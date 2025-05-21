@@ -1,0 +1,244 @@
+# Introduction
+
+_Nextmini_ is a high-performance overlay network layer written in Rust. We have designed _Nextmini_ to empower distributed computing across geographically distributed datacenters in the cloud, by seamlessly connecting virtual machines via a wide range of protocols. Similar to conventional Virtual Private Networks (VPNs), _Nextmini_ leverages the TUN interface and behaves as a virtual network device. This allows applications to leverage the full power of _Nextmini_ obliviously.
+
+_Nextmini_ provides three core features to ensure its delivery of high performance, capable of satisfying modern distributed computing needs:
+
+- **High performance, fully asynchronous architecture.** Based on the highly efficient `tokio` library, _Nextmini_ firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of computing cores in modern computing.
+
+- **Multi-path routing with TUN interfaces.** _Nextmini_ realizes multi-path routing by creating multiple TUN interfaces, each with its own set of paths to transport data simultaneously.
+
+- **Built-in performance monitoring and hot reconfiguration**. _Nextmini_ is designed to operate in unpredictable network environments. On top of providing the capability for monitoring the performance of the network down to per-flow granularity, Strato provides the ability to reconfigure routes on-the-fly to adapt to changing network conditions.
+
+Please refer to the Wiki page in this repository for more details about _Nextmini_.
+
+# Quick Start
+
+The easiest way to get started with _Nextmini_ is to use Docker. The Docker image is built atop the latest Ubuntu 24.04 release and contains all the necessary dependencies to run _Nextmini_.
+
+## Docker Single Machine Setup: a Simple Example with `iperf3`
+
+To run _Nextmini_ on a single machine over multiple containers, simply run the following command:
+
+```bash
+cd ./examples/simple && docker compose build && docker compose up
+```
+
+This will automatically start two _Nextmini_ nodes and a _Nextmini_ server. The two _Nextmini_ nodes will connect to the _Nextmini_ server via the docker network and establish a tunnel between them.
+
+We can attach to `node1` container with the following command, in a different terminal:
+
+```bash
+docker exec -it node1 /bin/bash
+```
+
+_Nextmini_ leverages TUN/TAP interfaces to facilitate internode communication. To check the available _Nextmini_ interfaces on node1, simply type:
+
+```bash
+ifconfig
+```
+
+This will display all available network interfaces. Interfaces created by _Nextmini_ are typically shown as `utun#`. In our case, they are shown as:
+
+```
+utun0: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
+        inet 10.0.0.1  netmask 255.255.255.0  destination 10.0.0.1
+        unspec 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00  txqueuelen 500  (UNSPEC)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+```
+
+We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, _Nextmini_ uses the subnet `10.0.0.0/24` for the _Nextmini_ data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
+
+To confirm that connection is successful, we can ping `node2` by its _Nextmini_ IP address:
+
+```bash
+ping 10.0.0.2
+```
+
+if successful, outputs similar to the following should be displayed
+
+```bash
+PING 10.0.0.2 (10.0.0.2): 56 data bytes
+64 bytes from 10.0.0.2: icmp_seq=0 ttl=64 time=0.694 ms
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.732 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.871 ms
+```
+
+The _Nextmini_ docker image comes pre-installed with the `iperf3` tool for network bandwidth testing. We can test the bandwidth between `node1` and `node2` by starting an `iperf3` server on `node1` with
+
+```bash
+iperf3 -s
+```
+
+Open a new terminal and attach to `node2` with
+
+```bash
+docker exec -it node2 /bin/bash
+```
+
+On `node2`, connect an `iperf3` client to node1 with
+
+```bash
+iperf3 -c 10.0.0.1
+```
+
+Wait for `iperf3` to complete running.
+
+To shutdown the Docker containers, use the command:
+
+```
+docker compose down
+```
+
+Alternatively, press `Control + C` in the terminal where `docker compose up` is running.
+
+## Running a Simple Distributed PyTorch Trainer with Docker: Single Machine Setup
+
+Strato is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
+
+Before starting to build the docker image, it is recommended to start from a clean slate:
+
+```bash
+docker system prune -a
+```
+
+This will remove all stopped containers, all unused networks and volumes, and all build cache. If you wish to remove all existing volumes at the same time, run:
+
+```bash
+docker system prune -a --volumes -f
+```
+
+To build and run the docker image in this example, simply execute the following:
+
+```bash
+cd ./examples/pytorch && docker compose build && docker compose up
+```
+
+This will start four Strato dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with
+
+```bash
+docker exec -it node1 /bin/bash
+```
+
+Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
+
+```bash
+mpirun --allow-run-as-root -np 4 echo hello world
+```
+
+We can also run a Python script using `uv`:
+
+```bash
+mpirun --allow-run-as-root -np 4 -H node1:1,node2:1,node3:1,node4:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by slot uv run test.py
+```
+
+or simply:
+
+```bash
+sh run-test.sh
+```
+
+We should see four `Hello World!` printed after the Python packages are downloaded and installed.
+
+Finally, we can start distributed training with PyTorch:
+
+```bash
+sh train.sh
+```
+
+This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes, each running in its own Docker container.
+
+
+## Running the Water-filling Routing Example
+
+**Step 1: Start the testbed**
+
+To start the experiment with water-filling routing, open a terminal and run the following:
+
+```bash
+cd ./examples/routing/waterfilling && docker compose build && docker compose up
+```
+
+Before starting to build the docker image, it is recommended to start from a clean slate:
+
+```bash
+docker system prune -a
+```
+
+This will remove all stopped containers, all unused networks and volumes, and all build cache. If you wish to remove all existing volumes at the same time, run:
+
+```bash
+docker system prune -a --volumes -f
+```
+
+To reset the environment and start from a clean state, run:
+
+```bash
+docker compose down
+docker compose build --no-cache
+```
+
+- Port 5432 is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
+
+Complimentary details: This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
+
+**Step 2: Run `iperf3`**
+
+We generate arbitrary data with `iperf3`. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
+
+In a new terminal, start the iperf3 servers on node2 by runnig:
+
+```bash
+docker exec -it node2 /bin/bash -c "./iperf3_s.sh"
+```
+
+In another terminal, start the iperf3 clients on node1 by running:
+
+```bash
+docker exec -it node1 /bin/bash -c "./iperf3_c.sh"
+```
+
+**Step 3: Monitor the bandwidth**
+
+Make sure you have `uv` installed first:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+And make sure that `$HOME/.cargo/bin` is in the `$PATH` by revising `~/.zshrc` accordingly:
+
+```sh
+export PATH=$HOME/.cargo/bin:$PATH
+```
+
+Later on, whenever one needs to update the version of `uv`, the following command can be used:
+
+```sh
+uv self update
+```
+
+They use the following command for live data monitoring, you will see a command-line dashboard for live data monitoring:
+
+```bash
+cd ./tools/monitor && uv run dashboard.py
+```
+
+Observe the traffic in each path, and note how they are not distributed evenly according to the bandwidth limit we set for each path.
+
+**Step 4: Run the water-filling algorithm**
+
+To run the water-filling algorithm, open one last terminal and run
+
+```bash
+cd ./tools/routing && uv run waterfilling.py
+```
+
+By default, the waterfilling algorithm will run in 2-second intervals, and print the output in each round. Once convergence is reached, the algorithm will stop printing.
+
+**Step 5: Observe the results**
+
+Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively. However, a known caveat, perhaps due to the design of the water-filling algorithm, is that the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps as well.
