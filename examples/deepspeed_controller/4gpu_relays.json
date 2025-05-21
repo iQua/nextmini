@@ -1,0 +1,667 @@
+{
+    "reset_db": true,
+    "protocol": "quic",
+    "routes": [
+        {
+            "src_node_id": 1,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                1,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 1,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                5,
+                1
+            ]
+        },
+        {
+            "src_node_id": 1,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                1,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 1,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                5,
+                1
+            ]
+        },
+        {
+            "src_node_id": 1,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                1,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 1,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                5,
+                1
+            ]
+        },
+        {
+            "src_node_id": 2,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                2,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 2,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                6,
+                2
+            ]
+        },
+        {
+            "src_node_id": 2,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                2,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 2,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                6,
+                2
+            ]
+        },
+        {
+            "src_node_id": 2,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                2,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 2,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                6,
+                2
+            ]
+        },
+        {
+            "src_node_id": 3,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                3,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 3,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                7,
+                3
+            ]
+        },
+        {
+            "src_node_id": 3,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                3,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 3,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                7,
+                3
+            ]
+        },
+        {
+            "src_node_id": 3,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                3,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 3,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                7,
+                3
+            ]
+        },
+        {
+            "src_node_id": 4,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                4,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 4,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                8,
+                4
+            ]
+        },
+        {
+            "src_node_id": 4,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                4,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 4,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                8,
+                4
+            ]
+        },
+        {
+            "src_node_id": 4,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                4,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 4,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                8,
+                4
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                5,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                6,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                5,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                6,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                5,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                6,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                5,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                7,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                5,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                7,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                5,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                7,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                5,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                8,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                5,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                8,
+                5
+            ]
+        },
+        {
+            "src_node_id": 5,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                5,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                8,
+                5
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                6,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                7,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                6,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                7,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                6,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                7,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                6,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                8,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                6,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                8,
+                6
+            ]
+        },
+        {
+            "src_node_id": 6,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                6,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                8,
+                6
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                7,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 0,
+            "hops": [
+                8,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                7,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 1,
+            "hops": [
+                8,
+                7
+            ]
+        },
+        {
+            "src_node_id": 7,
+            "dst_node_id": 8,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                7,
+                8
+            ]
+        },
+        {
+            "src_node_id": 8,
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "route_id": 2,
+            "hops": [
+                8,
+                7
+            ]
+        }
+    ],
+    "link_rates": []
+}

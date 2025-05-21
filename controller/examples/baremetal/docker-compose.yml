@@ -1,0 +1,17 @@
+version: '3'
+services:
+  controller:
+    container_name: controller
+    hostname: controller
+    image: strato_controller
+    build:
+        context: ../../
+        dockerfile: ./examples/metrics/Dockerfile
+    stdin_open: true
+    volumes:
+      - ./config.json:/var/strato/server/config.json
+      - ./dashboard.py:/var/strato/server/dashboard.py
+    ports:
+      - 5432:5432
+      - 10003:10003 
+    command: /bin/bash -c "node server.js"

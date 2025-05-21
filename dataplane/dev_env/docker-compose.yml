@@ -1,0 +1,16 @@
+services:
+  strato_node:
+    container_name: node
+    hostname: node
+    build:
+      context: ../
+      dockerfile: ./dev_env/Dockerfile
+    privileged: true
+    ports:
+      - 5432:5432
+      - 3000:3000
+    volumes:
+      - ../../:/var/strato
+    cap_add:
+      - NET_ADMIN
+    command: /bin/sh -c "sleep infinity"

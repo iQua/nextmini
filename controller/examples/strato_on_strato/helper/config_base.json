@@ -1,0 +1,5 @@
+{
+    "port":10003,
+    "reset_db" : true,
+    "auto_db_sync": true
+}

@@ -1,0 +1,27 @@
+services:
+  controller:
+    container_name: strato_controller
+    image: strato_controller
+    network_mode: "host"
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    stdin_open: true
+    volumes:
+      - ./controller-config.toml:/var/strato/server/config.toml
+    command: /bin/bash -c "/var/strato/server/target/release/controller"
+
+  node:
+    container_name: strato
+    image: strato_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    network_mode: "host"
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./config.toml:/var/node/config.toml
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "./target/release/strato ws://127.0.0.1:80"

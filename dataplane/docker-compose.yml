@@ -1,0 +1,15 @@
+version: '3'
+services:
+  node:
+    container_name: strato
+    hostname: strato
+    image: strato_datapath
+    build:
+        context: .
+        dockerfile: ./Dockerfile
+    privileged: true
+    volumes:
+      - .:/var/strato
+    cap_add:
+        - NET_ADMIN
+    command: /bin/bash -c "/var/node/target/release/strato ws://192.168.196.158:3000"

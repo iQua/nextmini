@@ -1,0 +1,33 @@
+services:
+  strato:
+    container_name: strato
+    image: strato_datapath_deepspeed
+    build:
+      context: ../../dataplane
+      dockerfile: ../examples/deepspeed_dataplane/Dockerfile
+    stdin_open: true
+    privileged: true
+    network_mode: "host"
+    volumes:
+      - ./ssh:/mnt/shared/ssh
+      - ./config.toml:/var/node/config.toml
+      - ./training:/var/node/training
+    environment:
+      - NCCL_IB_DISABLE=1
+      - NCCL_SOCKET_IFNAME=strato
+      - NCCL_P2P_LEVEL=PHB
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+    command: /bin/bash -c "cp -r /mnt/shared/ssh /root/.ssh &&
+      chmod 400 /root/.ssh/id_rsa &&
+      chmod +x /var/node/training/run_deepspeed.sh &&
+      /usr/sbin/sshd -p 12345 &
+      /var/node/target/release/strato ${CONTROLLER_ADDR}"

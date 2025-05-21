@@ -1,0 +1,31 @@
+services:
+  strato:
+    container_name: strato
+    image: strato_datapath_deepspeed
+    build:
+      context: ../../
+      dockerfile: ./examples/dataplane_deepspeed_gpu/Dockerfile
+    stdin_open: true
+    privileged: true
+    ports:
+      - 10001:10001
+    volumes:
+      - ./ssh:/mnt/shared/ssh
+      - ./run_horovod.sh:/horovod/examples/run_horovod.sh
+      - ./config.toml:/horovod/examples/config.toml
+      - ./training.py:/horovod/examples/training.py
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    command: /bin/bash -c "cp -r /mnt/shared/ssh /root/.ssh &&
+      chmod 400 /root/.ssh/id_rsa &&
+      chmod +x /horovod/examples/run_horovod.sh &&
+      /usr/sbin/sshd -p 12345 &
+      /var/node/target/release/strato ws://${CONTROLLER_ADDR}:80"

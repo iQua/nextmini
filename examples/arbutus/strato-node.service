@@ -1,0 +1,12 @@
+[Unit]
+Description=Strato Node
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker-compose -f /home/ubuntu/strato/examples/arbutus/docker-compose.yml up node
+ExecStop=/usr/bin/docker-compose -f /home/ubuntu/strato/examples/arbutus/docker-compose.yml down
+
+[Install]
+WantedBy=multi-user.target

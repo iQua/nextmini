@@ -1,0 +1,1 @@
+iperf3 -s -p 5201 & iperf3 -s -p 5202 & iperf3 -s -p 5203 & iperf3 -s -p 5204 & iperf3 -s -p 5205 & iperf3 -s -p 5206

@@ -1,0 +1,3 @@
+[workspace]
+members = ["messages", "controller", "dataplane"]
+resolver = "3"

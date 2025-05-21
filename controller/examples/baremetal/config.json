@@ -1,0 +1,103 @@
+{
+    "port":10003,
+    "reset_db" : true,
+    "routes_preset": {
+        "type": "full_mesh",
+        "n_nodes": 6
+    },
+    "routes":[
+        {
+            "src_node_id": 7, 
+            "dst_node_id": 6,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [7,6]
+        },
+        {
+            "src_node_id": 6, 
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [6,7]
+        },
+        {
+            "src_node_id": 7, 
+            "dst_node_id": 5,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [7,6,5]
+        },
+        {
+            "src_node_id": 5, 
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [5,6,7]
+        },
+        {
+            "src_node_id": 7, 
+            "dst_node_id": 4,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [7,6,4]
+        },
+        {
+            "src_node_id": 4, 
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [4,6,7]
+        },
+        {
+            "src_node_id": 7, 
+            "dst_node_id": 3,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [7,6,3]
+        },
+        {
+            "src_node_id": 3, 
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [3,6,7]
+        },
+        {
+            "src_node_id": 7, 
+            "dst_node_id": 2,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [7,6,2]
+        },
+        {
+            "src_node_id": 2, 
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [2,6,7]
+        },
+        {
+            "src_node_id": 7, 
+            "dst_node_id": 1,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [7,6,1]
+        },
+        {
+            "src_node_id": 1, 
+            "dst_node_id": 7,
+            "flow_weight": 1,
+            "route_weight": 1,
+            "hops": [1,6,7]
+        }
+    ],
+    "connections":{
+        "disconnect":[
+            [7,5],
+            [7,4],
+            [7,3],
+            [7,2],
+            [7,1]
+        ]
+    }
+}

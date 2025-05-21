@@ -1,0 +1,3 @@
+public_network_port = 6688
+public_network_address = "172.83.14.173"
+num_packet_processors = 0 

@@ -1,0 +1,3 @@
+public_network_port = 10001
+public_network_interface = "ens3"
+restart_on_disconnect = true 

@@ -1,0 +1,16 @@
+/controller/**/*.js
+/dataplane/target
+/messages/target
+/controller/target
+/controller/node_modules
+.vscode
+test.txt
+bigfile.zip
+.DS_Store
+lightning_logs/
+**/*.der
+**/Cargo.lock
+/target
+**/.venv
+**/uv.lock
+**/__pycache__

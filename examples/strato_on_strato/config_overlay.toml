@@ -1,0 +1,3 @@
+metrics_collection_interval = 1
+tun_interface_name = "strato1"
+private_network_port = 10002 

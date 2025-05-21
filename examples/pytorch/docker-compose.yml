@@ -1,0 +1,153 @@
+# docker-compose configuration for the PyTorch distributed example.
+networks:
+  network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.8.0/24
+
+services:
+  controller:
+    container_name: controller
+    hostname: controller
+    image: strato_controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.2
+    stdin_open: true
+    volumes:
+      - ./controller-config.toml:/var/strato/server/config.toml
+    ports:
+      - 5432:5432
+      - 3000:3000
+    command: /bin/bash -c "/var/strato/server/target/release/controller"
+
+  node1:
+    container_name: node1
+    hostname: node1
+    image: strato_datapath_pytorch
+    build:
+      context: ../../
+      dockerfile: ./examples/pytorch/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.3
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/mnt/shared/.ssh
+      - ./config.toml:/var/node/config.toml
+      - ./lenet5.py:/var/node/lenet5.py
+      - ./test.py:/var/node/test.py
+      - ./run_test.sh:/var/node/run_test.sh
+      - ./train.sh:/var/node/train.sh
+      - ./pyproject.toml:/var/node/pyproject.toml
+    depends_on:
+      - controller
+      - node4
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+      /usr/sbin/sshd -p 22 &
+      sleep 7 &&
+      ssh-keyscan -H node2 >> /root/.ssh/known_hosts &&
+      ssh-keyscan -H node3 >> /root/.ssh/known_hosts &&
+      ssh-keyscan -H node4 >> /root/.ssh/known_hosts &&
+      /var/node/target/release/strato ws://controller:3000"
+
+  node2:
+    container_name: node2
+    hostname: node2
+    image: strato_datapath_pytorch
+    build:
+      context: ../../
+      dockerfile: ./examples/pytorch/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.4
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/mnt/shared/.ssh
+      - ./config.toml:/var/node/config.toml
+      - ./lenet5.py:/var/node/lenet5.py
+      - ./test.py:/var/node/test.py
+      - ./run_test.sh:/var/node/run_test.sh
+      - ./train.sh:/var/node/train.sh
+      - ./pyproject.toml:/var/node/pyproject.toml
+    depends_on:
+      - controller
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+      /usr/sbin/sshd -p 22 &
+      sleep 7 &&
+      /var/node/target/release/strato ws://controller:3000"
+
+  node3:
+    container_name: node3
+    hostname: node3
+    image: strato_datapath_pytorch
+    build:
+      context: ../../
+      dockerfile: ./examples/pytorch/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.5
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/mnt/shared/.ssh
+      - ./config.toml:/var/node/config.toml
+      - ./lenet5.py:/var/node/lenet5.py
+      - ./test.py:/var/node/test.py
+      - ./run_test.sh:/var/node/run_test.sh
+      - ./train.sh:/var/node/train.sh
+      - ./pyproject.toml:/var/node/pyproject.toml
+    depends_on:
+      - controller
+      - node2
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+      /usr/sbin/sshd -p 22 &
+      sleep 7 &&
+      /var/node/target/release/strato ws://controller:3000"
+
+  node4:
+    container_name: node4
+    hostname: node4
+    image: strato_datapath_pytorch
+    build:
+      context: ../../
+      dockerfile: ./examples/pytorch/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.6
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/mnt/shared/.ssh
+      - ./config.toml:/var/node/config.toml
+      - ./lenet5.py:/var/node/lenet5.py
+      - ./test.py:/var/node/test.py
+      - ./run_test.sh:/var/node/run_test.sh
+      - ./train.sh:/var/node/train.sh
+      - ./pyproject.toml:/var/node/pyproject.toml
+    depends_on:
+      - controller
+      - node3
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+      /usr/sbin/sshd -p 22 &
+      sleep 7 &&
+      /var/node/target/release/strato ws://controller:3000"

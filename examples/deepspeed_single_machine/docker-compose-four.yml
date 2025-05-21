@@ -1,0 +1,176 @@
+networks:
+  network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.9.0/24
+
+services:
+  controller:
+    container_name: controller
+    hostname: controller
+    image: strato_controller
+    build:
+      context: ../../controller
+      dockerfile: ./Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.9.2
+    stdin_open: true
+    volumes:
+      - ./4gpu_emulated.json:/var/strato/server/config.json
+    ports:
+      - 3000:3000
+    command: /bin/bash -c "node server.js"
+
+  node1:
+    container_name: node1
+    image: strato_datapath_deepspeed
+    build:
+      context: ../../dataplane
+      dockerfile: ../examples/deepspeed_dataplane/Dockerfile
+    stdin_open: true
+    privileged: true
+    networks:
+      network:
+        ipv4_address: 172.16.9.3
+    volumes:
+      - ./ssh:/mnt/shared/ssh
+      - ./config.toml:/var/node/config.toml
+      - ../deepspeed_dataplane/training:/var/node/training
+    environment:
+      - NCCL_IB_DISABLE=1
+      - NCCL_SOCKET_IFNAME=strato
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - controller
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+
+    command: /bin/bash -c "cp -r /mnt/shared/ssh /root/.ssh &&
+      chmod 400 /root/.ssh/id_rsa &&
+      chmod +x /var/node/training/run_deepspeed.sh &&
+      /usr/sbin/sshd -p 12345 &
+      sleep 7 &&
+      /var/node/target/release/strato ${CONTROLLER_ADDR} --private_network_addr node1"
+
+  node2:
+    container_name: node2
+    image: strato_datapath_deepspeed
+    build:
+      context: ../../dataplane
+      dockerfile: ../examples/deepspeed_dataplane/Dockerfile
+    stdin_open: true
+    privileged: true
+    networks:
+      network:
+        ipv4_address: 172.16.9.4
+    volumes:
+      - ./ssh:/mnt/shared/ssh
+      - ./config.toml:/var/node/config.toml
+      - ../deepspeed_dataplane/training:/var/node/training
+    environment:
+      - NCCL_IB_DISABLE=1
+      - NCCL_SOCKET_IFNAME=strato
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - controller
+      - node1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+    command: /bin/bash -c "cp -r /mnt/shared/ssh /root/.ssh &&
+      chmod 400 /root/.ssh/id_rsa &&
+      chmod +x /var/node/training/run_deepspeed.sh &&
+      /usr/sbin/sshd -p 12345 &
+      sleep 8 &&
+      /var/node/target/release/strato ${CONTROLLER_ADDR} --private_network_addr node2"
+
+  node3:
+    container_name: node3
+    image: strato_datapath_deepspeed
+    build:
+      context: ../../dataplane
+      dockerfile: ../examples/deepspeed_dataplane/Dockerfile
+    stdin_open: true
+    privileged: true
+    networks:
+      network:
+        ipv4_address: 172.16.9.5
+    volumes:
+      - ./ssh:/mnt/shared/ssh
+      - ./config.toml:/var/node/config.toml
+      - ../deepspeed_dataplane/training:/var/node/training
+    environment:
+      - NCCL_IB_DISABLE=1
+      - NCCL_SOCKET_IFNAME=strato
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - controller
+      - node2
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+    command: /bin/bash -c "cp -r /mnt/shared/ssh /root/.ssh &&
+      chmod 400 /root/.ssh/id_rsa &&
+      chmod +x /var/node/training/run_deepspeed.sh &&
+      /usr/sbin/sshd -p 12345 &
+      sleep 8 &&
+      /var/node/target/release/strato ${CONTROLLER_ADDR} --private_network_addr node3"
+
+  node4:
+    container_name: node4
+    image: strato_datapath_deepspeed
+    build:
+      context: ../../dataplane
+      dockerfile: ../examples/deepspeed_dataplane/Dockerfile
+    stdin_open: true
+    privileged: true
+    networks:
+      network:
+        ipv4_address: 172.16.9.6
+    volumes:
+      - ./ssh:/mnt/shared/ssh
+      - ./config.toml:/var/node/config.toml
+      - ../deepspeed_dataplane/training:/var/node/training
+    environment:
+      - NCCL_IB_DISABLE=1
+      - NCCL_SOCKET_IFNAME=strato
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - controller
+      - node3
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+
+    command: /bin/bash -c "cp -r /mnt/shared/ssh /root/.ssh &&
+      chmod 400 /root/.ssh/id_rsa &&
+      chmod +x /var/node/training/run_deepspeed.sh &&
+      /usr/sbin/sshd -p 12345 &
+      sleep 8 &&
+      /var/node/target/release/strato ${CONTROLLER_ADDR} --private_network_addr node4"

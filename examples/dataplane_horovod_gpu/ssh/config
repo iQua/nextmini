@@ -1,0 +1,29 @@
+Host horovod1
+    HostName localhost
+    User root
+    Port 12345
+
+Host horovod2
+    HostName 10.0.0.2
+    User root
+    Port 12345
+
+Host horovod3
+    HostName 10.0.0.3
+    User root
+    Port 12345
+
+Host horovod4
+    HostName 10.0.0.4
+    User root
+    Port 12345
+
+Host horovod5
+    HostName 10.0.0.5
+    User root
+    Port 12345
+
+Host horovod6
+    HostName 10.0.0.6
+    User root
+    Port 12345

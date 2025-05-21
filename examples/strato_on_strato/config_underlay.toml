@@ -1,0 +1,2 @@
+metrics_collection_interval = 1
+private_network_port = 10001 

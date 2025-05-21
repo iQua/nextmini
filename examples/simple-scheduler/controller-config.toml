@@ -1,0 +1,14 @@
+reset_db = true
+protocol = "quic"
+multi_path_method = "stream"
+scheduler_type = "fifo"
+
+[routes_preset]
+n_nodes = 3
+type = "full_mesh"
+
+[[routes]]
+src_node_id = 1
+dst_node_id = 3
+hops = [1, 2, 3]
+route_id = 0

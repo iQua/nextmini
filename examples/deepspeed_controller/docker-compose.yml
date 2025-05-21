@@ -1,0 +1,13 @@
+services:
+  controller:
+    container_name: controller
+    hostname: controller
+    image: strato_controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    stdin_open: true
+    network_mode: "host"
+    volumes:
+      - ./controller-config.toml:/var/strato/server/config.toml
+    command: /bin/bash -c "/var/strato/server/target/release/controller"

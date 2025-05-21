@@ -1,0 +1,19 @@
+version: '3'
+services:
+  controller:
+    container_name: controller
+    hostname: controller
+    image: strato_controller
+    build:
+        context: ../../
+        dockerfile: ./examples/linear_constraints/Dockerfile
+    stdin_open: true
+    volumes:
+      - ./config.json:/var/strato/server/config.json
+      - ./dashboard.py:/var/strato/server/dashboard.py
+      - ../../../tools/MLRouting:/var/strato/server/MLRouting
+    ports:
+      - 5432:5432
+      - 10003:10003 
+      - 10234:10234
+    command: /bin/bash -c "node server.js"
