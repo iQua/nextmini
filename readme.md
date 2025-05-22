@@ -1,20 +1,16 @@
 # Introduction
 
-_Nextmini_ is a high-performance overlay network layer written in Rust. We have designed _Nextmini_ to empower distributed computing across geographically distributed datacenters in the cloud, by seamlessly connecting virtual machines via a wide range of protocols. Similar to conventional Virtual Private Networks (VPNs), _Nextmini_ leverages the TUN interface and behaves as a virtual network device. This allows applications to leverage the full power of _Nextmini_ obliviously.
+_Nextmini_ is a high-performance network emulation testbed, written in the Rust programming language. It is first and foremost designed to run as a network emulation testbed within Docker containers in the same compute cluster, but it can also run natively and across geographically distributed datacenters. Similar to conventional Virtual Private Networks (VPNs), _Nextmini_ leverages the cross-platform [TUN interface](https://en.wikipedia.org/wiki/TUN/TAP) and behaves as a virtual network device to distributed workloads. This allows distributed workloads, such as distributed machine learning workloads, to leverage the full power of the emulation testbed obliviously. As its name suggested, it is designed to supercede many of the core use cases of [Mininet](https://mininet.org), and extend it with the ability to scale up even further across multiple physical machines, and to run any distributed workload on the testbed.
 
-_Nextmini_ provides three core features to ensure its delivery of high performance, capable of satisfying modern distributed computing needs:
+Thanks to the Rust programming language, _Nextmini_ provides three core features to be highly performant, capable of satisfying modern network emulation needs:
 
-- **High performance, fully asynchronous architecture.** Based on the highly efficient `tokio` library, _Nextmini_ firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of computing cores in modern computing.
+- **High performance, fully asynchronous architecture.** Based on the highly efficient [`tokio`](https://tokio.rs) library, _Nextmini_ runs in userspace, and firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of compute cores in modern compute clusters.
 
-- **Multi-path routing with TUN interfaces.** _Nextmini_ realizes multi-path routing by creating multiple TUN interfaces, each with its own set of paths to transport data simultaneously.
+- **Multi-path routing.** _Nextmini_ supports multi-path routing obliviously, with each TCP flow traversing a different route in the emulated network.
 
-- **Built-in performance monitoring and hot reconfiguration**. _Nextmini_ is designed to operate in unpredictable network environments. On top of providing the capability for monitoring the performance of the network down to per-flow granularity, Strato provides the ability to reconfigure routes on-the-fly to adapt to changing network conditions.
+- **Built-in performance monitoring and hot reconfiguration**. _Nextmini_ is designed to operate in both emulated and real-world network environments. It provides the capability of both emulating and monitoring network performance at per-flow granularity, and of reconfiguring routes on-the-fly to adapt to changing network conditions.
 
-Please refer to the Wiki page in this repository for more details about _Nextmini_.
-
-# Quick Start
-
-The easiest way to get started with _Nextmini_ is to use Docker. The Docker image is built atop the latest Ubuntu 24.04 release and contains all the necessary dependencies to run _Nextmini_.
+Though _Nextmini_ runs natively across Linux, macOS, and Windows, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run _Nextmini_.
 
 ## Docker Single Machine Setup: a Simple Example with `iperf3`
 
@@ -152,11 +148,9 @@ sh train.sh
 This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes, each running in its own Docker container.
 
 
-## Running the Water-filling Routing Example
+## Running the Water-Filling Routing Example
 
-**Step 1: Start the testbed**
-
-To start the experiment with water-filling routing, open a terminal and run the following:
+The water-filling routing example, writtin in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:
 
 ```bash
 cd ./examples/routing/waterfilling && docker compose build && docker compose up
@@ -181,13 +175,11 @@ docker compose down
 docker compose build --no-cache
 ```
 
-- Port 5432 is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
+_Note:_ Port `5432` is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
 
-Complimentary details: This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
+This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
 
-**Step 2: Run `iperf3`**
-
-We generate arbitrary data with `iperf3`. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
+_Running the workload._ We can now generate arbitrary data with `iperf3` workloads. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
 
 In a new terminal, start the iperf3 servers on node2 by runnig:
 
@@ -201,9 +193,7 @@ In another terminal, start the iperf3 clients on node1 by running:
 docker exec -it node1 /bin/bash -c "./iperf3_c.sh"
 ```
 
-**Step 3: Monitor the bandwidth**
-
-Make sure you have `uv` installed first:
+**Monitoring the throughput.** To monitor the network throughput, first make sure you have `uv` installed first:
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -229,9 +219,7 @@ cd ./tools/monitor && uv run dashboard.py
 
 Observe the traffic in each path, and note how they are not distributed evenly according to the bandwidth limit we set for each path.
 
-**Step 4: Run the water-filling algorithm**
-
-To run the water-filling algorithm, open one last terminal and run
+**Running the algorithm.** To run the water-filling algorithm, open one more terminal and run:
 
 ```bash
 cd ./tools/routing && uv run waterfilling.py
@@ -239,6 +227,6 @@ cd ./tools/routing && uv run waterfilling.py
 
 By default, the waterfilling algorithm will run in 2-second intervals, and print the output in each round. Once convergence is reached, the algorithm will stop printing.
 
-**Step 5: Observe the results**
+Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively.
 
-Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively. However, a known caveat, perhaps due to the design of the water-filling algorithm, is that the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps as well.
+_Known caveat._ Perhaps due to the design of the water-filling algorithm, the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps in some of the runs.
