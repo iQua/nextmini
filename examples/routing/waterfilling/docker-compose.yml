@@ -41,10 +41,10 @@ services:
         ipv4_address: 172.16.8.3
     stdin_open: true
     volumes:
-      - ./controller-config.toml:/var/nextmini/server/config.toml
+      - ./controller-config.toml:/var/nextmini/config.toml
     ports:
       - 3000:3000
-    command: /bin/bash -c "/var/nextmini/server/target/release/controller"
+    command: /bin/bash -c "/var/nextmini/controller"
 
   node1:
     container_name: node1
@@ -59,14 +59,14 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./iperf3_c.sh:/var/node/iperf3_c.sh
-      - ./config.toml:/var/node/config.toml
-      - ../../../tools/:/var/node/tools
+      - ./iperf3_c.sh:/var/nextmini/iperf3_c.sh
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../../tools/:/var/nextmini/tools
     depends_on:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && ./target/release/nextmini ws://controller:3000"
+    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
@@ -81,15 +81,15 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./iperf3_s.sh:/var/node/iperf3_s.sh
-      - ./config.toml:/var/node/config.toml
-      - ../../../tools/:/var/node/tools
+      - ./iperf3_s.sh:/var/nextmini/iperf3_s.sh
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../../tools/:/var/nextmini/tools
     depends_on:
       - controller
       - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && ./target/release/nextmini ws://controller:3000"
+    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
@@ -104,14 +104,14 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./config.toml:/var/node/config.toml
-      - ../../../tools/:/var/node/tools
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../../tools/:/var/nextmini/tools
     depends_on:
       - controller
       - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && ./target/release/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
 
   node4:
     container_name: node4
@@ -126,11 +126,11 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./config.toml:/var/node/config.toml
-      - ../../../tools/:/var/node/tools
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../../tools/:/var/nextmini/tools
     depends_on:
       - controller
       - node3
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && ./target/release/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
