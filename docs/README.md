@@ -1,30 +1,26 @@
 # Introduction
 
-_Strato_ is a high-performance overlay network layer written in Rust. We have designed _Strato_ to empower distributed computing across geographically distributed datacenters in the cloud, by seamlessly connecting virtual machines via a wide range of protocols. Similar to conventional Virtual Private Networks (VPNs), _Strato_ leverages the TUN interface and behaves as a virtual network device. This allows applications to leverage the full power of _Strato_ obliviously.
+_Nextmini_ is a high-performance network emulation testbed, written in the Rust programming language. It is first and foremost designed to run as a network emulation testbed within Docker containers in the same compute cluster, but it can also run natively and across geographically distributed datacenters. Similar to conventional Virtual Private Networks (VPNs), _Nextmini_ leverages the cross-platform [TUN interface](https://en.wikipedia.org/wiki/TUN/TAP) and behaves as a virtual network device to distributed workloads. This allows distributed workloads, such as distributed machine learning workloads, to leverage the full power of the emulation testbed obliviously. As its name suggested, it is designed to supercede many of the core use cases of [Mininet](https://mininet.org), and extend it with the ability to scale up even further across multiple physical machines, and to run any distributed workload on the testbed.
 
-_Strato_ provides three core features to ensure its delivery of high performance, capable of satisfying modern distributed computing needs:
+Thanks to the Rust programming language, _Nextmini_ provides three core features to be highly performant, capable of satisfying modern network emulation needs:
 
-- **High performance, fully asynchronous architecture.** Based on the highly efficient `tokio` library, _Strato_ firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of computing cores in modern computing.
+- **High performance, fully asynchronous architecture.** Based on the highly efficient [`tokio`](https://tokio.rs) library, _Nextmini_ runs in userspace, and firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of compute cores in modern compute clusters.
 
-- **Multi-path routing with TUN interfaces.** _Strato_ realizes multi-path routing by creating multiple TUN interfaces, each with its own set of paths to transport data simultaneously.
+- **Multi-path routing.** _Nextmini_ supports multi-path routing obliviously, with each TCP flow traversing a different route in the emulated network.
 
-- **Built-in performance monitoring and hot reconfiguration**. _Strato_ is designed to operate in unpredictable network environments. On top of providing the capability for monitoring the performance of the network down to per-flow granularity, Strato provides the ability to reconfigure routes on-the-fly to adapt to changing network conditions.
+- **Built-in performance monitoring and hot reconfiguration**. _Nextmini_ is designed to operate in both emulated and real-world network environments. It provides the capability of both emulating and monitoring network performance at per-flow granularity, and of reconfiguring routes on-the-fly to adapt to changing network conditions.
 
-Please refer to the Wiki page in this repository for more details about _Strato_.
+Though _Nextmini_ runs natively across Linux, macOS, and Windows, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run _Nextmini_.
 
-# Quick Start
+## Docker Single Machine Setup: a Simple Example with `iperf3`
 
-The easiest way to get started with _Strato_ is to use Docker. The Docker image is built atop the latest Ubuntu 24.04 release and contains all the necessary dependencies to run _Strato_.
-
-### Docker Single Machine Setup: a Simple Example with `iperf3`
-
-To run _Strato_ on a single machine over multiple containers, simply run the following command:
+To run _Nextmini_ on a single machine over multiple containers, simply run the following command:
 
 ```bash
 cd ./examples/simple && docker compose build && docker compose up
 ```
 
-This will automatically start two _Strato_ nodes and a _Strato_ server. The two _Strato_ nodes will connect to the _Strato_ server via the docker network and establish a tunnel between them.
+This will automatically start two _Nextmini_ nodes and a _Nextmini_ server. The two _Nextmini_ nodes will connect to the _Nextmini_ server via the docker network and establish a tunnel between them.
 
 We can attach to `node1` container with the following command, in a different terminal:
 
@@ -32,13 +28,13 @@ We can attach to `node1` container with the following command, in a different te
 docker exec -it node1 /bin/bash
 ```
 
-_Strato_ leverages TUN/TAP interfaces to facilitate internode communication. To check the available _Strato_ interfaces on node1, simply type:
+_Nextmini_ leverages TUN/TAP interfaces to facilitate internode communication. To check the available _Nextmini_ interfaces on node1, simply type:
 
 ```bash
 ifconfig
 ```
 
-This will display all available network interfaces. Interfaces created by _Strato_ are typically shown as `utun#`. In our case, they are shown as:
+This will display all available network interfaces. Interfaces created by _Nextmini_ are typically shown as `utun#`. In our case, they are shown as:
 
 ```
 utun0: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
@@ -50,9 +46,9 @@ utun0: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
 ```
 
-We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, _Strato_ uses the subnet `10.0.0.0/24` for the _Strato_ data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
+We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, _Nextmini_ uses the subnet `10.0.0.0/24` for the _Nextmini_ data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
 
-To confirm that connection is successful, we can ping `node2` by its _Strato_ IP address:
+To confirm that connection is successful, we can ping `node2` by its _Nextmini_ IP address:
 
 ```bash
 ping 10.0.0.2
@@ -67,7 +63,7 @@ PING 10.0.0.2 (10.0.0.2): 56 data bytes
 64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.871 ms
 ```
 
-The _Strato_ docker image comes pre-installed with the `iperf3` tool for network bandwidth testing. We can test the bandwidth between `node1` and `node2` by starting an `iperf3` server on `node1` with
+The _Nextmini_ docker image comes pre-installed with the `iperf3` tool for network bandwidth testing. We can test the bandwidth between `node1` and `node2` by starting an `iperf3` server on `node1` with
 
 ```bash
 iperf3 -s
@@ -95,7 +91,7 @@ docker compose down
 
 Alternatively, press `Control + C` in the terminal where `docker compose up` is running.
 
-### Running a Simple Distributed PyTorch Trainer with Docker: Single Machine Setup
+## Running a Simple Distributed PyTorch Trainer with Docker: Single Machine Setup
 
 Strato is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
 
@@ -151,239 +147,10 @@ sh train.sh
 
 This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes, each running in its own Docker container.
 
-### Docker Multi-Machine Set up
 
-The above examples are toy examples intended as an introduction to _Strato_. However, _Strato_ truly shines when used to construct an overlay layer between multiple machines. Doing so requires at least 2 machines, each running a _Strato_ data plane node, and one of the machines running the _Strato_ controller.
+## Running the Water-Filling Routing Example
 
-**Step 1: Running the controller**
-
-_Strato_ requires the controller to run first, before starting any of the data plane nodes. By default, the controller runs on port 3000. Ensure that the port is available and allows incoming TCP traffic on the machine running the _Strato_ controller before proceeding to the next steps.
-
-Alternatively, the controller can be configured to run on a different port via modifying the configuration file and the docker port mapping. For example, to run the controller on port `12345`, we can edit`"port"` field in `examples/controller/config.json`
-
-```json
-{
-  "port": 12345,
-  "~port~": 3000,
-  "reset_db": true,
-  "flows_preset": {
-    "type": "full_mesh",
-    "n_nodes": 2
-  }
-}
-```
-
-Once the controller is configured to run on an appropriate port, we can start the controller on machine one with
-
-```bash
-cd ./examples/controller && docker compose build && docker compose up
-```
-
-The following should be displayed once the controller is running:
-
-```js
-controller    |  * Starting PostgreSQL 12 database server
-controller    |    ...done.
-controller    | Initializing PostgreSQL
-controller    | CREATE DATABASE
-controller    | CREATE ROLE
-controller    | GRANT
-controller    | PostgreSQL initialized
-controller    | initialization finished
-controller    | Using config file: /var/strato/server/config.json
-controller    | Adding preset flows from config file..
-controller    | Adding initial flows from config file..
-controller    | Server is running on port 3000
-```
-
-**Step 2: Running the data plane nodes**
-
-We can now open a new terminal on machine one to start a _Strato_ data plane node. Similar to the controller, the data plane node by default runs on port `6688`, which can be configured as well. To change to port to `12346`, for example, we can modify `public_network_port` field.
-
-```yml
-# public_network_port: 6688
-public_network_port: 12346
-```
-
-We now need to configure the controller address, which can be achieved via modifying `examples/data plane/.env` file.
-
-```toml
-CONTROLLER_ADDR=ws://123.45.6.7:3000
-```
-
-Replace `123.45.6.7` with the actual IP address of the machine running the controller. (Note, if the controller port was changed in the previous step, change the port accordingly. e.g. `ws://123.45.6.7:12345`)
-
-Each Strato node report their IP address to the controller for other node to connect to them. By default, they extract their local IP automatically. However, in containerized environments, we need to manually configure the host machine IP address for Strato. We can achieve this by editing `config.toml`:
-
-```toml
-# public_network_port = 6688
-public_network_port = 12346
-public_network_addr = "123.45.6.7"
-```
-
-Note that this is not necessarily the same IP address as the controller, but rather the host machine IP address of each Strato node. It is only the same as the controller address in this example because we host node1 and controller on the same machine.
-
-Now, finally, we can start the data plane node with
-
-```bash
-cd ./examples/data plane && docker compose build && docker compose up
-```
-
-Repeat the same step for node2 as well. After both nodes are running, using `ping` or `iperf3` to check connection (refer to [Docker Single Machine Step](#docker-single-machine-setup) for instructions)
-
-**Optional Step: Adding more data plane nodes**
-
-Connecting additional nodes to the _Strato_ data plane simply requires repeating Step 2 for as many nodes as desired. However, one may notice that while new nodes can be added, it is impossible to send data between them (`ping` and `iperf3` would fail). This is because _Strato_ does not have routes configured for new nodes.
-
-There are two ways to add routes to _Strato_. One method is to modify the controller's `config.json` file, but this requires restarting the controller and all data plane nodes. The other method involves writing to the `Flows` table in the PostgreSQL database in the controller container, which does not require restarting but is tedious to do manually. For the sake of simplicity, we show how to use the first method in this part of the tutorial.
-
-_Strato_ controller offers presets for setting up routes between a group of nodes. We are going to use the preset `full_mesh`, which connects all pairs of nodes for _n_ nodes.
-
-For example, if we want to install routes for 3 nodes, on the machine running controller, we can edit the file `examples/controller/config.json`
-
-```json
-{
-  "port": 12345,
-  "~port~": 3000,
-  "reset_db": true,
-  "flows_preset": {
-    "type": "full_mesh",
-    "~n_nodes~": 2,
-    "n_nodes": 3
-  }
-}
-```
-
-### Running DeepSpeed with Strato
-
-With containerization, Strato supports streamlined execution of distributed ML pipelines in diverse network environments. This is a tutorial for setting up Strato to train a Large Language Model (LLM) with DeepSpeed and Hugging Face Transformers using Strato's DeepSpeed example.
-
-**Preliminary: Configure Docker with GPU support**
-
-This tutorial assumes that the machines are configured to support Docker with NVIDIA GPU support. This is pre-configured on VMs by many cloud service providers. For example, this tutorial is run on Paperspace with ML-in-a-box image, which comes with all the necessary configurations.
-
-Refer to [this tutorial](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) to manually set up NVIDIA support for Docker.
-
-**Step 1: Set up Strato**
-
-Refer to [this section](#docker-multi-machine-setup) of the tutorial to set up Strato on multiple machines, using `examples/deepspeed_controller` for controller, and `exaxmples/deepspeed_dataplane` for data plane respectively.
-
-**Step 2: Configure shared SSH connection**
-
-DeepSpeed relies on SSH to orchestrate a job between workers. For simplicity, we set up a shared SSH folder. The default SSH configuration supports up to 6 nodes, aliased `worker[NodeID]` for Strato nodes IDs from 1 to 6 respectively, with Strato IP address based on the default Strato subnet `10.0.0.1/24`.
-
-To configure support for more workers, or for a different Strato network, we can modify the SSH config files on worker machines.
-
-It is recommended to perform this step concurrently with step 1 to save time. However, if step 1 is already completed and Strato is up and running, we need to first stop it by stopping the controller. On the machine running controller, from the root folder of the repository, run the following command
-
-```bash
-cd examples/deepspeed_controller && docker compose down
-```
-
-Now that the controller is stopped we can open the ssh config file with a text editor. We use choose Vim for this tutorial:
-
-```bash
-vim ../deepspeed_dataplane/ssh/config
-```
-
-Once opened, the following should be displayed:
-
-```config
-Host worker1
-    HostName 10.0.0.1
-    User root
-    Port 12345
-
-Host worker2
-    HostName 10.0.0.2
-    User root
-    Port 12345
-
-Host worker3
-    HostName 10.0.0.3
-    User root
-    Port 12345
-
-Host worker4
-    HostName 10.0.0.4
-    User root
-    Port 12345
-
-Host worker5
-    HostName 10.0.0.5
-    User root
-    Port 12345
-
-Host worker6
-    HostName 10.0.0.6
-    User root
-    Port 12345
-```
-
-To add a new worker7 with address 10.0.0.7, we can append this file with
-
-```
-Host worker7
-  HostName 10.0.0.7
-  Port 12345
-```
-
-To alternate the Strato addresses for a different Strato subnet, simply modify the `HostName` fields for the workers with the corresponding assigned Strato IP addresses for each node.
-
-Save the changes by pressing `<esc>` and then typing `:x`. The same change must be made on all participating machines. We recommend using Git to synchronize the change on all worker nodes.
-
-**Step 3: Configure NCCL**
-
-NCCL can be configured with environment variables. Strato includes some default ones for primarily Wide Area Network communication scenarios. To modify these configurations or to add more, we can modify the data plane docker-compose.yml in [`examples/deepspeed_dataplane/docker-compose.yml`](/examples/deepspeed_dataplane/docker-compose.yml)
-
-Modify the environment variable under the following:
-
-```yml
-environment:
-  - NCCL_IB_DISABLE=1
-  - NCCL_SOCKET_IFNAME=strato
-  - NCCL_P2P_LEVEL=PHB
-```
-
-A list of all NCCL environment variables can be found [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html).
-
-Once done, synchronize the file on all worker machines and restart Strato. Refer to step 2 for guidance on how to do this.
-
-**Step 3: Configure DeepSpeed**
-
-DeepSpeed is configured using a JSON file, located at [`examples/deepspeed_dataplane/training/dsconfig.json`](/examples/deepspeed_dataplane/training/dsconfig.json). Simply modify this file and synchronize the changes between all workers. Refer to [this documentation](https://www.deepspeed.ai/docs/config-json/) for how to configure DeepSpeed.
-
-This step also requires synchronizing modifications between all workers; however, unlike previous steps, this step does not require restarting Strato.
-
-**Step 4: Configure the launch script**
-
-We use the Hugging Face pipelines with accelerate for training LLMs, and the relevant parameters such using which pre-trained models and datasets can be configured using the launch script located at [`examples/deepspeed_dataplane/training/run_deepspeed.sh`](/examples/deepspeed_dataplane/training/run_deepspeed.sh).
-
-The launch script can be modified both on the host machine and from within the Strato container, without requiring restarting Strato. Moreover, it only needs to be changed on the master node that is launching DeepSpeed (by default worker1 a.k.a. node1, but can be changed by modifying the launch script itself).
-
-**Step 5: Running DeepSpeed**
-
-We are now ready to conduct training. To do so, on the machine configured as the master node in the launch script, attach to the data plane container with
-
-```bash
-docker exec -it strato /bin/bash
-```
-
-and then execute the following command to initiate training
-
-```bash
-./training/run_deepspeed.sh
-```
-
-## Network optimization with Strato
-
-Strato supports both real-time network bandwidth monitoring down to the stream granularity and dynamic route reconfiguration via third-party applications. This is achieved through accessing the PostgreSQL database bounded to the controller. Specifically, network bandwidth data can be retrieved via reading the "Metrics" table in the database, and routes can be installed by simply writing to the "Routes" table. In this section, we demonstrate how to set up a simple routing algorithm on Strato to optimize traffic distribution.
-
-### Running the Water-filling Routing Example
-
-**Step 1: Start the testbed**
-
-To start the experiment with water-filling routing, open a terminal and run the following:
+The water-filling routing example, writtin in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:
 
 ```bash
 cd ./examples/routing/waterfilling && docker compose build && docker compose up
@@ -408,13 +175,11 @@ docker compose down
 docker compose build --no-cache
 ```
 
-- Port 5432 is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
+_Note:_ Port `5432` is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
 
-Complimentary details: This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
+This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
 
-**Step 2: Run `iperf3`**
-
-We generate arbitrary data with `iperf3`. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
+_Running the workload._ We can now generate arbitrary data with `iperf3` workloads. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
 
 In a new terminal, start the iperf3 servers on node2 by runnig:
 
@@ -428,9 +193,7 @@ In another terminal, start the iperf3 clients on node1 by running:
 docker exec -it node1 /bin/bash -c "./iperf3_c.sh"
 ```
 
-**Step 3: Monitor the bandwidth**
-
-Make sure you have `uv` installed first:
+**Monitoring the throughput.** To monitor the network throughput, first make sure you have `uv` installed first:
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -456,9 +219,7 @@ cd ./tools/monitor && uv run dashboard.py
 
 Observe the traffic in each path, and note how they are not distributed evenly according to the bandwidth limit we set for each path.
 
-**Step 4: Run the water-filling algorithm**
-
-To run the water-filling algorithm, open one last terminal and run
+**Running the algorithm.** To run the water-filling algorithm, open one more terminal and run:
 
 ```bash
 cd ./tools/routing && uv run waterfilling.py
@@ -466,6 +227,6 @@ cd ./tools/routing && uv run waterfilling.py
 
 By default, the waterfilling algorithm will run in 2-second intervals, and print the output in each round. Once convergence is reached, the algorithm will stop printing.
 
-**Step 5: Observe the results**
+Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively.
 
-Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively. However, a known caveat, perhaps due to the design of the water-filling algorithm, is that the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps as well.
+_Known caveat._ Perhaps due to the design of the water-filling algorithm, the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps in some of the runs.
