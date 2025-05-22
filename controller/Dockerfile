@@ -1,9 +1,4 @@
-FROM rust:alpine
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-ENV TZ=America/Toronto
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+FROM rust:alpine AS build
 
 RUN apk update && \
     apk upgrade --no-cache && \
@@ -29,4 +24,25 @@ WORKDIR /var/nextmini/server
 # Build the Rust controller
 RUN cargo build --release
 
+FROM alpine:latest
+
+ENV TZ=America/Toronto
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add curl bash \
+    openssh-client \
+    openssh-server \
+    git\
+    vim \
+    build-base \
+    net-tools \
+    iputils-ping \
+    iperf3 \
+    openssl \
+    ca-certificates
+
+WORKDIR /var/nextmini
+COPY --from=build /var/nextmini/server/target/release/controller /var/nextmini/controller
 EXPOSE 3000
