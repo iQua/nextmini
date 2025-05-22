@@ -93,7 +93,7 @@ Alternatively, press `Control + C` in the terminal where `docker compose up` is 
 
 ## Running a Simple Distributed PyTorch Trainer with Docker: Single Machine Setup
 
-Strato is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
+nextmini is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
 
 Before starting to build the docker image, it is recommended to start from a clean slate:
 
@@ -113,7 +113,7 @@ To build and run the docker image in this example, simply execute the following:
 cd ./examples/pytorch && docker compose build && docker compose up
 ```
 
-This will start four Strato dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with
+This will start four nextmini dataplane nodes with OpenMPI installed, and connect them to a single nextmini controller. To start training, open another terminal and attach to `node1` with
 
 ```bash
 docker exec -it node1 /bin/bash
@@ -177,7 +177,7 @@ docker compose build --no-cache
 
 _Note:_ Port `5432` is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
 
-This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
+This will start a nextmini network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage nextmini's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
 
 _Running the workload._ We can now generate arbitrary data with `iperf3` workloads. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
 
