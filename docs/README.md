@@ -1,45 +1,232 @@
-To install Nextra and Next.js after installing [Bun](https://bun.sh/docs/installation), run:
+# Introduction
 
-```shell
-bun add next react react-dom nextra nextra-theme-docs steps geist sharp
+_Nextmini_ is a high-performance network emulation testbed, written in the Rust programming language. It is first and foremost designed to run as a network emulation testbed within Docker containers in the same compute cluster, but it can also run natively and across geographically distributed datacenters. Similar to conventional Virtual Private Networks (VPNs), _Nextmini_ leverages the cross-platform [TUN interface](https://en.wikipedia.org/wiki/TUN/TAP) and behaves as a virtual network device to distributed workloads. This allows distributed workloads, such as distributed machine learning workloads, to leverage the full power of the emulation testbed obliviously. As its name suggested, it is designed to supercede many of the core use cases of [Mininet](https://mininet.org), and extend it with the ability to scale up even further across multiple physical machines, and to run any distributed workload on the testbed.
+
+Thanks to the Rust programming language, _Nextmini_ provides three core features to be highly performant, capable of satisfying modern network emulation needs:
+
+- **High performance, fully asynchronous architecture.** Based on the highly efficient [`tokio`](https://tokio.rs) library, _Nextmini_ runs in userspace, and firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of compute cores in modern compute clusters.
+
+- **Multi-path routing.** _Nextmini_ supports multi-path routing obliviously, with each TCP flow traversing a different route in the emulated network.
+
+- **Built-in performance monitoring and hot reconfiguration**. _Nextmini_ is designed to operate in both emulated and real-world network environments. It provides the capability of both emulating and monitoring network performance at per-flow granularity, and of reconfiguring routes on-the-fly to adapt to changing network conditions.
+
+Though _Nextmini_ runs natively across Linux, macOS, and Windows, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run _Nextmini_.
+
+## Docker Single Machine Setup: a Simple Example with `iperf3`
+
+To run _Nextmini_ on a single machine over multiple containers, simply run the following command:
+
+```bash
+cd ./examples/simple && docker compose build && docker compose up
+```
+
+This will automatically start two _Nextmini_ nodes and a _Nextmini_ server. The two _Nextmini_ nodes will connect to the _Nextmini_ server via the docker network and establish a tunnel between them.
+
+We can attach to `node1` container with the following command, in a different terminal:
+
+```bash
+docker exec -it node1 /bin/bash
+```
+
+_Nextmini_ leverages TUN/TAP interfaces to facilitate internode communication. To check the available _Nextmini_ interfaces on node1, simply type:
+
+```bash
+ifconfig
+```
+
+This will display all available network interfaces. Interfaces created by _Nextmini_ are typically shown as `utun#`. In our case, they are shown as:
+
+```
+utun0: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
+        inet 10.0.0.1  netmask 255.255.255.0  destination 10.0.0.1
+        unspec 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00  txqueuelen 500  (UNSPEC)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+```
+
+We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, _Nextmini_ uses the subnet `10.0.0.0/24` for the _Nextmini_ data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
+
+To confirm that connection is successful, we can ping `node2` by its _Nextmini_ IP address:
+
+```bash
+ping 10.0.0.2
+```
+
+if successful, outputs similar to the following should be displayed
+
+```bash
+PING 10.0.0.2 (10.0.0.2): 56 data bytes
+64 bytes from 10.0.0.2: icmp_seq=0 ttl=64 time=0.694 ms
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.732 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.871 ms
+```
+
+The _Nextmini_ docker image comes pre-installed with the `iperf3` tool for network bandwidth testing. We can test the bandwidth between `node1` and `node2` by starting an `iperf3` server on `node1` with
+
+```bash
+iperf3 -s
+```
+
+Open a new terminal and attach to `node2` with
+
+```bash
+docker exec -it node2 /bin/bash
+```
+
+On `node2`, connect an `iperf3` client to node1 with
+
+```bash
+iperf3 -c 10.0.0.1
+```
+
+Wait for `iperf3` to complete running.
+
+To shutdown the Docker containers, use the command:
+
+```
+docker compose down
+```
+
+Alternatively, press `Control + C` in the terminal where `docker compose up` is running.
+
+## Running a Simple Distributed PyTorch Trainer with Docker: Single Machine Setup
+
+Strato is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
+
+Before starting to build the docker image, it is recommended to start from a clean slate:
+
+```bash
+docker system prune -a
+```
+
+This will remove all stopped containers, all unused networks and volumes, and all build cache. If you wish to remove all existing volumes at the same time, run:
+
+```bash
+docker system prune -a --volumes -f
+```
+
+To build and run the docker image in this example, simply execute the following:
+
+```bash
+cd ./examples/pytorch && docker compose build && docker compose up
+```
+
+This will start four Strato dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with
+
+```bash
+docker exec -it node1 /bin/bash
+```
+
+Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
+
+```bash
+mpirun --allow-run-as-root -np 4 echo hello world
+```
+
+We can also run a Python script using `uv`:
+
+```bash
+mpirun --allow-run-as-root -np 4 -H node1:1,node2:1,node3:1,node4:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by slot uv run test.py
 ```
 
 or simply:
 
-```shell
-bun install
+```bash
+sh run-test.sh
 ```
 
-To start the development server, run:
+We should see four `Hello World!` printed after the Python packages are downloaded and installed.
 
-```shell
-bun run dev
+Finally, we can start distributed training with PyTorch:
+
+```bash
+sh train.sh
 ```
 
-Then point the browser to `http://localhost:3000/~bli/eecg` to view the website, where `~bli/eecg` is the `basepath` of the website specified in `next.config.js`.
+This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes, each running in its own Docker container.
 
-In case `pagefind` has not yet been installed, it can be installed with:
 
-```shell
-cargo install pagefind --features extended
+## Running the Water-Filling Routing Example
+
+The water-filling routing example, writtin in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:
+
+```bash
+cd ./examples/routing/waterfilling && docker compose build && docker compose up
 ```
 
-To build the static website, run:
+Before starting to build the docker image, it is recommended to start from a clean slate:
 
-```shell
-bun run build
+```bash
+docker system prune -a
 ```
 
-To serve the static website, run:
+This will remove all stopped containers, all unused networks and volumes, and all build cache. If you wish to remove all existing volumes at the same time, run:
 
-```shell
-bun run start
+```bash
+docker system prune -a --volumes -f
 ```
 
-or:
+To reset the environment and start from a clean state, run:
 
-```shell
-npx serve@latest out
+```bash
+docker compose down
+docker compose build --no-cache
 ```
 
-Before deploying the static website, configure `basepath` in `next.config.js` to match the deployment URL. For example, if the website is deployed at `https://www.eecg.toronto.edu/~bli/eecg`, the `basepath` should be set to `/~bli/eecg`.
+_Note:_ Port `5432` is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
+
+This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
+
+_Running the workload._ We can now generate arbitrary data with `iperf3` workloads. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
+
+In a new terminal, start the iperf3 servers on node2 by runnig:
+
+```bash
+docker exec -it node2 /bin/bash -c "./iperf3_s.sh"
+```
+
+In another terminal, start the iperf3 clients on node1 by running:
+
+```bash
+docker exec -it node1 /bin/bash -c "./iperf3_c.sh"
+```
+
+**Monitoring the throughput.** To monitor the network throughput, first make sure you have `uv` installed first:
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+And make sure that `$HOME/.cargo/bin` is in the `$PATH` by revising `~/.zshrc` accordingly:
+
+```sh
+export PATH=$HOME/.cargo/bin:$PATH
+```
+
+Later on, whenever one needs to update the version of `uv`, the following command can be used:
+
+```sh
+uv self update
+```
+
+They use the following command for live data monitoring, you will see a command-line dashboard for live data monitoring:
+
+```bash
+cd ./tools/monitor && uv run dashboard.py
+```
+
+Observe the traffic in each path, and note how they are not distributed evenly according to the bandwidth limit we set for each path.
+
+**Running the algorithm.** To run the water-filling algorithm, open one more terminal and run:
+
+```bash
+cd ./tools/routing && uv run waterfilling.py
+```
+
+By default, the waterfilling algorithm will run in 2-second intervals, and print the output in each round. Once convergence is reached, the algorithm will stop printing.
+
+Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively.
+
+_Known caveat._ Perhaps due to the design of the water-filling algorithm, the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps in some of the runs.
