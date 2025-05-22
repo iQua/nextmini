@@ -1,24 +1,24 @@
-FROM ubuntu:24.04
+FROM rust:alpine AS build
 
 USER root
 
-RUN apt-get update && \
-    apt-get install -y \
-    curl\
-    openssh-client \
-    openssh-server \
-    git\
-    vim \
-    build-essential \
-    net-tools \
-    iperf3 \
-    inetutils-ping \
-    openssl \
-    openmpi-bin \
-    libopenmpi-dev \
-    gcc && \
-    rm -rf /var/lib/apt/lists/* && \
-    apt-get clean
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add --no-cache \
+        curl \
+        bash \
+        openssh-client \
+        openssh-server \
+        git \
+        vim \
+        build-base \
+        net-tools \
+        iperf3 \
+        iputils-ping \
+        openssl \
+        openmpi \
+        openmpi-dev \
+        gcc
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -31,21 +31,36 @@ ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 # Verify uv installation
 RUN uv --version
 
-# Create parent directory and copy messages
-RUN mkdir -p /var
-WORKDIR /var
-COPY messages /var/messages
-
 # Setup the dataplane directory
-RUN mkdir -p /var/node
-WORKDIR /var/node
+WORKDIR /var/nextmini
 
 # Copy the source code
-COPY dataplane/Cargo.toml .
-COPY dataplane/src src
+COPY messages /var/messages
+COPY dataplane/Cargo.toml /var/nextmini
+COPY dataplane/src /var/nextmini/src
 
 # running the certificate generator first
 RUN /bin/bash -c "cargo run --bin cert-gen"
 
 # build the dataplane from source
 RUN /bin/bash -c "cargo build --release"
+
+FROM alpine:latest
+
+RUN apk update && \
+  apk upgrade --no-cache && \
+  apk add curl bash \
+  openssh-client \
+  openssh-server \
+  git\
+  vim \
+  build-base \
+  net-tools \
+  iputils-ping \
+  iperf3 \
+  openssl
+
+ENV RUST_LOG=info
+WORKDIR /var/nextmini
+
+COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
