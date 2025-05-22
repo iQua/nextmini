@@ -1,14 +1,4 @@
-# Introduction
-
-_Nextmini_ is a high-performance network emulation testbed, written in the Rust programming language. It is first and foremost designed to run as a network emulation testbed within Docker containers in the same compute cluster, but it can also run natively and across geographically distributed datacenters. Similar to conventional Virtual Private Networks (VPNs), _Nextmini_ leverages the cross-platform [TUN interface](https://en.wikipedia.org/wiki/TUN/TAP) and behaves as a virtual network device to distributed workloads. This allows distributed workloads, such as distributed machine learning workloads, to leverage the full power of the emulation testbed obliviously. As its name suggested, it is designed to supercede many of the core use cases of [Mininet](https://mininet.org), and extend it with the ability to scale up even further across multiple physical machines, and to run any distributed workload on the testbed.
-
-Thanks to the Rust programming language, _Nextmini_ provides three core features to be highly performant, capable of satisfying modern network emulation needs:
-
-- **High performance, fully asynchronous architecture.** Based on the highly efficient [`tokio`](https://tokio.rs) library, _Nextmini_ runs in userspace, and firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of compute cores in modern compute clusters.
-
-- **Multi-path routing.** _Nextmini_ supports multi-path routing obliviously, with each TCP flow traversing a different route in the emulated network.
-
-- **Built-in performance monitoring and hot reconfiguration**. _Nextmini_ is designed to operate in both emulated and real-world network environments. It provides the capability of both emulating and monitoring network performance at per-flow granularity, and of reconfiguring routes on-the-fly to adapt to changing network conditions.
+## User's Guide
 
 Though _Nextmini_ runs natively across Linux, macOS, and Windows, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run _Nextmini_.
 
