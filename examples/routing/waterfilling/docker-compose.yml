@@ -7,34 +7,56 @@ networks:
         - subnet: 172.16.8.0/24
 
 services:
+  postgres:
+    container_name: postgres
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      network:
+        ipv4_address: 172.16.8.2
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
   controller:
     container_name: controller
     hostname: controller
-    image: strato_controller
+    image: nextmini_controller
     build:
       context: ../../../
       dockerfile: ./controller/Dockerfile
     networks:
       network:
-        ipv4_address: 172.16.8.2
+        ipv4_address: 172.16.8.3
     stdin_open: true
     volumes:
-      - ./controller-config.toml:/var/strato/server/config.toml
+      - ./controller-config.toml:/var/nextmini/server/config.toml
     ports:
       - 5432:5432
       - 3000:3000
-    command: /bin/bash -c "/var/strato/server/target/release/controller"
+    command: /bin/bash -c "/var/nextmini/server/target/release/controller"
 
   node1:
     container_name: node1
     hostname: node1
-    image: strato_datapath
+    image: nextmini_datapath
     build:
       context: ../../../
       dockerfile: ./dataplane/Dockerfile
     networks:
       network:
-        ipv4_address: 172.16.8.3
+        ipv4_address: 172.16.8.4
     stdin_open: true
     privileged: true
     volumes:
@@ -45,18 +67,18 @@ services:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && ./target/release/strato ws://controller:3000"
+    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && ./target/release/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
     hostname: node2
-    image: strato_datapath
+    image: nextmini_datapath
     build:
       context: ../../../
       dockerfile: ./dataplane/Dockerfile
     networks:
       network:
-        ipv4_address: 172.16.8.4
+        ipv4_address: 172.16.8.5
     stdin_open: true
     privileged: true
     volumes:
@@ -68,34 +90,12 @@ services:
       - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && ./target/release/strato ws://controller:3000"
+    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && ./target/release/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
     hostname: node3
-    image: strato_datapath
-    build:
-      context: ../../../
-      dockerfile: ./dataplane/Dockerfile
-    networks:
-      network:
-        ipv4_address: 172.16.8.5
-    stdin_open: true
-    privileged: true
-    volumes:
-      - ./config.toml:/var/node/config.toml
-      - ../../../tools/:/var/node/tools
-    depends_on:
-      - controller
-      - node2
-    cap_add:
-      - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && ./target/release/strato ws://controller:3000"
-
-  node4:
-    container_name: node4
-    hostname: node4
-    image: strato_datapath
+    image: nextmini_datapath
     build:
       context: ../../../
       dockerfile: ./dataplane/Dockerfile
@@ -109,7 +109,29 @@ services:
       - ../../../tools/:/var/node/tools
     depends_on:
       - controller
+      - node2
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 7 && ./target/release/nextmini ws://controller:3000"
+
+  node4:
+    container_name: node4
+    hostname: node4
+    image: nextmini_datapath
+    build:
+      context: ../../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.7
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./config.toml:/var/node/config.toml
+      - ../../../tools/:/var/node/tools
+    depends_on:
+      - controller
       - node3
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && ./target/release/strato ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && ./target/release/nextmini ws://controller:3000"
