@@ -1,5 +1,6 @@
 services:
   postgres:
+    container_name: postgres
     image: postgres:alpine
     hostname: postgres
     environment:
@@ -9,10 +10,13 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "pgusr"]
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 30
+    networks:
+      network:
+        ipv4_address: 172.16.8.2
     volumes:
       - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
@@ -26,7 +30,7 @@ services:
       dockerfile: ./controller/Dockerfile
     networks:
       network:
-        ipv4_address: 172.16.8.2
+        ipv4_address: 172.16.8.3
     stdin_open: true
     volumes:
       - ./controller-config.toml:/var/nextmini/server/config.toml
@@ -34,4 +38,4 @@ services:
       - postgres
     ports:
       - 3000:3000
-    command: /var/nextmini/server/target/release/controller
+    command: /bin/bash -c "sleep 7 && /var/nextmini/server/target/release/controller"
