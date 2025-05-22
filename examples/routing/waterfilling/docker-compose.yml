@@ -43,7 +43,6 @@ services:
     volumes:
       - ./controller-config.toml:/var/nextmini/server/config.toml
     ports:
-      - 5432:5432
       - 3000:3000
     command: /bin/bash -c "/var/nextmini/server/target/release/controller"
 
