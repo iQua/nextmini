@@ -1,11 +1,14 @@
 mod dataplane;
 mod tests;
 
+use tracing_subscriber;
+
 use dataplane::configs;
 use dataplane::controller_interface::Controller;
 use dataplane::protocols_server::start_protocols_server;
 
 fn main() {
+    tracing_subscriber::fmt::init();
     let configs = configs::new();
 
     // builds a multi-threaded Tokio runtime

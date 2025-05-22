@@ -15,6 +15,7 @@ pub mod scheduler;
 pub mod utils;
 
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -38,6 +39,27 @@ const FLOW_ID_PATH_MASK: u64 = 0xFFFFFFFF_FFFF00FF;
 
 /// The flow ID.
 pub type FlowId = u64;
+
+/// Defines the extension trait for extracting the source and destination IP addresses from FlowId
+pub trait FlowIdExt {
+    fn src_addr(&self) -> Ipv4Addr;
+    fn dest_addr(&self) -> Ipv4Addr;
+}
+
+/// Implements the trait for FlowId, which is of u64 type
+impl FlowIdExt for u64 {
+    fn src_addr(&self) -> Ipv4Addr {
+        // Extract upper 32 bits (source IP) by shifting right 32 bits
+        let src_u32 = (self >> 32) as u32;
+        Ipv4Addr::from(src_u32)
+    }
+
+    fn dest_addr(&self) -> Ipv4Addr {
+        // Extract lower 32 bits (destination IP) by masking with 0xFFFFFFFF
+        let dest_u32 = (self & 0xFFFFFFFF) as u32;
+        Ipv4Addr::from(dest_u32)
+    }
+}
 
 /// The node ID.
 pub type NodeId = usize;

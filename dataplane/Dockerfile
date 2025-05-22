@@ -1,24 +1,24 @@
-FROM ubuntu:24.04
+FROM alpine:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && \
-    apt-get install -y \
-    curl\
-    openssh-client \
-    openssh-server \
-    git\
-    vim \
-    build-essential \
-    net-tools \
-    iperf3 \
-    inetutils-ping \
-    openssl && \
-    apt-get clean
+RUN apk add curl bash \
+  openssh-client \
+  openssh-server \
+  git\
+  vim \
+  build-base \
+  net-tools \
+  iputils-ping \
+  iperf3 \
+  openssl
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 RUN echo "source $HOME/.cargo/env" >> $HOME/.bashrc
 ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Set the log level
+ENV RUST_LOG=info
 
 # Create parent directory and copy messages
 RUN mkdir -p /var
