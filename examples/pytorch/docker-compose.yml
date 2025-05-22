@@ -51,7 +51,7 @@ services:
   node1:
     container_name: node1
     hostname: node1
-    image: strato_datapath_pytorch
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -80,12 +80,12 @@ services:
       ssh-keyscan -H node2 >> /root/.ssh/known_hosts &&
       ssh-keyscan -H node3 >> /root/.ssh/known_hosts &&
       ssh-keyscan -H node4 >> /root/.ssh/known_hosts &&
-      /var/node/target/release/strato ws://controller:3000"
+      /var/node/target/release/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
     hostname: node2
-    image: strato_datapath_pytorch
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -110,12 +110,12 @@ services:
       chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
       /usr/sbin/sshd -p 22 &
       sleep 7 &&
-      /var/node/target/release/strato ws://controller:3000"
+      /var/node/target/release/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
     hostname: node3
-    image: strato_datapath_pytorch
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -141,12 +141,12 @@ services:
       chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
       /usr/sbin/sshd -p 22 &
       sleep 7 &&
-      /var/node/target/release/strato ws://controller:3000"
+      /var/node/target/release/nextmini ws://controller:3000"
 
   node4:
     container_name: node4
     hostname: node4
-    image: strato_datapath_pytorch
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -172,4 +172,4 @@ services:
       chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
       /usr/sbin/sshd -p 22 &
       sleep 7 &&
-      /var/node/target/release/strato ws://controller:3000"
+      /var/node/target/release/nextmini ws://controller:3000"
