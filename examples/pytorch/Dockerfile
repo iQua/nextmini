@@ -3,22 +3,22 @@ FROM rust:alpine AS build
 USER root
 
 RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add --no-cache \
-        curl \
-        bash \
-        openssh-client \
-        openssh-server \
-        git \
-        vim \
-        build-base \
-        net-tools \
-        iperf3 \
-        iputils-ping \
-        openssl \
-        openmpi \
-        openmpi-dev \
-        gcc
+  apk upgrade --no-cache && \
+  apk add --no-cache \
+  curl \
+  bash \
+  openssh-client \
+  openssh-server \
+  git \
+  vim \
+  build-base \
+  net-tools \
+  iperf3 \
+  iputils-ping \
+  openssl \
+  openmpi \
+  openmpi-dev \
+  gcc
 
 # Install Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -64,3 +64,5 @@ ENV RUST_LOG=info
 WORKDIR /var/nextmini
 
 COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
+COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem
+COPY --from=build /var/nextmini/server_key.pem /var/nextmini/server_key.pem
