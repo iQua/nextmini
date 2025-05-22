@@ -8,7 +8,7 @@
     "postcss": "^8.5.3",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "sharp": "^0.34.1",
+    "sharp": "^0.34.2",
     "steps": "^0.0.2",
     "tailwindcss": "^4.1.7"
   },

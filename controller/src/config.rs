@@ -174,8 +174,8 @@ fn default_db_config() -> DBConfig {
     DBConfig {
         user: "pgusr".to_string(),
         password: "pgpwrd".to_string(),
-        host: "127.0.0.1".to_string(),
-        database: "strato".to_string(),
+        host: "172.16.8.2".to_string(),
+        database: "nextmini".to_string(),
         port: "5432".to_string(),
     }
 }

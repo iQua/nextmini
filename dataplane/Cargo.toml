@@ -1,11 +1,11 @@
 [package]
-name = "strato"
+name = "nextmini"
 version = "0.1.0"
 edition = "2024"
-default-run = "strato"
+default-run = "nextmini"
 
 [[bin]]
-name = "strato"
+name = "nextmini"
 path = "src/main.rs"
 
 [[bin]]

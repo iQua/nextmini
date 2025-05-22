@@ -132,3 +132,4 @@ dist
 eecg/
 bun.lockb
 **/.DS_Store
+bun.lock

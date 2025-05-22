@@ -1,8 +1,26 @@
 services:
+  postgres:
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
   controller:
     container_name: controller
     hostname: controller
-    image: strato_controller
+    image: nextmini_controller
     build:
       context: ../../
       dockerfile: ./controller/Dockerfile
@@ -11,8 +29,9 @@ services:
         ipv4_address: 172.16.8.2
     stdin_open: true
     volumes:
-      - ./controller-config.toml:/var/strato/server/config.toml
+      - ./controller-config.toml:/var/nextmini/server/config.toml
+    depends_on:
+      - postgres
     ports:
-      - 5432:5432
       - 3000:3000
-    command: /bin/bash -c "/var/strato/server/target/release/controller"
+    command: /var/nextmini/server/target/release/controller

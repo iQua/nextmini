@@ -22,6 +22,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         config.db.user, config.db.password, config.db.host, config.db.port, config.db.database
     );
 
+    println!("Connecting to PostgreSQL: {}", db_url);
+
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
