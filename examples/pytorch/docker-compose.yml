@@ -41,12 +41,12 @@ services:
         ipv4_address: 172.16.8.3
     stdin_open: true
     volumes:
-      - ./controller-config.toml:/var/nextmini/server/config.toml
+      - ./controller-config.toml:/var/nextmini/config.toml
     depends_on:
       - postgres
     ports:
       - 3000:3000
-    command: /bin/bash -c "sleep 7 && /var/nextmini/server/target/release/controller"
+    command: /bin/bash -c "sleep 2 && /var/nextmini/controller"
 
   node1:
     container_name: node1
@@ -62,12 +62,12 @@ services:
     privileged: true
     volumes:
       - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./run_test.sh:/var/nextmini/run_test.sh
+      - ./train.sh:/var/nextmini/train.sh
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
       - node4
@@ -80,7 +80,7 @@ services:
       ssh-keyscan -H node2 >> /root/.ssh/known_hosts &&
       ssh-keyscan -H node3 >> /root/.ssh/known_hosts &&
       ssh-keyscan -H node4 >> /root/.ssh/known_hosts &&
-      /var/node/target/release/nextmini ws://controller:3000"
+      /var/nextmini/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
@@ -96,12 +96,12 @@ services:
     privileged: true
     volumes:
       - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./run_test.sh:/var/nextmini/run_test.sh
+      - ./train.sh:/var/nextmini/train.sh
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
     cap_add:
@@ -110,7 +110,7 @@ services:
       chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
       /usr/sbin/sshd -p 22 &
       sleep 7 &&
-      /var/node/target/release/nextmini ws://controller:3000"
+      /var/nextmini/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
@@ -126,12 +126,12 @@ services:
     privileged: true
     volumes:
       - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./run_test.sh:/var/nextmini/run_test.sh
+      - ./train.sh:/var/nextmini/train.sh
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
       - node2
@@ -141,7 +141,7 @@ services:
       chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
       /usr/sbin/sshd -p 22 &
       sleep 7 &&
-      /var/node/target/release/nextmini ws://controller:3000"
+      /var/nextmini/nextmini ws://controller:3000"
 
   node4:
     container_name: node4
@@ -157,12 +157,12 @@ services:
     privileged: true
     volumes:
       - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./run_test.sh:/var/nextmini/run_test.sh
+      - ./train.sh:/var/nextmini/train.sh
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
       - node3
@@ -172,4 +172,4 @@ services:
       chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
       /usr/sbin/sshd -p 22 &
       sleep 7 &&
-      /var/node/target/release/nextmini ws://controller:3000"
+      /var/nextmini/nextmini ws://controller:3000"
