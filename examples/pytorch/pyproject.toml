@@ -1,7 +1,7 @@
 [project]
 name = "pytorch-lenet5-mpi"
 version = "0.1.0"
-description = "A simple dashboard for monitoring Strato throughput at runtime."
+description = "A simple dashboard for monitoring nextmini throughput at runtime."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
