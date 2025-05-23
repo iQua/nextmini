@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use nextmini_messages::{MultiPathMethod, Protocol};
+use nextmini_messages::{Protocol};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
@@ -111,13 +111,6 @@ pub struct Config {
     #[serde(default = "default_interfaces")]
     pub num_interfaces: usize,
 
-    /// The multi-path method: Interface or Stream.
-    /// The Interface mode creates multiple network interfaces, each bound to a path (same as MPTCP), on every dataplane
-    /// node.
-    /// The Stream mode creates one interface, and binds each path to a TCP stream.
-    #[serde(default = "default_multi_path_method")]
-    pub multi_path_method: MultiPathMethod,
-
     /// Should database be reset before starting the controller?
     /// Warning: If this is set to true, all data will be deleted when restarting the controller.
     #[serde(default)]
@@ -153,11 +146,6 @@ fn default_ipv4_net_mask() -> [u8; 4] {
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
-}
-
-/// The default multi-path method: Stream
-fn default_multi_path_method() -> MultiPathMethod {
-    MultiPathMethod::Stream
 }
 
 fn default_true() -> bool {
@@ -245,7 +233,6 @@ impl Default for Config {
             routes_preset: RoutePreset::default(),
             topology: Topology::default(),
             num_interfaces: default_interfaces(),
-            multi_path_method: default_multi_path_method(),
             reset_db: false,
             db: default_db_config(),
         }

@@ -45,7 +45,6 @@ async fn create_install_flow_server() -> oneshot::Sender<()> {
                 "session_id": [0,0,0,1],
                 "num_paths": 1,
                 "protocol": "tcp",
-                "multi_path_method": "stream"
             });
 
             ws_stream

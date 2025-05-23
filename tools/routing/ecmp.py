@@ -85,7 +85,6 @@ if __name__ == "__main__":
     "reset_db" : true,
     "protocol": "quic",
     "num_paths": 3,
-    "multi_path_method": "stream", 
     "routes_preset": {
         "type": "full_mesh",
         "n_nodes": 3,

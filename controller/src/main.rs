@@ -197,7 +197,6 @@ async fn handle_connection(
                             config.session_id,
                             config.num_interfaces,
                             config.protocol.clone(),
-                            config.multi_path_method.clone(),
                         );
 
                         match write_arc

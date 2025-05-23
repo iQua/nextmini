@@ -1,6 +1,5 @@
 reset_db = true
 protocol = "quic"
-multi_path_method = "stream"
 
 [routes_preset]
 type = "full_mesh"

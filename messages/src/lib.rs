@@ -24,14 +24,6 @@ pub struct Metric {
     pub time_read: chrono::DateTime<chrono::Utc>,
 }
 
-/// The multi-path method: interface or stream
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MultiPathMethod {
-    Interface,
-    Stream,
-}
-
 /// The transport protocol used to transfer data between nodes
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,7 +43,6 @@ pub enum ControllerToDataplane {
         session_id: [u8; 4],
         num_interfaces: usize,
         protocol: Protocol,
-        multi_path_method: MultiPathMethod,
     },
     AddNode {
         protocol: Protocol,

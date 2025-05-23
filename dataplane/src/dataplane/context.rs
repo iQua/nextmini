@@ -82,7 +82,6 @@ impl Context {
         queues_by_queue_id: Vec<Vec<Arc<tun_rs::AsyncDevice>>>,
     ) {
         let senders_to_proc = self.get_processor_txs().await;
-        let method = controller_configs.multi_path_method.clone();
         let mut tun_writers = self.tun_writers.write().await;
 
         for queue in queues_by_queue_id
@@ -95,15 +94,14 @@ impl Context {
             // each writer for its own interface
             for dev in queue {
                 // dev.clone() does not clone the device, it simply creates a new reference to it
-                let writer = TunWriter::new(dev.clone(), method.clone());
+                let writer = TunWriter::new(dev.clone());
                 writers.push(writer);
 
                 // Start a new Tokio task for reading continuously from this TUN device
                 let mut reader = TunReader::new(dev.clone(), senders_to_proc.clone());
-                let method_clone = method.clone();
 
                 tokio::spawn(async move {
-                    reader.start_reading(method_clone).await;
+                    reader.start_reading().await;
                 });
             }
 

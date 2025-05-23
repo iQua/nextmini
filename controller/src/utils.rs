@@ -1,7 +1,7 @@
 /// Implements utility functions for the controller.
 use std::collections::HashMap;
 
-use nextmini_messages::{ControllerToDataplane, Flow, MultiPathMethod, Protocol, RouteInfo};
+use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RouteInfo};
 
 use crate::config::Config;
 use crate::models::Route;
@@ -56,7 +56,6 @@ pub fn build_startup_message(
     session_id: [u8; 4],
     num_interfaces: usize,
     protocol: Protocol,
-    multi_path_method: MultiPathMethod,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
@@ -65,7 +64,6 @@ pub fn build_startup_message(
         session_id,
         num_interfaces,
         protocol,
-        multi_path_method,
     }
 }
 
@@ -172,7 +170,7 @@ pub fn build_install_routes_message(
 
 #[cfg(test)]
 mod tests {
-    use nextmini_messages::{ControllerToDataplane, Flow, MultiPathMethod, Protocol, RouteInfo};
+    use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RouteInfo};
 
     use super::*;
     use crate::config::Config;
@@ -208,7 +206,6 @@ mod tests {
         let session_id = [1, 2, 3, 4];
         let num_interfaces = 1;
         let protocol = Protocol::Tcp;
-        let multi_path_method = MultiPathMethod::Stream;
 
         let msg = build_startup_message(
             node_id,
@@ -217,7 +214,6 @@ mod tests {
             session_id,
             num_interfaces,
             protocol.clone(),
-            multi_path_method.clone(),
         );
 
         let expected = ControllerToDataplane::StartUp {
@@ -227,7 +223,6 @@ mod tests {
             session_id,
             num_interfaces,
             protocol,
-            multi_path_method,
         };
 
         assert_eq!(msg, expected);

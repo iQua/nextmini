@@ -7,7 +7,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use serde_json::Value;
 
-use nextmini_messages::{ControllerToDataplane, MultiPathMethod, Protocol};
+use nextmini_messages::{ControllerToDataplane, Protocol};
 
 use crate::dataplane::scheduler::SchedulingDiscipline;
 
@@ -135,6 +135,58 @@ pub struct LocalConfigs {
     pub quic_congestion_control: CongestionControl,
 }
 
+/// Configuration options for the controller
+#[derive(Clone)]
+pub struct ControllerConfigs {
+    /// The session ID
+    pub session_id: [u8; 4],
+
+    /// The node ID
+    pub node_id: usize,
+
+    /// The local network address
+    pub strato_address: (u8, u8, u8, u8),
+
+    /// The local network mask
+    pub strato_mask: (u8, u8, u8, u8),
+
+    /// The number of interfaces
+    pub num_interfaces: usize,
+
+    /// The transport protocol: TCP, UDP, or QUIC
+    pub protocol: Protocol,
+
+    /// The scheduling discipline
+    pub scheduler_type: SchedulingDiscipline,
+}
+
+impl ControllerConfigs {
+    pub fn new(data: Value) -> Self {
+        let startup_message: ControllerToDataplane = serde_json::from_value(data).unwrap();
+        if let ControllerToDataplane::StartUp {
+            node_id,
+            addr,
+            net_mask,
+            session_id,
+            num_interfaces,
+            protocol,
+        } = startup_message
+        {
+            ControllerConfigs {
+                session_id,
+                node_id,
+                strato_address: (addr[0], addr[1], addr[2], addr[3]),
+                strato_mask: (net_mask[0], net_mask[1], net_mask[2], net_mask[3]),
+                num_interfaces,
+                protocol,
+                scheduler_type: SchedulingDiscipline::Fifo, // Default for now
+            }
+        } else {
+            panic!("Invalid startup message from controller");
+        }
+    }
+}
+
 /// Creates a new instance of LocalConfigs.
 pub fn new() -> LocalConfigs {
     let mut args = Args::parse();
@@ -226,62 +278,4 @@ pub fn new() -> LocalConfigs {
     println!("Using configs: {:#?}", cfgs);
 
     cfgs
-}
-
-/// Configuration options for the controller
-#[derive(Clone)]
-pub struct ControllerConfigs {
-    /// The session ID
-    pub session_id: [u8; 4],
-
-    /// The node ID
-    pub node_id: usize,
-
-    /// The local network address
-    pub strato_address: (u8, u8, u8, u8),
-
-    /// The local network mask
-    pub strato_mask: (u8, u8, u8, u8),
-
-    /// The multi-path method
-    pub multi_path_method: MultiPathMethod,
-
-    /// The number of interfaces
-    pub num_interfaces: usize,
-
-    /// The transport protocol: TCP, UDP, or QUIC
-    pub protocol: Protocol,
-
-    /// The scheduling discipline
-    pub scheduler_type: SchedulingDiscipline,
-}
-
-impl ControllerConfigs {
-    pub fn new(data: Value) -> Self {
-        let msg: ControllerToDataplane =
-            serde_json::from_value(data).expect("Invalid controller message format");
-        if let ControllerToDataplane::StartUp {
-            node_id,
-            addr,
-            net_mask,
-            session_id,
-            num_interfaces,
-            protocol,
-            multi_path_method,
-        } = msg
-        {
-            Self {
-                session_id,
-                node_id,
-                strato_address: (addr[0], addr[1], addr[2], addr[3]),
-                strato_mask: (net_mask[0], net_mask[1], net_mask[2], net_mask[3]),
-                multi_path_method,
-                num_interfaces,
-                protocol,
-                scheduler_type: SchedulingDiscipline::Fifo, // Default, could be made configurable
-            }
-        } else {
-            panic!("Expected StartUp message from controller");
-        }
-    }
 }

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-use nextmini_messages::MultiPathMethod;
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
@@ -24,13 +23,12 @@ pub async fn create_tun_devices(
     controller_configs: ControllerConfigs,
 ) -> Vec<Vec<Arc<AsyncDevice>>> {
     let num_queues = configs.num_packet_processors;
-    let num_interfaces = controller_configs.num_interfaces;
-    let mut queues_per_interface = Vec::with_capacity(num_interfaces);
+    let num_os_interfaces = 1; // Enforce single OS interface for Stream mode
+    let mut queues_per_interface = Vec::with_capacity(num_os_interfaces);
 
     #[cfg(target_os = "linux")]
-    for i in 0..num_interfaces {
-        let mut if_name = configs.tun_interface_name.clone();
-        if_name.push_str(i.to_string().as_str());
+    for _i in 0..num_os_interfaces {
+        let if_name = configs.tun_interface_name.clone(); // No index needed for a single interface
         let ipv4_addr = controller_configs.strato_address;
         let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
 
@@ -49,7 +47,7 @@ pub async fn create_tun_devices(
         let mut queues = Vec::with_capacity(num_queues);
 
         // creates multiple TUN queues with error handling
-        eprintln!("Creating {num_queues} TUN queues.");
+        eprintln!("Creating {num_queues} TUN queues for interface {if_name}.");
         for _ in 0..num_queues - 1 {
             match dev.try_clone() {
                 Ok(cloned_dev) => {
@@ -78,11 +76,12 @@ pub async fn create_tun_devices(
     }
 
     #[cfg(not(target_os = "linux"))]
-    for _ in 0..num_interfaces {
+    for _ in 0..num_os_interfaces {
         let ipv4_addr = controller_configs.strato_address;
         let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
 
         let dev = DeviceBuilder::new()
+            // No name setting for non-Linux as it might pick default like utun*
             .ipv4(
                 Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
                 ipv4_prefix,
@@ -99,7 +98,7 @@ pub async fn create_tun_devices(
     }
 
     // transposes to a vector of queues, each queue corresponds to multiple interfaces
-    let mut queues_by_queue_id = vec![Vec::with_capacity(num_interfaces); num_queues];
+    let mut queues_by_queue_id = vec![Vec::with_capacity(num_os_interfaces); num_queues];
 
     for interface_queues in queues_per_interface {
         for (queue_id, dev) in interface_queues.into_iter().enumerate() {
@@ -125,7 +124,7 @@ impl TunReader {
         }
     }
 
-    pub async fn start_reading(&mut self, _method: MultiPathMethod) {
+    pub async fn start_reading(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
         loop {
@@ -138,9 +137,8 @@ impl TunReader {
 
             let packet = Packet::new(n, buf);
 
-            // if method == MultiPathMethod::Stream {
-            //     packet.try_set_stream_id();
-            // }
+            // Always try to set stream ID as Stream mode is default
+            packet.try_set_stream_id();
 
             self.senders.try_send(packet);
         }
@@ -151,35 +149,25 @@ impl TunReader {
 #[derive(Clone)]
 pub struct TunWriter {
     dev: Arc<AsyncDevice>,
-    method: MultiPathMethod,
 }
 
 impl TunWriter {
-    pub fn new(dev: Arc<AsyncDevice>, method: MultiPathMethod) -> TunWriter {
-        TunWriter { dev, method }
+    pub fn new(dev: Arc<AsyncDevice>) -> TunWriter {
+        TunWriter { dev }
     }
 
     pub async fn write_packet(&self, packet: Packet) {
         let buf = &packet.buf[0..packet.packet_size];
 
-        match self.method {
-            MultiPathMethod::Stream => {
-                let mut modified_buf = buf.to_vec();
+        // Defaulting to Stream mode behavior
+        let mut modified_buf = buf.to_vec();
 
-                // resets prior modifications to the IP address
-                modified_buf[14] = 0;
+        // resets prior modifications to the IP address
+        modified_buf[14] = 0;
 
-                self.dev
-                    .send(&modified_buf)
-                    .await
-                    .expect("Failed to write to TUN device");
-            }
-            MultiPathMethod::Interface => {
-                self.dev
-                    .send(buf)
-                    .await
-                    .expect("Failed to write to TUN device");
-            }
-        };
+        self.dev
+            .send(&modified_buf)
+            .await
+            .expect("Failed to write to TUN device");
     }
 }
