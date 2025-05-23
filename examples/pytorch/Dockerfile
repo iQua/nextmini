@@ -52,16 +52,23 @@ RUN apk update && \
   apk add curl bash \
   openssh-client \
   openssh-server \
-  git\
+  git \
   vim \
   build-base \
   net-tools \
   iputils-ping \
   iperf3 \
   openssl \
-  openmpi
+  openmpi \
+  python3 \
+  python3-dev \
+  py3-pip
 
 RUN ssh-keygen -A
+
+# Install uv using the official installer
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 
 ENV RUST_LOG=info
 WORKDIR /var/nextmini
