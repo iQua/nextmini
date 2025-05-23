@@ -484,7 +484,7 @@ async fn handle_connection(
                                     flow_id_2_src_dst_route_id(&config, metric.flow_id.clone());
 
                                 let prev_hop_id = metric.src_node_id.map(|x| x as i32);
-                                let flow_id: Vec<i32> = metric.flow_id;
+                                let flow_id = metric.flow_id;
 
                                 match sqlx::query(
                                     r#"
@@ -497,8 +497,7 @@ async fn handle_connection(
                                 .bind(route_id)
                                 .bind(prev_hop_id)
                                 .bind(hop_id as i32)
-                                .bind(flow_id)
-                                // .bind(metric.stream_id)
+                                .bind(flow_id.as_ref())
                                 .bind(metric.time_read)
                                 .bind(metric.bps as i32)
                                 .execute(&*db_pool)

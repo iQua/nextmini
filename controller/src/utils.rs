@@ -31,20 +31,31 @@ pub fn create_new_virtual_addr(
 
 /// Converts the flow ID to source and destination addresses. By Strato's rules, we can obtain the
 /// node ID from the last byte of the source/destination address.
-pub fn flow_id_2_src_dst_route_id(config: &Config, flow_id: Vec<i32>) -> (i32, i32, i32) {
-    if flow_id.len() < 8 {
-        panic!(
-            "flow_id must have at least 8 elements, but it has {} elements",
-            flow_id.len()
-        );
-    }
+/// The flow_id_bytes are expected to be the big-endian representation of the u128 FlowId.
+/// Assumes src_ip (32b), dst_ip (32b), src_port (16b), dst_port (16b), route_id (32b) structure for the u128.
+pub fn flow_id_2_src_dst_route_id(config: &Config, flow_id_bytes: [u8; 16]) -> (i32, i32, i32) {
+    let flow_id_u128 = u128::from_be_bytes(flow_id_bytes);
 
-    let src_addr = flow_id[0..4].to_vec();
-    let dst_addr = flow_id[4..8].to_vec();
+    // Extract components based on the known bit layout of the u128 FlowId
+    // src_addr: bits 96-127
+    // dest_addr: bits 64-95
+    // src_port: bits 48-63 (unused here)
+    // dest_port: bits 32-47 (unused here)
+    // route_id (assumed to be in reserved bits): bits 0-31
 
-    let src_id = src_addr[3] - config.base_ipv4_addr[3] as i32;
-    let dst_id = dst_addr[3] - config.base_ipv4_addr[3] as i32;
-    let route_id = flow_id[2];
+    let src_ip_u32 = (flow_id_u128 >> 96) as u32;
+    let dst_ip_u32 = ((flow_id_u128 >> 64) & 0xFFFFFFFF) as u32;
+    
+    // Extract the last octet for src_id and dst_id calculation
+    // Ipv4Addr::from(src_ip_u32).octets()[3] would also work
+    let src_addr_last_octet = (src_ip_u32 & 0xFF) as u8;
+    let dst_addr_last_octet = (dst_ip_u32 & 0xFF) as u8;
+
+    let src_id = src_addr_last_octet as i32 - config.base_ipv4_addr[3] as i32;
+    let dst_id = dst_addr_last_octet as i32 - config.base_ipv4_addr[3] as i32;
+    
+    // Assuming route_id is stored in the lower 32 bits (the "reserved" part of the original FlowId)
+    let route_id = (flow_id_u128 & 0xFFFFFFFF) as i32;
 
     (src_id, dst_id, route_id)
 }

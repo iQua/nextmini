@@ -45,7 +45,7 @@ RUN apk update && \
     iperf3 \
     openssl
 
-ENV RUST_LOG=info
+ENV RUST_LOG=debug
 
 COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
 COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem

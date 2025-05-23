@@ -22,6 +22,7 @@ impl SimpleRoutingTable {
     }
 
     /// Install routes from controller's RouteMapping messages
+    /// Storing next_hop in a vector indexed by route_id
     pub fn install_routes(&mut self, routes: Vec<RouteMapping>) {
         // Find the maximum route_id to resize the vector
         let max_route_id = routes.iter().map(|r| r.route_id).max().unwrap_or(0);
@@ -74,7 +75,7 @@ impl SimpleRoutingTable {
             .and_then(|&next_hop| next_hop)
     }
 
-    /// Get next hop directly from flow_id (combines hashing and lookup)
+    /// Get next hop from flow_id (combines hashing and get_next_hop)
     pub fn next_hop_for_flow(&self, flow_id: FlowId) -> Option<NodeId> {
         self.hash_flow_to_route(flow_id)
             .and_then(|route_id| self.get_next_hop(route_id))

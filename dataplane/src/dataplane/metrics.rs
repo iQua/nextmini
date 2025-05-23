@@ -54,10 +54,8 @@ impl Collector {
                 // for (sock_id, value) in entry.iter() {
                     let bps = (8.0 * value.1 as f64 / self.collection_rate as f64) as usize;
 
-                    let flow_id_vec: Vec<i32> =
-                        flow_id.to_be_bytes().iter().map(|&b| b as i32).collect();
                     metrics_array.push(Metric {
-                        flow_id: flow_id_vec,
+                        flow_id: flow_id.to_be_bytes(),
                         bps,
                         src_node_id: Some(value.0),
                         // stream_id: Some(format!("{}:{}", sock_id.0, sock_id.1)),

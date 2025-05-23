@@ -5,7 +5,7 @@ use tokio::sync::{Notify, RwLock};
 
 use crossbeam_queue::ArrayQueue;
 
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::dataplane::FlowIdExt;
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -81,7 +81,8 @@ impl Scheduler for Fifo {
         }
 
         if self.queue.push(packet).is_err() {
-            panic!("Failed to enqueue a packet despite implementing a packet drop strategy.");
+            error!("Fifo: CRITICAL - Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue.");
+            return;
         }
 
         self.packet_arrived.notify_one();

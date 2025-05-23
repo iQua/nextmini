@@ -79,7 +79,7 @@ impl ProcessorManager {
             let flg = shutdown_flag.clone();
             let simple_table = self.simple_routing_table.clone();
             let senders = self.context.reproduce_senders().await;
-            let tun_writers = self.context.get_tun_writers(i).await;
+            let tun_writer = self.context.get_tun_writer().await.expect("TUN writer not available for processor");
             // let stream2routes = self.stream2routes.clone();
             // let stream_counters = self.stream_counters.clone();
             let metrics_tx = self.context.get_metrics_tx();
@@ -88,7 +88,7 @@ impl ProcessorManager {
                     receiver_rx,
                     simple_table,
                     senders,
-                    tun_writers,
+                    tun_writer,
                     flg,
                     metrics_tx,
                 );
@@ -131,8 +131,8 @@ pub struct Processor {
     // Count the number of streams in each flow. This is used to assign a path to a stream via round robin.
     // stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
 
-    // The local interface writers
-    tun_writers: Vec<TunWriter>,
+    // The local interface writer
+    tun_writer: TunWriter,
 
     // The flag to indicate if the processor should shutdown
     should_shutdown: Arc<AtomicBool>,
@@ -146,7 +146,7 @@ impl Processor {
         receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
         simple_routing_table: SimpleRoutingTable,
         senders: FxHashMap<NodeId, NodeSender>,
-        tun_writers: Vec<TunWriter>,
+        tun_writer: TunWriter,
         should_shutdown: Arc<AtomicBool>,
         metrics_tx: MetricsTx,
     ) -> Self {
@@ -154,7 +154,7 @@ impl Processor {
             receiver_rx,
             simple_routing_table,
             senders,
-            tun_writers,
+            tun_writer,
             should_shutdown,
             metrics_tx,
         }
@@ -245,12 +245,8 @@ impl Processor {
                 if let Some(next_hop) = next_hop {
                     // Sending out the packet
                     if next_hop == self.simple_routing_table.local_id {
-                        // Local delivery - use the first available TUN interface
-                        if let Some(writer) = self.tun_writers.get_mut(0) {
-                            writer.write_packet(packet).await;
-                        } else {
-                            println!("No TUN interface available for local delivery");
-                        }
+                        // Local delivery - use the single TUN writer
+                        self.tun_writer.write_packet(packet).await;
                     } else {
                         match self.senders.get_mut(&next_hop) {
                             Some(sender) => {

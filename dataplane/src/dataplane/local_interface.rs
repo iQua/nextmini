@@ -18,95 +18,40 @@ fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
 }
 
 /// Creates TUN devices for sending data to the application.
-pub async fn create_tun_devices(
+pub async fn create_tun_device(
     configs: LocalConfigs,
     controller_configs: ControllerConfigs,
-) -> Vec<Vec<Arc<AsyncDevice>>> {
-    let num_queues = configs.num_packet_processors;
-    let num_os_interfaces = 1; // Enforce single OS interface for Stream mode
-    let mut queues_per_interface = Vec::with_capacity(num_os_interfaces);
+) -> Arc<AsyncDevice> {
+    let if_name = configs.tun_interface_name.clone();
+    let ipv4_addr = controller_configs.strato_address;
+    let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
 
     #[cfg(target_os = "linux")]
-    for _i in 0..num_os_interfaces {
-        let if_name = configs.tun_interface_name.clone(); // No index needed for a single interface
-        let ipv4_addr = controller_configs.strato_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
-
-        let dev = DeviceBuilder::new()
-            .name(&if_name)
-            .ipv4(
-                Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
-                ipv4_prefix,
-                None,
-            )
-            .mtu(configs.mtu as u16)
-            .multi_queue(true)
-            .build_async()
-            .expect("Failed to create tun device");
-
-        let mut queues = Vec::with_capacity(num_queues);
-
-        // creates multiple TUN queues with error handling
-        eprintln!("Creating {num_queues} TUN queues for interface {if_name}.");
-        for _ in 0..num_queues - 1 {
-            match dev.try_clone() {
-                Ok(cloned_dev) => {
-                    queues.push(Arc::new(cloned_dev));
-                }
-                Err(e) => {
-                    // if we are unable to create all the queues, use what we have
-                    eprintln!(
-                        "Warning: Could not create all TUN queues ({}), continuing with {} queues",
-                        e,
-                        queues.len()
-                    );
-                    break;
-                }
-            }
-        }
-
-        queues.push(Arc::new(dev));
-
-        // ensures that we have at least one queue
-        if queues.is_empty() {
-            panic!("Failed to create even a single TUN queue. Terminating.");
-        }
-
-        queues_per_interface.push(queues);
-    }
+    let dev_builder = DeviceBuilder::new()
+        .name(&if_name)
+        .ipv4(
+            Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
+            ipv4_prefix,
+            None,
+        )
+        .mtu(configs.mtu as u16)
+        .multi_queue(false);
 
     #[cfg(not(target_os = "linux"))]
-    for _ in 0..num_os_interfaces {
-        let ipv4_addr = controller_configs.strato_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
+    let dev_builder = DeviceBuilder::new()
+        .ipv4(
+            Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
+            ipv4_prefix,
+            None,
+        )
+        .mtu(configs.mtu as u16);
 
-        let dev = DeviceBuilder::new()
-            // No name setting for non-Linux as it might pick default like utun*
-            .ipv4(
-                Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
-                ipv4_prefix,
-                None,
-            )
-            .mtu(configs.mtu as u16)
-            .build_async()
-            .expect("Failed to create tun device");
+    let dev = dev_builder.build_async()
+        .expect("Failed to create tun device");
+    
+    eprintln!("Successfully created TUN device {if_name}.");
 
-        // creates a single TUN queue on non-Linux platforms without multi-queue support
-        eprintln!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
-        let queues = vec![Arc::new(dev)];
-        queues_per_interface.push(queues);
-    }
-
-    // transposes to a vector of queues, each queue corresponds to multiple interfaces
-    let mut queues_by_queue_id = vec![Vec::with_capacity(num_os_interfaces); num_queues];
-
-    for interface_queues in queues_per_interface {
-        for (queue_id, dev) in interface_queues.into_iter().enumerate() {
-            queues_by_queue_id[queue_id].push(dev);
-        }
-    }
-
-    queues_by_queue_id
+    Arc::new(dev)
 }
 
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out

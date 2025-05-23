@@ -8,25 +8,45 @@ use crate::dataplane::node_server::TcpNodeServer;
 use crate::dataplane::node_interface::NodeManager;
 use crate::dataplane::metrics::Collector;
 use crate::dataplane::local_interface;
-use crate::configs;
+use crate::configs::{self, ControllerConfigs};
 
 #[tokio::test]
 async fn test_node_server_new(){
-    let configs = configs::new();
-    let tun_devs  = local_interface::create_tun_devices(&configs, 1, (10,0,0,1), (255,255,255,0));
+    let local_configs = configs::new();
+    let controller_configs = ControllerConfigs {
+        node_id: 1,
+        controller_addr: "127.0.0.1:8080".to_string(),
+        session_id: [0,0,0,1],
+        strato_address: (10,0,0,1),
+        strato_mask: (255,255,255,0),
+        num_interfaces: 1,
+        protocol: nextmini_messages::Protocol::Tcp,
+        scheduler_type: crate::dataplane::scheduler::SchedulingDiscipline::Fifo,
+    };
+    let tun_device  = local_interface::create_tun_device(local_configs.clone(), controller_configs.clone()).await;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let metrics_collector = Collector::new(tx, configs.metrics_collection_interval);
-    let context = NodeManager::new(&configs, 1, tun_devs, metrics_collector, Arc::new(RwLock::new(HashMap::new())));
+    let metrics_collector = Collector::new(tx, local_configs.metrics_collection_interval);
+    let context = NodeManager::new(&local_configs, 1, tun_device, metrics_collector, Arc::new(RwLock::new(HashMap::new())));
     let _node_server = TcpNodeServer::new(context.clone(), [0,0,0,1]);
 }
 
 #[tokio::test]
 async fn test_node_server_start_listening(){
-    let configs = configs::new();
-    let tun_devs  = local_interface::create_tun_devices(&configs, 1, (10,0,0,1), (255,255,255,0));
+    let local_configs = configs::new();
+    let controller_configs = ControllerConfigs {
+        node_id: 2,
+        controller_addr: "127.0.0.1:8080".to_string(),
+        session_id: [0,0,0,1],
+        strato_address: (10,0,0,1),
+        strato_mask: (255,255,255,0),
+        num_interfaces: 1,
+        protocol: nextmini_messages::Protocol::Tcp,
+        scheduler_type: crate::dataplane::scheduler::SchedulingDiscipline::Fifo,
+    };
+    let tun_device  = local_interface::create_tun_device(local_configs.clone(), controller_configs.clone()).await;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let metrics_collector: Collector = Collector::new(tx, configs.metrics_collection_interval);
-    let context = NodeManager::new(&configs, 2, tun_devs, metrics_collector,Arc::new(RwLock::new(HashMap::new())));
+    let metrics_collector: Collector = Collector::new(tx, local_configs.metrics_collection_interval);
+    let context = NodeManager::new(&local_configs, 2, tun_device, metrics_collector,Arc::new(RwLock::new(HashMap::new())));
     let session_id = [0,0,0,1];
     let mut node_server = TcpNodeServer::new(context.clone(), session_id);
     

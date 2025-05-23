@@ -6,6 +6,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tracing::{debug, error};
 
 pub enum ProtocolReader {
     Tcp(TcpReader),
@@ -57,16 +58,18 @@ impl TcpReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
+        debug!("TcpReader: Attempting to read 4-byte header");
         if let Err(e) = self.stream.read_exact(&mut buf[0..4]).await {
-            eprintln!("Failed to read TCP header: {}", e);
+            error!("TcpReader: Failed to read 4-byte header: {}", e);
             return 0;
         }
+        debug!(header = ?&buf[0..4], "TcpReader: Successfully read 4-byte header");
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
 
-        if let Err(e) = self.stream.read_exact(&mut buf[4..msg_len]).await {
-            eprintln!("Failed to read TCP data: {}", e);
-            return 0;
+        if msg_len == 0 {
+            error!("TcpReader: Calculated message length is 0. No payload to read after header.");
+            return 0; 
         }
 
         msg_len
@@ -84,6 +87,7 @@ impl TcpWriter {
     }
 
     pub async fn send(&mut self, data: &[u8]) {
+        debug!(data_len = data.len(), first_bytes = ?&data[0..std::cmp::min(data.len(), 16)], "TcpWriter: Sending data");
         let mut stream_guard = self.stream.lock().await;
         match stream_guard.write_all(data).await {
             Ok(_) => (),
@@ -130,6 +134,7 @@ impl UdpWriter {
     }
 
     pub async fn send(&self, data: &[u8]) {
+        debug!(data_len = data.len(), first_bytes = ?&data[0..std::cmp::min(data.len(), 16)], addr = %self.addr, "UdpWriter: Sending data");
         match self.sock.send_to(data, self.addr.as_str()).await {
             Ok(_) => (),
             Err(e) => panic!("{e}"),
@@ -153,9 +158,13 @@ impl QuicReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
+        debug!("QuicReader: Attempting to read 4-byte header");
         match self.stream.read_exact(&mut buf[0..4]).await {
-            Ok(_) => (),
-            Err(_) => {
+            Ok(_) => {
+                debug!(header = ?&buf[0..4], "QuicReader: Successfully read 4-byte header");
+            }
+            Err(e) => {
+                debug!("QuicReader: Failed to read 4-byte header: {}", e);
                 return 0;
             }
         }
@@ -185,6 +194,7 @@ impl QuicWriter {
     }
 
     pub async fn send(&mut self, buf: &[u8]) {
+        debug!(data_len = buf.len(), first_bytes = ?&buf[0..std::cmp::min(buf.len(), 16)], "QuicWriter: Sending data");
         let mut stream_guard = self.stream.lock().await;
 
         match stream_guard.write_all(buf).await {

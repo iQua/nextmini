@@ -17,7 +17,7 @@ pub enum DataplaneToController {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Metric {
-    pub flow_id: Vec<i32>,
+    pub flow_id: [u8; 16],
     // pub stream_id: Option<String>,
     pub bps: usize,
     pub src_node_id: Option<usize>,

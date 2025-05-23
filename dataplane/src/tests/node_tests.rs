@@ -9,7 +9,7 @@ use crate::dataplane::Packet;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::tungstenite::handshake::server;
-use crate::configs;
+use crate::configs::{self, ControllerConfigs, LocalConfigs};
 
 const MTU: usize = 1400;
 const RECEIVE_BUF_SIZE: usize = MTU + 4;
@@ -125,11 +125,21 @@ async fn tcp_node_test_send(){
 
 #[tokio::test]
 async fn test_context_new(){
-    let configs = configs::new();
-    let tun_devs = local_interface::create_tun_devices(&configs, 1, (10,0,0,1), (255,255,255,0));
+    let local_configs = configs::new();
+    let controller_configs = ControllerConfigs {
+        node_id: 1,
+        controller_addr: "127.0.0.1:8080".to_string(),
+        session_id: [0,0,0,1],
+        strato_address: (10,0,0,1),
+        strato_mask: (255,255,255,0),
+        num_interfaces: 1,
+        protocol: nextmini_messages::Protocol::Tcp,
+        scheduler_type: crate::dataplane::scheduler::SchedulingDiscipline::Fifo,
+    };
+    let tun_device = local_interface::create_tun_device(local_configs.clone(), controller_configs.clone()).await;
     let (tx, _) = tokio::sync::mpsc::unbounded_channel();
     let metrics_collector = Collector::new(tx, 1);
-    let _context = NodeManager::new(&configs, 1, tun_devs, metrics_collector, Arc::new(RwLock::new(HashMap::new())));
+    let _context = NodeManager::new(&local_configs, 1, tun_device, metrics_collector, Arc::new(RwLock::new(HashMap::new())));
 }
 
 #[tokio::test]
@@ -145,11 +155,21 @@ async fn test_context_add_tcp_node(){
     
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; //wait for the server to be up
     // Create a node manager
-    let configs = configs::new();
-    let tun_devs = local_interface::create_tun_devices(&configs, 1, (10,0,0,1), (255,255,255,0));
+    let local_configs = configs::new();
+    let controller_configs = ControllerConfigs {
+        node_id: 2,
+        controller_addr: "127.0.0.1:8080".to_string(),
+        session_id: [0,0,0,1],
+        strato_address: (10,0,0,1),
+        strato_mask: (255,255,255,0),
+        num_interfaces: 1,
+        protocol: nextmini_messages::Protocol::Tcp,
+        scheduler_type: crate::dataplane::scheduler::SchedulingDiscipline::Fifo,
+    };
+    let tun_device = local_interface::create_tun_device(local_configs.clone(), controller_configs.clone()).await;
     let (tx, _) = tokio::sync::mpsc::unbounded_channel();
     let metrics_collector = Collector::new(tx, 1);
-    let context = NodeManager::new(&configs, 2, tun_devs, metrics_collector,Arc::new(RwLock::new(HashMap::new())));
+    let context = NodeManager::new(&local_configs, 2, tun_device, metrics_collector,Arc::new(RwLock::new(HashMap::new())));
     let stream = tokio::net::TcpStream::connect("127.0.0.1:6688").await.expect("Should be able to connect");
     
     context.add_node(1, stream).await;
@@ -174,13 +194,23 @@ async fn test_context_recv(){
     });
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; //wait for the server to be up
     let stream = tokio::net::TcpStream::connect("127.0.0.1:6688").await.expect("Should be able to connect");
-    let configs = configs::new();
-    let tun_devs = local_interface::create_tun_devices(&configs, 1, (10,0,0,1), (255,255,255,0));
+    let local_configs = configs::new();
+    let controller_configs = ControllerConfigs {
+        node_id: 2,
+        controller_addr: "127.0.0.1:8080".to_string(),
+        session_id: [0,0,0,1],
+        strato_address: (10,0,0,1),
+        strato_mask: (255,255,255,0),
+        num_interfaces: 1,
+        protocol: nextmini_messages::Protocol::Tcp,
+        scheduler_type: crate::dataplane::scheduler::SchedulingDiscipline::Fifo,
+    };
+    let tun_device = local_interface::create_tun_device(local_configs.clone(), controller_configs.clone()).await;
 
     // Create a node manager
     let (tx, _) = tokio::sync::mpsc::unbounded_channel();
     let metrics_collector = Collector::new(tx, 1);
-    let context = NodeManager::new(&configs, 2, tun_devs, metrics_collector,Arc::new(RwLock::new(HashMap::new())));
+    let context = NodeManager::new(&local_configs, 2, tun_device, metrics_collector,Arc::new(RwLock::new(HashMap::new())));
 
     context.add_node(1, stream).await;
     let packet = context.recv().await;
@@ -222,13 +252,23 @@ async fn test_node_mannager_send(){
     
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; //wait for the server to be up
     let stream = tokio::net::TcpStream::connect("127.0.0.1:6688").await.expect("Should be able to connect");
-    let configs = configs::new();
-    let tun_devs = local_interface::create_tun_devices(&configs, 1, (10,0,0,1), (255,255,255,0));
+    let local_configs = configs::new();
+    let controller_configs = ControllerConfigs {
+        node_id: 2,
+        controller_addr: "127.0.0.1:8080".to_string(),
+        session_id: [0,0,0,1],
+        strato_address: (10,0,0,1),
+        strato_mask: (255,255,255,0),
+        num_interfaces: 1,
+        protocol: nextmini_messages::Protocol::Tcp,
+        scheduler_type: crate::dataplane::scheduler::SchedulingDiscipline::Fifo,
+    };
+    let tun_device = local_interface::create_tun_device(local_configs.clone(), controller_configs.clone()).await;
     
     // create a node manager
     let (tx, _) = tokio::sync::mpsc::unbounded_channel();
     let metrics_collector = Collector::new(tx, 1);
-    let context = NodeManager::new(&configs, 2, tun_devs, metrics_collector, Arc::new(RwLock::new(HashMap::new())));
+    let context = NodeManager::new(&local_configs, 2, tun_device, metrics_collector, Arc::new(RwLock::new(HashMap::new())));
 
     context.add_node(1, stream).await;
 
