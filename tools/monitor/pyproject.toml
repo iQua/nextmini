@@ -5,7 +5,7 @@ description = "A simple dashboard for monitoring Strato throughput at runtime."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "psycopg2",
+    "psycopg2-binary",
     "rich",
     "numpy"
 ]

@@ -6,64 +6,52 @@ networks:
       driver: default
       config:
         - subnet: 172.16.8.0/24
-
 services:
+  postgres:
+    container_name: postgres
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      network:
+        ipv4_address: 172.16.8.2
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
   controller:
     container_name: controller
     hostname: controller
-    image: strato_controller
+    image: nextmini_controller
     build:
       context: ../../
       dockerfile: ./controller/Dockerfile
     networks:
       network:
-        ipv4_address: 172.16.8.2
+        ipv4_address: 172.16.8.3
     stdin_open: true
     volumes:
-      - ./controller-config.toml:/var/strato/server/config.toml
+      - ./controller-config.toml:/var/nextmini/config.toml
+    depends_on:
+      - postgres
     ports:
-      - 5432:5432
       - 3000:3000
-    command: /bin/bash -c "/var/strato/server/target/release/controller"
+    command: /bin/bash -c "sleep 4 && /var/nextmini/controller"
 
   node1:
     container_name: node1
     hostname: node1
-    image: strato_datapath_pytorch
-    build:
-      context: ../../
-      dockerfile: ./examples/pytorch/Dockerfile
-    networks:
-      network:
-        ipv4_address: 172.16.8.3
-    stdin_open: true
-    privileged: true
-    volumes:
-      - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
-    depends_on:
-      - controller
-      - node4
-    cap_add:
-      - NET_ADMIN
-    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
-      /usr/sbin/sshd -p 22 &
-      sleep 7 &&
-      ssh-keyscan -H node2 >> /root/.ssh/known_hosts &&
-      ssh-keyscan -H node3 >> /root/.ssh/known_hosts &&
-      ssh-keyscan -H node4 >> /root/.ssh/known_hosts &&
-      /var/node/target/release/strato ws://controller:3000"
-
-  node2:
-    container_name: node2
-    hostname: node2
-    image: strato_datapath_pytorch
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -73,27 +61,33 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./ssh:/var/nextmini/.ssh
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./train.sh:/var/nextmini/train.sh
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
+      - node4
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
       /usr/sbin/sshd -p 22 &
-      sleep 7 &&
-      /var/node/target/release/strato ws://controller:3000"
+      sleep 8 &&
+      /var/nextmini/nextmini ws://controller:3000 &
+      echo \"Node 1 is now running.\" &&
+      sleep 15 &&
+      ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts &&
+      ssh-keyscan -H 10.0.0.3 >> /root/.ssh/known_hosts &&
+      ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts &&
+      sleep infinity"
 
-  node3:
-    container_name: node3
-    hostname: node3
-    image: strato_datapath_pytorch
+  node2:
+    container_name: node2
+    hostname: node2
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -103,28 +97,26 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./ssh:/var/nextmini/.ssh
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
-      - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
       /usr/sbin/sshd -p 22 &
-      sleep 7 &&
-      /var/node/target/release/strato ws://controller:3000"
+      sleep 11 &&
+      echo \"Node 2 is now running.\" &&
+      /var/nextmini/nextmini ws://controller:3000"
 
-  node4:
-    container_name: node4
-    hostname: node4
-    image: strato_datapath_pytorch
+  node3:
+    container_name: node3
+    hostname: node3
+    image: nextmini_datapath_pytorch
     build:
       context: ../../
       dockerfile: ./examples/pytorch/Dockerfile
@@ -134,20 +126,49 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/shared/.ssh
-      - ./config.toml:/var/node/config.toml
-      - ./lenet5.py:/var/node/lenet5.py
-      - ./test.py:/var/node/test.py
-      - ./run_test.sh:/var/node/run_test.sh
-      - ./train.sh:/var/node/train.sh
-      - ./pyproject.toml:/var/node/pyproject.toml
+      - ./ssh:/var/nextmini/.ssh
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
+    depends_on:
+      - controller
+      - node2
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+      /usr/sbin/sshd -p 22 &
+      sleep 11 &&
+      echo \"Node 3 is now running.\" &&
+      /var/nextmini/nextmini ws://controller:3000"
+
+  node4:
+    container_name: node4
+    hostname: node4
+    image: nextmini_datapath_pytorch
+    build:
+      context: ../../
+      dockerfile: ./examples/pytorch/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.7
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/var/nextmini/.ssh
+      - ./config.toml:/var/nextmini/config.toml
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
       - node3
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "cp -r /mnt/shared/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa && mkdir /run/sshd &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
       /usr/sbin/sshd -p 22 &
-      sleep 7 &&
-      /var/node/target/release/strato ws://controller:3000"
+      sleep 11 &&
+      echo \"Node 4 is now running.\" &&
+      /var/nextmini/nextmini ws://controller:3000"

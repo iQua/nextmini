@@ -57,6 +57,6 @@ docker run -d \
   --name $DB_CONTAINER_NAME \
   -e POSTGRES_USER="pgusr" \
   -e POSTGRES_PASSWORD="$DB_PASSWORD" \
-  -e POSTGRES_DB=strato \
+  -e POSTGRES_DB=nextmini \
   -p "$DB_PORT":5432 \
   docker.io/postgres && echo "Database container '$DB_CONTAINER_NAME' has successfully been created and started."

@@ -1,6 +1,30 @@
-FROM ubuntu:24.04
+FROM rust:alpine AS build
 
 USER root
+
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add --no-cache \
+    curl \
+    bash \
+    build-base \
+    gcc
+
+# Setup the dataplane directory
+WORKDIR /var/nextmini
+
+# Copy the source code
+COPY messages /var/messages
+COPY dataplane/Cargo.toml /var/nextmini
+COPY dataplane/src /var/nextmini/src
+
+# running the certificate generator first
+RUN /bin/bash -c "cargo run --bin cert-gen"
+
+# build the dataplane from source
+RUN /bin/bash -c "cargo build --release"
+
+FROM python:latest
 
 RUN apt-get update && \
     apt-get install -y \
@@ -15,37 +39,23 @@ RUN apt-get update && \
     inetutils-ping \
     openssl \
     openmpi-bin \
-    libopenmpi-dev \
-    gcc && \
+    libopenmpi-dev && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean
 
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN echo "source $HOME/.cargo/env" >> $HOME/.bashrc
+# Generate ssh host keys in /etc/ssh and start the sshd service
+RUN ssh-keygen -A
 
 # Install uv using the official installer
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 
-# Verify uv installation
-RUN uv --version
+# Install Python
+RUN uv python install
 
-# Create parent directory and copy messages
-RUN mkdir -p /var
-WORKDIR /var
-COPY messages /var/messages
+ENV RUST_LOG=info
+WORKDIR /var/nextmini
 
-# Setup the dataplane directory
-RUN mkdir -p /var/node
-WORKDIR /var/node
-
-# Copy the source code
-COPY dataplane/Cargo.toml .
-COPY dataplane/src src
-
-# running the certificate generator first
-RUN /bin/bash -c "cargo run --bin cert-gen"
-
-# build the dataplane from source
-RUN /bin/bash -c "cargo build --release"
+COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
+COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem
+COPY --from=build /var/nextmini/server_key.pem /var/nextmini/server_key.pem

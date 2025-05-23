@@ -1,0 +1,11 @@
+## Introduction
+
+_Strato_ is a high-performance overlay network layer written in Rust. We have designed _Strato_ to empower distributed computing across geographically distributed datacenters in the cloud, by seamlessly connecting virtual machines via a wide range of protocols. Similar to conventional Virtual Private Networks (VPNs), _Strato_ leverages the TUN interface and behaves as a virtual network device. This allows applications to leverage the full power of _Strato_ obliviously.
+
+_Strato_ provides three core features to ensure its delivery of high performance, capable of satisfying modern distributed computing needs:
+
+- **High performance, fully asynchronous architecture.** Based on the highly efficient `tokio` library, _Strato_ firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of computing cores in modern computing.
+
+- **Multi-path routing with TUN interfaces.** _Strato_ realizes multi-path routing by creating multiple TUN interfaces, each with its own set of paths to transport data simultaneously.
+
+- **Built-in performance monitoring and hot reconfiguration**. _Strato_ is designed to operate in unpredictable network environments. On top of providing the capability for monitoring the performance of the network down to per-flow granularity, Strato provides the ability to reconfigure routes on-the-fly to adapt to changing network conditions.

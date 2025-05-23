@@ -1,50 +1,42 @@
-FROM ubuntu:24.04
+FROM rust:alpine AS build
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=America/Toronto
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-
-RUN apt-get update && \
-    apt-get install -y \
-    curl \
-    openssh-client \
-    openssh-server \
-    git \
-    vim \
-    build-essential \
-    net-tools \
-    pkg-config \
-    libssl-dev \
-    libpq-dev \
-    ca-certificates && \
-    apt-get clean
-
-ENV INIT_POSTGRES=true
-# Install PostgreSQL
-RUN apt-get update && apt-get install -y postgresql
-# Configure PostgreSQL to listen on all interfaces
-RUN echo "listen_addresses='*'" >> $(ls /etc/postgresql/*/main/postgresql.conf)
-# Allow all hosts to connect to PostgreSQL
-RUN echo "host all all 0.0.0.0/0 md5" >> $(ls /etc/postgresql/*/main/pg_hba.conf)
-
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add curl bash \
+    build-base \
+    openssl \
+    ca-certificates
 
 # First, create directories and copy files
-WORKDIR /var/strato
-COPY messages /var/strato/messages
-COPY controller /var/strato/server
+WORKDIR /var/nextmini
+COPY messages /var/nextmini/messages
+COPY controller /var/nextmini/server
 
-WORKDIR /var/strato/server
-
-COPY controller/entrypoint.sh /
-RUN chmod +x /entrypoint.sh
+WORKDIR /var/nextmini/server
 
 # Build the Rust controller
 RUN cargo build --release
 
-EXPOSE 5432
-EXPOSE 3000
+FROM alpine:latest
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENV TZ=America/Toronto
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add curl bash \
+    openssh-client \
+    openssh-server \
+    git\
+    vim \
+    build-base \
+    net-tools \
+    iputils-ping \
+    iperf3 \
+    openssl \
+    ca-certificates
+
+WORKDIR /var/nextmini
+COPY --from=build /var/nextmini/server/target/release/controller /var/nextmini/controller
+
+EXPOSE 3000

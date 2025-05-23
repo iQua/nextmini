@@ -5,6 +5,9 @@ use tokio::sync::{Notify, RwLock};
 
 use crossbeam_queue::ArrayQueue;
 
+use tracing::debug;
+
+use crate::dataplane::FlowIdExt;
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::dataplane::packet::Packet;
 use crate::dataplane::protocols_io::ProtocolWriter;
@@ -102,19 +105,11 @@ impl Scheduler for Fifo {
                 }
 
                 while let Some(packet) = queue.pop() {
-                    // let flow_id_bytes = packet.flow_id.to_be_bytes();
-
-                    // println!(
-                    //     "Sending packet with from node {}.{}.{}.{} to node {}.{}.{}.{}",
-                    //     flow_id_bytes[0],
-                    //     flow_id_bytes[1],
-                    //     flow_id_bytes[2],
-                    //     flow_id_bytes[3],
-                    //     flow_id_bytes[4],
-                    //     flow_id_bytes[5],
-                    //     flow_id_bytes[6],
-                    //     flow_id_bytes[7]
-                    // );
+                    debug!(
+                        "Sending a packet from node {} to node {}.",
+                        packet.flow_id.src_addr(),
+                        packet.flow_id.dest_addr()
+                    );
 
                     writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;

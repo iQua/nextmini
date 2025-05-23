@@ -1,0 +1,33 @@
+## Developer's Guide
+
+This guide contains technical documentation on Strato's design and implementation for developers to better understand Strato's codebase.
+
+### Running Strato Locally without Docker (work-in-progress)
+
+It is also feasible to build the project locally on macOS. First, a database server needs to be started using Docker:
+
+```sh
+sh start-database.sh
+```
+
+After installing [Bun](https://bun.sh/docs/installation), run the following to start the controller:
+
+```sh
+cd controller; bun install; bun run build; bun run start
+```
+
+Then open a new terminal and run the following to start the first dataplane node:
+
+```sh
+cd dataplane
+sudo cargo run -- ws://127.0.0.1:3000 --config-path ./config.yml
+```
+
+And then open another terminal and run the following to start the second dataplane node:
+
+```sh
+cd dataplane
+sudo cargo run -- ws://127.0.0.1:3000 --config-path ./config1.yml
+```
+
+and so on. On the same machine, different configuration files should have different addresses and port numbers. We can also set `num_packet_processors` in `config.yml` to 1 when running on macOS, as it doesn't support multiple queues.

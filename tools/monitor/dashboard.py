@@ -12,9 +12,9 @@ class Database:
         self.connection = psycopg2.connect(
             user="pgusr",
             password="pgpwrd",
-            host="127.0.0.1",
+            host="172.16.8.2",
             port="5432",
-            database="strato"
+            database="nextmini"
         )
         self.connection.autocommit = True  # Enable autocommit to avoid transaction issues
         self.t_node = None
