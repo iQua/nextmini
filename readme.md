@@ -93,7 +93,7 @@ Alternatively, press `Control + C` in the terminal where `docker compose up` is 
 
 ## Running a Simple Distributed PyTorch Trainer with Docker: Single Machine Setup
 
-Nextmini is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
+_Nextmini_ is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or Mac).
 
 Before starting to build the docker image, it is recommended to start from a clean slate:
 

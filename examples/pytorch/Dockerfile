@@ -3,33 +3,22 @@ FROM rust:alpine AS build
 USER root
 
 RUN apk update && \
-  apk upgrade --no-cache && \
-  apk add --no-cache \
-  curl \
-  bash \
-  openssh-client \
-  openssh-server \
-  git \
-  vim \
-  build-base \
-  net-tools \
-  iperf3 \
-  iputils-ping \
-  openssl \
-  openmpi \
-  openmpi-dev \
-  gcc
-
-# Install Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-RUN echo "source $HOME/.cargo/env" >> $HOME/.bashrc
-
-# Install uv using the official installer
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
-
-# Verify uv installation
-RUN uv --version
+    apk upgrade --no-cache && \
+    apk add --no-cache \
+    curl \
+    bash \
+    openssh-client \
+    openssh-server \
+    git \
+    vim \
+    build-base \
+    net-tools \
+    iperf3 \
+    iputils-ping \
+    openssl \
+    openmpi \
+    openmpi-dev \
+    gcc
 
 # Setup the dataplane directory
 WORKDIR /var/nextmini
@@ -48,23 +37,32 @@ RUN /bin/bash -c "cargo build --release"
 FROM alpine:latest
 
 RUN apk update && \
-  apk upgrade --no-cache && \
-  apk add curl bash \
-  openssh-client \
-  openssh-server \
-  git \
-  vim \
-  build-base \
-  net-tools \
-  iputils-ping \
-  iperf3 \
-  openssl \
-  openmpi \
-  python3 \
-  python3-dev \
-  py3-pip
+    apk upgrade --no-cache && \
+    apk add curl bash \
+    openssh-client \
+    openssh-server \
+    git \
+    vim \
+    build-base \
+    net-tools \
+    iputils-ping \
+    iperf3 \
+    openssl \
+    openmpi \
+    python3 \
+    python3-dev \
+    py3-pip
 
+# Generate ssh host keys in /etc/ssh and start the sshd service
 RUN ssh-keygen -A
+RUN /usr/sbin/sshd
+
+# Install uv using the official installer
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+
+# Verify uv installation
+RUN uv --version
 
 # Install uv using the official installer
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
