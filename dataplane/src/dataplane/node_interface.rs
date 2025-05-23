@@ -6,6 +6,8 @@ use tokio::sync::{Mutex, RwLock, mpsc};
 
 use s2n_quic::stream::BidirectionalStream;
 
+use tracing::debug;
+
 use crate::dataplane::metrics::MetricsTx;
 use crate::dataplane::packet::Packet;
 use crate::dataplane::processor::SenderLoadBalancer;
@@ -105,6 +107,9 @@ impl NodeReceiver {
 
             let packet = Packet::new(n, buf);
             let flow_id = packet.flow_id;
+
+            debug!(flow_id = %flow_id, "Received packet from node {}", self.remote_node_id);
+            
             self.record_metrics(flow_id, n, metrics_tx.clone()).await;
             self.tx.try_send(packet);
         }

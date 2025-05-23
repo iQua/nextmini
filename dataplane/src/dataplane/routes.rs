@@ -37,8 +37,8 @@ impl SimpleRoutingTable {
             if route.route_id < self.route_table.len() {
                 self.route_table[route.route_id] = Some(route.next_hop);
                 println!(
-                    "Installed route {} -> next_hop {}",
-                    route.route_id, route.next_hop
+                    "Installed route {} -> next_hop {} for src_addr {:?} and dst_addr {:?}",
+                    route.route_id, route.next_hop, route.src_addr, route.dst_addr
                 );
             }
         }
