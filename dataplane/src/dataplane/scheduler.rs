@@ -106,12 +106,6 @@ impl Scheduler for Fifo {
                 }
 
                 while let Some(packet) = queue.pop() {
-                    debug!(
-                        "Sending a packet from node {} to node {}.",
-                        packet.flow_id.src_addr(),
-                        packet.flow_id.dest_addr()
-                    );
-
                     writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
 

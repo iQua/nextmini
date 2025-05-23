@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
+use tracing::debug;
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
@@ -79,9 +80,12 @@ impl TunReader {
                     panic!("Error reading from the TUN device: {:?}", e);
                 }
             };
-
             let packet = Packet::new(n, buf);
 
+            // packet received from the TUN device is already IPv6
+            // .len() can be removed to see the entire packet
+            debug!("TunReader: Received packet of {:?} bytes", packet.buf.len());
+            
             // Always try to set stream ID as Stream mode is default
             // packet.try_set_stream_id(); // Commented out since method is not available
 
