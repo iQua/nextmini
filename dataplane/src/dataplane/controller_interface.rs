@@ -13,7 +13,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 
-use strato_messages::{ControllerToDataplane, DataplaneToController, Protocol};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::dataplane::RateLimiterMap;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};

@@ -7,7 +7,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use serde_json::Value;
 
-use strato_messages::{ControllerToDataplane, MultiPathMethod, Protocol};
+use nextmini_messages::{ControllerToDataplane, MultiPathMethod, Protocol};
 
 use crate::dataplane::scheduler::SchedulingDiscipline;
 

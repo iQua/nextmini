@@ -13,4 +13,4 @@ toml = "0.8"
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
 chrono = "0.4"
 futures-util = "0.3"
-strato-messages = { path = "../messages" }
+nextmini_messages = { path = "../messages" }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-use strato_messages::MultiPathMethod;
+use nextmini_messages::MultiPathMethod;
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};

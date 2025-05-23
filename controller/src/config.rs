@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use strato_messages::{MultiPathMethod, Protocol};
+use nextmini_messages::{MultiPathMethod, Protocol};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {

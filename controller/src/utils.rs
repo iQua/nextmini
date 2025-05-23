@@ -1,7 +1,7 @@
 /// Implements utility functions for the controller.
 use std::collections::HashMap;
 
-use strato_messages::{ControllerToDataplane, Flow, MultiPathMethod, Protocol, RouteInfo};
+use nextmini_messages::{ControllerToDataplane, Flow, MultiPathMethod, Protocol, RouteInfo};
 
 use crate::config::Config;
 use crate::models::Route;
@@ -172,7 +172,7 @@ pub fn build_install_routes_message(
 
 #[cfg(test)]
 mod tests {
-    use strato_messages::{ControllerToDataplane, Flow, MultiPathMethod, Protocol, RouteInfo};
+    use nextmini_messages::{ControllerToDataplane, Flow, MultiPathMethod, Protocol, RouteInfo};
 
     use super::*;
     use crate::config::Config;
