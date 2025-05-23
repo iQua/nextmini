@@ -84,10 +84,73 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
     if config.reset_db {
         // resets the entire database for a new session, if needed
-        sqlx::query("TRUNCATE TABLE nodes, routes, metrics")
+        // Drop tables to ensure schema changes are applied
+        sqlx::query("DROP TABLE IF EXISTS metrics")
             .execute(&pool)
             .await
-            .expect("Failed to reset database");
+            .expect("Failed to drop metrics table");
+        
+        sqlx::query("DROP TABLE IF EXISTS routes")
+            .execute(&pool)
+            .await
+            .expect("Failed to drop routes table");
+            
+        sqlx::query("DROP TABLE IF EXISTS nodes")
+            .execute(&pool)
+            .await
+            .expect("Failed to drop nodes table");
+
+        // Recreate tables with current schema
+        sqlx::query(
+            r#"
+            CREATE TABLE nodes (
+                id SERIAL PRIMARY KEY,
+                private_network_name TEXT,
+                private_network_addr TEXT NOT NULL,
+                public_network_addr TEXT NOT NULL,
+                virtual_network_addr TEXT NOT NULL,
+                connections INTEGER[] NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to recreate nodes table");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE routes (
+                src_node_id INTEGER NOT NULL,
+                dst_node_id INTEGER NOT NULL,
+                route_id INTEGER NOT NULL,
+                route INTEGER[] NOT NULL,
+                PRIMARY KEY (src_node_id, dst_node_id, route_id)
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to recreate routes table");
+
+        sqlx::query(
+            r#"
+            CREATE TABLE metrics (
+                id SERIAL PRIMARY KEY,
+                src_id INTEGER,
+                dst_id INTEGER,
+                route_id INTEGER,
+                prev_hop_id INTEGER,
+                hop_id INTEGER,
+                flow_id BYTEA,
+                -- stream_id TEXT,
+                time_read TIMESTAMP,
+                bps INTEGER
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("Failed to recreate metrics table");
     } else {
         // the nodes table will always be reset
         sqlx::query("TRUNCATE TABLE nodes")
