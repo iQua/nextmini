@@ -66,7 +66,7 @@ services:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
@@ -89,7 +89,7 @@ services:
       - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
@@ -111,7 +111,7 @@ services:
       - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node4:
     container_name: node4
@@ -133,4 +133,4 @@ services:
       - node3
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && ./var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
