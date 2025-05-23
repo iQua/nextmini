@@ -58,7 +58,10 @@ RUN apk update && \
   net-tools \
   iputils-ping \
   iperf3 \
-  openssl
+  openssl \
+  openmpi
+
+RUN ssh-keygen -A
 
 ENV RUST_LOG=info
 WORKDIR /var/nextmini
