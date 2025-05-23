@@ -51,4 +51,4 @@ COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
 COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem
 COPY --from=build /var/nextmini/server_key.pem /var/nextmini/server_key.pem
 
-WORKDIR /var/nextmini/pytorch
+WORKDIR /var/nextmini
