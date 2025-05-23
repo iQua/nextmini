@@ -25,47 +25,53 @@ impl Packet {
         }
     }
 
+
     fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
         // Check if it's an IPv4 packet
         if buf.len() < 20 || buf[0] >> 4 != 4 {
-            // Fallback to old behavior for non-IPv4 packets
+            // Fallback to old behavior for non-IPv4 packets - convert to 128-bit
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
-            return cursor.read_u64::<BigEndian>().unwrap_or(0);
+            let old_flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
+            return old_flow_id as u128;
         }
 
-        // Extract source and destination IP addresses (8 bytes total)
+        // Extract source and destination IP addresses
         let src_ip = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
         let dst_ip = u32::from_be_bytes([buf[16], buf[17], buf[18], buf[19]]);
-        
+
         // Extract IHL to determine start of transport header
         let ihl = (buf[0] & 0x0F) as usize;
         let transport_header_start = 4 * ihl;
-        
+
         let (src_port, dst_port) = if buf.len() >= transport_header_start + 4 {
             match buf[9] {
                 6 | 17 => {
                     // TCP (6) or UDP (17) - both have ports at same offset
-                    let src_port = u16::from_be_bytes([buf[transport_header_start], buf[transport_header_start + 1]]);
-                    let dst_port = u16::from_be_bytes([buf[transport_header_start + 2], buf[transport_header_start + 3]]);
+                    let src_port = u16::from_be_bytes([
+                        buf[transport_header_start],
+                        buf[transport_header_start + 1],
+                    ]);
+                    let dst_port = u16::from_be_bytes([
+                        buf[transport_header_start + 2],
+                        buf[transport_header_start + 3],
+                    ]);
                     (src_port, dst_port)
                 }
-                _ => (0, 0) // Other protocols
+                _ => (0, 0), // Other protocols
             }
         } else {
             (0, 0) // Not enough data
         };
 
-        // Pack 4-tuple into 64-bit flow_id: src_ip(32) + dst_ip(16) + src_port(8) + dst_port(8)
-        ((src_ip as u64) << 32) | 
-        ((dst_ip as u64 & 0xFFFF) << 16) | 
-        ((src_port as u64 & 0xFF) << 8) | 
-        (dst_port as u64 & 0xFF)
+        // Pack complete 4-tuple into 128-bit flow_id without compression:
+        // src_ip(32) + dst_ip(32) + src_port(16) + dst_port(16) + reserved(32)
+        ((src_ip as u128) << 96)
+            | ((dst_ip as u128) << 64)
+            | ((src_port as u128) << 48)
+            | ((dst_port as u128) << 32)
     }
 
-    pub fn update_route(&mut self, path_id: u8) {
-        self.buf[14] = path_id;
-        self.flow_id += (path_id as u64) << 40;
-    }
+
 
     // pub fn try_set_stream_id(&mut self) {
     //     // Check the minimum length for IPv4 header + TCP header
@@ -117,15 +123,32 @@ impl Packet {
 }
 
 pub fn json_byte_array_to_flow_id(flow_id: &Value) -> FlowId {
-    let mut bytes: [u8; 8] = [0; 8];
-
-    for i in 0..8 {
-        bytes[i] = flow_id[i]
-            .as_u64()
-            .expect("Invalid flow_id field in JSON object, expected u8") as u8;
+    // Handle both 8-byte (old format) and 16-byte (new format) arrays
+    if let Some(array) = flow_id.as_array() {
+        if array.len() == 16 {
+            // New 16-byte format for 128-bit flow_id
+            let mut bytes: [u8; 16] = [0; 16];
+            for i in 0..16 {
+                bytes[i] = array[i]
+                    .as_u64()
+                    .expect("Invalid flow_id field in JSON object, expected u8") as u8;
+            }
+            let mut cursor = Cursor::new(&bytes);
+            cursor.read_u128::<BigEndian>().unwrap()
+        } else if array.len() == 8 {
+            // Legacy 8-byte format - convert to 128-bit
+            let mut bytes: [u8; 8] = [0; 8];
+            for i in 0..8 {
+                bytes[i] = array[i]
+                    .as_u64()
+                    .expect("Invalid flow_id field in JSON object, expected u8") as u8;
+            }
+            let mut cursor = Cursor::new(&bytes);
+            cursor.read_u64::<BigEndian>().unwrap() as u128
+        } else {
+            0u128
+        }
+    } else {
+        0u128
     }
-
-    let mut cursor = Cursor::new(&bytes);
-
-    cursor.read_u64::<BigEndian>().unwrap()
 }

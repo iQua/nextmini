@@ -16,7 +16,7 @@ use crate::dataplane::protocols_io::{
 use crate::dataplane::scheduler::SchedulingDiscipline;
 use crate::dataplane::scheduler::{Fifo, Scheduler};
 use crate::dataplane::utils::RateLimiter;
-use crate::dataplane::{INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
+use crate::dataplane::{FlowId, INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
 
 pub fn create_tcp_node_interfaces(
     stream: TcpStream,
@@ -110,7 +110,7 @@ impl NodeReceiver {
         }
     }
 
-    async fn record_metrics(&self, flow_id: u64, n_bytes: usize, metrics_tx: MetricsTx) {
+    async fn record_metrics(&self, flow_id: FlowId, n_bytes: usize, metrics_tx: MetricsTx) {
         // metrics reported are in the format of (flow_id, node_id, n_bytes)
         metrics_tx
             .send((flow_id, self.remote_node_id, n_bytes))

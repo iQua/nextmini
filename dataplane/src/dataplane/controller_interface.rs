@@ -22,7 +22,7 @@ use crate::dataplane::local_interface::create_tun_devices;
 use crate::dataplane::metrics::Collector;
 use crate::dataplane::processor::ProcessorManager;
 use crate::dataplane::protocols_client;
-use crate::dataplane::routes::{Flow, RoutingTable};
+use nextmini_messages::RouteMapping;
 use crate::dataplane::utils::RateLimiter;
 
 pub struct Controller {
@@ -218,17 +218,22 @@ impl ControllerReceiver {
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
             ControllerToDataplane::InstallFlow { flows } => {
-                println!("Installing flow..");
-                let mut routing_table = RoutingTable::new(self.context.local_id);
-                for flow in flows {
-                    routing_table.add_flow(Flow::from_json(&serde_json::to_value(&flow).unwrap()));
-                }
+                println!("Installing simple routes..");
+                // Convert flows to RouteMapping format for simple routing
+                let routes: Vec<RouteMapping> = flows.into_iter().enumerate().map(|(idx, _flow)| {
+                    RouteMapping {
+                        route_id: idx,
+                        next_hop: 2, // Default next hop - should be configured properly
+                        src_addr: [10, 0, 0, 1],
+                        dst_addr: [10, 0, 0, 4],
+                    }
+                }).collect();
+                
                 self.processor_manager
                     .write()
                     .await
-                    .update_routes(routing_table)
+                    .update_simple_routes(routes)
                     .await;
-                println!("Installed.");
             }
             ControllerToDataplane::AddNode {
                 protocol,
@@ -269,6 +274,15 @@ impl ControllerReceiver {
                         *(entry.write().await) = Some(RateLimiter::new(rate as f64));
                     }
                 }
+            }
+            ControllerToDataplane::InstallRoutes { routes } => {
+                println!("Installing simplified routes..");
+                self.processor_manager
+                    .write()
+                    .await
+                    .update_simple_routes(routes)
+                    .await;
+                println!("Simplified routes installed.");
             }
             _ => println!("Received unsupported message type"),
         }

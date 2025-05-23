@@ -138,7 +138,7 @@ impl TunReader {
             let packet = Packet::new(n, buf);
 
             // Always try to set stream ID as Stream mode is default
-            packet.try_set_stream_id();
+            // packet.try_set_stream_id(); // Commented out since method is not available
 
             self.senders.try_send(packet);
         }

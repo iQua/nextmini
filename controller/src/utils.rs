@@ -1,7 +1,7 @@
 /// Implements utility functions for the controller.
 use std::collections::HashMap;
 
-use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RouteInfo};
+use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RouteInfo, RouteMapping};
 
 use crate::config::Config;
 use crate::models::Route;
@@ -79,6 +79,7 @@ pub fn build_add_node_message(
     }
 }
 
+#[allow(dead_code)]
 pub fn build_install_routes_message(
     config: &Config,
     routes: Vec<Route>,
@@ -111,13 +112,13 @@ pub fn build_install_routes_message(
             .collect::<Vec<_>>()
             .join(".");
 
-        let idx = route.hops.iter().position(|&x| x == node_id);
+        let idx = route.route.iter().position(|&x| x == node_id);
 
         let next_hop = match idx {
             // the node is the destination of the flow
-            Some(i) if i == route.hops.len() - 1 => route.hops[i] as usize,
+            Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
             // the node is in the middle of the path
-            Some(i) => route.hops[i + 1] as usize,
+            Some(i) => route.route[i + 1] as usize,
             // the flow is not part of this path; this node will be skipped
             None => continue,
         };
@@ -165,6 +166,64 @@ pub fn build_install_routes_message(
         None
     } else {
         Some(ControllerToDataplane::InstallFlow { flows })
+    }
+}
+
+/// Builds a simplified InstallRoutes message for a specific node.
+/// This creates a direct mapping from route_id to next_hop for the dataplane.
+pub fn build_install_routes_simple(
+    config: &Config,
+    routes: Vec<Route>,
+    node_id: i32,
+) -> Option<ControllerToDataplane> {
+    let mut route_mappings: Vec<RouteMapping> = Vec::new();
+
+    for route in routes {
+        // Find the position of this node in the route
+        let idx = route.route.iter().position(|&x| x == node_id);
+
+        let next_hop = match idx {
+            // The node is the destination of the route - next hop is itself
+            Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
+            // The node is in the middle of the path - next hop is the next node
+            Some(i) => route.route[i + 1] as usize,
+            // The route doesn't pass through this node - skip it
+            None => continue,
+        };
+
+        // Compute virtual addresses for src and dst
+        let src_addr = match create_new_virtual_addr(
+            config.base_ipv4_addr,
+            config.ipv4_net_mask,
+            route.src_node_id as usize,
+        ) {
+            Some(addr) => addr,
+            None => continue, // Skip this route if we can't create virtual address
+        };
+
+        let dst_addr = match create_new_virtual_addr(
+            config.base_ipv4_addr,
+            config.ipv4_net_mask,
+            route.dst_node_id as usize,
+        ) {
+            Some(addr) => addr,
+            None => continue, // Skip this route if we can't create virtual address
+        };
+
+        route_mappings.push(RouteMapping {
+            route_id: route.route_id as usize,
+            next_hop,
+            src_addr,
+            dst_addr,
+        });
+    }
+
+    if route_mappings.is_empty() {
+        None
+    } else {
+        Some(ControllerToDataplane::InstallRoutes {
+            routes: route_mappings,
+        })
     }
 }
 
@@ -258,14 +317,14 @@ mod tests {
                 src_node_id: 0,
                 dst_node_id: 4,
                 route_id: 0,
-                hops: vec![0, 1, 2, 3, 4],
+                route: vec![0, 1, 2, 3, 4],
                 // streams: Some("[]".to_string()),
             },
             Route {
                 src_node_id: 0,
                 dst_node_id: 4,
                 route_id: 1,
-                hops: vec![0, 1, 2, 5, 4],
+                route: vec![0, 1, 2, 5, 4],
                 // streams: Some("[]".to_string()),
             },
         ];

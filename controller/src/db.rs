@@ -13,7 +13,7 @@ use sqlx::{Pool, Postgres};
 use crate::WebSocketWriter;
 use crate::config;
 use crate::models::Route;
-use crate::utils::build_install_routes_message;
+use crate::utils::build_install_routes_simple;
 
 pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     // connects to the PostgreSQL database
@@ -53,8 +53,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
             route_id INTEGER NOT NULL,
-            hops INTEGER[] NOT NULL,
-            streams TEXT,
+            route INTEGER[] NOT NULL,
             PRIMARY KEY (src_node_id, dst_node_id, route_id)
         )
         "#,
@@ -72,7 +71,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             route_id INTEGER,
             prev_hop_id INTEGER,
             hop_id INTEGER,
-            flow_id INTEGER[],
+            flow_id BYTEA,
             -- stream_id TEXT,
             time_read TIMESTAMP,
             bps INTEGER
@@ -117,23 +116,21 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                                 src_node_id: i as i32,
                                 dst_node_id: j as i32,
                                 route_id: *id as i32,
-                                hops: vec![i as i32, j as i32],
-                                // streams: Some("[]".to_string()),
+                                route: vec![i as i32, j as i32],
                             };
 
                             sqlx::query(
                                 r#"
-                                INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-                                VALUES ($1, $2, $3, $4, $5)
+                                INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
+                                VALUES ($1, $2, $3, $4)
                                 ON CONFLICT (src_node_id, dst_node_id, route_id)
-                                DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
+                                DO UPDATE SET route = EXCLUDED.route
                                 "#
                             )
                             .bind(route.src_node_id)
                             .bind(route.dst_node_id)
                             .bind(route.route_id)
-                            .bind(&route.hops)
-                            // .bind(&route.streams)
+                            .bind(&route.route)
                             .execute(&pool)
                             .await
                             .expect("Failed to insert full mesh route");
@@ -149,22 +146,20 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                             src_node_id: i as i32,
                             dst_node_id: j as i32,
                             route_id: *id as i32,
-                            hops: vec![i as i32, j as i32],
-                            // streams: Some("[]".to_string()),
+                            route: vec![i as i32, j as i32],
                         };
                         sqlx::query(
                             r#"
-                            INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-                            VALUES ($1, $2, $3, $4, $5)
+                            INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
+                            VALUES ($1, $2, $3, $4)
                             ON CONFLICT (src_node_id, dst_node_id, route_id)
-                            DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
+                            DO UPDATE SET route = EXCLUDED.route
                             "#,
                         )
                         .bind(route.src_node_id)
                         .bind(route.dst_node_id)
                         .bind(route.route_id)
-                        .bind(&route.hops)
-                        // .bind(&route.streams)
+                        .bind(&route.route)
                         .execute(&pool)
                         .await
                         .expect("Failed to insert ring route");
@@ -174,23 +169,21 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         src_node_id: n_nodes as i32,
                         dst_node_id: 1,
                         route_id: *id as i32,
-                        hops: vec![n_nodes as i32, 1],
-                        // streams: Some("[]".to_string()),
+                        route: vec![n_nodes as i32, 1],
                     };
 
                     sqlx::query(
                         r#"
-                        INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-                        VALUES ($1, $2, $3, $4, $5)
+                        INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
+                        VALUES ($1, $2, $3, $4)
                         ON CONFLICT (src_node_id, dst_node_id, route_id)
-                        DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
+                        DO UPDATE SET route = EXCLUDED.route
                         "#,
                     )
                     .bind(route.src_node_id)
                     .bind(route.dst_node_id)
                     .bind(route.route_id)
-                    .bind(&route.hops)
-                    // .bind(&route.streams)
+                    .bind(&route.route)
                     .execute(&pool)
                     .await
                     .expect("Failed to insert ring closure route");
@@ -202,22 +195,19 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     // adds initial routes from the configuration file
     println!("Adding initial routes from the configuration file.");
 
-    for mut route in config.routes.clone() {
-        // route.streams = Some(route.streams.unwrap_or_else(|| "[]".to_string()));
-
+    for route in config.routes.clone() {
         sqlx::query(
             r#"
-            INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (src_node_id, dst_node_id, route_id)
-            DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
+            DO UPDATE SET route = EXCLUDED.route
             "#,
         )
         .bind(route.src_node_id as i32)
         .bind(route.dst_node_id as i32)
         .bind(route.route_id as i32)
-        .bind(route.hops.iter().map(|&x| x as i32).collect::<Vec<_>>())
-        // .bind(&route.streams)
+        .bind(route.route.iter().map(|&x| x as i32).collect::<Vec<_>>())
         .execute(&pool)
         .await
         .expect("Failed to insert initial route");
@@ -240,7 +230,7 @@ pub async fn setup_notification(
         CREATE OR REPLACE FUNCTION notify_trigger_function()
         RETURNS TRIGGER AS $$
         BEGIN
-            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '","route_id":"'|| NEW.route_id || '","hops":"' || array_to_string(NEW.hops, ',') || '","streams":"'|| NEW.streams || '"}');
+            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '","route_id":"'|| NEW.route_id || '","route":"' || array_to_string(NEW.route, ',') || '"}');
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -325,7 +315,7 @@ pub async fn setup_notification(
                         let node_ws_guard = node_ws.read().await;
 
                         for (node_id, ws_arc) in node_ws_guard.iter() {
-                            if let Some(msg) = build_install_routes_message(
+                            if let Some(msg) = build_install_routes_simple(
                                 &config,
                                 routes.clone(),
                                 *node_id as i32,

@@ -14,9 +14,10 @@ use crate::dataplane::INTERNAL_Q_SIZE;
 use crate::dataplane::local_interface::TunWriter;
 use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
-use crate::dataplane::routes::RoutingTable;
+use crate::dataplane::routes::SimpleRoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
 use crate::dataplane::NodeId;
+use nextmini_messages::RouteMapping;
 
 pub struct ProcessorManager {
     context: Context,
@@ -25,13 +26,13 @@ pub struct ProcessorManager {
     receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
     // stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
     // stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
-    pub routing_table: RoutingTable,
+    pub simple_routing_table: SimpleRoutingTable,
 }
 
 impl ProcessorManager {
     pub fn new(context: Context, mut receiver_rxs: Vec<mpsc::Receiver<Packet>>) -> Self {
         let mut rxs = VecDeque::new();
-        let routing_table = RoutingTable::new(context.local_id);
+        let simple_routing_table = SimpleRoutingTable::new(context.local_id);
         for _ in 0..receiver_rxs.len() {
             let rx = receiver_rxs.pop().unwrap();
             rxs.push_back(Arc::new(RwLock::new(rx)));
@@ -43,21 +44,14 @@ impl ProcessorManager {
             receiver_rxs: rxs,
             // stream2routes: Arc::new(RwLock::new(FxHashMap::default())),
             // stream_counters: Arc::new(RwLock::new(FxHashMap::default())),
-            routing_table,
+            simple_routing_table,
         }
     }
 
-    pub async fn update_routes(&mut self, routing_table: RoutingTable) {
-        self.routing_table.merge(routing_table);
-        // Update the routing table with local stream assignments
-        // let stream2routes = self.stream2routes.read().await;
-        // for (key, path_id) in stream2routes.iter() {
-        //     if self.routing_table.get_path_id(&key.0, &key.1).is_none() {
-        //         self.routing_table
-        //             .insert_stream_mapping(key.0, key.1, *path_id);
-        //     }
-        // }
-        // drop(stream2routes);
+
+
+    pub async fn update_simple_routes(&mut self, routes: Vec<RouteMapping>) {
+        self.simple_routing_table.install_routes(routes);
         self.swap_processors().await;
     }
 
@@ -83,7 +77,7 @@ impl ProcessorManager {
             let shutdown_flag = Arc::new(AtomicBool::new(false));
 
             let flg = shutdown_flag.clone();
-            let table = self.routing_table.clone();
+            let simple_table = self.simple_routing_table.clone();
             let senders = self.context.reproduce_senders().await;
             let tun_writers = self.context.get_tun_writers(i).await;
             // let stream2routes = self.stream2routes.clone();
@@ -92,7 +86,7 @@ impl ProcessorManager {
             let handle = tokio::task::spawn(async move {
                 let mut proc = Processor::new(
                     receiver_rx,
-                    table,
+                    simple_table,
                     senders,
                     tun_writers,
                     flg,
@@ -118,14 +112,14 @@ impl ProcessorManager {
     }
 }
 
-const FLOW_ID_IF_MASK: u64 = 0x00000000_0000FF00;
+
 
 pub struct Processor {
     // The channel receiver to obtain packets from NodeReceiver or TUN reader
     receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
 
-    // The routing table
-    routing_table: RoutingTable,
+    // The simplified routing table
+    simple_routing_table: SimpleRoutingTable,
 
     // The senders that send packets to the network
     senders: FxHashMap<NodeId, NodeSender>,
@@ -150,7 +144,7 @@ pub struct Processor {
 impl Processor {
     pub fn new(
         receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
-        routing_table: RoutingTable,
+        simple_routing_table: SimpleRoutingTable,
         senders: FxHashMap<NodeId, NodeSender>,
         tun_writers: Vec<TunWriter>,
         should_shutdown: Arc<AtomicBool>,
@@ -158,7 +152,7 @@ impl Processor {
     ) -> Self {
         Self {
             receiver_rx,
-            routing_table,
+            simple_routing_table,
             senders,
             tun_writers,
             should_shutdown,
@@ -240,25 +234,25 @@ impl Processor {
                 self.metrics_tx
                     .send((
                         packet.flow_id,
-                        self.routing_table.local_id,
+                        self.simple_routing_table.local_id,
                         packet.packet_size,
                     ))
                     .expect("Failed to send metrics to the metrics collector.");
 
                 // Find the next hop and send the packet
-                if let Some(next_hop) = self.routing_table.next_hop(&packet.flow_id) {
-                    // Sending out the packet
-                    if *next_hop == self.routing_table.local_id {
-                        // We must select the correct interface with the correct interface id
-                        // e.g. For addr flow_id 0A0000010A000202 (10,0,0,1 to 10.0.2.2):
-                        // 0A0000010A000202 * FLOW_ID_IFMASK >> 8 = 0000000000000200 >> 8 = 2
-                        let if_id = (packet.flow_id & FLOW_ID_IF_MASK) >> 8;
+                let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
 
-                        self.tun_writers.get_mut(if_id as usize)
-                            .unwrap_or_else(|| panic!("Destination interface {if_id} doesn't exist. Hint: check if the number of paths configured and set are consistent."))
-                            .write_packet(packet).await;
+                if let Some(next_hop) = next_hop {
+                    // Sending out the packet
+                    if next_hop == self.simple_routing_table.local_id {
+                        // Local delivery - use the first available TUN interface
+                        if let Some(writer) = self.tun_writers.get_mut(0) {
+                            writer.write_packet(packet).await;
+                        } else {
+                            println!("No TUN interface available for local delivery");
+                        }
                     } else {
-                        match self.senders.get_mut(next_hop) {
+                        match self.senders.get_mut(&next_hop) {
                             Some(sender) => {
                                 sender.send(packet).await;
                             }

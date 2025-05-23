@@ -17,7 +17,7 @@ use crate::config::{Config, get_config};
 use crate::db::init_db;
 use crate::models::{Node, Route};
 use crate::utils::{
-    build_add_node_message, build_install_routes_message, build_startup_message,
+    build_add_node_message, build_install_routes_simple, build_startup_message,
     create_new_virtual_addr, flow_id_2_src_dst_route_id,
 };
 
@@ -428,7 +428,7 @@ async fn handle_connection(
                         };
 
                         if let Some(msg) =
-                            build_install_routes_message(&config, routes, node_id as i32)
+                            build_install_routes_simple(&config, routes, node_id as i32)
                         {
                             match write_arc
                                 .lock()
@@ -436,9 +436,9 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => println!("Sent InstallFlow message to node {}", node_id),
+                                Ok(_) => println!("Sent InstallRoutes message to node {}", node_id),
                                 Err(e) => println!(
-                                    "Error: Failed to send InstallFlow message to node {}: {}",
+                                    "Error: Failed to send InstallRoutes message to node {}: {}",
                                     node_id, e
                                 ),
                             }

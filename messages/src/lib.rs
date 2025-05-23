@@ -52,6 +52,9 @@ pub enum ControllerToDataplane {
     InstallFlow {
         flows: Vec<Flow>,
     },
+    InstallRoutes {
+        routes: Vec<RouteMapping>,
+    },
     SetLinkRate {
         node_id: usize,
         rate: usize,
@@ -69,4 +72,12 @@ pub struct RouteInfo {
     pub id: usize,
     pub next_hop: usize,
     // pub streams: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Debug)]
+pub struct RouteMapping {
+    pub route_id: usize,
+    pub next_hop: usize,
+    pub src_addr: [u8; 4],
+    pub dst_addr: [u8; 4],
 }

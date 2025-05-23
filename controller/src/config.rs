@@ -14,7 +14,7 @@ pub struct Route {
     pub src_node_id: usize,
     #[serde(default)]
     pub dst_node_id: usize,
-    pub hops: Vec<usize>,
+    pub route: Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -183,20 +183,20 @@ pub fn get_config(filename: &str) -> Config {
                             route.route_id, index
                         );
 
-                        // If src_node_id is not set and hops is not empty, use first element of hops
-                        if route.src_node_id == 0 && !route.hops.is_empty() {
-                            route.src_node_id = route.hops[0];
+                        // If src_node_id is not set and route is not empty, use first element of route
+                        if route.src_node_id == 0 && !route.route.is_empty() {
+                            route.src_node_id = route.route[0];
                             println!(
-                                "Auto-inferring src_node_id as {} from the hops array for route_id {}",
+                                "Auto-inferring src_node_id as {} from the route array for route_id {}",
                                 route.src_node_id, route.route_id
                             );
                         }
 
-                        // If dst_node_id is not set and hops is not empty, use last element of hops
-                        if route.dst_node_id == 0 && !route.hops.is_empty() {
-                            route.dst_node_id = route.hops[route.hops.len() - 1];
+                        // If dst_node_id is not set and route is not empty, use last element of route
+                        if route.dst_node_id == 0 && !route.route.is_empty() {
+                            route.dst_node_id = route.route[route.route.len() - 1];
                             println!(
-                                "Auto-inferring dst_node_id as {} from the hops array for route_id {}",
+                                "Auto-inferring dst_node_id as {} from the route array for route_id {}",
                                 route.dst_node_id, route.route_id
                             );
                         }
@@ -242,5 +242,123 @@ impl Default for Config {
             reset_db: false,
             db: default_db_config(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_example_config_parsing() {
+        let toml_content = r#"
+reset_db = true
+protocol = "quic"
+
+[[routes]]
+route = [1, 2, 3, 4]
+
+[[routes]]
+route = [1, 3, 2, 4]
+
+[[routes]]
+route = [1, 3, 4]
+"#;
+
+        let mut config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
+
+        // Test basic config values
+        assert_eq!(config.reset_db, true);
+        assert_eq!(config.protocol, Protocol::Quic);
+
+        // Test that we have 3 routes
+        assert_eq!(config.routes.len(), 3);
+
+        // Simulate route processing logic from get_config
+        for (index, route) in config.routes.iter_mut().enumerate() {
+            route.route_id = index;
+
+            // Auto-infer src_node_id and dst_node_id like in get_config
+            if route.src_node_id == 0 && !route.route.is_empty() {
+                route.src_node_id = route.route[0];
+            }
+            if route.dst_node_id == 0 && !route.route.is_empty() {
+                route.dst_node_id = route.route[route.route.len() - 1];
+            }
+        }
+
+        // Verify route 0: [1, 2, 3, 4]
+        assert_eq!(config.routes[0].route_id, 0);
+        assert_eq!(config.routes[0].src_node_id, 1);
+        assert_eq!(config.routes[0].dst_node_id, 4);
+        assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
+
+        // Verify route 1: [1, 3, 2, 4]
+        assert_eq!(config.routes[1].route_id, 1);
+        assert_eq!(config.routes[1].src_node_id, 1);
+        assert_eq!(config.routes[1].dst_node_id, 4);
+        assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
+
+        // Verify route 2: [1, 3, 4]
+        assert_eq!(config.routes[2].route_id, 2);
+        assert_eq!(config.routes[2].src_node_id, 1);
+        assert_eq!(config.routes[2].dst_node_id, 4);
+        assert_eq!(config.routes[2].route, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn test_route_processing_logic() {
+        // Test the route processing logic that happens in get_config
+        let config_content = r#"
+reset_db = true
+protocol = "quic"
+base_ipv4_addr = [10, 0, 0, 0]
+ipv4_net_mask = [255, 255, 255, 0]
+
+[[routes]]
+route = [1, 2, 3, 4]
+
+[[routes]]
+route = [1, 3, 2, 4]
+
+[[routes]]
+route = [1, 3, 4]
+"#;
+
+        let mut config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Simulate the route processing logic from get_config
+        for (index, route) in config.routes.iter_mut().enumerate() {
+            route.route_id = index;
+
+            // Auto-infer src_node_id and dst_node_id like in get_config
+            if route.src_node_id == 0 && !route.route.is_empty() {
+                route.src_node_id = route.route[0];
+            }
+            if route.dst_node_id == 0 && !route.route.is_empty() {
+                route.dst_node_id = route.route[route.route.len() - 1];
+            }
+        }
+
+        // Verify basic configuration
+        assert_eq!(config.reset_db, true);
+        assert_eq!(config.protocol, Protocol::Quic);
+        assert_eq!(config.base_ipv4_addr, [10, 0, 0, 0]);
+        assert_eq!(config.ipv4_net_mask, [255, 255, 255, 0]);
+
+        // Verify routes were processed correctly
+        assert_eq!(config.routes.len(), 3);
+
+        // Verify route processing (route_id assignment and src/dst inference)
+        for (index, route) in config.routes.iter().enumerate() {
+            assert_eq!(route.route_id, index);
+            assert_eq!(route.src_node_id, 1); // Should be auto-inferred from first element
+            assert_eq!(route.dst_node_id, 4); // Should be auto-inferred from last element
+        }
+
+        // Verify specific route paths
+        assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
+        assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
+        assert_eq!(config.routes[2].route, vec![1, 3, 4]);
     }
 }

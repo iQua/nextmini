@@ -34,30 +34,41 @@ const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 /// used throughout the dataplane implementation
 const INTERNAL_Q_SIZE: usize = 10000;
 
-/// The third element in the destination address is ignored since it determines the interface only.
-const FLOW_ID_PATH_MASK: u64 = 0xFFFFFFFF_FFFF00FF;
 
-/// The flow ID.
-pub type FlowId = u64;
 
-/// Defines the extension trait for extracting the source and destination IP addresses from FlowId
+/// The flow ID - 128-bit to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16) + dst_port(16) + reserved(32)
+pub type FlowId = u128;
+
+/// Defines the extension trait for extracting the 4-tuple components from FlowId
 pub trait FlowIdExt {
     fn src_addr(&self) -> Ipv4Addr;
     fn dest_addr(&self) -> Ipv4Addr;
+    fn src_port(&self) -> u16;
+    fn dest_port(&self) -> u16;
 }
 
-/// Implements the trait for FlowId, which is of u64 type
-impl FlowIdExt for u64 {
+/// Implements the trait for FlowId, which is of u128 type
+impl FlowIdExt for u128 {
     fn src_addr(&self) -> Ipv4Addr {
-        // Extract upper 32 bits (source IP) by shifting right 32 bits
-        let src_u32 = (self >> 32) as u32;
+        // Extract bits 96-127 (source IP) by shifting right 96 bits
+        let src_u32 = (self >> 96) as u32;
         Ipv4Addr::from(src_u32)
     }
 
     fn dest_addr(&self) -> Ipv4Addr {
-        // Extract lower 32 bits (destination IP) by masking with 0xFFFFFFFF
-        let dest_u32 = (self & 0xFFFFFFFF) as u32;
+        // Extract bits 64-95 (destination IP)
+        let dest_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
         Ipv4Addr::from(dest_u32)
+    }
+
+    fn src_port(&self) -> u16 {
+        // Extract bits 48-63 (source port)
+        ((self >> 48) & 0xFFFF) as u16
+    }
+
+    fn dest_port(&self) -> u16 {
+        // Extract bits 32-47 (destination port)
+        ((self >> 32) & 0xFFFF) as u16
     }
 }
 
