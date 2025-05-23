@@ -73,7 +73,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             prev_hop_id INTEGER,
             hop_id INTEGER,
             flow_id INTEGER[],
-            stream_id TEXT,
+            -- stream_id TEXT,
             time_read TIMESTAMP,
             bps INTEGER
         )

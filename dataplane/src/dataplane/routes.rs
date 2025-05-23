@@ -4,23 +4,23 @@ use serde_json::Value;
 use crate::dataplane::FLOW_ID_PATH_MASK;
 use crate::dataplane::FlowId;
 use crate::dataplane::NodeId;
-use crate::dataplane::SocketId;
+
 use crate::dataplane::packet::json_byte_array_to_flow_id;
 
 #[derive(Clone)]
 pub struct Route {
     next_hop: NodeId,
     id: u8,
-    streams: Vec<SocketId>,
+    // streams: Vec<SocketId>,
 }
 
 #[allow(unused)]
 impl Route {
-    pub fn new(next_hop: NodeId, id: u8, streams: Vec<SocketId>) -> Self {
+    pub fn new(next_hop: NodeId, id: u8) -> Self {
         Self {
             next_hop,
             id,
-            streams,
+            // streams,
         }
     }
 
@@ -51,7 +51,7 @@ impl Route {
                 .as_u64()
                 .expect("Invalid route id field in JSON object, expected usize")
                 as u8,
-            streams,
+            // streams,
         }
     }
 
@@ -89,7 +89,7 @@ impl Flow {
 
 #[derive(Clone)]
 pub struct RoutingTable {
-    stream_mapping: FxHashMap<(FlowId, SocketId), u8>,
+    // stream_mapping: FxHashMap<(FlowId, SocketId), u8>,
     next_hop: FxHashMap<FlowId, NodeId>,
     n_routes: FxHashMap<FlowId, usize>,
     pub local_id: NodeId,
@@ -98,7 +98,7 @@ pub struct RoutingTable {
 impl RoutingTable {
     pub fn new(local_id: NodeId) -> RoutingTable {
         RoutingTable {
-            stream_mapping: FxHashMap::default(),
+            // stream_mapping: FxHashMap::default(),
             next_hop: FxHashMap::default(),
             n_routes: FxHashMap::default(),
             local_id,
@@ -115,9 +115,9 @@ impl RoutingTable {
         for (flow_id, n_routes) in routing_table.n_routes {
             self.n_routes.insert(flow_id, n_routes);
         }
-        for (flow_id, route_id) in routing_table.stream_mapping {
-            self.stream_mapping.insert(flow_id, route_id);
-        }
+        // for (flow_id, route_id) in routing_table.stream_mapping {
+        //     self.stream_mapping.insert(flow_id, route_id);
+        // }
     }
 
     pub fn add_flow(&mut self, flow: Flow) {
@@ -134,9 +134,9 @@ impl RoutingTable {
                 .insert(flow_route_id & FLOW_ID_PATH_MASK, route.next_hop);
             self.n_routes
                 .insert(flow_id & FLOW_ID_PATH_MASK, flow.routes.len());
-            for stream in route.streams {
-                self.stream_mapping.insert((flow_id, stream), route.id);
-            }
+            // for stream in route.streams {
+            //     self.stream_mapping.insert((flow_id, stream), route.id);
+            // }
         }
     }
 
@@ -147,13 +147,13 @@ impl RoutingTable {
             .unwrap_or(1)
     }
 
-    pub fn get_path_id(&self, flow_id: &FlowId, stream_id: &SocketId) -> Option<u8> {
-        self.stream_mapping.get(&(*flow_id, *stream_id)).copied()
-    }
+    // pub fn get_path_id(&self, flow_id: &FlowId, stream_id: &SocketId) -> Option<u8> {
+    //     self.stream_mapping.get(&(*flow_id, *stream_id)).copied()
+    // }
 
-    pub fn insert_stream_mapping(&mut self, flow_id: FlowId, stream_id: SocketId, route_id: u8) {
-        self.stream_mapping.insert((flow_id, stream_id), route_id);
-    }
+    // pub fn insert_stream_mapping(&mut self, flow_id: FlowId, stream_id: SocketId, route_id: u8) {
+    //     self.stream_mapping.insert((flow_id, stream_id), route_id);
+    // }
 
     pub fn next_hop(&self, flow_id: &FlowId) -> Option<&NodeId> {
         self.next_hop.get(&(*flow_id & FLOW_ID_PATH_MASK))

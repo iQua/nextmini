@@ -111,9 +111,9 @@ impl NodeReceiver {
     }
 
     async fn record_metrics(&self, flow_id: u64, n_bytes: usize, metrics_tx: MetricsTx) {
-        // metrics reported are in the format of (flow_id, stream_id, node_id, n_bytes)
+        // metrics reported are in the format of (flow_id, node_id, n_bytes)
         metrics_tx
-            .send((flow_id, (0, 0), self.remote_node_id, n_bytes))
+            .send((flow_id, self.remote_node_id, n_bytes))
             .expect("Failed to send metrics");
     }
 }

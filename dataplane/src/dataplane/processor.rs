@@ -16,15 +16,15 @@ use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::RoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
-use crate::dataplane::{NodeId, SocketId};
+use crate::dataplane::NodeId;
 
 pub struct ProcessorManager {
     context: Context,
     proc_handles: VecDeque<tokio::task::JoinHandle<()>>,
     proc_shutdown_flags: VecDeque<Arc<AtomicBool>>,
     receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
-    stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-    stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
+    // stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
+    // stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
     pub routing_table: RoutingTable,
 }
 
@@ -41,8 +41,8 @@ impl ProcessorManager {
             proc_handles: VecDeque::new(),
             proc_shutdown_flags: VecDeque::new(),
             receiver_rxs: rxs,
-            stream2routes: Arc::new(RwLock::new(FxHashMap::default())),
-            stream_counters: Arc::new(RwLock::new(FxHashMap::default())),
+            // stream2routes: Arc::new(RwLock::new(FxHashMap::default())),
+            // stream_counters: Arc::new(RwLock::new(FxHashMap::default())),
             routing_table,
         }
     }
@@ -50,14 +50,14 @@ impl ProcessorManager {
     pub async fn update_routes(&mut self, routing_table: RoutingTable) {
         self.routing_table.merge(routing_table);
         // Update the routing table with local stream assignments
-        let stream2routes = self.stream2routes.read().await;
-        for (key, path_id) in stream2routes.iter() {
-            if self.routing_table.get_path_id(&key.0, &key.1).is_none() {
-                self.routing_table
-                    .insert_stream_mapping(key.0, key.1, *path_id);
-            }
-        }
-        drop(stream2routes);
+        // let stream2routes = self.stream2routes.read().await;
+        // for (key, path_id) in stream2routes.iter() {
+        //     if self.routing_table.get_path_id(&key.0, &key.1).is_none() {
+        //         self.routing_table
+        //             .insert_stream_mapping(key.0, key.1, *path_id);
+        //     }
+        // }
+        // drop(stream2routes);
         self.swap_processors().await;
     }
 
@@ -86,8 +86,8 @@ impl ProcessorManager {
             let table = self.routing_table.clone();
             let senders = self.context.reproduce_senders().await;
             let tun_writers = self.context.get_tun_writers(i).await;
-            let stream2routes = self.stream2routes.clone();
-            let stream_counters = self.stream_counters.clone();
+            // let stream2routes = self.stream2routes.clone();
+            // let stream_counters = self.stream_counters.clone();
             let metrics_tx = self.context.get_metrics_tx();
             let handle = tokio::task::spawn(async move {
                 let mut proc = Processor::new(
@@ -95,8 +95,6 @@ impl ProcessorManager {
                     table,
                     senders,
                     tun_writers,
-                    stream2routes,
-                    stream_counters,
                     flg,
                     metrics_tx,
                 );
@@ -134,10 +132,10 @@ pub struct Processor {
 
     // The mapping from stream id to route id. This is used as a local storage persistent across the life cycle
     // of processors for streams that are not assigned a path in the routing table
-    stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
+    // stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
 
     // Count the number of streams in each flow. This is used to assign a path to a stream via round robin.
-    stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
+    // stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
 
     // The local interface writers
     tun_writers: Vec<TunWriter>,
@@ -150,14 +148,11 @@ pub struct Processor {
 }
 
 impl Processor {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
         routing_table: RoutingTable,
         senders: FxHashMap<NodeId, NodeSender>,
         tun_writers: Vec<TunWriter>,
-        stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-        stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
         should_shutdown: Arc<AtomicBool>,
         metrics_tx: MetricsTx,
     ) -> Self {
@@ -165,8 +160,6 @@ impl Processor {
             receiver_rx,
             routing_table,
             senders,
-            stream2routes,
-            stream_counters,
             tun_writers,
             should_shutdown,
             metrics_tx,
@@ -186,7 +179,7 @@ impl Processor {
                 }
 
                 // Wait for packets to be avaiable
-                let mut packet = if i == 0 {
+                let packet = if i == 0 {
                     receiver
                         .recv()
                         .await
@@ -201,47 +194,56 @@ impl Processor {
                 };
 
                 // Preprocess the packet based on its stream id (only used if the multi-path method is "stream")
-                if packet.has_stream_id {
-                    // If we can get a stream id, then we assign a path to this stream
-                    let path_id = if let Some(path_id) = self
-                        .routing_table
-                        .get_path_id(&packet.flow_id, &packet.stream_id)
-                    {
-                        // First, we check if routing table has a path assigned for this stream
-                        path_id
-                    } else {
-                        // If not, we assign a new path to this stream
-                        let path_count = *self
-                            .stream_counters
-                            .write()
-                            .await
-                            .entry(packet.flow_id)
-                            .and_modify(|e| *e += 1)
-                            .or_insert(1);
-                        let path_id =
-                            path_count % self.routing_table.get_num_paths(&packet.flow_id);
-                        self.stream2routes
-                            .write()
-                            .await
-                            .insert((packet.flow_id, packet.stream_id), path_id as u8);
-                        self.routing_table.insert_stream_mapping(
-                            packet.flow_id,
-                            packet.stream_id,
-                            path_id as u8,
-                        );
-                        path_id as u8
-                    };
-                    packet.update_route(path_id); // The 14th byte is the third byte of the IPv4 addr, which we use to set the route.
-                    // We are also going to report the metrics to the metrics collector
-                    self.metrics_tx
-                        .send((
-                            packet.flow_id,
-                            packet.stream_id,
-                            self.routing_table.local_id,
-                            packet.packet_size,
-                        ))
-                        .expect("Failed to send metrics to the metrics collector.");
-                }
+                // if packet.has_stream_id {
+                //     // If we can get a stream id, then we assign a path to this stream
+                //     let path_id = if let Some(path_id) = self
+                //         .routing_table
+                //         .get_path_id(&packet.flow_id, &packet.stream_id)
+                //     {
+                //         // First, we check if routing table has a path assigned for this stream
+                //         path_id
+                //     } else {
+                //         // If not, we assign a new path to this stream
+                //         let path_count = *self
+                //             .stream_counters
+                //             .write()
+                //             .await
+                //             .entry(packet.flow_id)
+                //             .and_modify(|e| *e += 1)
+                //             .or_insert(1);
+                //         let path_id =
+                //             path_count % self.routing_table.get_num_paths(&packet.flow_id);
+                //         self.stream2routes
+                //             .write()
+                //             .await
+                //             .insert((packet.flow_id, packet.stream_id), path_id as u8);
+                //         self.routing_table.insert_stream_mapping(
+                //             packet.flow_id,
+                //             packet.stream_id,
+                //             path_id as u8,
+                //         );
+                //         path_id as u8
+                //     };
+                //     packet.update_route(path_id); // The 14th byte is the third byte of the IPv4 addr, which we use to set the route.
+                //     // We are also going to report the metrics to the metrics collector
+                //     self.metrics_tx
+                //         .send((
+                //             packet.flow_id,
+                //             packet.stream_id,
+                //             self.routing_table.local_id,
+                //             packet.packet_size,
+                //         ))
+                //         .expect("Failed to send metrics to the metrics collector.");
+                // }
+
+                // Report metrics for the packet
+                self.metrics_tx
+                    .send((
+                        packet.flow_id,
+                        self.routing_table.local_id,
+                        packet.packet_size,
+                    ))
+                    .expect("Failed to send metrics to the metrics collector.");
 
                 // Find the next hop and send the packet
                 if let Some(next_hop) = self.routing_table.next_hop(&packet.flow_id) {
@@ -288,7 +290,7 @@ impl Processor {
 pub struct SenderLoadBalancer {
     txs: Vec<mpsc::Sender<Packet>>,
     tx_current: usize,
-    stream2proc: FxHashMap<(SocketId, FlowId), usize>,
+    // stream2proc: FxHashMap<(SocketId, FlowId), usize>,
     flow2proc: FxHashMap<FlowId, usize>,
     n_proc: usize,
 }
@@ -299,7 +301,7 @@ impl SenderLoadBalancer {
         Self {
             txs,
             tx_current: 0,
-            stream2proc: FxHashMap::default(),
+            // stream2proc: FxHashMap::default(),
             flow2proc: FxHashMap::default(),
             n_proc: len,
         }
@@ -308,18 +310,19 @@ impl SenderLoadBalancer {
     pub fn try_send(&mut self, packet: Packet) {
         let proc_id;
 
-        if packet.has_stream_id {
-            if let Some(id) = self.stream2proc.get(&(packet.stream_id, packet.flow_id)) {
-                proc_id = *id;
-            } else {
-                proc_id = self.tx_current;
+        // if packet.has_stream_id {
+        //     if let Some(id) = self.stream2proc.get(&(packet.stream_id, packet.flow_id)) {
+        //         proc_id = *id;
+        //     } else {
+        //         proc_id = self.tx_current;
 
-                self.stream2proc
-                    .insert((packet.stream_id, packet.flow_id), proc_id);
+        //         self.stream2proc
+        //             .insert((packet.stream_id, packet.flow_id), proc_id);
 
-                self.tx_current = (self.tx_current + 1) % self.n_proc;
-            }
-        } else if let Some(id) = self.flow2proc.get(&packet.flow_id) {
+        //         self.tx_current = (self.tx_current + 1) % self.n_proc;
+        //     }
+        // } else 
+        if let Some(id) = self.flow2proc.get(&packet.flow_id) {
             proc_id = *id;
         } else {
             proc_id = self.tx_current;

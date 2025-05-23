@@ -125,7 +125,7 @@ impl TunReader {
         }
     }
 
-    pub async fn start_reading(&mut self, method: MultiPathMethod) {
+    pub async fn start_reading(&mut self, _method: MultiPathMethod) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
         loop {
@@ -136,11 +136,11 @@ impl TunReader {
                 }
             };
 
-            let mut packet = Packet::new(n, buf);
+            let packet = Packet::new(n, buf);
 
-            if method == MultiPathMethod::Stream {
-                packet.try_set_stream_id();
-            }
+            // if method == MultiPathMethod::Stream {
+            //     packet.try_set_stream_id();
+            // }
 
             self.senders.try_send(packet);
         }

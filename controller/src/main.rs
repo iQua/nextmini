@@ -489,8 +489,8 @@ async fn handle_connection(
 
                                 match sqlx::query(
                                     r#"
-                                    INSERT INTO metrics (src_id, dst_id, route_id, prev_hop_id, hop_id, flow_id, stream_id, time_read, bps)
-                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                    INSERT INTO metrics (src_id, dst_id, route_id, prev_hop_id, hop_id, flow_id, time_read, bps)
+                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                                     "#
                                 )
                                 .bind(src_id)
@@ -499,7 +499,7 @@ async fn handle_connection(
                                 .bind(prev_hop_id)
                                 .bind(hop_id as i32)
                                 .bind(flow_id)
-                                .bind(metric.stream_id)
+                                // .bind(metric.stream_id)
                                 .bind(metric.time_read)
                                 .bind(metric.bps as i32)
                                 .execute(&*db_pool)

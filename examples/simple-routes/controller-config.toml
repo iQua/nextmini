@@ -1,0 +1,12 @@
+reset_db = true
+protocol = "quic"
+multi_path_method = "stream"
+
+[routes]
+route = [1, 2, 3, 4]
+
+[routes]
+route = [1, 3, 2, 4]
+
+[routes]
+route = [1, 3, 4]

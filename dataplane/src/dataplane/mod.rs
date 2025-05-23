@@ -65,7 +65,7 @@ impl FlowIdExt for u64 {
 pub type NodeId = usize;
 
 /// The socket ID.
-pub type SocketId = (u16, u16);
+// pub type SocketId = (u16, u16);
 
 /// The packet buffer, used for receiving a packet from the network.
 type PacketBuf = [u8; RECEIVE_BUF_SIZE];

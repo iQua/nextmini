@@ -30,7 +30,7 @@ pub struct Metrics {
     pub prev_hop_id: Option<i32>,
     pub hop_id: Option<i32>,
     pub flow_id: Vec<i32>,
-    pub stream_id: Option<String>,
+    // pub stream_id: Option<String>,
     pub time_read: chrono::DateTime<chrono::Utc>,
     pub bps: i32,
 }
