@@ -4,17 +4,17 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use nextmini_messages::{Protocol};
+use nextmini_messages::Protocol;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
     #[serde(default)]
+    pub route_id: usize,
+    #[serde(default)]
     pub src_node_id: usize,
     #[serde(default)]
     pub dst_node_id: usize,
-    pub route_id: usize,
     pub hops: Vec<usize>,
-    // pub streams: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -89,6 +89,7 @@ pub struct Config {
     pub auto_db_sync: bool,
 
     /// A list of routes. For example:
+    ///     route_id: 0,        // The route ID (unique identifier)
     ///     src_node_id: 0,     // The source node ID
     ///     dst_node_id: 1,     // The destination node ID
     ///     hops: [0, 2, 3, 1]  // The paths for the route
@@ -175,14 +176,19 @@ pub fn get_config(filename: &str) -> Config {
                 Ok(mut config) => {
                     println!("Successfully loaded configuration from: {}", filename);
 
-                    // Post-process routes to ensure src_node_id and dst_node_id are set
-                    for route in &mut config.routes {
+                    for (index, route) in config.routes.iter_mut().enumerate() {
+                        route.route_id = index;
+                        println!(
+                            "Controller assigned route_id {} to route at index {}",
+                            route.route_id, index
+                        );
+
                         // If src_node_id is not set and hops is not empty, use first element of hops
                         if route.src_node_id == 0 && !route.hops.is_empty() {
                             route.src_node_id = route.hops[0];
                             println!(
-                                "Auto-inferring src_node_id as {} from the hops array",
-                                route.src_node_id
+                                "Auto-inferring src_node_id as {} from the hops array for route_id {}",
+                                route.src_node_id, route.route_id
                             );
                         }
 
@@ -190,8 +196,8 @@ pub fn get_config(filename: &str) -> Config {
                         if route.dst_node_id == 0 && !route.hops.is_empty() {
                             route.dst_node_id = route.hops[route.hops.len() - 1];
                             println!(
-                                "Auto-inferring dst_node_id as {} from the hops array",
-                                route.dst_node_id
+                                "Auto-inferring dst_node_id as {} from the hops array for route_id {}",
+                                route.dst_node_id, route.route_id
                             );
                         }
                     }
