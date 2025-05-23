@@ -3,14 +3,7 @@ FROM rust:alpine AS build
 RUN apk update && \
     apk upgrade --no-cache && \
     apk add curl bash \
-    openssh-client \
-    openssh-server \
-    git\
-    vim \
     build-base \
-    net-tools \
-    iputils-ping \
-    iperf3 \
     openssl \
     ca-certificates
 
@@ -45,4 +38,5 @@ RUN apk update && \
 
 WORKDIR /var/nextmini
 COPY --from=build /var/nextmini/server/target/release/controller /var/nextmini/controller
+
 EXPOSE 3000
