@@ -118,7 +118,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                                 dst_node_id: j as i32,
                                 route_id: *id as i32,
                                 hops: vec![i as i32, j as i32],
-                                streams: Some("[]".to_string()),
+                                // streams: Some("[]".to_string()),
                             };
 
                             sqlx::query(
@@ -133,7 +133,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                             .bind(route.dst_node_id)
                             .bind(route.route_id)
                             .bind(&route.hops)
-                            .bind(&route.streams)
+                            // .bind(&route.streams)
                             .execute(&pool)
                             .await
                             .expect("Failed to insert full mesh route");
@@ -150,7 +150,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                             dst_node_id: j as i32,
                             route_id: *id as i32,
                             hops: vec![i as i32, j as i32],
-                            streams: Some("[]".to_string()),
+                            // streams: Some("[]".to_string()),
                         };
                         sqlx::query(
                             r#"
@@ -164,7 +164,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         .bind(route.dst_node_id)
                         .bind(route.route_id)
                         .bind(&route.hops)
-                        .bind(&route.streams)
+                        // .bind(&route.streams)
                         .execute(&pool)
                         .await
                         .expect("Failed to insert ring route");
@@ -175,7 +175,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         dst_node_id: 1,
                         route_id: *id as i32,
                         hops: vec![n_nodes as i32, 1],
-                        streams: Some("[]".to_string()),
+                        // streams: Some("[]".to_string()),
                     };
 
                     sqlx::query(
@@ -190,7 +190,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                     .bind(route.dst_node_id)
                     .bind(route.route_id)
                     .bind(&route.hops)
-                    .bind(&route.streams)
+                    // .bind(&route.streams)
                     .execute(&pool)
                     .await
                     .expect("Failed to insert ring closure route");
@@ -203,7 +203,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     println!("Adding initial routes from the configuration file.");
 
     for mut route in config.routes.clone() {
-        route.streams = Some(route.streams.unwrap_or_else(|| "[]".to_string()));
+        // route.streams = Some(route.streams.unwrap_or_else(|| "[]".to_string()));
 
         sqlx::query(
             r#"
@@ -217,7 +217,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         .bind(route.dst_node_id as i32)
         .bind(route.route_id as i32)
         .bind(route.hops.iter().map(|&x| x as i32).collect::<Vec<_>>())
-        .bind(&route.streams)
+        // .bind(&route.streams)
         .execute(&pool)
         .await
         .expect("Failed to insert initial route");

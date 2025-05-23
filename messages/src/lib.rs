@@ -68,5 +68,5 @@ pub struct Flow {
 pub struct RouteInfo {
     pub id: usize,
     pub next_hop: usize,
-    pub streams: Vec<String>,
+    // pub streams: Vec<String>,
 }

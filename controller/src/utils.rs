@@ -122,32 +122,32 @@ pub fn build_install_routes_message(
             None => continue,
         };
 
-        let empty_str = String::from("[]");
+        // let empty_str = String::from("[]");
 
-        let streams_content = route.streams.as_ref().unwrap_or(&empty_str);
+        // let streams_content = route.streams.as_ref().unwrap_or(&empty_str);
 
-        let streams = match serde_json::from_str(streams_content) {
-            Ok(streams) => {
-                println!(
-                    "Successfully deserialized streams: '{}' -> {:?}",
-                    streams_content, streams
-                );
-                streams
-            }
-            Err(e) => {
-                println!(
-                    "Failed to deserialize streams: {}. Content: '{}', Route ID: {}, Src: {}, Dst: {}",
-                    e, streams_content, route.route_id, route.src_node_id, route.dst_node_id
-                );
+        // let streams = match serde_json::from_str(streams_content) {
+        //     Ok(streams) => {
+        //         println!(
+        //             "Successfully deserialized streams: '{}' -> {:?}",
+        //             streams_content, streams
+        //         );
+        //         streams
+        //     }
+        //     Err(e) => {
+        //         println!(
+        //             "Failed to deserialize streams: {}. Content: '{}', Route ID: {}, Src: {}, Dst: {}",
+        //             e, streams_content, route.route_id, route.src_node_id, route.dst_node_id
+        //         );
 
-                vec![]
-            }
-        };
+        //         vec![]
+        //     }
+        // };
 
         let route_info = RouteInfo {
             id: route.route_id as usize,
             next_hop,
-            streams,
+            //streams,
         };
 
         flows_map
@@ -259,14 +259,14 @@ mod tests {
                 dst_node_id: 4,
                 route_id: 0,
                 hops: vec![0, 1, 2, 3, 4],
-                streams: Some("[]".to_string()),
+                // streams: Some("[]".to_string()),
             },
             Route {
                 src_node_id: 0,
                 dst_node_id: 4,
                 route_id: 1,
                 hops: vec![0, 1, 2, 5, 4],
-                streams: Some("[]".to_string()),
+                // streams: Some("[]".to_string()),
             },
         ];
 
@@ -279,12 +279,12 @@ mod tests {
             RouteInfo {
                 id: 0,
                 next_hop: 3,
-                streams: vec![],
+                // streams: vec![],
             },
             RouteInfo {
                 id: 1,
                 next_hop: 5,
-                streams: vec![],
+                // streams: vec![],
             },
         ];
 

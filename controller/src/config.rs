@@ -14,7 +14,7 @@ pub struct Route {
     pub dst_node_id: usize,
     pub route_id: usize,
     pub hops: Vec<usize>,
-    pub streams: Option<String>,
+    // pub streams: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

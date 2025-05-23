@@ -17,7 +17,7 @@ pub struct Route {
     pub dst_node_id: i32,
     pub route_id: i32,
     pub hops: Vec<i32>,
-    pub streams: Option<String>,
+    //pub streams: Option<String>,
 }
 
 #[allow(dead_code)]
