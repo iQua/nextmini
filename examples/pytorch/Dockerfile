@@ -7,17 +7,7 @@ RUN apk update && \
     apk add --no-cache \
     curl \
     bash \
-    openssh-client \
-    openssh-server \
-    git \
-    vim \
     build-base \
-    net-tools \
-    iperf3 \
-    iputils-ping \
-    openssl \
-    openmpi \
-    openmpi-dev \
     gcc
 
 # Setup the dataplane directory
@@ -34,39 +24,34 @@ RUN /bin/bash -c "cargo run --bin cert-gen"
 # build the dataplane from source
 RUN /bin/bash -c "cargo build --release"
 
-FROM alpine:latest
+FROM python:latest
 
-RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
+RUN apt-get update && \
+    apt-get install -y \
+    curl\
     openssh-client \
     openssh-server \
-    git \
+    git\
     vim \
-    build-base \
+    build-essential \
     net-tools \
-    iputils-ping \
     iperf3 \
+    inetutils-ping \
     openssl \
-    openmpi \
-    python3 \
-    python3-dev \
-    py3-pip
+    openmpi-bin \
+    libopenmpi-dev && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean
 
 # Generate ssh host keys in /etc/ssh and start the sshd service
 RUN ssh-keygen -A
-RUN /usr/sbin/sshd
 
 # Install uv using the official installer
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
 
-# Verify uv installation
-RUN uv --version
-
-# Install uv using the official installer
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+# Install Python
+RUN uv python install
 
 ENV RUST_LOG=info
 WORKDIR /var/nextmini

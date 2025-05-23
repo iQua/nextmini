@@ -61,7 +61,7 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/share/.ssh
+      - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
@@ -73,15 +73,15 @@ services:
       - node4
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "mkdir -p /root/.ssh && cp -r /mnt/share/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+      /usr/sbin/sshd -p 22 &
       sleep 8 &&
       /var/nextmini/nextmini ws://controller:3000 &&
       sleep 8 &&
       ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts &&
       ssh-keyscan -H 10.0.0.3 >> /root/.ssh/known_hosts &&
-      ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts
-      "
+      ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts"
 
   node2:
     container_name: node2
@@ -96,7 +96,7 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/share/.ssh
+      - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
@@ -107,8 +107,9 @@ services:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "mkdir -p /root/.ssh && cp -r /mnt/share/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+      /usr/sbin/sshd -p 22 &
       sleep 11 &&
       /var/nextmini/nextmini ws://controller:3000"
 
@@ -125,7 +126,7 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/share/.ssh
+      - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
@@ -137,8 +138,9 @@ services:
       - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "mkdir -p /root/.ssh && cp -r /mnt/share/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+      /usr/sbin/sshd -p 22 &
       sleep 11 &&
       /var/nextmini/nextmini ws://controller:3000"
 
@@ -155,7 +157,7 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./ssh:/mnt/share/.ssh
+      - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
@@ -167,7 +169,8 @@ services:
       - node3
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "mkdir -p /root/.ssh && cp -r /mnt/share/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa &&
+    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
+      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+      /usr/sbin/sshd -p 22 &
       sleep 11 &&
       /var/nextmini/nextmini ws://controller:3000"
