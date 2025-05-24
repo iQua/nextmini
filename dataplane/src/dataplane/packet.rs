@@ -1,33 +1,23 @@
 use std::io::Cursor;
 
-use byteorder::{BigEndian, ReadBytesExt};
-use serde_json::Value;
-
 use crate::dataplane::{FlowId, PacketBuf};
+use byteorder::{BigEndian, ReadBytesExt};
 
 #[derive(Debug)]
 pub struct Packet {
     pub flow_id: FlowId,
     pub packet_size: usize,
-    // pub stream_id: SocketId,
-    // pub has_stream_id: bool,
     pub buf: PacketBuf,
 }
 
 impl Packet {
     pub fn new(packet_size: usize, buf: PacketBuf) -> Self {
-        // Validate IP packet before processing - disabled for performance
-        // Self::debug_validate_packet(&buf, packet_size);
-        
         Self {
             flow_id: Self::get_flow_id_from_buf(&buf, packet_size),
             packet_size,
-            // stream_id: (0, 0),
-            // has_stream_id: false,
             buf,
         }
     }
-
 
     fn get_flow_id_from_buf(buf: &PacketBuf, packet_size: usize) -> FlowId {
         // Check if it's an IPv4 packet
@@ -85,135 +75,6 @@ impl Packet {
             | ((src_port as u128) << 48)
             | ((dst_port as u128) << 32);
 
-        // Generated flow_id - removed debug for performance
-
         flow_id
-    }
-
-    #[allow(dead_code)]
-    fn format_ip(ip: u32) -> String {
-        format!("{}.{}.{}.{}", 
-                (ip >> 24) & 0xFF, 
-                (ip >> 16) & 0xFF, 
-                (ip >> 8) & 0xFF, 
-                ip & 0xFF)
-    }
-
-    #[allow(dead_code)]
-    fn debug_validate_packet(buf: &PacketBuf, packet_size: usize) {
-        if packet_size == 0 {
-            // Empty packet detected
-            return;
-        }
-
-        if packet_size < 20 {
-            // Too small for IP header
-            return;
-        }
-
-        let version = buf[0] >> 4;
-        let ihl = buf[0] & 0x0F;
-        let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-        let _protocol = buf[9];
-
-        // Packet validation - removed debug for performance
-
-        if version != 4 {
-            // WARNING - Not IPv4
-        }
-
-        if ihl < 5 {
-            // WARNING - Invalid IHL
-        }
-
-        if total_length != packet_size {
-            // WARNING - Length mismatch
-        }
-
-        if total_length < (ihl * 4) as usize {
-            // WARNING - Total length less than header length
-        }
-    }
-
-
-
-    // pub fn try_set_stream_id(&mut self) {
-    //     // Check the minimum length for IPv4 header + TCP header
-    //     if self.buf.len() < 20 + 4 {
-    //         return;
-    //     }
-    //     // Check if it's an IPv4 packet
-    //     if self.buf[0] >> 4 != 4 {
-    //         return;
-    //     }
-    //     // Extract IHL value to determine start of TCP header
-    //     let ihl = (self.buf[0] & 0x0F) as usize;
-    //     let tcp_header_start = 4 * ihl;
-
-    //     // Check if the next protocol is TCP (protocol number for TCP is 6)
-    //     if self.buf[9] == 6 {
-    //         // Check if we have enough data for the TCP header
-    //         if self.buf.len() < tcp_header_start + 4 {
-    //             return;
-    //         }
-
-    //         // Extract the source and destination ports
-    //         let source_port =
-    //             u16::from_be_bytes([self.buf[tcp_header_start], self.buf[tcp_header_start + 1]]);
-    //         let dest_port = u16::from_be_bytes([
-    //             self.buf[tcp_header_start + 2],
-    //             self.buf[tcp_header_start + 3],
-    //         ]);
-
-    //         self.stream_id = (source_port, dest_port);
-    //         self.has_stream_id = true;
-    //     } else if self.buf[9] == 17 {
-    //         // Check if the protocol is UDP (protocol number 17)
-    //         // Calculate the start of the UDP header
-    //         let udp_header_start = ihl * 4;
-
-    //         // Extract the source and destination ports
-    //         let source_port =
-    //             u16::from_be_bytes([self.buf[udp_header_start], self.buf[udp_header_start + 1]]);
-    //         let dest_port = u16::from_be_bytes([
-    //             self.buf[udp_header_start + 2],
-    //             self.buf[udp_header_start + 3],
-    //         ]);
-
-    //         self.stream_id = (source_port, dest_port);
-    //         self.has_stream_id = true;
-    //     }
-    // }
-}
-
-#[allow(dead_code)]
-pub fn json_byte_array_to_flow_id(flow_id: &Value) -> FlowId {
-    // Handle both 8-byte (old format) and 16-byte (new format) arrays
-    if let Some(array) = flow_id.as_array() {
-        if array.len() == 16 {
-            // New 16-byte format for 128-bit flow_id
-            let mut bytes: [u8; 16] = [0; 16];
-            for i in 0..16 {
-                bytes[i] = array[i]
-                    .as_u64()
-                    .expect("Invalid flow_id field in JSON object, expected u8") as u8;
-            }
-            let mut cursor = Cursor::new(&bytes);
-            cursor.read_u128::<BigEndian>().unwrap()
-        } else if array.len() == 8 {
-            // Legacy 8-byte format - convert to 128-bit
-            let mut bytes: [u8; 8] = [0; 8];
-            for i in 0..8 {
-                bytes[i] = array[i]
-                    .as_u64()
-                    .expect("Invalid flow_id field in JSON object, expected u8") as u8;
-            }
-            let mut cursor = Cursor::new(&bytes);
-            cursor.read_u64::<BigEndian>().unwrap() as u128
-        } else {
-            0u128
-        }
-    } else {
-        0u128
     }
 }
