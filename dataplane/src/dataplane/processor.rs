@@ -213,10 +213,7 @@ impl Processor {
                     }
                 } else {
                     // No route was found for the packet
-                    println!("WARNING: No route was found. Packet dropped.");
-
-                    // debug level logging
-                    self.simple_routing_table.debug_print_routing_table(); 
+                    println!("WARNING: No route was found. Packet dropped.",);
                     continue;
                 }
             }

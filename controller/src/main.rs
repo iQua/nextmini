@@ -13,7 +13,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
-use crate::config::{Config, get_config, is_node_allowed};
+use crate::config::{Config, get_config};
 use crate::db::init_db;
 use crate::models::{Node, Route};
 use crate::utils::{
@@ -115,13 +115,6 @@ async fn handle_connection(
 
                             new_id
                         };
-
-                        // checks if the node is allowed in config file
-                        if !is_node_allowed(node_id, &config) {
-                            println!("Node ID {} is dropped when attempting to join the network, becasue it is not defined in the preset topology or in the initial routes.", node_id);
-                            continue;
-                        }
-
 
                         // checks if the node_id is already used
                         if node_ws.read().await.contains_key(&node_id) {
