@@ -196,6 +196,12 @@ impl Processor {
                         // Local delivery
                         self.tun_writer.write_packet(packet).await;
                     } else {
+                        
+                        // for simple-routes, iperf3 from node 1 to node 2
+                        if next_hop_id != 2  && next_hop_id != 1 {   
+                            println!("Sending to Node {}", next_hop.unwrap());
+                        }
+                        
                         match self.senders.get_mut(&next_hop_id) {
                             Some(sender) => {
                                 sender.send(packet).await;
