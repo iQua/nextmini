@@ -14,15 +14,17 @@ RUN apk update && \
 WORKDIR /var/nextmini
 
 # Copy the source code
+COPY Cargo.toml /var/nextmini/Cargo.toml
 COPY messages /var/messages
-COPY dataplane/Cargo.toml /var/nextmini
-COPY dataplane/src /var/nextmini/src
+COPY cert-gen /var/nextmini/cert-gen
+COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
+COPY dataplane/src /var/nextmini/dataplane/src
 
 # running the certificate generator first
-RUN /bin/bash -c "cargo run --bin cert-gen"
+RUN /bin/bash -c "cargo run -p cert-gen"
 
 # build the dataplane from source
-RUN /bin/bash -c "cargo build --release"
+RUN /bin/bash -c "cargo build -p nextmini --release"
 
 FROM bitnami/minideb:latest
 

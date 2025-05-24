@@ -8,9 +8,7 @@ default-run = "nextmini"
 name = "nextmini"
 path = "src/main.rs"
 
-[[bin]]
-name = "cert-gen"
-path = "src/cert-gen.rs"
+
 
 [dependencies]
 byteorder = "1.5"
@@ -27,7 +25,7 @@ url = "2.3.1"
 clap-serde-derive = "0.2.0"
 num_cpus = "1.15.0"
 console-subscriber = "0.4"
-rcgen = { version = "0.13", features = ["pem"] }
+
 s2n-quic = "1"
 fxhash = "0.2"
 ahash = "0.8"

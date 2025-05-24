@@ -20,15 +20,17 @@ ENV RUST_LOG=info
 WORKDIR /var/nextmini
 
 # Copy the source code
+COPY Cargo.toml /var/nextmini/Cargo.toml
 COPY messages /var/messages
-COPY dataplane/Cargo.toml /var/nextmini
-COPY dataplane/src /var/nextmini/src
+COPY cert-gen /var/nextmini/cert-gen
+COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
+COPY dataplane/src /var/nextmini/dataplane/src
 
 # Run the certificate generator first
-RUN cargo run --bin cert-gen
+RUN cargo run -p cert-gen
 
 # Build the dataplane from source
-RUN cargo build --release
+RUN cargo build -p nextmini --release
 
 FROM alpine:latest
 
