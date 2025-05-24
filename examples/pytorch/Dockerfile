@@ -24,7 +24,7 @@ RUN /bin/bash -c "cargo run --bin cert-gen"
 # build the dataplane from source
 RUN /bin/bash -c "cargo build --release"
 
-FROM python:latest
+FROM bitnami/minideb:latest
 
 RUN apt-get update && \
     apt-get install -y \
