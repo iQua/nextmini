@@ -26,12 +26,17 @@ impl Packet {
             // Fallback to old behavior for non-IPv4 packets - convert to 128-bit
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
             let old_flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
+            println!("DEBUG: Non-IPv4 packet, using fallback flow_id: {:#x}", old_flow_id as u128);
             return old_flow_id as u128;
         }
 
         // Extract source and destination IP addresses
         let src_ip = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
         let dst_ip = u32::from_be_bytes([buf[16], buf[17], buf[18], buf[19]]);
+
+        println!("DEBUG: Packet IP info - src_ip: {}.{}.{}.{}, dst_ip: {}.{}.{}.{}",
+            buf[12], buf[13], buf[14], buf[15],
+            buf[16], buf[17], buf[18], buf[19]);
 
         // Extract IHL to determine start of transport header
         let ihl = (buf[0] & 0x0F) as usize;
@@ -40,6 +45,7 @@ impl Packet {
         // Validate IHL
         if ihl < 5 || transport_header_start > packet_size {
             // Invalid IHL or insufficient packet size
+            println!("DEBUG: Invalid IHL ({}) or insufficient packet size, using zero flow_id", ihl);
             return 0;
         }
 
@@ -55,16 +61,20 @@ impl Packet {
                         buf[transport_header_start + 2],
                         buf[transport_header_start + 3],
                     ]);
-                    // Extracted ports - removed debug for performance
+                    // Debug info
+                    println!("DEBUG: Protocol: {}, src_port: {}, dst_port: {}", 
+                        if buf[9] == 6 { "TCP" } else { "UDP" }, src_port, dst_port);
                     (src_port, dst_port)
                 }
                 _ => {
                     // Protocol - no port extraction
+                    println!("DEBUG: Unknown protocol: {}, no ports extracted", buf[9]);
                     (0, 0) // Other protocols
                 }
             }
         } else {
             // Insufficient data for transport header
+            println!("DEBUG: Insufficient data for transport header, no ports extracted");
             (0, 0) // Not enough data
         };
 
@@ -74,6 +84,9 @@ impl Packet {
             | ((dst_ip as u128) << 64)
             | ((src_port as u128) << 48)
             | ((dst_port as u128) << 32);
+
+        println!("DEBUG: Created flow_id: {:#x} from src_ip: {}, dst_ip: {}, src_port: {}, dst_port: {}", 
+            flow_id, src_ip, dst_ip, src_port, dst_port);
 
         flow_id
     }

@@ -189,6 +189,7 @@ impl Processor {
                 let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
 
                 if let Some(next_hop_id) = next_hop {
+                    println!("DEBUG: Route found for flow {}. Next hop: {}", packet.flow_id, next_hop_id);
                     let packet_flow_id = packet.flow_id; // Save flow_id before packet is moved
 
                     // Sending out the packet

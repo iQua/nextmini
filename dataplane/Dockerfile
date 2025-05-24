@@ -27,8 +27,9 @@ COPY cert-gen /var/nextmini/cert-gen
 COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
 COPY dataplane/src /var/nextmini/dataplane/src
 
-# Run the certificate generator first
-WORKDIR /var/nextmini/dataplane
+# Run the certificate generator first from the root directory
+# This will generate the certificate files in /var/nextmini/
+WORKDIR /var/nextmini
 RUN cargo run -p cert-gen
 
 # Build the dataplane from source

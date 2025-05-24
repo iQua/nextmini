@@ -56,34 +56,63 @@ pub fn build_add_node_message(
     }
 }
 
-/// Builds an enhanced routing table for a specific node.
-/// Now includes src/dst node information for proper flow matching.
-/// Computes route_id -> next_hop mapping with flow matching context.
+/// Builds route-level next-hop information for a specific node.
+/// Controller only computes route_id -> next_hop mappings.
+/// Dataplane handles flow_id -> route_id mapping autonomously.
+/// Only processes routes that include the current node.
 pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<ControllerToDataplane> {
     let mut route_entries: Vec<SimpleRouteEntry> = Vec::new();
+    
+    println!("DEBUG: Building routes for node {}, total routes to process: {}", node_id, routes.len());
 
     for route in routes {
+        println!("DEBUG: Processing route_id: {}, path: {:?}, src_node_id: {}, dst_node_id: {}", 
+            route.route_id, route.route, route.src_node_id, route.dst_node_id);
+            
         // Find the position of this node in the route path
         let idx = route.route.iter().position(|&x| x == node_id);
 
-        let next_hop = match idx {
+        // Skip routes that don't include this node
+        if idx.is_none() {
+            println!("DEBUG: Node {} not in route path {:?}, skipping", node_id, route.route);
+            continue;
+        }
+
+        let idx = idx.unwrap();
+        let next_hop = if idx == route.route.len() - 1 {
             // The node is the destination - next hop is itself (local delivery)
-            Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
+            route.route[idx] as usize
+        } else {
             // The node is in the middle of the path - next hop is the next node
-            Some(i) => route.route[i + 1] as usize,
-            // The route doesn't pass through this node - mark as inactive
-            None => 0,
+            route.route[idx + 1] as usize
         };
+
+        println!("DEBUG: Node {} found at position {} in route, next_hop: {}", 
+            node_id, idx, next_hop);
+
+        // Send route endpoints for dataplane's direction indexing
+        let src_node_id = route.route[0] as usize; // Route source
+        let dst_node_id = route.route[route.route.len() - 1] as usize; // Route destination
+
+        println!("DEBUG: Using src_node_id: {} (first hop), dst_node_id: {} (last hop)", 
+            src_node_id, dst_node_id);
 
         route_entries.push(SimpleRouteEntry {
             route_id: route.route_id as usize,
             next_hop,
-            src_node_id: route.src_node_id as usize,
-            dst_node_id: route.dst_node_id as usize,
+            src_node_id,
+            dst_node_id,
         });
+        
+        println!("DEBUG: Added route entry: route_id={}, next_hop={}, src_node_id={}, dst_node_id={}", 
+            route.route_id, next_hop, src_node_id, dst_node_id);
     }
 
+    println!("DEBUG: Finished building routes for node {}, total route entries: {}", 
+        node_id, route_entries.len());
+
     if route_entries.is_empty() {
+        println!("DEBUG: No routes for node {}", node_id);
         None
     } else {
         Some(ControllerToDataplane::InstallRoutes {

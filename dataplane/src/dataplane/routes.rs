@@ -16,21 +16,21 @@ pub struct EnhancedRouteEntry {
     pub dst_node_id: NodeId,
 }
 
-/// Ultra-simplified routing table using direct HashMap lookup
-/// Single paths use direct mapping, multi-paths use Vec + jump hash
+/// Optimized routing table using direct route_id mapping
+/// Controller only sends route-level next-hop info, dataplane manages flow->route mapping
 #[derive(Clone)]
 pub struct SimpleRoutingTable {
-    /// Single-path routes: (src_node, dst_node) -> next_hop
-    single_routes: HashMap<(NodeId, NodeId), NodeId>,
+    /// Direct route_id -> next_hop mapping (O(1) lookup)
+    route_next_hop: HashMap<usize, NodeId>,
 
-    /// Multi-path routes: (src_node, dst_node) -> Vec<next_hop>
-    multi_routes: HashMap<(NodeId, NodeId), Vec<NodeId>>,
+    /// Direction -> available route_ids mapping for flow routing
+    direction_routes: HashMap<(NodeId, NodeId), Vec<usize>>,
+
+    /// Flow-to-route cache for consistent routing (O(1) after first lookup)
+    flow_route_cache: AHashMap<FlowId, usize>,
 
     /// Local node ID
     pub local_id: NodeId,
-
-    /// Direct cache for flow_id to next_hop mappings (only for multi-path)
-    flow_next_hop_cache: AHashMap<FlowId, NodeId>,
 
     /// Base IPv4 address for node ID calculation (e.g., [10, 0, 0, 0])
     base_ipv4_addr: [u8; 4],
@@ -39,10 +39,10 @@ pub struct SimpleRoutingTable {
 impl SimpleRoutingTable {
     pub fn new(local_id: NodeId) -> Self {
         Self {
-            single_routes: HashMap::new(),
-            multi_routes: HashMap::new(),
+            route_next_hop: HashMap::new(),
+            direction_routes: HashMap::new(),
+            flow_route_cache: AHashMap::new(),
             local_id,
-            flow_next_hop_cache: AHashMap::new(),
             base_ipv4_addr: [10, 0, 0, 0], // Default, should be configured
         }
     }
@@ -52,7 +52,8 @@ impl SimpleRoutingTable {
         self.base_ipv4_addr = base_addr;
     }
 
-    /// Install routes using SimpleRouteEntry (now includes src/dst node information)
+    /// Install routes using route_id -> next_hop mapping with direction indexing
+    /// Controller only needs to send route-level next-hop info
     pub fn install_routes(&mut self, routes: Vec<SimpleRouteEntry>) {
         debug!(
             "RoutingTable: Installing {} routes for local_id {}",
@@ -60,20 +61,23 @@ impl SimpleRoutingTable {
             self.local_id
         );
 
-        // Clear existing routes and cache
-        self.single_routes.clear();
-        self.multi_routes.clear();
-        self.flow_next_hop_cache.clear();
+        // Clear existing data
+        self.route_next_hop.clear();
+        self.direction_routes.clear();
+        self.flow_route_cache.clear();
 
-        // First pass: group routes by direction
-        let mut temp_routes: HashMap<(NodeId, NodeId), Vec<NodeId>> = HashMap::new();
+        // Build routing tables
         for route in routes {
             if route.next_hop != 0 {
-                let direction_key = (route.src_node_id, route.dst_node_id);
-                temp_routes
-                    .entry(direction_key)
+                // 1. Direct route_id -> next_hop mapping
+                self.route_next_hop.insert(route.route_id, route.next_hop);
+
+                // 2. Build reverse index: direction -> available route_ids
+                let direction = (route.src_node_id, route.dst_node_id);
+                self.direction_routes
+                    .entry(direction)
                     .or_insert_with(Vec::new)
-                    .push(route.next_hop);
+                    .push(route.route_id);
 
                 debug!(
                     "RoutingTable: Installed route {} ({}→{}) -> next_hop {}",
@@ -82,27 +86,10 @@ impl SimpleRoutingTable {
             }
         }
 
-        // Second pass: optimize single vs multi-path routes
-        for (direction, next_hops) in temp_routes {
-            if next_hops.len() == 1 {
-                // Single path: direct mapping
-                self.single_routes.insert(direction, next_hops[0]);
-                debug!("Single-path route: {:?} -> {}", direction, next_hops[0]);
-            } else {
-                // Multi-path: Vec + jump hash
-                self.multi_routes.insert(direction, next_hops);
-                debug!(
-                    "Multi-path route: {:?} -> {:?}",
-                    direction,
-                    self.multi_routes.get(&direction).unwrap()
-                );
-            }
-        }
-
         debug!(
-            "RoutingTable: Route installation complete. {} single routes, {} multi routes",
-            self.single_routes.len(),
-            self.multi_routes.len()
+            "RoutingTable: Route installation complete. {} direct routes, {} directions",
+            self.route_next_hop.len(),
+            self.direction_routes.len()
         );
     }
 
@@ -133,6 +120,13 @@ impl SimpleRoutingTable {
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
 
+        // Debug info
+        println!("DEBUG: Flow ID: {:#x}", flow_id);
+        println!("DEBUG: Extracted src_ip: {}.{}.{}.{} ({}), dst_ip: {}.{}.{}.{} ({})",
+            (src_ip >> 24) & 0xFF, (src_ip >> 16) & 0xFF, (src_ip >> 8) & 0xFF, src_ip & 0xFF, src_ip,
+            (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF, (dst_ip >> 8) & 0xFF, dst_ip & 0xFF, dst_ip);
+        println!("DEBUG: Converted to src_node_id: {}, dst_node_id: {}", src_node_id, dst_node_id);
+
         (src_node_id, dst_node_id)
     }
 
@@ -140,12 +134,16 @@ impl SimpleRoutingTable {
     fn ip_to_node_id(&self, ip: u32) -> usize {
         let base_ip = u32::from_be_bytes(self.base_ipv4_addr);
         let node_id = ip - base_ip;
+        
+        // Debug info
+        println!("DEBUG: IP to node_id conversion - IP: {}, Base IP: {}, Node ID: {}", 
+            ip, base_ip, node_id as usize);
+        
         node_id as usize
     }
 
-    /// Jump hash implementation for consistent hashing
-    /// This is the core algorithm that ensures the same flow_id
-    /// always maps to the same route_id across all nodes
+    /// Jump hash implementation for consistent load balancing
+    /// Ensures the same flow_id always maps to the same route_id
     fn jump_hash(&self, flow_id: FlowId, num_buckets: usize) -> usize {
         // Convert flow_id to a hash value
         let mut hasher = DefaultHasher::new();
@@ -164,74 +162,94 @@ impl SimpleRoutingTable {
         b as usize
     }
 
-    /// Get next hop from flow_id using optimized lookup (O(1) for all cases)
+    /// Optimized next hop lookup: flow_id -> route_id -> next_hop
+    /// Fast path: O(1) cached lookup
+    /// Slow path: extract direction, select route_id, cache result
     pub fn next_hop_for_flow(&mut self, flow_id: FlowId) -> Option<NodeId> {
+        // Fast path: Check flow_id -> route_id cache
+        if let Some(&route_id) = self.flow_route_cache.get(&flow_id) {
+            let next_hop = self.route_next_hop.get(&route_id).copied();
+            if let Some(hop) = next_hop {
+                println!("DEBUG: Cache hit for flow {:#x}: route_id {} -> next_hop {}", 
+                    flow_id, route_id, hop);
+            }
+            return next_hop;
+        }
+
+        // Slow path: New flow processing
         let (src_node, dst_node) = self.extract_src_dst_from_flow(flow_id);
         let direction_key = (src_node, dst_node);
 
-        // Ultra-fast path: Single-path routes (no cache needed - already O(1))
-        if let Some(&next_hop) = self.single_routes.get(&direction_key) {
-            return Some(next_hop);
-        }
+        println!("DEBUG: Looking up route for direction ({}, {})", src_node, dst_node);
 
-        // Multi-path routes: Check cache first
-        if let Some(&next_hop) = self.flow_next_hop_cache.get(&flow_id) {
-            return Some(next_hop);
-        }
+        // Find available routes for this direction
+        let available_routes = self.direction_routes.get(&direction_key)?;
 
-        // Multi-path routes: Jump hash for load balancing
-        if let Some(available_routes) = self.multi_routes.get(&direction_key) {
+        // Select route_id using load balancing strategy
+        let route_id = if available_routes.len() == 1 {
+            // Single route: direct selection
+            available_routes[0]
+        } else {
+            // Multiple routes: use jump hash for consistent load balancing
             let route_index = self.jump_hash(flow_id, available_routes.len());
-            let next_hop = available_routes[route_index];
+            available_routes[route_index]
+        };
 
-            // Cache result for multi-path routes
-            self.flow_next_hop_cache.insert(flow_id, next_hop);
-            return Some(next_hop);
+        println!("DEBUG: Selected route_id {} for direction ({}, {}) from {} available routes", 
+            route_id, src_node, dst_node, available_routes.len());
+
+        // Cache the flow -> route mapping
+        self.flow_route_cache.insert(flow_id, route_id);
+
+        // Return next_hop for the selected route
+        let next_hop = self.route_next_hop.get(&route_id).copied();
+        if let Some(hop) = next_hop {
+            println!("DEBUG: New flow {:#x}: route_id {} -> next_hop {}", 
+                flow_id, route_id, hop);
+        } else {
+            println!("DEBUG: No next_hop found for route_id {}", route_id);
         }
 
-        // No route found
-        None
+        next_hop
     }
 
     /// Get number of active routes
     #[allow(dead_code)]
     pub fn num_routes(&self) -> usize {
-        let single_count = self.single_routes.len();
-        let multi_count: usize = self.multi_routes.values().map(|v| v.len()).sum();
-        single_count + multi_count
+        self.route_next_hop.len()
     }
 
     /// Check if any routes are installed
     #[allow(dead_code)]
     pub fn has_routes(&self) -> bool {
-        !self.single_routes.is_empty() || !self.multi_routes.is_empty()
+        !self.route_next_hop.is_empty()
     }
 
-    /// Debug function to print simplified routing table
+    /// Debug function to print optimized routing table
     #[allow(dead_code)]
     pub fn debug_print_routing_table(&self) {
         debug!(
-            "=== HashMap + Jump Hash Routing Table Debug for Node {} ===",
+            "=== Optimized Route-ID Routing Table Debug for Node {} ===",
             self.local_id
         );
         debug!(
-            "Single routes: {}, Multi routes: {}, Total routes: {}",
-            self.single_routes.len(),
-            self.multi_routes.len(),
-            self.num_routes()
+            "Direct routes: {}, Directions: {}, Cached flows: {}",
+            self.route_next_hop.len(),
+            self.direction_routes.len(),
+            self.flow_route_cache.len()
         );
 
-        for ((src, dst), &next_hop) in &self.single_routes {
-            debug!("  Single route: {}→{} -> {}", src, dst, next_hop);
+        for (&route_id, &next_hop) in &self.route_next_hop {
+            debug!("  Route {}: -> next_hop {}", route_id, next_hop);
         }
 
-        for ((src, dst), next_hops) in &self.multi_routes {
+        for ((src, dst), route_ids) in &self.direction_routes {
             debug!(
-                "  Multi route: {}→{} -> {:?} ({} paths)",
+                "  Direction {}→{}: routes {:?} ({} options)",
                 src,
                 dst,
-                next_hops,
-                next_hops.len()
+                route_ids,
+                route_ids.len()
             );
         }
         debug!("=== End Routing Table Debug ===");
