@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use fxhash::FxHashMap;
@@ -13,12 +13,12 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::dataplane::INTERNAL_Q_SIZE;
+use crate::dataplane::NodeId;
 use crate::dataplane::local_interface::TunWriter;
 use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::SimpleRoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
-use crate::dataplane::NodeId;
 use nextmini_messages::SimpleRouteEntry;
 
 pub struct ProcessorManager {
@@ -48,12 +48,10 @@ impl ProcessorManager {
         }
     }
 
-
-
     pub async fn update_simple_routes(&mut self, routes: Vec<SimpleRouteEntry>) {
         // Set base IPv4 address for node ID calculation (should be configurable)
         self.simple_routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
-        
+
         // Install routes directly using SimpleRouteEntry
         self.simple_routing_table.install_routes(routes);
         self.swap_processors().await;
@@ -83,7 +81,11 @@ impl ProcessorManager {
             let flg = shutdown_flag.clone();
             let simple_table = self.simple_routing_table.clone();
             let senders = self.context.reproduce_senders().await;
-            let tun_writer = self.context.get_tun_writer().await.expect("TUN writer not available for processor");
+            let tun_writer = self
+                .context
+                .get_tun_writer()
+                .await
+                .expect("TUN writer not available for processor");
             // let stream2routes = self.stream2routes.clone();
             // let stream_counters = self.stream_counters.clone();
             let metrics_tx = self.context.get_metrics_tx();
@@ -115,8 +117,6 @@ impl ProcessorManager {
         }
     }
 }
-
-
 
 pub struct Processor {
     // The channel receiver to obtain packets from NodeReceiver or TUN reader
@@ -173,10 +173,10 @@ impl Processor {
 
         // Extract destination IP from IP header (bytes 16-19)
         let dst_ip = u32::from_be_bytes([
-            packet.buf[16], 
-            packet.buf[17], 
-            packet.buf[18], 
-            packet.buf[19]
+            packet.buf[16],
+            packet.buf[17],
+            packet.buf[18],
+            packet.buf[19],
         ]);
 
         // Calculate expected local IP: 10.0.0.{local_id}
@@ -184,7 +184,7 @@ impl Processor {
         let expected_local_ip = 0x0A000000u32 + (self.simple_routing_table.local_id as u32);
 
         let matches = dst_ip == expected_local_ip;
-        
+
         if matches {
             // Removed high-frequency debug logging for performance
         }
@@ -197,6 +197,11 @@ impl Processor {
         let batch_size = 256;
         let mut receiver = self.receiver_rx.write().await;
 
+        debug!(
+            "[PERF] Processor for local_id {} started",
+            self.simple_routing_table.local_id
+        );
+
         // Start the main loop
         loop {
             for i in 0..batch_size {
@@ -204,7 +209,13 @@ impl Processor {
                     return;
                 }
 
-                // Wait for packets to be avaiable
+                // Wait for packets to be available
+                let receive_start = if cfg!(debug_assertions) {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+
                 let packet = if i == 0 {
                     receiver
                         .recv()
@@ -218,66 +229,104 @@ impl Processor {
                         Err(_) => break,
                     }
                 };
+                debug!(
+                    "[TEMP_DEBUG] Processor received packet: flow_id={}, size={}",
+                    packet.flow_id, packet.packet_size
+                );
+
+                if cfg!(debug_assertions) {
+                    if let Some(start) = receive_start {
+                        let receive_duration = start.elapsed();
+                        if i == 0 && receive_duration.as_micros() > 100 {
+                            // Log only for blocking recv and if it's slow
+                            debug!(
+                                "[PERF] Processor recv() took {}μs for flow_id {}",
+                                receive_duration.as_micros(),
+                                packet.flow_id
+                            );
+                        }
+                    }
+                }
 
                 // Skip empty packets to prevent downstream processing errors
                 if packet.packet_size == 0 {
-                    debug!("Processor: Skipping empty packet with flow_id: {}", packet.flow_id);
+                    debug!(
+                        "Processor: Skipping empty packet with flow_id: {}",
+                        packet.flow_id
+                    );
                     continue;
                 }
 
-                // Removed high-frequency debug logging for performance
+                let processing_start = if cfg!(debug_assertions) {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
 
-                        // Check if this packet is destined for the local node before routing
-                        if self.is_packet_for_local_node(&packet) {
-                            // Removed high-frequency debug logging for performance
-                            self.tun_writer.write_packet(packet).await;
-                            continue;
+                // Check if this packet is destined for the local node before routing
+                let local_check_start = if cfg!(debug_assertions) {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
+                let is_local = self.is_packet_for_local_node(&packet);
+                if cfg!(debug_assertions) {
+                    if let Some(start) = local_check_start {
+                        let local_check_duration = start.elapsed();
+                        if local_check_duration.as_micros() > 5 {
+                            // Log if check takes more than 5us
+                            debug!(
+                                "[PERF] is_packet_for_local_node check took {}μs for flow_id {}",
+                                local_check_duration.as_micros(),
+                                packet.flow_id
+                            );
                         }
+                    }
+                }
 
-                // Preprocess the packet based on its stream id (only used if the multi-path method is "stream")
-                // if packet.has_stream_id {
-                //     // If we can get a stream id, then we assign a path to this stream
-                //     let path_id = if let Some(path_id) = self
-                //         .routing_table
-                //         .get_path_id(&packet.flow_id, &packet.stream_id)
-                //     {
-                //         // First, we check if routing table has a path assigned for this stream
-                //         path_id
-                //     } else {
-                //         // If not, we assign a new path to this stream
-                //         let path_count = *self
-                //             .stream_counters
-                //             .write()
-                //             .await
-                //             .entry(packet.flow_id)
-                //             .and_modify(|e| *e += 1)
-                //             .or_insert(1);
-                //         let path_id =
-                //             path_count % self.routing_table.get_num_paths(&packet.flow_id);
-                //         self.stream2routes
-                //             .write()
-                //             .await
-                //             .insert((packet.flow_id, packet.stream_id), path_id as u8);
-                //         self.routing_table.insert_stream_mapping(
-                //             packet.flow_id,
-                //             packet.stream_id,
-                //             path_id as u8,
-                //         );
-                //         path_id as u8
-                //     };
-                //     packet.update_route(path_id); // The 14th byte is the third byte of the IPv4 addr, which we use to set the route.
-                //     // We are also going to report the metrics to the metrics collector
-                //     self.metrics_tx
-                //         .send((
-                //             packet.flow_id,
-                //             packet.stream_id,
-                //             self.routing_table.local_id,
-                //             packet.packet_size,
-                //         ))
-                //         .expect("Failed to send metrics to the metrics collector.");
-                // }
+                if is_local {
+                    if cfg!(debug_assertions) {
+                        // This log is fine as is, not a timing but a state
+                        // debug!("[PERF] Packet flow_id {} destined for local node {} (direct check)",
+                        //        packet.flow_id, self.simple_routing_table.local_id);
+                    }
+                    let tun_write_start = if cfg!(debug_assertions) {
+                        Some(Instant::now())
+                    } else {
+                        None
+                    };
+                    let packet_flow_id_for_log = packet.flow_id; // Store flow_id before packet is moved
+                    self.tun_writer.write_packet(packet).await;
+                    if cfg!(debug_assertions) {
+                        if let Some(start) = tun_write_start {
+                            let tun_duration = start.elapsed();
+                            if tun_duration.as_micros() > 50 {
+                                // Log if TUN write is slow
+                                debug!(
+                                    "[PERF] TUN write (direct local) took {}μs for flow_id {}",
+                                    tun_duration.as_micros(),
+                                    packet_flow_id_for_log
+                                );
+                            }
+                        }
+                    }
+                    if cfg!(debug_assertions) {
+                        if let Some(start) = processing_start {
+                            let total_duration = start.elapsed();
+                            if total_duration.as_micros() > 100 {
+                                // Log if total processing for local packet is slow
+                                debug!(
+                                    "[PERF] Total packet processing (direct local) took {}μs for flow_id {}",
+                                    total_duration.as_micros(),
+                                    packet_flow_id_for_log
+                                );
+                            }
+                        }
+                    }
+                    continue;
+                }
 
-                // Report metrics for the packet
+                // Report metrics for the packet (moved here as it's for non-local packets or packets to be routed)
                 self.metrics_tx
                     .send((
                         packet.flow_id,
@@ -287,32 +336,122 @@ impl Processor {
                     .expect("Failed to send metrics to the metrics collector.");
 
                 // Find the next hop and send the packet
+                let routing_start = if cfg!(debug_assertions) {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
                 let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
 
-                if let Some(next_hop) = next_hop {
-                    // Sending out the packet
-                    if next_hop == self.simple_routing_table.local_id {
-                        // Local delivery - use the single TUN writer
-                        self.tun_writer.write_packet(packet).await;
+                if cfg!(debug_assertions) {
+                    if let Some(start) = routing_start {
+                        let routing_duration = start.elapsed();
+                        if routing_duration.as_micros() > 10 {
+                            // Log if route lookup is slow
+                            debug!(
+                                "[PERF] Route lookup took {}μs for flow_id {}",
+                                routing_duration.as_micros(),
+                                packet.flow_id
+                            );
+                        }
+                    }
+                }
+
+                if let Some(next_hop_id) = next_hop {
+                    let send_start = if cfg!(debug_assertions) {
+                        Some(Instant::now())
                     } else {
-                        match self.senders.get_mut(&next_hop) {
+                        None
+                    };
+                    let packet_flow_id = packet.flow_id; // Save flow_id before packet is moved
+
+                    // Sending out the packet
+                    if next_hop_id == self.simple_routing_table.local_id {
+                        // Local delivery determined by routing logic - use the single TUN writer
+                        let tun_write_routed_local_start = if cfg!(debug_assertions) {
+                            Some(Instant::now())
+                        } else {
+                            None
+                        };
+                        self.tun_writer.write_packet(packet).await;
+                        if cfg!(debug_assertions) {
+                            if let Some(start) = tun_write_routed_local_start {
+                                let tun_duration = start.elapsed();
+                                if tun_duration.as_micros() > 50 {
+                                    // Log if TUN write is slow
+                                    debug!(
+                                        "[PERF] TUN write (routed local) took {}μs for flow_id {}",
+                                        tun_duration.as_micros(),
+                                        packet_flow_id
+                                    );
+                                }
+                            }
+                            // debug!("[PERF] Local delivery (via routing) for flow_id {}", packet_flow_id);
+                        }
+                    } else {
+                        match self.senders.get_mut(&next_hop_id) {
                             Some(sender) => {
                                 sender.send(packet).await;
+                                if cfg!(debug_assertions) {
+                                    if let Some(start) = send_start {
+                                        let send_duration = start.elapsed();
+                                        if send_duration.as_micros() > 50 {
+                                            // Log if node send is slow
+                                            debug!(
+                                                "[PERF] NodeSender.send() to node {} took {}μs for flow_id {}",
+                                                next_hop_id,
+                                                send_duration.as_micros(),
+                                                packet_flow_id
+                                            );
+                                        }
+                                    }
+                                }
                             }
                             None => {
                                 // Route defined, but the node doesn't exist yet.
                                 println!(
                                     "WARNING: Route defined for flow {}, but node {} is offline. Packet dropped",
-                                    packet.flow_id, next_hop
+                                    packet_flow_id, next_hop_id
                                 );
+                                // No total processing log here as packet is dropped before full processing cycle completes in the same way
                                 continue;
+                            }
+                        }
+                    }
+
+                    if cfg!(debug_assertions) {
+                        if let Some(start) = processing_start {
+                            let total_duration = start.elapsed();
+                            if total_duration.as_micros() > 100 {
+                                // Log if total processing for routed packet is slow
+                                debug!(
+                                    "[PERF] Total packet processing (routed) took {}μs for flow_id {}",
+                                    total_duration.as_micros(),
+                                    packet_flow_id
+                                );
                             }
                         }
                     }
                 } else {
                     // No route was found for the packet
-                    println!("WARNING: No route found for flow {} from node {}", 
-                            packet.flow_id, self.simple_routing_table.local_id);
+                    let packet_flow_id = packet.flow_id; // Save flow_id before continue
+                    if cfg!(debug_assertions) {
+                        debug!(
+                            "[PERF] No route found for flow {} from node {}. Packet dropped.",
+                            packet_flow_id, self.simple_routing_table.local_id
+                        );
+                        if let Some(start) = processing_start {
+                            let total_duration = start.elapsed();
+                            // Log time even for dropped packets if it's significant, to see if pre-drop processing is slow
+                            if total_duration.as_micros() > 20 {
+                                debug!(
+                                    "[PERF] Processing before drop (no route) took {}μs for flow_id {}",
+                                    total_duration.as_micros(),
+                                    packet_flow_id
+                                );
+                            }
+                        }
+                    }
                     continue;
                 }
             }
@@ -342,6 +481,11 @@ impl SenderLoadBalancer {
     }
 
     pub fn try_send(&mut self, packet: Packet) {
+        let lb_start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let proc_id;
 
         // if packet.has_stream_id {
@@ -355,7 +499,7 @@ impl SenderLoadBalancer {
 
         //         self.tx_current = (self.tx_current + 1) % self.n_proc;
         //     }
-        // } else 
+        // } else
         if let Some(id) = self.flow2proc.get(&packet.flow_id) {
             proc_id = *id;
         } else {
@@ -377,8 +521,30 @@ impl SenderLoadBalancer {
         };
 
         match tx.try_send(packet) {
-            Err(_) => return,
-            Ok(_) => return,
+            Err(_) => {
+                if cfg!(debug_assertions) {
+                    debug!(
+                        "[PERF] LoadBalancer try_send failed - channel full for processor {}",
+                        proc_id
+                    );
+                }
+                return;
+            }
+            Ok(_) => {
+                if cfg!(debug_assertions) {
+                    if let Some(start) = lb_start {
+                        let lb_duration = start.elapsed();
+                        if lb_duration.as_micros() > 10 {
+                            debug!(
+                                "[PERF] LoadBalancer try_send took {}μs to processor {}",
+                                lb_duration.as_micros(),
+                                proc_id
+                            );
+                        }
+                    }
+                }
+                return;
+            }
         };
     }
 }

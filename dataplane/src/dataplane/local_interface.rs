@@ -1,6 +1,7 @@
 use core::panic;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::mpsc::Sender;
 use tun_rs::{AsyncDevice, DeviceBuilder};
@@ -47,9 +48,10 @@ pub async fn create_tun_device(
         )
         .mtu(configs.mtu as u16);
 
-    let dev = dev_builder.build_async()
+    let dev = dev_builder
+        .build_async()
         .expect("Failed to create tun device");
-    
+
     eprintln!("Successfully created TUN device {if_name}.");
 
     Arc::new(dev)
@@ -73,34 +75,95 @@ impl TunReader {
     pub async fn start_reading(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
+        if cfg!(debug_assertions) {
+            debug!("[PERF] TunReader started");
+        }
+
         loop {
+            let read_start = if cfg!(debug_assertions) {
+                Some(Instant::now())
+            } else {
+                None
+            };
+
             let n = match self.dev.recv(&mut buf).await {
                 Ok(n) => {
-                    debug!("TunReader: Successfully read {} bytes from TUN device", n);
+                    if cfg!(debug_assertions) {
+                        if let Some(start) = read_start {
+                            let read_duration = start.elapsed();
+                            if read_duration.as_micros() > 100 {
+                                debug!(
+                                    "[PERF] TunReader recv() took {}μs to read {} bytes",
+                                    read_duration.as_micros(),
+                                    n
+                                );
+                            }
+                        }
+                        debug!("TunReader: Successfully read {} bytes from TUN device", n);
+                    }
                     n
-                },
+                }
                 Err(e) => {
                     panic!("Error reading from the TUN device: {:?}", e);
                 }
             };
-            
+
             // Skip empty or invalid packets to prevent downstream errors
             if n == 0 {
                 debug!("TunReader: Received empty packet from TUN device, skipping");
                 continue;
             }
-            
-            let packet = Packet::new(n, buf);
 
-            // packet received from the TUN device is already IPv6
-            // .len() can be removed to see the entire packet
-            debug!("TunReader: Created packet with flow_id: {}, size: {} bytes, first 16 bytes: {:?}", 
-                   packet.flow_id, packet.packet_size, &packet.buf[0..std::cmp::min(16, packet.packet_size)]);
-            
+            let packet_create_start = if cfg!(debug_assertions) {
+                Some(Instant::now())
+            } else {
+                None
+            };
+            let packet = Packet::new(n, buf);
+            debug!("TunReader: Received packet of {:?} bytes", packet.buf.len());
+
+            if cfg!(debug_assertions) {
+                if let Some(start) = packet_create_start {
+                    let create_duration = start.elapsed();
+                    if create_duration.as_micros() > 10 {
+                        debug!(
+                            "[PERF] Packet::new() took {}μs for {} bytes",
+                            create_duration.as_micros(),
+                            n
+                        );
+                    }
+                }
+                // packet received from the TUN device is already IPv6
+                // .len() can be removed to see the entire packet
+                debug!(
+                    "TunReader: Created packet with flow_id: {}, size: {} bytes, first 16 bytes: {:?}",
+                    packet.flow_id,
+                    packet.packet_size,
+                    &packet.buf[0..std::cmp::min(16, packet.packet_size)]
+                );
+            }
+
             // Always try to set stream ID as Stream mode is default
             // packet.try_set_stream_id(); // Commented out since method is not available
 
+            let send_start = if cfg!(debug_assertions) {
+                Some(Instant::now())
+            } else {
+                None
+            };
             self.senders.try_send(packet);
+
+            if cfg!(debug_assertions) {
+                if let Some(start) = send_start {
+                    let send_duration = start.elapsed();
+                    if send_duration.as_micros() > 50 {
+                        debug!(
+                            "[PERF] LoadBalancer.try_send() took {}μs",
+                            send_duration.as_micros()
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -117,17 +180,32 @@ impl TunWriter {
     }
 
     pub async fn write_packet(&self, packet: Packet) {
+        let validation_start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let buf = &packet.buf[0..packet.packet_size];
 
         // Skip empty or invalid packets
         if buf.len() < 20 {
-            debug!("TunWriter: Skipping packet with insufficient size: {} bytes (need at least 20 for IP header)", buf.len());
+            if cfg!(debug_assertions) {
+                debug!(
+                    "TunWriter: Skipping packet with insufficient size: {} bytes (need at least 20 for IP header)",
+                    buf.len()
+                );
+            }
             return;
         }
 
         // Validate this is an IPv4 packet
         if buf[0] >> 4 != 4 {
-            debug!("TunWriter: Skipping non-IPv4 packet (version={})", buf[0] >> 4);
+            if cfg!(debug_assertions) {
+                debug!(
+                    "TunWriter: Skipping non-IPv4 packet (version={})",
+                    buf[0] >> 4
+                );
+            }
             return;
         }
 
@@ -135,18 +213,56 @@ impl TunWriter {
         let ihl = (buf[0] & 0x0F) as usize;
         let header_length = ihl * 4;
         if header_length > buf.len() || header_length < 20 {
-            debug!("TunWriter: Invalid IP header length: IHL={}, header_len={}, packet_len={}", 
-                   ihl, header_length, buf.len());
+            if cfg!(debug_assertions) {
+                debug!(
+                    "TunWriter: Invalid IP header length: IHL={}, header_len={}, packet_len={}",
+                    ihl,
+                    header_length,
+                    buf.len()
+                );
+            }
             return;
         }
 
-        // Send the original packet without modification
-        // Note: Removed the problematic modification of buf[14] which was corrupting destination IP
-        debug!("TunWriter: Sending packet of {} bytes to TUN device", buf.len());
-        
+        if cfg!(debug_assertions) {
+            if let Some(start) = validation_start {
+                let validation_duration = start.elapsed();
+                if validation_duration.as_micros() > 10 {
+                    debug!(
+                        "[PERF] TunWriter validation took {}μs",
+                        validation_duration.as_micros()
+                    );
+                }
+            }
+            // Send the original packet without modification
+            // Note: Removed the problematic modification of buf[14] which was corrupting destination IP
+            debug!(
+                "TunWriter: Sending packet of {} bytes to TUN device",
+                buf.len()
+            );
+        }
+
+        let write_start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
         self.dev
             .send(buf)
             .await
             .expect("Failed to write to TUN device");
+
+        if cfg!(debug_assertions) {
+            if let Some(start) = write_start {
+                let write_duration = start.elapsed();
+                if write_duration.as_micros() > 100 {
+                    debug!(
+                        "[PERF] TUN device send() took {}μs for {} bytes",
+                        write_duration.as_micros(),
+                        buf.len()
+                    );
+                }
+            }
+        }
     }
 }
