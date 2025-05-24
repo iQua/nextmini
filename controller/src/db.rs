@@ -158,7 +158,6 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         let n_nodes = config.routes_preset.n_nodes.unwrap_or(0);
         let _route_ids = config.routes_preset.route_ids.clone().unwrap_or(vec![0]);
 
-        // assign route_id to each route in the preset topology
         match preset_topology {
             config::PresetTopology::FullMesh => {
                 let mut current_route_id = 0;
@@ -261,15 +260,9 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     }
 
     // adds initial routes from the configuration file
-    // inital routes is specified routesin the config file
-    // manually specified routes will override the preset routes with the same (src_node_id, dst_node_id, route_id)
     println!("Adding initial routes from the configuration file.");
 
     for route in config.routes.clone() {
-        
-        println!("Overriding preset route route_id {} from node {} to node {} with inital route {:?}", 
-                route.route_id, route.src_node_id, route.dst_node_id, route.route);
-
         sqlx::query(
             r#"
             INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
