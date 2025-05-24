@@ -183,10 +183,7 @@ impl Processor {
         let matches = dst_ip == expected_local_ip;
         
         if matches {
-            debug!("Processor: Destination IP {}.{}.{}.{} matches local node {} IP", 
-                   (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF, 
-                   (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
-                   self.simple_routing_table.local_id);
+            // Removed high-frequency debug logging for performance
         }
 
         matches
@@ -225,11 +222,11 @@ impl Processor {
                     continue;
                 }
 
-                debug!("Processor: Received packet, flow_id: {}, size: {} bytes", packet.flow_id, packet.packet_size);
+                // Removed high-frequency debug logging for performance
 
                         // Check if this packet is destined for the local node before routing
                         if self.is_packet_for_local_node(&packet) {
-                            debug!("Processor: Packet destined for local node, delivering locally, flow_id: {}", packet.flow_id);
+                            // Removed high-frequency debug logging for performance
                             self.tun_writer.write_packet(packet).await;
                             continue;
                         }
@@ -288,18 +285,18 @@ impl Processor {
 
                 // Find the next hop and send the packet
                 let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
-                debug!("Processor: Next hop for flow_id {}: {:?}", packet.flow_id, next_hop);
+                // Removed high-frequency debug logging for performance
 
                 if let Some(next_hop) = next_hop {
                     // Sending out the packet
                     if next_hop == self.simple_routing_table.local_id {
                         // Local delivery - use the single TUN writer
-                        debug!("Processor: Sending packet to local TUN writer, flow_id: {}", packet.flow_id);
+                        // Removed high-frequency debug logging for performance
                         self.tun_writer.write_packet(packet).await;
                     } else {
                         match self.senders.get_mut(&next_hop) {
                             Some(sender) => {
-                                debug!("Processor: Sending packet to node {}, flow_id: {}", next_hop, packet.flow_id);
+                                // Removed high-frequency debug logging for performance
                                 sender.send(packet).await;
                             }
                             None => {

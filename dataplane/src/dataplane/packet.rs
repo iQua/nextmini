@@ -17,8 +17,8 @@ pub struct Packet {
 
 impl Packet {
     pub fn new(packet_size: usize, buf: PacketBuf) -> Self {
-        // Validate IP packet before processing
-        Self::debug_validate_packet(&buf, packet_size);
+        // Validate IP packet before processing - disabled for performance
+        // Self::debug_validate_packet(&buf, packet_size);
         
         Self {
             flow_id: Self::get_flow_id_from_buf(&buf, packet_size),
@@ -33,7 +33,7 @@ impl Packet {
     fn get_flow_id_from_buf(buf: &PacketBuf, packet_size: usize) -> FlowId {
         // Check if it's an IPv4 packet
         if packet_size < 20 || buf[0] >> 4 != 4 {
-            debug!("FlowID: Non-IPv4 or insufficient data, using fallback calculation");
+            // Non-IPv4 or insufficient data, using fallback calculation
             // Fallback to old behavior for non-IPv4 packets - convert to 128-bit
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
             let old_flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
@@ -50,7 +50,7 @@ impl Packet {
 
         // Validate IHL
         if ihl < 5 || transport_header_start > packet_size {
-            debug!("FlowID: Invalid IHL {} or insufficient packet size", ihl);
+            // Invalid IHL or insufficient packet size
             return 0;
         }
 
@@ -66,18 +66,16 @@ impl Packet {
                         buf[transport_header_start + 2],
                         buf[transport_header_start + 3],
                     ]);
-                    debug!("FlowID: Extracted ports {}:{} -> {}:{}", 
-                           Self::format_ip(src_ip), src_port, Self::format_ip(dst_ip), dst_port);
+                    // Extracted ports - removed debug for performance
                     (src_port, dst_port)
                 }
                 _ => {
-                    debug!("FlowID: Protocol {} - no port extraction", buf[9]);
+                    // Protocol - no port extraction
                     (0, 0) // Other protocols
                 }
             }
         } else {
-            debug!("FlowID: Insufficient data for transport header (need {}, have {})", 
-                   transport_header_start + 4, packet_size);
+            // Insufficient data for transport header
             (0, 0) // Not enough data
         };
 
@@ -88,8 +86,7 @@ impl Packet {
             | ((src_port as u128) << 48)
             | ((dst_port as u128) << 32);
 
-        debug!("FlowID: Generated 0x{:032x} for {}:{} -> {}:{}", 
-               flow_id, Self::format_ip(src_ip), src_port, Self::format_ip(dst_ip), dst_port);
+        // Generated flow_id - removed debug for performance
 
         flow_id
     }
@@ -104,12 +101,12 @@ impl Packet {
 
     fn debug_validate_packet(buf: &PacketBuf, packet_size: usize) {
         if packet_size == 0 {
-            debug!("Packet: Empty packet detected");
+            // Empty packet detected
             return;
         }
 
         if packet_size < 20 {
-            debug!("Packet: Too small for IP header: {} bytes", packet_size);
+            // Too small for IP header
             return;
         }
 
@@ -118,24 +115,22 @@ impl Packet {
         let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
         let protocol = buf[9];
 
-        debug!("Packet: IPv{}, IHL={}, TotalLen={}, ActualSize={}, Protocol={}", 
-               version, ihl, total_length, packet_size, protocol);
+        // Packet validation - removed debug for performance
 
         if version != 4 {
-            debug!("Packet: WARNING - Not IPv4 (version={})", version);
+            // WARNING - Not IPv4
         }
 
         if ihl < 5 {
-            debug!("Packet: WARNING - Invalid IHL: {}", ihl);
+            // WARNING - Invalid IHL
         }
 
         if total_length != packet_size {
-            debug!("Packet: WARNING - Length mismatch: header={}, actual={}", 
-                   total_length, packet_size);
+            // WARNING - Length mismatch
         }
 
         if total_length < (ihl * 4) as usize {
-            debug!("Packet: WARNING - Total length less than header length");
+            // WARNING - Total length less than header length
         }
     }
 

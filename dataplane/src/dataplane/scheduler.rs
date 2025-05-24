@@ -7,7 +7,7 @@ use crossbeam_queue::ArrayQueue;
 
 use tracing::{debug, error};
 
-use crate::dataplane::FlowIdExt;
+
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::dataplane::packet::Packet;
 use crate::dataplane::protocols_io::ProtocolWriter;
@@ -107,7 +107,7 @@ impl Scheduler for Fifo {
 
                 while let Some(packet) = queue.pop() {
                     // Send raw packet data directly without protocol header
-                    debug!("Scheduler: Sending packet of {} bytes, flow_id: {}", packet.packet_size, packet.flow_id);
+                    // Removed high-frequency debug logging for performance
                     writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
 

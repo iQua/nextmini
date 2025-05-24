@@ -30,6 +30,7 @@ console-subscriber = "0.4"
 rcgen = { version = "0.13", features = ["pem"] }
 s2n-quic = "1"
 fxhash = "0.2"
+ahash = "0.8"
 rand = "0.9"
 approx = "0.5.1"
 rmp-serde = "1.3"

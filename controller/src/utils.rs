@@ -181,7 +181,8 @@ pub fn build_install_routes_message(
 }
 
 /// Builds a simplified InstallRoutes message for a specific node.
-/// This creates a direct mapping from route_id to next_hop for the dataplane.
+/// Sends ALL routes to ensure global consistency of flow_id->route_id mapping,
+/// but sets next_hop=0 for routes that don't pass through this node.
 pub fn build_install_routes_simple(
     config: &Config,
     routes: Vec<Route>,
@@ -190,18 +191,6 @@ pub fn build_install_routes_simple(
     let mut route_mappings: Vec<RouteMapping> = Vec::new();
 
     for route in routes {
-        // Find the position of this node in the route
-        let idx = route.route.iter().position(|&x| x == node_id);
-
-        let next_hop = match idx {
-            // The node is the destination of the route - next hop is itself
-            Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
-            // The node is in the middle of the path - next hop is the next node
-            Some(i) => route.route[i + 1] as usize,
-            // The route doesn't pass through this node - skip it
-            None => continue,
-        };
-
         // Compute virtual addresses for src and dst
         let src_addr = match create_new_virtual_addr(
             config.base_ipv4_addr,
@@ -219,6 +208,18 @@ pub fn build_install_routes_simple(
         ) {
             Some(addr) => addr,
             None => continue, // Skip this route if we can't create virtual address
+        };
+
+        // Find the position of this node in the route
+        let idx = route.route.iter().position(|&x| x == node_id);
+
+        let next_hop = match idx {
+            // The node is the destination of the route - next hop is itself
+            Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
+            // The node is in the middle of the path - next hop is the next node
+            Some(i) => route.route[i + 1] as usize,
+            // The route doesn't pass through this node - use 0 as marker
+            None => 0,
         };
 
         route_mappings.push(RouteMapping {
