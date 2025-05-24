@@ -260,18 +260,18 @@ mod tests {
     #[test]
     fn test_example_config_parsing() {
         let toml_content = r#"
-reset_db = true
-protocol = "quic"
+        reset_db = true
+        protocol = "quic"
 
-[[routes]]
-route = [1, 2, 3, 4]
+        [[routes]]
+        route = [1, 2, 3, 4]
 
-[[routes]]
-route = [1, 3, 2, 4]
+        [[routes]]
+        route = [1, 3, 2, 4]
 
-[[routes]]
-route = [1, 3, 4]
-"#;
+        [[routes]]
+        route = [1, 3, 4]
+        "#;
 
         let mut config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
 
@@ -318,20 +318,20 @@ route = [1, 3, 4]
     fn test_route_processing_logic() {
         // Test the route processing logic that happens in get_config
         let config_content = r#"
-reset_db = true
-protocol = "quic"
-base_ipv4_addr = [10, 0, 0, 0]
-ipv4_net_mask = [255, 255, 255, 0]
+        reset_db = true
+        protocol = "quic"
+        base_ipv4_addr = [10, 0, 0, 0]
+        ipv4_net_mask = [255, 255, 255, 0]
 
-[[routes]]
-route = [1, 2, 3, 4]
+        [[routes]]
+        route = [1, 2, 3, 4]
 
-[[routes]]
-route = [1, 3, 2, 4]
+        [[routes]]
+        route = [1, 3, 2, 4]
 
-[[routes]]
-route = [1, 3, 4]
-"#;
+        [[routes]]
+        route = [1, 3, 4]
+        "#;
 
         let mut config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
