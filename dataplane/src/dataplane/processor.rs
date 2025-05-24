@@ -5,12 +5,10 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use fxhash::FxHashMap;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
-use tracing::debug;
 
 use crate::dataplane::INTERNAL_Q_SIZE;
 use crate::dataplane::NodeId;
@@ -187,11 +185,6 @@ impl Processor {
         let batch_size = 256;
         let mut receiver = self.receiver_rx.write().await;
 
-        debug!(
-            "[PERF] Processor for local_id {} started",
-            self.simple_routing_table.local_id
-        );
-
         // Start the main loop
         loop {
             for i in 0..batch_size {
@@ -200,12 +193,6 @@ impl Processor {
                 }
 
                 // Wait for packets to be available
-                let receive_start = if cfg!(debug_assertions) {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-
                 let packet = if i == 0 {
                     receiver
                         .recv()
@@ -219,62 +206,14 @@ impl Processor {
                         Err(_) => break,
                     }
                 };
-                debug!(
-                    "[TEMP_DEBUG] Processor received packet: flow_id={}, size={}",
-                    packet.flow_id, packet.packet_size
-                );
-
-                if cfg!(debug_assertions) {
-                    if let Some(start) = receive_start {
-                        let receive_duration = start.elapsed();
-                        if i == 0 && receive_duration.as_micros() > 100 {
-                            // Log only for blocking recv and if it's slow
-                            debug!(
-                                "[PERF] Processor recv() took {}μs for flow_id {}",
-                                receive_duration.as_micros(),
-                                packet.flow_id
-                            );
-                        }
-                    }
-                }
 
                 // Skip empty packets to prevent downstream processing errors
                 if packet.packet_size == 0 {
-                    debug!(
-                        "Processor: Skipping empty packet with flow_id: {}",
-                        packet.flow_id
-                    );
                     continue;
                 }
 
-                let processing_start = if cfg!(debug_assertions) {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-
                 if self.is_packet_for_local_node(&packet) {
-                    let tun_write_start = if cfg!(debug_assertions) {
-                        Some(Instant::now())
-                    } else {
-                        None
-                    };
-
-                    let packet_flow_id_for_log = packet.flow_id; // Store flow_id before packet is moved
                     self.tun_writer.write_packet(packet).await;
-                    if cfg!(debug_assertions) {
-                        if let Some(start) = tun_write_start {
-                            let tun_duration = start.elapsed();
-                            if tun_duration.as_micros() > 50 {
-                                // Log if TUN write is slow
-                                debug!(
-                                    "[PERF] TUN write (direct local) took {}μs for flow_id {}",
-                                    tun_duration.as_micros(),
-                                    packet_flow_id_for_log
-                                );
-                            }
-                        }
-                    }
 
                     continue;
                 }
@@ -316,24 +255,6 @@ impl Processor {
                     }
                 } else {
                     // No route was found for the packet
-                    let packet_flow_id = packet.flow_id; // Save flow_id before continue
-                    if cfg!(debug_assertions) {
-                        debug!(
-                            "[PERF] No route found for flow {} from node {}. Packet dropped.",
-                            packet_flow_id, self.simple_routing_table.local_id
-                        );
-                        if let Some(start) = processing_start {
-                            let total_duration = start.elapsed();
-                            // Log time even for dropped packets if it's significant, to see if pre-drop processing is slow
-                            if total_duration.as_micros() > 20 {
-                                debug!(
-                                    "[PERF] Processing before drop (no route) took {}μs for flow_id {}",
-                                    total_duration.as_micros(),
-                                    packet_flow_id
-                                );
-                            }
-                        }
-                    }
                     continue;
                 }
             }
@@ -345,7 +266,6 @@ impl Processor {
 pub struct SenderLoadBalancer {
     txs: Vec<mpsc::Sender<Packet>>,
     tx_current: usize,
-    // stream2proc: FxHashMap<(SocketId, FlowId), usize>,
     flow2proc: FxHashMap<FlowId, usize>,
     n_proc: usize,
 }
@@ -363,25 +283,8 @@ impl SenderLoadBalancer {
     }
 
     pub fn try_send(&mut self, packet: Packet) {
-        let lb_start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
         let proc_id;
 
-        // if packet.has_stream_id {
-        //     if let Some(id) = self.stream2proc.get(&(packet.stream_id, packet.flow_id)) {
-        //         proc_id = *id;
-        //     } else {
-        //         proc_id = self.tx_current;
-
-        //         self.stream2proc
-        //             .insert((packet.stream_id, packet.flow_id), proc_id);
-
-        //         self.tx_current = (self.tx_current + 1) % self.n_proc;
-        //     }
-        // } else
         if let Some(id) = self.flow2proc.get(&packet.flow_id) {
             proc_id = *id;
         } else {
@@ -404,27 +307,9 @@ impl SenderLoadBalancer {
 
         match tx.try_send(packet) {
             Err(_) => {
-                if cfg!(debug_assertions) {
-                    debug!(
-                        "[PERF] LoadBalancer try_send failed - channel full for processor {}",
-                        proc_id
-                    );
-                }
                 return;
             }
             Ok(_) => {
-                if cfg!(debug_assertions) {
-                    if let Some(start) = lb_start {
-                        let lb_duration = start.elapsed();
-                        if lb_duration.as_micros() > 10 {
-                            debug!(
-                                "[PERF] LoadBalancer try_send took {}μs to processor {}",
-                                lb_duration.as_micros(),
-                                proc_id
-                            );
-                        }
-                    }
-                }
                 return;
             }
         };
