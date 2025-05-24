@@ -8,12 +8,6 @@ use nextmini_messages::Protocol;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
-    #[serde(default)]
-    pub route_id: usize,
-    #[serde(default)]
-    pub src_node_id: usize,
-    #[serde(default)]
-    pub dst_node_id: usize,
     pub route: Vec<usize>,
 }
 
@@ -37,11 +31,9 @@ pub enum PresetTopology {
 pub struct RoutePreset {
     #[serde(default)]
     #[serde(alias = "type")]
-    pub preset_topology: Option<PresetTopology>,
+    pub topology: Option<PresetTopology>,
     #[serde(default)]
     pub n_nodes: Option<usize>,
-    #[serde(default)]
-    pub route_ids: Option<Vec<usize>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -88,11 +80,8 @@ pub struct Config {
     #[serde(default = "default_true")]
     pub auto_db_sync: bool,
 
-    /// A list of routes. For example:
-    ///     route_id: 0,        // The route ID (unique identifier)
-    ///     src_node_id: 0,     // The source node ID
-    ///     dst_node_id: 1,     // The destination node ID
-    ///     hops: [0, 2, 3, 1]  // The paths for the route
+    /// A list of routes. Each route is defined as a path of node IDs.
+    /// For example: route = [1, 2, 3, 4] means a path from node 1 to node 4 via nodes 2 and 3
     #[serde(default)]
     pub routes: Vec<Route>,
 
@@ -100,7 +89,7 @@ pub struct Config {
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
 
-    /// A dictionary of routes presets. Overriden by routes on overlap.
+    /// Preset topology configuration for automatic route generation.
     #[serde(default)]
     pub routes_preset: RoutePreset,
 
@@ -173,42 +162,13 @@ pub fn get_config(filename: &str) -> Config {
     if Path::new(filename).exists() {
         match fs::read_to_string(filename) {
             Ok(content) => match toml::from_str::<Config>(&content) {
-                Ok(mut config) => {
+                Ok(config) => {
                     println!("Successfully loaded configuration from: {}", filename);
 
-                    for (index, route) in config.routes.iter_mut().enumerate() {
-                        // Only auto-assign route_id if it's not manually specified (default value 0)
-                        if route.route_id == 0 {
-                            route.route_id = index;
-                            println!(
-                                "Auto-assigned route_id {} to route at index {}",
-                                route.route_id, index
-                            );
-                        } else {
-                            println!(
-                                "Using manually specified route_id {} for route at index {}",
-                                route.route_id, index
-                            );
-                        }
-
-                        // If src_node_id is not set and route is not empty, use first element of route
-                        if route.src_node_id == 0 && !route.route.is_empty() {
-                            route.src_node_id = route.route[0];
-                            println!(
-                                "Auto-inferring src_node_id as {} from the route array for route_id {}",
-                                route.src_node_id, route.route_id
-                            );
-                        }
-
-                        // If dst_node_id is not set and route is not empty, use last element of route
-                        if route.dst_node_id == 0 && !route.route.is_empty() {
-                            route.dst_node_id = route.route[route.route.len() - 1];
-                            println!(
-                                "Auto-inferring dst_node_id as {} from the route array for route_id {}",
-                                route.dst_node_id, route.route_id
-                            );
-                        }
-                    }
+                    println!(
+                        "Loaded {} custom routes from configuration",
+                        config.routes.len()
+                    );
                     config
                 }
                 Err(e) => {
@@ -273,7 +233,7 @@ mod tests {
         route = [1, 3, 4]
         "#;
 
-        let mut config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
+        let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
 
         // Test basic config values
         assert_eq!(config.reset_db, true);
@@ -282,35 +242,9 @@ mod tests {
         // Test that we have 3 routes
         assert_eq!(config.routes.len(), 3);
 
-        // Simulate route processing logic from get_config
-        for (index, route) in config.routes.iter_mut().enumerate() {
-            route.route_id = index;
-
-            // Auto-infer src_node_id and dst_node_id like in get_config
-            if route.src_node_id == 0 && !route.route.is_empty() {
-                route.src_node_id = route.route[0];
-            }
-            if route.dst_node_id == 0 && !route.route.is_empty() {
-                route.dst_node_id = route.route[route.route.len() - 1];
-            }
-        }
-
-        // Verify route 0: [1, 2, 3, 4]
-        assert_eq!(config.routes[0].route_id, 0);
-        assert_eq!(config.routes[0].src_node_id, 1);
-        assert_eq!(config.routes[0].dst_node_id, 4);
+        // Verify route parsing
         assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
-
-        // Verify route 1: [1, 3, 2, 4]
-        assert_eq!(config.routes[1].route_id, 1);
-        assert_eq!(config.routes[1].src_node_id, 1);
-        assert_eq!(config.routes[1].dst_node_id, 4);
         assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
-
-        // Verify route 2: [1, 3, 4]
-        assert_eq!(config.routes[2].route_id, 2);
-        assert_eq!(config.routes[2].src_node_id, 1);
-        assert_eq!(config.routes[2].dst_node_id, 4);
         assert_eq!(config.routes[2].route, vec![1, 3, 4]);
     }
 
@@ -333,20 +267,7 @@ mod tests {
         route = [1, 3, 4]
         "#;
 
-        let mut config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Simulate the route processing logic from get_config
-        for (index, route) in config.routes.iter_mut().enumerate() {
-            route.route_id = index;
-
-            // Auto-infer src_node_id and dst_node_id like in get_config
-            if route.src_node_id == 0 && !route.route.is_empty() {
-                route.src_node_id = route.route[0];
-            }
-            if route.dst_node_id == 0 && !route.route.is_empty() {
-                route.dst_node_id = route.route[route.route.len() - 1];
-            }
-        }
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify basic configuration
         assert_eq!(config.reset_db, true);
@@ -357,16 +278,323 @@ mod tests {
         // Verify routes were processed correctly
         assert_eq!(config.routes.len(), 3);
 
-        // Verify route processing (route_id assignment and src/dst inference)
-        for (index, route) in config.routes.iter().enumerate() {
-            assert_eq!(route.route_id, index);
-            assert_eq!(route.src_node_id, 1); // Should be auto-inferred from first element
-            assert_eq!(route.dst_node_id, 4); // Should be auto-inferred from last element
-        }
-
         // Verify specific route paths
         assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
         assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
         assert_eq!(config.routes[2].route, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn test_preset_topology_config_parsing() {
+        // Test preset topology configuration parsing
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+
+        [routes_preset]
+        topology = "full_mesh"
+        n_nodes = 3
+
+        [[routes]]
+        route = [1, 2, 3]
+
+        [[routes]]
+        route = [3, 2, 1]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify preset topology configuration
+        assert!(config.routes_preset.topology.is_some());
+        match config.routes_preset.topology.as_ref().unwrap() {
+            PresetTopology::FullMesh => {
+                assert_eq!(config.routes_preset.n_nodes, Some(3));
+            }
+            _ => panic!("Expected FullMesh topology"),
+        }
+
+        // Verify custom routes are present
+        assert_eq!(config.routes.len(), 2);
+        assert_eq!(config.routes[0].route, vec![1, 2, 3]);
+        assert_eq!(config.routes[1].route, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn test_ring_topology_config_parsing() {
+        // Test ring topology configuration parsing
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+
+        [routes_preset]
+        topology = "ring"
+        n_nodes = 4
+
+        [[routes]]
+        route = [1, 3, 4]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify preset topology configuration
+        assert!(config.routes_preset.topology.is_some());
+        match config.routes_preset.topology.as_ref().unwrap() {
+            PresetTopology::Ring => {
+                assert_eq!(config.routes_preset.n_nodes, Some(4));
+            }
+            _ => panic!("Expected Ring topology"),
+        }
+
+        // Verify custom routes are present
+        assert_eq!(config.routes.len(), 1);
+        assert_eq!(config.routes[0].route, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn test_route_id_assignment_only_custom_routes() {
+        // Test route_id assignment for only custom routes (no preset topology)
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+
+        [[routes]]
+        route = [1, 2, 3]
+
+        [[routes]]
+        route = [3, 2, 1]
+
+        [[routes]]
+        route = [1, 4, 2]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify no preset topology
+        assert!(config.routes_preset.topology.is_none());
+
+        // Verify custom routes
+        assert_eq!(config.routes.len(), 3);
+        assert_eq!(config.routes[0].route, vec![1, 2, 3]);
+        assert_eq!(config.routes[1].route, vec![3, 2, 1]);
+        assert_eq!(config.routes[2].route, vec![1, 4, 2]);
+
+        println!("✓ Only custom routes configuration parsed correctly");
+        println!("  - Custom routes should get route_id: 0, 1, 2");
+    }
+
+    #[test]
+    fn test_route_id_assignment_with_full_mesh() {
+        // Test route_id assignment with full mesh preset + custom routes
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+
+        [routes_preset]
+        topology = "full_mesh"
+        n_nodes = 3
+
+        [[routes]]
+        route = [1, 2, 3]
+
+        [[routes]]
+        route = [3, 1, 2]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify preset topology
+        assert!(config.routes_preset.topology.is_some());
+        match config.routes_preset.topology.as_ref().unwrap() {
+            PresetTopology::FullMesh => {
+                assert_eq!(config.routes_preset.n_nodes, Some(3));
+            }
+            _ => panic!("Expected FullMesh topology"),
+        }
+
+        // Verify custom routes
+        assert_eq!(config.routes.len(), 2);
+        assert_eq!(config.routes[0].route, vec![1, 2, 3]);
+        assert_eq!(config.routes[1].route, vec![3, 1, 2]);
+
+        println!("✓ Full mesh + custom routes configuration parsed correctly");
+        println!("  - Full mesh (3 nodes) should generate route_id: 0, 1, 2, 3, 4, 5");
+        println!("  - Custom routes should get route_id: 6, 7");
+    }
+
+    #[test]
+    fn test_route_id_assignment_with_ring() {
+        // Test route_id assignment with ring preset + custom routes
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+
+        [routes_preset]
+        topology = "ring"
+        n_nodes = 4
+
+        [[routes]]
+        route = [1, 3, 4]
+
+        [[routes]]
+        route = [4, 2, 1]
+
+        [[routes]]
+        route = [2, 4, 3, 1]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify preset topology
+        assert!(config.routes_preset.topology.is_some());
+        match config.routes_preset.topology.as_ref().unwrap() {
+            PresetTopology::Ring => {
+                assert_eq!(config.routes_preset.n_nodes, Some(4));
+            }
+            _ => panic!("Expected Ring topology"),
+        }
+
+        // Verify custom routes
+        assert_eq!(config.routes.len(), 3);
+        assert_eq!(config.routes[0].route, vec![1, 3, 4]);
+        assert_eq!(config.routes[1].route, vec![4, 2, 1]);
+        assert_eq!(config.routes[2].route, vec![2, 4, 3, 1]);
+
+        println!("✓ Ring + custom routes configuration parsed correctly");
+        println!("  - Ring (4 nodes) should generate route_id: 0, 1, 2, 3");
+        println!("  - Custom routes should get route_id: 4, 5, 6");
+    }
+
+    #[test]
+    fn test_controller_config_toml_format() {
+        // Test the exact format used in controller-config.toml
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+
+        # Forward routes: Node 1 to Node 4
+        [[routes]]
+        route = [1, 2, 3, 4]
+
+        [[routes]]
+        route = [1, 3, 2, 4]
+
+        [[routes]]
+        route = [1, 3, 4]
+
+        # Reverse routes: Node 4 to Node 1
+        [[routes]]
+        route = [4, 3, 2, 1]
+
+        [[routes]]
+        route = [4, 2, 3, 1]
+
+        [[routes]]
+        route = [4, 3, 1]
+
+        # Node 1 to Node 2
+        [[routes]]
+        route = [1, 2]
+
+        # Node 2 to Node 1
+        [[routes]]
+        route = [2, 1]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify basic settings
+        assert_eq!(config.reset_db, true);
+        assert_eq!(config.protocol, Protocol::Quic);
+
+        // Verify no preset topology
+        assert!(config.routes_preset.topology.is_none());
+
+        // Verify all 8 routes are parsed correctly
+        assert_eq!(config.routes.len(), 8);
+
+        // Verify specific routes
+        assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
+        assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
+        assert_eq!(config.routes[2].route, vec![1, 3, 4]);
+        assert_eq!(config.routes[3].route, vec![4, 3, 2, 1]);
+        assert_eq!(config.routes[4].route, vec![4, 2, 3, 1]);
+        assert_eq!(config.routes[5].route, vec![4, 3, 1]);
+        assert_eq!(config.routes[6].route, vec![1, 2]);
+        assert_eq!(config.routes[7].route, vec![2, 1]);
+
+        println!("✓ Controller-config.toml format parsed correctly");
+        println!("  - 8 custom routes should get route_id: 0, 1, 2, 3, 4, 5, 6, 7");
+    }
+
+    #[test]
+    fn test_empty_routes_handling() {
+        // Test handling of configuration with no routes
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify basic settings
+        assert_eq!(config.reset_db, true);
+        assert_eq!(config.protocol, Protocol::Quic);
+
+        // Verify no routes
+        assert_eq!(config.routes.len(), 0);
+        assert!(config.routes_preset.topology.is_none());
+
+        println!("✓ Empty routes configuration handled correctly");
+    }
+
+    #[test]
+    fn test_route_deduplication_scenario() {
+        // Test route deduplication with preset topology + duplicate custom routes
+        let config_content = r#"
+        reset_db = true
+        protocol = "quic"
+        
+        [routes_preset]
+        topology = "full_mesh"
+        n_nodes = 4
+
+        # These routes duplicate some of the preset routes
+        [[routes]]
+        route = [1, 2]  # This will duplicate preset route
+
+        [[routes]]
+        route = [2, 1]  # This will duplicate preset route
+
+        # These are unique multi-hop routes
+        [[routes]]
+        route = [1, 2, 3, 4]
+
+        [[routes]]
+        route = [4, 3, 2, 1]
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify preset topology
+        assert!(config.routes_preset.topology.is_some());
+        match config.routes_preset.topology.as_ref().unwrap() {
+            PresetTopology::FullMesh => {
+                assert_eq!(config.routes_preset.n_nodes, Some(4));
+            }
+            _ => panic!("Expected FullMesh topology"),
+        }
+
+        // Verify custom routes (including duplicates)
+        assert_eq!(config.routes.len(), 4);
+        assert_eq!(config.routes[0].route, vec![1, 2]);     // Will be duplicate
+        assert_eq!(config.routes[1].route, vec![2, 1]);     // Will be duplicate  
+        assert_eq!(config.routes[2].route, vec![1, 2, 3, 4]); // Unique
+        assert_eq!(config.routes[3].route, vec![4, 3, 2, 1]); // Unique
+
+        println!("✓ Route deduplication scenario configuration parsed correctly");
+        println!("  - Full mesh (4 nodes) should generate 12 preset routes");
+        println!("  - 2 custom routes should be deduplicated (skipped)");
+        println!("  - 2 unique custom routes should be added");
+        println!("  - Total expected routes: 12 + 2 = 14 routes");
     }
 }
