@@ -22,7 +22,6 @@ use crate::dataplane::context::Context;
 use crate::dataplane::metrics::Collector;
 use crate::dataplane::processor::ProcessorManager;
 use crate::dataplane::protocols_client;
-use nextmini_messages::RouteMapping;
 use crate::dataplane::utils::RateLimiter;
 
 pub struct Controller {
@@ -214,24 +213,7 @@ impl ControllerReceiver {
 
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
-            ControllerToDataplane::InstallFlow { flows } => {
-                println!("Installing simple routes..");
-                // Convert flows to RouteMapping format for simple routing
-                let routes: Vec<RouteMapping> = flows.into_iter().enumerate().map(|(idx, _flow)| {
-                    RouteMapping {
-                        route_id: idx,
-                        next_hop: 2, // Default next hop - should be configured properly
-                        src_addr: [10, 0, 0, 1],
-                        dst_addr: [10, 0, 0, 4],
-                    }
-                }).collect();
-                
-                self.processor_manager
-                    .write()
-                    .await
-                    .update_simple_routes(routes)
-                    .await;
-            }
+
             ControllerToDataplane::AddNode {
                 protocol,
                 node_id,
@@ -277,8 +259,8 @@ impl ControllerReceiver {
                 debug!("ControllerInterface: Received {} routes to install", routes.len());
                 
                 for route in &routes {
-                    debug!("ControllerInterface: Route {} -> next_hop {} (src: {:?}, dst: {:?})", 
-                           route.route_id, route.next_hop, route.src_addr, route.dst_addr);
+                    debug!("ControllerInterface: Route {} -> next_hop {}", 
+                           route.route_id, route.next_hop);
                 }
                 
                 self.processor_manager

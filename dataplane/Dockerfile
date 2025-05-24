@@ -1,17 +1,17 @@
 FROM rust:alpine AS build
 
 RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
-    openssh-client \
-    openssh-server \
-    git\
-    vim \
-    build-base \
-    net-tools \
-    iputils-ping \
-    iperf3 \
-    openssl
+  apk upgrade --no-cache && \
+  apk add curl bash \
+  openssh-client \
+  openssh-server \
+  git\
+  vim \
+  build-base \
+  net-tools \
+  iputils-ping \
+  iperf3 \
+  openssl
 
 # Set the log level
 ENV RUST_LOG=info
@@ -33,19 +33,19 @@ RUN cargo build --release
 FROM alpine:latest
 
 RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
-    openssh-client \
-    openssh-server \
-    git\
-    vim \
-    build-base \
-    net-tools \
-    iputils-ping \
-    iperf3 \
-    openssl
+  apk upgrade --no-cache && \
+  apk add curl bash \
+  openssh-client \
+  openssh-server \
+  git\
+  vim \
+  build-base \
+  net-tools \
+  iputils-ping \
+  iperf3 \
+  openssl
 
-ENV RUST_LOG=debug
+ENV RUST_LOG=info
 
 COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
 COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem

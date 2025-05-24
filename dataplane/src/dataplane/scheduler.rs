@@ -5,7 +5,7 @@ use tokio::sync::{Notify, RwLock};
 
 use crossbeam_queue::ArrayQueue;
 
-use tracing::{debug, error};
+use tracing::error;
 
 
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};

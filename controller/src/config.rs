@@ -177,11 +177,19 @@ pub fn get_config(filename: &str) -> Config {
                     println!("Successfully loaded configuration from: {}", filename);
 
                     for (index, route) in config.routes.iter_mut().enumerate() {
-                        route.route_id = index;
-                        println!(
-                            "Controller assigned route_id {} to route at index {}",
-                            route.route_id, index
-                        );
+                        // Only auto-assign route_id if it's not manually specified (default value 0)
+                        if route.route_id == 0 {
+                            route.route_id = index;
+                            println!(
+                                "Auto-assigned route_id {} to route at index {}",
+                                route.route_id, index
+                            );
+                        } else {
+                            println!(
+                                "Using manually specified route_id {} for route at index {}",
+                                route.route_id, index
+                            );
+                        }
 
                         // If src_node_id is not set and route is not empty, use first element of route
                         if route.src_node_id == 0 && !route.route.is_empty() {

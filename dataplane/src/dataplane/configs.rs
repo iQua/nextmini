@@ -150,7 +150,8 @@ pub struct ControllerConfigs {
     /// The local network mask
     pub strato_mask: (u8, u8, u8, u8),
 
-    /// The number of interfaces
+    /// The number of interfaces (currently unused, reserved for future multi-interface support)
+    #[allow(dead_code)]
     pub num_interfaces: usize,
 
     /// The transport protocol: TCP, UDP, or QUIC

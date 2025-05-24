@@ -17,8 +17,8 @@ use crate::config::{Config, get_config};
 use crate::db::init_db;
 use crate::models::{Node, Route};
 use crate::utils::{
-    build_add_node_message, build_install_routes_simple, build_startup_message,
-    create_new_virtual_addr, flow_id_2_src_dst_route_id,
+    build_add_node_message, build_routes_for_node, build_startup_message,
+    create_new_virtual_addr,
 };
 
 mod config;
@@ -428,7 +428,7 @@ async fn handle_connection(
                         };
 
                         if let Some(msg) =
-                            build_install_routes_simple(&config, routes, node_id as i32)
+                            build_routes_for_node(routes, node_id as i32)
                         {
                             match write_arc
                                 .lock()
@@ -480,21 +480,16 @@ async fn handle_connection(
                                     continue;
                                 }
 
-                                let (src_id, dst_id, route_id) =
-                                    flow_id_2_src_dst_route_id(&config, metric.flow_id.clone());
-
+                                // Simplified metrics handling - no need to parse flow_id
                                 let prev_hop_id = metric.src_node_id.map(|x| x as i32);
                                 let flow_id = metric.flow_id;
 
                                 match sqlx::query(
                                     r#"
-                                    INSERT INTO metrics (src_id, dst_id, route_id, prev_hop_id, hop_id, flow_id, time_read, bps)
-                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                                    INSERT INTO metrics (prev_hop_id, hop_id, flow_id, time_read, bps)
+                                    VALUES ($1, $2, $3, $4, $5)
                                     "#
                                 )
-                                .bind(src_id)
-                                .bind(dst_id)
-                                .bind(route_id)
                                 .bind(prev_hop_id)
                                 .bind(hop_id as i32)
                                 .bind(flow_id.as_ref())

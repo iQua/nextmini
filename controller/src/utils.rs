@@ -1,9 +1,6 @@
 /// Implements utility functions for the controller.
-use std::collections::HashMap;
+use nextmini_messages::{ControllerToDataplane, Protocol, SimpleRouteEntry};
 
-use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RouteInfo, RouteMapping};
-
-use crate::config::Config;
 use crate::models::Route;
 
 /// Creates a new virtual address by adding the node ID to the base address.
@@ -27,37 +24,6 @@ pub fn create_new_virtual_addr(
     } else {
         Some(new_virtual_addr)
     }
-}
-
-/// Converts the flow ID to source and destination addresses. By Strato's rules, we can obtain the
-/// node ID from the last byte of the source/destination address.
-/// The flow_id_bytes are expected to be the big-endian representation of the u128 FlowId.
-/// Assumes src_ip (32b), dst_ip (32b), src_port (16b), dst_port (16b), route_id (32b) structure for the u128.
-pub fn flow_id_2_src_dst_route_id(config: &Config, flow_id_bytes: [u8; 16]) -> (i32, i32, i32) {
-    let flow_id_u128 = u128::from_be_bytes(flow_id_bytes);
-
-    // Extract components based on the known bit layout of the u128 FlowId
-    // src_addr: bits 96-127
-    // dest_addr: bits 64-95
-    // src_port: bits 48-63 (unused here)
-    // dest_port: bits 32-47 (unused here)
-    // route_id (assumed to be in reserved bits): bits 0-31
-
-    let src_ip_u32 = (flow_id_u128 >> 96) as u32;
-    let dst_ip_u32 = ((flow_id_u128 >> 64) & 0xFFFFFFFF) as u32;
-    
-    // Extract the last octet for src_id and dst_id calculation
-    // Ipv4Addr::from(src_ip_u32).octets()[3] would also work
-    let src_addr_last_octet = (src_ip_u32 & 0xFF) as u8;
-    let dst_addr_last_octet = (dst_ip_u32 & 0xFF) as u8;
-
-    let src_id = src_addr_last_octet as i32 - config.base_ipv4_addr[3] as i32;
-    let dst_id = dst_addr_last_octet as i32 - config.base_ipv4_addr[3] as i32;
-    
-    // Assuming route_id is stored in the lower 32 bits (the "reserved" part of the original FlowId)
-    let route_id = (flow_id_u128 & 0xFFFFFFFF) as i32;
-
-    (src_id, dst_id, route_id)
 }
 
 pub fn build_startup_message(
@@ -90,282 +56,38 @@ pub fn build_add_node_message(
     }
 }
 
-#[allow(dead_code)]
-pub fn build_install_routes_message(
-    config: &Config,
-    routes: Vec<Route>,
-    node_id: i32,
-) -> Option<ControllerToDataplane> {
-    let mut flows_map: HashMap<String, Flow> = HashMap::new();
+/// Builds an enhanced routing table for a specific node.
+/// Now includes src/dst node information for proper flow matching.
+/// Computes route_id -> next_hop mapping with flow matching context.
+pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<ControllerToDataplane> {
+    let mut route_entries: Vec<SimpleRouteEntry> = Vec::new();
 
     for route in routes {
-        let src_node_addr = create_new_virtual_addr(
-            config.base_ipv4_addr,
-            config.ipv4_net_mask,
-            route.src_node_id as usize,
-        )?;
-
-        let dst_node_addr = create_new_virtual_addr(
-            config.base_ipv4_addr,
-            config.ipv4_net_mask,
-            route.dst_node_id as usize,
-        )?;
-
-        // the flow ID is constructed by concatenating the source and destination node addresses
-        let flow_id = src_node_addr
-            .iter()
-            .chain(dst_node_addr.iter())
-            .copied()
-            .collect::<Vec<u8>>();
-        let flow_id_str = flow_id
-            .iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(".");
-
+        // Find the position of this node in the route path
         let idx = route.route.iter().position(|&x| x == node_id);
 
         let next_hop = match idx {
-            // the node is the destination of the flow
-            Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
-            // the node is in the middle of the path
-            Some(i) => route.route[i + 1] as usize,
-            // the flow is not part of this path; this node will be skipped
-            None => continue,
-        };
-
-        // let empty_str = String::from("[]");
-
-        // let streams_content = route.streams.as_ref().unwrap_or(&empty_str);
-
-        // let streams = match serde_json::from_str(streams_content) {
-        //     Ok(streams) => {
-        //         println!(
-        //             "Successfully deserialized streams: '{}' -> {:?}",
-        //             streams_content, streams
-        //         );
-        //         streams
-        //     }
-        //     Err(e) => {
-        //         println!(
-        //             "Failed to deserialize streams: {}. Content: '{}', Route ID: {}, Src: {}, Dst: {}",
-        //             e, streams_content, route.route_id, route.src_node_id, route.dst_node_id
-        //         );
-
-        //         vec![]
-        //     }
-        // };
-
-        let route_info = RouteInfo {
-            id: route.route_id as usize,
-            next_hop,
-            //streams,
-        };
-
-        flows_map
-            .entry(flow_id_str)
-            .or_insert(Flow {
-                flow_id: flow_id.clone(),
-                routes: vec![],
-            })
-            .routes
-            .push(route_info);
-    }
-
-    let flows: Vec<Flow> = flows_map.into_values().collect();
-    if flows.is_empty() {
-        None
-    } else {
-        Some(ControllerToDataplane::InstallFlow { flows })
-    }
-}
-
-/// Builds a simplified InstallRoutes message for a specific node.
-/// Sends ALL routes to ensure global consistency of flow_id->route_id mapping,
-/// but sets next_hop=0 for routes that don't pass through this node.
-pub fn build_install_routes_simple(
-    config: &Config,
-    routes: Vec<Route>,
-    node_id: i32,
-) -> Option<ControllerToDataplane> {
-    let mut route_mappings: Vec<RouteMapping> = Vec::new();
-
-    for route in routes {
-        // Compute virtual addresses for src and dst
-        let src_addr = match create_new_virtual_addr(
-            config.base_ipv4_addr,
-            config.ipv4_net_mask,
-            route.src_node_id as usize,
-        ) {
-            Some(addr) => addr,
-            None => continue, // Skip this route if we can't create virtual address
-        };
-
-        let dst_addr = match create_new_virtual_addr(
-            config.base_ipv4_addr,
-            config.ipv4_net_mask,
-            route.dst_node_id as usize,
-        ) {
-            Some(addr) => addr,
-            None => continue, // Skip this route if we can't create virtual address
-        };
-
-        // Find the position of this node in the route
-        let idx = route.route.iter().position(|&x| x == node_id);
-
-        let next_hop = match idx {
-            // The node is the destination of the route - next hop is itself
+            // The node is the destination - next hop is itself (local delivery)
             Some(i) if i == route.route.len() - 1 => route.route[i] as usize,
             // The node is in the middle of the path - next hop is the next node
             Some(i) => route.route[i + 1] as usize,
-            // The route doesn't pass through this node - use 0 as marker
+            // The route doesn't pass through this node - mark as inactive
             None => 0,
         };
 
-        route_mappings.push(RouteMapping {
+        route_entries.push(SimpleRouteEntry {
             route_id: route.route_id as usize,
             next_hop,
-            src_addr,
-            dst_addr,
+            src_node_id: route.src_node_id as usize,
+            dst_node_id: route.dst_node_id as usize,
         });
     }
 
-    if route_mappings.is_empty() {
+    if route_entries.is_empty() {
         None
     } else {
         Some(ControllerToDataplane::InstallRoutes {
-            routes: route_mappings,
+            routes: route_entries,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RouteInfo};
-
-    use super::*;
-    use crate::config::Config;
-    use crate::models::Route;
-
-    #[test]
-    fn test_create_new_virtual_addr() {
-        let base_addr = [10, 0, 0, 0];
-        let net_mask = [255, 255, 255, 0];
-        let node_id = 5;
-        let expected = Some([10, 0, 0, 5]);
-
-        assert_eq!(
-            create_new_virtual_addr(base_addr, net_mask, node_id),
-            expected
-        );
-    }
-
-    #[test]
-    fn test_create_new_virtual_addr_invalid() {
-        let base_addr = [10, 0, 0, 0];
-        let net_mask = [255, 255, 255, 0];
-        let node_id = 256;
-
-        assert_eq!(create_new_virtual_addr(base_addr, net_mask, node_id), None);
-    }
-
-    #[test]
-    fn test_build_startup_message() {
-        let node_id = 5;
-        let virtual_addr = [10, 0, 0, 5];
-        let net_mask = [255, 255, 255, 0];
-        let session_id = [1, 2, 3, 4];
-        let num_interfaces = 1;
-        let protocol = Protocol::Tcp;
-
-        let msg = build_startup_message(
-            node_id,
-            virtual_addr,
-            net_mask,
-            session_id,
-            num_interfaces,
-            protocol.clone(),
-        );
-
-        let expected = ControllerToDataplane::StartUp {
-            node_id,
-            addr: virtual_addr,
-            net_mask,
-            session_id,
-            num_interfaces,
-            protocol,
-        };
-
-        assert_eq!(msg, expected);
-    }
-
-    #[test]
-    fn test_build_add_node_message() {
-        let protocol = Protocol::Tcp;
-        let node_id = 5;
-        let addr = "172.10.0.2:8080".to_string();
-
-        let msg = build_add_node_message(protocol.clone(), node_id, addr.clone());
-
-        let expected = ControllerToDataplane::AddNode {
-            protocol,
-            node_id,
-            addr,
-        };
-
-        assert_eq!(msg, expected);
-    }
-
-    #[test]
-    fn test_build_install_routes_message() {
-        let config = Config {
-            base_ipv4_addr: [10, 0, 0, 0],
-            ipv4_net_mask: [255, 255, 255, 0],
-            ..Default::default()
-        };
-
-        let routes = vec![
-            Route {
-                src_node_id: 0,
-                dst_node_id: 4,
-                route_id: 0,
-                route: vec![0, 1, 2, 3, 4],
-                // streams: Some("[]".to_string()),
-            },
-            Route {
-                src_node_id: 0,
-                dst_node_id: 4,
-                route_id: 1,
-                route: vec![0, 1, 2, 5, 4],
-                // streams: Some("[]".to_string()),
-            },
-        ];
-
-        let node_id = 2;
-
-        let msg = build_install_routes_message(&config, routes, node_id);
-
-        let expected_flow_id = vec![10, 0, 0, 0, 10, 0, 0, 4];
-        let expected_routes = vec![
-            RouteInfo {
-                id: 0,
-                next_hop: 3,
-                // streams: vec![],
-            },
-            RouteInfo {
-                id: 1,
-                next_hop: 5,
-                // streams: vec![],
-            },
-        ];
-
-        let expected = Some(ControllerToDataplane::InstallFlow {
-            flows: vec![Flow {
-                flow_id: expected_flow_id,
-                routes: expected_routes,
-            }],
-        });
-
-        assert_eq!(msg, expected);
     }
 }

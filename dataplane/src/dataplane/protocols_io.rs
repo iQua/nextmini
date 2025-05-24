@@ -6,7 +6,6 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use tracing::{debug, error};
 
 pub enum ProtocolReader {
     Tcp(TcpReader),
@@ -58,41 +57,15 @@ impl TcpReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
-        // First, read at least the IP header (20 bytes minimum)
-        let mut bytes_read = 0;
-        while bytes_read < 20 {
-            match self.stream.read(&mut buf[bytes_read..]).await {
-                Ok(0) => return 0, // Connection closed
-                Ok(n) => bytes_read += n,
-                Err(e) => {
-                    error!("TcpReader: Failed to read IP header: {}", e);
-                    return 0;
-                }
+        // Read raw IP packet data directly
+        match self.stream.read(&mut buf[..]).await {
+            Ok(0) => 0, // Connection closed
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("Failed to read TCP data: {}", e);
+                0
             }
         }
-
-        // Extract total length from IP header (bytes 2-3)
-        let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-        
-        // Validate total length
-        if total_length < 20 || total_length > buf.len() {
-            error!("TcpReader: Invalid IP total length: {}", total_length);
-            return 0;
-        }
-
-        // Read the rest of the packet
-        while bytes_read < total_length {
-            match self.stream.read(&mut buf[bytes_read..]).await {
-                Ok(0) => return 0, // Connection closed
-                Ok(n) => bytes_read += n,
-                Err(e) => {
-                    error!("TcpReader: Failed to read packet data: {}", e);
-                    return 0;
-                }
-            }
-        }
-
-        total_length
     }
 }
 
@@ -107,7 +80,6 @@ impl TcpWriter {
     }
 
     pub async fn send(&mut self, data: &[u8]) {
-        debug!(data_len = data.len(), first_bytes = ?&data[0..std::cmp::min(data.len(), 16)], "TcpWriter: Sending data");
         let mut stream_guard = self.stream.lock().await;
         match stream_guard.write_all(data).await {
             Ok(_) => (),
@@ -137,7 +109,10 @@ impl UdpReader {
     pub async fn recv(&self, buf: &mut PacketBuf) -> usize {
         match self.sock.recv(&mut buf[..]).await {
             Ok(n) => n,
-            Err(e) => panic!("{e}"),
+            Err(e) => {
+                eprintln!("Failed to receive UDP data: {}", e);
+                0
+            }
         }
     }
 }
@@ -154,10 +129,11 @@ impl UdpWriter {
     }
 
     pub async fn send(&self, data: &[u8]) {
-        debug!(data_len = data.len(), first_bytes = ?&data[0..std::cmp::min(data.len(), 16)], addr = %self.addr, "UdpWriter: Sending data");
         match self.sock.send_to(data, self.addr.as_str()).await {
             Ok(_) => (),
-            Err(e) => panic!("{e}"),
+            Err(e) => {
+                eprintln!("Failed to send UDP data to {}: {}", self.addr, e);
+            }
         }
     }
 
@@ -178,41 +154,15 @@ impl QuicReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
-        // First, read at least the IP header (20 bytes minimum)
-        let mut bytes_read = 0;
-        while bytes_read < 20 {
-            match self.stream.read(&mut buf[bytes_read..]).await {
-                Ok(0) => return 0, // Stream closed
-                Ok(n) => bytes_read += n,
-                Err(e) => {
-                    debug!("QuicReader: Failed to read IP header: {}", e);
-                    return 0;
-                }
+        // Read raw IP packet data directly
+        match self.stream.read(&mut buf[..]).await {
+            Ok(0) => 0, // Stream closed
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("Failed to read QUIC data: {}", e);
+                0
             }
         }
-
-        // Extract total length from IP header (bytes 2-3)
-        let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-        
-        // Validate total length
-        if total_length < 20 || total_length > buf.len() {
-            debug!("QuicReader: Invalid IP total length: {}", total_length);
-            return 0;
-        }
-
-        // Read the rest of the packet
-        while bytes_read < total_length {
-            match self.stream.read(&mut buf[bytes_read..]).await {
-                Ok(0) => return 0, // Stream closed
-                Ok(n) => bytes_read += n,
-                Err(e) => {
-                    debug!("QuicReader: Failed to read packet data: {}", e);
-                    return 0;
-                }
-            }
-        }
-
-        total_length
     }
 }
 
@@ -228,13 +178,14 @@ impl QuicWriter {
     }
 
     pub async fn send(&mut self, buf: &[u8]) {
-        debug!(data_len = buf.len(), first_bytes = ?&buf[0..std::cmp::min(buf.len(), 16)], "QuicWriter: Sending data");
         let mut stream_guard = self.stream.lock().await;
 
         match stream_guard.write_all(buf).await {
             Ok(_) => (),
-            Err(e) => panic!("{e}"),
-        };
+            Err(e) => {
+                eprintln!("Failed to write QUIC data: {}", e);
+            }
+        }
     }
 
     pub fn reproduce(&self) -> Self {

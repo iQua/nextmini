@@ -18,7 +18,6 @@ pub enum DataplaneToController {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Metric {
     pub flow_id: [u8; 16],
-    // pub stream_id: Option<String>,
     pub bps: usize,
     pub src_node_id: Option<usize>,
     pub time_read: chrono::DateTime<chrono::Utc>,
@@ -49,11 +48,8 @@ pub enum ControllerToDataplane {
         node_id: usize,
         addr: String,
     },
-    InstallFlow {
-        flows: Vec<Flow>,
-    },
     InstallRoutes {
-        routes: Vec<RouteMapping>,
+        routes: Vec<SimpleRouteEntry>,
     },
     SetLinkRate {
         node_id: usize,
@@ -61,23 +57,11 @@ pub enum ControllerToDataplane {
     },
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub struct Flow {
-    pub flow_id: Vec<u8>,
-    pub routes: Vec<RouteInfo>,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub struct RouteInfo {
-    pub id: usize,
-    pub next_hop: usize,
-    // pub streams: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize, PartialEq, Debug)]
-pub struct RouteMapping {
+/// Enhanced route entry: route_id -> next_hop mapping with src/dst node information
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
+pub struct SimpleRouteEntry {
     pub route_id: usize,
     pub next_hop: usize,
-    pub src_addr: [u8; 4],
-    pub dst_addr: [u8; 4],
+    pub src_node_id: usize,
+    pub dst_node_id: usize,
 }

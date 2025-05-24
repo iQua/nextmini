@@ -2,7 +2,6 @@ use std::io::Cursor;
 
 use byteorder::{BigEndian, ReadBytesExt};
 use serde_json::Value;
-use tracing::debug;
 
 use crate::dataplane::{FlowId, PacketBuf};
 
@@ -91,6 +90,7 @@ impl Packet {
         flow_id
     }
 
+    #[allow(dead_code)]
     fn format_ip(ip: u32) -> String {
         format!("{}.{}.{}.{}", 
                 (ip >> 24) & 0xFF, 
@@ -99,6 +99,7 @@ impl Packet {
                 ip & 0xFF)
     }
 
+    #[allow(dead_code)]
     fn debug_validate_packet(buf: &PacketBuf, packet_size: usize) {
         if packet_size == 0 {
             // Empty packet detected
@@ -113,7 +114,7 @@ impl Packet {
         let version = buf[0] >> 4;
         let ihl = buf[0] & 0x0F;
         let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
-        let protocol = buf[9];
+        let _protocol = buf[9];
 
         // Packet validation - removed debug for performance
 
@@ -185,6 +186,7 @@ impl Packet {
     // }
 }
 
+#[allow(dead_code)]
 pub fn json_byte_array_to_flow_id(flow_id: &Value) -> FlowId {
     // Handle both 8-byte (old format) and 16-byte (new format) arrays
     if let Some(array) = flow_id.as_array() {

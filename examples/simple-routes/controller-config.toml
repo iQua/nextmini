@@ -24,3 +24,7 @@ route = [4, 3, 1]
 # Node 1 to Node 2
 [[routes]]
 route = [1, 2]
+
+# Node 2 to Node 1
+[[routes]]
+route = [2, 1]

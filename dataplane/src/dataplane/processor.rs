@@ -4,7 +4,8 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use fxhash::FxHashMap;
 use tokio::sync::RwLock;
@@ -18,7 +19,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::SimpleRoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
 use crate::dataplane::NodeId;
-use nextmini_messages::RouteMapping;
+use nextmini_messages::SimpleRouteEntry;
 
 pub struct ProcessorManager {
     context: Context,
@@ -43,15 +44,17 @@ impl ProcessorManager {
             proc_handles: VecDeque::new(),
             proc_shutdown_flags: VecDeque::new(),
             receiver_rxs: rxs,
-            // stream2routes: Arc::new(RwLock::new(FxHashMap::default())),
-            // stream_counters: Arc::new(RwLock::new(FxHashMap::default())),
             simple_routing_table,
         }
     }
 
 
 
-    pub async fn update_simple_routes(&mut self, routes: Vec<RouteMapping>) {
+    pub async fn update_simple_routes(&mut self, routes: Vec<SimpleRouteEntry>) {
+        // Set base IPv4 address for node ID calculation (should be configurable)
+        self.simple_routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
+        
+        // Install routes directly using SimpleRouteEntry
         self.simple_routing_table.install_routes(routes);
         self.swap_processors().await;
     }
@@ -285,34 +288,31 @@ impl Processor {
 
                 // Find the next hop and send the packet
                 let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
-                // Removed high-frequency debug logging for performance
 
                 if let Some(next_hop) = next_hop {
                     // Sending out the packet
                     if next_hop == self.simple_routing_table.local_id {
                         // Local delivery - use the single TUN writer
-                        // Removed high-frequency debug logging for performance
                         self.tun_writer.write_packet(packet).await;
                     } else {
                         match self.senders.get_mut(&next_hop) {
                             Some(sender) => {
-                                // Removed high-frequency debug logging for performance
                                 sender.send(packet).await;
                             }
                             None => {
                                 // Route defined, but the node doesn't exist yet.
                                 println!(
-                                    "WARNING: Route {:?} defined, but the node {} is offline. Packet dropped",
-                                    &packet.flow_id.to_be_bytes(),
-                                    next_hop
+                                    "WARNING: Route defined for flow {}, but node {} is offline. Packet dropped",
+                                    packet.flow_id, next_hop
                                 );
                                 continue;
                             }
                         }
                     }
                 } else {
-                    // Not route was found for the packet
-                    debug!("Processor: No route found for packet with flow_id: {}", packet.flow_id);
+                    // No route was found for the packet
+                    println!("WARNING: No route found for flow {} from node {}", 
+                            packet.flow_id, self.simple_routing_table.local_id);
                     continue;
                 }
             }

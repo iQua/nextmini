@@ -23,13 +23,9 @@ pub struct Route {
 #[derive(FromRow, Debug)]
 pub struct Metrics {
     pub id: i32,
-    pub src_id: Option<i32>,
-    pub dst_id: Option<i32>,
-    pub route_id: Option<i32>,
     pub prev_hop_id: Option<i32>,
     pub hop_id: Option<i32>,
     pub flow_id: Vec<u8>,
-    // pub stream_id: Option<String>,
     pub time_read: chrono::DateTime<chrono::Utc>,
     pub bps: i32,
 }
