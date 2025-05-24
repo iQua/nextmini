@@ -15,7 +15,8 @@ WORKDIR /var/nextmini
 
 # Copy the source code
 COPY Cargo.toml /var/nextmini/Cargo.toml
-COPY messages /var/messages
+COPY controller /var/nextmini/controller
+COPY messages /var/nextmini/messages
 COPY cert-gen /var/nextmini/cert-gen
 COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
 COPY dataplane/src /var/nextmini/dataplane/src
