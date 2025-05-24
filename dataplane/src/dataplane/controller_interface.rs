@@ -19,6 +19,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 use crate::dataplane::RateLimiterMap;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
 use crate::dataplane::context::Context;
+use crate::dataplane::local_interface::create_tun_device;
 use crate::dataplane::metrics::Collector;
 use crate::dataplane::processor::ProcessorManager;
 use crate::dataplane::protocols_client;
@@ -81,6 +82,9 @@ impl Controller {
 
         let (sender_tx, sender_rx) = unbounded_channel::<DataplaneToController>();
 
+        // Create local tun interface.
+        let tun_device = create_tun_device(configs.clone(), controller_configs.clone()).await;
+
         // Create metrics collector.
         let metrics_collector =
             Collector::new(sender_tx.clone(), configs.metrics_collection_interval);
@@ -102,9 +106,9 @@ impl Controller {
                 .init_udp_socket(configs.private_network_port.clone())
                 .await;
         }
-        
+
         // Create and start the single TUN device
-        context.start_tun_device(&configs, &controller_configs).await;
+        context.start_tun_device(tun_device).await;
 
         let processor_manager = Arc::new(RwLock::new(ProcessorManager::new(
             context.clone(),
@@ -213,7 +217,6 @@ impl ControllerReceiver {
 
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
-
             ControllerToDataplane::AddNode {
                 protocol,
                 node_id,
@@ -256,19 +259,24 @@ impl ControllerReceiver {
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 println!("Installing simplified routes..");
-                debug!("ControllerInterface: Received {} routes to install", routes.len());
-                
+                debug!(
+                    "ControllerInterface: Received {} routes to install",
+                    routes.len()
+                );
+
                 for route in &routes {
-                    debug!("ControllerInterface: Route {} -> next_hop {}", 
-                           route.route_id, route.next_hop);
+                    debug!(
+                        "ControllerInterface: Route {} -> next_hop {}",
+                        route.route_id, route.next_hop
+                    );
                 }
-                
+
                 self.processor_manager
                     .write()
                     .await
                     .update_simple_routes(routes)
                     .await;
-                    
+
                 debug!("ControllerInterface: Route installation completed");
                 println!("Simplified routes installed.");
             }

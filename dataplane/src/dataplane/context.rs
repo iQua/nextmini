@@ -12,9 +12,8 @@ use tokio::sync::mpsc;
 use fxhash::FxHashMap;
 use s2n_quic::stream::BidirectionalStream;
 
-use tracing::debug;
-use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
-use crate::dataplane::local_interface::{TunReader, TunWriter, create_tun_device};
+use crate::dataplane::configs::LocalConfigs;
+use crate::dataplane::local_interface::{TunReader, TunWriter};
 use crate::dataplane::metrics::MetricsTx;
 use crate::dataplane::node_interface::{
     NodeSender, create_quic_node_interfaces, create_tcp_node_interfaces, create_udp_node_receiver,
@@ -24,6 +23,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::scheduler::SchedulingDiscipline;
 use crate::dataplane::utils::RateLimiter;
 use crate::dataplane::{INTERNAL_Q_SIZE, NodeId, ProcessorChannel, RateLimiterMap};
+use tracing::debug;
 
 #[derive(Clone)]
 pub struct Context {
@@ -33,8 +33,8 @@ pub struct Context {
     // Local configurations
     configs: LocalConfigs,
 
-    // Writer to the TUN interface
-    tun_writer: Arc<RwLock<Option<TunWriter>>>,
+    // Writers to the TUN interface, as shared writable vectors, where each queue corresponds to one writer
+    tun_writers: Arc<RwLock<Vec<TunWriter>>>,
 
     // A vector of processor channels, each including a sender and a receiver for an mpsc channel
     processor_channels: Arc<RwLock<Vec<ProcessorChannel>>>,
@@ -68,7 +68,7 @@ impl Context {
             configs,
             processor_channels: Arc::new(RwLock::new(Vec::new())),
             processor_senders: Arc::new(RwLock::new(FxHashMap::default())),
-            tun_writer: Arc::new(RwLock::new(None)),
+            tun_writers: Arc::new(RwLock::new(Vec::new())),
             metrics_tx: metrics,
             link_rate_limiters,
             udp_socket: None,
@@ -77,60 +77,36 @@ impl Context {
     }
 
     // Create and start the single TUN device
-    pub async fn start_tun_device(&mut self, configs: &LocalConfigs, controller_configs: &ControllerConfigs) {
-        let start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        
-        if cfg!(debug_assertions) {
-            debug!("[PERF] Context starting TUN device for local_id {}", self.local_id);
-        }
-        
-        let device_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        let device = create_tun_device(configs.clone(), controller_configs.clone()).await;
-        
-        if cfg!(debug_assertions) {
-            if let Some(start_time) = device_start {
-                let duration = start_time.elapsed();
-                debug!("[PERF] TUN device creation took {}ms", duration.as_millis());
-            }
-        }
-        
-        let channels_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
+    pub async fn start_tun_device(&mut self, tun_queues: Vec<Arc<tun_rs::AsyncDevice>>) {
         let senders_to_proc = self.get_processor_txs().await;
-        
-        if cfg!(debug_assertions) {
-            if let Some(start_time) = channels_start {
-                let duration = start_time.elapsed();
-                if duration.as_micros() > 100 {
-                    debug!("[PERF] Getting processor channels took {}μs", duration.as_micros());
-                }
-            }
-        }
-        
-        let writer = TunWriter::new(device.clone());
-        *self.tun_writer.write().await = Some(writer);
+        let mut tun_writers = self.tun_writers.write().await;
 
-        // Start a new Tokio task for reading continuously from this TUN device
-        let mut reader = TunReader::new(device, senders_to_proc);
+        for dev in tun_queues.iter() {
+            // tun_writers is a vector of queues for one TUN device
+            // dev.clone() does not clone the device, it simply creates a new reference to it
+            let writer = TunWriter::new(dev.clone());
+            tun_writers.push(writer);
 
-        if cfg!(debug_assertions) {
-            debug!("[PERF] Starting TUN reader task");
-        }
+            // Start a new Tokio task for reading continuously from this TUN device
+            let mut reader = TunReader::new(dev.clone(), senders_to_proc.clone());
 
-        tokio::spawn(async move {
-            reader.start_reading().await;
-        });
-        
-        if cfg!(debug_assertions) {
-            if let Some(start_time) = start {
-                let duration = start_time.elapsed();
-                debug!("[PERF] Complete TUN device setup took {}ms", duration.as_millis());
-            }
+            tokio::spawn(async move {
+                reader.start_reading().await;
+            });
         }
     }
 
-    // Get a clone of the TUN writer
-    pub async fn get_tun_writer(&self) -> Option<TunWriter> {
-        self.tun_writer.read().await.clone()
+    // Get a reference of the TUN writer for the corresponding queue ID
+    pub async fn get_tun_writer(&self, queue_id: usize) -> TunWriter {
+        self.tun_writers
+            .read()
+            .await
+            .get(queue_id)
+            .expect(
+                "Error: Attempting to obtain a TUN queue that doesn't exist. \\
+                        Are TUN queues created successfully?",
+            )
+            .clone()
     }
 
     // metrics_tx is an mpsc unbounded sender that can be cloned.
@@ -142,14 +118,21 @@ impl Context {
     // Note: This can be called multiple times (i.e. every time when a new node is added),
     // but it will only create the channels once.
     async fn get_processor_txs(&self) -> Vec<mpsc::Sender<Packet>> {
-        let start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        
+        let start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
         let mut channels = self.processor_channels.write().await;
         let mut txs = vec![];
 
         if channels.is_empty() {
             if cfg!(debug_assertions) {
-                debug!("[PERF] Context creating {} processor channels", self.configs.num_packet_processors);
+                debug!(
+                    "[PERF] Context creating {} processor channels",
+                    self.configs.num_packet_processors
+                );
             }
             // Channels don't exist yet, create a new mpsc channel for each queue
             for i in 0..self.configs.num_packet_processors {
@@ -175,7 +158,10 @@ impl Context {
             if let Some(start_time) = start {
                 let duration = start_time.elapsed();
                 if duration.as_micros() > 100 {
-                    debug!("[PERF] Context get_processor_txs took {}μs", duration.as_micros());
+                    debug!(
+                        "[PERF] Context get_processor_txs took {}μs",
+                        duration.as_micros()
+                    );
                 }
             }
         }
@@ -186,14 +172,21 @@ impl Context {
     // Obtains the receivers from processor mpsc channels.
     // Note: This should only be called once to initialize the processor manager.
     pub async fn get_processor_rxs(&self) -> Vec<mpsc::Receiver<Packet>> {
-        let start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        
+        let start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
         let mut channels = self.processor_channels.write().await;
 
         let mut rxs = vec![];
         if channels.is_empty() {
             if cfg!(debug_assertions) {
-                debug!("[PERF] Context creating processor receivers for {} channels", self.configs.num_packet_processors);
+                debug!(
+                    "[PERF] Context creating processor receivers for {} channels",
+                    self.configs.num_packet_processors
+                );
             }
             // channels don't exist yet, create a new mpsc channel for each queue
             for i in 0..self.configs.num_packet_processors {
@@ -227,7 +220,10 @@ impl Context {
             if let Some(start_time) = start {
                 let duration = start_time.elapsed();
                 if duration.as_micros() > 100 {
-                    debug!("[PERF] Context get_processor_rxs took {}μs", duration.as_micros());
+                    debug!(
+                        "[PERF] Context get_processor_rxs took {}μs",
+                        duration.as_micros()
+                    );
                 }
             }
         }
@@ -237,22 +233,29 @@ impl Context {
 
     // Adds a NodeSender to the global hashmap, associated with the node ID
     pub async fn register_sender(&self, node_id: NodeId, node_sender: NodeSender) {
-        let start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        
+        let start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
         if cfg!(debug_assertions) {
             debug!("[PERF] Context registering sender for node_id {}", node_id);
         }
-        
+
         self.processor_senders
             .write()
             .await
             .insert(node_id, node_sender);
-            
+
         if cfg!(debug_assertions) {
             if let Some(start_time) = start {
                 let duration = start_time.elapsed();
                 if duration.as_micros() > 50 {
-                    debug!("[PERF] Context register_sender took {}μs", duration.as_micros());
+                    debug!(
+                        "[PERF] Context register_sender took {}μs",
+                        duration.as_micros()
+                    );
                 }
             }
         }
@@ -277,12 +280,16 @@ impl Context {
     }
 
     pub async fn add_tcp_node(&self, node_id: NodeId, stream: TcpStream) {
-        let _start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        
+        let _start = if cfg!(debug_assertions) {
+            Some(Instant::now())
+        } else {
+            None
+        };
+
         if cfg!(debug_assertions) {
             debug!("[PERF] Context adding TCP node {}", node_id);
         }
-        
+
         assert!(
             self.local_id != node_id,
             "Error: Attempt to add a new TCP node with the same id as the local id {}",

@@ -26,8 +26,6 @@ pub struct ProcessorManager {
     proc_handles: VecDeque<tokio::task::JoinHandle<()>>,
     proc_shutdown_flags: VecDeque<Arc<AtomicBool>>,
     receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
-    // stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-    // stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
     pub simple_routing_table: SimpleRoutingTable,
 }
 
@@ -81,13 +79,9 @@ impl ProcessorManager {
             let flg = shutdown_flag.clone();
             let simple_table = self.simple_routing_table.clone();
             let senders = self.context.reproduce_senders().await;
-            let tun_writer = self
-                .context
-                .get_tun_writer()
-                .await
-                .expect("TUN writer not available for processor");
-            // let stream2routes = self.stream2routes.clone();
-            // let stream_counters = self.stream_counters.clone();
+
+            let tun_writer = self.context.get_tun_writer(i).await;
+
             let metrics_tx = self.context.get_metrics_tx();
             let handle = tokio::task::spawn(async move {
                 let mut proc = Processor::new(
@@ -185,10 +179,6 @@ impl Processor {
 
         let matches = dst_ip == expected_local_ip;
 
-        if matches {
-            // Removed high-frequency debug logging for performance
-        }
-
         matches
     }
 
@@ -263,38 +253,13 @@ impl Processor {
                     None
                 };
 
-                // Check if this packet is destined for the local node before routing
-                let local_check_start = if cfg!(debug_assertions) {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
-                let is_local = self.is_packet_for_local_node(&packet);
-                if cfg!(debug_assertions) {
-                    if let Some(start) = local_check_start {
-                        let local_check_duration = start.elapsed();
-                        if local_check_duration.as_micros() > 5 {
-                            // Log if check takes more than 5us
-                            debug!(
-                                "[PERF] is_packet_for_local_node check took {}μs for flow_id {}",
-                                local_check_duration.as_micros(),
-                                packet.flow_id
-                            );
-                        }
-                    }
-                }
-
-                if is_local {
-                    if cfg!(debug_assertions) {
-                        // This log is fine as is, not a timing but a state
-                        // debug!("[PERF] Packet flow_id {} destined for local node {} (direct check)",
-                        //        packet.flow_id, self.simple_routing_table.local_id);
-                    }
+                if self.is_packet_for_local_node(&packet) {
                     let tun_write_start = if cfg!(debug_assertions) {
                         Some(Instant::now())
                     } else {
                         None
                     };
+
                     let packet_flow_id_for_log = packet.flow_id; // Store flow_id before packet is moved
                     self.tun_writer.write_packet(packet).await;
                     if cfg!(debug_assertions) {
@@ -310,19 +275,7 @@ impl Processor {
                             }
                         }
                     }
-                    if cfg!(debug_assertions) {
-                        if let Some(start) = processing_start {
-                            let total_duration = start.elapsed();
-                            if total_duration.as_micros() > 100 {
-                                // Log if total processing for local packet is slow
-                                debug!(
-                                    "[PERF] Total packet processing (direct local) took {}μs for flow_id {}",
-                                    total_duration.as_micros(),
-                                    packet_flow_id_for_log
-                                );
-                            }
-                        }
-                    }
+
                     continue;
                 }
 
@@ -336,76 +289,19 @@ impl Processor {
                     .expect("Failed to send metrics to the metrics collector.");
 
                 // Find the next hop and send the packet
-                let routing_start = if cfg!(debug_assertions) {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
                 let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
 
-                if cfg!(debug_assertions) {
-                    if let Some(start) = routing_start {
-                        let routing_duration = start.elapsed();
-                        if routing_duration.as_micros() > 10 {
-                            // Log if route lookup is slow
-                            debug!(
-                                "[PERF] Route lookup took {}μs for flow_id {}",
-                                routing_duration.as_micros(),
-                                packet.flow_id
-                            );
-                        }
-                    }
-                }
-
                 if let Some(next_hop_id) = next_hop {
-                    let send_start = if cfg!(debug_assertions) {
-                        Some(Instant::now())
-                    } else {
-                        None
-                    };
                     let packet_flow_id = packet.flow_id; // Save flow_id before packet is moved
 
                     // Sending out the packet
                     if next_hop_id == self.simple_routing_table.local_id {
-                        // Local delivery determined by routing logic - use the single TUN writer
-                        let tun_write_routed_local_start = if cfg!(debug_assertions) {
-                            Some(Instant::now())
-                        } else {
-                            None
-                        };
+                        // Local delivery
                         self.tun_writer.write_packet(packet).await;
-                        if cfg!(debug_assertions) {
-                            if let Some(start) = tun_write_routed_local_start {
-                                let tun_duration = start.elapsed();
-                                if tun_duration.as_micros() > 50 {
-                                    // Log if TUN write is slow
-                                    debug!(
-                                        "[PERF] TUN write (routed local) took {}μs for flow_id {}",
-                                        tun_duration.as_micros(),
-                                        packet_flow_id
-                                    );
-                                }
-                            }
-                            // debug!("[PERF] Local delivery (via routing) for flow_id {}", packet_flow_id);
-                        }
                     } else {
                         match self.senders.get_mut(&next_hop_id) {
                             Some(sender) => {
                                 sender.send(packet).await;
-                                if cfg!(debug_assertions) {
-                                    if let Some(start) = send_start {
-                                        let send_duration = start.elapsed();
-                                        if send_duration.as_micros() > 50 {
-                                            // Log if node send is slow
-                                            debug!(
-                                                "[PERF] NodeSender.send() to node {} took {}μs for flow_id {}",
-                                                next_hop_id,
-                                                send_duration.as_micros(),
-                                                packet_flow_id
-                                            );
-                                        }
-                                    }
-                                }
                             }
                             None => {
                                 // Route defined, but the node doesn't exist yet.
@@ -415,20 +311,6 @@ impl Processor {
                                 );
                                 // No total processing log here as packet is dropped before full processing cycle completes in the same way
                                 continue;
-                            }
-                        }
-                    }
-
-                    if cfg!(debug_assertions) {
-                        if let Some(start) = processing_start {
-                            let total_duration = start.elapsed();
-                            if total_duration.as_micros() > 100 {
-                                // Log if total processing for routed packet is slow
-                                debug!(
-                                    "[PERF] Total packet processing (routed) took {}μs for flow_id {}",
-                                    total_duration.as_micros(),
-                                    packet_flow_id
-                                );
                             }
                         }
                     }

@@ -1,12 +1,9 @@
 use core::panic;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::sync::mpsc::Sender;
 use tun_rs::{AsyncDevice, DeviceBuilder};
-
-use tracing::debug;
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
@@ -23,38 +20,80 @@ fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
 pub async fn create_tun_device(
     configs: LocalConfigs,
     controller_configs: ControllerConfigs,
-) -> Arc<AsyncDevice> {
-    let if_name = configs.tun_interface_name.clone();
-    let ipv4_addr = controller_configs.strato_address;
-    let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
-
+) -> Vec<Arc<AsyncDevice>> {
     #[cfg(target_os = "linux")]
-    let dev_builder = DeviceBuilder::new()
-        .name(&if_name)
-        .ipv4(
-            Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
-            ipv4_prefix,
-            None,
-        )
-        .mtu(configs.mtu as u16)
-        .multi_queue(false);
+    {
+        let num_queues = configs.num_packet_processors;
+
+        let mut if_name = configs.tun_interface_name.clone();
+        if_name.push_str(i.to_string().as_str());
+        let ipv4_addr = controller_configs.strato_address;
+        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
+
+        let dev = DeviceBuilder::new()
+            .name(&if_name)
+            .ipv4(
+                Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
+                ipv4_prefix,
+                None,
+            )
+            .mtu(configs.mtu as u16)
+            .multi_queue(true)
+            .build_async()
+            .expect("Failed to create tun device");
+
+        let mut queues = Vec::with_capacity(num_queues);
+
+        // creates multiple TUN queues with error handling
+        eprintln!("Creating {num_queues} TUN queues.");
+        for _ in 0..num_queues - 1 {
+            match dev.try_clone() {
+                Ok(cloned_dev) => {
+                    queues.push(Arc::new(cloned_dev));
+                }
+                Err(e) => {
+                    // if we are unable to create all the queues, use what we have
+                    eprintln!(
+                        "Warning: Could not create all TUN queues ({}), continuing with {} queues",
+                        e,
+                        queues.len()
+                    );
+                    break;
+                }
+            }
+        }
+
+        queues.push(Arc::new(dev));
+
+        // ensures that we have at least one queue
+        if queues.is_empty() {
+            panic!("Failed to create even a single TUN queue. Terminating.");
+        }
+
+        queues
+    }
 
     #[cfg(not(target_os = "linux"))]
-    let dev_builder = DeviceBuilder::new()
-        .ipv4(
-            Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
-            ipv4_prefix,
-            None,
-        )
-        .mtu(configs.mtu as u16);
+    {
+        let ipv4_addr = controller_configs.strato_address;
+        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
 
-    let dev = dev_builder
-        .build_async()
-        .expect("Failed to create tun device");
+        let dev = DeviceBuilder::new()
+            .ipv4(
+                Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
+                ipv4_prefix,
+                None,
+            )
+            .mtu(configs.mtu as u16)
+            .build_async()
+            .expect("Failed to create tun device");
 
-    eprintln!("Successfully created TUN device {if_name}.");
+        // creates a single TUN queue on non-Linux platforms without multi-queue support
+        eprintln!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
+        let queues = vec![Arc::new(dev)];
 
-    Arc::new(dev)
+        queues
+    }
 }
 
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out
@@ -75,95 +114,16 @@ impl TunReader {
     pub async fn start_reading(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
-        if cfg!(debug_assertions) {
-            debug!("[PERF] TunReader started");
-        }
-
         loop {
-            let read_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
-
             let n = match self.dev.recv(&mut buf).await {
-                Ok(n) => {
-                    if cfg!(debug_assertions) {
-                        if let Some(start) = read_start {
-                            let read_duration = start.elapsed();
-                            if read_duration.as_micros() > 100 {
-                                debug!(
-                                    "[PERF] TunReader recv() took {}μs to read {} bytes",
-                                    read_duration.as_micros(),
-                                    n
-                                );
-                            }
-                        }
-                        debug!("TunReader: Successfully read {} bytes from TUN device", n);
-                    }
-                    n
-                }
+                Ok(n) => n,
                 Err(e) => {
                     panic!("Error reading from the TUN device: {:?}", e);
                 }
             };
 
-            // Skip empty or invalid packets to prevent downstream errors
-            if n == 0 {
-                debug!("TunReader: Received empty packet from TUN device, skipping");
-                continue;
-            }
-
-            let packet_create_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
             let packet = Packet::new(n, buf);
-            debug!("TunReader: Received packet of {:?} bytes", packet.buf.len());
-
-            if cfg!(debug_assertions) {
-                if let Some(start) = packet_create_start {
-                    let create_duration = start.elapsed();
-                    if create_duration.as_micros() > 10 {
-                        debug!(
-                            "[PERF] Packet::new() took {}μs for {} bytes",
-                            create_duration.as_micros(),
-                            n
-                        );
-                    }
-                }
-                // packet received from the TUN device is already IPv6
-                // .len() can be removed to see the entire packet
-                debug!(
-                    "TunReader: Created packet with flow_id: {}, size: {} bytes, first 16 bytes: {:?}",
-                    packet.flow_id,
-                    packet.packet_size,
-                    &packet.buf[0..std::cmp::min(16, packet.packet_size)]
-                );
-            }
-
-            // Always try to set stream ID as Stream mode is default
-            // packet.try_set_stream_id(); // Commented out since method is not available
-
-            let send_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
             self.senders.try_send(packet);
-
-            if cfg!(debug_assertions) {
-                if let Some(start) = send_start {
-                    let send_duration = start.elapsed();
-                    if send_duration.as_micros() > 50 {
-                        debug!(
-                            "[PERF] LoadBalancer.try_send() took {}μs",
-                            send_duration.as_micros()
-                        );
-                    }
-                }
-            }
         }
     }
 }
@@ -180,89 +140,11 @@ impl TunWriter {
     }
 
     pub async fn write_packet(&self, packet: Packet) {
-        let validation_start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
         let buf = &packet.buf[0..packet.packet_size];
 
-        // Skip empty or invalid packets
-        if buf.len() < 20 {
-            if cfg!(debug_assertions) {
-                debug!(
-                    "TunWriter: Skipping packet with insufficient size: {} bytes (need at least 20 for IP header)",
-                    buf.len()
-                );
-            }
-            return;
-        }
-
-        // Validate this is an IPv4 packet
-        if buf[0] >> 4 != 4 {
-            if cfg!(debug_assertions) {
-                debug!(
-                    "TunWriter: Skipping non-IPv4 packet (version={})",
-                    buf[0] >> 4
-                );
-            }
-            return;
-        }
-
-        // Validate packet structure
-        let ihl = (buf[0] & 0x0F) as usize;
-        let header_length = ihl * 4;
-        if header_length > buf.len() || header_length < 20 {
-            if cfg!(debug_assertions) {
-                debug!(
-                    "TunWriter: Invalid IP header length: IHL={}, header_len={}, packet_len={}",
-                    ihl,
-                    header_length,
-                    buf.len()
-                );
-            }
-            return;
-        }
-
-        if cfg!(debug_assertions) {
-            if let Some(start) = validation_start {
-                let validation_duration = start.elapsed();
-                if validation_duration.as_micros() > 10 {
-                    debug!(
-                        "[PERF] TunWriter validation took {}μs",
-                        validation_duration.as_micros()
-                    );
-                }
-            }
-            // Send the original packet without modification
-            // Note: Removed the problematic modification of buf[14] which was corrupting destination IP
-            debug!(
-                "TunWriter: Sending packet of {} bytes to TUN device",
-                buf.len()
-            );
-        }
-
-        let write_start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
         self.dev
             .send(buf)
             .await
             .expect("Failed to write to TUN device");
-
-        if cfg!(debug_assertions) {
-            if let Some(start) = write_start {
-                let write_duration = start.elapsed();
-                if write_duration.as_micros() > 100 {
-                    debug!(
-                        "[PERF] TUN device send() took {}μs for {} bytes",
-                        write_duration.as_micros(),
-                        buf.len()
-                    );
-                }
-            }
-        }
     }
 }
