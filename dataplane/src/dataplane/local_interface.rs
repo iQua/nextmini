@@ -25,8 +25,7 @@ pub async fn create_tun_device(
     {
         let num_queues = configs.num_packet_processors;
 
-        let mut if_name = configs.tun_interface_name.clone();
-        if_name.push_str(i.to_string().as_str());
+        let if_name = configs.tun_interface_name.clone();
         let ipv4_addr = controller_configs.strato_address;
         let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
 
