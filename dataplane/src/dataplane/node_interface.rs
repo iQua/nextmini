@@ -1,13 +1,10 @@
 //This struct represents the connection of a node in the network.
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use s2n_quic::stream::BidirectionalStream;
-
-use tracing::debug;
 
 use crate::dataplane::metrics::MetricsTx;
 use crate::dataplane::packet::Packet;
@@ -102,113 +99,21 @@ pub struct NodeReceiver {
 
 impl NodeReceiver {
     pub async fn start_receiving(&mut self, metrics_tx: MetricsTx) {
-        if cfg!(debug_assertions) {
-            debug!(
-                "[PERF] NodeReceiver started for remote_node_id {}",
-                self.remote_node_id
-            );
-        }
-
         loop {
-            let recv_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
             let mut buf = [0; RECEIVE_BUF_SIZE];
             let n = self.reader.recv(&mut buf).await;
 
-            if cfg!(debug_assertions) {
-                if let Some(start) = recv_start {
-                    let recv_duration = start.elapsed();
-                    if recv_duration.as_micros() > 200 {
-                        debug!(
-                            "[PERF] NodeReceiver recv() from node {} took {}μs to read {} bytes",
-                            self.remote_node_id,
-                            recv_duration.as_micros(),
-                            n
-                        );
-                    }
-                }
+            // Skip empty or invalid packets to prevent downstream errors
+            if n == 0 {
+                continue;
             }
 
-            // Skip empty or invalid packets to prevent downstream errors
-            if n == 0 {
-                if cfg!(debug_assertions) {
-                    debug!(
-                        "NodeReceiver: Received empty packet from node {}, skipping",
-                        self.remote_node_id
-                    );
-                }
-                continue;
-            }
-            // Skip empty or invalid packets to prevent downstream errors
-            if n == 0 {
-                debug!(
-                    "NodeReceiver: Received empty packet from node {}, skipping",
-                    self.remote_node_id
-                );
-                continue;
-            }
-            let packet_create_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
             let packet = Packet::new(n, buf);
             let flow_id = packet.flow_id;
 
-            if cfg!(debug_assertions) {
-                if let Some(start) = packet_create_start {
-                    let create_duration = start.elapsed();
-                    if create_duration.as_micros() > 10 {
-                        debug!(
-                            "[PERF] NodeReceiver Packet::new() took {}μs for {} bytes",
-                            create_duration.as_micros(),
-                            n
-                        );
-                    }
-                }
-                debug!(flow_id = %flow_id, "Received packet from node {}", self.remote_node_id);
-            }
-
-            let metrics_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
             self.record_metrics(flow_id, n, metrics_tx.clone()).await;
 
-            if cfg!(debug_assertions) {
-                if let Some(start) = metrics_start {
-                    let metrics_duration = start.elapsed();
-                    if metrics_duration.as_micros() > 20 {
-                        debug!(
-                            "[PERF] NodeReceiver metrics recording took {}μs",
-                            metrics_duration.as_micros()
-                        );
-                    }
-                }
-            }
-
-            let send_start = if cfg!(debug_assertions) {
-                Some(Instant::now())
-            } else {
-                None
-            };
             self.tx.try_send(packet);
-
-            if cfg!(debug_assertions) {
-                if let Some(start) = send_start {
-                    let send_duration = start.elapsed();
-                    if send_duration.as_micros() > 50 {
-                        debug!(
-                            "[PERF] NodeReceiver LoadBalancer.try_send() took {}μs",
-                            send_duration.as_micros()
-                        );
-                    }
-                }
-            }
         }
     }
 
@@ -259,32 +164,7 @@ impl NodeSender {
     }
 
     pub async fn send(&mut self, packet: Packet) {
-        let enqueue_start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
-        if cfg!(debug_assertions) {
-            debug!(
-                "[PERF] NodeSender enqueueing packet flow_id {}, size {} bytes",
-                packet.flow_id, packet.packet_size
-            );
-        }
-
         self.scheduler.enqueue(packet);
-
-        if cfg!(debug_assertions) {
-            if let Some(start) = enqueue_start {
-                let enqueue_duration = start.elapsed();
-                if enqueue_duration.as_micros() > 50 {
-                    debug!(
-                        "[PERF] NodeSender scheduler.enqueue() took {}μs",
-                        enqueue_duration.as_micros()
-                    );
-                }
-            }
-        }
     }
 
     pub async fn reproduce(&self) -> Self {

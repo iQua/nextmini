@@ -1,13 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use tokio::sync::{Notify, RwLock};
 
 use crossbeam_queue::ArrayQueue;
 
-use tracing::{error, debug};
-
+use tracing::error;
 
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::dataplane::packet::Packet;
@@ -70,8 +68,6 @@ impl Fifo {
 
 impl Scheduler for Fifo {
     fn enqueue(&mut self, packet: Packet) {
-        let enqueue_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-        
         // drops the packet if the buffer is full
         let should_drop_packet =
             self.drop_strategy
@@ -80,26 +76,15 @@ impl Scheduler for Fifo {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
-            if cfg!(debug_assertions) {
-                debug!("[PERF] FIFO scheduler dropped packet flow_id {} (queue len: {})", 
-                       packet.flow_id, self.queue.len());
-            }
+
             return;
         }
 
         if self.queue.push(packet).is_err() {
-            error!("Fifo: CRITICAL - Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue.");
+            error!(
+                "Fifo: CRITICAL - Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue."
+            );
             return;
-        }
-
-        if cfg!(debug_assertions) {
-            if let Some(start) = enqueue_start {
-                let enqueue_duration = start.elapsed();
-                if enqueue_duration.as_micros() > 20 {
-                    debug!("[PERF] FIFO enqueue took {}μs (queue len: {})", 
-                           enqueue_duration.as_micros(), self.queue.len());
-                }
-            }
         }
 
         self.packet_arrived.notify_one();
@@ -113,66 +98,23 @@ impl Scheduler for Fifo {
         let shutdown_flag = self.shutdown.clone();
 
         tokio::spawn(async move {
-            if cfg!(debug_assertions) {
-                debug!("[PERF] FIFO scheduler worker started");
-            }
-            
             let mut tokens: usize = 0; // accumulated total bytes sent
             let mut counter: usize = 0; // accumulated number of packets sent
             loop {
-                let wait_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
                 packet_arrived.notified().await;
-
-                if cfg!(debug_assertions) {
-                    if let Some(start) = wait_start {
-                        let wait_duration = start.elapsed();
-                        if wait_duration.as_millis() > 10 {
-                            debug!("[PERF] FIFO scheduler waited {}ms for packet notification", 
-                                   wait_duration.as_millis());
-                        }
-                    }
-                }
 
                 if shutdown_flag.load(Ordering::Relaxed) {
                     break;
                 }
 
-                let mut batch_packets = 0;
-                let batch_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-
                 while let Some(packet) = queue.pop() {
-                    let send_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-                    
                     // Send raw packet data directly without protocol header
                     writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
-                    batch_packets += 1;
-
-                    if cfg!(debug_assertions) {
-                        if let Some(start) = send_start {
-                            let send_duration = start.elapsed();
-                            if send_duration.as_micros() > 100 {
-                                debug!("[PERF] FIFO writer.send() took {}μs for {} bytes, flow_id {}", 
-                                       send_duration.as_micros(), packet.packet_size, packet.flow_id);
-                            }
-                        }
-                    }
 
                     if counter == Self::BATCH_SIZE {
-                        let rate_limit_start = if cfg!(debug_assertions) { Some(Instant::now()) } else { None };
-                        
                         if let Some(limiter) = rate_limiter.read().await.as_ref() {
                             limiter.consume((tokens as f64) * 8.0).await;
-                        }
-
-                        if cfg!(debug_assertions) {
-                            if let Some(start) = rate_limit_start {
-                                let rate_limit_duration = start.elapsed();
-                                if rate_limit_duration.as_micros() > 50 {
-                                    debug!("[PERF] Rate limiting took {}μs for {} bytes", 
-                                           rate_limit_duration.as_micros(), tokens);
-                                }
-                            }
                         }
 
                         counter = 0;
@@ -180,18 +122,6 @@ impl Scheduler for Fifo {
                     }
 
                     counter += 1;
-                }
-
-                if cfg!(debug_assertions) {
-                    if batch_packets > 0 {
-                        if let Some(start) = batch_start {
-                            let batch_duration = start.elapsed();
-                            if batch_duration.as_micros() > 200 {
-                                debug!("[PERF] FIFO batch processing {} packets took {}μs", 
-                                       batch_packets, batch_duration.as_micros());
-                            }
-                        }
-                    }
                 }
             }
         });

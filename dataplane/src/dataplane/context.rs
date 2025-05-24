@@ -2,7 +2,6 @@
 // of the dataplane.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
@@ -23,7 +22,6 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::scheduler::SchedulingDiscipline;
 use crate::dataplane::utils::RateLimiter;
 use crate::dataplane::{INTERNAL_Q_SIZE, NodeId, ProcessorChannel, RateLimiterMap};
-use tracing::debug;
 
 #[derive(Clone)]
 pub struct Context {
@@ -118,22 +116,10 @@ impl Context {
     // Note: This can be called multiple times (i.e. every time when a new node is added),
     // but it will only create the channels once.
     async fn get_processor_txs(&self) -> Vec<mpsc::Sender<Packet>> {
-        let start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
         let mut channels = self.processor_channels.write().await;
         let mut txs = vec![];
 
         if channels.is_empty() {
-            if cfg!(debug_assertions) {
-                debug!(
-                    "[PERF] Context creating {} processor channels",
-                    self.configs.num_packet_processors
-                );
-            }
             // Channels don't exist yet, create a new mpsc channel for each queue
             for i in 0..self.configs.num_packet_processors {
                 let (tx, rx) = mpsc::channel(INTERNAL_Q_SIZE);
@@ -154,40 +140,16 @@ impl Context {
             }
         }
 
-        if cfg!(debug_assertions) {
-            if let Some(start_time) = start {
-                let duration = start_time.elapsed();
-                if duration.as_micros() > 100 {
-                    debug!(
-                        "[PERF] Context get_processor_txs took {}μs",
-                        duration.as_micros()
-                    );
-                }
-            }
-        }
-
         txs
     }
 
     // Obtains the receivers from processor mpsc channels.
     // Note: This should only be called once to initialize the processor manager.
     pub async fn get_processor_rxs(&self) -> Vec<mpsc::Receiver<Packet>> {
-        let start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
         let mut channels = self.processor_channels.write().await;
 
         let mut rxs = vec![];
         if channels.is_empty() {
-            if cfg!(debug_assertions) {
-                debug!(
-                    "[PERF] Context creating processor receivers for {} channels",
-                    self.configs.num_packet_processors
-                );
-            }
             // channels don't exist yet, create a new mpsc channel for each queue
             for i in 0..self.configs.num_packet_processors {
                 let (tx, rx) = mpsc::channel(INTERNAL_Q_SIZE);
@@ -216,49 +178,15 @@ impl Context {
             }
         }
 
-        if cfg!(debug_assertions) {
-            if let Some(start_time) = start {
-                let duration = start_time.elapsed();
-                if duration.as_micros() > 100 {
-                    debug!(
-                        "[PERF] Context get_processor_rxs took {}μs",
-                        duration.as_micros()
-                    );
-                }
-            }
-        }
-
         rxs
     }
 
     // Adds a NodeSender to the global hashmap, associated with the node ID
     pub async fn register_sender(&self, node_id: NodeId, node_sender: NodeSender) {
-        let start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
-        if cfg!(debug_assertions) {
-            debug!("[PERF] Context registering sender for node_id {}", node_id);
-        }
-
         self.processor_senders
             .write()
             .await
             .insert(node_id, node_sender);
-
-        if cfg!(debug_assertions) {
-            if let Some(start_time) = start {
-                let duration = start_time.elapsed();
-                if duration.as_micros() > 50 {
-                    debug!(
-                        "[PERF] Context register_sender took {}μs",
-                        duration.as_micros()
-                    );
-                }
-            }
-        }
     }
 
     // the link rate limiters need to be guarded for writing to prevent simutaneous edits from the controller
@@ -280,16 +208,6 @@ impl Context {
     }
 
     pub async fn add_tcp_node(&self, node_id: NodeId, stream: TcpStream) {
-        let _start = if cfg!(debug_assertions) {
-            Some(Instant::now())
-        } else {
-            None
-        };
-
-        if cfg!(debug_assertions) {
-            debug!("[PERF] Context adding TCP node {}", node_id);
-        }
-
         assert!(
             self.local_id != node_id,
             "Error: Attempt to add a new TCP node with the same id as the local id {}",
