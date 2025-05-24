@@ -112,13 +112,11 @@ impl SimpleRoutingTable {
         // Convert EnhancedRouteEntry to SimpleRouteEntry for consistency
         let simple_routes: Vec<SimpleRouteEntry> = routes
             .into_iter()
-            .map(|route| {
-                SimpleRouteEntry {
-                    route_id: route.route_id,
-                    next_hop: route.next_hop,
-                    src_node_id: route.src_node_id,
-                    dst_node_id: route.dst_node_id,
-                }
+            .map(|route| SimpleRouteEntry {
+                route_id: route.route_id,
+                next_hop: route.next_hop,
+                src_node_id: route.src_node_id,
+                dst_node_id: route.dst_node_id,
             })
             .collect();
 
@@ -228,7 +226,13 @@ impl SimpleRoutingTable {
         }
 
         for ((src, dst), next_hops) in &self.multi_routes {
-            debug!("  Multi route: {}→{} -> {:?} ({} paths)", src, dst, next_hops, next_hops.len());
+            debug!(
+                "  Multi route: {}→{} -> {:?} ({} paths)",
+                src,
+                dst,
+                next_hops,
+                next_hops.len()
+            );
         }
         debug!("=== End Routing Table Debug ===");
     }

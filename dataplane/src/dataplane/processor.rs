@@ -203,7 +203,7 @@ impl Processor {
                             None => {
                                 // Route defined, but the node doesn't exist yet.
                                 println!(
-                                    "WARNING: Route defined for flow {}, but node {} is offline. Packet dropped",
+                                    "WARNING: Route defined for flow {}, but node {} is offline. Packet dropped.",
                                     packet_flow_id, next_hop_id
                                 );
                                 // No total processing log here as packet is dropped before full processing cycle completes in the same way
@@ -213,6 +213,7 @@ impl Processor {
                     }
                 } else {
                     // No route was found for the packet
+                    println!("WARNING: No route was found. Packet dropped.",);
                     continue;
                 }
             }
