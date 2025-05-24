@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-use nextmini-messages::{ControllerToDataplane, DataplaneToController, Protocol};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::config::{Config, get_config};
 use crate::db::init_db;

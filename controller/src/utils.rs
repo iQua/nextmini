@@ -1,5 +1,5 @@
 /// Implements utility functions for the controller.
-use nextmini-messages::{ControllerToDataplane, Protocol, SimpleRouteEntry};
+use nextmini_messages::{ControllerToDataplane, Protocol, SimpleRouteEntry};
 
 use crate::models::Route;
 

@@ -9,7 +9,7 @@ use tokio::{io::AsyncReadExt, sync::RwLock};
 use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
 
-use nextmini-messages::Protocol;
+use nextmini_messages::Protocol;
 
 use crate::dataplane::configs::{CongestionControl, LocalConfigs};
 use crate::dataplane::context::Context;

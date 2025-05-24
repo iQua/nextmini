@@ -1,5 +1,5 @@
 use approx::assert_relative_eq;
-use nextmini-messages::DataplaneToController;
+use nextmini_messages::DataplaneToController;
 
 use crate::dataplane::metrics::Collector;
 use crate::dataplane::{FlowId, NodeId};
