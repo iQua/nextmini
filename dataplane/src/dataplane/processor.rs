@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use fxhash::FxHashMap;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
+use tracing::debug;
 
 use crate::dataplane::INTERNAL_Q_SIZE;
 use crate::dataplane::local_interface::TunWriter;
@@ -160,6 +161,37 @@ impl Processor {
         }
     }
 
+    /// Check if the packet is destined for the local node by examining the destination IP
+    fn is_packet_for_local_node(&self, packet: &Packet) -> bool {
+        // Only check IPv4 packets with sufficient size
+        if packet.packet_size < 20 || packet.buf[0] >> 4 != 4 {
+            return false;
+        }
+
+        // Extract destination IP from IP header (bytes 16-19)
+        let dst_ip = u32::from_be_bytes([
+            packet.buf[16], 
+            packet.buf[17], 
+            packet.buf[18], 
+            packet.buf[19]
+        ]);
+
+        // Calculate expected local IP: 10.0.0.{local_id}
+        // Base IP: 10.0.0.0 = 0x0A000000
+        let expected_local_ip = 0x0A000000u32 + (self.simple_routing_table.local_id as u32);
+
+        let matches = dst_ip == expected_local_ip;
+        
+        if matches {
+            debug!("Processor: Destination IP {}.{}.{}.{} matches local node {} IP", 
+                   (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF, 
+                   (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
+                   self.simple_routing_table.local_id);
+        }
+
+        matches
+    }
+
     pub async fn run(&mut self) {
         // Do some intialization before starting the main loop
         let batch_size = 256;
@@ -186,6 +218,21 @@ impl Processor {
                         Err(_) => break,
                     }
                 };
+
+                // Skip empty packets to prevent downstream processing errors
+                if packet.packet_size == 0 {
+                    debug!("Processor: Skipping empty packet with flow_id: {}", packet.flow_id);
+                    continue;
+                }
+
+                debug!("Processor: Received packet, flow_id: {}, size: {} bytes", packet.flow_id, packet.packet_size);
+
+                        // Check if this packet is destined for the local node before routing
+                        if self.is_packet_for_local_node(&packet) {
+                            debug!("Processor: Packet destined for local node, delivering locally, flow_id: {}", packet.flow_id);
+                            self.tun_writer.write_packet(packet).await;
+                            continue;
+                        }
 
                 // Preprocess the packet based on its stream id (only used if the multi-path method is "stream")
                 // if packet.has_stream_id {
@@ -241,15 +288,18 @@ impl Processor {
 
                 // Find the next hop and send the packet
                 let next_hop = self.simple_routing_table.next_hop_for_flow(packet.flow_id);
+                debug!("Processor: Next hop for flow_id {}: {:?}", packet.flow_id, next_hop);
 
                 if let Some(next_hop) = next_hop {
                     // Sending out the packet
                     if next_hop == self.simple_routing_table.local_id {
                         // Local delivery - use the single TUN writer
+                        debug!("Processor: Sending packet to local TUN writer, flow_id: {}", packet.flow_id);
                         self.tun_writer.write_packet(packet).await;
                     } else {
                         match self.senders.get_mut(&next_hop) {
                             Some(sender) => {
+                                debug!("Processor: Sending packet to node {}, flow_id: {}", next_hop, packet.flow_id);
                                 sender.send(packet).await;
                             }
                             None => {
@@ -265,10 +315,7 @@ impl Processor {
                     }
                 } else {
                     // Not route was found for the packet
-                    // println!(
-                    //     "WARNING: No route found for the packet with flow id {:?}.",
-                    //     &packet.flow_id.to_be_bytes()
-                    // );
+                    debug!("Processor: No route found for packet with flow_id: {}", packet.flow_id);
                     continue;
                 }
             }

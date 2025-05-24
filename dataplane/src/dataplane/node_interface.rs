@@ -105,6 +105,12 @@ impl NodeReceiver {
             let mut buf = [0; RECEIVE_BUF_SIZE];
             let n = self.reader.recv(&mut buf).await;
 
+            // Skip empty or invalid packets to prevent downstream errors
+            if n == 0 {
+                debug!("NodeReceiver: Received empty packet from node {}, skipping", self.remote_node_id);
+                continue;
+            }
+
             let packet = Packet::new(n, buf);
             let flow_id = packet.flow_id;
 

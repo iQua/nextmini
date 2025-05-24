@@ -58,21 +58,41 @@ impl TcpReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
-        debug!("TcpReader: Attempting to read 4-byte header");
-        if let Err(e) = self.stream.read_exact(&mut buf[0..4]).await {
-            error!("TcpReader: Failed to read 4-byte header: {}", e);
+        // First, read at least the IP header (20 bytes minimum)
+        let mut bytes_read = 0;
+        while bytes_read < 20 {
+            match self.stream.read(&mut buf[bytes_read..]).await {
+                Ok(0) => return 0, // Connection closed
+                Ok(n) => bytes_read += n,
+                Err(e) => {
+                    error!("TcpReader: Failed to read IP header: {}", e);
+                    return 0;
+                }
+            }
+        }
+
+        // Extract total length from IP header (bytes 2-3)
+        let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+        
+        // Validate total length
+        if total_length < 20 || total_length > buf.len() {
+            error!("TcpReader: Invalid IP total length: {}", total_length);
             return 0;
         }
-        debug!(header = ?&buf[0..4], "TcpReader: Successfully read 4-byte header");
 
-        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-
-        if msg_len == 0 {
-            error!("TcpReader: Calculated message length is 0. No payload to read after header.");
-            return 0; 
+        // Read the rest of the packet
+        while bytes_read < total_length {
+            match self.stream.read(&mut buf[bytes_read..]).await {
+                Ok(0) => return 0, // Connection closed
+                Ok(n) => bytes_read += n,
+                Err(e) => {
+                    error!("TcpReader: Failed to read packet data: {}", e);
+                    return 0;
+                }
+            }
         }
 
-        msg_len
+        total_length
     }
 }
 
@@ -158,27 +178,41 @@ impl QuicReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
-        debug!("QuicReader: Attempting to read 4-byte header");
-        match self.stream.read_exact(&mut buf[0..4]).await {
-            Ok(_) => {
-                debug!(header = ?&buf[0..4], "QuicReader: Successfully read 4-byte header");
-            }
-            Err(e) => {
-                debug!("QuicReader: Failed to read 4-byte header: {}", e);
-                return 0;
-            }
-        }
-
-        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-
-        match self.stream.read_exact(&mut buf[4..msg_len]).await {
-            Ok(_) => (),
-            Err(_) => {
-                return 0;
+        // First, read at least the IP header (20 bytes minimum)
+        let mut bytes_read = 0;
+        while bytes_read < 20 {
+            match self.stream.read(&mut buf[bytes_read..]).await {
+                Ok(0) => return 0, // Stream closed
+                Ok(n) => bytes_read += n,
+                Err(e) => {
+                    debug!("QuicReader: Failed to read IP header: {}", e);
+                    return 0;
+                }
             }
         }
 
-        msg_len
+        // Extract total length from IP header (bytes 2-3)
+        let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+        
+        // Validate total length
+        if total_length < 20 || total_length > buf.len() {
+            debug!("QuicReader: Invalid IP total length: {}", total_length);
+            return 0;
+        }
+
+        // Read the rest of the packet
+        while bytes_read < total_length {
+            match self.stream.read(&mut buf[bytes_read..]).await {
+                Ok(0) => return 0, // Stream closed
+                Ok(n) => bytes_read += n,
+                Err(e) => {
+                    debug!("QuicReader: Failed to read packet data: {}", e);
+                    return 0;
+                }
+            }
+        }
+
+        total_length
     }
 }
 

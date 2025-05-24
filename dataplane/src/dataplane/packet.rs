@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use byteorder::{BigEndian, ReadBytesExt};
 use serde_json::Value;
+use tracing::debug;
 
 use crate::dataplane::{FlowId, PacketBuf};
 
@@ -16,8 +17,11 @@ pub struct Packet {
 
 impl Packet {
     pub fn new(packet_size: usize, buf: PacketBuf) -> Self {
+        // Validate IP packet before processing
+        Self::debug_validate_packet(&buf, packet_size);
+        
         Self {
-            flow_id: Self::get_flow_id_from_buf(&buf),
+            flow_id: Self::get_flow_id_from_buf(&buf, packet_size),
             packet_size,
             // stream_id: (0, 0),
             // has_stream_id: false,
@@ -26,9 +30,10 @@ impl Packet {
     }
 
 
-    fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
+    fn get_flow_id_from_buf(buf: &PacketBuf, packet_size: usize) -> FlowId {
         // Check if it's an IPv4 packet
-        if buf.len() < 20 || buf[0] >> 4 != 4 {
+        if packet_size < 20 || buf[0] >> 4 != 4 {
+            debug!("FlowID: Non-IPv4 or insufficient data, using fallback calculation");
             // Fallback to old behavior for non-IPv4 packets - convert to 128-bit
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
             let old_flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
@@ -43,7 +48,13 @@ impl Packet {
         let ihl = (buf[0] & 0x0F) as usize;
         let transport_header_start = 4 * ihl;
 
-        let (src_port, dst_port) = if buf.len() >= transport_header_start + 4 {
+        // Validate IHL
+        if ihl < 5 || transport_header_start > packet_size {
+            debug!("FlowID: Invalid IHL {} or insufficient packet size", ihl);
+            return 0;
+        }
+
+        let (src_port, dst_port) = if packet_size >= transport_header_start + 4 {
             match buf[9] {
                 6 | 17 => {
                     // TCP (6) or UDP (17) - both have ports at same offset
@@ -55,20 +66,77 @@ impl Packet {
                         buf[transport_header_start + 2],
                         buf[transport_header_start + 3],
                     ]);
+                    debug!("FlowID: Extracted ports {}:{} -> {}:{}", 
+                           Self::format_ip(src_ip), src_port, Self::format_ip(dst_ip), dst_port);
                     (src_port, dst_port)
                 }
-                _ => (0, 0), // Other protocols
+                _ => {
+                    debug!("FlowID: Protocol {} - no port extraction", buf[9]);
+                    (0, 0) // Other protocols
+                }
             }
         } else {
+            debug!("FlowID: Insufficient data for transport header (need {}, have {})", 
+                   transport_header_start + 4, packet_size);
             (0, 0) // Not enough data
         };
 
         // Pack complete 4-tuple into 128-bit flow_id without compression:
         // src_ip(32) + dst_ip(32) + src_port(16) + dst_port(16) + reserved(32)
-        ((src_ip as u128) << 96)
+        let flow_id = ((src_ip as u128) << 96)
             | ((dst_ip as u128) << 64)
             | ((src_port as u128) << 48)
-            | ((dst_port as u128) << 32)
+            | ((dst_port as u128) << 32);
+
+        debug!("FlowID: Generated 0x{:032x} for {}:{} -> {}:{}", 
+               flow_id, Self::format_ip(src_ip), src_port, Self::format_ip(dst_ip), dst_port);
+
+        flow_id
+    }
+
+    fn format_ip(ip: u32) -> String {
+        format!("{}.{}.{}.{}", 
+                (ip >> 24) & 0xFF, 
+                (ip >> 16) & 0xFF, 
+                (ip >> 8) & 0xFF, 
+                ip & 0xFF)
+    }
+
+    fn debug_validate_packet(buf: &PacketBuf, packet_size: usize) {
+        if packet_size == 0 {
+            debug!("Packet: Empty packet detected");
+            return;
+        }
+
+        if packet_size < 20 {
+            debug!("Packet: Too small for IP header: {} bytes", packet_size);
+            return;
+        }
+
+        let version = buf[0] >> 4;
+        let ihl = buf[0] & 0x0F;
+        let total_length = u16::from_be_bytes([buf[2], buf[3]]) as usize;
+        let protocol = buf[9];
+
+        debug!("Packet: IPv{}, IHL={}, TotalLen={}, ActualSize={}, Protocol={}", 
+               version, ihl, total_length, packet_size, protocol);
+
+        if version != 4 {
+            debug!("Packet: WARNING - Not IPv4 (version={})", version);
+        }
+
+        if ihl < 5 {
+            debug!("Packet: WARNING - Invalid IHL: {}", ihl);
+        }
+
+        if total_length != packet_size {
+            debug!("Packet: WARNING - Length mismatch: header={}, actual={}", 
+                   total_length, packet_size);
+        }
+
+        if total_length < (ihl * 4) as usize {
+            debug!("Packet: WARNING - Total length less than header length");
+        }
     }
 
 

@@ -1,12 +1,43 @@
 reset_db = true
 protocol = "quic"
-multi_path_method = "stream"
+
+# Simple full mesh routing configuration
+# Node 1 routes
+[[routes]]
+route = [1, 2]
 
 [[routes]]
-route = [1, 2, 3, 4]
+route = [1, 3]
 
 [[routes]]
-route = [1, 3, 2, 4]
+route = [1, 4]
+
+# Node 2 routes
+[[routes]]
+route = [2, 1]
 
 [[routes]]
-route = [1, 3, 4]
+route = [2, 3]
+
+[[routes]]
+route = [2, 4]
+
+# Node 3 routes
+[[routes]]
+route = [3, 1]
+
+[[routes]]
+route = [3, 2]
+
+[[routes]]
+route = [3, 4]
+
+# Node 4 routes
+[[routes]]
+route = [4, 1]
+
+[[routes]]
+route = [4, 2]
+
+[[routes]]
+route = [4, 3]

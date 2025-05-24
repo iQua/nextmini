@@ -12,6 +12,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
+use tracing::debug;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
@@ -273,11 +274,20 @@ impl ControllerReceiver {
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 println!("Installing simplified routes..");
+                debug!("ControllerInterface: Received {} routes to install", routes.len());
+                
+                for route in &routes {
+                    debug!("ControllerInterface: Route {} -> next_hop {} (src: {:?}, dst: {:?})", 
+                           route.route_id, route.next_hop, route.src_addr, route.dst_addr);
+                }
+                
                 self.processor_manager
                     .write()
                     .await
                     .update_simple_routes(routes)
                     .await;
+                    
+                debug!("ControllerInterface: Route installation completed");
                 println!("Simplified routes installed.");
             }
             _ => println!("Received unsupported message type"),

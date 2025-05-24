@@ -75,16 +75,27 @@ impl TunReader {
 
         loop {
             let n = match self.dev.recv(&mut buf).await {
-                Ok(n) => n,
+                Ok(n) => {
+                    debug!("TunReader: Successfully read {} bytes from TUN device", n);
+                    n
+                },
                 Err(e) => {
                     panic!("Error reading from the TUN device: {:?}", e);
                 }
             };
+            
+            // Skip empty or invalid packets to prevent downstream errors
+            if n == 0 {
+                debug!("TunReader: Received empty packet from TUN device, skipping");
+                continue;
+            }
+            
             let packet = Packet::new(n, buf);
 
             // packet received from the TUN device is already IPv6
             // .len() can be removed to see the entire packet
-            debug!("TunReader: Received packet of {:?} bytes", packet.buf.len());
+            debug!("TunReader: Created packet with flow_id: {}, size: {} bytes, first 16 bytes: {:?}", 
+                   packet.flow_id, packet.packet_size, &packet.buf[0..std::cmp::min(16, packet.packet_size)]);
             
             // Always try to set stream ID as Stream mode is default
             // packet.try_set_stream_id(); // Commented out since method is not available
@@ -108,14 +119,33 @@ impl TunWriter {
     pub async fn write_packet(&self, packet: Packet) {
         let buf = &packet.buf[0..packet.packet_size];
 
-        // Defaulting to Stream mode behavior
-        let mut modified_buf = buf.to_vec();
+        // Skip empty or invalid packets
+        if buf.len() < 20 {
+            debug!("TunWriter: Skipping packet with insufficient size: {} bytes (need at least 20 for IP header)", buf.len());
+            return;
+        }
 
-        // resets prior modifications to the IP address
-        modified_buf[14] = 0;
+        // Validate this is an IPv4 packet
+        if buf[0] >> 4 != 4 {
+            debug!("TunWriter: Skipping non-IPv4 packet (version={})", buf[0] >> 4);
+            return;
+        }
 
+        // Validate packet structure
+        let ihl = (buf[0] & 0x0F) as usize;
+        let header_length = ihl * 4;
+        if header_length > buf.len() || header_length < 20 {
+            debug!("TunWriter: Invalid IP header length: IHL={}, header_len={}, packet_len={}", 
+                   ihl, header_length, buf.len());
+            return;
+        }
+
+        // Send the original packet without modification
+        // Note: Removed the problematic modification of buf[14] which was corrupting destination IP
+        debug!("TunWriter: Sending packet of {} bytes to TUN device", buf.len());
+        
         self.dev
-            .send(&modified_buf)
+            .send(buf)
             .await
             .expect("Failed to write to TUN device");
     }
