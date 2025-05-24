@@ -169,6 +169,13 @@ fn default_db_config() -> DBConfig {
     }
 }
 
+pub fn is_node_allowed(node_id: usize, config: &Config) -> bool {
+    let preset_n_nodes = config.routes_preset.n_nodes.unwrap();
+    let is_in_preset_topology =  node_id <= preset_n_nodes as usize;
+    let is_in_initial_routes = config.routes.iter().any(|route| route.route.contains(&node_id));
+    is_in_preset_topology || is_in_initial_routes
+}
+
 pub fn get_config(filename: &str) -> Config {
     if Path::new(filename).exists() {
         match fs::read_to_string(filename) {

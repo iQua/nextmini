@@ -3,5 +3,5 @@ protocol = "quic"
 
 [routes_preset]
 type = "full_mesh"
-n_nodes = 3
-route_ids = [0, 1] 
+n_nodes = 2
+route_ids = [0]
