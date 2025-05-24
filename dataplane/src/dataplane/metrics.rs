@@ -3,7 +3,7 @@ use fxhash::FxHashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::time::{Duration, sleep};
 
-use nextmini_messages::{DataplaneToController, Metric};
+use nextmini-messages::{DataplaneToController, Metric};
 
 use crate::dataplane::{FlowId, NodeId};
 

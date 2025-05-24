@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use nextmini_messages::Protocol;
+use nextmini-messages::Protocol;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {

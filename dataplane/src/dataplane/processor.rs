@@ -19,7 +19,7 @@ use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::SimpleRoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
-use nextmini_messages::SimpleRouteEntry;
+use nextmini-messages::SimpleRouteEntry;
 
 pub struct ProcessorManager {
     context: Context,

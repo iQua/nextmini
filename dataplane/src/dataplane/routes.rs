@@ -1,7 +1,7 @@
 use crate::dataplane::FlowId;
 use crate::dataplane::NodeId;
 use ahash::AHashMap;
-use nextmini_messages::SimpleRouteEntry;
+use nextmini-messages::SimpleRouteEntry;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

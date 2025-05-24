@@ -14,7 +14,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use tracing::debug;
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
+use nextmini-messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::dataplane::RateLimiterMap;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
@@ -102,7 +102,7 @@ impl Controller {
                 .init_udp_socket(configs.private_network_port.clone())
                 .await;
         }
-        
+
         // Create and start the single TUN device
         context.start_tun_device(&configs, &controller_configs).await;
 
@@ -257,18 +257,18 @@ impl ControllerReceiver {
             ControllerToDataplane::InstallRoutes { routes } => {
                 println!("Installing simplified routes..");
                 debug!("ControllerInterface: Received {} routes to install", routes.len());
-                
+
                 for route in &routes {
-                    debug!("ControllerInterface: Route {} -> next_hop {}", 
+                    debug!("ControllerInterface: Route {} -> next_hop {}",
                            route.route_id, route.next_hop);
                 }
-                
+
                 self.processor_manager
                     .write()
                     .await
                     .update_simple_routes(routes)
                     .await;
-                    
+
                 debug!("ControllerInterface: Route installation completed");
                 println!("Simplified routes installed.");
             }
