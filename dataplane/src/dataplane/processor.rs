@@ -120,13 +120,6 @@ pub struct Processor {
     // The senders that send packets to the network
     senders: FxHashMap<NodeId, NodeSender>,
 
-    // The mapping from stream id to route id. This is used as a local storage persistent across the life cycle
-    // of processors for streams that are not assigned a path in the routing table
-    // stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-
-    // Count the number of streams in each flow. This is used to assign a path to a stream via round robin.
-    // stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
-
     // The local interface writer
     tun_writer: TunWriter,
 
@@ -156,30 +149,6 @@ impl Processor {
         }
     }
 
-    /// Check if the packet is destined for the local node by examining the destination IP
-    fn is_packet_for_local_node(&self, packet: &Packet) -> bool {
-        // Only check IPv4 packets with sufficient size
-        if packet.packet_size < 20 || packet.buf[0] >> 4 != 4 {
-            return false;
-        }
-
-        // Extract destination IP from IP header (bytes 16-19)
-        let dst_ip = u32::from_be_bytes([
-            packet.buf[16],
-            packet.buf[17],
-            packet.buf[18],
-            packet.buf[19],
-        ]);
-
-        // Calculate expected local IP: 10.0.0.{local_id}
-        // Base IP: 10.0.0.0 = 0x0A000000
-        let expected_local_ip = 0x0A000000u32 + (self.simple_routing_table.local_id as u32);
-
-        let matches = dst_ip == expected_local_ip;
-
-        matches
-    }
-
     pub async fn run(&mut self) {
         // Do some intialization before starting the main loop
         let batch_size = 256;
@@ -206,17 +175,6 @@ impl Processor {
                         Err(_) => break,
                     }
                 };
-
-                // Skip empty packets to prevent downstream processing errors
-                if packet.packet_size == 0 {
-                    continue;
-                }
-
-                if self.is_packet_for_local_node(&packet) {
-                    self.tun_writer.write_packet(packet).await;
-
-                    continue;
-                }
 
                 // Report metrics for the packet (moved here as it's for non-local packets or packets to be routed)
                 self.metrics_tx
@@ -276,7 +234,6 @@ impl SenderLoadBalancer {
         Self {
             txs,
             tx_current: 0,
-            // stream2proc: FxHashMap::default(),
             flow2proc: FxHashMap::default(),
             n_proc: len,
         }
