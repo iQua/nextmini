@@ -78,6 +78,11 @@ impl RoutingTable {
         let src_ip = ((flow_id >> 96) & 0xFFFFFFFF) as u32;
         let dst_ip = ((flow_id >> 64) & 0xFFFFFFFF) as u32;
 
+        if src_ip == 0 || dst_ip == 0 {
+            // 0.0.0.0 is not a valid IP address, consider it as a loopback address
+            return (self.local_id, self.local_id);
+        }
+
         // converts IP addresses to node IDs
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
@@ -85,7 +90,7 @@ impl RoutingTable {
         (src_node_id, dst_node_id)
     }
 
-    /// Converts an IP address to its node ID based on base address.
+    /// Converts an IP address to its node ID based on the base address.
     fn ip_to_node_id(&self, ip: u32) -> usize {
         let base_ip = u32::from_be_bytes(self.base_ipv4_addr);
         let node_id = ip - base_ip;
@@ -102,18 +107,13 @@ impl RoutingTable {
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
-        // extracts source and destination nodes
-        let (src_node, dst_node) = self.extract_src_dst_from_flow(flow_id);
-
         // obtains the source-destination pair as the key for the available routes
-        let src_dst_pair = (src_node, dst_node);
-
-        println!("The source-destination pair is: {:?}.", src_dst_pair);
+        let src_dst_pair = self.extract_src_dst_from_flow(flow_id);
 
         // gets the available routes for this source-destination pair
         let available_routes = self.available_routes.get(&src_dst_pair)?;
 
-        // Simple route selection: use jump hash among available routes
+        // Use jump hash to select among the available routes
         let selected_route_id = if available_routes.len() == 1 {
             available_routes[0]
         } else {
@@ -122,7 +122,7 @@ impl RoutingTable {
         };
 
         debug!(
-            "Source node selected route_id {} for flow {} from {} available routes",
+            "Route ID {} is selected for flow {} from {} available routes.",
             selected_route_id,
             flow_id,
             available_routes.len()
@@ -141,7 +141,7 @@ impl RoutingTable {
 mod tests {
     use super::*;
 
-    // Assumes base IP 10.0.0.0 for IPs like 10.0.0.src_octet and 10.0.0.dst_octet
+    // Assumes that the base IP address is 10.0.0.0: 10.0.0.src_octet and 10.0.0.dst_octet
     fn create_flow_id(
         src_ip_last_octet: u8,
         dst_ip_last_octet: u8,
@@ -233,6 +233,7 @@ mod tests {
         let table = RoutingTable::new(1); // base_ipv4_addr is [10,0,0,0] by default
         let flow_id = create_flow_id(5, 7, 12345, 80, 6); // 10.0.0.5 -> 10.0.0.7
         let (src_node, dst_node) = table.extract_src_dst_from_flow(flow_id);
+
         assert_eq!(src_node, 5, "Source node ID mismatch");
         assert_eq!(dst_node, 7, "Destination node ID mismatch");
     }
