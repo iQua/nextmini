@@ -78,14 +78,19 @@ impl RoutingTable {
         let src_ip = ((flow_id >> 96) & 0xFFFFFFFF) as u32;
         let dst_ip = ((flow_id >> 64) & 0xFFFFFFFF) as u32;
 
-        if src_ip == 0 || dst_ip == 0 {
-            // 0.0.0.0 is not a valid IP address, consider it as a loopback address
-            return (self.local_id, self.local_id);
-        }
+        println!(
+            "Before ip_to_node_id: source IP: {}, destination IP: {}",
+            src_ip, dst_ip
+        );
 
         // converts IP addresses to node IDs
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
+
+        println!(
+            "After ip_to_node_id: source IP: {}, destination IP: {}",
+            src_ip, dst_ip
+        );
 
         (src_node_id, dst_node_id)
     }

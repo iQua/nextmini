@@ -38,7 +38,7 @@ impl Packet {
         // checks if it's an IPv4 packet
         if packet_size < 20 || buf[0] >> 4 != 4 {
             // Non-IPv4 or insufficient data, using fallback calculation
-            warn!(
+            debug!(
                 "Non-IPv4 packet detected: version: {}, size: {}.",
                 buf[0] >> 4,
                 packet_size
@@ -47,10 +47,12 @@ impl Packet {
             // uses the source and destination addresses as the flow ID
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
             let flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
+
             debug!(
-                "Non-IPv4 packet, using fallback flow_id: {:#x}",
-                flow_id as u128
+                "Using fallback flow_id without source and destination port numbers: {:#x}",
+                flow_id << 0xFFFFFFFF as u128
             );
+
             return flow_id as u128;
         }
 
@@ -90,7 +92,7 @@ impl Packet {
                 }
                 _ => {
                     // Unknown protocol: no port extraction
-                    warn!("Unknown protocol: {}, no ports are extracted", buf[9]);
+                    warn!("Unknown protocol: {}, no ports are extracted.", buf[9]);
 
                     (0, 0)
                 }
