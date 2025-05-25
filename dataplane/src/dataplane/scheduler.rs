@@ -36,6 +36,7 @@ pub struct Fifo {
     writer: ProtocolWriter,
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
+    task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Fifo {
@@ -62,6 +63,7 @@ impl Fifo {
             writer,
             rate_limiter,
             shutdown: Arc::new(AtomicBool::new(false)),
+            task_handle: None,
         }
     }
 }
@@ -100,13 +102,23 @@ impl Scheduler for Fifo {
     }
 
     fn run(&mut self) {
+        // Shutdown any existing task first
+        if let Some(handle) = self.task_handle.take() {
+            self.shutdown.store(true, Ordering::Relaxed);
+            self.packet_arrived.notify_one();
+            handle.abort();
+        }
+
+        // Reset shutdown flag for new task
+        self.shutdown.store(false, Ordering::Relaxed);
+
         let queue = self.queue.clone();
         let packet_arrived = self.packet_arrived.clone();
         let rate_limiter = self.rate_limiter.clone();
         let mut writer = self.writer.reproduce();
         let shutdown_flag = self.shutdown.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut tokens: usize = 0; // accumulated total bytes sent
             let mut counter: usize = 0; // accumulated number of packets sent
             loop {
@@ -118,9 +130,22 @@ impl Scheduler for Fifo {
 
                 while let Some(packet) = queue.pop() {
                     // Send raw packet data directly without protocol header
-                    writer.send(&packet.buf[0..packet.packet_size]).await;
-                    tokens += packet.packet_size;
-                    counter += 1;
+                    match writer.send(&packet.buf[0..packet.packet_size]).await {
+                        Ok(_) => {
+                            tokens += packet.packet_size;
+                            counter += 1;
+                        }
+                        Err(e) => {
+                            error!(
+                                "FIFO: Failed to send packet for flow {} (size: {}): {} - packet dropped",
+                                packet.flow_id,
+                                packet.packet_size,
+                                e
+                            );
+                            // Continue processing other packets even if one fails
+                            continue;
+                        }
+                    }
 
                     // Apply rate limiting at batch boundaries or when queue is empty
                     if counter >= Self::BATCH_SIZE || queue.is_empty() {
@@ -137,6 +162,8 @@ impl Scheduler for Fifo {
                 }
             }
         });
+
+        self.task_handle = Some(handle);
     }
 }
 
@@ -144,5 +171,10 @@ impl Drop for Fifo {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.packet_arrived.notify_one();
+        
+        // Abort the task if it exists
+        if let Some(handle) = self.task_handle.take() {
+            handle.abort();
+        }
     }
 }

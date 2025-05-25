@@ -31,7 +31,7 @@ pub enum ProtocolWriter {
 }
 
 impl ProtocolWriter {
-    pub async fn send(&mut self, data: &[u8]) {
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
         match self {
             Self::Tcp(writer) => writer.send(data).await,
             Self::Udp(writer) => writer.send(data).await,
@@ -83,24 +83,26 @@ impl TcpWriter {
         Self { stream }
     }
 
-    pub async fn send(&mut self, data: &[u8]) {
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
         let mut stream_guard = self.stream.lock().await;
         match stream_guard.write_all(data).await {
             Ok(_) => {
                 // Ensure data is flushed to the network
                 if let Err(flush_err) = stream_guard.flush().await {
-                    error!(
-                        "Failed to flush TCP data: {} - packets may be buffered",
-                        flush_err
-                    );
+                    let error = format!("Failed to flush TCP data: {} - packets may be buffered", flush_err);
+                    error!("{}", error);
+                    return Err(error);
                 }
+                Ok(())
             }
             Err(e) => {
-                error!(
+                let error = format!(
                     "Failed to write TCP data (size: {} bytes): {} - connection may be broken",
                     data.len(),
                     e
                 );
+                error!("{}", error);
+                Err(error)
             }
         }
     }
@@ -152,25 +154,30 @@ impl UdpWriter {
         Self { sock, addr }
     }
 
-    pub async fn send(&self, data: &[u8]) {
+    pub async fn send(&self, data: &[u8]) -> Result<(), String> {
         match self.sock.send_to(data, self.addr.as_str()).await {
             Ok(bytes_sent) => {
                 if bytes_sent != data.len() {
-                    info!(
-                        "WARNING: UDP partial send - expected {} bytes, sent {} bytes to {}",
+                    let error = format!(
+                        "UDP partial send - expected {} bytes, sent {} bytes to {}",
                         data.len(),
                         bytes_sent,
                         self.addr
                     );
+                    warn!("{}", error);
+                    return Err(error);
                 }
+                Ok(())
             }
             Err(e) => {
-                error!(
+                let error = format!(
                     "Failed to send UDP data to {} (size: {} bytes): {} - destination may be unreachable",
                     self.addr,
                     data.len(),
                     e
                 );
+                error!("{}", error);
+                Err(error)
             }
         }
     }
@@ -221,25 +228,27 @@ impl QuicWriter {
         }
     }
 
-    pub async fn send(&mut self, buf: &[u8]) {
+    pub async fn send(&mut self, buf: &[u8]) -> Result<(), String> {
         let mut stream_guard = self.stream.lock().await;
 
         match stream_guard.write_all(buf).await {
             Ok(_) => {
                 // Ensure data is flushed to the network
                 if let Err(flush_err) = stream_guard.flush().await {
-                    error!(
-                        "Failed to flush QUIC data: {} - packets may be buffered",
-                        flush_err
-                    );
+                    let error = format!("Failed to flush QUIC data: {} - packets may be buffered", flush_err);
+                    error!("{}", error);
+                    return Err(error);
                 }
+                Ok(())
             }
             Err(e) => {
-                error!(
+                let error = format!(
                     "Failed to write QUIC data (size: {} bytes): {} - stream may be broken",
                     buf.len(),
                     e
                 );
+                error!("{}", error);
+                Err(error)
             }
         }
     }

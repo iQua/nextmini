@@ -18,7 +18,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::RoutingTable;
 use crate::dataplane::{FlowId, FlowIdExt, context::Context, metrics::MetricsTx};
 use nextmini_messages::RoutingTableEntry;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 pub struct ProcessorManager {
     context: Context,
@@ -103,8 +103,8 @@ impl ProcessorManager {
             let flg = self.proc_shutdown_flags.pop_front().unwrap();
             let hdl = self.proc_handles.pop_front().unwrap();
             flg.store(true, Ordering::Relaxed);
-            //Wait for the processor to shutdown
-            tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+            //Wait for the processor to shutdown gracefully
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             //Drop the processor if it is still running
             hdl.abort();
         }
@@ -154,10 +154,14 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
-        debug!("Processing new packet for flow {} ({}:{} -> {}:{})", 
-               packet_flow_id, 
-               packet_flow_id.src_ip(), packet_flow_id.src_port(),
-               packet_flow_id.dst_ip(), packet_flow_id.dst_port());
+        info!(
+            "Processing new packet for flow {} ({}:{} -> {}:{})",
+            packet_flow_id,
+            packet_flow_id.src_ip(),
+            packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(),
+            packet_flow_id.dst_port()
+        );
 
         // Select route_id for new flow at source node
         let route_id = self
@@ -197,9 +201,12 @@ impl Processor {
         debug!(
             "Flow {} ({}:{} -> {}:{}) selected route_id {} → next_hop {}.",
             packet_flow_id,
-            packet_flow_id.src_ip(), packet_flow_id.src_port(),
-            packet_flow_id.dst_ip(), packet_flow_id.dst_port(),
-            route_id, next_hop_id
+            packet_flow_id.src_ip(),
+            packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(),
+            packet_flow_id.dst_port(),
+            route_id,
+            next_hop_id
         );
 
         self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)
@@ -215,11 +222,19 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
+            debug!(
+                "Delivering packet locally for flow {} (size: {})",
+                packet_flow_id, packet.packet_size
+            );
             self.tun_writer.write_packet(packet).await;
             Ok(())
         } else {
             match self.senders.get_mut(&next_hop_id) {
                 Some(sender) => {
+                    debug!(
+                        "Forwarding packet to node {} for flow {} (size: {})",
+                        next_hop_id, packet_flow_id, packet.packet_size
+                    );
                     sender.send(packet).await;
                     Ok(())
                 }
@@ -271,6 +286,11 @@ impl Processor {
             };
 
             // Process the batch of packets
+            let batch_size = packets.len();
+            if batch_size > 0 {
+                debug!("Processing batch of {} packets", batch_size);
+            }
+
             for packet in packets {
                 // Report metrics for the packet
                 self.metrics_tx

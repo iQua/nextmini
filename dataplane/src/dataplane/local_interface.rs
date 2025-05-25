@@ -118,9 +118,10 @@ impl TunReader {
                 Ok(n) => n,
                 Err(e) => {
                     error!(
-                        "Failed to read from TUN device: {:?} - interface may be down",
+                        "Failed to read from TUN device: {:?}: interface may be down. Retrying...",
                         e
                     );
+
                     // Sleep briefly before retrying to avoid busy loop
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     continue;
@@ -129,11 +130,19 @@ impl TunReader {
 
             // Skip empty packets
             if n == 0 {
-                warn!("TunReader received empty packet - may indicate interface issues");
+                warn!("TunReader received an empty packet.");
                 continue;
             }
 
             let packet = Packet::new(n, buf);
+
+            // Check if packet creation was successful (non-zero flow_id indicates valid packet)
+            if packet.flow_id == 0 {
+                warn!("TunReader: Invalid packet received, dropping (size: {})", n);
+                continue;
+            }
+
+            // Try to send packet to processor with error handling
             self.senders.try_send(packet);
         }
     }
