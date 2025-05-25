@@ -169,7 +169,7 @@ async fn handle_connection(
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
                                 public_network_addr = EXCLUDED.public_network_addr,
-                                virtual_network_addr = EXCLUDED.virtual_network_addr,
+                                virtual_network_addr = EXCLUDED.virtual_network_addr
                             "#
                         )
                         .bind(new_node.id)
