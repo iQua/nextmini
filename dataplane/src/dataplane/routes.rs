@@ -1,4 +1,5 @@
 use crate::dataplane::FlowId;
+use crate::dataplane::FlowIdExt;
 use crate::dataplane::NodeId;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
@@ -75,12 +76,12 @@ impl RoutingTable {
 
     /// Extracts source and destination node IDs from the flow ID.
     fn extract_src_dst_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
-        let src_ip = ((flow_id >> 96) & 0xFFFFFFFF) as u32;
-        let dst_ip = ((flow_id >> 64) & 0xFFFFFFFF) as u32;
+        let src_ip = flow_id.src_ip();
+        let dst_ip = flow_id.dst_ip();
 
         // converts IP addresses to node IDs
-        let src_node_id = self.ip_to_node_id(src_ip);
-        let dst_node_id = self.ip_to_node_id(dst_ip);
+        let src_node_id = self.ip_to_node_id(src_ip.into());
+        let dst_node_id = self.ip_to_node_id(dst_ip.into());
 
         (src_node_id, dst_node_id)
     }

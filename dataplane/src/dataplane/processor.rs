@@ -16,7 +16,7 @@ use crate::dataplane::local_interface::TunWriter;
 use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::RoutingTable;
-use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
+use crate::dataplane::{FlowId, FlowIdExt, context::Context, metrics::MetricsTx};
 use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, error, warn};
 
@@ -154,7 +154,10 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
-        debug!("Processing new packet for flow {}", packet_flow_id);
+        debug!("Processing new packet for flow {} ({}:{} -> {}:{})", 
+               packet_flow_id, 
+               packet_flow_id.src_ip(), packet_flow_id.src_port(),
+               packet_flow_id.dst_ip(), packet_flow_id.dst_port());
 
         // Select route_id for new flow at source node
         let route_id = self
@@ -192,8 +195,11 @@ impl Processor {
             })?;
 
         debug!(
-            "New packet flow {} selected route_id {} → next_hop {}.",
-            packet_flow_id, route_id, next_hop_id
+            "Flow {} ({}:{} -> {}:{}) selected route_id {} → next_hop {}.",
+            packet_flow_id,
+            packet_flow_id.src_ip(), packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(), packet_flow_id.dst_port(),
+            route_id, next_hop_id
         );
 
         self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)

@@ -38,6 +38,37 @@ const INTERNAL_Q_SIZE: usize = 10000;
 /// + dst_port(16) + reserved(32)
 pub type FlowId = u128;
 
+pub trait FlowIdExt {
+    fn src_ip(&self) -> std::net::Ipv4Addr;
+    fn dst_ip(&self) -> std::net::Ipv4Addr;
+    fn src_port(&self) -> u16;
+    fn dst_port(&self) -> u16;
+}
+
+impl FlowIdExt for FlowId {
+    fn src_ip(&self) -> std::net::Ipv4Addr {
+        // Extract source IP
+        let src_u32 = (self >> 96) as u32;
+        std::net::Ipv4Addr::from(src_u32)
+    }
+
+    fn dst_ip(&self) -> std::net::Ipv4Addr {
+        // Extract destination IP
+        let dst_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
+        std::net::Ipv4Addr::from(dst_u32)
+    }
+
+    fn src_port(&self) -> u16 {
+        // Extract source port
+        ((self >> 48) & 0xFFFF) as u16
+    }
+
+    fn dst_port(&self) -> u16 {
+        // Extract destination port
+        ((self >> 32) & 0xFFFF) as u16
+    }
+}
+
 /// The node ID.
 pub type NodeId = usize;
 
