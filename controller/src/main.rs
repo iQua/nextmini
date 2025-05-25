@@ -239,19 +239,13 @@ async fn handle_connection(
                                 continue;
                             }
 
-                            // Always connect all nodes in the topology
-                            let should_connect = true;
-
-                            if !should_connect {
-                                continue;
-                            }
-
+                            // connects all nodes in the topology
                             new_connections.push(node.id);
 
                             // determines the address to use (private or public)
                             // if two nodes share the same private network name, then we use the private
                             // network address for this connection; otherwise, we use the public network
-                            // address for this connection
+                            // address.
                             let addr = if node.private_network_name
                                 == Some(private_network_name.clone())
                             {
@@ -267,7 +261,7 @@ async fn handle_connection(
                                 addr,
                             };
 
-                            // inform the existing nodes about the new node by updating their connections
+                            // informs the existing nodes about the new node by updating their connections
                             match write_arc
                                 .lock()
                                 .await
@@ -284,7 +278,7 @@ async fn handle_connection(
                                 ),
                             }
 
-                            // For UDP, also notify the existing node about the new node
+                            // For UDP, also notifies the existing node about the new node
                             if config.protocol == Protocol::Udp {
                                 let addr =
                                     if new_node.private_network_name == node.private_network_name {
