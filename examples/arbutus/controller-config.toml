@@ -1,5 +1,4 @@
-reset_db = true
 
 [routes_preset]
 type = "full_mesh"
-n_nodes = 32 
+n_nodes = 32

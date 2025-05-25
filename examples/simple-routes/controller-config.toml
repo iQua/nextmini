@@ -1,4 +1,3 @@
-reset_db = true
 protocol = "quic"
 
 [topology]

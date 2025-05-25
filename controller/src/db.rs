@@ -254,8 +254,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         }
     }
 
-    // Add custom routes from configuration file
-    info!("Adding custom routes from configuration file...");
+    // adds custom routes from the configuration file
+    info!("Adding custom routes from the configuration file.");
 
     for route in config.routes.clone() {
         if route.route.is_empty() {

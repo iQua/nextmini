@@ -88,10 +88,6 @@ pub struct Config {
     pub num_interfaces: usize,
 
     /// Should database be reset before starting the controller?
-    /// Warning: If this is set to true, all data will be deleted when restarting the controller.
-    #[serde(default)]
-    pub reset_db: bool,
-
     /// The database configuration.
     #[serde(default = "default_db_config")]
     pub db: DBConfig,
@@ -186,7 +182,6 @@ impl Default for Config {
             link_rates: Vec::new(),
             topology: Topology::default(),
             num_interfaces: default_interfaces(),
-            reset_db: false,
             db: default_db_config(),
         }
     }
@@ -199,7 +194,6 @@ mod tests {
     #[test]
     fn test_example_config_parsing() {
         let toml_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [[routes]]
@@ -215,7 +209,6 @@ mod tests {
         let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
 
         // Test basic config values
-        assert_eq!(config.reset_db, true);
         assert_eq!(config.protocol, Protocol::Quic);
 
         // Test that we have 3 routes
@@ -231,7 +224,6 @@ mod tests {
     fn test_route_processing_logic() {
         // Test the route processing logic that happens in get_config
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
         base_ipv4_addr = [10, 0, 0, 0]
         ipv4_net_mask = [255, 255, 255, 0]
@@ -249,7 +241,6 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify basic configuration
-        assert_eq!(config.reset_db, true);
         assert_eq!(config.protocol, Protocol::Quic);
         assert_eq!(config.base_ipv4_addr, [10, 0, 0, 0]);
         assert_eq!(config.ipv4_net_mask, [255, 255, 255, 0]);
@@ -267,7 +258,6 @@ mod tests {
     fn test_preset_topology_config_parsing() {
         // Test preset topology configuration parsing
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [topology]
@@ -302,7 +292,6 @@ mod tests {
     fn test_ring_topology_config_parsing() {
         // Test ring topology configuration parsing
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [topology]
@@ -333,7 +322,6 @@ mod tests {
     fn test_route_id_assignment_only_custom_routes() {
         // Test route_id assignment for only custom routes (no preset topology)
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [[routes]]
@@ -365,7 +353,6 @@ mod tests {
     fn test_route_id_assignment_with_full_mesh() {
         // Test route_id assignment with full mesh preset + custom routes
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [topology]
@@ -404,7 +391,6 @@ mod tests {
     fn test_route_id_assignment_with_ring() {
         // Test route_id assignment with ring preset + custom routes
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [topology]
@@ -447,7 +433,6 @@ mod tests {
     fn test_controller_config_toml_format() {
         // Test the exact format used in controller-config.toml
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         # Forward routes: Node 1 to Node 4
@@ -482,7 +467,6 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify basic settings
-        assert_eq!(config.reset_db, true);
         assert_eq!(config.protocol, Protocol::Quic);
 
         // Verify no preset topology
@@ -509,14 +493,12 @@ mod tests {
     fn test_empty_routes_handling() {
         // Test handling of configuration with no routes
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
         "#;
 
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify basic settings
-        assert_eq!(config.reset_db, true);
         assert_eq!(config.protocol, Protocol::Quic);
 
         // Verify no routes
@@ -530,7 +512,6 @@ mod tests {
     fn test_route_deduplication_scenario() {
         // Test route deduplication with preset topology + duplicate custom routes
         let config_content = r#"
-        reset_db = true
         protocol = "quic"
 
         [topology]

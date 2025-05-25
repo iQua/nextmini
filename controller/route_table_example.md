@@ -1,7 +1,6 @@
 ## Configuration File Example
 
 ```toml
-reset_db = true
 protocol = "quic"
 
 # Preset topology (optional)

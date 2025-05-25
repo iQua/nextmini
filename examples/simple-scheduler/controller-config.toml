@@ -1,4 +1,3 @@
-reset_db = true
 protocol = "quic"
 scheduler_type = "fifo"
 
