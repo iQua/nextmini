@@ -213,6 +213,41 @@ impl SimpleRoutingTable {
         next_hop
     }
 
+    /// Source node route selection: select route_id for new flow
+    /// This method is used only at source nodes for new flows
+    pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
+        // Extract src/dst nodes from flow_id
+        let (src_node, dst_node) = self.extract_src_dst_from_flow(flow_id);
+        let direction_key = (src_node, dst_node);
+
+        println!("DEBUG: Source node selecting route for direction ({}, {})", src_node, dst_node);
+
+        // Get available routes for this direction
+        let available_routes = self.direction_routes.get(&direction_key)?;
+
+        // Select route using jump hash for load balancing
+        let selected_route_id = if available_routes.len() == 1 {
+            available_routes[0]
+        } else {
+            let hash_result = self.jump_hash(flow_id, available_routes.len());
+            available_routes[hash_result]
+        };
+
+        println!("DEBUG: Source node selected route_id {} for flow {:#x} from {} available routes",
+                 selected_route_id, flow_id, available_routes.len());
+
+        // Cache the result for future packets of the same flow
+        self.flow_route_cache.insert(flow_id, selected_route_id);
+
+        Some(selected_route_id)
+    }
+
+    /// Intermediate node route lookup: get next_hop by route_id
+    /// This method is used by intermediate nodes for packet forwarding
+    pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
+        self.route_next_hop.get(&route_id).copied()
+    }
+
     /// Get number of active routes
     #[allow(dead_code)]
     pub fn num_routes(&self) -> usize {
@@ -463,4 +498,114 @@ mod tests {
         assert!(table.flow_route_cache.get(&flow_id).is_none());
     }
 
+    #[test]
+    fn test_select_route_for_flow() {
+        let mut table = SimpleRoutingTable::new(1);
+        table.set_base_ipv4_addr([10, 0, 0, 0]);
+        
+        // Install multiple routes for the same direction
+        let routes = vec![
+            SimpleRouteEntry { route_id: 100, next_hop: 2, src_node_id: 5, dst_node_id: 7 },
+            SimpleRouteEntry { route_id: 101, next_hop: 3, src_node_id: 5, dst_node_id: 7 },
+            SimpleRouteEntry { route_id: 102, next_hop: 4, src_node_id: 5, dst_node_id: 7 },
+        ];
+        table.install_routes(routes);
+
+        let flow_id = create_flow_id(5, 7, 1234, 80, 6);
+        
+        // Test source node route selection
+        let route_id = table.select_route_for_flow(flow_id);
+        assert!(route_id.is_some());
+        let selected_route = route_id.unwrap();
+        assert!(selected_route == 100 || selected_route == 101 || selected_route == 102);
+        
+        // Check that the route is cached
+        assert_eq!(table.flow_route_cache.get(&flow_id), Some(&selected_route));
+        
+        // Second call should return the same route (from cache)
+        let route_id2 = table.select_route_for_flow(flow_id);
+        assert_eq!(route_id2, Some(selected_route));
+    }
+
+    #[test]
+    fn test_get_next_hop_by_route() {
+        let mut table = SimpleRoutingTable::new(1);
+        table.set_base_ipv4_addr([10, 0, 0, 0]);
+        
+        let routes = vec![
+            SimpleRouteEntry { route_id: 100, next_hop: 2, src_node_id: 5, dst_node_id: 7 },
+            SimpleRouteEntry { route_id: 101, next_hop: 3, src_node_id: 5, dst_node_id: 7 },
+            SimpleRouteEntry { route_id: 102, next_hop: 4, src_node_id: 6, dst_node_id: 8 },
+        ];
+        table.install_routes(routes);
+        
+        // Test direct route_id lookup
+        assert_eq!(table.get_next_hop_by_route(100), Some(2));
+        assert_eq!(table.get_next_hop_by_route(101), Some(3));
+        assert_eq!(table.get_next_hop_by_route(102), Some(4));
+        
+        // Test non-existent route_id
+        assert_eq!(table.get_next_hop_by_route(999), None);
+    }
+
+    #[test]
+    fn test_source_vs_intermediate_processing() {
+        let mut table = SimpleRoutingTable::new(1);
+        table.set_base_ipv4_addr([10, 0, 0, 0]);
+        
+        let routes = vec![
+            SimpleRouteEntry { route_id: 100, next_hop: 2, src_node_id: 5, dst_node_id: 7 },
+            SimpleRouteEntry { route_id: 101, next_hop: 3, src_node_id: 5, dst_node_id: 7 },
+        ];
+        table.install_routes(routes);
+
+        let flow_id = create_flow_id(5, 7, 1234, 80, 6);
+        
+        // Step 1: Source node selects route
+        let route_id = table.select_route_for_flow(flow_id).unwrap();
+        assert!(route_id == 100 || route_id == 101);
+        
+        // Step 2: Intermediate node uses route_id for forwarding
+        let next_hop = table.get_next_hop_by_route(route_id).unwrap();
+        assert!(next_hop == 2 || next_hop == 3);
+        
+        // Verify consistency: same flow should always get same route
+        for _ in 0..10 {
+            assert_eq!(table.select_route_for_flow(flow_id), Some(route_id));
+        }
+    }
+
+    #[test]
+    fn test_new_architecture_consistency() {
+        let mut table = SimpleRoutingTable::new(1);
+        table.set_base_ipv4_addr([10, 0, 0, 0]);
+        
+        // Install routes for multiple directions
+        let routes = vec![
+            SimpleRouteEntry { route_id: 12, next_hop: 2, src_node_id: 1, dst_node_id: 4 },
+            SimpleRouteEntry { route_id: 13, next_hop: 3, src_node_id: 1, dst_node_id: 4 },
+            SimpleRouteEntry { route_id: 17, next_hop: 3, src_node_id: 4, dst_node_id: 1 },
+        ];
+        table.install_routes(routes);
+
+        // Test flow from node 1 to node 4 (like iperf3 example)
+        let flow_1_to_4 = create_flow_id(1, 4, 39847, 5201, 6);
+        let route_id_1_to_4 = table.select_route_for_flow(flow_1_to_4).unwrap();
+        assert!(route_id_1_to_4 == 12 || route_id_1_to_4 == 13);
+        
+        // Test flow from node 4 to node 1 (return traffic)
+        let flow_4_to_1 = create_flow_id(4, 1, 5201, 39847, 6);
+        let route_id_4_to_1 = table.select_route_for_flow(flow_4_to_1).unwrap();
+        assert_eq!(route_id_4_to_1, 17);
+        
+        // Verify intermediate node can forward using route_id
+        assert!(table.get_next_hop_by_route(route_id_1_to_4).is_some());
+        assert_eq!(table.get_next_hop_by_route(route_id_4_to_1), Some(3));
+        
+        // Test consistency over multiple calls
+        for _ in 0..100 {
+            assert_eq!(table.select_route_for_flow(flow_1_to_4), Some(route_id_1_to_4));
+            assert_eq!(table.select_route_for_flow(flow_4_to_1), Some(route_id_4_to_1));
+        }
+    }
 }
