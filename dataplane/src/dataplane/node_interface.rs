@@ -17,6 +17,7 @@ use crate::dataplane::scheduler::SchedulingDiscipline;
 use crate::dataplane::scheduler::{Fifo, Scheduler};
 use crate::dataplane::utils::RateLimiter;
 use crate::dataplane::{FlowId, INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
+use tracing::error;
 
 pub fn create_tcp_node_interfaces(
     stream: TcpStream,
@@ -105,8 +106,10 @@ impl NodeReceiver {
 
             // Skip empty or invalid packets to prevent downstream errors
             if n == 0 {
-                println!("WARNING: NodeReceiver from node {} received empty packet - connection may be closing", 
-                         self.remote_node_id);
+                println!(
+                    "WARNING: NodeReceiver from node {} received empty packet - connection may be closing",
+                    self.remote_node_id
+                );
                 continue;
             }
 
@@ -122,8 +125,10 @@ impl NodeReceiver {
     async fn record_metrics(&self, flow_id: FlowId, n_bytes: usize, metrics_tx: MetricsTx) {
         // metrics reported are in the format of (flow_id, node_id, n_bytes)
         if let Err(e) = metrics_tx.send((flow_id, self.remote_node_id, n_bytes)) {
-            println!("ERROR: Failed to send metrics for flow {:#x} from node {} ({} bytes): {:?} - metrics collector may be offline", 
-                     flow_id, self.remote_node_id, n_bytes, e);
+            error!(
+                "Failed to send metrics for flow {:#x} from node {} ({} bytes): {:?} - metrics collector may be offline",
+                flow_id, self.remote_node_id, n_bytes, e
+            );
         }
     }
 }

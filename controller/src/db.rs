@@ -14,6 +14,7 @@ use crate::WebSocketWriter;
 use crate::config;
 use crate::models::Route;
 use crate::utils::build_routes_for_node;
+use tracing::error;
 
 pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     // connects to the PostgreSQL database
@@ -397,13 +398,13 @@ pub async fn setup_notification(
 
                                 println!("Installing routes on node {}.", node_id);
                             } else {
-                                println!("Error: No node to install flow to.");
+                                error!("No node to install flow to.");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Error receiving notification: {}", e);
+                    error!("Error receiving notification: {}", e);
                 }
             }
         }

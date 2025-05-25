@@ -14,3 +14,4 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chron
 chrono = "0.4"
 futures-util = "0.3"
 nextmini-messages = { path = "../messages" }
+tracing = "0.1"

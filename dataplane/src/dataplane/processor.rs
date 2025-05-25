@@ -18,6 +18,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::SimpleRoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
 use nextmini_messages::SimpleRouteEntry;
+use tracing::{debug, error};
 
 pub struct ProcessorManager {
     context: Context,
@@ -177,7 +178,7 @@ impl Processor {
         let next_hop_id = self.simple_routing_table.get_next_hop_by_route(route_id)
             .ok_or_else(|| {
                 let error = format!("CRITICAL: No next_hop found for route_id {} on flow {} - routing table may be incomplete", route_id, packet_flow_id);
-                println!("ERROR: {}", error);
+                error!("{}", error);
                 error
             })?;
 
@@ -194,13 +195,13 @@ impl Processor {
     async fn process_new_packet(&mut self, mut packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
-        println!("DEBUG: Processing new packet for flow {}", packet_flow_id);
+        debug!("Processing new packet for flow {}", packet_flow_id);
 
         // Select route_id for new flow at source node
         let route_id = self.simple_routing_table.select_route_for_flow(packet_flow_id)
             .ok_or_else(|| {
                 let error = format!("CRITICAL: No route found for flow {} - routing table may be empty or misconfigured", packet_flow_id);
-                println!("ERROR: {}", error);
+                error!("{}", error);
                 error
             })?;
 
@@ -211,7 +212,7 @@ impl Processor {
         let next_hop_id = self.simple_routing_table.get_next_hop_by_route(route_id)
             .ok_or_else(|| {
                 let error = format!("CRITICAL: No next_hop found for route_id {} on flow {} - routing inconsistency detected", route_id, packet_flow_id);
-                println!("ERROR: {}", error);
+                error!("{}", error);
                 error
             })?;
 
@@ -233,7 +234,7 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.simple_routing_table.local_id {
             // Local delivery - no need to embed route_id for local packets
-            println!("DEBUG: Local delivery for flow {}", packet_flow_id);
+            debug!("Local delivery for flow {}", packet_flow_id);
             self.tun_writer.write_packet(packet).await;
             Ok(())
         } else {
@@ -258,7 +259,7 @@ impl Processor {
                         "CRITICAL: Next hop node {} is offline/unreachable for flow {} - connection may have been lost",
                         next_hop_id, packet_flow_id
                     );
-                    println!("ERROR: {}", error);
+                    error!("{}", error);
                     Err(error)
                 }
             }
@@ -315,7 +316,7 @@ impl Processor {
                 let next_hop_result = self.process_packet(packet).await;
 
                 if let Err(error_msg) = next_hop_result {
-                    println!("ERROR: Packet processing failed - {}", error_msg);
+                    error!("Packet processing failed - {}", error_msg);
                     // Count dropped packets for debugging
                     continue;
                 }

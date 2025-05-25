@@ -2,6 +2,7 @@
 use nextmini_messages::{ControllerToDataplane, Protocol, SimpleRouteEntry};
 
 use crate::models::Route;
+use tracing::debug;
 
 /// Creates a new virtual address by adding the node ID to the base address.
 pub fn create_new_virtual_addr(
@@ -63,10 +64,10 @@ pub fn build_add_node_message(
 pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<ControllerToDataplane> {
     let mut route_entries: Vec<SimpleRouteEntry> = Vec::new();
     
-    println!("DEBUG: Building routes for node {}, total routes to process: {}", node_id, routes.len());
+    debug!("Building routes for node {}, total routes to process: {}", node_id, routes.len());
 
     for route in routes {
-        println!("DEBUG: Processing route_id: {}, path: {:?}, src_node_id: {}, dst_node_id: {}", 
+        debug!("Processing route_id: {}, path: {:?}, src_node_id: {}, dst_node_id: {}", 
             route.route_id, route.route, route.src_node_id, route.dst_node_id);
             
         // Find the position of this node in the route path
@@ -74,7 +75,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
 
         // Skip routes that don't include this node
         if idx.is_none() {
-            println!("DEBUG: Node {} not in route path {:?}, skipping", node_id, route.route);
+            debug!("Node {} not in route path {:?}, skipping", node_id, route.route);
             continue;
         }
 
@@ -87,14 +88,14 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             route.route[idx + 1] as usize
         };
 
-        println!("DEBUG: Node {} found at position {} in route, next_hop: {}", 
+        debug!("Node {} found at position {} in route, next_hop: {}", 
             node_id, idx, next_hop);
 
         // Send route endpoints for dataplane's direction indexing
         let src_node_id = route.route[0] as usize; // Route source
         let dst_node_id = route.route[route.route.len() - 1] as usize; // Route destination
 
-        println!("DEBUG: Using src_node_id: {} (first hop), dst_node_id: {} (last hop)", 
+        debug!("Using src_node_id: {} (first hop), dst_node_id: {} (last hop)", 
             src_node_id, dst_node_id);
 
         route_entries.push(SimpleRouteEntry {
@@ -104,15 +105,15 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             dst_node_id,
         });
         
-        println!("DEBUG: Added route entry: route_id={}, next_hop={}, src_node_id={}, dst_node_id={}", 
+        debug!("Added route entry: route_id={}, next_hop={}, src_node_id={}, dst_node_id={}", 
             route.route_id, next_hop, src_node_id, dst_node_id);
     }
 
-    println!("DEBUG: Finished building routes for node {}, total route entries: {}", 
+    debug!("Finished building routes for node {}, total route entries: {}", 
         node_id, route_entries.len());
 
     if route_entries.is_empty() {
-        println!("DEBUG: No routes for node {}", node_id);
+        debug!("No routes for node {}", node_id);
         None
     } else {
         Some(ControllerToDataplane::InstallRoutes {

@@ -10,6 +10,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tracing::error;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
@@ -184,7 +185,7 @@ async fn handle_connection(
                         .await {
                             Ok(_) => println!("Node {} added to database", node_id),
                             Err(e) => {
-                                println!("Error: Failed to insert node into database: {}", e);
+                                error!("Failed to insert node into database: {}", e);
                                 continue;
                             }
                         }
@@ -207,7 +208,7 @@ async fn handle_connection(
                         {
                             Ok(_) => println!("Sent StartUp response to node {}", node_id),
                             Err(e) => {
-                                println!("Error: Failed to send StartUp response: {}", e);
+                                error!("Failed to send StartUp response: {}", e);
                                 continue;
                             }
                         }
@@ -229,7 +230,7 @@ async fn handle_connection(
                         {
                             Ok(nodes) => nodes,
                             Err(e) => {
-                                println!("Error: Failed to fetch nodes: {}", e);
+                                error!("Failed to fetch nodes: {}", e);
                                 continue;
                             }
                         };
@@ -392,7 +393,7 @@ async fn handle_connection(
                         {
                             Ok(routes) => routes,
                             Err(e) => {
-                                println!("Error: Failed to fetch routes: {}", e);
+                                error!("Failed to fetch routes: {}", e);
                                 continue;
                             }
                         };
@@ -468,7 +469,7 @@ async fn handle_connection(
                                 .execute(&*db_pool)
                                 .await {
                                     Ok(_) => {},
-                                    Err(e) => println!("Error: Failed to insert metric: {}", e)
+                                    Err(e) => error!("Failed to insert metric: {}", e)
                                 }
                             }
                         } else {
@@ -487,7 +488,7 @@ async fn handle_connection(
                 "Warning: Received a message that is not a binary or a ping message. Something may be wrong."
             ),
             Err(e) => {
-                println!("Error receiving the message: {}", e);
+                error!("Error receiving the message: {}", e);
                 break;
             }
         }

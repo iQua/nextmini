@@ -6,6 +6,7 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tracing::error;
 
 pub enum ProtocolReader {
     Tcp(TcpReader),
@@ -65,7 +66,7 @@ impl TcpReader {
             }
             Ok(n) => n,
             Err(e) => {
-                println!("ERROR: Failed to read TCP data: {} - connection may be broken", e);
+                error!("Failed to read TCP data: {} - connection may be broken", e);
                 0
             }
         }
@@ -88,11 +89,11 @@ impl TcpWriter {
             Ok(_) => {
                 // Ensure data is flushed to the network
                 if let Err(flush_err) = stream_guard.flush().await {
-                    println!("ERROR: Failed to flush TCP data: {} - packets may be buffered", flush_err);
+                    error!("Failed to flush TCP data: {} - packets may be buffered", flush_err);
                 }
             }
             Err(e) => {
-                println!("ERROR: Failed to write TCP data (size: {} bytes): {} - connection may be broken", data.len(), e);
+                error!("Failed to write TCP data (size: {} bytes): {} - connection may be broken", data.len(), e);
             }
         }
     }
@@ -123,7 +124,7 @@ impl UdpReader {
                 n
             }
             Err(e) => {
-                println!("ERROR: Failed to receive UDP data: {} - socket may be closed or network unreachable", e);
+                error!("Failed to receive UDP data: {} - socket may be closed or network unreachable", e);
                 0
             }
         }
@@ -150,7 +151,7 @@ impl UdpWriter {
                 }
             }
             Err(e) => {
-                println!("ERROR: Failed to send UDP data to {} (size: {} bytes): {} - destination may be unreachable", 
+                error!("Failed to send UDP data to {} (size: {} bytes): {} - destination may be unreachable", 
                          self.addr, data.len(), e);
             }
         }
@@ -181,7 +182,7 @@ impl QuicReader {
             }
             Ok(n) => n,
             Err(e) => {
-                println!("ERROR: Failed to read QUIC data: {} - stream may be broken or connection lost", e);
+                error!("Failed to read QUIC data: {} - stream may be broken or connection lost", e);
                 0
             }
         }
@@ -206,11 +207,11 @@ impl QuicWriter {
             Ok(_) => {
                 // Ensure data is flushed to the network
                 if let Err(flush_err) = stream_guard.flush().await {
-                    println!("ERROR: Failed to flush QUIC data: {} - packets may be buffered", flush_err);
+                    error!("Failed to flush QUIC data: {} - packets may be buffered", flush_err);
                 }
             }
             Err(e) => {
-                println!("ERROR: Failed to write QUIC data (size: {} bytes): {} - stream may be broken", buf.len(), e);
+                error!("Failed to write QUIC data (size: {} bytes): {} - stream may be broken", buf.len(), e);
             }
         }
     }
