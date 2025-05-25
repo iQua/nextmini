@@ -18,7 +18,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::RoutingTable;
 use crate::dataplane::{FlowId, FlowIdExt, context::Context, metrics::MetricsTx};
 use nextmini_messages::RoutingTableEntry;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 pub struct ProcessorManager {
     context: Context,
@@ -154,9 +154,8 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
-        info!(
-            "Processing new packet for flow {} ({}:{} -> {}:{})",
-            packet_flow_id,
+        debug!(
+            "Processing packet for flow {}:{} -> {}:{}",
             packet_flow_id.src_ip(),
             packet_flow_id.src_port(),
             packet_flow_id.dst_ip(),
@@ -199,8 +198,7 @@ impl Processor {
             })?;
 
         debug!(
-            "Flow {} ({}:{} -> {}:{}) selected route_id {} → next_hop {}.",
-            packet_flow_id,
+            "Flow {}:{} -> {}:{} selected route_id {} → next_hop {}.",
             packet_flow_id.src_ip(),
             packet_flow_id.src_port(),
             packet_flow_id.dst_ip(),
@@ -223,8 +221,10 @@ impl Processor {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
             debug!(
-                "Delivering packet locally for flow {} (size: {})",
-                packet_flow_id, packet.packet_size
+                "Delivering packet locally for destination {}:{} (size: {}).",
+                packet_flow_id.dst_ip(),
+                packet_flow_id.dst_port(),
+                packet.packet_size
             );
             self.tun_writer.write_packet(packet).await;
             Ok(())

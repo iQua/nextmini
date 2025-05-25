@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::mpsc::Sender;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
@@ -138,7 +138,7 @@ impl TunReader {
 
             // Check if packet creation was successful (non-zero flow_id indicates valid packet)
             if packet.flow_id == 0 {
-                warn!("TunReader: Invalid packet received, dropping (size: {})", n);
+                debug!("TunReader: Invalid packet received, dropping (size: {})", n);
                 continue;
             }
 

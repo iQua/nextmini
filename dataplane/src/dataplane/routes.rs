@@ -123,9 +123,10 @@ impl RoutingTable {
         };
 
         debug!(
-            "Route ID {} is selected for flow {} from {} available routes.",
+            "Route ID {} is selected for destination {}:{} from {} available routes.",
             selected_route_id,
-            flow_id,
+            flow_id.dst_ip(),
+            flow_id.dst_port(),
             available_routes.len()
         );
 
