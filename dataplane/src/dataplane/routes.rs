@@ -1,38 +1,24 @@
 use crate::dataplane::FlowId;
 use crate::dataplane::NodeId;
-use ahash::AHashMap;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, info};
 
-/// Enhanced route entry that includes src/dst node information for proper flow matching
-#[derive(Clone, Debug)]
-pub struct EnhancedRouteEntry {
-    pub route_id: usize,
-    pub next_hop: NodeId,
-    pub src_node_id: NodeId,
-    pub dst_node_id: NodeId,
-}
-
-/// Optimized routing table using direct route_id mapping
-/// Controller only sends route-level next-hop info, dataplane manages flow->route mapping
+/// The routing table in the dataplane.
 #[derive(Clone)]
 pub struct RoutingTable {
-    /// Direct route_id -> next_hop mapping (O(1) lookup)
-    route_next_hop: HashMap<usize, NodeId>,
-
-    /// Direction -> available route_ids mapping for flow routing
-    direction_routes: HashMap<(NodeId, NodeId), Vec<usize>>,
-
-    /// Flow-to-route cache for consistent routing (O(1) after first lookup)
-    flow_route_cache: AHashMap<FlowId, usize>,
-
     /// Local node ID
     pub local_id: NodeId,
 
     /// Base IPv4 address for node ID calculation (e.g., [10, 0, 0, 0])
     base_ipv4_addr: [u8; 4],
+
+    /// Source-destination pair -> available route IDs
+    available_routes: HashMap<(NodeId, NodeId), Vec<usize>>,
+
+    /// Route ID -> next hop
+    route_next_hop: HashMap<usize, NodeId>,
 
     /// Jump hash hasher for consistent routing
     jump_hasher: JumpHasher,
@@ -42,10 +28,9 @@ impl RoutingTable {
     pub fn new(local_id: NodeId) -> Self {
         Self {
             route_next_hop: HashMap::new(),
-            direction_routes: HashMap::new(),
-            flow_route_cache: AHashMap::new(),
+            available_routes: HashMap::new(),
             local_id,
-            base_ipv4_addr: [10, 0, 0, 0], // Default, should be configured
+            base_ipv4_addr: [10, 0, 0, 0],
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
         }
     }
@@ -55,10 +40,9 @@ impl RoutingTable {
         self.base_ipv4_addr = base_addr;
     }
 
-    /// Install routes using route_id -> next_hop mapping with direction indexing
-    /// Controller only needs to send route-level next-hop info
+    /// Install all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
-        debug!(
+        info!(
             "RoutingTable: Installing {} routes for local_id {}",
             routes.len(),
             self.local_id
@@ -66,8 +50,7 @@ impl RoutingTable {
 
         // Clear existing data
         self.route_next_hop.clear();
-        self.direction_routes.clear();
-        self.flow_route_cache.clear();
+        self.available_routes.clear();
 
         // Build routing tables directly from routes
         for route in routes {
@@ -77,7 +60,7 @@ impl RoutingTable {
 
                 // 2. Build reverse index: direction -> available route_ids
                 let direction = (route.src_node_id, route.dst_node_id);
-                self.direction_routes
+                self.available_routes
                     .entry(direction)
                     .or_insert_with(Vec::new)
                     .push(route.route_id);
@@ -92,25 +75,8 @@ impl RoutingTable {
         debug!(
             "RoutingTable: Route installation complete. {} direct routes, {} directions",
             self.route_next_hop.len(),
-            self.direction_routes.len()
+            self.available_routes.len()
         );
-    }
-
-    /// Legacy method for enhanced routes - now just calls install_routes
-    #[allow(dead_code)]
-    pub fn install_routes_enhanced(&mut self, routes: Vec<EnhancedRouteEntry>) {
-        // Convert EnhancedRouteEntry to RoutingTableEntry for consistency
-        let simple_routes: Vec<RoutingTableEntry> = routes
-            .into_iter()
-            .map(|route| RoutingTableEntry {
-                route_id: route.route_id,
-                next_hop: route.next_hop,
-                src_node_id: route.src_node_id,
-                dst_node_id: route.dst_node_id,
-            })
-            .collect();
-
-        self.install_routes(simple_routes);
     }
 
     /// Extract src and dst node IDs from flow_id
@@ -139,20 +105,17 @@ impl RoutingTable {
         self.jump_hasher.slot(&flow_id, num_buckets as u32) as usize
     }
 
-    /// Select route_id for a new flow at each node, with load balanced using a consistent hash
-    ///  when multiple routes are available between the same source and destination nodes.
+    /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
+    /// when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
-        // Extract source and destination nodes
+        // extracts source and destination nodes
         let (src_node, dst_node) = self.extract_src_dst_from_flow(flow_id);
+
+        // obtains the source-destination pair as the key for the available routes
         let src_dst_pair = (src_node, dst_node);
 
-        debug!(
-            "Source node selecting route for direction ({}, {})",
-            src_node, dst_node
-        );
-
-        // Get available routes for this direction
-        let available_routes = self.direction_routes.get(&src_dst_pair)?;
+        // gets the available routes for this source-destination pair
+        let available_routes = self.available_routes.get(&src_dst_pair)?;
 
         // Simple route selection: use jump hash among available routes
         let selected_route_id = if available_routes.len() == 1 {
@@ -169,13 +132,10 @@ impl RoutingTable {
             available_routes.len()
         );
 
-        // Cache result for later use
-        self.flow_route_cache.insert(flow_id, selected_route_id);
-
         Some(selected_route_id)
     }
 
-    /// Get next_hop by route_id (for packets with determined route)
+    /// Get next_hop by route ID
     pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
         self.route_next_hop.get(&route_id).copied()
     }
@@ -204,17 +164,17 @@ mod tests {
     }
 
     #[test]
-    fn test_install_multiple_routes_different_directions() {
+    fn test_install_multiple_routes() {
         let mut table = RoutingTable::new(1);
         let routes = vec![
             RoutingTableEntry {
-                route_id: 100,
+                route_id: 1,
                 next_hop: 2,
                 src_node_id: 1,
                 dst_node_id: 3,
             },
             RoutingTableEntry {
-                route_id: 101,
+                route_id: 2,
                 next_hop: 4,
                 src_node_id: 1,
                 dst_node_id: 5,
@@ -223,25 +183,25 @@ mod tests {
         table.install_routes(routes);
 
         assert_eq!(table.route_next_hop.len(), 2);
-        assert_eq!(table.direction_routes.len(), 2);
-        assert_eq!(table.route_next_hop.get(&100), Some(&2));
-        assert_eq!(table.route_next_hop.get(&101), Some(&4));
-        assert_eq!(table.direction_routes.get(&(1, 3)), Some(&vec![100]));
-        assert_eq!(table.direction_routes.get(&(1, 5)), Some(&vec![101]));
+        assert_eq!(table.available_routes.len(), 2);
+        assert_eq!(table.route_next_hop.get(&1), Some(&2));
+        assert_eq!(table.route_next_hop.get(&2), Some(&4));
+        assert_eq!(table.available_routes.get(&(1, 3)), Some(&vec![1]));
+        assert_eq!(table.available_routes.get(&(1, 5)), Some(&vec![2]));
     }
 
     #[test]
-    fn test_install_multiple_routes_same_direction() {
+    fn test_install_multiple_routes_alternative() {
         let mut table = RoutingTable::new(1);
         let routes = vec![
             RoutingTableEntry {
-                route_id: 100,
+                route_id: 1,
                 next_hop: 2,
                 src_node_id: 1,
                 dst_node_id: 3,
             },
             RoutingTableEntry {
-                route_id: 101,
+                route_id: 2,
                 next_hop: 4,
                 src_node_id: 1,
                 dst_node_id: 3,
@@ -249,26 +209,26 @@ mod tests {
         ];
         table.install_routes(routes);
 
-        assert_eq!(table.route_next_hop.len(), 2); // Both routes stored
-        assert_eq!(table.direction_routes.len(), 1); // One direction
-        let dir_routes = table.direction_routes.get(&(1, 3)).unwrap();
-        assert!(dir_routes.contains(&100));
-        assert!(dir_routes.contains(&101));
+        assert_eq!(table.route_next_hop.len(), 2);
+        assert_eq!(table.available_routes.len(), 1);
+        let dir_routes = table.available_routes.get(&(1, 3)).unwrap();
+        assert!(dir_routes.contains(&1));
+        assert!(dir_routes.contains(&2));
     }
 
     #[test]
     fn test_install_route_with_zero_next_hop() {
         let mut table = RoutingTable::new(1);
         let routes = vec![RoutingTableEntry {
-            route_id: 100,
-            next_hop: 0, // Invalid next hop
+            route_id: 1,
+            next_hop: 0,
             src_node_id: 1,
             dst_node_id: 3,
         }];
         table.install_routes(routes);
 
-        assert_eq!(table.route_next_hop.len(), 0); // Should not be installed
-        assert_eq!(table.direction_routes.len(), 0); // Direction should not be added if no valid route
+        assert_eq!(table.route_next_hop.len(), 0);
+        assert_eq!(table.available_routes.len(), 0);
     }
 
     #[test]
