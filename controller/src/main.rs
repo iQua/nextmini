@@ -163,8 +163,8 @@ async fn handle_connection(
                         // Insert node into database
                         match sqlx::query(
                             r#"
-                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr, connections)
-                            VALUES ($1, $2, $3, $4, $5, $6)
+                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr)
+                            VALUES ($1, $2, $3, $4, $5)
                             ON CONFLICT (id) DO UPDATE SET
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
