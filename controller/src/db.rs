@@ -16,22 +16,8 @@ use crate::models::Route;
 use crate::utils::build_routes_for_node;
 use tracing::{error, info, warn};
 
-pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
-    // connects to the PostgreSQL database
-    let db_url = format!(
-        "postgres://{}:{}@{}:{}/{}",
-        config.db.user, config.db.password, config.db.host, config.db.port, config.db.database
-    );
-
-    info!("Connecting to PostgreSQL: {}", db_url);
-
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&db_url)
-        .await
-        .expect("Failed to connect to database");
-
-    // creates the tables in the database, if they do not exist yet
+/// Creates the tables in the database, if they do not exist yet.
+async fn create_db(pool: &Pool<Postgres>) {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS nodes (
@@ -44,22 +30,22 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         )
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to create nodes table");
 
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS routes (
+            route_id SERIAL PRIMARY KEY,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            route_id SERIAL PRIMARY KEY,
             route INTEGER[] NOT NULL,
             UNIQUE (src_node_id, dst_node_id, route)
         )
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to create routes table");
 
@@ -75,88 +61,103 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         )
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to create metrics table");
+}
 
-    if config.reset_db {
-        // resets the entire database for a new session, if needed
-        // Drop tables to ensure schema changes are applied
-        sqlx::query("DROP TABLE IF EXISTS metrics")
-            .execute(&pool)
-            .await
-            .expect("Failed to drop metrics table");
-
-        sqlx::query("DROP TABLE IF EXISTS routes")
-            .execute(&pool)
-            .await
-            .expect("Failed to drop routes table");
-
-        sqlx::query("DROP TABLE IF EXISTS nodes")
-            .execute(&pool)
-            .await
-            .expect("Failed to drop nodes table");
-
-        // Recreate tables with current schema
-        sqlx::query(
-            r#"
-            CREATE TABLE nodes (
-                id SERIAL PRIMARY KEY,
-                private_network_name TEXT,
-                private_network_addr TEXT NOT NULL,
-                public_network_addr TEXT NOT NULL,
-                virtual_network_addr TEXT NOT NULL,
-                connections INTEGER[] NOT NULL
-            )
-            "#,
-        )
-        .execute(&pool)
+// Resets the entire database.
+async fn reset_db(pool: &Pool<Postgres>) {
+    // drops the existing tables to ensure schema changes are applied
+    sqlx::query("DROP TABLE IF EXISTS metrics")
+        .execute(pool)
         .await
-        .expect("Failed to recreate nodes table");
+        .expect("Failed to drop metrics table");
 
-        sqlx::query(
-            r#"
-            CREATE TABLE routes (
-                src_node_id INTEGER NOT NULL,
-                dst_node_id INTEGER NOT NULL,
-                route_id SERIAL PRIMARY KEY,
-                route INTEGER[] NOT NULL,
-                UNIQUE (src_node_id, dst_node_id, route)
-            )
-            "#,
-        )
-        .execute(&pool)
+    sqlx::query("DROP TABLE IF EXISTS routes")
+        .execute(pool)
         .await
-        .expect("Failed to recreate routes table");
+        .expect("Failed to drop routes table");
 
-        sqlx::query(
-            r#"
-            CREATE TABLE metrics (
-                id SERIAL PRIMARY KEY,
-                prev_hop_id INTEGER,
-                hop_id INTEGER,
-                flow_id BYTEA,
-                time_read TIMESTAMP,
-                bps INTEGER
-            )
-            "#,
-        )
-        .execute(&pool)
+    sqlx::query("DROP TABLE IF EXISTS nodes")
+        .execute(pool)
         .await
-        .expect("Failed to recreate metrics table");
-    } else {
-        // the nodes table will always be reset
-        sqlx::query("TRUNCATE TABLE nodes")
-            .execute(&pool)
-            .await
-            .expect("Failed to reset database");
-    }
+        .expect("Failed to drop nodes table");
 
-    // Add preset topology routes
+    // recreates the tables with current schema
+    sqlx::query(
+        r#"
+        CREATE TABLE nodes (
+            id SERIAL PRIMARY KEY,
+            private_network_name TEXT,
+            private_network_addr TEXT NOT NULL,
+            public_network_addr TEXT NOT NULL,
+            virtual_network_addr TEXT NOT NULL,
+            connections INTEGER[] NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate nodes table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE routes (
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
+            route_id SERIAL PRIMARY KEY,
+            route INTEGER[] NOT NULL,
+            UNIQUE (src_node_id, dst_node_id, route)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate routes table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE metrics (
+            id SERIAL PRIMARY KEY,
+            prev_hop_id INTEGER,
+            hop_id INTEGER,
+            flow_id BYTEA,
+            time_read TIMESTAMP,
+            bps INTEGER
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate metrics table");
+}
+
+/// Connects to and initializes the PostgreSQL database.
+pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
+    // connects to the PostgreSQL database
+    let db_url = format!(
+        "postgres://{}:{}@{}:{}/{}",
+        config.db.user, config.db.password, config.db.host, config.db.port, config.db.database
+    );
+
+    info!("Connecting to PostgreSQL: {}", db_url);
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("Failed to connect to database");
+
+    // creates the database and tables if they do not exist, and then resets it
+    create_db(&pool).await;
+    reset_db(&pool).await;
+
+    // adds the topology and direct links between neighbouring nodes as initial routes
     if let Some(preset_topology) = &config.topology.topology_type {
         let n_nodes = config.topology.n_nodes.unwrap_or(0);
         info!(
-            "Adding preset routes from configuration: {:?} topology with {} nodes",
+            "Adding the {:?} topology with {} nodes.",
             preset_topology, n_nodes
         );
 
