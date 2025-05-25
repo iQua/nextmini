@@ -76,13 +76,16 @@ impl Scheduler for Fifo {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
-
+            println!("WARNING: Scheduler dropped packet for flow {} (size: {}) - queue length: {}/{}, drops: {}", 
+                     packet.flow_id, packet.packet_size, self.queue.len(), self.queue.capacity(), self.packets_dropped);
             return;
         }
 
         if self.queue.push(packet).is_err() {
+            self.packets_dropped += 1;
             error!(
-                "Fifo: CRITICAL - Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue."
+                "Fifo: CRITICAL - Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue. Total drops: {}",
+                self.packets_dropped
             );
             return;
         }
@@ -111,17 +114,20 @@ impl Scheduler for Fifo {
                     // Send raw packet data directly without protocol header
                     writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
+                    counter += 1;
 
-                    if counter == Self::BATCH_SIZE {
+                    // Apply rate limiting at batch boundaries or when queue is empty
+                    if counter >= Self::BATCH_SIZE || queue.is_empty() {
                         if let Some(limiter) = rate_limiter.read().await.as_ref() {
-                            limiter.consume((tokens as f64) * 8.0).await;
+                            if tokens > 0 {
+                                limiter.consume((tokens as f64) * 8.0).await;
+                            }
                         }
 
+                        // Reset counters for next batch
                         counter = 0;
                         tokens = 0;
                     }
-
-                    counter += 1;
                 }
             }
         });

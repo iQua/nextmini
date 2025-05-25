@@ -153,7 +153,7 @@ impl Processor {
     async fn process_packet(&mut self, mut packet: Packet) -> Result<(), String> {
         // First, try to extract route_id from IP options if packet came from network
         packet.extract_route_id_from_packet();
-        
+
         if packet.has_route_id() {
             // Case 1: Packet already has route_id (forwarded from another node)
             self.process_forwarded_packet(packet).await
@@ -167,43 +167,70 @@ impl Processor {
     async fn process_forwarded_packet(&mut self, packet: Packet) -> Result<(), String> {
         let route_id = packet.get_route_id().unwrap();
         let packet_flow_id = packet.flow_id;
-        
-        println!("DEBUG: Processing forwarded packet with route_id {} for flow {}", route_id, packet_flow_id);
-        
+
+        println!(
+            "DEBUG: Processing forwarded packet with route_id {} for flow {}",
+            route_id, packet_flow_id
+        );
+
         // Directly look up next_hop by route_id, no need to recalculate
         let next_hop_id = self.simple_routing_table.get_next_hop_by_route(route_id)
-            .ok_or_else(|| format!("No next_hop found for route_id {}", route_id))?;
-        
-        println!("DEBUG: Forwarded packet route_id {} -> next_hop {}", route_id, next_hop_id);
-        
-        self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id).await
+            .ok_or_else(|| {
+                let error = format!("CRITICAL: No next_hop found for route_id {} on flow {} - routing table may be incomplete", route_id, packet_flow_id);
+                println!("ERROR: {}", error);
+                error
+            })?;
+
+        println!(
+            "DEBUG: Forwarded packet route_id {} -> next_hop {}",
+            route_id, next_hop_id
+        );
+
+        self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)
+            .await
     }
 
     /// Process new packet (source node logic)
     async fn process_new_packet(&mut self, mut packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
-        
+
         println!("DEBUG: Processing new packet for flow {}", packet_flow_id);
-        
+
         // Select route_id for new flow at source node
         let route_id = self.simple_routing_table.select_route_for_flow(packet_flow_id)
-            .ok_or_else(|| format!("No route found for flow {}", packet_flow_id))?;
-        
+            .ok_or_else(|| {
+                let error = format!("CRITICAL: No route found for flow {} - routing table may be empty or misconfigured", packet_flow_id);
+                println!("ERROR: {}", error);
+                error
+            })?;
+
         // Set route_id in the packet
         packet.set_route_id(route_id);
-        
+
         // Get next_hop
         let next_hop_id = self.simple_routing_table.get_next_hop_by_route(route_id)
-            .ok_or_else(|| format!("No next_hop found for route_id {}", route_id))?;
-        
-        println!("DEBUG: New packet flow {} selected route_id {} -> next_hop {}", 
-                 packet_flow_id, route_id, next_hop_id);
-        
-        self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id).await
+            .ok_or_else(|| {
+                let error = format!("CRITICAL: No next_hop found for route_id {} on flow {} - routing inconsistency detected", route_id, packet_flow_id);
+                println!("ERROR: {}", error);
+                error
+            })?;
+
+        println!(
+            "DEBUG: New packet flow {} selected route_id {} -> next_hop {}",
+            packet_flow_id, route_id, next_hop_id
+        );
+
+        self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)
+            .await
     }
 
     /// Unified packet sending method
-    async fn send_packet_to_next_hop(&mut self, mut packet: Packet, next_hop_id: usize, packet_flow_id: FlowId) -> Result<(), String> {
+    async fn send_packet_to_next_hop(
+        &mut self,
+        mut packet: Packet,
+        next_hop_id: usize,
+        packet_flow_id: FlowId,
+    ) -> Result<(), String> {
         if next_hop_id == self.simple_routing_table.local_id {
             // Local delivery - no need to embed route_id for local packets
             println!("DEBUG: Local delivery for flow {}", packet_flow_id);
@@ -212,15 +239,27 @@ impl Processor {
         } else {
             // Forward to next hop - embed route_id into IP options before sending
             packet.embed_route_id_to_packet();
-            println!("DEBUG: Forwarding packet with embedded route_id to next_hop {}", next_hop_id);
-            
+            println!(
+                "DEBUG: Forwarding packet with embedded route_id to next_hop {}",
+                next_hop_id
+            );
+
             match self.senders.get_mut(&next_hop_id) {
                 Some(sender) => {
                     sender.send(packet).await;
+                    println!(
+                        "DEBUG: Successfully sent packet for flow {} to next_hop {}",
+                        packet_flow_id, next_hop_id
+                    );
                     Ok(())
                 }
                 None => {
-                    Err(format!("Next hop node {} is offline for flow {}", next_hop_id, packet_flow_id))
+                    let error = format!(
+                        "CRITICAL: Next hop node {} is offline/unreachable for flow {} - connection may have been lost",
+                        next_hop_id, packet_flow_id
+                    );
+                    println!("ERROR: {}", error);
+                    Err(error)
                 }
             }
         }
@@ -235,7 +274,7 @@ impl Processor {
             let packets = {
                 let mut receiver = self.receiver_rx.write().await;
                 let mut batch = Vec::with_capacity(batch_size);
-                
+
                 for i in 0..batch_size {
                     if self.should_shutdown.load(Ordering::Relaxed) {
                         return;
@@ -255,7 +294,7 @@ impl Processor {
                             Err(_) => break,
                         }
                     };
-                    
+
                     batch.push(packet);
                 }
                 batch
@@ -274,9 +313,10 @@ impl Processor {
 
                 // New packet processing logic: distinguish between source and intermediate node
                 let next_hop_result = self.process_packet(packet).await;
-                
+
                 if let Err(error_msg) = next_hop_result {
-                    println!("WARNING: {}", error_msg);
+                    println!("ERROR: Packet processing failed - {}", error_msg);
+                    // Count dropped packets for debugging
                     continue;
                 }
             }
@@ -304,13 +344,14 @@ impl SenderLoadBalancer {
     }
 
     pub fn try_send(&mut self, packet: Packet) {
+        let flow_id = packet.flow_id; // Extract flow_id early to avoid borrow issues
         let proc_id;
 
-        if let Some(id) = self.flow2proc.get(&packet.flow_id) {
+        if let Some(id) = self.flow2proc.get(&flow_id) {
             proc_id = *id;
         } else {
             proc_id = self.tx_current;
-            self.flow2proc.insert(packet.flow_id, proc_id);
+            self.flow2proc.insert(flow_id, proc_id);
             self.tx_current = (self.tx_current + 1) % self.n_proc;
         }
 
@@ -323,11 +364,16 @@ impl SenderLoadBalancer {
         if rand::random::<f32>() * 0.75 + 0.25
             < 1.0 - (tx.capacity() as f32 / INTERNAL_Q_SIZE as f32)
         {
+            println!("WARNING: Random early drop for flow {}", flow_id,);
             return;
         };
 
         match tx.try_send(packet) {
-            Err(_) => {
+            Err(e) => {
+                println!(
+                    "ERROR: Failed to send packet for flow {} to processor {}: channel full or closed - {:?}",
+                    flow_id, proc_id, e
+                );
                 return;
             }
             Ok(_) => {

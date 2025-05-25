@@ -267,9 +267,23 @@ impl Packet {
     }
 
     fn get_flow_id_from_buf(buf: &PacketBuf, packet_size: usize) -> FlowId {
+        // Validate packet size first
+        if packet_size == 0 {
+            println!("ERROR: Zero-length packet received, returning zero flow_id");
+            return 0;
+        }
+
+        if packet_size > buf.len() {
+            println!("ERROR: Packet size {} exceeds buffer length {}, using buffer length", 
+                     packet_size, buf.len());
+        }
+
         // Check if it's an IPv4 packet
         if packet_size < 20 || buf[0] >> 4 != 4 {
             // Non-IPv4 or insufficient data, using fallback calculation
+            println!("DEBUG: Non-IPv4 packet detected - version: {}, size: {}", 
+                     buf[0] >> 4, packet_size);
+            
             // Fallback to old behavior for non-IPv4 packets - convert to 128-bit
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
             let old_flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);

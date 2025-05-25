@@ -1,4 +1,3 @@
-use core::panic;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -117,9 +116,23 @@ impl TunReader {
             let n = match self.dev.recv(&mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
-                    panic!("Error reading from the TUN device: {:?}", e);
+                    println!(
+                        "ERROR: Failed to read from TUN device: {:?} - interface may be down",
+                        e
+                    );
+                    // Sleep briefly before retrying to avoid busy loop
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    continue;
                 }
             };
+
+            // Skip empty packets
+            if n == 0 {
+                println!(
+                    "WARNING: TunReader received empty packet - may indicate interface issues"
+                );
+                continue;
+            }
 
             let packet = Packet::new(n, buf);
             self.senders.try_send(packet);

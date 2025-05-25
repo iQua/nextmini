@@ -59,10 +59,13 @@ impl TcpReader {
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
         // Read raw IP packet data directly
         match self.stream.read(&mut buf[..]).await {
-            Ok(0) => 0, // Connection closed
+            Ok(0) => {
+                println!("WARNING: TCP connection closed by peer");
+                0 // Connection closed
+            }
             Ok(n) => n,
             Err(e) => {
-                eprintln!("Failed to read TCP data: {}", e);
+                println!("ERROR: Failed to read TCP data: {} - connection may be broken", e);
                 0
             }
         }
@@ -82,9 +85,14 @@ impl TcpWriter {
     pub async fn send(&mut self, data: &[u8]) {
         let mut stream_guard = self.stream.lock().await;
         match stream_guard.write_all(data).await {
-            Ok(_) => (),
+            Ok(_) => {
+                // Ensure data is flushed to the network
+                if let Err(flush_err) = stream_guard.flush().await {
+                    println!("ERROR: Failed to flush TCP data: {} - packets may be buffered", flush_err);
+                }
+            }
             Err(e) => {
-                eprintln!("Failed to write TCP data: {}", e);
+                println!("ERROR: Failed to write TCP data (size: {} bytes): {} - connection may be broken", data.len(), e);
             }
         }
     }
@@ -108,9 +116,14 @@ impl UdpReader {
 
     pub async fn recv(&self, buf: &mut PacketBuf) -> usize {
         match self.sock.recv(&mut buf[..]).await {
-            Ok(n) => n,
+            Ok(n) => {
+                if n == 0 {
+                    println!("WARNING: Received empty UDP packet");
+                }
+                n
+            }
             Err(e) => {
-                eprintln!("Failed to receive UDP data: {}", e);
+                println!("ERROR: Failed to receive UDP data: {} - socket may be closed or network unreachable", e);
                 0
             }
         }
@@ -130,9 +143,15 @@ impl UdpWriter {
 
     pub async fn send(&self, data: &[u8]) {
         match self.sock.send_to(data, self.addr.as_str()).await {
-            Ok(_) => (),
+            Ok(bytes_sent) => {
+                if bytes_sent != data.len() {
+                    println!("WARNING: UDP partial send - expected {} bytes, sent {} bytes to {}", 
+                             data.len(), bytes_sent, self.addr);
+                }
+            }
             Err(e) => {
-                eprintln!("Failed to send UDP data to {}: {}", self.addr, e);
+                println!("ERROR: Failed to send UDP data to {} (size: {} bytes): {} - destination may be unreachable", 
+                         self.addr, data.len(), e);
             }
         }
     }
@@ -156,10 +175,13 @@ impl QuicReader {
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
         // Read raw IP packet data directly
         match self.stream.read(&mut buf[..]).await {
-            Ok(0) => 0, // Stream closed
+            Ok(0) => {
+                println!("WARNING: QUIC stream closed by peer");
+                0 // Stream closed
+            }
             Ok(n) => n,
             Err(e) => {
-                eprintln!("Failed to read QUIC data: {}", e);
+                println!("ERROR: Failed to read QUIC data: {} - stream may be broken or connection lost", e);
                 0
             }
         }
@@ -181,9 +203,14 @@ impl QuicWriter {
         let mut stream_guard = self.stream.lock().await;
 
         match stream_guard.write_all(buf).await {
-            Ok(_) => (),
+            Ok(_) => {
+                // Ensure data is flushed to the network
+                if let Err(flush_err) = stream_guard.flush().await {
+                    println!("ERROR: Failed to flush QUIC data: {} - packets may be buffered", flush_err);
+                }
+            }
             Err(e) => {
-                eprintln!("Failed to write QUIC data: {}", e);
+                println!("ERROR: Failed to write QUIC data (size: {} bytes): {} - stream may be broken", buf.len(), e);
             }
         }
     }
