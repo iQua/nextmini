@@ -28,20 +28,13 @@ pub enum PresetTopology {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct RoutePreset {
-    #[serde(default)]
-    #[serde(alias = "type")]
-    pub topology: Option<PresetTopology>,
-    #[serde(default)]
-    pub n_nodes: Option<usize>,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Topology {
     #[serde(default)]
-    pub connect: Option<Vec<(usize, usize)>>,
+    #[serde(alias = "topology")]
+    #[serde(rename = "type")]
+    pub topology_type: Option<PresetTopology>,
     #[serde(default)]
-    pub disconnect: Option<Vec<(usize, usize)>>,
+    pub n_nodes: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -89,11 +82,7 @@ pub struct Config {
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
 
-    /// Preset topology configuration for automatic route generation.
-    #[serde(default)]
-    pub routes_preset: RoutePreset,
-
-    /// An option to manually configure the connections.
+    /// Topology configuration for automatic route generation.
     #[serde(default)]
     pub topology: Topology,
 
@@ -204,7 +193,6 @@ impl Default for Config {
             auto_db_sync: default_true(),
             routes: Vec::new(),
             link_rates: Vec::new(),
-            routes_preset: RoutePreset::default(),
             topology: Topology::default(),
             num_interfaces: default_interfaces(),
             reset_db: false,
@@ -291,8 +279,8 @@ mod tests {
         reset_db = true
         protocol = "quic"
 
-        [routes_preset]
-        topology = "full_mesh"
+        [topology]
+        type = "full_mesh"
         n_nodes = 3
 
         [[routes]]
@@ -305,10 +293,10 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify preset topology configuration
-        assert!(config.routes_preset.topology.is_some());
-        match config.routes_preset.topology.as_ref().unwrap() {
+        assert!(config.topology.topology_type.is_some());
+        match config.topology.topology_type.as_ref().unwrap() {
             PresetTopology::FullMesh => {
-                assert_eq!(config.routes_preset.n_nodes, Some(3));
+                assert_eq!(config.topology.n_nodes, Some(3));
             }
             _ => panic!("Expected FullMesh topology"),
         }
@@ -326,8 +314,8 @@ mod tests {
         reset_db = true
         protocol = "quic"
 
-        [routes_preset]
-        topology = "ring"
+        [topology]
+        type = "ring"
         n_nodes = 4
 
         [[routes]]
@@ -337,10 +325,10 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify preset topology configuration
-        assert!(config.routes_preset.topology.is_some());
-        match config.routes_preset.topology.as_ref().unwrap() {
+        assert!(config.topology.topology_type.is_some());
+        match config.topology.topology_type.as_ref().unwrap() {
             PresetTopology::Ring => {
-                assert_eq!(config.routes_preset.n_nodes, Some(4));
+                assert_eq!(config.topology.n_nodes, Some(4));
             }
             _ => panic!("Expected Ring topology"),
         }
@@ -370,7 +358,7 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify no preset topology
-        assert!(config.routes_preset.topology.is_none());
+        assert!(config.topology.topology_type.is_none());
 
         // Verify custom routes
         assert_eq!(config.routes.len(), 3);
@@ -389,8 +377,8 @@ mod tests {
         reset_db = true
         protocol = "quic"
 
-        [routes_preset]
-        topology = "full_mesh"
+        [topology]
+        type = "full_mesh"
         n_nodes = 3
 
         [[routes]]
@@ -403,10 +391,10 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify preset topology
-        assert!(config.routes_preset.topology.is_some());
-        match config.routes_preset.topology.as_ref().unwrap() {
+        assert!(config.topology.topology_type.is_some());
+        match config.topology.topology_type.as_ref().unwrap() {
             PresetTopology::FullMesh => {
-                assert_eq!(config.routes_preset.n_nodes, Some(3));
+                assert_eq!(config.topology.n_nodes, Some(3));
             }
             _ => panic!("Expected FullMesh topology"),
         }
@@ -428,8 +416,8 @@ mod tests {
         reset_db = true
         protocol = "quic"
 
-        [routes_preset]
-        topology = "ring"
+        [topology]
+        type = "ring"
         n_nodes = 4
 
         [[routes]]
@@ -445,10 +433,10 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify preset topology
-        assert!(config.routes_preset.topology.is_some());
-        match config.routes_preset.topology.as_ref().unwrap() {
+        assert!(config.topology.topology_type.is_some());
+        match config.topology.topology_type.as_ref().unwrap() {
             PresetTopology::Ring => {
-                assert_eq!(config.routes_preset.n_nodes, Some(4));
+                assert_eq!(config.topology.n_nodes, Some(4));
             }
             _ => panic!("Expected Ring topology"),
         }
@@ -507,7 +495,7 @@ mod tests {
         assert_eq!(config.protocol, Protocol::Quic);
 
         // Verify no preset topology
-        assert!(config.routes_preset.topology.is_none());
+        assert!(config.topology.topology_type.is_none());
 
         // Verify all 8 routes are parsed correctly
         assert_eq!(config.routes.len(), 8);
@@ -542,7 +530,7 @@ mod tests {
 
         // Verify no routes
         assert_eq!(config.routes.len(), 0);
-        assert!(config.routes_preset.topology.is_none());
+        assert!(config.topology.topology_type.is_none());
 
         println!("✓ Empty routes configuration handled correctly");
     }
@@ -554,8 +542,8 @@ mod tests {
         reset_db = true
         protocol = "quic"
         
-        [routes_preset]
-        topology = "full_mesh"
+        [topology]
+        type = "full_mesh"
         n_nodes = 4
 
         # These routes duplicate some of the preset routes
@@ -576,10 +564,10 @@ mod tests {
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
 
         // Verify preset topology
-        assert!(config.routes_preset.topology.is_some());
-        match config.routes_preset.topology.as_ref().unwrap() {
+        assert!(config.topology.topology_type.is_some());
+        match config.topology.topology_type.as_ref().unwrap() {
             PresetTopology::FullMesh => {
-                assert_eq!(config.routes_preset.n_nodes, Some(4));
+                assert_eq!(config.topology.n_nodes, Some(4));
             }
             _ => panic!("Expected FullMesh topology"),
         }

@@ -240,38 +240,8 @@ async fn handle_connection(
                                 continue;
                             }
 
-                            let should_connect =
-                                match (&config.topology.connect, &config.topology.disconnect) {
-                                    (Some(_), Some(_)) => {
-                                        // if both are specified, connect only takes precedence
-                                        config
-                                            .topology
-                                            .connect
-                                            .as_ref()
-                                            .unwrap()
-                                            .contains(&(node_id, node.id as usize))
-                                            || config
-                                                .topology
-                                                .connect
-                                                .as_ref()
-                                                .unwrap()
-                                                .contains(&(node.id as usize, node_id))
-                                    }
-                                    (Some(connect), _) => {
-                                        // if connect is specified, only connect nodes that are explicitly listed
-                                        connect.contains(&(node_id, node.id as usize))
-                                            || connect.contains(&(node.id as usize, node_id))
-                                    }
-                                    (None, Some(disconnect)) => {
-                                        // if disconnect is specified, connect all nodes except those listed
-                                        !disconnect.contains(&(node_id, node.id as usize))
-                                            && !disconnect.contains(&(node.id as usize, node_id))
-                                    }
-                                    (None, None) => {
-                                        // if neither is specified, connect all nodes
-                                        true
-                                    }
-                                };
+                            // Always connect all nodes in the topology
+                            let should_connect = true;
 
                             if !should_connect {
                                 continue;

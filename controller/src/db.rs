@@ -159,8 +159,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     let mut current_route_id: i32 = 0;
 
     // First, add preset topology routes
-    if let Some(preset_topology) = &config.routes_preset.topology {
-        let n_nodes = config.routes_preset.n_nodes.unwrap_or(0);
+    if let Some(preset_topology) = &config.topology.topology_type {
+        let n_nodes = config.topology.n_nodes.unwrap_or(0);
         println!("Adding preset routes from configuration: {:?} topology with {} nodes", preset_topology, n_nodes);
 
         match preset_topology {

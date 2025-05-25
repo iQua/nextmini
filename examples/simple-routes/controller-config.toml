@@ -1,8 +1,8 @@
 reset_db = true
 protocol = "quic"
 
-[routes_preset]
-topology = "full_mesh"
+[topology]
+type = "full_mesh"
 n_nodes = 4
 
 # Forward routes: Node 1 to Node 4
