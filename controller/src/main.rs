@@ -194,7 +194,6 @@ async fn handle_connection(
                             node_id,
                             virtual_addr,
                             config.net_mask,
-                            config.num_interfaces,
                             config.protocol.clone(),
                         );
 

@@ -83,10 +83,6 @@ pub struct Config {
     #[serde(default)]
     pub topology: Topology,
 
-    /// The total number of paths to use for a flow (with the Interface multi-path method).
-    #[serde(default = "default_interfaces")]
-    pub num_interfaces: usize,
-
     /// Should database be reset before starting the controller?
     /// The database configuration.
     #[serde(default = "default_db_config")]
@@ -121,9 +117,6 @@ fn default_true() -> bool {
 }
 
 /// The default total number of paths to use for a flow.
-fn default_interfaces() -> usize {
-    1
-}
 
 /// The default configuration for the database
 fn default_db_config() -> DBConfig {
@@ -182,7 +175,6 @@ impl Default for Config {
             routes: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),
-            num_interfaces: default_interfaces(),
             db: default_db_config(),
         }
     }

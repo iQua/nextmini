@@ -143,14 +143,10 @@ pub struct ControllerConfigs {
     pub node_id: usize,
 
     /// The local network address
-    pub strato_address: (u8, u8, u8, u8),
+    pub local_address: (u8, u8, u8, u8),
 
     /// The local network mask
-    pub strato_mask: (u8, u8, u8, u8),
-
-    /// The number of interfaces (currently unused, reserved for future multi-interface support)
-    #[allow(dead_code)]
-    pub num_interfaces: usize,
+    pub local_netmask: (u8, u8, u8, u8),
 
     /// The transport protocol: TCP, UDP, or QUIC
     pub protocol: Protocol,
@@ -166,15 +162,13 @@ impl ControllerConfigs {
             node_id,
             addr,
             net_mask,
-            num_interfaces,
             protocol,
         } = startup_message
         {
             ControllerConfigs {
                 node_id,
-                strato_address: (addr[0], addr[1], addr[2], addr[3]),
-                strato_mask: (net_mask[0], net_mask[1], net_mask[2], net_mask[3]),
-                num_interfaces,
+                local_address: (addr[0], addr[1], addr[2], addr[3]),
+                local_netmask: (net_mask[0], net_mask[1], net_mask[2], net_mask[3]),
                 protocol,
                 scheduler_type: SchedulingDiscipline::Fifo, // Default for now
             }

@@ -39,7 +39,6 @@ pub enum ControllerToDataplane {
         node_id: usize,
         addr: [u8; 4],
         net_mask: [u8; 4],
-        num_interfaces: usize,
         protocol: Protocol,
     },
     AddNode {

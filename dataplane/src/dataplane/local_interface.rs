@@ -26,8 +26,8 @@ pub async fn create_tun_device(
         let num_queues = configs.num_packet_processors;
 
         let if_name = configs.tun_interface_name.clone();
-        let ipv4_addr = controller_configs.strato_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
+        let ipv4_addr = controller_configs.local_address;
+        let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
 
         let dev = DeviceBuilder::new()
             .name(&if_name)
@@ -74,8 +74,8 @@ pub async fn create_tun_device(
 
     #[cfg(not(target_os = "linux"))]
     {
-        let ipv4_addr = controller_configs.strato_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
+        let ipv4_addr = controller_configs.local_address;
+        let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
 
         let dev = DeviceBuilder::new()
             .ipv4(

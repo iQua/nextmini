@@ -33,18 +33,17 @@ pub fn create_new_virtual_addr(
     }
 }
 
+/// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_message(
     node_id: usize,
     virtual_addr: [u8; 4],
     net_mask: [u8; 4],
-    num_interfaces: usize,
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
         addr: virtual_addr,
         net_mask,
-        num_interfaces,
         protocol,
     }
 }
