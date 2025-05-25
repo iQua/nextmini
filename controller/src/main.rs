@@ -229,6 +229,7 @@ async fn handle_connection(
                             }
                         };
 
+                        // establishes connections between all pairs of nodes by sending AddNode messages
                         for node in nodes {
                             if node.id == node_id as i32 {
                                 continue;

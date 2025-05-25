@@ -170,13 +170,9 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
         match preset_topology {
             config::PresetTopology::FullMesh => {
-                for i in 1..=n_nodes {
-                    for j in 1..=n_nodes {
-                        if i == j {
-                            continue;
-                        }
-
-                        let route_path = vec![i as i32, j as i32];
+                for src_node in 1..=n_nodes {
+                    for dest_node in 1..=n_nodes {
+                        let route_path = vec![src_node as i32, dest_node as i32];
 
                         let result = sqlx::query(
                             r#"
@@ -186,8 +182,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                             RETURNING route_id
                             "#,
                         )
-                        .bind(i as i32)
-                        .bind(j as i32)
+                        .bind(src_node as i32)
+                        .bind(dest_node as i32)
                         .bind(&route_path)
                         .fetch_optional(&pool)
                         .await
@@ -196,17 +192,17 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         if let Some(row) = result {
                             let route_id: i32 = row.get("route_id");
                             info!(
-                                "Created full mesh route_id {} from node {} to node {}",
-                                route_id, i, j
+                                "Created full mesh route ID {} from node {} to node {}",
+                                route_id, src_node, dest_node
                             );
                         }
                     }
                 }
             }
             config::PresetTopology::Ring => {
-                for i in 1..n_nodes {
-                    let j = i + 1;
-                    let route_path = vec![i as i32, j as i32];
+                // adds loopback routes (self to self) within each node
+                for src_node in 1..=n_nodes {
+                    let route_path = vec![src_node as i32, src_node as i32];
 
                     let result = sqlx::query(
                         r#"
@@ -216,8 +212,37 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         RETURNING route_id
                         "#,
                     )
-                    .bind(i as i32)
-                    .bind(j as i32)
+                    .bind(src_node as i32)
+                    .bind(src_node as i32)
+                    .bind(&route_path)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("Failed to insert loopback route");
+
+                    if let Some(row) = result {
+                        let route_id: i32 = row.get("route_id");
+                        info!(
+                            "Created loopback route ID {} on node {}.",
+                            route_id, src_node
+                        );
+                    }
+                }
+
+                // adds links between neighbouring nodes on the ring
+                for src_node in 1..n_nodes {
+                    let dest_node = src_node + 1;
+                    let route_path = vec![src_node as i32, dest_node as i32];
+
+                    let result = sqlx::query(
+                        r#"
+                        INSERT INTO routes (src_node_id, dst_node_id, route)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                        RETURNING route_id
+                        "#,
+                    )
+                    .bind(src_node as i32)
+                    .bind(dest_node as i32)
                     .bind(&route_path)
                     .fetch_optional(&pool)
                     .await
@@ -226,8 +251,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                     if let Some(row) = result {
                         let route_id: i32 = row.get("route_id");
                         info!(
-                            "Created ring route_id {} from node {} to node {}",
-                            route_id, i, j
+                            "Created ring route ID {} from node {} to node {}",
+                            route_id, src_node, dest_node
                         );
                     }
                 }
