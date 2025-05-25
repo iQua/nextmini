@@ -6,7 +6,6 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
 
 pub enum ProtocolReader {
     Tcp(TcpReader),
@@ -31,7 +30,7 @@ pub enum ProtocolWriter {
 }
 
 impl ProtocolWriter {
-    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
+    pub async fn send(&mut self, data: &[u8]) {
         match self {
             Self::Tcp(writer) => writer.send(data).await,
             Self::Udp(writer) => writer.send(data).await,
@@ -58,18 +57,19 @@ impl TcpReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
-        // Read raw IP packet data directly
-        match self.stream.read(&mut buf[..]).await {
-            Ok(0) => {
-                info!("WARNING: TCP connection closed by peer");
-                0 // Connection closed
-            }
-            Ok(n) => n,
-            Err(e) => {
-                error!("Failed to read TCP data: {} - connection may be broken", e);
-                0
-            }
+        if let Err(e) = self.stream.read_exact(&mut buf[0..4]).await {
+            eprintln!("Failed to read TCP header: {}", e);
+            return 0;
         }
+
+        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
+
+        if let Err(e) = self.stream.read_exact(&mut buf[4..msg_len]).await {
+            eprintln!("Failed to read TCP data: {}", e);
+            return 0;
+        }
+
+        msg_len
     }
 }
 
@@ -83,26 +83,12 @@ impl TcpWriter {
         Self { stream }
     }
 
-    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
+    pub async fn send(&mut self, data: &[u8]) {
         let mut stream_guard = self.stream.lock().await;
         match stream_guard.write_all(data).await {
-            Ok(_) => {
-                // Ensure data is flushed to the network
-                if let Err(flush_err) = stream_guard.flush().await {
-                    let error = format!("Failed to flush TCP data: {} - packets may be buffered", flush_err);
-                    error!("{}", error);
-                    return Err(error);
-                }
-                Ok(())
-            }
+            Ok(_) => (),
             Err(e) => {
-                let error = format!(
-                    "Failed to write TCP data (size: {} bytes): {} - connection may be broken",
-                    data.len(),
-                    e
-                );
-                error!("{}", error);
-                Err(error)
+                eprintln!("Failed to write TCP data: {}", e);
             }
         }
     }
@@ -126,19 +112,8 @@ impl UdpReader {
 
     pub async fn recv(&self, buf: &mut PacketBuf) -> usize {
         match self.sock.recv(&mut buf[..]).await {
-            Ok(n) => {
-                if n == 0 {
-                    warn!("Received empty UDP packet");
-                }
-                n
-            }
-            Err(e) => {
-                error!(
-                    "Failed to receive UDP data: {} - socket may be closed or network unreachable",
-                    e
-                );
-                0
-            }
+            Ok(n) => n,
+            Err(e) => panic!("{e}"),
         }
     }
 }
@@ -154,31 +129,10 @@ impl UdpWriter {
         Self { sock, addr }
     }
 
-    pub async fn send(&self, data: &[u8]) -> Result<(), String> {
+    pub async fn send(&self, data: &[u8]) {
         match self.sock.send_to(data, self.addr.as_str()).await {
-            Ok(bytes_sent) => {
-                if bytes_sent != data.len() {
-                    let error = format!(
-                        "UDP partial send - expected {} bytes, sent {} bytes to {}",
-                        data.len(),
-                        bytes_sent,
-                        self.addr
-                    );
-                    warn!("{}", error);
-                    return Err(error);
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let error = format!(
-                    "Failed to send UDP data to {} (size: {} bytes): {} - destination may be unreachable",
-                    self.addr,
-                    data.len(),
-                    e
-                );
-                error!("{}", error);
-                Err(error)
-            }
+            Ok(_) => (),
+            Err(e) => panic!("{e}"),
         }
     }
 
@@ -199,21 +153,23 @@ impl QuicReader {
     }
 
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
-        // Read raw IP packet data directly
-        match self.stream.read(&mut buf[..]).await {
-            Ok(0) => {
-                warn!("QUIC stream closed by peer");
-                0 // Stream closed
-            }
-            Ok(n) => n,
-            Err(e) => {
-                error!(
-                    "Failed to read QUIC data: {} - stream may be broken or connection lost",
-                    e
-                );
-                0
+        match self.stream.read_exact(&mut buf[0..4]).await {
+            Ok(_) => (),
+            Err(_) => {
+                return 0;
             }
         }
+
+        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
+
+        match self.stream.read_exact(&mut buf[4..msg_len]).await {
+            Ok(_) => (),
+            Err(_) => {
+                return 0;
+            }
+        }
+
+        msg_len
     }
 }
 
@@ -228,29 +184,13 @@ impl QuicWriter {
         }
     }
 
-    pub async fn send(&mut self, buf: &[u8]) -> Result<(), String> {
+    pub async fn send(&mut self, buf: &[u8]) {
         let mut stream_guard = self.stream.lock().await;
 
         match stream_guard.write_all(buf).await {
-            Ok(_) => {
-                // Ensure data is flushed to the network
-                if let Err(flush_err) = stream_guard.flush().await {
-                    let error = format!("Failed to flush QUIC data: {} - packets may be buffered", flush_err);
-                    error!("{}", error);
-                    return Err(error);
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let error = format!(
-                    "Failed to write QUIC data (size: {} bytes): {} - stream may be broken",
-                    buf.len(),
-                    e
-                );
-                error!("{}", error);
-                Err(error)
-            }
-        }
+            Ok(_) => (),
+            Err(e) => panic!("{e}"),
+        };
     }
 
     pub fn reproduce(&self) -> Self {

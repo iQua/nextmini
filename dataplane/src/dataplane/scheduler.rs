@@ -130,22 +130,9 @@ impl Scheduler for Fifo {
 
                 while let Some(packet) = queue.pop() {
                     // Send raw packet data directly without protocol header
-                    match writer.send(&packet.buf[0..packet.packet_size]).await {
-                        Ok(_) => {
-                            tokens += packet.packet_size;
-                            counter += 1;
-                        }
-                        Err(e) => {
-                            error!(
-                                "FIFO: Failed to send packet for flow {} (size: {}): {} - packet dropped",
-                                packet.flow_id,
-                                packet.packet_size,
-                                e
-                            );
-                            // Continue processing other packets even if one fails
-                            continue;
-                        }
-                    }
+                    writer.send(&packet.buf[0..packet.packet_size]).await;
+                    tokens += packet.packet_size;
+                    counter += 1;
 
                     // Apply rate limiting at batch boundaries or when queue is empty
                     if counter >= Self::BATCH_SIZE || queue.is_empty() {
