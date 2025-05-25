@@ -6,6 +6,7 @@ use clap_serde_derive::clap::Parser;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use serde_json::Value;
+use tracing::info;
 
 use nextmini_messages::{ControllerToDataplane, Protocol};
 
@@ -196,13 +197,13 @@ pub fn new() -> LocalConfigs {
         Ok(content) => match toml::from_str::<<LocalConfigs as ClapSerde>::Opt>(&content) {
             Ok(cfgs) => LocalConfigs::from(cfgs).merge(&mut args.args),
             Err(e) => {
-                println!("Failed to parse config file (with error: {e}), using default values.");
+                info!("Failed to parse config file (with error: {e}), using default values.");
                 LocalConfigs::from(&mut args.args)
             }
         },
         Err(e) => {
             let fname = &args.config_path.clone();
-            println!(
+            info!(
                 "Failed to read the config file '{fname}' (with error: {e}), using default values."
             );
             LocalConfigs::from(&mut args.args)
@@ -276,7 +277,7 @@ pub fn new() -> LocalConfigs {
         cfgs.num_packet_processors = num_cpus::get();
     }
 
-    println!("Using configs: {:#?}", cfgs);
+    info!("Using configs: {:#?}", cfgs);
 
     cfgs
 }

@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tracing::info;
 
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::{Client, client::Connect};
@@ -29,11 +30,11 @@ pub async fn connect_tcp_node(
                     .write_all(&local_id.to_be_bytes())
                     .await
                     .expect("Failed to send local node id to the node");
-                println!("Connected to node {node_id} with TCP.");
+                info!("Connected to node {node_id} with TCP.");
                 return stream;
             }
             Err(e) => {
-                println!(
+                info!(
                     "Failed to connect to node addr: {addr}, error: {e}, retrying in {}s",
                     delay.as_secs()
                 );
@@ -77,7 +78,7 @@ pub async fn connect_quic_node(
                 break connection;
             }
             Err(e) => {
-                println!(
+                info!(
                     "Failed to initiate quic connection to {addr}, error: {e} retrying in 1 second"
                 );
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -107,7 +108,7 @@ pub async fn connect_quic_node(
         .await
         .expect("Failed to send local node id to the node");
 
-    println!("connected.");
+    info!("connected.");
 
     stream
 }

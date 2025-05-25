@@ -12,7 +12,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
@@ -45,11 +45,11 @@ impl Controller {
             match connect_async(url.as_str()).await {
                 Ok((ws, _)) => {
                     ws_stream = ws;
-                    println!("WebSocket handshake has been successfully completed");
+                    info!("WebSocket handshake has been successfully completed");
                     break;
                 }
                 Err(e) => {
-                    println!("Failed to connect to controller: {}. Retrying...", e);
+                    info!("Failed to connect to controller: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
@@ -187,8 +187,8 @@ impl ControllerReceiver {
             let msg = match self.controller_receiver_stream.next().await.unwrap() {
                 Ok(msg) => msg,
                 Err(e) => {
-                    println!("Connection with the controller is broken. Restarting node state..");
-                    println!("Connection Lost with Error: {:?}", e);
+                    info!("Connection with the controller is broken. Restarting node state..");
+                    info!("Connection Lost with Error: {:?}", e);
                     self.shutdown_tx
                         .send(true)
                         .expect("Failed to send shutdown signal to main task");
@@ -207,7 +207,7 @@ impl ControllerReceiver {
                     continue;
                 }
                 _ => {
-                    println!(
+                    info!(
                         "Received a message that is not a binary or a ping message. There may be something wrong."
                     );
                 }
@@ -243,7 +243,7 @@ impl ControllerReceiver {
                     .await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
-                println!("Setting link rate for node: {}, rate: {}", node_id, rate);
+                info!("Setting link rate for node: {}, rate: {}", node_id, rate);
                 let mut guard = self.link_rate_limiters.write().await;
 
                 match guard.get(&node_id) {
@@ -258,7 +258,7 @@ impl ControllerReceiver {
                 }
             }
             ControllerToDataplane::InstallRoutes { routes } => {
-                println!("Installing simplified routes..");
+                info!("Installing simplified routes..");
                 debug!(
                     "ControllerInterface: Received {} routes to install",
                     routes.len()
@@ -278,9 +278,9 @@ impl ControllerReceiver {
                     .await;
 
                 debug!("ControllerInterface: Route installation completed");
-                println!("Simplified routes installed.");
+                info!("Simplified routes installed.");
             }
-            _ => println!("Received unsupported message type"),
+            _ => info!("Received unsupported message type"),
         }
     }
 

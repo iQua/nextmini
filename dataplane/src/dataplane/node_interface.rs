@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock, mpsc};
+use tracing::info;
 
 use s2n_quic::stream::BidirectionalStream;
 
@@ -106,7 +107,7 @@ impl NodeReceiver {
 
             // Skip empty or invalid packets to prevent downstream errors
             if n == 0 {
-                println!(
+                info!(
                     "WARNING: NodeReceiver from node {} received empty packet - connection may be closing",
                     self.remote_node_id
                 );

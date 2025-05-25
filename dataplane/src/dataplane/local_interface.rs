@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::mpsc::Sender;
+use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
@@ -43,7 +44,7 @@ pub async fn create_tun_device(
         let mut queues = Vec::with_capacity(num_queues);
 
         // creates multiple TUN queues with error handling
-        eprintln!("Creating {num_queues} TUN queues.");
+        info!("Creating {num_queues} TUN queues.");
         for _ in 0..num_queues - 1 {
             match dev.try_clone() {
                 Ok(cloned_dev) => {
@@ -51,8 +52,8 @@ pub async fn create_tun_device(
                 }
                 Err(e) => {
                     // if we are unable to create all the queues, use what we have
-                    eprintln!(
-                        "Warning: Could not create all TUN queues ({}), continuing with {} queues",
+                    warn!(
+                        "Could not create all TUN queues ({}), continuing with {} queues",
                         e,
                         queues.len()
                     );
@@ -87,7 +88,7 @@ pub async fn create_tun_device(
             .expect("Failed to create tun device");
 
         // creates a single TUN queue on non-Linux platforms without multi-queue support
-        eprintln!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
+        info!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
         let queues = vec![Arc::new(dev)];
 
         queues
@@ -116,8 +117,8 @@ impl TunReader {
             let n = match self.dev.recv(&mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
-                    println!(
-                        "ERROR: Failed to read from TUN device: {:?} - interface may be down",
+                    error!(
+                        "Failed to read from TUN device: {:?} - interface may be down",
                         e
                     );
                     // Sleep briefly before retrying to avoid busy loop
@@ -128,9 +129,7 @@ impl TunReader {
 
             // Skip empty packets
             if n == 0 {
-                println!(
-                    "WARNING: TunReader received empty packet - may indicate interface issues"
-                );
+                warn!("TunReader received empty packet - may indicate interface issues");
                 continue;
             }
 

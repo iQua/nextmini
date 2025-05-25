@@ -3,6 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use nextmini_messages::Protocol;
 
@@ -152,16 +153,16 @@ pub fn get_config(filename: &str) -> Config {
         match fs::read_to_string(filename) {
             Ok(content) => match toml::from_str::<Config>(&content) {
                 Ok(config) => {
-                    println!("Successfully loaded configuration from: {}", filename);
+                    info!("Successfully loaded configuration from: {}", filename);
 
-                    println!(
+                    info!(
                         "Loaded {} custom routes from configuration",
                         config.routes.len()
                     );
                     config
                 }
                 Err(e) => {
-                    println!(
+                    info!(
                         "Error parsing TOML config file: {}. Using the default configuration.",
                         e
                     );
@@ -169,7 +170,7 @@ pub fn get_config(filename: &str) -> Config {
                 }
             },
             Err(e) => {
-                println!(
+                info!(
                     "Error reading config file: {}. Using the default configuration.",
                     e
                 );
@@ -177,7 +178,7 @@ pub fn get_config(filename: &str) -> Config {
             }
         }
     } else {
-        println!("The configuration file cannot be found. Using the default configuration.");
+        info!("The configuration file cannot be found. Using the default configuration.");
         Config::default()
     }
 }
@@ -366,8 +367,8 @@ mod tests {
         assert_eq!(config.routes[1].route, vec![3, 2, 1]);
         assert_eq!(config.routes[2].route, vec![1, 4, 2]);
 
-        println!("✓ Only custom routes configuration parsed correctly");
-        println!("  - Custom routes should get route_id: 0, 1, 2");
+        info!("✓ Only custom routes configuration parsed correctly");
+        info!("  - Custom routes should get route_id: 0, 1, 2");
     }
 
     #[test]
@@ -404,9 +405,9 @@ mod tests {
         assert_eq!(config.routes[0].route, vec![1, 2, 3]);
         assert_eq!(config.routes[1].route, vec![3, 1, 2]);
 
-        println!("✓ Full mesh + custom routes configuration parsed correctly");
-        println!("  - Full mesh (3 nodes) should generate route_id: 0, 1, 2, 3, 4, 5");
-        println!("  - Custom routes should get route_id: 6, 7");
+        info!("✓ Full mesh + custom routes configuration parsed correctly");
+        info!("  - Full mesh (3 nodes) should generate route_id: 0, 1, 2, 3, 4, 5");
+        info!("  - Custom routes should get route_id: 6, 7");
     }
 
     #[test]
@@ -447,9 +448,9 @@ mod tests {
         assert_eq!(config.routes[1].route, vec![4, 2, 1]);
         assert_eq!(config.routes[2].route, vec![2, 4, 3, 1]);
 
-        println!("✓ Ring + custom routes configuration parsed correctly");
-        println!("  - Ring (4 nodes) should generate route_id: 0, 1, 2, 3");
-        println!("  - Custom routes should get route_id: 4, 5, 6");
+        info!("✓ Ring + custom routes configuration parsed correctly");
+        info!("  - Ring (4 nodes) should generate route_id: 0, 1, 2, 3");
+        info!("  - Custom routes should get route_id: 4, 5, 6");
     }
 
     #[test]
@@ -510,8 +511,8 @@ mod tests {
         assert_eq!(config.routes[6].route, vec![1, 2]);
         assert_eq!(config.routes[7].route, vec![2, 1]);
 
-        println!("✓ Controller-config.toml format parsed correctly");
-        println!("  - 8 custom routes should get route_id: 0, 1, 2, 3, 4, 5, 6, 7");
+        info!("✓ Controller-config.toml format parsed correctly");
+        info!("  - 8 custom routes should get route_id: 0, 1, 2, 3, 4, 5, 6, 7");
     }
 
     #[test]
@@ -532,7 +533,7 @@ mod tests {
         assert_eq!(config.routes.len(), 0);
         assert!(config.topology.topology_type.is_none());
 
-        println!("✓ Empty routes configuration handled correctly");
+        info!("✓ Empty routes configuration handled correctly");
     }
 
     #[test]
@@ -541,7 +542,7 @@ mod tests {
         let config_content = r#"
         reset_db = true
         protocol = "quic"
-        
+
         [topology]
         type = "full_mesh"
         n_nodes = 4
@@ -574,15 +575,15 @@ mod tests {
 
         // Verify custom routes (including duplicates)
         assert_eq!(config.routes.len(), 4);
-        assert_eq!(config.routes[0].route, vec![1, 2]);     // Will be duplicate
-        assert_eq!(config.routes[1].route, vec![2, 1]);     // Will be duplicate  
+        assert_eq!(config.routes[0].route, vec![1, 2]); // Will be duplicate
+        assert_eq!(config.routes[1].route, vec![2, 1]); // Will be duplicate
         assert_eq!(config.routes[2].route, vec![1, 2, 3, 4]); // Unique
         assert_eq!(config.routes[3].route, vec![4, 3, 2, 1]); // Unique
 
-        println!("✓ Route deduplication scenario configuration parsed correctly");
-        println!("  - Full mesh (4 nodes) should generate 12 preset routes");
-        println!("  - 2 custom routes should be deduplicated (skipped)");
-        println!("  - 2 unique custom routes should be added");
-        println!("  - Total expected routes: 12 + 2 = 14 routes");
+        info!("✓ Route deduplication scenario configuration parsed correctly");
+        info!("  - Full mesh (4 nodes) should generate 12 preset routes");
+        info!("  - 2 custom routes should be deduplicated (skipped)");
+        info!("  - 2 unique custom routes should be added");
+        info!("  - Total expected routes: 12 + 2 = 14 routes");
     }
 }

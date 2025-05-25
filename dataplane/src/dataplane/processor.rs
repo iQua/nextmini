@@ -18,7 +18,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::SimpleRoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
 use nextmini_messages::SimpleRouteEntry;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 pub struct ProcessorManager {
     context: Context,
@@ -169,7 +169,7 @@ impl Processor {
         let route_id = packet.get_route_id().unwrap();
         let packet_flow_id = packet.flow_id;
 
-        println!(
+        info!(
             "DEBUG: Processing forwarded packet with route_id {} for flow {}",
             route_id, packet_flow_id
         );
@@ -182,7 +182,7 @@ impl Processor {
                 error
             })?;
 
-        println!(
+        info!(
             "DEBUG: Forwarded packet route_id {} -> next_hop {}",
             route_id, next_hop_id
         );
@@ -216,7 +216,7 @@ impl Processor {
                 error
             })?;
 
-        println!(
+        info!(
             "DEBUG: New packet flow {} selected route_id {} -> next_hop {}",
             packet_flow_id, route_id, next_hop_id
         );
@@ -240,7 +240,7 @@ impl Processor {
         } else {
             // Forward to next hop - embed route_id into IP options before sending
             packet.embed_route_id_to_packet();
-            println!(
+            info!(
                 "DEBUG: Forwarding packet with embedded route_id to next_hop {}",
                 next_hop_id
             );
@@ -248,7 +248,7 @@ impl Processor {
             match self.senders.get_mut(&next_hop_id) {
                 Some(sender) => {
                     sender.send(packet).await;
-                    println!(
+                    info!(
                         "DEBUG: Successfully sent packet for flow {} to next_hop {}",
                         packet_flow_id, next_hop_id
                     );
@@ -365,13 +365,13 @@ impl SenderLoadBalancer {
         if rand::random::<f32>() * 0.75 + 0.25
             < 1.0 - (tx.capacity() as f32 / INTERNAL_Q_SIZE as f32)
         {
-            println!("WARNING: Random early drop for flow {}", flow_id,);
+            info!("WARNING: Random early drop for flow {}", flow_id,);
             return;
         };
 
         match tx.try_send(packet) {
             Err(e) => {
-                println!(
+                info!(
                     "ERROR: Failed to send packet for flow {} to processor {}: channel full or closed - {:?}",
                     flow_id, proc_id, e
                 );

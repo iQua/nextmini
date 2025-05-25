@@ -14,7 +14,7 @@ use crate::WebSocketWriter;
 use crate::config;
 use crate::models::Route;
 use crate::utils::build_routes_for_node;
-use tracing::error;
+use tracing::{error, info, warn};
 
 pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     // connects to the PostgreSQL database
@@ -23,7 +23,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         config.db.user, config.db.password, config.db.host, config.db.port, config.db.database
     );
 
-    println!("Connecting to PostgreSQL: {}", db_url);
+    info!("Connecting to PostgreSQL: {}", db_url);
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -86,12 +86,12 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             .execute(&pool)
             .await
             .expect("Failed to drop metrics table");
-        
+
         sqlx::query("DROP TABLE IF EXISTS routes")
             .execute(&pool)
             .await
             .expect("Failed to drop routes table");
-            
+
         sqlx::query("DROP TABLE IF EXISTS nodes")
             .execute(&pool)
             .await
@@ -155,7 +155,10 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     // Add preset topology routes
     if let Some(preset_topology) = &config.topology.topology_type {
         let n_nodes = config.topology.n_nodes.unwrap_or(0);
-        println!("Adding preset routes from configuration: {:?} topology with {} nodes", preset_topology, n_nodes);
+        info!(
+            "Adding preset routes from configuration: {:?} topology with {} nodes",
+            preset_topology, n_nodes
+        );
 
         match preset_topology {
             config::PresetTopology::FullMesh => {
@@ -166,14 +169,14 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         }
 
                         let route_path = vec![i as i32, j as i32];
-                        
+
                         let result = sqlx::query(
                             r#"
                             INSERT INTO routes (src_node_id, dst_node_id, route)
                             VALUES ($1, $2, $3)
                             ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
                             RETURNING route_id
-                            "#
+                            "#,
                         )
                         .bind(i as i32)
                         .bind(j as i32)
@@ -184,7 +187,10 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
                         if let Some(row) = result {
                             let route_id: i32 = row.get("route_id");
-                            println!("Created full mesh route_id {} from node {} to node {}", route_id, i, j);
+                            info!(
+                                "Created full mesh route_id {} from node {} to node {}",
+                                route_id, i, j
+                            );
                         }
                     }
                 }
@@ -193,7 +199,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 for i in 1..n_nodes {
                     let j = i + 1;
                     let route_path = vec![i as i32, j as i32];
-                    
+
                     let result = sqlx::query(
                         r#"
                         INSERT INTO routes (src_node_id, dst_node_id, route)
@@ -211,13 +217,16 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
                     if let Some(row) = result {
                         let route_id: i32 = row.get("route_id");
-                        println!("Created ring route_id {} from node {} to node {}", route_id, i, j);
+                        info!(
+                            "Created ring route_id {} from node {} to node {}",
+                            route_id, i, j
+                        );
                     }
                 }
 
                 // Add ring closure: connect last node back to first node
                 let route_path = vec![n_nodes as i32, 1];
-                
+
                 let result = sqlx::query(
                     r#"
                     INSERT INTO routes (src_node_id, dst_node_id, route)
@@ -235,18 +244,21 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
                 if let Some(row) = result {
                     let route_id: i32 = row.get("route_id");
-                    println!("Created ring closure route_id {} from node {} to node 1", route_id, n_nodes);
+                    info!(
+                        "Created ring closure route_id {} from node {} to node 1",
+                        route_id, n_nodes
+                    );
                 }
             }
         }
     }
 
     // Add custom routes from configuration file
-    println!("Adding custom routes from configuration file...");
+    info!("Adding custom routes from configuration file...");
 
     for route in config.routes.clone() {
         if route.route.is_empty() {
-            println!("Warning: Skipping empty route");
+            warn!("Skipping empty route");
             continue;
         }
 
@@ -273,11 +285,15 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
         if let Some(row) = result {
             let route_id: i32 = row.get("route_id");
-            println!("Auto-assigned route_id {} to custom route from node {} to node {} with path {:?}", 
-                    route_id, src_node_id, dst_node_id, route.route);
+            info!(
+                "Auto-assigned route_id {} to custom route from node {} to node {} with path {:?}",
+                route_id, src_node_id, dst_node_id, route.route
+            );
         } else {
-            println!("Skipped duplicate route from node {} to node {} with path {:?}", 
-                    src_node_id, dst_node_id, route.route);
+            info!(
+                "Skipped duplicate route from node {} to node {} with path {:?}",
+                src_node_id, dst_node_id, route.route
+            );
         }
     }
 
@@ -372,7 +388,7 @@ pub async fn setup_notification(
                     {
                         // Strato does not support installing routes individually, so we need to find
                         // all routes from the database and re-install them all
-                        println!("Installing route updates into the dataplane.");
+                        info!("Installing route updates into the dataplane.");
 
                         let routes: Vec<Route> = sqlx::query_as("SELECT * FROM routes")
                             .fetch_all(&*db_pool)
@@ -383,10 +399,9 @@ pub async fn setup_notification(
                         let node_ws_guard = node_ws.read().await;
 
                         for (node_id, ws_arc) in node_ws_guard.iter() {
-                            if let Some(msg) = build_routes_for_node(
-                                routes.clone(),
-                                *node_id as i32,
-                            ) {
+                            if let Some(msg) =
+                                build_routes_for_node(routes.clone(), *node_id as i32)
+                            {
                                 let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
                                 ws_arc
@@ -396,7 +411,7 @@ pub async fn setup_notification(
                                     .await
                                     .unwrap();
 
-                                println!("Installing routes on node {}.", node_id);
+                                info!("Installing routes on node {}.", node_id);
                             } else {
                                 error!("No node to install flow to.");
                             }

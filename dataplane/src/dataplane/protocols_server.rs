@@ -3,11 +3,11 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use tokio::net::TcpListener;
-use tokio::{io::AsyncReadExt, sync::RwLock};
-
 use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
+use tokio::net::TcpListener;
+use tokio::{io::AsyncReadExt, sync::RwLock};
+use tracing::{error, info};
 
 use nextmini_messages::Protocol;
 
@@ -127,7 +127,7 @@ impl TcpServer {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
             Err(e) => {
-                eprintln!("Failed to bind to address {}: {}", addr, e);
+                error!("Failed to bind to address {}: {}", addr, e);
                 return;
             }
         };
@@ -139,13 +139,13 @@ impl TcpServer {
             let (mut stream, _) = match listener.accept().await {
                 Ok(stream) => stream,
                 Err(e) => {
-                    eprintln!("Failed to accept TCP connection: {}", e);
+                    error!("Failed to accept TCP connection: {}", e);
                     continue;
                 }
             };
 
             if let Err(e) = stream.read_exact(&mut session_id_buf).await {
-                eprintln!("Failed to read session ID: {}", e);
+                error!("Failed to read session ID: {}", e);
                 continue;
             }
 
@@ -154,7 +154,7 @@ impl TcpServer {
             }
 
             if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                eprintln!("Failed to read node ID: {}", e);
+                error!("Failed to read node ID: {}", e);
                 continue;
             }
 
@@ -163,7 +163,7 @@ impl TcpServer {
             let node_id = match cursor.read_u64().await {
                 Ok(id) => id as usize,
                 Err(e) => {
-                    eprintln!("Failed to parse node ID: {}", e);
+                    error!("Failed to parse node ID: {}", e);
                     continue;
                 }
             };
@@ -177,7 +177,7 @@ impl TcpServer {
                 .update_processors()
                 .await;
 
-            println!("Connected.")
+            info!("Connected.")
         }
     }
 }
@@ -234,19 +234,19 @@ impl QuicServer {
             let context = self.context.clone();
 
             tokio::spawn(async move {
-                eprintln!("Connection accepted from {:?}.", connection.remote_addr());
+                info!("Connection accepted from {:?}.", connection.remote_addr());
 
                 if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
                     let mut session_id_buf = [0; 4];
 
                     if let Err(e) = stream.read_exact(&mut session_id_buf).await {
-                        println!("Failed to read session ID: {}", e);
+                        info!("Failed to read session ID: {}", e);
                         connection.close(0u32.into());
                         return;
                     }
 
                     if session_id_buf != session_id {
-                        println!(
+                        info!(
                             "Invalid session id: {:?}, expected: {:?}",
                             session_id_buf, session_id
                         );
@@ -257,18 +257,18 @@ impl QuicServer {
                     let mut node_id_buf: [u8; 8] = [0; 8];
 
                     if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                        println!("Failed to read node ID: {}", e);
+                        info!("Failed to read node ID: {}", e);
                         connection.close(0u32.into());
                         return;
                     }
 
                     let node_id = u64::from_be_bytes(node_id_buf) as usize;
-                    println!("Incoming connection from node {}...", node_id);
+                    info!("Incoming connection from node {}...", node_id);
                     context.add_quic_node(node_id, stream).await;
 
                     processor_manager.write().await.update_processors().await;
 
-                    println!("Connected.");
+                    info!("Connected.");
                 } else {
                     connection.close(0u32.into());
                 }

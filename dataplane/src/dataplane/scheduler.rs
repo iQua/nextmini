@@ -5,7 +5,7 @@ use tokio::sync::{Notify, RwLock};
 
 use crossbeam_queue::ArrayQueue;
 
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::dataplane::packet::Packet;
@@ -76,15 +76,21 @@ impl Scheduler for Fifo {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
-            println!("WARNING: Scheduler dropped packet for flow {} (size: {}) - queue length: {}/{}, drops: {}", 
-                     packet.flow_id, packet.packet_size, self.queue.len(), self.queue.capacity(), self.packets_dropped);
+            warn!(
+                "FIFO: Scheduler dropped packet for flow {} (size: {}) - queue length: {}/{}, drops: {}",
+                packet.flow_id,
+                packet.packet_size,
+                self.queue.len(),
+                self.queue.capacity(),
+                self.packets_dropped
+            );
             return;
         }
 
         if self.queue.push(packet).is_err() {
             self.packets_dropped += 1;
             error!(
-                "Fifo: CRITICAL - Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue. Total drops: {}",
+                "FIFO: Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue. Total drops: {}",
                 self.packets_dropped
             );
             return;

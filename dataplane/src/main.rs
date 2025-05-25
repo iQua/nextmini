@@ -1,6 +1,7 @@
 mod dataplane;
 mod tests;
 
+use tracing::info;
 use tracing_subscriber;
 
 use dataplane::configs;
@@ -62,17 +63,17 @@ fn main() {
 
             tokio::spawn(async move { controller_sender.run().await });
 
-            println!("Strato is now running.");
+            info!("Nextmini is now running.");
 
             shutdown_rx.changed().await.unwrap();
         });
 
         if configs.restart_on_disconnect {
-            println!("Restarting Strato...");
+            info!("Restarting Nextmini...");
             continue;
         }
 
-        println!("Shutting down Strato...");
+        info!("Shutting down Nextmini...");
         break;
     }
 }
