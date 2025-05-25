@@ -158,7 +158,6 @@ async fn handle_connection(
                             private_network_addr,
                             public_network_addr,
                             virtual_network_addr,
-                            connections: vec![],
                         };
 
                         // Insert node into database
@@ -171,7 +170,6 @@ async fn handle_connection(
                                 private_network_addr = EXCLUDED.private_network_addr,
                                 public_network_addr = EXCLUDED.public_network_addr,
                                 virtual_network_addr = EXCLUDED.virtual_network_addr,
-                                connections = EXCLUDED.connections
                             "#
                         )
                         .bind(new_node.id)
@@ -179,7 +177,6 @@ async fn handle_connection(
                         .bind(&new_node.private_network_addr)
                         .bind(&new_node.public_network_addr)
                         .bind(&new_node.virtual_network_addr)
-                        .bind(&new_node.connections)
                         .execute(&*db_pool)
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
@@ -232,14 +229,10 @@ async fn handle_connection(
                             }
                         };
 
-                        let mut new_connections = vec![];
                         for node in nodes {
                             if node.id == node_id as i32 {
                                 continue;
                             }
-
-                            // connects all nodes in the topology
-                            new_connections.push(node.id);
 
                             // determines the address to use (private or public)
                             // if two nodes share the same private network name, then we use the private
@@ -311,63 +304,6 @@ async fn handle_connection(
                                     }
                                 } else {
                                     warn!("Could not find WebSocket for node {}", node.id);
-                                }
-                            }
-                        }
-
-                        // updates connections for the new node
-                        match sqlx::query("UPDATE nodes SET connections = $1 WHERE id = $2")
-                            .bind(&new_connections)
-                            .bind(node_id as i32)
-                            .execute(&*db_pool)
-                            .await
-                        {
-                            Ok(_) => info!(
-                                "Updated connections for node {}: {:?}",
-                                node_id, new_connections
-                            ),
-                            Err(e) => info!(
-                                "Error: Failed to update connections for node {}: {}",
-                                node_id, e
-                            ),
-                        }
-
-                        // updates connections for other nodes in the database
-                        for other_node_id in &new_connections {
-                            let mut connections: Vec<i32> = match sqlx::query_scalar(
-                                "SELECT connections FROM nodes WHERE id = $1",
-                            )
-                            .bind(*other_node_id)
-                            .fetch_one(&*db_pool)
-                            .await
-                            {
-                                Ok(conns) => conns,
-                                Err(e) => {
-                                    info!(
-                                        "Error: Failed to fetch connections for node {}: {}",
-                                        other_node_id, e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            // adds the new node to their connections if not already present
-                            if !connections.contains(&(node_id as i32)) {
-                                connections.push(node_id as i32);
-                                match sqlx::query("UPDATE nodes SET connections = $1 WHERE id = $2")
-                                    .bind(&connections)
-                                    .bind(*other_node_id)
-                                    .execute(&*db_pool)
-                                    .await
-                                {
-                                    Ok(_) => info!(
-                                        "Updated connections for node {}: {:?}",
-                                        other_node_id, connections
-                                    ),
-                                    Err(e) => info!(
-                                        "Error: Failed to update other node connections for node {}: {}",
-                                        other_node_id, e
-                                    ),
                                 }
                             }
                         }

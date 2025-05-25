@@ -18,6 +18,11 @@ use tracing::{error, info, warn};
 
 /// Creates the tables in the database, if they do not exist yet.
 async fn create_db(pool: &Pool<Postgres>) {
+    // private_network_name: Used to identify which private network (cluster) the node belongs to.
+    // private_network_addr: Address of the node in the private network.
+    // public_network_addr: Address of the node in the public network, when connecting to other private networks
+    // over the public internet.
+    // virtual_network_addr: Address of the node in the virtual network, established by Nextmini.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS nodes (
@@ -26,7 +31,6 @@ async fn create_db(pool: &Pool<Postgres>) {
             private_network_addr TEXT NOT NULL,
             public_network_addr TEXT NOT NULL,
             virtual_network_addr TEXT NOT NULL,
-            connections INTEGER[] NOT NULL
         )
         "#,
     )
@@ -97,7 +101,6 @@ async fn reset_db(pool: &Pool<Postgres>) {
             private_network_addr TEXT NOT NULL,
             public_network_addr TEXT NOT NULL,
             virtual_network_addr TEXT NOT NULL,
-            connections INTEGER[] NOT NULL
         )
         "#,
     )

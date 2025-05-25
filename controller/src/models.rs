@@ -8,7 +8,6 @@ pub struct Node {
     pub private_network_addr: String,
     pub public_network_addr: String,
     pub virtual_network_addr: String,
-    pub connections: Vec<i32>,
 }
 
 #[derive(Clone, FromRow, Debug)]
