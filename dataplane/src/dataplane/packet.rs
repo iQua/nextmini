@@ -6,6 +6,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 #[derive(Debug)]
 pub struct Packet {
     pub flow_id: FlowId,
+    pub route_id: Option<usize>,  // Carries route_id
     pub packet_size: usize,
     pub buf: PacketBuf,
 }
@@ -14,9 +15,25 @@ impl Packet {
     pub fn new(packet_size: usize, buf: PacketBuf) -> Self {
         Self {
             flow_id: Self::get_flow_id_from_buf(&buf, packet_size),
+            route_id: None,  // No route_id at initialization
             packet_size,
             buf,
         }
+    }
+
+    // Set route_id for the packet
+    pub fn set_route_id(&mut self, route_id: usize) {
+        self.route_id = Some(route_id);
+    }
+
+    // Get route_id
+    pub fn get_route_id(&self) -> Option<usize> {
+        self.route_id
+    }
+
+    // Check if route_id is set
+    pub fn has_route_id(&self) -> bool {
+        self.route_id.is_some()
     }
 
     fn get_flow_id_from_buf(buf: &PacketBuf, packet_size: usize) -> FlowId {
