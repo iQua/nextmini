@@ -20,7 +20,7 @@ pub struct RoutingTable {
     /// Route ID -> next hop
     route_next_hop: HashMap<usize, NodeId>,
 
-    /// Jump hash hasher for consistent routing
+    /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
 }
 
@@ -31,6 +31,7 @@ impl RoutingTable {
             available_routes: HashMap::new(),
             local_id,
             base_ipv4_addr: [10, 0, 0, 0],
+            // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
         }
     }
@@ -52,55 +53,48 @@ impl RoutingTable {
         self.route_next_hop.clear();
         self.available_routes.clear();
 
-        // Build routing tables directly from routes
+        // Build the routing table from routes
         for route in routes {
-            if route.next_hop != 0 {
-                // 1. Direct route_id -> next_hop mapping
-                self.route_next_hop.insert(route.route_id, route.next_hop);
+            // source-destination pair → available route IDs
+            let src_dst_pair = (route.src_node_id, route.dst_node_id);
 
-                // 2. Build reverse index: direction -> available route_ids
-                let direction = (route.src_node_id, route.dst_node_id);
-                self.available_routes
-                    .entry(direction)
-                    .or_insert_with(Vec::new)
-                    .push(route.route_id);
+            // route ID → next hop
+            self.route_next_hop.insert(route.route_id, route.next_hop);
 
-                debug!(
-                    "RoutingTable: Installed route {} ({}→{}) -> next_hop {}",
-                    route.route_id, route.src_node_id, route.dst_node_id, route.next_hop
-                );
-            }
+            self.available_routes
+                .entry(src_dst_pair)
+                .or_insert_with(Vec::new)
+                .push(route.route_id);
+
+            info!(
+                "RoutingTable: Installed route {} ({} → {}): the next hop is {}.",
+                route.route_id, route.src_node_id, route.dst_node_id, route.next_hop
+            );
         }
-
-        debug!(
-            "RoutingTable: Route installation complete. {} direct routes, {} directions",
-            self.route_next_hop.len(),
-            self.available_routes.len()
-        );
     }
 
-    /// Extract src and dst node IDs from flow_id
+    /// Extracts source and destination node IDs from the flow ID.
     fn extract_src_dst_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
-        // Extract src_ip and dst_ip from flow_id
         let src_ip = ((flow_id >> 96) & 0xFFFFFFFF) as u32;
         let dst_ip = ((flow_id >> 64) & 0xFFFFFFFF) as u32;
 
-        // Convert IP addresses to node IDs
+        // converts IP addresses to node IDs
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
 
         (src_node_id, dst_node_id)
     }
 
-    /// Convert IP address to node ID based on base address
+    /// Converts an IP address to its node ID based on base address.
     fn ip_to_node_id(&self, ip: u32) -> usize {
         let base_ip = u32::from_be_bytes(self.base_ipv4_addr);
         let node_id = ip - base_ip;
+
         node_id as usize
     }
 
-    /// Jump hash implementation for consistent load balancing using jumphash library
-    /// Ensures the same flow_id always maps to the same route_id
+    /// Applies a deterministic consistent hash function using jump hash for load balancing.
+    /// The same flow ID always maps to the same route ID.
     fn jump_hash(&self, flow_id: FlowId, num_buckets: usize) -> usize {
         self.jump_hasher.slot(&flow_id, num_buckets as u32) as usize
     }
@@ -113,6 +107,8 @@ impl RoutingTable {
 
         // obtains the source-destination pair as the key for the available routes
         let src_dst_pair = (src_node, dst_node);
+
+        println!("The source-destination pair is: {:?}.", src_dst_pair);
 
         // gets the available routes for this source-destination pair
         let available_routes = self.available_routes.get(&src_dst_pair)?;
@@ -227,8 +223,9 @@ mod tests {
         }];
         table.install_routes(routes);
 
-        assert_eq!(table.route_next_hop.len(), 0);
-        assert_eq!(table.available_routes.len(), 0);
+        // should still be installed
+        assert_eq!(table.route_next_hop.len(), 1);
+        assert_eq!(table.available_routes.len(), 1);
     }
 
     #[test]
