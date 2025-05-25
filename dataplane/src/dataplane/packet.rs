@@ -39,7 +39,7 @@ impl Packet {
         if packet_size < 20 || buf[0] >> 4 != 4 {
             // Non-IPv4 or insufficient data, using fallback calculation
             debug!(
-                "Non-IPv4 packet detected: version: {}, size: {}.",
+                "Non-IPv4 packet detected: version: {}, size: {}. Using only source and destination addresses as the flow ID.",
                 buf[0] >> 4,
                 packet_size
             );
@@ -48,12 +48,7 @@ impl Packet {
             let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
             let flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
 
-            debug!(
-                "Using fallback flow_id without source and destination port numbers: {:#x}",
-                flow_id << 0xFFFFFFFF as u128
-            );
-
-            return flow_id as u128;
+            return (flow_id as u128) << 0xFFFFFFFFu64;
         }
 
         // extracts source and destination IP addresses
