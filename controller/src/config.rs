@@ -52,13 +52,13 @@ pub struct Config {
     pub port: u16,
 
     /// The base ipv4 address for the network
-    #[serde(default = "default_base_ipv4_addr")]
-    pub base_ipv4_addr: [u8; 4],
+    #[serde(default = "default_base_addr")]
+    pub base_addr: [u8; 4],
 
     /// The net mask for the network.
     /// This is used to calculate the ipv4 address for each node. Change this only if you understand what you are doing.
-    #[serde(default = "default_ipv4_net_mask")]
-    pub ipv4_net_mask: [u8; 4],
+    #[serde(default = "default_net_mask")]
+    pub net_mask: [u8; 4],
 
     /// The transport protocol: TCP, UDP, or QUIC.
     #[serde(default = "default_protocol")]
@@ -101,13 +101,14 @@ fn default_port() -> u16 {
 }
 
 /// The default base ipv4 address for the network
-fn default_base_ipv4_addr() -> [u8; 4] {
+fn default_base_addr() -> [u8; 4] {
     [10, 0, 0, 0]
 }
 
 /// The default net mask for the network.
-fn default_ipv4_net_mask() -> [u8; 4] {
-    [255, 255, 255, 0]
+fn default_net_mask() -> [u8; 4] {
+    // accommodates up to 255 * 255 nodes in the private network
+    [255, 255, 0, 0]
 }
 
 /// The default transport protocol: QUIC
@@ -174,8 +175,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             port: default_port(),
-            base_ipv4_addr: default_base_ipv4_addr(),
-            ipv4_net_mask: default_ipv4_net_mask(),
+            base_addr: default_base_addr(),
+            net_mask: default_net_mask(),
             protocol: default_protocol(),
             auto_db_sync: default_true(),
             routes: Vec::new(),
@@ -225,8 +226,8 @@ mod tests {
         // Test the route processing logic that happens in get_config
         let config_content = r#"
         protocol = "quic"
-        base_ipv4_addr = [10, 0, 0, 0]
-        ipv4_net_mask = [255, 255, 255, 0]
+        base_addr = [10, 0, 0, 0]
+        net_mask = [255, 255, 255, 0]
 
         [[routes]]
         route = [1, 2, 3, 4]
@@ -242,8 +243,8 @@ mod tests {
 
         // Verify basic configuration
         assert_eq!(config.protocol, Protocol::Quic);
-        assert_eq!(config.base_ipv4_addr, [10, 0, 0, 0]);
-        assert_eq!(config.ipv4_net_mask, [255, 255, 255, 0]);
+        assert_eq!(config.base_addr, [10, 0, 0, 0]);
+        assert_eq!(config.net_mask, [255, 255, 255, 0]);
 
         // Verify routes were processed correctly
         assert_eq!(config.routes.len(), 3);

@@ -124,8 +124,8 @@ async fn handle_connection(
 
                         // assigns a virtual address to this node
                         let virtual_addr = match create_new_virtual_addr(
-                            config.base_ipv4_addr,
-                            config.ipv4_net_mask,
+                            config.base_addr,
+                            config.net_mask,
                             node_id,
                         ) {
                             Some(addr) => addr,
@@ -193,7 +193,7 @@ async fn handle_connection(
                         let response = build_startup_message(
                             node_id,
                             virtual_addr,
-                            config.ipv4_net_mask,
+                            config.net_mask,
                             config.num_interfaces,
                             config.protocol.clone(),
                         );
