@@ -63,7 +63,7 @@ impl RoutingTable {
 
             self.available_routes
                 .entry(src_dst_pair)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(route.route_id);
 
             info!(
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn test_extract_src_dst_from_flow() {
         let table = RoutingTable::new(1); // base_ipv4_addr is [10,0,0,0] by default
-        let flow_id = create_flow_id(5, 7, 12345, 80, 6); // 10.0.0.5 -> 10.0.0.7
+        let flow_id = create_flow_id(5, 7, 12345, 80, 6); // 10.0.0.5 → 10.0.0.7
         let (src_node, dst_node) = table.extract_src_dst_from_flow(flow_id);
 
         assert_eq!(src_node, 5, "Source node ID mismatch");

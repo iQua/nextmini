@@ -34,14 +34,12 @@ const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 /// used throughout the dataplane implementation
 const INTERNAL_Q_SIZE: usize = 10000;
 
-/// The flow ID - 128-bit to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16) + dst_port(16) + reserved(32)
+/// The flow ID is a 128-bit integer, used to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16)
+/// + dst_port(16) + reserved(32)
 pub type FlowId = u128;
 
 /// The node ID.
 pub type NodeId = usize;
-
-/// The socket ID.
-// pub type SocketId = (u16, u16);
 
 /// The packet buffer, used for receiving a packet from the network.
 type PacketBuf = [u8; RECEIVE_BUF_SIZE];

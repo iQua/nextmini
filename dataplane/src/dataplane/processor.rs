@@ -162,7 +162,7 @@ impl Processor {
             .select_route_for_flow(packet_flow_id)
             .ok_or_else(|| {
                 let error = format!(
-                    "No route is found for flow {}: the routing table may be misconfigured.",
+                    "No route is found for flow {}: the routing table may be misconfigured",
                     packet_flow_id
                 );
                 error!("{}", error);
@@ -173,13 +173,8 @@ impl Processor {
         if route_id == 0 {
             // no route can be possible as the flow ID is not valid (represented as a value of 0)
             // perhaps a non-IPv4 packet?
-            debug!(
-                "No route can be selected for a flow ID of {}.",
-                packet_flow_id
-            );
-
             // drops the packet without forwarding it
-            return Err("No route can be selected.".to_string());
+            return Err("No route can be selected".to_string());
         }
 
         // Route the packet to its next hop
@@ -188,7 +183,7 @@ impl Processor {
             .get_next_hop_by_route(route_id)
             .ok_or_else(|| {
                 let error = format!(
-                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
+                    "No next hop is found for route id {} on flow {}: routing inconsistency detected",
                     route_id, packet_flow_id
                 );
                 error!("{}", error);
@@ -197,7 +192,7 @@ impl Processor {
             })?;
 
         debug!(
-            "New packet flow {} selected route_id {} -> next_hop {}.",
+            "New packet flow {} selected route_id {} → next_hop {}.",
             packet_flow_id, route_id, next_hop_id
         );
 
@@ -281,7 +276,7 @@ impl Processor {
                     .expect("Failed to send metrics to the metrics collector.");
 
                 if let Err(error_msg) = self.process_packet(packet).await {
-                    debug!("Packet dropped with error: {}.", error_msg);
+                    warn!("Packet dropped with error: {}.", error_msg);
 
                     continue;
                 }
@@ -334,18 +329,11 @@ impl SenderLoadBalancer {
             return;
         };
 
-        match tx.try_send(packet) {
-            Err(e) => {
-                error!(
-                    "Failed to send packet for flow {} to processor {}. Error: {:?}.",
-                    flow_id, proc_id, e
-                );
-
-                return;
-            }
-            Ok(_) => {
-                return;
-            }
+        if let Err(e) = tx.try_send(packet) {
+            error!(
+                "Failed to send packet for flow {} to processor {}. Error: {:?}.",
+                flow_id, proc_id, e
+            );
         };
     }
 }

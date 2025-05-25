@@ -55,7 +55,7 @@ pub enum ControllerToDataplane {
     },
 }
 
-/// Enhanced route entry: route_id -> next_hop mapping with src/dst node information
+/// Routing table entry: route_id → next_hop, with source and destination node IDs
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RoutingTableEntry {
     pub route_id: usize,

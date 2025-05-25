@@ -109,8 +109,6 @@ fn default_protocol() -> Protocol {
     Protocol::Quic
 }
 
-/// The default total number of paths to use for a flow.
-
 /// The default configuration for the database
 fn default_db_config() -> DBConfig {
     DBConfig {

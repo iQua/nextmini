@@ -94,11 +94,9 @@ impl Packet {
 
         // packs complete 4-tuple into 128-bit flow_id without compression:
         // src_ip(32) + dst_ip(32) + src_port(16) + dst_port(16) + reserved(32)
-        let flow_id = ((src_ip as u128) << 96)
+        ((src_ip as u128) << 96)
             | ((dst_ip as u128) << 64)
             | ((src_port as u128) << 48)
-            | ((dst_port as u128) << 32);
-
-        flow_id
+            | ((dst_port as u128) << 32)
     }
 }

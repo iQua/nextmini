@@ -2,7 +2,6 @@ mod dataplane;
 mod tests;
 
 use tracing::info;
-use tracing_subscriber;
 
 use dataplane::configs;
 use dataplane::controller_interface::Controller;
