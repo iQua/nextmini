@@ -139,11 +139,12 @@ impl RoutingTable {
         self.jump_hasher.slot(&flow_id, num_buckets as u32) as usize
     }
 
-    /// Select route_id for a new flow at the source node (load balancing)
+    /// Select route_id for a new flow at each node, with load balanced using a consistent hash
+    ///  when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
         // Extract source and destination nodes
         let (src_node, dst_node) = self.extract_src_dst_from_flow(flow_id);
-        let direction_key = (src_node, dst_node);
+        let src_dst_pair = (src_node, dst_node);
 
         debug!(
             "Source node selecting route for direction ({}, {})",
@@ -151,7 +152,7 @@ impl RoutingTable {
         );
 
         // Get available routes for this direction
-        let available_routes = self.direction_routes.get(&direction_key)?;
+        let available_routes = self.direction_routes.get(&src_dst_pair)?;
 
         // Simple route selection: use jump hash among available routes
         let selected_route_id = if available_routes.len() == 1 {
@@ -178,69 +179,11 @@ impl RoutingTable {
     pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
         self.route_next_hop.get(&route_id).copied()
     }
-
-    /// Simplified version: compatible with existing code
-    /// Note: It is recommended to use the new split method (select_route_for_flow + get_next_hop_by_route)
-    #[allow(dead_code)]
-    pub fn next_hop_for_flow(&mut self, flow_id: FlowId) -> Option<NodeId> {
-        // Fast path: Check flow_id -> route_id cache
-        if let Some(&route_id) = self.flow_route_cache.get(&flow_id) {
-            return self.route_next_hop.get(&route_id).copied();
-        }
-
-        // Slow path: Use the new simplified route selection method
-        let route_id = self.select_route_for_flow(flow_id)?;
-
-        // Return next_hop for the selected route
-        self.route_next_hop.get(&route_id).copied()
-    }
-
-    /// Get number of active routes
-    #[allow(dead_code)]
-    pub fn num_routes(&self) -> usize {
-        self.route_next_hop.len()
-    }
-
-    /// Check if any routes are installed
-    #[allow(dead_code)]
-    pub fn has_routes(&self) -> bool {
-        !self.route_next_hop.is_empty()
-    }
-
-    /// Debug function to print optimized routing table
-    #[allow(dead_code)]
-    pub fn debug_print_routing_table(&self) {
-        debug!(
-            "=== Optimized Route-ID Routing Table Debug for Node {} ===",
-            self.local_id
-        );
-        debug!(
-            "Direct routes: {}, Directions: {}, Cached flows: {}",
-            self.route_next_hop.len(),
-            self.direction_routes.len(),
-            self.flow_route_cache.len()
-        );
-
-        for (&route_id, &next_hop) in &self.route_next_hop {
-            debug!("  Route {}: -> next_hop {}", route_id, next_hop);
-        }
-
-        for ((src, dst), route_ids) in &self.direction_routes {
-            debug!(
-                "  Direction {}→{}: routes {:?} ({} options)",
-                src,
-                dst,
-                route_ids,
-                route_ids.len()
-            );
-        }
-        debug!("=== End Routing Table Debug ===");
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*; // Imports RoutingTable, RoutingTableEntry, NodeId, FlowId
+    use super::*;
 
     // Assumes base IP 10.0.0.0 for IPs like 10.0.0.src_octet and 10.0.0.dst_octet
     fn create_flow_id(
@@ -392,116 +335,5 @@ mod tests {
             "Jump hash seems to map all test flows to a single bucket, or only one bucket exists. Results: {:?}",
             results
         );
-    }
-
-    // This test may be changed if reintallation will not clear the cache.
-    #[test]
-    fn test_next_hop_cache_reintall_routes() {
-        let mut table = RoutingTable::new(1);
-        table.set_base_ipv4_addr([10, 0, 0, 0]);
-
-        // add two routes for the same direction [5,7] -> 2 and [5,7] -> 3
-        let route1 = vec![RoutingTableEntry {
-            route_id: 100,
-            next_hop: 2,
-            src_node_id: 5,
-            dst_node_id: 7,
-        }];
-        let route2 = vec![RoutingTableEntry {
-            route_id: 101,
-            next_hop: 3,
-            src_node_id: 5,
-            dst_node_id: 7,
-        }];
-        table.install_routes(route1);
-        table.install_routes(route2);
-
-        let flow_id = create_flow_id(5, 7, 1234, 80, 6); // 10.0.0.5 -> 10.0.0.7
-
-        // First call
-        let next_hop1 = table.next_hop_for_flow(flow_id);
-        assert_eq!(next_hop1, Some(3));
-        assert_eq!(table.flow_route_cache.len(), 1);
-        assert_eq!(table.flow_route_cache.get(&flow_id), Some(&101));
-    }
-
-    #[test]
-    fn test_next_hop_cache_hit() {
-        let mut table = RoutingTable::new(1);
-        table.set_base_ipv4_addr([10, 0, 0, 0]);
-        let routes = vec![RoutingTableEntry {
-            route_id: 100,
-            next_hop: 2,
-            src_node_id: 5,
-            dst_node_id: 7,
-        }];
-        table.install_routes(routes);
-
-        let flow_id = create_flow_id(5, 7, 1234, 80, 6);
-        assert!(table.flow_route_cache.is_empty());
-
-        let next_hop = table.next_hop_for_flow(flow_id);
-        assert_eq!(next_hop, Some(2));
-        assert_eq!(table.next_hop_for_flow(flow_id), Some(2)); // check cache hit
-    }
-
-    #[test]
-    fn test_next_hop_cache_miss_with_multiple_routes() {
-        let mut table = RoutingTable::new(1);
-        table.set_base_ipv4_addr([10, 0, 0, 0]);
-        let routes = vec![
-            RoutingTableEntry {
-                route_id: 100,
-                next_hop: 2,
-                src_node_id: 5,
-                dst_node_id: 7,
-            },
-            RoutingTableEntry {
-                route_id: 101,
-                next_hop: 3,
-                src_node_id: 5,
-                dst_node_id: 7,
-            },
-        ];
-        table.install_routes(routes);
-
-        // Create two different flow_ids that map to the same direction
-        let flow_id1 = create_flow_id(5, 7, 1000, 80, 6); // 10.0.0.5 -> 10.0.0.7
-        let flow_id2 = create_flow_id(5, 7, 2000, 80, 6); // 10.0.0.5 -> 10.0.0.7, different sport
-
-        let next_hop1 = table.next_hop_for_flow(flow_id1);
-        let route_id1 = *table.flow_route_cache.get(&flow_id1).unwrap();
-
-        let next_hop2 = table.next_hop_for_flow(flow_id2);
-        let route_id2 = *table.flow_route_cache.get(&flow_id2).unwrap();
-
-        // With jump hash, these should be consistent. They might be the same or different
-        // depending on the hash outcomes. We mainly check that *a* valid route is chosen.
-        assert!(next_hop1 == Some(2) || next_hop1 == Some(3));
-        assert!(next_hop2 == Some(2) || next_hop2 == Some(3));
-        assert!(route_id1 == 100 || route_id1 == 101);
-        assert!(route_id2 == 100 || route_id2 == 101);
-
-        // Ensure consistency for the same flow_id
-        assert_eq!(table.next_hop_for_flow(flow_id1), next_hop1);
-        assert_eq!(table.next_hop_for_flow(flow_id2), next_hop2);
-    }
-
-    #[test]
-    fn test_next_hop_cache_no_route() {
-        let mut table = RoutingTable::new(1);
-        table.set_base_ipv4_addr([10, 0, 0, 0]);
-        let routes = vec![RoutingTableEntry {
-            route_id: 100,
-            next_hop: 2,
-            src_node_id: 5,
-            dst_node_id: 7,
-        }];
-        table.install_routes(routes); // Route for 5->7
-
-        let flow_id = create_flow_id(5, 8, 1234, 80, 6);
-        let next_hop = table.next_hop_for_flow(flow_id);
-        assert_eq!(next_hop, None);
-        assert!(table.flow_route_cache.get(&flow_id).is_none());
     }
 }
