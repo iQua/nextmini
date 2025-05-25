@@ -8,7 +8,7 @@ use tokio_tungstenite::tungstenite::Message;
 use futures_util::{SinkExt, StreamExt};
 use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Pool, Postgres};
+use sqlx::{Pool, Postgres, Row};
 
 use crate::WebSocketWriter;
 use crate::config;
@@ -52,9 +52,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         CREATE TABLE IF NOT EXISTS routes (
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            route_id INTEGER NOT NULL,
+            route_id SERIAL PRIMARY KEY,
             route INTEGER[] NOT NULL,
-            PRIMARY KEY (src_node_id, dst_node_id, route_id),
             UNIQUE (src_node_id, dst_node_id, route)
         )
         "#,
@@ -119,9 +118,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             CREATE TABLE routes (
                 src_node_id INTEGER NOT NULL,
                 dst_node_id INTEGER NOT NULL,
-                route_id INTEGER NOT NULL,
+                route_id SERIAL PRIMARY KEY,
                 route INTEGER[] NOT NULL,
-                PRIMARY KEY (src_node_id, dst_node_id, route_id),
                 UNIQUE (src_node_id, dst_node_id, route)
             )
             "#,
@@ -153,12 +151,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             .expect("Failed to reset database");
     }
 
-    // Auto-assign route_id for all routes: preset routes first, then custom routes
-    println!("Auto-assigning route_id for all routes...");
-    
-    let mut current_route_id: i32 = 0;
-
-    // First, add preset topology routes
+    // Add preset topology routes
     if let Some(preset_topology) = &config.topology.topology_type {
         let n_nodes = config.topology.n_nodes.unwrap_or(0);
         println!("Adding preset routes from configuration: {:?} topology with {} nodes", preset_topology, n_nodes);
@@ -171,102 +164,84 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                             continue;
                         }
 
-                        let route = Route {
-                            src_node_id: i as i32,
-                            dst_node_id: j as i32,
-                            route_id: current_route_id,
-                            route: vec![i as i32, j as i32],
-                        };
-
-                        println!("Creating full mesh route_id {} from node {} to node {}", 
-                                current_route_id, i, j);
-
-                        sqlx::query(
+                        let route_path = vec![i as i32, j as i32];
+                        
+                        let result = sqlx::query(
                             r#"
-                            INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
-                            VALUES ($1, $2, $3, $4)
-                            ON CONFLICT (src_node_id, dst_node_id, route_id)
-                            DO UPDATE SET route = EXCLUDED.route
+                            INSERT INTO routes (src_node_id, dst_node_id, route)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                            RETURNING route_id
                             "#
                         )
-                        .bind(route.src_node_id)
-                        .bind(route.dst_node_id)
-                        .bind(route.route_id)
-                        .bind(&route.route)
-                        .execute(&pool)
+                        .bind(i as i32)
+                        .bind(j as i32)
+                        .bind(&route_path)
+                        .fetch_optional(&pool)
                         .await
                         .expect("Failed to insert full mesh route");
 
-                        current_route_id += 1;
+                        if let Some(row) = result {
+                            let route_id: i32 = row.get("route_id");
+                            println!("Created full mesh route_id {} from node {} to node {}", route_id, i, j);
+                        }
                     }
                 }
             }
             config::PresetTopology::Ring => {
                 for i in 1..n_nodes {
                     let j = i + 1;
-                    let route = Route {
-                        src_node_id: i as i32,
-                        dst_node_id: j as i32,
-                        route_id: current_route_id,
-                        route: vec![i as i32, j as i32],
-                    };
-
-                    println!("Creating ring route_id {} from node {} to node {}", 
-                            current_route_id, i, j);
-                    sqlx::query(
+                    let route_path = vec![i as i32, j as i32];
+                    
+                    let result = sqlx::query(
                         r#"
-                        INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
-                        VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (src_node_id, dst_node_id, route_id)
-                        DO UPDATE SET route = EXCLUDED.route
+                        INSERT INTO routes (src_node_id, dst_node_id, route)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                        RETURNING route_id
                         "#,
                     )
-                    .bind(route.src_node_id)
-                    .bind(route.dst_node_id)
-                    .bind(route.route_id)
-                    .bind(&route.route)
-                    .execute(&pool)
+                    .bind(i as i32)
+                    .bind(j as i32)
+                    .bind(&route_path)
+                    .fetch_optional(&pool)
                     .await
                     .expect("Failed to insert ring route");
 
-                    current_route_id += 1;
+                    if let Some(row) = result {
+                        let route_id: i32 = row.get("route_id");
+                        println!("Created ring route_id {} from node {} to node {}", route_id, i, j);
+                    }
                 }
 
                 // Add ring closure: connect last node back to first node
-                let route = Route {
-                    src_node_id: n_nodes as i32,
-                    dst_node_id: 1,
-                    route_id: current_route_id,
-                    route: vec![n_nodes as i32, 1],
-                };
-
-                println!("Creating ring closure route_id {} from node {} to node 1", 
-                        current_route_id, n_nodes);
-
-                sqlx::query(
+                let route_path = vec![n_nodes as i32, 1];
+                
+                let result = sqlx::query(
                     r#"
-                    INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (src_node_id, dst_node_id, route_id)
-                    DO UPDATE SET route = EXCLUDED.route
+                    INSERT INTO routes (src_node_id, dst_node_id, route)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                    RETURNING route_id
                     "#,
                 )
-                .bind(route.src_node_id)
-                .bind(route.dst_node_id)
-                .bind(route.route_id)
-                .bind(&route.route)
-                .execute(&pool)
+                .bind(n_nodes as i32)
+                .bind(1)
+                .bind(&route_path)
+                .fetch_optional(&pool)
                 .await
                 .expect("Failed to insert ring closure route");
 
-                current_route_id += 1;
+                if let Some(row) = result {
+                    let route_id: i32 = row.get("route_id");
+                    println!("Created ring closure route_id {} from node {} to node 1", route_id, n_nodes);
+                }
             }
         }
     }
 
-    // Then, add custom routes from configuration file
+    // Add custom routes from configuration file
     println!("Adding custom routes from configuration file...");
-    println!("Starting custom route_id assignment from: {}", current_route_id);
 
     for route in config.routes.clone() {
         if route.route.is_empty() {
@@ -279,26 +254,26 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         let dst_node_id = route.route[route.route.len() - 1] as i32;
         let route_path = route.route.iter().map(|&x| x as i32).collect::<Vec<_>>();
 
-        // Try to insert route, database constraint will handle duplicates
+        // Insert route with auto-generated route_id
         let result = sqlx::query(
             r#"
-            INSERT INTO routes (src_node_id, dst_node_id, route_id, route)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO routes (src_node_id, dst_node_id, route)
+            VALUES ($1, $2, $3)
             ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+            RETURNING route_id
             "#,
         )
         .bind(src_node_id)
         .bind(dst_node_id)
-        .bind(current_route_id)
         .bind(&route_path)
-        .execute(&pool)
+        .fetch_optional(&pool)
         .await
         .expect("Failed to insert custom route");
 
-        if result.rows_affected() > 0 {
+        if let Some(row) = result {
+            let route_id: i32 = row.get("route_id");
             println!("Auto-assigned route_id {} to custom route from node {} to node {} with path {:?}", 
-                    current_route_id, src_node_id, dst_node_id, route.route);
-            current_route_id += 1;
+                    route_id, src_node_id, dst_node_id, route.route);
         } else {
             println!("Skipped duplicate route from node {} to node {} with path {:?}", 
                     src_node_id, dst_node_id, route.route);
