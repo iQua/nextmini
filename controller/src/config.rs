@@ -66,9 +66,6 @@ pub struct Config {
 
     /// Whether the controller should automatically synchronize with the dataplane.
     /// if true, the controller will automatically synchronize routes in its database with the dataplane routing tables.
-    /// if false, synchronization will take place manually by sending a sync route trigger through the Postgres database
-    #[serde(default = "default_true")]
-    pub auto_db_sync: bool,
 
     /// A list of routes. Each route is defined as a path of node IDs.
     /// For example: route = [1, 2, 3, 4] means a path from node 1 to node 4 via nodes 2 and 3
@@ -110,10 +107,6 @@ fn default_net_mask() -> [u8; 4] {
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
-}
-
-fn default_true() -> bool {
-    true
 }
 
 /// The default total number of paths to use for a flow.
@@ -171,7 +164,6 @@ impl Default for Config {
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
             protocol: default_protocol(),
-            auto_db_sync: default_true(),
             routes: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),

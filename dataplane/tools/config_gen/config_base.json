@@ -1,4 +1,3 @@
 {
-  "port": 10003,
-  "auto_db_sync": true
+  "port": 10003
 }

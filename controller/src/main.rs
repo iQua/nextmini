@@ -42,7 +42,7 @@ async fn main() {
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
     // Set up database notifications
-    db::setup_notification(db_pool.clone(), config.clone(), node_ws.clone()).await;
+    db::setup_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream

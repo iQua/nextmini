@@ -34,6 +34,10 @@ async fn create_db(pool: &Pool<Postgres>) {
     .await
     .expect("Failed to create nodes table");
 
+    // route_id: Unique identifier for the route, automatically assigned by controller.
+    // route: all hops in the route, as an array of node IDs. e.g. [1, 2, 3]
+    // src_node_id: Source node ID in the route.
+    // dst_node_id: Destination node ID in the route.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS routes (
@@ -303,7 +307,6 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
 pub async fn setup_notification(
     db_pool: Arc<Pool<Postgres>>,
-    config: config::Config,
 
     // a hashmap from the node ID to its corresponding WebSocket sink
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
@@ -384,9 +387,7 @@ pub async fn setup_notification(
                 Ok(notif) => {
                     let channel = notif.channel();
 
-                    if (channel == "auto_sync_routes" && config.auto_db_sync)
-                        || channel == "sync_routes"
-                    {
+                    if channel == "auto_sync_routes" {
                         // Strato does not support installing routes individually, so we need to find
                         // all routes from the database and re-install them all
                         info!("Installing route updates into the dataplane.");
