@@ -25,13 +25,13 @@ pub struct ProcessorManager {
     proc_handles: VecDeque<tokio::task::JoinHandle<()>>,
     proc_shutdown_flags: VecDeque<Arc<AtomicBool>>,
     receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
-    pub simple_routing_table: RoutingTable,
+    pub routing_table: RoutingTable,
 }
 
 impl ProcessorManager {
     pub fn new(context: Context, mut receiver_rxs: Vec<mpsc::Receiver<Packet>>) -> Self {
         let mut rxs = VecDeque::new();
-        let simple_routing_table = RoutingTable::new(context.local_id);
+        let routing_table = RoutingTable::new(context.local_id);
         for _ in 0..receiver_rxs.len() {
             let rx = receiver_rxs.pop().unwrap();
             rxs.push_back(Arc::new(RwLock::new(rx)));
@@ -41,16 +41,16 @@ impl ProcessorManager {
             proc_handles: VecDeque::new(),
             proc_shutdown_flags: VecDeque::new(),
             receiver_rxs: rxs,
-            simple_routing_table,
+            routing_table,
         }
     }
 
     pub async fn update_simple_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         // Set base IPv4 address for node ID calculation (should be configurable)
-        self.simple_routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
+        self.routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
 
         // Install routes directly using RoutingTableEntry
-        self.simple_routing_table.install_routes(routes);
+        self.routing_table.install_routes(routes);
         self.swap_processors().await;
     }
 
@@ -76,7 +76,7 @@ impl ProcessorManager {
             let shutdown_flag = Arc::new(AtomicBool::new(false));
 
             let flg = shutdown_flag.clone();
-            let simple_table = self.simple_routing_table.clone();
+            let simple_table = self.routing_table.clone();
             let senders = self.context.reproduce_senders().await;
 
             let tun_writer = self.context.get_tun_writer(i).await;
@@ -116,7 +116,7 @@ pub struct Processor {
     receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
 
     // The simplified routing table
-    simple_routing_table: RoutingTable,
+    routing_table: RoutingTable,
 
     // The senders that send packets to the network
     senders: FxHashMap<NodeId, NodeSender>,
@@ -134,7 +134,7 @@ pub struct Processor {
 impl Processor {
     pub fn new(
         receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
-        simple_routing_table: RoutingTable,
+        routing_table: RoutingTable,
         senders: FxHashMap<NodeId, NodeSender>,
         tun_writer: TunWriter,
         should_shutdown: Arc<AtomicBool>,
@@ -142,7 +142,7 @@ impl Processor {
     ) -> Self {
         Self {
             receiver_rx,
-            simple_routing_table,
+            routing_table,
             senders,
             tun_writer,
             should_shutdown,
@@ -175,9 +175,9 @@ impl Processor {
         );
 
         // Directly look up next_hop by route_id, no need to recalculate
-        let next_hop_id = self.simple_routing_table.get_next_hop_by_route(route_id)
+        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id)
             .ok_or_else(|| {
-                let error = format!("CRITICAL: No next_hop found for route_id {} on flow {} - routing table may be incomplete", route_id, packet_flow_id);
+                let error = format!("No next hop is found for route_id {} on flow {}: routing table may be incomplete.", route_id, packet_flow_id);
                 error!("{}", error);
                 error
             })?;
@@ -199,7 +199,7 @@ impl Processor {
 
         // Select route_id for new flow at source node
         let route_id = self
-            .simple_routing_table
+            .routing_table
             .select_route_for_flow(packet_flow_id)
             .ok_or_else(|| {
                 let error = format!(
@@ -215,7 +215,7 @@ impl Processor {
 
         // Get next_hop
         let next_hop_id = self
-            .simple_routing_table
+            .routing_table
             .get_next_hop_by_route(route_id)
             .ok_or_else(|| {
                 let error = format!(
@@ -242,7 +242,7 @@ impl Processor {
         next_hop_id: usize,
         packet_flow_id: FlowId,
     ) -> Result<(), String> {
-        if next_hop_id == self.simple_routing_table.local_id {
+        if next_hop_id == self.routing_table.local_id {
             // Local delivery - no need to embed route_id for local packets
             debug!("Local delivery for flow {}", packet_flow_id);
             self.tun_writer.write_packet(packet).await;
@@ -266,7 +266,7 @@ impl Processor {
                 }
                 None => {
                     let error = format!(
-                        "CRITICAL: Next hop node {} is offline/unreachable for flow {} - connection may have been lost",
+                        "Next hop node {} is offline or unreachable for flow {}: connection may have been lost.",
                         next_hop_id, packet_flow_id
                     );
                     error!("{}", error);
@@ -317,7 +317,7 @@ impl Processor {
                 self.metrics_tx
                     .send((
                         packet.flow_id,
-                        self.simple_routing_table.local_id,
+                        self.routing_table.local_id,
                         packet.packet_size,
                     ))
                     .expect("Failed to send metrics to the metrics collector.");
