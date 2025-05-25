@@ -77,27 +77,27 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
         // Find the position of this node in the route path
         let idx = route.route.iter().position(|&x| x == node_id);
 
-        // Skip routes that don't include this node
-        if idx.is_none() {
+        let next_hop = if let Some(idx) = idx {
+            if idx == route.route.len() - 1 {
+                // The node is the destination - next hop is itself (local delivery)
+                route.route[idx] as usize
+            } else {
+                // The node is in the middle of the path - next hop is the next node
+                route.route[idx + 1] as usize
+            }
+        } else {
+            // Node not in route path - set next_hop to 0
             debug!(
-                "Node {} not in route path {:?}, skipping",
+                "Node {} is not in route {:?}, setting next_hop to 0.",
                 node_id, route.route
             );
-            continue;
-        }
 
-        let idx = idx.unwrap();
-        let next_hop = if idx == route.route.len() - 1 {
-            // The node is the destination - next hop is itself (local delivery)
-            route.route[idx] as usize
-        } else {
-            // The node is in the middle of the path - next hop is the next node
-            route.route[idx + 1] as usize
+            0
         };
 
         debug!(
-            "Node {} found at position {} in route, next_hop: {}",
-            node_id, idx, next_hop
+            "Node {} is found in the route {:?}, setting the next_hop to {}.",
+            node_id, route.route, next_hop
         );
 
         // Send route endpoints for dataplane's direction indexing
