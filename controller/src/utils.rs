@@ -31,7 +31,6 @@ pub fn build_startup_message(
     node_id: usize,
     virtual_addr: [u8; 4],
     net_mask: [u8; 4],
-    session_id: [u8; 4],
     num_interfaces: usize,
     protocol: Protocol,
 ) -> ControllerToDataplane {
@@ -39,7 +38,6 @@ pub fn build_startup_message(
         node_id,
         addr: virtual_addr,
         net_mask,
-        session_id,
         num_interfaces,
         protocol,
     }

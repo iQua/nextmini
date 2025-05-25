@@ -138,10 +138,6 @@ impl Controller {
         self.context.clone()
     }
 
-    pub fn get_session_id(&self) -> [u8; 4] {
-        self.controller_configs.session_id
-    }
-
     pub fn get_protocol(&self) -> Protocol {
         self.controller_configs.protocol.clone()
     }
@@ -161,7 +157,6 @@ impl Controller {
         };
         let receiver = ControllerReceiver {
             shutdown_tx: self.shutdown_tx,
-            controller_configs: self.controller_configs,
             processor_manager: self.processor_manager,
             context: self.context,
             link_rate_limiters: self.link_rate_limiters,
@@ -174,7 +169,6 @@ impl Controller {
 
 pub struct ControllerReceiver {
     shutdown_tx: watch::Sender<bool>,
-    controller_configs: ControllerConfigs,
     processor_manager: Arc<RwLock<ProcessorManager>>,
     context: Context,
     link_rate_limiters: Arc<RwLock<RateLimiterMap>>,
@@ -293,9 +287,8 @@ impl ControllerReceiver {
             .as_str()
             .expect("Invalid control message: expected to contain the field 'addr'");
         let local_id = self.context.local_id;
-        let session_id = self.controller_configs.session_id;
 
-        let stream = protocols_client::connect_tcp_node(local_id, addr, node_id, &session_id).await;
+        let stream = protocols_client::connect_tcp_node(local_id, addr, node_id).await;
         self.context.add_tcp_node(node_id, stream).await;
     }
 
@@ -320,10 +313,8 @@ impl ControllerReceiver {
             .as_str()
             .expect("Invalid control message: expected to contain the field 'addr'");
         let local_id = self.context.local_id;
-        let session_id = self.controller_configs.session_id;
 
-        let stream =
-            protocols_client::connect_quic_node(local_id, addr, node_id, &session_id).await;
+        let stream = protocols_client::connect_quic_node(local_id, addr, node_id).await;
         self.context.add_quic_node(node_id, stream).await;
     }
 }

@@ -40,7 +40,6 @@ fn main() {
 
             // starts the protocol servers to accept inter-node connections
             start_protocols_server(
-                controller.get_session_id(),
                 controller.get_protocol(),
                 configs.clone(),
                 controller.get_context(),

@@ -139,9 +139,6 @@ pub struct LocalConfigs {
 /// Configuration options for the controller
 #[derive(Clone)]
 pub struct ControllerConfigs {
-    /// The session ID
-    pub session_id: [u8; 4],
-
     /// The node ID
     pub node_id: usize,
 
@@ -169,13 +166,11 @@ impl ControllerConfigs {
             node_id,
             addr,
             net_mask,
-            session_id,
             num_interfaces,
             protocol,
         } = startup_message
         {
             ControllerConfigs {
-                session_id,
                 node_id,
                 strato_address: (addr[0], addr[1], addr[2], addr[3]),
                 strato_mask: (net_mask[0], net_mask[1], net_mask[2], net_mask[3]),

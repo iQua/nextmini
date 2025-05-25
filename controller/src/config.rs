@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{error, info};
 
 use nextmini_messages::Protocol;
 
@@ -47,10 +47,6 @@ pub struct LinkRate {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
-    /// The session ID as a vector of four bytes
-    #[serde(default = "default_session_id")]
-    pub session_id: [u8; 4],
-
     /// The port to listen on
     #[serde(default = "default_port")]
     pub port: u16,
@@ -102,11 +98,6 @@ pub struct Config {
 }
 
 // Default values if they are missing from the configuration file
-
-/// The default session ID, as a vector of four bytes
-fn default_session_id() -> [u8; 4] {
-    [1, 2, 3, 4]
-}
 
 /// The default port number to listen on
 fn default_port() -> u16 {
@@ -162,7 +153,7 @@ pub fn get_config(filename: &str) -> Config {
                     config
                 }
                 Err(e) => {
-                    info!(
+                    error!(
                         "Error parsing TOML config file: {}. Using the default configuration.",
                         e
                     );
@@ -170,7 +161,7 @@ pub fn get_config(filename: &str) -> Config {
                 }
             },
             Err(e) => {
-                info!(
+                error!(
                     "Error reading config file: {}. Using the default configuration.",
                     e
                 );
@@ -186,7 +177,6 @@ pub fn get_config(filename: &str) -> Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            session_id: default_session_id(),
             port: default_port(),
             base_ipv4_addr: default_base_ipv4_addr(),
             ipv4_net_mask: default_ipv4_net_mask(),

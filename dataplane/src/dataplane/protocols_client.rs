@@ -9,12 +9,7 @@ use tracing::info;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::{Client, client::Connect};
 
-pub async fn connect_tcp_node(
-    local_id: usize,
-    addr: &str,
-    node_id: usize,
-    session_id: &[u8; 4],
-) -> TcpStream {
+pub async fn connect_tcp_node(local_id: usize, addr: &str, node_id: usize) -> TcpStream {
     let mut retry_count = 0;
     const MAX_RETRY: usize = 10;
     let mut delay = Duration::from_secs(1);
@@ -23,19 +18,17 @@ pub async fn connect_tcp_node(
         match TcpStream::connect(addr).await {
             Ok(mut stream) => {
                 stream
-                    .write_all(session_id)
-                    .await
-                    .expect("Failed to send session id to the node");
-                stream
                     .write_all(&local_id.to_be_bytes())
                     .await
                     .expect("Failed to send local node id to the node");
-                info!("Connected to node {node_id} with TCP.");
+                info!("Connected to node {} with TCP.", node_id);
                 return stream;
             }
             Err(e) => {
                 info!(
-                    "Failed to connect to node addr: {addr}, error: {e}, retrying in {}s",
+                    "Failed to connect to node addr: {}, error: {}, retrying in {}s",
+                    addr,
+                    e,
                     delay.as_secs()
                 );
                 tokio::time::sleep(delay).await;
@@ -49,12 +42,7 @@ pub async fn connect_tcp_node(
     }
 }
 
-pub async fn connect_quic_node(
-    local_id: usize,
-    addr: &str,
-    node_id: usize,
-    session_id: &[u8; 4],
-) -> BidirectionalStream {
+pub async fn connect_quic_node(local_id: usize, addr: &str, node_id: usize) -> BidirectionalStream {
     let client = Client::builder()
         .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
         .expect("Failed to set TLS configuration")
@@ -88,7 +76,10 @@ pub async fn connect_quic_node(
         retry_count += 1;
 
         if retry_count >= MAX_RETRY {
-            panic!("Maximum retry reached to establish a QUIC connection to {addr}. Aborting.");
+            panic!(
+                "Maximum retry reached to establish a QUIC connection to {}. Aborting.",
+                addr
+            );
         }
     };
 
@@ -97,18 +88,14 @@ pub async fn connect_quic_node(
         .await
         .expect("Failed to establish handshake stream");
 
-    print!("Connecting to node {node_id} with QUIC...");
+    info!("Connecting to node {} with QUIC...", node_id);
 
-    stream
-        .send(Bytes::copy_from_slice(session_id))
-        .await
-        .expect("Failed to send session id to the node");
     stream
         .send(Bytes::copy_from_slice(&local_id.to_be_bytes()))
         .await
         .expect("Failed to send local node id to the node");
 
-    info!("connected.");
+    info!("Connected to node {}.", node_id);
 
     stream
 }
