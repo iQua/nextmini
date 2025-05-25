@@ -1,3 +1,2 @@
 private_network_interface = "eth0"
 private_network_name = "net1"
-public_network_addr = "172.0.0.1" 

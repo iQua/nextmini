@@ -92,7 +92,7 @@ pub struct LocalConfigs {
     #[arg(long)]
     pub private_network_addr: String,
 
-    /// The address of the local network interface touse for communciating with nodes from a different subnet.
+    /// The address of the network interface to use for communciating with nodes over the public Internet.
     #[default("".to_string())]
     #[arg(long)]
     pub public_network_addr: String,
