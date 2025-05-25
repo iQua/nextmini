@@ -1,4 +1,4 @@
 
-[routes_preset]
+[topology]
 type = "full_mesh"
 n_nodes = 32
