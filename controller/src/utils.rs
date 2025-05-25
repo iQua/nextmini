@@ -1,5 +1,5 @@
 /// Implements utility functions for the controller.
-use nextmini_messages::{ControllerToDataplane, Protocol, SimpleRouteEntry};
+use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry};
 
 use crate::models::Route;
 use tracing::{debug, info};
@@ -65,7 +65,7 @@ pub fn build_add_node_message(
 /// Dataplane handles flow_id -> route_id mapping autonomously.
 /// Only processes routes that include the current node.
 pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<ControllerToDataplane> {
-    let mut route_entries: Vec<SimpleRouteEntry> = Vec::new();
+    let mut route_entries: Vec<RoutingTableEntry> = Vec::new();
 
     debug!(
         "Building routes for node {}, total routes to process: {}",
@@ -114,7 +114,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             src_node_id, dst_node_id
         );
 
-        route_entries.push(SimpleRouteEntry {
+        route_entries.push(RoutingTableEntry {
             route_id: route.route_id as usize,
             next_hop,
             src_node_id,

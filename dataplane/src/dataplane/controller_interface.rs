@@ -12,7 +12,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
-use tracing::{debug, info};
+use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
@@ -45,12 +45,12 @@ impl Controller {
             match connect_async(url.as_str()).await {
                 Ok((ws, _)) => {
                     ws_stream = ws;
-                    info!("WebSocket handshake has been successfully completed");
+                    info!("WebSocket handshake has been successfully completed.");
                     break;
                 }
                 Err(e) => {
-                    info!("Failed to connect to controller: {}. Retrying...", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    info!("Failed to connect to the controller: {}. Retrying...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 }
             }
         }
@@ -65,6 +65,7 @@ impl Controller {
                 + &configs.public_network_port.clone(),
             node_id: configs.node_id.parse().ok(),
         };
+
         ws_stream
             .send(Message::binary(rmp_serde::to_vec(&startup_msg).unwrap()))
             .await
@@ -197,13 +198,11 @@ impl ControllerReceiver {
                     self.process_control_msg(ctrl_msg).await;
                 }
                 Message::Pong(_) => {
-                    // received a pong message to keep the connection alive. Do nothing.
+                    // received a ping message to keep the connection alive. Do nothing.
                     continue;
                 }
                 _ => {
-                    info!(
-                        "Received a message that is not a binary or a ping message. There may be something wrong."
-                    );
+                    error!("Received a message that is not a binary or a ping message.");
                 }
             };
         }
@@ -252,15 +251,11 @@ impl ControllerReceiver {
                 }
             }
             ControllerToDataplane::InstallRoutes { routes } => {
-                info!("Installing simplified routes..");
-                debug!(
-                    "ControllerInterface: Received {} routes to install",
-                    routes.len()
-                );
+                info!("Installing {} routes.", routes.len());
 
                 for route in &routes {
-                    debug!(
-                        "ControllerInterface: Route {} -> next_hop {}",
+                    info!(
+                        "Route id {}: the next hop is {}.",
                         route.route_id, route.next_hop
                     );
                 }
@@ -271,10 +266,9 @@ impl ControllerReceiver {
                     .update_simple_routes(routes)
                     .await;
 
-                debug!("ControllerInterface: Route installation completed");
-                info!("Simplified routes installed.");
+                info!("All routes installed.");
             }
-            _ => info!("Received unsupported message type"),
+            _ => error!("Received unsupported message type."),
         }
     }
 

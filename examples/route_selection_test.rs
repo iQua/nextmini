@@ -12,7 +12,7 @@ pub struct Route {
 }
 
 #[derive(Clone, Debug)]
-pub struct SimpleRouteEntry {
+pub struct RoutingTableEntry {
     pub route_id: usize,
     pub next_hop: usize,
     pub src_node_id: usize,
@@ -55,7 +55,7 @@ fn generate_full_mesh_routes(n_nodes: usize, start_route_id: usize) -> Vec<Route
 }
 
 /// Controller logic: compute route_id -> next_hop for a specific node
-fn build_routes_for_node(routes: Vec<Route>, node_id: usize) -> Vec<SimpleRouteEntry> {
+fn build_routes_for_node(routes: Vec<Route>, node_id: usize) -> Vec<RoutingTableEntry> {
     let mut route_entries = Vec::new();
 
     for route in routes {
@@ -66,7 +66,7 @@ fn build_routes_for_node(routes: Vec<Route>, node_id: usize) -> Vec<SimpleRouteE
                 route.path[idx + 1] // Next hop
             };
 
-            route_entries.push(SimpleRouteEntry {
+            route_entries.push(RoutingTableEntry {
                 route_id: route.route_id,
                 next_hop,
                 src_node_id: route.path[0],
@@ -97,7 +97,7 @@ impl TestRoutingTable {
         }
     }
 
-    pub fn install_routes(&mut self, routes: Vec<SimpleRouteEntry>) {
+    pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         self.route_next_hop.clear();
         self.direction_routes.clear();
         self.flow_route_cache.clear();

@@ -68,26 +68,26 @@ Note: Custom routes `[1, 2]` and `[2, 1]` overlap with preset topology routes, s
 ControllerToDataplane::InstallRoutes {
     routes: vec![
         // Preset routes (route_id 0-11)
-        SimpleRouteEntry { route_id: 0,  next_hop: 2, src_node_id: 1, dst_node_id: 2 },  // [1,2]
-        SimpleRouteEntry { route_id: 1,  next_hop: 3, src_node_id: 1, dst_node_id: 3 },  // [1,3]
-        SimpleRouteEntry { route_id: 2,  next_hop: 4, src_node_id: 1, dst_node_id: 4 },  // [1,4]
-        SimpleRouteEntry { route_id: 3,  next_hop: 1, src_node_id: 2, dst_node_id: 1 },  // [2,1] - local delivery
-        SimpleRouteEntry { route_id: 4,  next_hop: 0, src_node_id: 2, dst_node_id: 3 },  // [2,3] - not via node 1
-        SimpleRouteEntry { route_id: 5,  next_hop: 0, src_node_id: 2, dst_node_id: 4 },  // [2,4] - not via node 1
-        SimpleRouteEntry { route_id: 6,  next_hop: 1, src_node_id: 3, dst_node_id: 1 },  // [3,1] - local delivery
-        SimpleRouteEntry { route_id: 7,  next_hop: 0, src_node_id: 3, dst_node_id: 2 },  // [3,2] - not via node 1
-        SimpleRouteEntry { route_id: 8,  next_hop: 0, src_node_id: 3, dst_node_id: 4 },  // [3,4] - not via node 1
-        SimpleRouteEntry { route_id: 9,  next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,1] - local delivery
-        SimpleRouteEntry { route_id: 10, next_hop: 0, src_node_id: 4, dst_node_id: 2 },  // [4,2] - not via node 1
-        SimpleRouteEntry { route_id: 11, next_hop: 0, src_node_id: 4, dst_node_id: 3 },  // [4,3] - not via node 1
+        RoutingTableEntry { route_id: 0,  next_hop: 2, src_node_id: 1, dst_node_id: 2 },  // [1,2]
+        RoutingTableEntry { route_id: 1,  next_hop: 3, src_node_id: 1, dst_node_id: 3 },  // [1,3]
+        RoutingTableEntry { route_id: 2,  next_hop: 4, src_node_id: 1, dst_node_id: 4 },  // [1,4]
+        RoutingTableEntry { route_id: 3,  next_hop: 1, src_node_id: 2, dst_node_id: 1 },  // [2,1] - local delivery
+        RoutingTableEntry { route_id: 4,  next_hop: 0, src_node_id: 2, dst_node_id: 3 },  // [2,3] - not via node 1
+        RoutingTableEntry { route_id: 5,  next_hop: 0, src_node_id: 2, dst_node_id: 4 },  // [2,4] - not via node 1
+        RoutingTableEntry { route_id: 6,  next_hop: 1, src_node_id: 3, dst_node_id: 1 },  // [3,1] - local delivery
+        RoutingTableEntry { route_id: 7,  next_hop: 0, src_node_id: 3, dst_node_id: 2 },  // [3,2] - not via node 1
+        RoutingTableEntry { route_id: 8,  next_hop: 0, src_node_id: 3, dst_node_id: 4 },  // [3,4] - not via node 1
+        RoutingTableEntry { route_id: 9,  next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,1] - local delivery
+        RoutingTableEntry { route_id: 10, next_hop: 0, src_node_id: 4, dst_node_id: 2 },  // [4,2] - not via node 1
+        RoutingTableEntry { route_id: 11, next_hop: 0, src_node_id: 4, dst_node_id: 3 },  // [4,3] - not via node 1
 
         // Custom routes (route_id 12-17)
-        SimpleRouteEntry { route_id: 12, next_hop: 2, src_node_id: 1, dst_node_id: 4 },  // [1,2,3,4]
-        SimpleRouteEntry { route_id: 13, next_hop: 3, src_node_id: 1, dst_node_id: 4 },  // [1,3,2,4]
-        SimpleRouteEntry { route_id: 14, next_hop: 3, src_node_id: 1, dst_node_id: 4 },  // [1,3,4]
-        SimpleRouteEntry { route_id: 15, next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,3,2,1] - local delivery
-        SimpleRouteEntry { route_id: 16, next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,2,3,1] - local delivery
-        SimpleRouteEntry { route_id: 17, next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,3,1] - local delivery
+        RoutingTableEntry { route_id: 12, next_hop: 2, src_node_id: 1, dst_node_id: 4 },  // [1,2,3,4]
+        RoutingTableEntry { route_id: 13, next_hop: 3, src_node_id: 1, dst_node_id: 4 },  // [1,3,2,4]
+        RoutingTableEntry { route_id: 14, next_hop: 3, src_node_id: 1, dst_node_id: 4 },  // [1,3,4]
+        RoutingTableEntry { route_id: 15, next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,3,2,1] - local delivery
+        RoutingTableEntry { route_id: 16, next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,2,3,1] - local delivery
+        RoutingTableEntry { route_id: 17, next_hop: 1, src_node_id: 4, dst_node_id: 1 },  // [4,3,1] - local delivery
     ]
 }
 ```

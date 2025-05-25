@@ -15,9 +15,9 @@ use crate::dataplane::NodeId;
 use crate::dataplane::local_interface::TunWriter;
 use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
-use crate::dataplane::routes::SimpleRoutingTable;
+use crate::dataplane::routes::RoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
-use nextmini_messages::SimpleRouteEntry;
+use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, error, info};
 
 pub struct ProcessorManager {
@@ -25,13 +25,13 @@ pub struct ProcessorManager {
     proc_handles: VecDeque<tokio::task::JoinHandle<()>>,
     proc_shutdown_flags: VecDeque<Arc<AtomicBool>>,
     receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
-    pub simple_routing_table: SimpleRoutingTable,
+    pub simple_routing_table: RoutingTable,
 }
 
 impl ProcessorManager {
     pub fn new(context: Context, mut receiver_rxs: Vec<mpsc::Receiver<Packet>>) -> Self {
         let mut rxs = VecDeque::new();
-        let simple_routing_table = SimpleRoutingTable::new(context.local_id);
+        let simple_routing_table = RoutingTable::new(context.local_id);
         for _ in 0..receiver_rxs.len() {
             let rx = receiver_rxs.pop().unwrap();
             rxs.push_back(Arc::new(RwLock::new(rx)));
@@ -45,11 +45,11 @@ impl ProcessorManager {
         }
     }
 
-    pub async fn update_simple_routes(&mut self, routes: Vec<SimpleRouteEntry>) {
+    pub async fn update_simple_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         // Set base IPv4 address for node ID calculation (should be configurable)
         self.simple_routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
 
-        // Install routes directly using SimpleRouteEntry
+        // Install routes directly using RoutingTableEntry
         self.simple_routing_table.install_routes(routes);
         self.swap_processors().await;
     }
@@ -116,7 +116,7 @@ pub struct Processor {
     receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
 
     // The simplified routing table
-    simple_routing_table: SimpleRoutingTable,
+    simple_routing_table: RoutingTable,
 
     // The senders that send packets to the network
     senders: FxHashMap<NodeId, NodeSender>,
@@ -134,7 +134,7 @@ pub struct Processor {
 impl Processor {
     pub fn new(
         receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
-        simple_routing_table: SimpleRoutingTable,
+        simple_routing_table: RoutingTable,
         senders: FxHashMap<NodeId, NodeSender>,
         tun_writer: TunWriter,
         should_shutdown: Arc<AtomicBool>,
@@ -198,9 +198,14 @@ impl Processor {
         debug!("Processing new packet for flow {}", packet_flow_id);
 
         // Select route_id for new flow at source node
-        let route_id = self.simple_routing_table.select_route_for_flow(packet_flow_id)
+        let route_id = self
+            .simple_routing_table
+            .select_route_for_flow(packet_flow_id)
             .ok_or_else(|| {
-                let error = format!("CRITICAL: No route found for flow {} - routing table may be empty or misconfigured", packet_flow_id);
+                let error = format!(
+                    "No route is found for flow {}: routing table may be empty or misconfigured.",
+                    packet_flow_id
+                );
                 error!("{}", error);
                 error
             })?;
@@ -209,15 +214,20 @@ impl Processor {
         packet.set_route_id(route_id);
 
         // Get next_hop
-        let next_hop_id = self.simple_routing_table.get_next_hop_by_route(route_id)
+        let next_hop_id = self
+            .simple_routing_table
+            .get_next_hop_by_route(route_id)
             .ok_or_else(|| {
-                let error = format!("CRITICAL: No next_hop found for route_id {} on flow {} - routing inconsistency detected", route_id, packet_flow_id);
+                let error = format!(
+                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
+                    route_id, packet_flow_id
+                );
                 error!("{}", error);
                 error
             })?;
 
-        info!(
-            "DEBUG: New packet flow {} selected route_id {} -> next_hop {}",
+        debug!(
+            "New packet flow {} selected route_id {} -> next_hop {}.",
             packet_flow_id, route_id, next_hop_id
         );
 

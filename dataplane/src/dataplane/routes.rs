@@ -2,7 +2,7 @@ use crate::dataplane::FlowId;
 use crate::dataplane::NodeId;
 use ahash::AHashMap;
 use jumphash::JumpHasher;
-use nextmini_messages::SimpleRouteEntry;
+use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
 use tracing::debug;
 
@@ -18,7 +18,7 @@ pub struct EnhancedRouteEntry {
 /// Optimized routing table using direct route_id mapping
 /// Controller only sends route-level next-hop info, dataplane manages flow->route mapping
 #[derive(Clone)]
-pub struct SimpleRoutingTable {
+pub struct RoutingTable {
     /// Direct route_id -> next_hop mapping (O(1) lookup)
     route_next_hop: HashMap<usize, NodeId>,
 
@@ -38,7 +38,7 @@ pub struct SimpleRoutingTable {
     jump_hasher: JumpHasher,
 }
 
-impl SimpleRoutingTable {
+impl RoutingTable {
     pub fn new(local_id: NodeId) -> Self {
         Self {
             route_next_hop: HashMap::new(),
@@ -57,7 +57,7 @@ impl SimpleRoutingTable {
 
     /// Install routes using route_id -> next_hop mapping with direction indexing
     /// Controller only needs to send route-level next-hop info
-    pub fn install_routes(&mut self, routes: Vec<SimpleRouteEntry>) {
+    pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         debug!(
             "RoutingTable: Installing {} routes for local_id {}",
             routes.len(),
@@ -99,10 +99,10 @@ impl SimpleRoutingTable {
     /// Legacy method for enhanced routes - now just calls install_routes
     #[allow(dead_code)]
     pub fn install_routes_enhanced(&mut self, routes: Vec<EnhancedRouteEntry>) {
-        // Convert EnhancedRouteEntry to SimpleRouteEntry for consistency
-        let simple_routes: Vec<SimpleRouteEntry> = routes
+        // Convert EnhancedRouteEntry to RoutingTableEntry for consistency
+        let simple_routes: Vec<RoutingTableEntry> = routes
             .into_iter()
-            .map(|route| SimpleRouteEntry {
+            .map(|route| RoutingTableEntry {
                 route_id: route.route_id,
                 next_hop: route.next_hop,
                 src_node_id: route.src_node_id,
@@ -240,7 +240,7 @@ impl SimpleRoutingTable {
 
 #[cfg(test)]
 mod tests {
-    use super::*; // Imports SimpleRoutingTable, SimpleRouteEntry, NodeId, FlowId
+    use super::*; // Imports RoutingTable, RoutingTableEntry, NodeId, FlowId
 
     // Assumes base IP 10.0.0.0 for IPs like 10.0.0.src_octet and 10.0.0.dst_octet
     fn create_flow_id(
@@ -262,15 +262,15 @@ mod tests {
 
     #[test]
     fn test_install_multiple_routes_different_directions() {
-        let mut table = SimpleRoutingTable::new(1);
+        let mut table = RoutingTable::new(1);
         let routes = vec![
-            SimpleRouteEntry {
+            RoutingTableEntry {
                 route_id: 100,
                 next_hop: 2,
                 src_node_id: 1,
                 dst_node_id: 3,
             },
-            SimpleRouteEntry {
+            RoutingTableEntry {
                 route_id: 101,
                 next_hop: 4,
                 src_node_id: 1,
@@ -289,15 +289,15 @@ mod tests {
 
     #[test]
     fn test_install_multiple_routes_same_direction() {
-        let mut table = SimpleRoutingTable::new(1);
+        let mut table = RoutingTable::new(1);
         let routes = vec![
-            SimpleRouteEntry {
+            RoutingTableEntry {
                 route_id: 100,
                 next_hop: 2,
                 src_node_id: 1,
                 dst_node_id: 3,
             },
-            SimpleRouteEntry {
+            RoutingTableEntry {
                 route_id: 101,
                 next_hop: 4,
                 src_node_id: 1,
@@ -315,8 +315,8 @@ mod tests {
 
     #[test]
     fn test_install_route_with_zero_next_hop() {
-        let mut table = SimpleRoutingTable::new(1);
-        let routes = vec![SimpleRouteEntry {
+        let mut table = RoutingTable::new(1);
+        let routes = vec![RoutingTableEntry {
             route_id: 100,
             next_hop: 0, // Invalid next hop
             src_node_id: 1,
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn test_extract_src_dst_from_flow() {
-        let table = SimpleRoutingTable::new(1); // base_ipv4_addr is [10,0,0,0] by default
+        let table = RoutingTable::new(1); // base_ipv4_addr is [10,0,0,0] by default
         let flow_id = create_flow_id(5, 7, 12345, 80, 6); // 10.0.0.5 -> 10.0.0.7
         let (src_node, dst_node) = table.extract_src_dst_from_flow(flow_id);
         assert_eq!(src_node, 5, "Source node ID mismatch");
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_jump_hash_consistency() {
-        let table = SimpleRoutingTable::new(1);
+        let table = RoutingTable::new(1);
         let flow_id: FlowId = 12345678901234567890;
         let num_buckets = 10;
         let hash1 = table.jump_hash(flow_id, num_buckets);
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn test_jump_hash_range() {
-        let table = SimpleRoutingTable::new(1);
+        let table = RoutingTable::new(1);
         let flow_id: FlowId = 9876543210987654321;
         let num_buckets = 5;
         for i in 0..100 {
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_jump_hash_single_bucket() {
-        let table = SimpleRoutingTable::new(1);
+        let table = RoutingTable::new(1);
         let flow_id: FlowId = 11112222333344445555;
         let num_buckets = 1;
         let hash_val = table.jump_hash(flow_id, num_buckets);
@@ -377,7 +377,7 @@ mod tests {
     // Basic distribution check - non-exhaustive sanity check
     #[test]
     fn test_jump_hash_distribution_basic() {
-        let table = SimpleRoutingTable::new(1);
+        let table = RoutingTable::new(1);
         let num_buckets = 10;
         let mut results = std::collections::HashSet::new();
         // Expect that with a few different flow_ids, we might hit different buckets.
@@ -397,17 +397,17 @@ mod tests {
     // This test may be changed if reintallation will not clear the cache.
     #[test]
     fn test_next_hop_cache_reintall_routes() {
-        let mut table = SimpleRoutingTable::new(1);
+        let mut table = RoutingTable::new(1);
         table.set_base_ipv4_addr([10, 0, 0, 0]);
 
         // add two routes for the same direction [5,7] -> 2 and [5,7] -> 3
-        let route1 = vec![SimpleRouteEntry {
+        let route1 = vec![RoutingTableEntry {
             route_id: 100,
             next_hop: 2,
             src_node_id: 5,
             dst_node_id: 7,
         }];
-        let route2 = vec![SimpleRouteEntry {
+        let route2 = vec![RoutingTableEntry {
             route_id: 101,
             next_hop: 3,
             src_node_id: 5,
@@ -427,9 +427,9 @@ mod tests {
 
     #[test]
     fn test_next_hop_cache_hit() {
-        let mut table = SimpleRoutingTable::new(1);
+        let mut table = RoutingTable::new(1);
         table.set_base_ipv4_addr([10, 0, 0, 0]);
-        let routes = vec![SimpleRouteEntry {
+        let routes = vec![RoutingTableEntry {
             route_id: 100,
             next_hop: 2,
             src_node_id: 5,
@@ -447,16 +447,16 @@ mod tests {
 
     #[test]
     fn test_next_hop_cache_miss_with_multiple_routes() {
-        let mut table = SimpleRoutingTable::new(1);
+        let mut table = RoutingTable::new(1);
         table.set_base_ipv4_addr([10, 0, 0, 0]);
         let routes = vec![
-            SimpleRouteEntry {
+            RoutingTableEntry {
                 route_id: 100,
                 next_hop: 2,
                 src_node_id: 5,
                 dst_node_id: 7,
             },
-            SimpleRouteEntry {
+            RoutingTableEntry {
                 route_id: 101,
                 next_hop: 3,
                 src_node_id: 5,
@@ -489,9 +489,9 @@ mod tests {
 
     #[test]
     fn test_next_hop_cache_no_route() {
-        let mut table = SimpleRoutingTable::new(1);
+        let mut table = RoutingTable::new(1);
         table.set_base_ipv4_addr([10, 0, 0, 0]);
-        let routes = vec![SimpleRouteEntry {
+        let routes = vec![RoutingTableEntry {
             route_id: 100,
             next_hop: 2,
             src_node_id: 5,
