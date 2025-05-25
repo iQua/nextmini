@@ -18,7 +18,7 @@ use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::RoutingTable;
 use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
 use nextmini_messages::RoutingTableEntry;
-use tracing::{debug, error, info};
+use tracing::{debug, error, warn};
 
 pub struct ProcessorManager {
     context: Context,
@@ -178,7 +178,8 @@ impl Processor {
                 packet_flow_id
             );
 
-            ()
+            // drops the packet without forwarding it
+            return Err("No route can be selected.".to_string());
         }
 
         // Route the packet to its next hop
@@ -270,7 +271,7 @@ impl Processor {
 
             // Process the batch of packets
             for packet in packets {
-                // Report metrics for the packet (moved here as it's for non-local packets or packets to be routed)
+                // Report metrics for the packet
                 self.metrics_tx
                     .send((
                         packet.flow_id,
@@ -279,12 +280,9 @@ impl Processor {
                     ))
                     .expect("Failed to send metrics to the metrics collector.");
 
-                // New packet processing logic: distinguish between source and intermediate node
-                let next_hop_result = self.process_packet(packet).await;
+                if let Err(error_msg) = self.process_packet(packet).await {
+                    debug!("Packet dropped with error: {}.", error_msg);
 
-                if let Err(error_msg) = next_hop_result {
-                    error!("Packet processing failed - {}", error_msg);
-                    // Count dropped packets for debugging
                     continue;
                 }
             }
@@ -332,16 +330,17 @@ impl SenderLoadBalancer {
         if rand::random::<f32>() * 0.75 + 0.25
             < 1.0 - (tx.capacity() as f32 / INTERNAL_Q_SIZE as f32)
         {
-            info!("WARNING: Random early drop for flow {}", flow_id,);
+            warn!("Random early drop for flow {}", flow_id,);
             return;
         };
 
         match tx.try_send(packet) {
             Err(e) => {
-                info!(
-                    "ERROR: Failed to send packet for flow {} to processor {}: channel full or closed - {:?}",
+                error!(
+                    "Failed to send packet for flow {} to processor {}. Error: {:?}.",
                     flow_id, proc_id, e
                 );
+
                 return;
             }
             Ok(_) => {
