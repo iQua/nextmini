@@ -150,7 +150,10 @@ impl Processor {
     }
 
     /// Unified packet processing method
-    async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
+    async fn process_packet(&mut self, mut packet: Packet) -> Result<(), String> {
+        // First, try to extract route_id from IP options if packet came from network
+        packet.extract_route_id_from_packet();
+        
         if packet.has_route_id() {
             // Case 1: Packet already has route_id (forwarded from another node)
             self.process_forwarded_packet(packet).await
@@ -200,14 +203,17 @@ impl Processor {
     }
 
     /// Unified packet sending method
-    async fn send_packet_to_next_hop(&mut self, packet: Packet, next_hop_id: usize, packet_flow_id: FlowId) -> Result<(), String> {
+    async fn send_packet_to_next_hop(&mut self, mut packet: Packet, next_hop_id: usize, packet_flow_id: FlowId) -> Result<(), String> {
         if next_hop_id == self.simple_routing_table.local_id {
-            // Local delivery
+            // Local delivery - no need to embed route_id for local packets
             println!("DEBUG: Local delivery for flow {}", packet_flow_id);
             self.tun_writer.write_packet(packet).await;
             Ok(())
         } else {
-            // Forward to next hop
+            // Forward to next hop - embed route_id into IP options before sending
+            packet.embed_route_id_to_packet();
+            println!("DEBUG: Forwarding packet with embedded route_id to next_hop {}", next_hop_id);
+            
             match self.senders.get_mut(&next_hop_id) {
                 Some(sender) => {
                     sender.send(packet).await;
