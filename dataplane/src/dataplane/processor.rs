@@ -162,14 +162,26 @@ impl Processor {
             .select_route_for_flow(packet_flow_id)
             .ok_or_else(|| {
                 let error = format!(
-                    "No route is found for flow {}: routing table may be empty or misconfigured.",
+                    "No route is found for flow {}: the routing table may be misconfigured.",
                     packet_flow_id
                 );
                 error!("{}", error);
+
                 error
             })?;
 
-        // Get next_hop
+        if route_id == 0 {
+            // no route can be possible as the flow ID is not valid (represented as a value of 0)
+            // perhaps a non-IPv4 packet?
+            debug!(
+                "No route can be selected for a flow ID of {}.",
+                packet_flow_id
+            );
+
+            ()
+        }
+
+        // Route the packet to its next hop
         let next_hop_id = self
             .routing_table
             .get_next_hop_by_route(route_id)
@@ -179,6 +191,7 @@ impl Processor {
                     route_id, packet_flow_id
                 );
                 error!("{}", error);
+
                 error
             })?;
 

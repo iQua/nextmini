@@ -78,19 +78,9 @@ impl RoutingTable {
         let src_ip = ((flow_id >> 96) & 0xFFFFFFFF) as u32;
         let dst_ip = ((flow_id >> 64) & 0xFFFFFFFF) as u32;
 
-        println!(
-            "Before ip_to_node_id: source IP: {}, destination IP: {}",
-            src_ip, dst_ip
-        );
-
         // converts IP addresses to node IDs
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
-
-        println!(
-            "After ip_to_node_id: source IP: {}, destination IP: {}",
-            src_ip, dst_ip
-        );
 
         (src_node_id, dst_node_id)
     }
@@ -112,6 +102,11 @@ impl RoutingTable {
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
+        if flow_id == 0 {
+            // The flow ID cannot be successfully extracted, no routing is possible
+            return Some(0);
+        }
+
         // obtains the source-destination pair as the key for the available routes
         let src_dst_pair = self.extract_src_dst_from_flow(flow_id);
 

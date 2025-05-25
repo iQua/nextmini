@@ -1,8 +1,5 @@
-use std::io::Cursor;
-
 use crate::dataplane::{FlowId, PacketBuf};
-use byteorder::{BigEndian, ReadBytesExt};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Debug)]
 pub struct Packet {
@@ -28,7 +25,7 @@ impl Packet {
         }
 
         if packet_size > buf.len() {
-            warn!(
+            error!(
                 "Packet size {} exceeds the buffer length {}, using the buffer length.",
                 packet_size,
                 buf.len()
@@ -44,11 +41,7 @@ impl Packet {
                 packet_size
             );
 
-            // uses the source and destination addresses as the flow ID
-            let mut cursor = Cursor::new(buf.get(12..20).unwrap_or(&[0; 8]));
-            let flow_id = cursor.read_u64::<BigEndian>().unwrap_or(0);
-
-            return (flow_id as u128) << 0xFFFFFFFFu64;
+            return 0;
         }
 
         // extracts source and destination IP addresses
