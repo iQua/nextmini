@@ -211,7 +211,7 @@ impl Processor {
             .await
     }
 
-    /// Unified packet sending method
+    /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
     async fn send_packet_to_next_hop(
         &mut self,
         packet: Packet,
