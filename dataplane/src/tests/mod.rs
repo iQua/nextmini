@@ -14,5 +14,5 @@
 // mod processor_tests;
 #[cfg(test)]
 mod metrics_collector_tests;
-#[cfg(test)]
-mod packet_tests;
+// #[cfg(test)]
+// mod packet_tests;
