@@ -119,7 +119,7 @@ impl NodeReceiver {
 
             self.record_metrics(flow_id, n, metrics_tx.clone()).await;
 
-            self.tx.try_send(packet);
+            self.tx.send(packet).await;
         }
     }
 

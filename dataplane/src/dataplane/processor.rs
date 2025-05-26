@@ -10,7 +10,6 @@ use fxhash::FxHashMap;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
-use crate::dataplane::INTERNAL_Q_SIZE;
 use crate::dataplane::NodeId;
 use crate::dataplane::local_interface::TunWriter;
 use crate::dataplane::node_interface::NodeSender;
@@ -260,11 +259,11 @@ impl Processor {
                 let mut receiver = self.receiver_rx.write().await;
                 let mut batch = Vec::with_capacity(batch_size);
 
-                for i in 0..batch_size {
-                    if self.should_shutdown.load(Ordering::Relaxed) {
-                        return;
-                    }
+                if self.should_shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
 
+                for i in 0..batch_size {
                     // Wait for packets to be available
                     let packet = if i == 0 {
                         receiver
@@ -286,11 +285,6 @@ impl Processor {
             };
 
             // Process the batch of packets
-            let batch_size = packets.len();
-            if batch_size > 0 {
-                debug!("Processing batch of {} packets", batch_size);
-            }
-
             for packet in packets {
                 // Report metrics for the packet
                 self.metrics_tx
@@ -330,7 +324,7 @@ impl SenderLoadBalancer {
         }
     }
 
-    pub fn try_send(&mut self, packet: Packet) {
+    pub async fn send(&mut self, packet: Packet) {
         let flow_id = packet.flow_id; // Extract flow_id early to avoid borrow issues
         let proc_id;
 
@@ -347,15 +341,7 @@ impl SenderLoadBalancer {
             .get_mut(proc_id)
             .expect("Error: Trying to send to a processor but the channel does not exist.");
 
-        // Perform random early drop based on internal channel capacity
-        if rand::random::<f32>() * 0.75 + 0.25
-            < 1.0 - (tx.capacity() as f32 / INTERNAL_Q_SIZE as f32)
-        {
-            warn!("Random early drop for flow {}", flow_id,);
-            return;
-        };
-
-        if let Err(e) = tx.try_send(packet) {
+        if let Err(e) = tx.send(packet).await {
             error!(
                 "Failed to send packet for flow {} to processor {}. Error: {:?}.",
                 flow_id, proc_id, e

@@ -172,6 +172,10 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             config::PresetTopology::FullMesh => {
                 for src_node in 1..=n_nodes {
                     for dest_node in 1..=n_nodes {
+                        if src_node == dest_node {
+                            continue; // skips loopback routes
+                        }
+
                         let route_path = vec![src_node as i32, dest_node as i32];
 
                         let result = sqlx::query(
@@ -200,34 +204,6 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 }
             }
             config::PresetTopology::Ring => {
-                // adds loopback routes (self to self) within each node
-                for src_node in 1..=n_nodes {
-                    let route_path = vec![src_node as i32, src_node as i32];
-
-                    let result = sqlx::query(
-                        r#"
-                        INSERT INTO routes (src_node_id, dst_node_id, route)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
-                        RETURNING route_id
-                        "#,
-                    )
-                    .bind(src_node as i32)
-                    .bind(src_node as i32)
-                    .bind(&route_path)
-                    .fetch_optional(&pool)
-                    .await
-                    .expect("Failed to insert loopback route");
-
-                    if let Some(row) = result {
-                        let route_id: i32 = row.get("route_id");
-                        info!(
-                            "Created loopback route ID {} on node {}.",
-                            route_id, src_node
-                        );
-                    }
-                }
-
                 // adds links between neighbouring nodes on the ring
                 for src_node in 1..n_nodes {
                     let dest_node = src_node + 1;

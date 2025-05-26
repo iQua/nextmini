@@ -1,6 +1,7 @@
 use crate::dataplane::FlowId;
 use crate::dataplane::FlowIdExt;
 use crate::dataplane::NodeId;
+use futures::select;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
@@ -94,12 +95,6 @@ impl RoutingTable {
         node_id as usize
     }
 
-    /// Applies a deterministic consistent hash function using jump hash for load balancing.
-    /// The same flow ID always maps to the same route ID.
-    fn jump_hash(&self, flow_id: FlowId, num_buckets: usize) -> usize {
-        self.jump_hasher.slot(&flow_id, num_buckets as u32) as usize
-    }
-
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
@@ -114,13 +109,20 @@ impl RoutingTable {
         // gets the available routes for this source-destination pair
         let available_routes = self.available_routes.get(&src_dst_pair)?;
 
-        // Use jump hash to select among the available routes
-        let selected_route_id = if available_routes.len() == 1 {
-            available_routes[0]
-        } else {
-            let hash_result = self.jump_hash(flow_id, available_routes.len());
-            available_routes[hash_result]
-        };
+        let selected_index = (flow_id % available_routes.len() as u128) as usize;
+        let selected_route_id = available_routes[selected_index];
+
+        // // Use jump hash to select among the available routes
+        // let selected_route_id = if available_routes.len() == 1 {
+        //     available_routes[0]
+        // } else {
+        //     // Applies a deterministic consistent hash function using jump hash for load balancing;
+        //     // The same flow ID always maps to the same route ID.
+        //     let hash_result = self
+        //         .jump_hasher
+        //         .slot(&flow_id, available_routes.len() as u32);
+        //     available_routes[hash_result as usize]
+        // };
 
         debug!(
             "Route ID {} is selected for destination {}:{} from {} available routes.",

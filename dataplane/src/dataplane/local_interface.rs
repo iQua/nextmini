@@ -143,7 +143,7 @@ impl TunReader {
             }
 
             // Try to send packet to processor with error handling
-            self.senders.try_send(packet);
+            self.senders.send(packet).await;
         }
     }
 }
