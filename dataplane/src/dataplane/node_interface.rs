@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, RwLock, mpsc};
+use tracing::info;
 
 use s2n_quic::stream::BidirectionalStream;
 
@@ -16,7 +17,8 @@ use crate::dataplane::protocols_io::{
 use crate::dataplane::scheduler::SchedulingDiscipline;
 use crate::dataplane::scheduler::{Fifo, Scheduler};
 use crate::dataplane::utils::RateLimiter;
-use crate::dataplane::{INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
+use crate::dataplane::{FlowId, INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
+use tracing::error;
 
 pub fn create_tcp_node_interfaces(
     stream: TcpStream,
@@ -103,18 +105,32 @@ impl NodeReceiver {
             let mut buf = [0; RECEIVE_BUF_SIZE];
             let n = self.reader.recv(&mut buf).await;
 
+            // Skip empty or invalid packets to prevent downstream errors
+            if n == 0 {
+                info!(
+                    "WARNING: NodeReceiver from node {} received empty packet - connection may be closing",
+                    self.remote_node_id
+                );
+                continue;
+            }
+
             let packet = Packet::new(n, buf);
             let flow_id = packet.flow_id;
+
             self.record_metrics(flow_id, n, metrics_tx.clone()).await;
-            self.tx.try_send(packet);
+
+            self.tx.send(packet).await;
         }
     }
 
-    async fn record_metrics(&self, flow_id: u64, n_bytes: usize, metrics_tx: MetricsTx) {
-        // metrics reported are in the format of (flow_id, stream_id, node_id, n_bytes)
-        metrics_tx
-            .send((flow_id, (0, 0), self.remote_node_id, n_bytes))
-            .expect("Failed to send metrics");
+    async fn record_metrics(&self, flow_id: FlowId, n_bytes: usize, metrics_tx: MetricsTx) {
+        // metrics reported are in the format of (flow_id, node_id, n_bytes)
+        if let Err(e) = metrics_tx.send((flow_id, self.remote_node_id, n_bytes)) {
+            error!(
+                "Failed to send metrics for flow {:#x} from node {} ({} bytes): {:?} - metrics collector may be offline",
+                flow_id, self.remote_node_id, n_bytes, e
+            );
+        }
     }
 }
 

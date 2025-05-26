@@ -15,7 +15,7 @@ pub mod scheduler;
 pub mod utils;
 
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -34,38 +34,43 @@ const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 /// used throughout the dataplane implementation
 const INTERNAL_Q_SIZE: usize = 10000;
 
-/// The third element in the destination address is ignored since it determines the interface only.
-const FLOW_ID_PATH_MASK: u64 = 0xFFFFFFFF_FFFF00FF;
+/// The flow ID is a 128-bit integer, used to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16)
+/// + dst_port(16) + reserved(32)
+pub type FlowId = u128;
 
-/// The flow ID.
-pub type FlowId = u64;
-
-/// Defines the extension trait for extracting the source and destination IP addresses from FlowId
 pub trait FlowIdExt {
-    fn src_addr(&self) -> Ipv4Addr;
-    fn dest_addr(&self) -> Ipv4Addr;
+    fn src_ip(&self) -> std::net::Ipv4Addr;
+    fn dst_ip(&self) -> std::net::Ipv4Addr;
+    fn src_port(&self) -> u16;
+    fn dst_port(&self) -> u16;
 }
 
-/// Implements the trait for FlowId, which is of u64 type
-impl FlowIdExt for u64 {
-    fn src_addr(&self) -> Ipv4Addr {
-        // Extract upper 32 bits (source IP) by shifting right 32 bits
-        let src_u32 = (self >> 32) as u32;
-        Ipv4Addr::from(src_u32)
+impl FlowIdExt for FlowId {
+    fn src_ip(&self) -> std::net::Ipv4Addr {
+        // Extract source IP
+        let src_u32 = (self >> 96) as u32;
+        std::net::Ipv4Addr::from(src_u32)
     }
 
-    fn dest_addr(&self) -> Ipv4Addr {
-        // Extract lower 32 bits (destination IP) by masking with 0xFFFFFFFF
-        let dest_u32 = (self & 0xFFFFFFFF) as u32;
-        Ipv4Addr::from(dest_u32)
+    fn dst_ip(&self) -> std::net::Ipv4Addr {
+        // Extract destination IP
+        let dst_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
+        std::net::Ipv4Addr::from(dst_u32)
+    }
+
+    fn src_port(&self) -> u16 {
+        // Extract source port
+        ((self >> 48) & 0xFFFF) as u16
+    }
+
+    fn dst_port(&self) -> u16 {
+        // Extract destination port
+        ((self >> 32) & 0xFFFF) as u16
     }
 }
 
 /// The node ID.
 pub type NodeId = usize;
-
-/// The socket ID.
-pub type SocketId = (u16, u16);
 
 /// The packet buffer, used for receiving a packet from the network.
 type PacketBuf = [u8; RECEIVE_BUF_SIZE];

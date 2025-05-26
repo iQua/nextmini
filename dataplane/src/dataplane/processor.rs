@@ -10,21 +10,20 @@ use fxhash::FxHashMap;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
-use crate::dataplane::INTERNAL_Q_SIZE;
+use crate::dataplane::NodeId;
 use crate::dataplane::local_interface::TunWriter;
 use crate::dataplane::node_interface::NodeSender;
 use crate::dataplane::packet::Packet;
 use crate::dataplane::routes::RoutingTable;
-use crate::dataplane::{FlowId, context::Context, metrics::MetricsTx};
-use crate::dataplane::{NodeId, SocketId};
+use crate::dataplane::{FlowId, FlowIdExt, context::Context, metrics::MetricsTx};
+use nextmini_messages::RoutingTableEntry;
+use tracing::{debug, error, warn};
 
 pub struct ProcessorManager {
     context: Context,
     proc_handles: VecDeque<tokio::task::JoinHandle<()>>,
     proc_shutdown_flags: VecDeque<Arc<AtomicBool>>,
     receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
-    stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-    stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
     pub routing_table: RoutingTable,
 }
 
@@ -41,23 +40,16 @@ impl ProcessorManager {
             proc_handles: VecDeque::new(),
             proc_shutdown_flags: VecDeque::new(),
             receiver_rxs: rxs,
-            stream2routes: Arc::new(RwLock::new(FxHashMap::default())),
-            stream_counters: Arc::new(RwLock::new(FxHashMap::default())),
             routing_table,
         }
     }
 
-    pub async fn update_routes(&mut self, routing_table: RoutingTable) {
-        self.routing_table.merge(routing_table);
-        // Update the routing table with local stream assignments
-        let stream2routes = self.stream2routes.read().await;
-        for (key, path_id) in stream2routes.iter() {
-            if self.routing_table.get_path_id(&key.0, &key.1).is_none() {
-                self.routing_table
-                    .insert_stream_mapping(key.0, key.1, *path_id);
-            }
-        }
-        drop(stream2routes);
+    pub async fn update_simple_routes(&mut self, routes: Vec<RoutingTableEntry>) {
+        // Set base IPv4 address for node ID calculation (should be configurable)
+        self.routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
+
+        // Install routes directly using RoutingTableEntry
+        self.routing_table.install_routes(routes);
         self.swap_processors().await;
     }
 
@@ -83,20 +75,18 @@ impl ProcessorManager {
             let shutdown_flag = Arc::new(AtomicBool::new(false));
 
             let flg = shutdown_flag.clone();
-            let table = self.routing_table.clone();
+            let simple_table = self.routing_table.clone();
             let senders = self.context.reproduce_senders().await;
-            let tun_writers = self.context.get_tun_writers(i).await;
-            let stream2routes = self.stream2routes.clone();
-            let stream_counters = self.stream_counters.clone();
+
+            let tun_writer = self.context.get_tun_writer(i).await;
+
             let metrics_tx = self.context.get_metrics_tx();
             let handle = tokio::task::spawn(async move {
                 let mut proc = Processor::new(
                     receiver_rx,
-                    table,
+                    simple_table,
                     senders,
-                    tun_writers,
-                    stream2routes,
-                    stream_counters,
+                    tun_writer,
                     flg,
                     metrics_tx,
                 );
@@ -112,35 +102,26 @@ impl ProcessorManager {
             let flg = self.proc_shutdown_flags.pop_front().unwrap();
             let hdl = self.proc_handles.pop_front().unwrap();
             flg.store(true, Ordering::Relaxed);
-            //Wait for the processor to shutdown
-            tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+            //Wait for the processor to shutdown gracefully
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             //Drop the processor if it is still running
             hdl.abort();
         }
     }
 }
 
-const FLOW_ID_IF_MASK: u64 = 0x00000000_0000FF00;
-
 pub struct Processor {
     // The channel receiver to obtain packets from NodeReceiver or TUN reader
     receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
 
-    // The routing table
+    // The simplified routing table
     routing_table: RoutingTable,
 
     // The senders that send packets to the network
     senders: FxHashMap<NodeId, NodeSender>,
 
-    // The mapping from stream id to route id. This is used as a local storage persistent across the life cycle
-    // of processors for streams that are not assigned a path in the routing table
-    stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-
-    // Count the number of streams in each flow. This is used to assign a path to a stream via round robin.
-    stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
-
-    // The local interface writers
-    tun_writers: Vec<TunWriter>,
+    // The local interface writer
+    tun_writer: TunWriter,
 
     // The flag to indicate if the processor should shutdown
     should_shutdown: Arc<AtomicBool>,
@@ -150,14 +131,11 @@ pub struct Processor {
 }
 
 impl Processor {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
         routing_table: RoutingTable,
         senders: FxHashMap<NodeId, NodeSender>,
-        tun_writers: Vec<TunWriter>,
-        stream2routes: Arc<RwLock<FxHashMap<(FlowId, SocketId), u8>>>,
-        stream_counters: Arc<RwLock<FxHashMap<FlowId, usize>>>,
+        tun_writer: TunWriter,
         should_shutdown: Arc<AtomicBool>,
         metrics_tx: MetricsTx,
     ) -> Self {
@@ -165,118 +143,161 @@ impl Processor {
             receiver_rx,
             routing_table,
             senders,
-            stream2routes,
-            stream_counters,
-            tun_writers,
+            tun_writer,
             should_shutdown,
             metrics_tx,
+        }
+    }
+
+    /// Process inbound packets for outbound delivery
+    async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
+        let packet_flow_id = packet.flow_id;
+
+        debug!(
+            "Processing packet for flow {}:{} -> {}:{}",
+            packet_flow_id.src_ip(),
+            packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(),
+            packet_flow_id.dst_port()
+        );
+
+        // Select route_id for new flow at source node
+        let route_id = self
+            .routing_table
+            .select_route_for_flow(packet_flow_id)
+            .ok_or_else(|| {
+                let error = format!(
+                    "No route is found for flow {}: the routing table may be misconfigured",
+                    packet_flow_id
+                );
+                error!("{}", error);
+
+                error
+            })?;
+
+        if route_id == 0 {
+            // no route can be possible as the flow ID is not valid (represented as a value of 0)
+            // perhaps a non-IPv4 packet?
+            // drops the packet without forwarding it
+            return Err("No route can be selected".to_string());
+        }
+
+        // Route the packet to its next hop
+        let next_hop_id = self
+            .routing_table
+            .get_next_hop_by_route(route_id)
+            .ok_or_else(|| {
+                let error = format!(
+                    "No next hop is found for route id {} on flow {}: routing inconsistency detected",
+                    route_id, packet_flow_id
+                );
+                error!("{}", error);
+
+                error
+            })?;
+
+        debug!(
+            "Flow {}:{} -> {}:{} selected route_id {} → next_hop {}.",
+            packet_flow_id.src_ip(),
+            packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(),
+            packet_flow_id.dst_port(),
+            route_id,
+            next_hop_id
+        );
+
+        self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)
+            .await
+    }
+
+    /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
+    async fn send_packet_to_next_hop(
+        &mut self,
+        packet: Packet,
+        next_hop_id: NodeId,
+        packet_flow_id: FlowId,
+    ) -> Result<(), String> {
+        if next_hop_id == self.routing_table.local_id {
+            // Local delivery
+            debug!(
+                "Delivering packet locally for destination {}:{} (size: {}).",
+                packet_flow_id.dst_ip(),
+                packet_flow_id.dst_port(),
+                packet.packet_size
+            );
+            self.tun_writer.write_packet(packet).await;
+            Ok(())
+        } else {
+            match self.senders.get_mut(&next_hop_id) {
+                Some(sender) => {
+                    debug!(
+                        "Forwarding packet to node {} for flow {} (size: {})",
+                        next_hop_id, packet_flow_id, packet.packet_size
+                    );
+                    sender.send(packet).await;
+                    Ok(())
+                }
+                None => {
+                    let error = format!(
+                        "Next hop node {} is offline or unreachable for flow {}: connection may have been lost.",
+                        next_hop_id, packet_flow_id
+                    );
+                    error!("{}", error);
+                    Err(error)
+                }
+            }
         }
     }
 
     pub async fn run(&mut self) {
         // Do some intialization before starting the main loop
         let batch_size = 256;
-        let mut receiver = self.receiver_rx.write().await;
 
         // Start the main loop
         loop {
-            for i in 0..batch_size {
+            let packets = {
+                let mut receiver = self.receiver_rx.write().await;
+                let mut batch = Vec::with_capacity(batch_size);
+
                 if self.should_shutdown.load(Ordering::Relaxed) {
                     return;
                 }
 
-                // Wait for packets to be avaiable
-                let mut packet = if i == 0 {
-                    receiver
-                        .recv()
-                        .await
-                        .expect("Failed to receive data from receiver interface.")
-                } else {
-                    // If we can continue to receive packet, do it
-                    // Otherwise, break the inner loop to wait for more packets.
-                    match receiver.try_recv() {
-                        Ok(p) => p,
-                        Err(_) => break,
-                    }
-                };
-
-                // Preprocess the packet based on its stream id (only used if the multi-path method is "stream")
-                if packet.has_stream_id {
-                    // If we can get a stream id, then we assign a path to this stream
-                    let path_id = if let Some(path_id) = self
-                        .routing_table
-                        .get_path_id(&packet.flow_id, &packet.stream_id)
-                    {
-                        // First, we check if routing table has a path assigned for this stream
-                        path_id
-                    } else {
-                        // If not, we assign a new path to this stream
-                        let path_count = *self
-                            .stream_counters
-                            .write()
+                for i in 0..batch_size {
+                    // Wait for packets to be available
+                    let packet = if i == 0 {
+                        receiver
+                            .recv()
                             .await
-                            .entry(packet.flow_id)
-                            .and_modify(|e| *e += 1)
-                            .or_insert(1);
-                        let path_id =
-                            path_count % self.routing_table.get_num_paths(&packet.flow_id);
-                        self.stream2routes
-                            .write()
-                            .await
-                            .insert((packet.flow_id, packet.stream_id), path_id as u8);
-                        self.routing_table.insert_stream_mapping(
-                            packet.flow_id,
-                            packet.stream_id,
-                            path_id as u8,
-                        );
-                        path_id as u8
-                    };
-                    packet.update_route(path_id); // The 14th byte is the third byte of the IPv4 addr, which we use to set the route.
-                    // We are also going to report the metrics to the metrics collector
-                    self.metrics_tx
-                        .send((
-                            packet.flow_id,
-                            packet.stream_id,
-                            self.routing_table.local_id,
-                            packet.packet_size,
-                        ))
-                        .expect("Failed to send metrics to the metrics collector.");
-                }
-
-                // Find the next hop and send the packet
-                if let Some(next_hop) = self.routing_table.next_hop(&packet.flow_id) {
-                    // Sending out the packet
-                    if *next_hop == self.routing_table.local_id {
-                        // We must select the correct interface with the correct interface id
-                        // e.g. For addr flow_id 0A0000010A000202 (10,0,0,1 to 10.0.2.2):
-                        // 0A0000010A000202 * FLOW_ID_IFMASK >> 8 = 0000000000000200 >> 8 = 2
-                        let if_id = (packet.flow_id & FLOW_ID_IF_MASK) >> 8;
-
-                        self.tun_writers.get_mut(if_id as usize)
-                            .unwrap_or_else(|| panic!("Destination interface {if_id} doesn't exist. Hint: check if the number of paths configured and set are consistent."))
-                            .write_packet(packet).await;
+                            .expect("Failed to receive data from receiver interface.")
                     } else {
-                        match self.senders.get_mut(next_hop) {
-                            Some(sender) => {
-                                sender.send(packet).await;
-                            }
-                            None => {
-                                // Route defined, but the node doesn't exist yet.
-                                println!(
-                                    "WARNING: Route {:?} defined, but the node {} is offline. Packet dropped",
-                                    &packet.flow_id.to_be_bytes(),
-                                    next_hop
-                                );
-                                continue;
-                            }
+                        // If we can continue to receive packet, do it
+                        // Otherwise, break the inner loop to wait for more packets.
+                        match receiver.try_recv() {
+                            Ok(p) => p,
+                            Err(_) => break,
                         }
-                    }
-                } else {
-                    // Not route was found for the packet
-                    // println!(
-                    //     "WARNING: No route found for the packet with flow id {:?}.",
-                    //     &packet.flow_id.to_be_bytes()
-                    // );
+                    };
+
+                    batch.push(packet);
+                }
+                batch
+            };
+
+            // Process the batch of packets
+            for packet in packets {
+                // Report metrics for the packet
+                self.metrics_tx
+                    .send((
+                        packet.flow_id,
+                        self.routing_table.local_id,
+                        packet.packet_size,
+                    ))
+                    .expect("Failed to send metrics to the metrics collector.");
+
+                if let Err(error_msg) = self.process_packet(packet).await {
+                    warn!("Packet dropped with error: {}.", error_msg);
+
                     continue;
                 }
             }
@@ -288,7 +309,6 @@ impl Processor {
 pub struct SenderLoadBalancer {
     txs: Vec<mpsc::Sender<Packet>>,
     tx_current: usize,
-    stream2proc: FxHashMap<(SocketId, FlowId), usize>,
     flow2proc: FxHashMap<FlowId, usize>,
     n_proc: usize,
 }
@@ -299,31 +319,20 @@ impl SenderLoadBalancer {
         Self {
             txs,
             tx_current: 0,
-            stream2proc: FxHashMap::default(),
             flow2proc: FxHashMap::default(),
             n_proc: len,
         }
     }
 
-    pub fn try_send(&mut self, packet: Packet) {
+    pub async fn send(&mut self, packet: Packet) {
+        let flow_id = packet.flow_id; // Extract flow_id early to avoid borrow issues
         let proc_id;
 
-        if packet.has_stream_id {
-            if let Some(id) = self.stream2proc.get(&(packet.stream_id, packet.flow_id)) {
-                proc_id = *id;
-            } else {
-                proc_id = self.tx_current;
-
-                self.stream2proc
-                    .insert((packet.stream_id, packet.flow_id), proc_id);
-
-                self.tx_current = (self.tx_current + 1) % self.n_proc;
-            }
-        } else if let Some(id) = self.flow2proc.get(&packet.flow_id) {
+        if let Some(id) = self.flow2proc.get(&flow_id) {
             proc_id = *id;
         } else {
             proc_id = self.tx_current;
-            self.flow2proc.insert(packet.flow_id, proc_id);
+            self.flow2proc.insert(flow_id, proc_id);
             self.tx_current = (self.tx_current + 1) % self.n_proc;
         }
 
@@ -332,16 +341,11 @@ impl SenderLoadBalancer {
             .get_mut(proc_id)
             .expect("Error: Trying to send to a processor but the channel does not exist.");
 
-        // Perform random early drop based on internal channel capacity
-        if rand::random::<f32>() * 0.75 + 0.25
-            < 1.0 - (tx.capacity() as f32 / INTERNAL_Q_SIZE as f32)
-        {
-            return;
-        };
-
-        match tx.try_send(packet) {
-            Err(_) => return,
-            Ok(_) => return,
+        if let Err(e) = tx.send(packet).await {
+            error!(
+                "Failed to send packet for flow {} to processor {}. Error: {:?}.",
+                flow_id, proc_id, e
+            );
         };
     }
 }

@@ -12,17 +12,17 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
+use tracing::{error, info};
 
-use strato_messages::{ControllerToDataplane, DataplaneToController, Protocol};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::dataplane::RateLimiterMap;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
 use crate::dataplane::context::Context;
-use crate::dataplane::local_interface::create_tun_devices;
+use crate::dataplane::local_interface::create_tun_device;
 use crate::dataplane::metrics::Collector;
 use crate::dataplane::processor::ProcessorManager;
 use crate::dataplane::protocols_client;
-use crate::dataplane::routes::{Flow, RoutingTable};
 use crate::dataplane::utils::RateLimiter;
 
 pub struct Controller {
@@ -45,12 +45,12 @@ impl Controller {
             match connect_async(url.as_str()).await {
                 Ok((ws, _)) => {
                     ws_stream = ws;
-                    println!("WebSocket handshake has been successfully completed");
+                    info!("WebSocket handshake has been successfully completed.");
                     break;
                 }
                 Err(e) => {
-                    println!("Failed to connect to controller: {}. Retrying...", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    info!("Failed to connect to the controller: {}. Retrying...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 }
             }
         }
@@ -65,6 +65,7 @@ impl Controller {
                 + &configs.public_network_port.clone(),
             node_id: configs.node_id.parse().ok(),
         };
+
         ws_stream
             .send(Message::binary(rmp_serde::to_vec(&startup_msg).unwrap()))
             .await
@@ -82,8 +83,8 @@ impl Controller {
 
         let (sender_tx, sender_rx) = unbounded_channel::<DataplaneToController>();
 
-        // Create local tun interfaces.
-        let tun_devs = create_tun_devices(configs.clone(), controller_configs.clone()).await;
+        // Create local tun interface.
+        let tun_device = create_tun_device(configs.clone(), controller_configs.clone()).await;
 
         // Create metrics collector.
         let metrics_collector =
@@ -106,9 +107,9 @@ impl Controller {
                 .init_udp_socket(configs.private_network_port.clone())
                 .await;
         }
-        context
-            .start_tun_devices(&configs, &controller_configs, tun_devs)
-            .await;
+
+        // Create and start the single TUN device
+        context.start_tun_device(tun_device).await;
 
         let processor_manager = Arc::new(RwLock::new(ProcessorManager::new(
             context.clone(),
@@ -138,10 +139,6 @@ impl Controller {
         self.context.clone()
     }
 
-    pub fn get_session_id(&self) -> [u8; 4] {
-        self.controller_configs.session_id
-    }
-
     pub fn get_protocol(&self) -> Protocol {
         self.controller_configs.protocol.clone()
     }
@@ -161,7 +158,6 @@ impl Controller {
         };
         let receiver = ControllerReceiver {
             shutdown_tx: self.shutdown_tx,
-            controller_configs: self.controller_configs,
             processor_manager: self.processor_manager,
             context: self.context,
             link_rate_limiters: self.link_rate_limiters,
@@ -174,7 +170,6 @@ impl Controller {
 
 pub struct ControllerReceiver {
     shutdown_tx: watch::Sender<bool>,
-    controller_configs: ControllerConfigs,
     processor_manager: Arc<RwLock<ProcessorManager>>,
     context: Context,
     link_rate_limiters: Arc<RwLock<RateLimiterMap>>,
@@ -187,8 +182,8 @@ impl ControllerReceiver {
             let msg = match self.controller_receiver_stream.next().await.unwrap() {
                 Ok(msg) => msg,
                 Err(e) => {
-                    println!("Connection with the controller is broken. Restarting node state..");
-                    println!("Connection Lost with Error: {:?}", e);
+                    info!("Connection with the controller is broken. Restarting node state..");
+                    info!("Connection Lost with Error: {:?}", e);
                     self.shutdown_tx
                         .send(true)
                         .expect("Failed to send shutdown signal to main task");
@@ -203,13 +198,11 @@ impl ControllerReceiver {
                     self.process_control_msg(ctrl_msg).await;
                 }
                 Message::Pong(_) => {
-                    // received a pong message to keep the connection alive. Do nothing.
+                    // received a ping message to keep the connection alive. Do nothing.
                     continue;
                 }
                 _ => {
-                    println!(
-                        "Received a message that is not a binary or a ping message. There may be something wrong."
-                    );
+                    error!("Received a message that is not a binary or a ping message.");
                 }
             };
         }
@@ -217,19 +210,6 @@ impl ControllerReceiver {
 
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
-            ControllerToDataplane::InstallFlow { flows } => {
-                println!("Installing flow..");
-                let mut routing_table = RoutingTable::new(self.context.local_id);
-                for flow in flows {
-                    routing_table.add_flow(Flow::from_json(&serde_json::to_value(&flow).unwrap()));
-                }
-                self.processor_manager
-                    .write()
-                    .await
-                    .update_routes(routing_table)
-                    .await;
-                println!("Installed.");
-            }
             ControllerToDataplane::AddNode {
                 protocol,
                 node_id,
@@ -256,7 +236,7 @@ impl ControllerReceiver {
                     .await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
-                println!("Setting link rate for node: {}, rate: {}", node_id, rate);
+                info!("Setting link rate for node: {}, rate: {}", node_id, rate);
                 let mut guard = self.link_rate_limiters.write().await;
 
                 match guard.get(&node_id) {
@@ -270,7 +250,25 @@ impl ControllerReceiver {
                     }
                 }
             }
-            _ => println!("Received unsupported message type"),
+            ControllerToDataplane::InstallRoutes { routes } => {
+                info!("Installing {} routes.", routes.len());
+
+                for route in &routes {
+                    info!(
+                        "Route id {}: the next hop is {}.",
+                        route.route_id, route.next_hop
+                    );
+                }
+
+                self.processor_manager
+                    .write()
+                    .await
+                    .update_simple_routes(routes)
+                    .await;
+
+                info!("All routes installed.");
+            }
+            _ => error!("Received unsupported message type."),
         }
     }
 
@@ -283,9 +281,8 @@ impl ControllerReceiver {
             .as_str()
             .expect("Invalid control message: expected to contain the field 'addr'");
         let local_id = self.context.local_id;
-        let session_id = self.controller_configs.session_id;
 
-        let stream = protocols_client::connect_tcp_node(local_id, addr, node_id, &session_id).await;
+        let stream = protocols_client::connect_tcp_node(local_id, addr, node_id).await;
         self.context.add_tcp_node(node_id, stream).await;
     }
 
@@ -310,10 +307,8 @@ impl ControllerReceiver {
             .as_str()
             .expect("Invalid control message: expected to contain the field 'addr'");
         let local_id = self.context.local_id;
-        let session_id = self.controller_configs.session_id;
 
-        let stream =
-            protocols_client::connect_quic_node(local_id, addr, node_id, &session_id).await;
+        let stream = protocols_client::connect_quic_node(local_id, addr, node_id).await;
         self.context.add_quic_node(node_id, stream).await;
     }
 }

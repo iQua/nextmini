@@ -1,8 +1,5 @@
-reset_db = true
 protocol = "quic"
-multi_path_method = "stream"
 
-[routes_preset]
+[topology]
 type = "full_mesh"
 n_nodes = 3
-route_ids = [0, 1] 

@@ -10,15 +10,15 @@ use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tracing::{error, info, warn};
 
-use strato_messages::{ControllerToDataplane, DataplaneToController, Protocol};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::config::{Config, get_config};
 use crate::db::init_db;
 use crate::models::{Node, Route};
 use crate::utils::{
-    build_add_node_message, build_install_routes_message, build_startup_message,
-    create_new_virtual_addr, flow_id_2_src_dst_route_id,
+    build_add_node_message, build_routes_for_node, build_startup_message, create_new_virtual_addr,
 };
 
 mod config;
@@ -37,19 +37,19 @@ async fn main() {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
         .expect("Failed to bind to port");
-    println!("The controller is now listening on port {}.", config.port);
+    info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
     // Set up database notifications
-    db::setup_notification(db_pool.clone(), config.clone(), node_ws.clone()).await;
+    db::setup_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
             .peer_addr()
             .expect("Connected streams should have a peer address");
 
-        println!("New connection from {}", peer);
+        info!("New connection from {}", peer);
 
         let ws_stream = accept_async(stream)
             .await
@@ -82,7 +82,7 @@ async fn handle_connection(
                 let dataplane_msg = match rmp_serde::from_slice::<DataplaneToController>(&data) {
                     Ok(msg) => msg,
                     Err(e) => {
-                        println!("Failed to parse dataplane message: {}", e);
+                        info!("Failed to parse dataplane message: {}", e);
                         continue;
                     }
                 };
@@ -94,7 +94,7 @@ async fn handle_connection(
                         public_network_addr,
                         node_id: maybe_node_id,
                     } => {
-                        println!(
+                        info!(
                             "Received StartUp message from {} (public), {} (private), requested ID: {:?}",
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
@@ -111,26 +111,26 @@ async fn handle_connection(
                                 *node_ws_guard.keys().max().unwrap_or(&0) + 1
                             };
 
-                            println!("Assigning a new node ID: {}.", new_id);
+                            info!("Assigning a new node ID: {}.", new_id);
 
                             new_id
                         };
 
                         // checks if the node_id is already used
                         if node_ws.read().await.contains_key(&node_id) {
-                            println!("Node ID {} is already used.", node_id);
+                            info!("Node ID {} is already used.", node_id);
                             continue;
                         }
 
                         // assigns a virtual address to this node
                         let virtual_addr = match create_new_virtual_addr(
-                            config.base_ipv4_addr,
-                            config.ipv4_net_mask,
+                            config.base_addr,
+                            config.net_mask,
                             node_id,
                         ) {
                             Some(addr) => addr,
                             None => {
-                                println!(
+                                info!(
                                     "Error: Failed to create a virtual address for node {}",
                                     node_id
                                 );
@@ -144,7 +144,7 @@ async fn handle_connection(
                             .collect::<Vec<_>>()
                             .join(".");
 
-                        println!(
+                        info!(
                             "Created new node {} with private address {}, public address {}, and virtual address {}.",
                             node_id,
                             private_network_addr,
@@ -158,20 +158,18 @@ async fn handle_connection(
                             private_network_addr,
                             public_network_addr,
                             virtual_network_addr,
-                            connections: vec![],
                         };
 
                         // Insert node into database
                         match sqlx::query(
                             r#"
-                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr, connections)
-                            VALUES ($1, $2, $3, $4, $5, $6)
+                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr)
+                            VALUES ($1, $2, $3, $4, $5)
                             ON CONFLICT (id) DO UPDATE SET
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
                                 public_network_addr = EXCLUDED.public_network_addr,
-                                virtual_network_addr = EXCLUDED.virtual_network_addr,
-                                connections = EXCLUDED.connections
+                                virtual_network_addr = EXCLUDED.virtual_network_addr
                             "#
                         )
                         .bind(new_node.id)
@@ -179,12 +177,11 @@ async fn handle_connection(
                         .bind(&new_node.private_network_addr)
                         .bind(&new_node.public_network_addr)
                         .bind(&new_node.virtual_network_addr)
-                        .bind(&new_node.connections)
                         .execute(&*db_pool)
                         .await {
-                            Ok(_) => println!("Node {} added to database", node_id),
+                            Ok(_) => info!("Node {} added to database", node_id),
                             Err(e) => {
-                                println!("Error: Failed to insert node into database: {}", e);
+                                error!("Failed to insert node into database: {}", e);
                                 continue;
                             }
                         }
@@ -193,11 +190,8 @@ async fn handle_connection(
                         let response = build_startup_message(
                             node_id,
                             virtual_addr,
-                            config.ipv4_net_mask,
-                            config.session_id,
-                            config.num_interfaces,
+                            config.net_mask,
                             config.protocol.clone(),
-                            config.multi_path_method.clone(),
                         );
 
                         match write_arc
@@ -206,9 +200,9 @@ async fn handle_connection(
                             .send(Message::binary(rmp_serde::to_vec(&response).unwrap()))
                             .await
                         {
-                            Ok(_) => println!("Sent StartUp response to node {}", node_id),
+                            Ok(_) => info!("Sent StartUp response to node {}", node_id),
                             Err(e) => {
-                                println!("Error: Failed to send StartUp response: {}", e);
+                                error!("Failed to send StartUp response: {}", e);
                                 continue;
                             }
                         }
@@ -230,60 +224,21 @@ async fn handle_connection(
                         {
                             Ok(nodes) => nodes,
                             Err(e) => {
-                                println!("Error: Failed to fetch nodes: {}", e);
+                                error!("Failed to fetch nodes: {}", e);
                                 continue;
                             }
                         };
 
-                        let mut new_connections = vec![];
+                        // establishes connections between all pairs of nodes by sending AddNode messages
                         for node in nodes {
                             if node.id == node_id as i32 {
                                 continue;
                             }
 
-                            let should_connect =
-                                match (&config.topology.connect, &config.topology.disconnect) {
-                                    (Some(_), Some(_)) => {
-                                        // if both are specified, connect only takes precedence
-                                        config
-                                            .topology
-                                            .connect
-                                            .as_ref()
-                                            .unwrap()
-                                            .contains(&(node_id, node.id as usize))
-                                            || config
-                                                .topology
-                                                .connect
-                                                .as_ref()
-                                                .unwrap()
-                                                .contains(&(node.id as usize, node_id))
-                                    }
-                                    (Some(connect), _) => {
-                                        // if connect is specified, only connect nodes that are explicitly listed
-                                        connect.contains(&(node_id, node.id as usize))
-                                            || connect.contains(&(node.id as usize, node_id))
-                                    }
-                                    (None, Some(disconnect)) => {
-                                        // if disconnect is specified, connect all nodes except those listed
-                                        !disconnect.contains(&(node_id, node.id as usize))
-                                            && !disconnect.contains(&(node.id as usize, node_id))
-                                    }
-                                    (None, None) => {
-                                        // if neither is specified, connect all nodes
-                                        true
-                                    }
-                                };
-
-                            if !should_connect {
-                                continue;
-                            }
-
-                            new_connections.push(node.id);
-
                             // determines the address to use (private or public)
                             // if two nodes share the same private network name, then we use the private
                             // network address for this connection; otherwise, we use the public network
-                            // address for this connection
+                            // address.
                             let addr = if node.private_network_name
                                 == Some(private_network_name.clone())
                             {
@@ -299,24 +254,24 @@ async fn handle_connection(
                                 addr,
                             };
 
-                            // inform the existing nodes about the new node by updating their connections
+                            // informs the existing nodes about the new node by updating their connections
                             match write_arc
                                 .lock()
                                 .await
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => println!(
+                                Ok(_) => info!(
                                     "Sent an AddNode message for node {} to node {}.",
                                     node.id, node_id
                                 ),
-                                Err(e) => println!(
+                                Err(e) => info!(
                                     "Error: Failed to send an AddNode message to node {}: {}.",
                                     node_id, e
                                 ),
                             }
 
-                            // For UDP, also notify the existing node about the new node
+                            // For UDP, also notifies the existing node about the new node
                             if config.protocol == Protocol::Udp {
                                 let addr =
                                     if new_node.private_network_name == node.private_network_name {
@@ -339,83 +294,23 @@ async fn handle_connection(
                                         .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                         .await
                                     {
-                                        Ok(_) => println!(
+                                        Ok(_) => info!(
                                             "Sent AddNode message for new node {} to existing node {}",
                                             node_id, node.id
                                         ),
-                                        Err(e) => println!(
+                                        Err(e) => info!(
                                             "Error: Failed to send AddNode message to existing node {}: {}",
                                             node.id, e
                                         ),
                                     }
                                 } else {
-                                    println!(
-                                        "WARNING: Could not find WebSocket for node {}",
-                                        node.id
-                                    );
-                                }
-                            }
-                        }
-
-                        // updates connections for the new node
-                        match sqlx::query("UPDATE nodes SET connections = $1 WHERE id = $2")
-                            .bind(&new_connections)
-                            .bind(node_id as i32)
-                            .execute(&*db_pool)
-                            .await
-                        {
-                            Ok(_) => println!(
-                                "Updated connections for node {}: {:?}",
-                                node_id, new_connections
-                            ),
-                            Err(e) => println!(
-                                "Error: Failed to update connections for node {}: {}",
-                                node_id, e
-                            ),
-                        }
-
-                        // updates connections for other nodes in the database
-                        for other_node_id in &new_connections {
-                            let mut connections: Vec<i32> = match sqlx::query_scalar(
-                                "SELECT connections FROM nodes WHERE id = $1",
-                            )
-                            .bind(*other_node_id)
-                            .fetch_one(&*db_pool)
-                            .await
-                            {
-                                Ok(conns) => conns,
-                                Err(e) => {
-                                    println!(
-                                        "Error: Failed to fetch connections for node {}: {}",
-                                        other_node_id, e
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            // adds the new node to their connections if not already present
-                            if !connections.contains(&(node_id as i32)) {
-                                connections.push(node_id as i32);
-                                match sqlx::query("UPDATE nodes SET connections = $1 WHERE id = $2")
-                                    .bind(&connections)
-                                    .bind(*other_node_id)
-                                    .execute(&*db_pool)
-                                    .await
-                                {
-                                    Ok(_) => println!(
-                                        "Updated connections for node {}: {:?}",
-                                        other_node_id, connections
-                                    ),
-                                    Err(e) => println!(
-                                        "Error: Failed to update other node connections for node {}: {}",
-                                        other_node_id, e
-                                    ),
+                                    warn!("Could not find WebSocket for node {}", node.id);
                                 }
                             }
                         }
 
                         // installs routes
-                        println!("Installing routes for node {}", node_id);
+                        info!("Installing routes for node {}", node_id);
 
                         let routes: Vec<Route> = match sqlx::query_as("SELECT * FROM routes")
                             .fetch_all(&*db_pool)
@@ -423,32 +318,30 @@ async fn handle_connection(
                         {
                             Ok(routes) => routes,
                             Err(e) => {
-                                println!("Error: Failed to fetch routes: {}", e);
+                                error!("Failed to fetch routes: {}", e);
                                 continue;
                             }
                         };
 
-                        if let Some(msg) =
-                            build_install_routes_message(&config, routes, node_id as i32)
-                        {
+                        if let Some(msg) = build_routes_for_node(routes, node_id as i32) {
                             match write_arc
                                 .lock()
                                 .await
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => println!("Sent InstallFlow message to node {}", node_id),
-                                Err(e) => println!(
-                                    "Error: Failed to send InstallFlow message to node {}: {}",
+                                Ok(_) => info!("Sent InstallRoutes message to node {}", node_id),
+                                Err(e) => info!(
+                                    "Error: Failed to send InstallRoutes message to node {}: {}",
                                     node_id, e
                                 ),
                             }
                         } else {
-                            println!("No routes to install for node {}", node_id);
+                            info!("No routes to install for node {}", node_id);
                         }
 
                         // sets the link rates
-                        println!("Setting link rates for node {}", node_id);
+                        info!("Setting link rates for node {}", node_id);
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
                                 let msg = ControllerToDataplane::SetLinkRate {
@@ -462,11 +355,11 @@ async fn handle_connection(
                                     .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                     .await
                                 {
-                                    Ok(_) => println!(
+                                    Ok(_) => info!(
                                         "Set link rate for node {} to node {} at {} bps",
                                         node_id, link_rate.dst_node_id, link_rate.bandwidth
                                     ),
-                                    Err(e) => println!(
+                                    Err(e) => info!(
                                         "Error: Failed to send SetLinkRate message to node {}: {}",
                                         node_id, e
                                     ),
@@ -481,35 +374,29 @@ async fn handle_connection(
                                     continue;
                                 }
 
-                                let (src_id, dst_id, route_id) =
-                                    flow_id_2_src_dst_route_id(&config, metric.flow_id.clone());
-
+                                // Simplified metrics handling - no need to parse flow_id
                                 let prev_hop_id = metric.src_node_id.map(|x| x as i32);
-                                let flow_id: Vec<i32> = metric.flow_id;
+                                let flow_id = metric.flow_id;
 
                                 match sqlx::query(
                                     r#"
-                                    INSERT INTO metrics (src_id, dst_id, route_id, prev_hop_id, hop_id, flow_id, stream_id, time_read, bps)
-                                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                    INSERT INTO metrics (prev_hop_id, hop_id, flow_id, time_read, bps)
+                                    VALUES ($1, $2, $3, $4, $5)
                                     "#
                                 )
-                                .bind(src_id)
-                                .bind(dst_id)
-                                .bind(route_id)
                                 .bind(prev_hop_id)
                                 .bind(hop_id as i32)
-                                .bind(flow_id)
-                                .bind(metric.stream_id)
+                                .bind(flow_id.as_ref())
                                 .bind(metric.time_read)
                                 .bind(metric.bps as i32)
                                 .execute(&*db_pool)
                                 .await {
                                     Ok(_) => {},
-                                    Err(e) => println!("Error: Failed to insert metric: {}", e)
+                                    Err(e) => error!("Failed to insert metric: {}", e)
                                 }
                             }
                         } else {
-                            println!(
+                            info!(
                                 "Warning: Received metrics but no node ID is associated with this connection."
                             );
                         }
@@ -520,18 +407,18 @@ async fn handle_connection(
                 // just received a ping message to keep the connection alive. Do nothing.
                 continue;
             }
-            Ok(_) => println!(
+            Ok(_) => info!(
                 "Warning: Received a message that is not a binary or a ping message. Something may be wrong."
             ),
             Err(e) => {
-                println!("Error receiving the message: {}", e);
+                error!("Error receiving the message: {}", e);
                 break;
             }
         }
     }
 
     if let Some(node_id) = current_node_id {
-        println!("Connection closed for node {}.", node_id);
+        info!("Connection closed for node {}.", node_id);
         node_ws.write().await.remove(&node_id);
     }
 }

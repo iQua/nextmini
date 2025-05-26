@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use fxhash::FxHashMap;
 use s2n_quic::stream::BidirectionalStream;
 
-use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
+use crate::dataplane::configs::LocalConfigs;
 use crate::dataplane::local_interface::{TunReader, TunWriter};
 use crate::dataplane::metrics::MetricsTx;
 use crate::dataplane::node_interface::{
@@ -31,9 +31,8 @@ pub struct Context {
     // Local configurations
     configs: LocalConfigs,
 
-    // Writers to the TUN interfaces, as a shared writable vector of vectors, where each queue
-    // has a vector of writers, each writer for its own interface
-    tun_writers: Arc<RwLock<Vec<Vec<TunWriter>>>>,
+    // Writers to the TUN interface, as shared writable vectors, where each queue corresponds to one writer
+    tun_writers: Arc<RwLock<Vec<TunWriter>>>,
 
     // A vector of processor channels, each including a sender and a receiver for an mpsc channel
     processor_channels: Arc<RwLock<Vec<ProcessorChannel>>>,
@@ -75,51 +74,35 @@ impl Context {
         }
     }
 
-    pub async fn start_tun_devices(
-        &mut self,
-        configs: &LocalConfigs,
-        controller_configs: &ControllerConfigs,
-        queues_by_queue_id: Vec<Vec<Arc<tun_rs::AsyncDevice>>>,
-    ) {
+    // Create and start the single TUN device
+    pub async fn start_tun_device(&mut self, tun_queues: Vec<Arc<tun_rs::AsyncDevice>>) {
         let senders_to_proc = self.get_processor_txs().await;
-        let method = controller_configs.multi_path_method.clone();
         let mut tun_writers = self.tun_writers.write().await;
 
-        for queue in queues_by_queue_id
-            .iter()
-            .take(configs.num_packet_processors)
-        {
-            let mut writers = Vec::new();
+        for dev in tun_queues.iter() {
+            // tun_writers is a vector of queues for one TUN device
+            // dev.clone() does not clone the device, it simply creates a new reference to it
+            let writer = TunWriter::new(dev.clone());
+            tun_writers.push(writer);
 
-            // tun_writers is a vector of queues, where each queue has a vector of writers,
-            // each writer for its own interface
-            for dev in queue {
-                // dev.clone() does not clone the device, it simply creates a new reference to it
-                let writer = TunWriter::new(dev.clone(), method.clone());
-                writers.push(writer);
+            // Start a new Tokio task for reading continuously from this TUN device
+            let mut reader = TunReader::new(dev.clone(), senders_to_proc.clone());
 
-                // Start a new Tokio task for reading continuously from this TUN device
-                let mut reader = TunReader::new(dev.clone(), senders_to_proc.clone());
-                let method_clone = method.clone();
-
-                tokio::spawn(async move {
-                    reader.start_reading(method_clone).await;
-                });
-            }
-
-            tun_writers.push(writers);
+            tokio::spawn(async move {
+                reader.start_reading().await;
+            });
         }
     }
 
-    // Get a reference of the TUN writers for the corresponding queue ID
-    pub async fn get_tun_writers(&self, queue_id: usize) -> Vec<TunWriter> {
+    // Get a reference of the TUN writer for the corresponding queue ID
+    pub async fn get_tun_writer(&self, queue_id: usize) -> TunWriter {
         self.tun_writers
             .read()
             .await
             .get(queue_id)
             .expect(
                 "Error: Attempting to obtain a TUN queue that doesn't exist. \\
-                Are TUN queues created successfully?",
+                        Are TUN queues created successfully?",
             )
             .clone()
     }

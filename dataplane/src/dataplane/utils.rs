@@ -95,19 +95,19 @@ impl RateLimiter {
 async fn test_bucket() {
     let mut bucket = LeakyBucket::new(10.0);
     // consume 1 tokens
-    assert_eq!(bucket.consume(1.0), true);
+    assert!(bucket.consume(1.0));
 
     // consume 1 tokens again, should fail
-    assert_eq!(bucket.consume(1.0), false);
+    assert!(!bucket.consume(1.0));
 
     //sleep for 100 seconds for one token
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // consume 1 tokens, should succeed
-    assert_eq!(bucket.consume(1.0), true);
+    assert!(bucket.consume(1.0));
 
     // consume 1 token, should fail
-    assert_eq!(bucket.consume(1.0), false);
+    assert!(!bucket.consume(1.0));
 }
 
 #[tokio::test]

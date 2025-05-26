@@ -145,14 +145,12 @@ Strato's comes with some default configurations for the controller in the `confi
 
 ```json
 {
-    "reset_db" : true,
     "routes_preset": {
         "type": "full_mesh",
         "n_nodes": 32
     }
 }
 ```
-- `reset_db`: If set to `true`, the controller will reset the database on startup. This is useful when setting up independent experiments. It is recommended to set this to `true` and back up the database if needed to record the results.
 
 - `routes_preset`: This field is used to set up the initial routes in the network. The `type` field can be set to `full_mesh` or `ring`. If set to `full_mesh`, the controller will set up routes between all nodes in the network. The `n_nodes` field is used to set the number of the nodes to set up routes for. It is fine as long as it is larger than the numbers of nodes in the network, but it is recommended to set it to the actual number of nodes in the network.
 
@@ -336,7 +334,6 @@ The overall modified JSON file should look like this
 
 ```json
 {
-    "reset_db" : true,
     "routes_preset": {
         "type": "ring",
         "n_nodes": 32

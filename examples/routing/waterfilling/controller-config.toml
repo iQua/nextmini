@@ -1,6 +1,4 @@
-reset_db = true
 protocol = "quic"
-auto_db_sync = true
 multi_path_method = "stream"
 
 [routes_preset]

@@ -1,6 +1,4 @@
-reset_db = true
 protocol = "quic"
-multi_path_method = "stream"
 scheduler_type = "fifo"
 
 [routes_preset]

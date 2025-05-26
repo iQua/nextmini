@@ -1,6 +1,4 @@
-reset_db = true
 protocol = "quic"
-auto_db_sync = false
 multi_path_method = "stream"
 
 [routes_preset]
@@ -39,4 +37,4 @@ bandwidth = 20000000
 [[link_rates]]
 src_node_id = 4
 dst_node_id = 2
-bandwidth = 30000000 
+bandwidth = 30000000

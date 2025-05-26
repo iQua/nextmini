@@ -14,3 +14,5 @@ lightning_logs/
 **/.venv
 **/uv.lock
 **/__pycache__
+**/server_cert.pem
+**/server_key.pem

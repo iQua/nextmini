@@ -1,7 +1,7 @@
 mod dataplane;
 mod tests;
 
-use tracing_subscriber;
+use tracing::info;
 
 use dataplane::configs;
 use dataplane::controller_interface::Controller;
@@ -39,7 +39,6 @@ fn main() {
 
             // starts the protocol servers to accept inter-node connections
             start_protocols_server(
-                controller.get_session_id(),
                 controller.get_protocol(),
                 configs.clone(),
                 controller.get_context(),
@@ -62,17 +61,17 @@ fn main() {
 
             tokio::spawn(async move { controller_sender.run().await });
 
-            println!("Strato is now running.");
+            info!("Nextmini is now running.");
 
             shutdown_rx.changed().await.unwrap();
         });
 
         if configs.restart_on_disconnect {
-            println!("Restarting Strato...");
+            info!("Restarting Nextmini...");
             continue;
         }
 
-        println!("Shutting down Strato...");
+        info!("Shutting down Nextmini...");
         break;
     }
 }

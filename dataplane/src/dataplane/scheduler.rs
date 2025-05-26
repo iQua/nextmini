@@ -5,9 +5,8 @@ use tokio::sync::{Notify, RwLock};
 
 use crossbeam_queue::ArrayQueue;
 
-use tracing::debug;
+use tracing::{error, warn};
 
-use crate::dataplane::FlowIdExt;
 use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::dataplane::packet::Packet;
 use crate::dataplane::protocols_io::ProtocolWriter;
@@ -37,6 +36,7 @@ pub struct Fifo {
     writer: ProtocolWriter,
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
+    task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Fifo {
@@ -63,6 +63,7 @@ impl Fifo {
             writer,
             rate_limiter,
             shutdown: Arc::new(AtomicBool::new(false)),
+            task_handle: None,
         }
     }
 }
@@ -77,24 +78,47 @@ impl Scheduler for Fifo {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
+            warn!(
+                "FIFO: Scheduler dropped packet for flow {} (size: {}) - queue length: {}/{}, drops: {}",
+                packet.flow_id,
+                packet.packet_size,
+                self.queue.len(),
+                self.queue.capacity(),
+                self.packets_dropped
+            );
             return;
         }
 
         if self.queue.push(packet).is_err() {
-            panic!("Failed to enqueue a packet despite implementing a packet drop strategy.");
+            self.packets_dropped += 1;
+            error!(
+                "FIFO: Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue. Total drops: {}",
+                self.packets_dropped
+            );
+            return;
         }
 
         self.packet_arrived.notify_one();
     }
 
     fn run(&mut self) {
+        // Shutdown any existing task first
+        if let Some(handle) = self.task_handle.take() {
+            self.shutdown.store(true, Ordering::Relaxed);
+            self.packet_arrived.notify_one();
+            handle.abort();
+        }
+
+        // Reset shutdown flag for new task
+        self.shutdown.store(false, Ordering::Relaxed);
+
         let queue = self.queue.clone();
         let packet_arrived = self.packet_arrived.clone();
         let rate_limiter = self.rate_limiter.clone();
         let mut writer = self.writer.reproduce();
         let shutdown_flag = self.shutdown.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut tokens: usize = 0; // accumulated total bytes sent
             let mut counter: usize = 0; // accumulated number of packets sent
             loop {
@@ -105,28 +129,28 @@ impl Scheduler for Fifo {
                 }
 
                 while let Some(packet) = queue.pop() {
-                    debug!(
-                        "Sending a packet from node {} to node {}.",
-                        packet.flow_id.src_addr(),
-                        packet.flow_id.dest_addr()
-                    );
-
+                    // Send raw packet data directly without protocol header
                     writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
+                    counter += 1;
 
-                    if counter == Self::BATCH_SIZE {
+                    // Apply rate limiting at batch boundaries or when queue is empty
+                    if counter >= Self::BATCH_SIZE || queue.is_empty() {
                         if let Some(limiter) = rate_limiter.read().await.as_ref() {
-                            limiter.consume((tokens as f64) * 8.0).await;
+                            if tokens > 0 {
+                                limiter.consume((tokens as f64) * 8.0).await;
+                            }
                         }
 
+                        // Reset counters for next batch
                         counter = 0;
                         tokens = 0;
                     }
-
-                    counter += 1;
                 }
             }
         });
+
+        self.task_handle = Some(handle);
     }
 }
 
@@ -134,5 +158,10 @@ impl Drop for Fifo {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.packet_arrived.notify_one();
+        
+        // Abort the task if it exists
+        if let Some(handle) = self.task_handle.take() {
+            handle.abort();
+        }
     }
 }

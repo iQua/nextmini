@@ -1,11 +1,9 @@
-use core::panic;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::mpsc::Sender;
+use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
-
-use strato_messages::MultiPathMethod;
 
 use crate::dataplane::RECEIVE_BUF_SIZE;
 use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
@@ -19,20 +17,17 @@ fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
 }
 
 /// Creates TUN devices for sending data to the application.
-pub async fn create_tun_devices(
+pub async fn create_tun_device(
     configs: LocalConfigs,
     controller_configs: ControllerConfigs,
-) -> Vec<Vec<Arc<AsyncDevice>>> {
-    let num_queues = configs.num_packet_processors;
-    let num_interfaces = controller_configs.num_interfaces;
-    let mut queues_per_interface = Vec::with_capacity(num_interfaces);
-
+) -> Vec<Arc<AsyncDevice>> {
     #[cfg(target_os = "linux")]
-    for i in 0..num_interfaces {
-        let mut if_name = configs.tun_interface_name.clone();
-        if_name.push_str(i.to_string().as_str());
-        let ipv4_addr = controller_configs.strato_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
+    {
+        let num_queues = configs.num_packet_processors;
+
+        let if_name = configs.tun_interface_name.clone();
+        let ipv4_addr = controller_configs.local_address;
+        let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
 
         let dev = DeviceBuilder::new()
             .name(&if_name)
@@ -49,7 +44,7 @@ pub async fn create_tun_devices(
         let mut queues = Vec::with_capacity(num_queues);
 
         // creates multiple TUN queues with error handling
-        eprintln!("Creating {num_queues} TUN queues.");
+        info!("Creating {num_queues} TUN queues.");
         for _ in 0..num_queues - 1 {
             match dev.try_clone() {
                 Ok(cloned_dev) => {
@@ -57,8 +52,8 @@ pub async fn create_tun_devices(
                 }
                 Err(e) => {
                     // if we are unable to create all the queues, use what we have
-                    eprintln!(
-                        "Warning: Could not create all TUN queues ({}), continuing with {} queues",
+                    warn!(
+                        "Could not create all TUN queues ({}), continuing with {} queues",
                         e,
                         queues.len()
                     );
@@ -74,13 +69,13 @@ pub async fn create_tun_devices(
             panic!("Failed to create even a single TUN queue. Terminating.");
         }
 
-        queues_per_interface.push(queues);
+        queues
     }
 
     #[cfg(not(target_os = "linux"))]
-    for _ in 0..num_interfaces {
-        let ipv4_addr = controller_configs.strato_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.strato_mask);
+    {
+        let ipv4_addr = controller_configs.local_address;
+        let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
 
         let dev = DeviceBuilder::new()
             .ipv4(
@@ -93,21 +88,11 @@ pub async fn create_tun_devices(
             .expect("Failed to create tun device");
 
         // creates a single TUN queue on non-Linux platforms without multi-queue support
-        eprintln!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
+        info!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
         let queues = vec![Arc::new(dev)];
-        queues_per_interface.push(queues);
+
+        queues
     }
-
-    // transposes to a vector of queues, each queue corresponds to multiple interfaces
-    let mut queues_by_queue_id = vec![Vec::with_capacity(num_interfaces); num_queues];
-
-    for interface_queues in queues_per_interface {
-        for (queue_id, dev) in interface_queues.into_iter().enumerate() {
-            queues_by_queue_id[queue_id].push(dev);
-        }
-    }
-
-    queues_by_queue_id
 }
 
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out
@@ -125,24 +110,40 @@ impl TunReader {
         }
     }
 
-    pub async fn start_reading(&mut self, method: MultiPathMethod) {
+    pub async fn start_reading(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
         loop {
             let n = match self.dev.recv(&mut buf).await {
                 Ok(n) => n,
                 Err(e) => {
-                    panic!("Error reading from the TUN device: {:?}", e);
+                    error!(
+                        "Failed to read from TUN device: {:?}: interface may be down. Retrying...",
+                        e
+                    );
+
+                    // Sleep briefly before retrying to avoid busy loop
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    continue;
                 }
             };
 
-            let mut packet = Packet::new(n, buf);
-
-            if method == MultiPathMethod::Stream {
-                packet.try_set_stream_id();
+            // Skip empty packets
+            if n == 0 {
+                warn!("TunReader received an empty packet.");
+                continue;
             }
 
-            self.senders.try_send(packet);
+            let packet = Packet::new(n, buf);
+
+            // Check if packet creation was successful (non-zero flow_id indicates valid packet)
+            if packet.flow_id == 0 {
+                debug!("TunReader: Invalid packet received, dropping (size: {})", n);
+                continue;
+            }
+
+            // Try to send packet to processor with error handling
+            self.senders.send(packet).await;
         }
     }
 }
@@ -151,35 +152,19 @@ impl TunReader {
 #[derive(Clone)]
 pub struct TunWriter {
     dev: Arc<AsyncDevice>,
-    method: MultiPathMethod,
 }
 
 impl TunWriter {
-    pub fn new(dev: Arc<AsyncDevice>, method: MultiPathMethod) -> TunWriter {
-        TunWriter { dev, method }
+    pub fn new(dev: Arc<AsyncDevice>) -> TunWriter {
+        TunWriter { dev }
     }
 
     pub async fn write_packet(&self, packet: Packet) {
         let buf = &packet.buf[0..packet.packet_size];
 
-        match self.method {
-            MultiPathMethod::Stream => {
-                let mut modified_buf = buf.to_vec();
-
-                // resets prior modifications to the IP address
-                modified_buf[14] = 0;
-
-                self.dev
-                    .send(&modified_buf)
-                    .await
-                    .expect("Failed to write to TUN device");
-            }
-            MultiPathMethod::Interface => {
-                self.dev
-                    .send(buf)
-                    .await
-                    .expect("Failed to write to TUN device");
-            }
-        };
+        self.dev
+            .send(buf)
+            .await
+            .expect("Failed to write to TUN device");
     }
 }

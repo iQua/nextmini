@@ -1,161 +1,139 @@
-use fxhash::FxHashMap;
-use serde_json::Value;
+use std::net::Ipv4Addr;
 
-use crate::dataplane::FLOW_ID_PATH_MASK;
+use jumphash::JumpHasher;
+use nextmini_messages::RoutingTableEntry;
+use std::collections::HashMap;
+use tracing::{debug, info};
+
 use crate::dataplane::FlowId;
+use crate::dataplane::FlowIdExt;
 use crate::dataplane::NodeId;
-use crate::dataplane::SocketId;
-use crate::dataplane::packet::json_byte_array_to_flow_id;
 
-#[derive(Clone)]
-pub struct Route {
-    next_hop: NodeId,
-    id: u8,
-    streams: Vec<SocketId>,
-}
-
-#[allow(unused)]
-impl Route {
-    pub fn new(next_hop: NodeId, id: u8, streams: Vec<SocketId>) -> Self {
-        Self {
-            next_hop,
-            id,
-            streams,
-        }
-    }
-
-    pub fn from_json(object: &Value) -> Self {
-        let mut streams = vec![];
-        if let Some(streams_array) = object["streams"].as_array() {
-            for stream in streams_array {
-                if let Some(stream_str) = stream.as_str() {
-                    let parts: Vec<&str> = stream_str.split(':').collect();
-                    if parts.len() == 2 {
-                        if let (Ok(port), Ok(id)) =
-                            (parts[0].parse::<u16>(), parts[1].parse::<u16>())
-                        {
-                            streams.push((port, id));
-                            continue;
-                        }
-                    }
-                    eprintln!("Warning: Invalid stream string format: {}", stream_str);
-                }
-            }
-        }
-        Self {
-            next_hop: object["next_hop"]
-                .as_u64()
-                .expect("Invalid next_hop field in JSON object, expected usize")
-                as usize,
-            id: object["id"]
-                .as_u64()
-                .expect("Invalid route id field in JSON object, expected usize")
-                as u8,
-            streams,
-        }
-    }
-
-    pub fn get_next_hop(&self) -> NodeId {
-        self.next_hop
-    }
-}
-
-#[derive(Clone)]
-#[allow(unused)]
-pub struct Flow {
-    flow_id: FlowId,
-    routes: Vec<Route>,
-}
-
-impl Flow {
-    pub fn new(flow_id: FlowId, routes: Vec<Route>) -> Self {
-        // let scheduler = StrideScheduler::from_routes(& mut routes);
-        Self { flow_id, routes }
-    }
-
-    pub fn from_json(object: &Value) -> Self {
-        let mut routes = Vec::<Route>::new();
-        if let Some(routes_array) = object["routes"].as_array() {
-            for route in routes_array {
-                routes.push(Route::from_json(route));
-            }
-        }
-
-        let flow_id = json_byte_array_to_flow_id(&object["flow_id"]);
-
-        Self::new(flow_id, routes)
-    }
-}
-
+/// The routing table in the dataplane.
 #[derive(Clone)]
 pub struct RoutingTable {
-    stream_mapping: FxHashMap<(FlowId, SocketId), u8>,
-    next_hop: FxHashMap<FlowId, NodeId>,
-    n_routes: FxHashMap<FlowId, usize>,
+    /// Local node ID
     pub local_id: NodeId,
+
+    /// Base IPv4 address for node ID calculation (e.g., [10, 0, 0, 0])
+    base_ipv4_addr: [u8; 4],
+
+    /// Source-destination pair -> available route IDs
+    available_routes: HashMap<(Ipv4Addr, Ipv4Addr), Vec<usize>>,
+
+    /// Route ID -> next hop
+    route_next_hop: HashMap<usize, NodeId>,
+
+    /// Jump consistent hasher (Lamping and Veach, Google 2014)
+    jump_hasher: JumpHasher,
 }
 
 impl RoutingTable {
-    pub fn new(local_id: NodeId) -> RoutingTable {
-        RoutingTable {
-            stream_mapping: FxHashMap::default(),
-            next_hop: FxHashMap::default(),
-            n_routes: FxHashMap::default(),
+    pub fn new(local_id: NodeId) -> Self {
+        Self {
+            route_next_hop: HashMap::new(),
+            available_routes: HashMap::new(),
             local_id,
+            base_ipv4_addr: [10, 0, 0, 0],
+            // rather than using the default jump hasher with randomized keys, use fixed keys instead
+            jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
         }
     }
 
-    pub fn merge(&mut self, routing_table: RoutingTable) {
-        // Updates the routing table with the new one
-        // Keeps residual path fragments from the old routing table
-        // to avoid dropping all packets in the queue.
-        for (flow_id, next_hop) in routing_table.next_hop {
-            self.next_hop.insert(flow_id, next_hop);
+    /// Set the base IPv4 address for node ID calculation
+    pub fn set_base_ipv4_addr(&mut self, base_addr: [u8; 4]) {
+        self.base_ipv4_addr = base_addr;
+    }
+
+    /// Install all the routes received from the controller.
+    pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
+        info!(
+            "RoutingTable: Installing {} routes for local_id {}",
+            routes.len(),
+            self.local_id
+        );
+
+        // Clear existing data
+        self.route_next_hop.clear();
+        self.available_routes.clear();
+
+        // Build the routing table from routes
+        for route in routes {
+            // source-destination pair → available route IDs
+            let src_ip = self.node_id_to_ip(route.src_node_id);
+            let dst_ip = self.node_id_to_ip(route.dst_node_id);
+            let src_dst_pair = (src_ip, dst_ip);
+
+            // route ID → next hop
+            self.route_next_hop.insert(route.route_id, route.next_hop);
+
+            self.available_routes
+                .entry(src_dst_pair)
+                .or_default()
+                .push(route.route_id);
+
+            info!(
+                "RoutingTable: Installed route {} ({} → {}): the next hop is {}.",
+                route.route_id, route.src_node_id, route.dst_node_id, route.next_hop
+            );
         }
-        for (flow_id, n_routes) in routing_table.n_routes {
-            self.n_routes.insert(flow_id, n_routes);
+    }
+
+    /// Extracts source and destination node IDs from the flow ID.
+    fn extract_src_dst_from_flow(&self, flow_id: FlowId) -> (Ipv4Addr, Ipv4Addr) {
+        let src_ip = flow_id.src_ip();
+        let dst_ip = flow_id.dst_ip();
+
+        (src_ip, dst_ip)
+    }
+
+    /// Converts a node ID to its IP address based on the base address.
+    fn node_id_to_ip(&self, node_id: usize) -> Ipv4Addr {
+        let base_ip = u32::from_be_bytes(self.base_ipv4_addr);
+        let ip_addr = base_ip + node_id as u32;
+
+        Ipv4Addr::from(ip_addr)
+    }
+
+    /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
+    /// when multiple routes are available between the same source and destination nodes.
+    pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
+        if flow_id == 0 {
+            // The flow ID cannot be successfully extracted, no routing is possible
+            return Some(0);
         }
-        for (flow_id, route_id) in routing_table.stream_mapping {
-            self.stream_mapping.insert(flow_id, route_id);
-        }
+
+        // obtains the source-destination pair as the key for the available routes
+        let src_dst_pair = self.extract_src_dst_from_flow(flow_id);
+
+        // gets the available routes for this source-destination pair
+        let available_routes = self.available_routes.get(&src_dst_pair)?;
+
+        // Use jump hash to select among the available routes
+        let selected_route_id = if available_routes.len() == 1 {
+            available_routes[0]
+        } else {
+            // Applies a deterministic consistent hash function using jump hash for load balancing;
+            // The same flow ID always maps to the same route ID.
+            let hash_result = self
+                .jump_hasher
+                .slot(&flow_id, available_routes.len() as u32);
+            available_routes[hash_result as usize]
+        };
+
+        debug!(
+            "Route ID {} is selected for destination {}:{} from {} available routes.",
+            selected_route_id,
+            flow_id.dst_ip(),
+            flow_id.dst_port(),
+            available_routes.len()
+        );
+
+        Some(selected_route_id)
     }
 
-    pub fn add_flow(&mut self, flow: Flow) {
-        // adds a new flow to the routing table, and replaces if it already exists
-        let flow_id = flow.flow_id;
-
-        for route in flow.routes.clone() {
-            let route_id = route.id as u64;
-
-            // adds the route id to the third component of the sender ipv4 address
-            let flow_route_id = flow_id + (route_id << 40);
-
-            self.next_hop
-                .insert(flow_route_id & FLOW_ID_PATH_MASK, route.next_hop);
-            self.n_routes
-                .insert(flow_id & FLOW_ID_PATH_MASK, flow.routes.len());
-            for stream in route.streams {
-                self.stream_mapping.insert((flow_id, stream), route.id);
-            }
-        }
-    }
-
-    pub fn get_num_paths(&self, flow_id: &FlowId) -> usize {
-        self.n_routes
-            .get(&(*flow_id & FLOW_ID_PATH_MASK))
-            .copied()
-            .unwrap_or(1)
-    }
-
-    pub fn get_path_id(&self, flow_id: &FlowId, stream_id: &SocketId) -> Option<u8> {
-        self.stream_mapping.get(&(*flow_id, *stream_id)).copied()
-    }
-
-    pub fn insert_stream_mapping(&mut self, flow_id: FlowId, stream_id: SocketId, route_id: u8) {
-        self.stream_mapping.insert((flow_id, stream_id), route_id);
-    }
-
-    pub fn next_hop(&self, flow_id: &FlowId) -> Option<&NodeId> {
-        self.next_hop.get(&(*flow_id & FLOW_ID_PATH_MASK))
+    /// Get next_hop by route ID
+    pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
+        self.route_next_hop.get(&route_id).copied()
     }
 }

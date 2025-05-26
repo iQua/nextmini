@@ -8,29 +8,21 @@ use tokio_tungstenite::tungstenite::Message;
 use futures_util::{SinkExt, StreamExt};
 use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Pool, Postgres};
+use sqlx::{Pool, Postgres, Row};
 
 use crate::WebSocketWriter;
 use crate::config;
 use crate::models::Route;
-use crate::utils::build_install_routes_message;
+use crate::utils::build_routes_for_node;
+use tracing::{error, info, warn};
 
-pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
-    // connects to the PostgreSQL database
-    let db_url = format!(
-        "postgres://{}:{}@{}:{}/{}",
-        config.db.user, config.db.password, config.db.host, config.db.port, config.db.database
-    );
-
-    println!("Connecting to PostgreSQL: {}", db_url);
-
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&db_url)
-        .await
-        .expect("Failed to connect to database");
-
-    // creates the tables in the database, if they do not exist yet
+/// Creates the tables in the database, if they do not exist yet.
+async fn create_db(pool: &Pool<Postgres>) {
+    // private_network_name: Used to identify which private network (cluster) the node belongs to.
+    // private_network_addr: Address of the node in the private network.
+    // public_network_addr: Address of the node in the public network, when connecting to other private networks
+    // over the public internet.
+    // virtual_network_addr: Address of the node in the virtual network, established by Nextmini.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS nodes (
@@ -38,28 +30,30 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             private_network_name TEXT,
             private_network_addr TEXT NOT NULL,
             public_network_addr TEXT NOT NULL,
-            virtual_network_addr TEXT NOT NULL,
-            connections INTEGER[] NOT NULL
+            virtual_network_addr TEXT NOT NULL
         )
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to create nodes table");
 
+    // route_id: Unique identifier for the route, automatically assigned by controller.
+    // route: all hops in the route, as an array of node IDs. e.g. [1, 2, 3]
+    // src_node_id: Source node ID in the route.
+    // dst_node_id: Destination node ID in the route.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS routes (
+            route_id SERIAL PRIMARY KEY,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            route_id INTEGER NOT NULL,
-            hops INTEGER[] NOT NULL,
-            streams TEXT,
-            PRIMARY KEY (src_node_id, dst_node_id, route_id)
+            route INTEGER[] NOT NULL,
+            UNIQUE (src_node_id, dst_node_id, route)
         )
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to create routes table");
 
@@ -67,160 +61,249 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         r#"
         CREATE TABLE IF NOT EXISTS metrics (
             id SERIAL PRIMARY KEY,
-            src_id INTEGER,
-            dst_id INTEGER,
-            route_id INTEGER,
             prev_hop_id INTEGER,
             hop_id INTEGER,
-            flow_id INTEGER[],
-            stream_id TEXT,
+            flow_id BYTEA,
             time_read TIMESTAMP,
             bps INTEGER
         )
         "#,
     )
-    .execute(&pool)
+    .execute(pool)
     .await
     .expect("Failed to create metrics table");
+}
 
-    if config.reset_db {
-        // resets the entire database for a new session, if needed
-        sqlx::query("TRUNCATE TABLE nodes, routes, metrics")
-            .execute(&pool)
-            .await
-            .expect("Failed to reset database");
-    } else {
-        // the nodes table will always be reset
-        sqlx::query("TRUNCATE TABLE nodes")
-            .execute(&pool)
-            .await
-            .expect("Failed to reset database");
-    }
+// Resets the entire database.
+async fn reset_db(pool: &Pool<Postgres>) {
+    // drops the existing tables to ensure schema changes are applied
+    sqlx::query("DROP TABLE IF EXISTS metrics")
+        .execute(pool)
+        .await
+        .expect("Failed to drop metrics table");
 
-    // adds initial routes from presets
-    println!("Adding preset routes from the configuration file.");
+    sqlx::query("DROP TABLE IF EXISTS routes")
+        .execute(pool)
+        .await
+        .expect("Failed to drop routes table");
 
-    if let Some(preset_topology) = &config.routes_preset.preset_topology {
-        let n_nodes = config.routes_preset.n_nodes.unwrap_or(0);
-        let route_ids = config.routes_preset.route_ids.clone().unwrap_or(vec![0]);
+    sqlx::query("DROP TABLE IF EXISTS nodes")
+        .execute(pool)
+        .await
+        .expect("Failed to drop nodes table");
+
+    // recreates the tables with current schema
+    sqlx::query(
+        r#"
+        CREATE TABLE nodes (
+            id SERIAL PRIMARY KEY,
+            private_network_name TEXT,
+            private_network_addr TEXT NOT NULL,
+            public_network_addr TEXT NOT NULL,
+            virtual_network_addr TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate nodes table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE routes (
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
+            route_id SERIAL PRIMARY KEY,
+            route INTEGER[] NOT NULL,
+            UNIQUE (src_node_id, dst_node_id, route)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate routes table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE metrics (
+            id SERIAL PRIMARY KEY,
+            prev_hop_id INTEGER,
+            hop_id INTEGER,
+            flow_id BYTEA,
+            time_read TIMESTAMP,
+            bps INTEGER
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate metrics table");
+}
+
+/// Connects to and initializes the PostgreSQL database.
+pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
+    // connects to the PostgreSQL database
+    let db_url = format!(
+        "postgres://{}:{}@{}:{}/{}",
+        config.db.user, config.db.password, config.db.host, config.db.port, config.db.database
+    );
+
+    info!("Connecting to PostgreSQL: {}", db_url);
+
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("Failed to connect to database");
+
+    // creates the database and tables if they do not exist, and then resets it
+    create_db(&pool).await;
+    reset_db(&pool).await;
+
+    // adds the topology and direct links between neighbouring nodes as initial routes
+    if let Some(preset_topology) = &config.topology.topology_type {
+        let n_nodes = config.topology.n_nodes.unwrap_or(0);
+        info!(
+            "Adding the {:?} topology with {} nodes.",
+            preset_topology, n_nodes
+        );
 
         match preset_topology {
             config::PresetTopology::FullMesh => {
-                for id in &route_ids {
-                    for i in 1..=n_nodes {
-                        for j in 1..=n_nodes {
-                            if i == j {
-                                continue;
-                            }
+                for src_node in 1..=n_nodes {
+                    for dest_node in 1..=n_nodes {
+                        if src_node == dest_node {
+                            continue; // skips loopback routes
+                        }
 
-                            let route = Route {
-                                src_node_id: i as i32,
-                                dst_node_id: j as i32,
-                                route_id: *id as i32,
-                                hops: vec![i as i32, j as i32],
-                                streams: Some("[]".to_string()),
-                            };
+                        let route_path = vec![src_node as i32, dest_node as i32];
 
-                            sqlx::query(
-                                r#"
-                                INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-                                VALUES ($1, $2, $3, $4, $5)
-                                ON CONFLICT (src_node_id, dst_node_id, route_id)
-                                DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
-                                "#
-                            )
-                            .bind(route.src_node_id)
-                            .bind(route.dst_node_id)
-                            .bind(route.route_id)
-                            .bind(&route.hops)
-                            .bind(&route.streams)
-                            .execute(&pool)
-                            .await
-                            .expect("Failed to insert full mesh route");
+                        let result = sqlx::query(
+                            r#"
+                            INSERT INTO routes (src_node_id, dst_node_id, route)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                            RETURNING route_id
+                            "#,
+                        )
+                        .bind(src_node as i32)
+                        .bind(dest_node as i32)
+                        .bind(&route_path)
+                        .fetch_optional(&pool)
+                        .await
+                        .expect("Failed to insert full mesh route");
+
+                        if let Some(row) = result {
+                            let route_id: i32 = row.get("route_id");
+                            info!(
+                                "Created full mesh route ID {} from node {} to node {}",
+                                route_id, src_node, dest_node
+                            );
                         }
                     }
                 }
             }
             config::PresetTopology::Ring => {
-                for id in &route_ids {
-                    for i in 1..n_nodes {
-                        let j = i + 1;
-                        let route = Route {
-                            src_node_id: i as i32,
-                            dst_node_id: j as i32,
-                            route_id: *id as i32,
-                            hops: vec![i as i32, j as i32],
-                            streams: Some("[]".to_string()),
-                        };
-                        sqlx::query(
-                            r#"
-                            INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-                            VALUES ($1, $2, $3, $4, $5)
-                            ON CONFLICT (src_node_id, dst_node_id, route_id)
-                            DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
-                            "#,
-                        )
-                        .bind(route.src_node_id)
-                        .bind(route.dst_node_id)
-                        .bind(route.route_id)
-                        .bind(&route.hops)
-                        .bind(&route.streams)
-                        .execute(&pool)
-                        .await
-                        .expect("Failed to insert ring route");
-                    }
+                // adds links between neighbouring nodes on the ring
+                for src_node in 1..n_nodes {
+                    let dest_node = src_node + 1;
+                    let route_path = vec![src_node as i32, dest_node as i32];
 
-                    let route = Route {
-                        src_node_id: n_nodes as i32,
-                        dst_node_id: 1,
-                        route_id: *id as i32,
-                        hops: vec![n_nodes as i32, 1],
-                        streams: Some("[]".to_string()),
-                    };
-
-                    sqlx::query(
+                    let result = sqlx::query(
                         r#"
-                        INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (src_node_id, dst_node_id, route_id)
-                        DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
+                        INSERT INTO routes (src_node_id, dst_node_id, route)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                        RETURNING route_id
                         "#,
                     )
-                    .bind(route.src_node_id)
-                    .bind(route.dst_node_id)
-                    .bind(route.route_id)
-                    .bind(&route.hops)
-                    .bind(&route.streams)
-                    .execute(&pool)
+                    .bind(src_node as i32)
+                    .bind(dest_node as i32)
+                    .bind(&route_path)
+                    .fetch_optional(&pool)
                     .await
-                    .expect("Failed to insert ring closure route");
+                    .expect("Failed to insert ring route");
+
+                    if let Some(row) = result {
+                        let route_id: i32 = row.get("route_id");
+                        info!(
+                            "Created ring route ID {} from node {} to node {}",
+                            route_id, src_node, dest_node
+                        );
+                    }
+                }
+
+                // Add ring closure: connect last node back to first node
+                let route_path = vec![n_nodes as i32, 1];
+
+                let result = sqlx::query(
+                    r#"
+                    INSERT INTO routes (src_node_id, dst_node_id, route)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+                    RETURNING route_id
+                    "#,
+                )
+                .bind(n_nodes as i32)
+                .bind(1)
+                .bind(&route_path)
+                .fetch_optional(&pool)
+                .await
+                .expect("Failed to insert ring closure route");
+
+                if let Some(row) = result {
+                    let route_id: i32 = row.get("route_id");
+                    info!(
+                        "Created ring closure route_id {} from node {} to node 1",
+                        route_id, n_nodes
+                    );
                 }
             }
         }
     }
 
-    // adds initial routes from the configuration file
-    println!("Adding initial routes from the configuration file.");
+    // adds custom routes from the configuration file
+    info!("Adding custom routes from the configuration file.");
 
-    for mut route in config.routes.clone() {
-        route.streams = Some(route.streams.unwrap_or_else(|| "[]".to_string()));
+    for route in config.routes.clone() {
+        if route.route.is_empty() {
+            warn!("Skipping empty route");
+            continue;
+        }
 
-        sqlx::query(
+        // Auto-infer src_node_id and dst_node_id from route path
+        let src_node_id = route.route[0] as i32;
+        let dst_node_id = route.route[route.route.len() - 1] as i32;
+        let route_path = route.route.iter().map(|&x| x as i32).collect::<Vec<_>>();
+
+        // Insert route with auto-generated route_id
+        let result = sqlx::query(
             r#"
-            INSERT INTO routes (src_node_id, dst_node_id, route_id, hops, streams)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (src_node_id, dst_node_id, route_id)
-            DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams
+            INSERT INTO routes (src_node_id, dst_node_id, route)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
+            RETURNING route_id
             "#,
         )
-        .bind(route.src_node_id as i32)
-        .bind(route.dst_node_id as i32)
-        .bind(route.route_id as i32)
-        .bind(route.hops.iter().map(|&x| x as i32).collect::<Vec<_>>())
-        .bind(&route.streams)
-        .execute(&pool)
+        .bind(src_node_id)
+        .bind(dst_node_id)
+        .bind(&route_path)
+        .fetch_optional(&pool)
         .await
-        .expect("Failed to insert initial route");
+        .expect("Failed to insert custom route");
+
+        if let Some(row) = result {
+            let route_id: i32 = row.get("route_id");
+            info!(
+                "Auto-assigned route_id {} to custom route from node {} to node {} with path {:?}",
+                route_id, src_node_id, dst_node_id, route.route
+            );
+        } else {
+            info!(
+                "Skipped duplicate route from node {} to node {} with path {:?}",
+                src_node_id, dst_node_id, route.route
+            );
+        }
     }
 
     pool
@@ -228,7 +311,6 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
 pub async fn setup_notification(
     db_pool: Arc<Pool<Postgres>>,
-    config: config::Config,
 
     // a hashmap from the node ID to its corresponding WebSocket sink
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
@@ -240,7 +322,7 @@ pub async fn setup_notification(
         CREATE OR REPLACE FUNCTION notify_trigger_function()
         RETURNS TRIGGER AS $$
         BEGIN
-            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '","route_id":"'|| NEW.route_id || '","hops":"' || array_to_string(NEW.hops, ',') || '","streams":"'|| NEW.streams || '"}');
+            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '","route_id":"'|| NEW.route_id || '","route":"' || array_to_string(NEW.route, ',') || '"}');
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -309,12 +391,10 @@ pub async fn setup_notification(
                 Ok(notif) => {
                     let channel = notif.channel();
 
-                    if (channel == "auto_sync_routes" && config.auto_db_sync)
-                        || channel == "sync_routes"
-                    {
+                    if channel == "auto_sync_routes" {
                         // Strato does not support installing routes individually, so we need to find
                         // all routes from the database and re-install them all
-                        println!("Installing route updates into the dataplane.");
+                        info!("Installing route updates into the dataplane.");
 
                         let routes: Vec<Route> = sqlx::query_as("SELECT * FROM routes")
                             .fetch_all(&*db_pool)
@@ -325,11 +405,9 @@ pub async fn setup_notification(
                         let node_ws_guard = node_ws.read().await;
 
                         for (node_id, ws_arc) in node_ws_guard.iter() {
-                            if let Some(msg) = build_install_routes_message(
-                                &config,
-                                routes.clone(),
-                                *node_id as i32,
-                            ) {
+                            if let Some(msg) =
+                                build_routes_for_node(routes.clone(), *node_id as i32)
+                            {
                                 let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
                                 ws_arc
@@ -339,15 +417,15 @@ pub async fn setup_notification(
                                     .await
                                     .unwrap();
 
-                                println!("Installing routes on node {}.", node_id);
+                                info!("Installing routes on node {}.", node_id);
                             } else {
-                                println!("Error: No node to install flow to.");
+                                error!("No node to install flow to.");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    println!("Error receiving notification: {}", e);
+                    error!("Error receiving notification: {}", e);
                 }
             }
         }
