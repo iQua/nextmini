@@ -33,7 +33,7 @@ impl Packet {
             // src_ip(32) + dst_ip(32) + src_port(16) + dst_port(16) + reserved(32)
             (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
         } else {
-            return 0;
+            0
         }
     }
 }

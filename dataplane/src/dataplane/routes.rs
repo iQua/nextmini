@@ -84,7 +84,7 @@ impl RoutingTable {
         let src_ip = flow_id.src_ip();
         let dst_ip = flow_id.dst_ip();
 
-        (Ipv4Addr::from(src_ip), Ipv4Addr::from(dst_ip))
+        (src_ip, dst_ip)
     }
 
     /// Converts a node ID to its IP address based on the base address.
