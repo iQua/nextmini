@@ -214,7 +214,7 @@ impl Processor {
     async fn send_packet_to_next_hop(
         &mut self,
         packet: Packet,
-        next_hop_id: usize,
+        next_hop_id: NodeId,
         packet_flow_id: FlowId,
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
