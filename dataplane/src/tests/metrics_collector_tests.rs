@@ -1,8 +1,8 @@
 use approx::assert_relative_eq;
 use nextmini_messages::DataplaneToController;
 
-use crate::dataplane::metrics::Collector;
-use crate::dataplane::{FlowId, NodeId};
+use crate::node::metrics::Collector;
+use crate::node::{FlowId, NodeId};
 
 #[tokio::test]
 async fn tests_new() {
@@ -32,18 +32,10 @@ async fn test_collector_run() {
     let n_bytes = 500;
 
     // Send metrics: 4 messages for flow_id, each with 500 bytes
-    metrics_tx
-        .send((flow_id, node_id, n_bytes))
-        .unwrap();
-    metrics_tx
-        .send((flow_id, node_id, n_bytes))
-        .unwrap();
-    metrics_tx
-        .send((flow_id, node_id, n_bytes))
-        .unwrap();
-    metrics_tx
-        .send((flow_id, node_id, n_bytes))
-        .unwrap();
+    metrics_tx.send((flow_id, node_id, n_bytes)).unwrap();
+    metrics_tx.send((flow_id, node_id, n_bytes)).unwrap();
+    metrics_tx.send((flow_id, node_id, n_bytes)).unwrap();
+    metrics_tx.send((flow_id, node_id, n_bytes)).unwrap();
 
     // Wait longer than the collection rate to ensure processing
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;

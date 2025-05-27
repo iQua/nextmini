@@ -38,7 +38,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub async fn connect(configs: LocalConfigs, shutdown_tx: watch::Sender<bool>) -> Controller {
+    pub async fn new(configs: LocalConfigs, shutdown_tx: watch::Sender<bool>) -> Controller {
         let url = url::Url::parse(&configs.server_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
         loop {

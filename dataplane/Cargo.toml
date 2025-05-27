@@ -8,8 +8,6 @@ default-run = "nextmini"
 name = "nextmini"
 path = "src/main.rs"
 
-
-
 [dependencies]
 byteorder = "1.5"
 bytes = "1"

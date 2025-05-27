@@ -1,12 +1,12 @@
-mod dataplane;
+mod node;
 mod tests;
 
 use tokio::sync::watch;
 use tracing::info;
 
-use dataplane::configs;
-use dataplane::controller_interface::Controller;
-use dataplane::protocols_server::start_protocols_server;
+use node::configs;
+use node::controller::Controller;
+use node::protocols_server::start_protocols_server;
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -24,7 +24,7 @@ fn main() {
             let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
             // starts a controller interface and connnect to the controller
-            let mut controller = Controller::connect(configs.clone(), shutdown_tx).await;
+            let mut controller = Controller::new(configs.clone(), shutdown_tx).await;
 
             // starts the protocol servers to accept inter-node connections
             start_protocols_server(
