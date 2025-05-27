@@ -22,12 +22,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
     // A channel for the main tokio task to signal a shutdown signal to the Conductor actor.
-    let (shutdown_send, shutdown_recv) = mpsc::unbounded_channel();
+    let (shutdown_sender, shutdown_receiver) = mpsc::unbounded_channel();
 
     // creates a TaskTracker to manage graceful shutdowns
     let tracker = TaskTracker::new();
 
-    let conductor = Conductor::new(shutdown_recv);
+    let conductor = Conductor::new(shutdown_receiver);
 
     // Spawn the Conductor task with the receiver
     tracker.spawn(conductor.run());
@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         _ = signal::ctrl_c() => {
             info!("Received Ctrl + C. Shutting down Nextmini gracefully...");
-            shutdown_send.send(()).expect("Failed to send shutdown signal to the conductor.");
+            shutdown_sender.send(()).expect("Failed to send shutdown signal to the conductor.");
             tracker.wait().await;
         },
     }

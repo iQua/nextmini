@@ -17,14 +17,15 @@ use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
-use crate::dataplane::RateLimiterMap;
-use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
-use crate::dataplane::context::Context;
-use crate::dataplane::local_interface::create_tun_device;
-use crate::dataplane::metrics::Collector;
-use crate::dataplane::processor::ProcessorManager;
-use crate::dataplane::protocols_client;
-use crate::dataplane::utils::RateLimiter;
+use crate::node::config::LocalConfig;
+
+use crate::node::RateLimiterMap;
+use crate::node::context::Context;
+use crate::node::local_interface::create_tun_device;
+use crate::node::metrics::Collector;
+use crate::node::processor::ProcessorManager;
+use crate::node::protocols_client;
+use crate::node::utils::RateLimiter;
 
 enum ControllerMessage {
     Shutdown,
@@ -35,9 +36,9 @@ pub struct ControllerHandle {
 }
 
 impl ControllerHandle {
-    pub fn new() -> Self {
+    pub fn new(config: LocalConfig, shutdown_sender: mpsc::UnboundedReceiver<()>) -> Self {
         let (sender, receiver) = mpsc::channel(10);
-        let controller = Controller::new(receiver);
+        let controller = Controller::new(config, receiver, shutdown_sender);
         tokio::spawn(async move { controller.run().await });
 
         Self { sender }
@@ -49,6 +50,7 @@ impl ControllerHandle {
             .await
             .expect("Failed to shutdown the controller.");
     }
+}
 
 pub struct Controller {
     controller_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
