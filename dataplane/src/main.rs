@@ -8,32 +8,40 @@ mod node;
 mod tests;
 
 use tokio::signal;
+use tokio::sync::mpsc;
 use tokio_util::task::TaskTracker;
+
 use tracing::info;
 
 use node::conductor::Conductor;
-use node::config::LocalConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let configs = LocalConfig::new();
 
-    let (shutdown_send, mut shutdown_recv) = mpsc::unbounded_channel();
+    // A channel for the main tokio task to signal a shutdown signal to the Conductor actor.
+    let (shutdown_send, shutdown_recv) = mpsc::unbounded_channel();
 
+    // creates a TaskTracker to manage graceful shutdowns
     let tracker = TaskTracker::new();
-    tracker.spawn(Conductor::run(shutdown_send));
+
+    let conductor = Conductor::new(shutdown_recv);
+
+    // Spawn the Conductor task with the receiver
+    tracker.spawn(Conductor::run());
     tracker.close();
 
-    // Wait for everything to finish.
-    tracker.wait().await;
-
     tokio::select! {
-        _ = signal::ctrl_c() => {},
-        _ = shutdown_recv.recv() => {},
+        _ = tracker.wait() => {
+            info!("Nextmini finished normally.");
+        },
+        _ = signal::ctrl_c() => {
+            info!("Received Ctrl + C. Shutting down Nextmini gracefully...");
+            shutdown_send.send(()).expect("Failed to send shutdown signal to the conductor.");
+            tracker.wait().await;
+        },
     }
 
-    info!("Shutting down Nextmini gracefully...");
     Ok(())
 }
 
