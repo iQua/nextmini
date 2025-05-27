@@ -7,16 +7,18 @@
 mod node;
 mod tests;
 
+use std::error::Error;
+
 use tokio::signal;
 use tokio::sync::mpsc;
-use tokio_util::task::TaskTracker;
+use tokio_util::task_tracker::TaskTracker;
 
 use tracing::info;
 
 use node::conductor::Conductor;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
     // A channel for the main tokio task to signal a shutdown signal to the Conductor actor.

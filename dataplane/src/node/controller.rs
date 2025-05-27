@@ -12,6 +12,7 @@ use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde_json::Value;
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
@@ -24,6 +25,30 @@ use crate::dataplane::metrics::Collector;
 use crate::dataplane::processor::ProcessorManager;
 use crate::dataplane::protocols_client;
 use crate::dataplane::utils::RateLimiter;
+
+enum ControllerMessage {
+    Shutdown,
+}
+
+pub struct ControllerHandle {
+    sender: mpsc::Sender<ControllerMessage>,
+}
+
+impl ControllerHandle {
+    pub fn new() -> Self {
+        let (sender, receiver) = mpsc::channel(10);
+        let controller = Controller::new(receiver);
+        tokio::spawn(async move { controller.run().await });
+
+        Self { sender }
+    }
+
+    pub async fn shutdown(&self) {
+        self.sender
+            .send(ControllerMessage::Shutdown)
+            .await
+            .expect("Failed to shutdown the controller.");
+    }
 
 pub struct Controller {
     controller_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -38,7 +63,7 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub async fn new(configs: LocalConfigs, shutdown_tx: watch::Sender<bool>) -> Controller {
+    pub async fn run(configs: LocalConfigs, shutdown_tx: watch::Sender<bool>) -> Controller {
         let url = url::Url::parse(&configs.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
         loop {
