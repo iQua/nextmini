@@ -110,46 +110,41 @@ impl ProcessorManager {
     }
 }
 
-pub struct Processor {
-    // The channel receiver to obtain packets from NodeReceiver or TUN reader
-    receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
 
-    // The simplified routing table
+/// Actor Model Implementation
+
+// Processor: Processes packets and forwards them to the next hop
+struct Processor {
+    // Processor Receiver
+    receiver: flume::Receiver<ProcessorMessage>,
+
+    // Data Used by the processor
     routing_table: RoutingTable,
+    local_id: NodeId,
 
-    // The senders that send packets to the network
-    senders: FxHashMap<NodeId, NodeSender>,
-
-    // The local interface writer
-    tun_writer: TunWriter,
-
-    // The flag to indicate if the processor should shutdown
-    should_shutdown: Arc<AtomicBool>,
-
-    // The metrics collector channel
-    metrics_tx: MetricsTx,
+    // Handles to send to the next stage
+    local_writer_handle: LocalWriterHandle,
+    scheduler_handles: HashMap<NodeId, SchedulerHandle>,
+    metrics_collector_handle: MetricsCollectorHandle,
 }
 
 impl Processor {
-    pub fn new(
-        receiver_rx: Arc<RwLock<mpsc::Receiver<Packet>>>,
-        routing_table: RoutingTable,
-        senders: FxHashMap<NodeId, NodeSender>,
-        tun_writer: TunWriter,
-        should_shutdown: Arc<AtomicBool>,
-        metrics_tx: MetricsTx,
-    ) -> Self {
-        Self {
-            receiver_rx,
-            routing_table,
-            senders,
-            tun_writer,
-            should_shutdown,
-            metrics_tx,
+    async fn run(&mut self) {
+
+        // TODO : Integrate metrics_collector_handle
+
+        while let Ok(msg) = self.receiver.recv_async().await {
+            match msg {
+                ProcessorMessage::ProcessPacket(packet) => {
+                    self.process_packet(packet).await;
+                }
+                ProcessorMessage::UpdateRoutingTable(new_table) => {
+                    self.routing_table = new_table;
+                }
+            }
         }
     }
 
-    /// Process inbound packets for outbound delivery
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
@@ -210,7 +205,6 @@ impl Processor {
             .await
     }
 
-    /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
     async fn send_packet_to_next_hop(
         &mut self,
         packet: Packet,
@@ -228,13 +222,13 @@ impl Processor {
             self.tun_writer.write_packet(packet).await;
             Ok(())
         } else {
-            match self.senders.get_mut(&next_hop_id) {
-                Some(sender) => {
+            match self.scheduler_handles.get_mut(&next_hop_id) {
+                Some(scheduler_handle) => {
                     debug!(
                         "Forwarding packet to node {} for flow {} (size: {})",
                         next_hop_id, packet_flow_id, packet.packet_size
                     );
-                    sender.send(packet).await;
+                    scheduler_handle.send(packet).await;
                     Ok(())
                 }
                 None => {
@@ -248,104 +242,60 @@ impl Processor {
             }
         }
     }
-
-    pub async fn run(&mut self) {
-        // Do some intialization before starting the main loop
-        let batch_size = 256;
-
-        // Start the main loop
-        loop {
-            let packets = {
-                let mut receiver = self.receiver_rx.write().await;
-                let mut batch = Vec::with_capacity(batch_size);
-
-                if self.should_shutdown.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                for i in 0..batch_size {
-                    // Wait for packets to be available
-                    let packet = if i == 0 {
-                        receiver
-                            .recv()
-                            .await
-                            .expect("Failed to receive data from receiver interface.")
-                    } else {
-                        // If we can continue to receive packet, do it
-                        // Otherwise, break the inner loop to wait for more packets.
-                        match receiver.try_recv() {
-                            Ok(p) => p,
-                            Err(_) => break,
-                        }
-                    };
-
-                    batch.push(packet);
-                }
-                batch
-            };
-
-            // Process the batch of packets
-            for packet in packets {
-                // Report metrics for the packet
-                self.metrics_tx
-                    .send((
-                        packet.flow_id,
-                        self.routing_table.local_id,
-                        packet.packet_size,
-                    ))
-                    .expect("Failed to send metrics to the metrics collector.");
-
-                if let Err(error_msg) = self.process_packet(packet).await {
-                    warn!("Packet dropped with error: {}.", error_msg);
-
-                    continue;
-                }
-            }
-        }
-    }
+    
 }
 
 #[derive(Clone)]
-pub struct SenderLoadBalancer {
-    txs: Vec<mpsc::Sender<Packet>>,
-    tx_current: usize,
-    flow2proc: FxHashMap<FlowId, usize>,
-    n_proc: usize,
+struct ProcessorHandle {
+    sender: flume::Sender<ProcessorMessage>,
 }
 
-impl SenderLoadBalancer {
-    pub fn new(txs: Vec<mpsc::Sender<Packet>>) -> Self {
-        let len = txs.len();
-        Self {
-            txs,
-            tx_current: 0,
-            flow2proc: FxHashMap::default(),
-            n_proc: len,
+impl ProcessorHandle {
+    
+    pub fn new(
+        // The size of the mpmc channel
+        mpmc_channel_size: usize,
+        // The number of processors
+        num_processors: usize,
+
+        // A copy of the routing table
+        routing_table: RoutingTable,
+        // The local id
+        local_id: NodeId,
+        
+        // The local writer handle
+        local_writer: LocalWriterHandle,
+        // The scheduler handles
+        scheduler_handles: HashMap<NodeId, SchedulerHandle>,
+        // The metrics collector handle
+        metrics_collector_handle: MetricsCollectorHandle,
+
+    ) -> Self {
+        let (processor_sender, processor_receiver) = bounded(mpmc_channel_size);
+        for _ in 0..num_processors {
+            let mut actor = Processor {
+                receiver: processor_receiver.clone(),
+                routing_table: routing_table.clone(),
+                local_id,
+                local_writer_handle: local_writer.clone(),
+                scheduler_handles: scheduler_handles.clone(),
+                metrics_collector_handle: metrics_collector_handle.clone(),
+            };
+            tokio::spawn(async move { actor.run().await });
         }
+        Self { sender: processor_sender }
     }
 
-    pub async fn send(&mut self, packet: Packet) {
-        let flow_id = packet.flow_id; // Extract flow_id early to avoid borrow issues
-        let proc_id;
-
-        if let Some(id) = self.flow2proc.get(&flow_id) {
-            proc_id = *id;
-        } else {
-            proc_id = self.tx_current;
-            self.flow2proc.insert(flow_id, proc_id);
-            self.tx_current = (self.tx_current + 1) % self.n_proc;
-        }
-
-        let tx = self
-            .txs
-            .get_mut(proc_id)
-            .expect("Error: Trying to send to a processor but the channel does not exist.");
-
-        if let Err(e) = tx.send(packet).await {
-            error!(
-                "Failed to send packet for flow {} to processor {}. Error: {:?}.",
-                flow_id, proc_id, e
-            );
-        };
+    pub async fn update_routing_table(&self, new_table: RoutingTable) {
+        self.sender
+            .send_async(ProcessorMessage::UpdateRoutingTable(new_table))
+            .await
+            .expect("Failed to send update to processor");
+    }
+    pub async fn process_packet(&self, packet: Packet) {
+        self.sender
+            .send_async(ProcessorMessage::ProcessPacket(packet))
+            .await
+            .expect("Failed to send packet to processor");
     }
 }
