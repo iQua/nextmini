@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
     let conductor = Conductor::new(shutdown_recv);
 
     // Spawn the Conductor task with the receiver
-    tracker.spawn(Conductor::run());
+    tracker.spawn(conductor.run());
     tracker.close();
 
     tokio::select! {
