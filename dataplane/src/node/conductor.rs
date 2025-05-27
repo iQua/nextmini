@@ -2,22 +2,30 @@
 /// the dataplane node, including the connection with the controller actor, all processor actors,
 /// the local reader and writer actors, and the metrics collector actor.
 use crate::node::config::LocalConfig;
-use crate::node::controller::Controller;
+use crate::node::controller::{Controller, ControllerHandle};
 
 pub struct Conductor {
     configs: LocalConfig,
-    controller: Controller,
+    controller_handle: ControllerHandle,
+
+    // used by actors local to the conductor to shutdown the conductor
     shutdown_recv: mpsc::UnboundedReceiver,
+
+    // used by the main tokio task to shutdown the conductor
+    main_shutdown_recv: mpsc::UnboundedReceiver,
 }
 
 impl Conductor {
-    pub fn new(shutdown_recv: mpsc::UnboundedReceiver) -> Self {
+    pub fn new(main_shutdown_recv: mpsc::UnboundedReceiver) -> Self {
         let configs = LocalConfig::new();
-        let controller = Controller::new(configs.clone());
+        let (shutdown_send, shutdown_recv) = mpsc::unbounded_channel();
+
+        let controller_handle = ControllerHandle::new(configs.clone(), shutdown_send.clone());
 
         Conductor {
             configs,
-            controller,
+            controller_handle,
+            main_shutdown_recv,
             shutdown_recv,
         }
     }
@@ -27,9 +35,13 @@ impl Conductor {
             _ = async { self.start().await;} => {
                 // At this point, the conductor actor has finished normally
             },
-            _ = shutdown_recv.recv() => {
-                // handles the shutdown signal by cleaning up all the actors
+            _ = self.shutdown_recv.recv() => {
+                // handles the local shutdown signal by cleaning up all the actors
                 conductor.shutdown().await;
+            },
+            _ = self.main_shutdown_recv.recv() => {
+                // handles the shutdown signal from the main tokio task
+                self.shutdown().await;
             },
         }
     }
