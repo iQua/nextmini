@@ -15,7 +15,7 @@ enum LocalWriterMessage {
     WritePacket(Packet),
 }
 
-enum SenderMessage {
+enum ProtocolSenderMessage {
     SendPacket(Packet),
 }
 
@@ -52,19 +52,26 @@ impl LocalWriterHandle {
         tokio::spawn(async move { actor.run().await });
         Self { sender }
     }
+
+    pub async fn send(&self, packet: Packet) {
+        self.sender
+            .send(LocalWriterMessage::WritePacket(packet))
+            .await
+            .expect("Failed to send to local writer");
+    }
 }
 
-// Sender: Handles sending packets to remote nodes
-struct Sender {
-    receiver: mpsc::Receiver<SenderMessage>,
+// ProtocolSender: Handles sending packets to remote nodes
+struct ProtocolSender {
+    receiver: mpsc::Receiver<ProtocolSenderMessage>,
     protocol_writer: ProtocolWriter,
 }
 
-impl Sender {
+impl ProtocolSender {
     async fn run(&mut self) {
         while let Some(msg) = self.receiver.recv().await {
             match msg {
-                SenderMessage::SendPacket(packet) => {
+                ProtocolSenderMessage::SendPacket(packet) => {
                     self.protocol_writer
                         .send(&packet.buf[0..packet.packet_size])
                         .await;
@@ -72,17 +79,24 @@ impl Sender {
             }
         }
     }
+
+    pub async fn send(&self, packet: Packet) {
+        self.sender
+            .send(ProtocolSenderMessage::SendPacket(packet))
+            .await
+            .expect("Failed to send to protocol sender");
+    }
 }
 
 #[derive(Clone)]
-struct SenderHandle {
-    sender: mpsc::Sender<SenderMessage>,
+struct ProtocolSenderHandle {
+    sender: mpsc::Sender<ProtocolSenderMessage>,
 }
 
-impl SenderHandle {
+impl ProtocolSenderHandle {
     pub fn new(protocol_writer: ProtocolWriter) -> Self {
         let (sender, receiver) = mpsc::channel(100);
-        let mut actor = Sender {
+        let mut actor = ProtocolSender {
             receiver,
             protocol_writer,
         };
@@ -96,8 +110,8 @@ struct Processor {
     receiver: mpsc::Receiver<ProcessorMessage>,
     routing_table: RoutingTable,
     local_id: NodeId,
-    local_writer_sender: mpsc::Sender<LocalWriterMessage>,
-    sender_senders: HashMap<NodeId, mpsc::Sender<SenderMessage>>,
+    local_writer_handle: LocalWriterHandle,
+    senders: HashMap<NodeId, ProtocolSenderHandle>,
 }
 
 impl Processor {
@@ -107,15 +121,12 @@ impl Processor {
                 ProcessorMessage::ProcessPacket(packet) => {
                     if let Some(next_hop) = self.routing_table.next_hop(&packet.flow_id) {
                         if *next_hop == self.local_id {
-                            self.local_writer_sender
-                                .send(LocalWriterMessage::WritePacket(packet))
+                            self.local_writer_handle
+                                .send(packet)
                                 .await
                                 .expect("Failed to send to local writer");
-                        } else if let Some(sender_sender) = self.sender_senders.get(next_hop) {
-                            sender_sender
-                                .send(SenderMessage::SendPacket(packet))
-                                .await
-                                .expect("Failed to send to sender");
+                        } else if let Some(sender) = self.senders.get(next_hop) {
+                            sender.send(packet).await.expect("Failed to send to sender");
                         } else {
                             println!("No sender for node {}", next_hop);
                         }
@@ -140,8 +151,8 @@ impl ProcessorHandle {
     pub fn new(
         routing_table: RoutingTable,
         local_id: NodeId,
-        local_writer_sender: mpsc::Sender<LocalWriterMessage>,
-        sender_senders: HashMap<NodeId, mpsc::Sender<SenderMessage>>,
+        local_writer: LocalWriterHandle,
+        protocol_senders: HashMap<NodeId, ProtocolSenderHandle>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(100);
         let mut actor = Processor {
@@ -149,7 +160,7 @@ impl ProcessorHandle {
             routing_table,
             local_id,
             local_writer_sender,
-            sender_senders,
+            senders,
         };
         tokio::spawn(async move { actor.run().await });
         Self { sender }
@@ -171,17 +182,15 @@ async fn setup_actors(
     protocol_writers: HashMap<NodeId, ProtocolWriter>,
 ) -> ProcessorHandle {
     let local_writer_handle = LocalWriterHandle::new(tun_writer);
-    let mut sender_senders = HashMap::new();
+
+    let mut senders = HashMap::new();
+
     for (node_id, protocol_writer) in protocol_writers {
         let sender_handle = SenderHandle::new(protocol_writer);
-        sender_senders.insert(node_id, sender_handle.sender);
+        senders.insert(node_id, sender_handle);
     }
-    ProcessorHandle::new(
-        routing_table,
-        local_id,
-        local_writer_handle.sender,
-        sender_senders,
-    )
+
+    ProcessorHandle::new(routing_table, local_id, local_writer_handle, sender_handle)
 }
 
 // Reader task to forward packets to the processor
