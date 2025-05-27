@@ -1,0 +1,89 @@
+use std::io::Cursor;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+
+use s2n_quic::Server;
+use s2n_quic::provider::congestion_controller;
+use tokio::net::TcpListener;
+use tokio::{io::AsyncReadExt, sync::RwLock};
+use tracing::{error, info};
+
+use nextmini_messages::Protocol;
+
+use crate::dataplane::configs::{CongestionControl, LocalConfigs};
+use crate::dataplane::context::Context;
+use crate::dataplane::processor::ProcessorManager;
+
+pub async fn start_protocols_server(
+    protocol: Protocol,
+    configs: LocalConfigs,
+    mut context: Context,
+    processor_manager: Arc<RwLock<ProcessorManager>>,
+) {
+    let public_port = configs.public_network_port.clone();
+    let private_port = configs.private_network_port.clone();
+
+    match protocol {
+        Protocol::Udp => {
+            context.start_udp_receiver().await;
+        }
+        Protocol::Tcp => {
+            if public_port == private_port {
+                let mut tcp_server = TcpServer::new(context.clone(), processor_manager.clone());
+                tokio::spawn(async move {
+                    tcp_server
+                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                        .await;
+                });
+
+                return;
+            }
+
+            let mut tcp_server = TcpServer::new(context.clone(), processor_manager.clone());
+            tokio::spawn(async move {
+                tcp_server
+                    .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                    .await;
+            });
+
+            let mut tcp_server = TcpServer::new(context.clone(), processor_manager.clone());
+            tokio::spawn(async move {
+                tcp_server
+                    .start_listening(&format!("{}:{}", "0.0.0.0", private_port))
+                    .await;
+            });
+        }
+        Protocol::Quic => {
+            if public_port == private_port {
+                let mut quic_server =
+                    QuicServer::new(context.clone(), configs.clone(), processor_manager.clone());
+                tokio::spawn(async move {
+                    quic_server
+                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                        .await;
+                });
+
+                return;
+            }
+
+            let mut quic_server =
+                QuicServer::new(context.clone(), configs.clone(), processor_manager.clone());
+
+            tokio::spawn(async move {
+                quic_server
+                    .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                    .await;
+            });
+
+            let mut quic_server =
+                QuicServer::new(context.clone(), configs.clone(), processor_manager.clone());
+
+            tokio::spawn(async move {
+                quic_server
+                    .start_listening(&format!("{}:{}", "0.0.0.0", private_port))
+                    .await;
+            });
+        }
+    }
+}
