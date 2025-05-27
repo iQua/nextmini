@@ -21,6 +21,7 @@ futures = "0.3"
 network-interface = "2.0"
 tokio = { version = "1", features = ["full", "rt"] }
 tokio-tungstenite = "0.26"
+tokio-util = "1.70"
 tun-rs = { version = "2", features = ["async"] }
 url = "2.3.1"
 clap-serde-derive = "0.2.0"
