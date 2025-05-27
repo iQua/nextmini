@@ -182,11 +182,13 @@ impl ControllerReceiver {
             let msg = match self.controller_receiver_stream.next().await.unwrap() {
                 Ok(msg) => msg,
                 Err(e) => {
-                    info!("Connection with the controller is broken. Restarting node state..");
-                    info!("Connection Lost with Error: {:?}", e);
+                    error!(
+                        "Connection with the controller is lost with error: {:?}. Restarting or shutting down...",
+                        e
+                    );
                     self.shutdown_tx
                         .send(true)
-                        .expect("Failed to send shutdown signal to main task");
+                        .expect("Failed to shutdown the main Tokio task.");
                     return;
                 }
             };

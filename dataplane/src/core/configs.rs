@@ -97,7 +97,7 @@ pub struct LocalConfigs {
     #[arg(long)]
     pub public_network_addr: String,
 
-    /// The name of the tun interface
+    /// The name of the local TUN interface
     #[default("utun".to_string())]
     #[arg(long)]
     pub tun_interface_name: String,
@@ -112,23 +112,6 @@ pub struct LocalConfigs {
     #[default(false)]
     #[arg(long)]
     pub restart_on_disconnect: bool,
-
-    /// Whether tokio-console logging should be enabled for performance fine-tuning.
-    #[default(false)]
-    #[arg(long)]
-    pub enable_tokio_console: bool,
-
-    /// Runtime fine-tuning: event_interval. A value of 0 uses Tokio's default seting. See
-    /// https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html#method.event_interval.
-    #[default(0)]
-    #[arg(long)]
-    pub rt_event_interval: u32,
-
-    /// Runtime fine-tuning: the number of worker threads. A value of 0 uses the same number as available
-    /// CPU cores.
-    #[default(0)]
-    #[arg(long)]
-    pub rt_n_worker_threads: usize,
 
     /// QUIC congestion control algorithm to use.
     #[default(CongestionControl::Bbr)]
@@ -170,10 +153,10 @@ impl ControllerConfigs {
                 local_address: (addr[0], addr[1], addr[2], addr[3]),
                 local_netmask: (net_mask[0], net_mask[1], net_mask[2], net_mask[3]),
                 protocol,
-                scheduler_type: SchedulingDiscipline::Fifo, // Default for now
+                scheduler_type: SchedulingDiscipline::Fifo,
             }
         } else {
-            panic!("Invalid startup message from controller");
+            panic!("Invalid startup message from the controller");
         }
     }
 }

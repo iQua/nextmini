@@ -1,6 +1,7 @@
 mod dataplane;
 mod tests;
 
+use tokio::sync::watch;
 use tracing::info;
 
 use dataplane::configs;
@@ -15,24 +16,12 @@ fn main() {
     let mut rt_builder = tokio::runtime::Builder::new_multi_thread();
     rt_builder.enable_all();
 
-    if configs.rt_event_interval > 0 {
-        rt_builder.event_interval(configs.rt_event_interval);
-    }
-
-    if configs.rt_n_worker_threads > 0 {
-        rt_builder.worker_threads(configs.rt_n_worker_threads);
-    }
-
     loop {
         let rt = rt_builder.build().unwrap();
 
         // spawns the main Tokio task
         rt.block_on(async {
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-
-            if configs.enable_tokio_console {
-                console_subscriber::init();
-            }
+            let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 
             // starts a controller interface and connnect to the controller
             let mut controller = Controller::connect(configs.clone(), shutdown_tx).await;
