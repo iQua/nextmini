@@ -1,6 +1,6 @@
 pub mod configs;
 pub mod context;
-pub mod controller_interface;
+pub mod controller;
 pub mod drop;
 pub mod local_interface;
 pub mod metrics;
