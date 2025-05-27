@@ -15,7 +15,7 @@ use tracing::{error, info, warn};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::config::{Config, get_config};
-use crate::db::init_db;
+use crate::db::{init_db, setup_notification};
 use crate::models::{Node, Route};
 use crate::utils::{
     build_add_node_message, build_routes_for_node, build_startup_message, create_new_virtual_addr,
@@ -42,7 +42,7 @@ async fn main() {
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
     // Set up database notifications
-    db::setup_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream

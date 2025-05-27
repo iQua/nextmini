@@ -28,7 +28,7 @@ use crate::dataplane::utils::RateLimiter;
 const MAX_MTU: usize = 6400;
 
 /// The buffer size for ProtocolReader to receive a packet from the network.
-const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
+pub const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 
 /// The maximum number of packets allowed in Tokio's bounded mpsc (multi-producer, single-consumer) channels,
 /// used throughout the dataplane implementation
