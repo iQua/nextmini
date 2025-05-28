@@ -13,7 +13,6 @@ use s2n_quic::stream::BidirectionalStream;
 
 use crate::node::config::LocalConfig;
 use crate::node::local_interface::{TunReader, TunWriterHandle};
-use crate::node::metrics::MetricsTx;
 use crate::node::node_interface::{
     NodeSender, create_quic_node_interfaces, create_tcp_node_interfaces, create_udp_node_receiver,
     create_udp_node_sender,
