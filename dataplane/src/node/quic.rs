@@ -1,3 +1,4 @@
+use crate::node::config::LocalConfig;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use std::sync::{Arc, Mutex};
 use tracing::info;
