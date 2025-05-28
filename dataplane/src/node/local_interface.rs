@@ -1,14 +1,13 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::configs::{ControllerConfigs, LocalConfigs};
+use crate::node::config::{ControllerConfigs, LocalConfig};
 use crate::node::packet::Packet;
-use crate::node::processor::SenderLoadBalancer;
+use crate::node::processor::ProcessorHandle;
 
 /// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
@@ -18,14 +17,14 @@ fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
 
 /// Creates TUN devices for sending data to the application.
 pub async fn create_tun_device(
-    configs: LocalConfigs,
+    config: LocalConfig,
     controller_configs: ControllerConfigs,
 ) -> Vec<Arc<AsyncDevice>> {
     #[cfg(target_os = "linux")]
     {
-        let num_queues = configs.num_packet_processors;
+        let num_queues = config.num_packet_processors;
 
-        let if_name = configs.tun_interface_name.clone();
+        let if_name = config.tun_interface_name.clone();
         let ipv4_addr = controller_configs.local_address;
         let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
 
@@ -36,7 +35,7 @@ pub async fn create_tun_device(
                 ipv4_prefix,
                 None,
             )
-            .mtu(configs.mtu as u16)
+            .mtu(config.mtu as u16)
             .multi_queue(true)
             .build_async()
             .expect("Failed to create tun device");
@@ -83,7 +82,7 @@ pub async fn create_tun_device(
                 ipv4_prefix,
                 None,
             )
-            .mtu(configs.mtu as u16)
+            .mtu(config.mtu as u16)
             .build_async()
             .expect("Failed to create tun device");
 
@@ -96,17 +95,17 @@ pub async fn create_tun_device(
 }
 
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out
-/// via a SenderLoadBalancer.
+/// via a ProcessorHandle
 pub struct TunReader {
     dev: Arc<AsyncDevice>, // a shared reference to the device that can be cloned
-    senders: SenderLoadBalancer,
+    processor_handle: ProcessorHandle,
 }
 
 impl TunReader {
-    pub fn new(dev: Arc<AsyncDevice>, senders_to_proc: Vec<Sender<Packet>>) -> TunReader {
+    pub fn new(dev: Arc<AsyncDevice>, processor_handle: ProcessorHandle) -> TunReader {
         TunReader {
             dev,
-            senders: SenderLoadBalancer::new(senders_to_proc),
+            processor_handle,
         }
     }
 
@@ -142,8 +141,8 @@ impl TunReader {
                 continue;
             }
 
-            // Try to send packet to processor with error handling
-            self.senders.send(packet).await;
+            // Use processorhandle
+            self.processor_handle.process_packet(packet).await;
         }
     }
 }
