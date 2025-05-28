@@ -220,7 +220,7 @@ impl SchedulerHandle {
             }
         };
         tokio::spawn(async move { 
-            scheduler.send_to_protocol_writer().await;    
+            scheduler.send_to_protocol_writer();    
             scheduler.run().await 
         });
         Self { sender }
