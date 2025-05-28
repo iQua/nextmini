@@ -95,9 +95,12 @@ impl Scheduler for Fifo {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 SchedulerMessage::Enqueue(packet) => {
+                    // Send metrics
                     self.metrics_tx.send(
                         (packet.flow_id, self.local_id, packet.packet_size)
                     ).unwrap(); 
+
+                    // Enqueue the packet
                     self.enqueue(packet);
                 }
             }
@@ -201,8 +204,10 @@ impl Drop for Fifo {
 }
 
 
-/// Actor Model Implementation
-
+/// Scheduler Handle Implementation
+/// A handle has two responsibilities :
+/// 1. Initialize the actor and other related struct -> Spawn them
+/// 2. It has a method that allows other actors to send msg to actor via this handle
 pub enum SchedulerMessage {
     Enqueue(Packet),
 }
@@ -227,12 +232,14 @@ impl SchedulerHandle {
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
         
+        // Initialize the metrics collector
         let mut metrics_collector = Collector::new(
             controller_handle, 
             collection_rate
         );
         let metrics_tx = metrics_collector.get_metrics_tx();
-        
+
+        // Initialize the scheduler actor
         let (sender, receiver) = mpsc::channel(mpsc_channel_size);
         let mut scheduler= match scheduler_type {
             SchedulingDiscipline::Fifo => {
@@ -250,6 +257,8 @@ impl SchedulerHandle {
                 panic!("Wrr scheduling discipline not implemented");
             }
         };
+
+        // spawn all tasks
         tokio::spawn(async move { 
             metrics_collector.run().await;        // Spawn the metrics collector
             scheduler.send_to_protocol_writer();  // Inside this method, the subscriber to the enqueue notification is spawned

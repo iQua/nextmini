@@ -1,6 +1,6 @@
 use chrono::Utc;
 use fxhash::FxHashMap;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, sleep};
 
 use nextmini_messages::{DataplaneToController, Metric};
@@ -21,7 +21,7 @@ impl Collector {
         controller_handle: ControllerHandle,
         collection_rate: u64,
     ) -> Self {
-        let (metrics_tx, metrics_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (metrics_tx, metrics_rx) = unbounded_channel();
         Self {
             metrics_tx,
             metrics_rx,
