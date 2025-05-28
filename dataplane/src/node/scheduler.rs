@@ -7,10 +7,10 @@ use crossbeam_queue::ArrayQueue;
 
 use tracing::{error, warn};
 
-use crate::dataplane::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
-use crate::dataplane::packet::Packet;
-use crate::dataplane::protocols_io::ProtocolWriter;
-use crate::dataplane::utils::RateLimiter;
+use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
+use crate::node::packet::Packet;
+use crate::node::protocols_io::ProtocolWriter;
+use crate::node::utils::RateLimiter;
 
 /// The scheduling discipline.
 #[allow(unused)]
@@ -158,7 +158,7 @@ impl Drop for Fifo {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
         self.packet_arrived.notify_one();
-        
+
         // Abort the task if it exists
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
