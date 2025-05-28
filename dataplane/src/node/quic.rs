@@ -1,3 +1,5 @@
+use crate::node::protocols_io::ProtocolWriterMessage;
+use tokio::sync::mpsc;
 pub struct QuicServer {
     context: Context,
     processor_manager: Arc<RwLock<ProcessorManager>>,
@@ -102,29 +104,53 @@ impl QuicReader {
     }
 }
 
-pub struct QuicWriter {
-    stream: Arc<Mutex<SendStream>>,
+
+/// Actor Model Implementation
+
+struct QuicProtocolWriter {
+    receiver: mpsc::Receiver<ProtocolWriterMessage>,
+    writer: QuicWriter,
 }
 
-impl QuicWriter {
-    pub fn new(stream: Arc<Mutex<SendStream>>) -> Self {
-        Self {
-            stream: stream.clone(),
+impl QuicProtocolWriter {
+    async fn run(&mut self) {
+        while let Some(message) = self.receiver.recv().await {
+            match message {
+                ProtocolWriterMessage::Send(data) => {
+                    self.writer.send(&data).await;
+                }
+                ProtocolWriterMessage::Shutdown => break,
+            }
         }
     }
+}
+#[derive(Clone)]
+pub struct QuicProtocolWriterHandle {
+    sender: mpsc::Sender<ProtocolWriterMessage>,
+}
 
-    pub async fn send(&mut self, buf: &[u8]) {
-        let mut stream_guard = self.stream.lock().await;
+impl QuicProtocolWriterHandle {
+    pub fn new_quic(quic_writer: QuicWriter) -> Self {
+        let (sender, receiver) = mpsc::channel(100);
 
-        match stream_guard.write_all(buf).await {
-            Ok(_) => (),
-            Err(e) => panic!("{e}"),
+        let mut actor = QuicProtocolWriter {
+            receiver,
+            writer: quic_writer,
         };
-    }
 
-    pub fn reproduce(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
+        tokio::spawn(async move {
+            actor.run().await;
+        });
+
+        Self { sender }
+    }
+    pub async fn send(&self, data: &[u8]) {
+        if let Err(_) = self
+            .sender
+            .send(ProtocolWriterMessage::Send(data.to_vec()))
+            .await
+        {
+            error!("Failed to send data through protocol writer channel");
         }
     }
 }

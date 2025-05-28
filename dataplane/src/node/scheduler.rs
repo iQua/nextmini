@@ -130,7 +130,7 @@ impl Scheduler for Fifo {
         let queue = self.queue.clone();
         let packet_arrived = self.packet_arrived.clone();
         let rate_limiter = self.rate_limiter.clone();
-        let mut writer = self.protocol_writer_handle.clone();
+        let writer = self.protocol_writer_handle.clone();
         let shutdown_flag = self.shutdown.clone();
 
         let handle = tokio::spawn(async move {

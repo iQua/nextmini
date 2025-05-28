@@ -1,3 +1,5 @@
+use crate::node::protocols_io::ProtocolWriterMessage;
+use tokio::sync::mpsc;
 #[derive(Clone)]
 pub struct UdpReader {
     sock: Arc<UdpSocket>,
@@ -16,27 +18,53 @@ impl UdpReader {
     }
 }
 
-#[derive(Clone)]
-pub struct UdpWriter {
-    sock: Arc<UdpSocket>,
-    addr: String,
+
+/// Actor Model Implementation
+struct UdpProtocolWriter {
+    receiver: mpsc::Receiver<ProtocolWriterMessage>,
+    writer: UdpWriter,
 }
 
-impl UdpWriter {
-    pub fn new(sock: Arc<UdpSocket>, addr: String) -> Self {
-        Self { sock, addr }
-    }
-
-    pub async fn send(&self, data: &[u8]) {
-        match self.sock.send_to(data, self.addr.as_str()).await {
-            Ok(_) => (),
-            Err(e) => panic!("{e}"),
+impl UdpProtocolWriter {
+    async fn run(&mut self) {
+        while let Some(message) = self.receiver.recv().await {
+            match message {
+                ProtocolWriterMessage::Send(data) => {
+                    (&mut self.writer).send(&data).await;
+                }
+                ProtocolWriterMessage::Shutdown => break,
+            }
         }
     }
+}
 
-    pub fn reproduce(&self) -> Self {
-        let sock = self.sock.clone();
-        let addr = self.addr.clone();
-        Self { sock, addr }
+#[derive(Clone)]
+pub struct UdpProtocolWriterHandle {
+    sender: mpsc::Sender<ProtocolWriterMessage>,
+}
+
+impl UdpProtocolWriterHandle {
+        pub fn new_udp(udp_writer: UdpWriter) -> Self {
+        let (sender, receiver) = mpsc::channel(100);
+
+        let mut actor = UdpProtocolWriter {
+            receiver,
+            writer: udp_writer,
+        };
+
+        tokio::spawn(async move {
+            actor.run().await;
+        });
+
+        Self { sender }
+    }
+    pub async fn send(&self, data: &[u8]) {
+        if let Err(_) = self
+            .sender
+            .send(ProtocolWriterMessage::Send(data.to_vec()))
+            .await
+        {
+            error!("Failed to send data through protocol writer channel");
+        }
     }
 }

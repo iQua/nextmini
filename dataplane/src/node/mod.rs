@@ -13,6 +13,9 @@ pub mod protocols_io;
 pub mod protocols_server;
 pub mod routes;
 pub mod scheduler;
+pub mod tcp;
+pub mod udp;
+pub mod quic;
 pub mod utils;
 
 use std::collections::HashMap;

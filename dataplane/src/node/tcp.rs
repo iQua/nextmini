@@ -1,3 +1,5 @@
+use crate::node::protocols_io::ProtocolWriterMessage;
+use tokio::sync::mpsc;
 pub struct TcpServer {
     context: Context,
     processor_manager: Arc<RwLock<ProcessorManager>>,
@@ -89,29 +91,57 @@ impl TcpReader {
     }
 }
 
-#[derive(Clone)]
-pub struct TcpWriter {
-    stream: Arc<Mutex<WriteHalf<TcpStream>>>,
+
+
+/// Actor Model Implementation
+
+struct TcpProtocolWriter {
+    receiver: mpsc::Receiver<ProtocolWriterMessage>,
+    writer: TcpWriter,
 }
 
-impl TcpWriter {
-    pub fn new(stream: Arc<Mutex<WriteHalf<TcpStream>>>) -> Self {
-        Self { stream }
-    }
-
-    pub async fn send(&mut self, data: &[u8]) {
-        let mut stream_guard = self.stream.lock().await;
-        match stream_guard.write_all(data).await {
-            Ok(_) => (),
-            Err(e) => {
-                eprintln!("Failed to write TCP data: {}", e);
+impl TcpProtocolWriter {
+    async fn run(&mut self) {
+        while let Some(message) = self.receiver.recv().await {
+            match message {
+                ProtocolWriterMessage::Send(data) => {
+                    (&mut self.writer).send(&data).await;
+                }
+                ProtocolWriterMessage::Shutdown => break,
             }
         }
     }
+}
 
-    pub fn reproduce(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
+
+#[derive(Clone)]
+pub struct TcpProtocolWriterHandle {
+    sender: mpsc::Sender<ProtocolWriterMessage>,
+}
+
+impl TcpProtocolWriterHandle {
+    pub fn new_tcp(tcp_writer: TcpWriter) -> Self {
+        let (sender, receiver) = mpsc::channel(100);
+
+        let mut actor = TcpProtocolWriter {
+            receiver,
+            writer: tcp_writer,
+        };
+
+        tokio::spawn(async move {
+            actor.run().await;
+        });
+
+        Self { sender }
+    }
+    pub async fn send(&self, data: &[u8]) {
+        if let Err(_) = self
+            .sender
+            .send(ProtocolWriterMessage::Send(data.to_vec()))
+            .await
+        {
+            error!("Failed to send data through protocol writer channel");
         }
     }
 }
+
