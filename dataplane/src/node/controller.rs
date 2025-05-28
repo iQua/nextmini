@@ -110,7 +110,7 @@ impl Controller {
         let (sender_tx, sender_rx) = unbounded_channel::<DataplaneToController>();
 
         // Create local tun interface.
-        let tun_device = create_tun_device(configs.clone(), controller_configs.clone()).await;
+        let tun_device = create_tun_device(configs.clone()).await;
 
         // Create metrics collector.
         let metrics_collector =

@@ -1,14 +1,14 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::{ControllerConfigs, LocalConfig};
+use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use tokio::sync::mpsc;
 
 /// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
@@ -17,17 +17,14 @@ fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
 }
 
 /// Creates TUN devices for sending data to the application.
-pub async fn create_tun_device(
-    config: LocalConfig,
-    controller_configs: ControllerConfigs,
-) -> Vec<Arc<AsyncDevice>> {
+pub async fn create_tun_device(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
     #[cfg(target_os = "linux")]
     {
         let num_queues = config.num_packet_processors;
 
         let if_name = config.tun_interface_name.clone();
-        let ipv4_addr = controller_configs.local_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
+        let ipv4_addr = config.local_address;
+        let ipv4_prefix = mask_to_prefix(config.local_netmask);
 
         let dev = DeviceBuilder::new()
             .name(&if_name)
@@ -74,8 +71,8 @@ pub async fn create_tun_device(
 
     #[cfg(not(target_os = "linux"))]
     {
-        let ipv4_addr = controller_configs.local_address;
-        let ipv4_prefix = mask_to_prefix(controller_configs.local_netmask);
+        let ipv4_addr = config.local_address;
+        let ipv4_prefix = mask_to_prefix(config.local_netmask);
 
         let dev = DeviceBuilder::new()
             .ipv4(
