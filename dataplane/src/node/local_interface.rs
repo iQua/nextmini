@@ -174,3 +174,32 @@ impl TunWriter {
         }
     }
 }
+
+/// TunWriterHandle
+#[derive(Clone)]
+pub struct TunWriterHandle {
+    sender: mpsc::Sender<TunWriterMessage>,
+}
+
+impl TunWriterHandle {
+    pub fn new(dev: Arc<AsyncDevice>) -> Self {
+        let (sender, receiver) = mpsc::channel(100);
+        let mut actor = TunWriter { receiver, dev };
+
+        tokio::spawn(async move {
+            actor.run().await;
+        });
+
+        Self { sender }
+    }
+
+    pub async fn write_packet(&self, packet: Packet) {
+        if let Err(e) = self
+            .sender
+            .send(TunWriterMessage::WritePacket(packet))
+            .await
+        {
+            error!("Failed to send packet to TunWriter actor: {:?}", e);
+        }
+    }
+}
