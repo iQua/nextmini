@@ -147,7 +147,7 @@ impl TunReader {
     }
 }
 
-/// Writes one packet to a TUN device using either the stream or interface multi-path method.
+/// Writes one packet to a TUN device.
 #[derive(Clone)]
 pub struct TunWriter {
     dev: Arc<AsyncDevice>,
