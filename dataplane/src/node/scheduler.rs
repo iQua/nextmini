@@ -22,8 +22,9 @@ pub enum SchedulingDiscipline {
 
 /// Defines the interface for all scheduling disciplines.
 pub trait Scheduler {
+    async fn run(&mut self);
     fn enqueue(&mut self, packet: Packet);
-    fn run(&mut self);
+    fn send_to_protocol_writer(&mut self);
 }
 
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
@@ -74,6 +75,15 @@ impl Fifo {
 }
 
 impl Scheduler for Fifo {
+    async fn run(&mut self) {
+        while let Some(message) = self.receiver.recv().await {
+            match message {
+                SchedulerMessage::Enqueue(packet) => {
+                    self.enqueue(packet);
+                }
+            }
+        }
+    }
     fn enqueue(&mut self, packet: Packet) {
         // drops the packet if the buffer is full
         let should_drop_packet =
@@ -106,7 +116,7 @@ impl Scheduler for Fifo {
         self.packet_arrived.notify_one();
     }
 
-    fn run(&mut self) {
+    fn send_to_protocol_writer(&mut self) {
         // Shutdown any existing task first
         if let Some(handle) = self.task_handle.take() {
             self.shutdown.store(true, Ordering::Relaxed);
@@ -195,30 +205,27 @@ impl SchedulerHandle {
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(mpsc_channel_size);
-        let mut scheduler: Box<dyn Scheduler + Send + Sync> = match scheduler_type {
+        let mut scheduler= match scheduler_type {
             SchedulingDiscipline::Fifo => {
-                Box::new(Fifo::new(
+                Fifo::new(
                     receiver, 
                     capacity, 
                     drop_strategy, 
                     protocol_writer_handle, 
                     rate_limiter
-                ))
+                )
             } 
             SchedulingDiscipline::Wrr => {
                 panic!("Wrr scheduling discipline not implemented");
             }
         };
-        tokio::spawn(async move { scheduler.run() });
+        tokio::spawn(async move { 
+            scheduler.send_to_protocol_writer().await;    
+            scheduler.run().await 
+        });
         Self { sender }
     }
-    pub async fn run(&mut self) {
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                SchedulerMessage::Enqueue(packet) => {
-                    self.scheduler.enqueue(packet);
-                }
-            }
-        }
+    pub async fn send(&mut self, packet: Packet) {
+        self.sender.send(SchedulerMessage::Enqueue(packet)).await.unwrap();
     }
 }

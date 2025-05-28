@@ -7,17 +7,17 @@ use tracing::info;
 
 use s2n_quic::stream::BidirectionalStream;
 
-use crate::dataplane::metrics::MetricsTx;
-use crate::dataplane::packet::Packet;
-use crate::dataplane::processor::SenderLoadBalancer;
-use crate::dataplane::protocols_io::{
+use crate::node::metrics::MetricsTx;
+use crate::node::packet::Packet;
+use crate::node::processor::SenderLoadBalancer;
+use crate::node::protocols_io::{
     ProtocolReader, ProtocolWriter, QuicReader, QuicWriter, TcpReader, TcpWriter, UdpReader,
     UdpWriter,
 };
-use crate::dataplane::scheduler::SchedulingDiscipline;
-use crate::dataplane::scheduler::{Fifo, Scheduler};
-use crate::dataplane::utils::RateLimiter;
-use crate::dataplane::{FlowId, INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
+use crate::node::scheduler::SchedulingDiscipline;
+use crate::node::scheduler::{Fifo, Scheduler};
+use crate::node::utils::RateLimiter;
+use crate::node::{FlowId, INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
 use tracing::error;
 
 pub fn create_tcp_node_interfaces(

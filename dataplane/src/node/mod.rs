@@ -22,8 +22,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
-use crate::dataplane::packet::Packet;
-use crate::dataplane::utils::RateLimiter;
+use crate::node::packet::Packet;
+use crate::node::utils::RateLimiter;
 
 /// The maximum Maximum Transmission Unit (MTU).
 const MAX_MTU: usize = 6400;

@@ -2,10 +2,11 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
-use crate::node::NodeId;
+use crate::node::{FlowId, NodeId};
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
+use crate::node::metrics::{MetricsCollectorHandle};
 
 use std::collections::HashMap;
 use tracing::{debug, error};
@@ -27,7 +28,6 @@ struct Processor {
 
     // Data Used by the processor
     routing_table: RoutingTable,
-    local_id: NodeId,
 
     // Handles to send to the next stage
     local_writer_handle: LocalWriterHandle,
@@ -43,6 +43,7 @@ impl Processor {
         while let Ok(msg) = self.receiver.recv_async().await {
             match msg {
                 ProcessorMessage::ProcessPacket(packet) => {
+                    self.metrics_collector_handle.collect_metrics(packet.flow_id, self.routing_table.local_id, packet.packet_size).await;
                     self.process_packet(packet).await;
                 }
                 ProcessorMessage::UpdateRoutingTable(new_table) => {
@@ -54,14 +55,6 @@ impl Processor {
 
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
-
-        debug!(
-            "Processing packet for flow {}:{} -> {}:{}",
-            packet_flow_id.src_ip(),
-            packet_flow_id.src_port(),
-            packet_flow_id.dst_ip(),
-            packet_flow_id.dst_port()
-        );
 
         // Select route_id for new flow at source node
         let route_id = self
@@ -98,16 +91,6 @@ impl Processor {
                 error
             })?;
 
-        debug!(
-            "Flow {}:{} -> {}:{} selected route_id {} → next_hop {}.",
-            packet_flow_id.src_ip(),
-            packet_flow_id.src_port(),
-            packet_flow_id.dst_ip(),
-            packet_flow_id.dst_port(),
-            route_id,
-            next_hop_id
-        );
-
         self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)
             .await
     }
@@ -120,13 +103,7 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            debug!(
-                "Delivering packet locally for destination {}:{} (size: {}).",
-                packet_flow_id.dst_ip(),
-                packet_flow_id.dst_port(),
-                packet.packet_size
-            );
-            self.tun_writer.write_packet(packet).await;
+            self.local_writer_handle.write_packet(packet).await;
             Ok(())
         } else {
             match self.scheduler_handles.get_mut(&next_hop_id) {
@@ -167,8 +144,6 @@ impl ProcessorHandle {
 
         // A copy of the routing table
         routing_table: RoutingTable,
-        // The local id
-        local_id: NodeId,
 
         // The local writer handle
         local_writer: LocalWriterHandle,
@@ -183,7 +158,6 @@ impl ProcessorHandle {
             let mut actor = Processor {
                 receiver: processor_receiver.clone(),
                 routing_table: routing_table.clone(),
-                local_id,
                 local_writer_handle: local_writer.clone(),
                 scheduler_handles: scheduler_handles.clone(),
                 metrics_collector_handle: metrics_collector_handle.clone(),

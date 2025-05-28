@@ -5,9 +5,9 @@ use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
 use tracing::{debug, info};
 
-use crate::dataplane::FlowId;
-use crate::dataplane::FlowIdExt;
-use crate::dataplane::NodeId;
+use crate::node::FlowId;
+use crate::node::FlowIdExt;
+use crate::node::NodeId;
 
 /// The routing table in the dataplane.
 #[derive(Clone)]
