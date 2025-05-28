@@ -154,22 +154,23 @@ enum TunWriterMessage {
 }
 
 /// Writes one packet to a TUN device.
-#[derive(Clone)]
-pub struct TunWriter {
+struct TunWriter {
+    receiver: mpsc::Receiver<TunWriterMessage>,
     dev: Arc<AsyncDevice>,
 }
 
 impl TunWriter {
-    pub fn new(dev: Arc<AsyncDevice>) -> TunWriter {
-        TunWriter { dev }
-    }
+    async fn run(&mut self) {
+        while let Some(msg) = self.receiver.recv().await {
+            match msg {
+                TunWriterMessage::WritePacket(packet) => {
+                    let buf = &packet.buf[0..packet.packet_size];
 
-    pub async fn write_packet(&self, packet: Packet) {
-        let buf = &packet.buf[0..packet.packet_size];
-
-        self.dev
-            .send(buf)
-            .await
-            .expect("Failed to write to TUN device");
+                    if let Err(e) = self.dev.send(buf).await {
+                        error!("Failed to write to TUN device: {:?}", e);
+                    }
+                }
+            }
+        }
     }
 }
