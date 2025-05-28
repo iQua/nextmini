@@ -1,5 +1,9 @@
 use crate::node::protocols_io::ProtocolWriterMessage;
+use s2n_quic::stream::{ReceiveStream, SendStream};
 use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use tracing::{info, error};
+
 pub struct QuicServer {
     context: Context,
     processor_manager: Arc<RwLock<ProcessorManager>>,
@@ -107,35 +111,49 @@ impl QuicReader {
 
 /// Actor Model Implementation
 
-struct QuicProtocolWriter {
+
+pub struct QuicWriter {
     receiver: mpsc::Receiver<ProtocolWriterMessage>,
-    writer: QuicWriter,
+    stream: Arc<Mutex<SendStream>>,
 }
 
-impl QuicProtocolWriter {
-    async fn run(&mut self) {
+impl QuicWriter {
+    pub fn new(receiver: mpsc::Receiver<ProtocolWriterMessage>, stream: Arc<Mutex<SendStream>>) -> Self {
+        Self {
+            receiver,
+            stream: stream.clone(),
+        }
+    }
+    pub async fn run(&mut self) {
         while let Some(message) = self.receiver.recv().await {
             match message {
-                ProtocolWriterMessage::Send(data) => {
-                    self.writer.send(&data).await;
-                }
+                ProtocolWriterMessage::Send(data) => self.send(&data).await,
                 ProtocolWriterMessage::Shutdown => break,
             }
         }
     }
+    pub async fn send(&mut self, buf: &[u8]) {
+        let mut stream_guard = self.stream.lock().await;
+
+        match stream_guard.write_all(buf).await {
+            Ok(_) => (),
+            Err(e) => panic!("{e}"),
+        };
+    }
 }
+
 #[derive(Clone)]
-pub struct QuicProtocolWriterHandle {
+pub struct QuicWriterHandle {
     sender: mpsc::Sender<ProtocolWriterMessage>,
 }
 
-impl QuicProtocolWriterHandle {
-    pub fn new_quic(quic_writer: QuicWriter) -> Self {
+impl QuicWriterHandle {
+    pub fn new_quic(stream: Arc<Mutex<SendStream>>) -> Self {
         let (sender, receiver) = mpsc::channel(100);
 
-        let mut actor = QuicProtocolWriter {
+        let mut actor = QuicWriter {
             receiver,
-            writer: quic_writer,
+            stream: stream.clone(),
         };
 
         tokio::spawn(async move {
@@ -151,6 +169,15 @@ impl QuicProtocolWriterHandle {
             .await
         {
             error!("Failed to send data through protocol writer channel");
+        }
+    }
+    pub async fn shutdown(&self) {
+        if let Err(_) = self
+            .sender
+            .send(ProtocolWriterMessage::Shutdown)
+            .await
+        {
+            error!("Failed to send shutdown message through protocol writer channel");
         }
     }
 }

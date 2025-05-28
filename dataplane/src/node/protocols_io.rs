@@ -1,17 +1,19 @@
-use crate::node::quic::{QuicProtocolReaderHandle, QuicProtocolWriterHandle};
-use crate::node::tcp::{TcpProtocolReaderHandle, TcpProtocolWriterHandle};
-use crate::node::udp::{UdpProtocolReaderHandle, UdpProtocolWriterHandle};
+use crate::node::quic::{QuicWriterHandle, QuicWriter};
+use crate::node::tcp::{TcpWriterHandle, TcpWriter};
+use crate::node::udp::{UdpWriterHandle, UdpWriter};
 
 pub enum ProtocolWriterMessage {
     Send(Vec<u8>),
     Shutdown,
 }
 
+
+// Should be changed after all writers are fixed
 #[derive(Clone)]
 pub enum ProtocolWriterHandle {
-    Tcp(TcpProtocolWriterHandle),
-    Udp(UdpProtocolWriterHandle),
-    Quic(QuicProtocolWriterHandle),
+    Tcp(TcpWriterHandle),
+    Udp(UdpWriterHandle),
+    Quic(QuicWriterHandle),
 }
 
 impl ProtocolWriterHandle {
