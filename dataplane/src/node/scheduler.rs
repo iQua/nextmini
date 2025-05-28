@@ -9,6 +9,7 @@ use tracing::{error, warn};
 
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::packet::Packet;
+use crate::node::protocols_io::ProtocolWriterHandle;
 use crate::node::utils::RateLimiter;
 
 /// The scheduling discipline.
@@ -134,7 +135,7 @@ impl Scheduler for Fifo {
 
                 while let Some(packet) = queue.pop() {
                     // Send raw packet data directly without protocol header
-                    self.protocol_writer_handle.send(&packet.buf[0..packet.packet_size]).await;
+                    writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
                     counter += 1;
 
