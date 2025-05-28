@@ -5,6 +5,7 @@
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
+use crate::node::local_interface::TunWriterHandle;
 use crate::node::{FlowId, NodeId};
 
 use flume::bounded;
@@ -29,7 +30,7 @@ struct Processor {
     routing_table: RoutingTable,
 
     // Handles to send to the next stage
-    local_writer_handle: LocalWriterHandle,
+    tun_writer_handle: TunWriterHandle,
     scheduler_handles: HashMap<NodeId, SchedulerHandle>,
 }
 
@@ -99,7 +100,7 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            self.local_writer_handle.write_packet(packet).await;
+            self.tun_writer_handle.write_packet(packet).await;
             Ok(())
         } else {
             match self.scheduler_handles.get_mut(&next_hop_id) {
@@ -139,8 +140,8 @@ impl ProcessorHandle {
         // A copy of the routing table
         routing_table: RoutingTable,
 
-        // The local writer handle
-        local_writer: LocalWriterHandle,
+        // The TUN writer handle
+        tun_writer: TunWriterHandle,
         // The scheduler handles
         scheduler_handles: HashMap<NodeId, SchedulerHandle>,
     ) -> Self {
@@ -149,7 +150,7 @@ impl ProcessorHandle {
             let mut actor = Processor {
                 receiver: processor_receiver.clone(),
                 routing_table: routing_table.clone(),
-                local_writer_handle: local_writer.clone(),
+                tun_writer_handle: tun_writer.clone(),
                 scheduler_handles: scheduler_handles.clone(),
             };
             tokio::spawn(async move { actor.run().await });
