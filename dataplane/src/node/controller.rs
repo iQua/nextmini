@@ -23,7 +23,6 @@ use crate::node::RateLimiterMap;
 use crate::node::context::Context;
 use crate::node::local_interface::create_tun_device;
 use crate::node::metrics::Collector;
-use crate::node::processor::ProcessorManager;
 use crate::node::protocols_client;
 use crate::node::utils::RateLimiter;
 
