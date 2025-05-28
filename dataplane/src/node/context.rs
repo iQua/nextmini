@@ -18,6 +18,7 @@ use crate::node::node_interface::{
     create_udp_node_sender,
 };
 use crate::node::packet::Packet;
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulingDiscipline;
 use crate::node::utils::RateLimiter;
 use crate::node::{INTERNAL_Q_SIZE, NodeId, ProcessorChannel, RateLimiterMap};
@@ -39,8 +40,8 @@ pub struct Context {
     // Hashmap from node IDs to NodeSenders
     processor_senders: Arc<RwLock<FxHashMap<NodeId, NodeSender>>>,
 
-    // Performance metrics
-    metrics_tx: MetricsTx,
+    // Processor handle for packet processing
+    processor_handle: Option<ProcessorHandle>,
 
     // Hashmap from node IDs to rate limiters
     link_rate_limiters: Arc<RwLock<RateLimiterMap>>,
@@ -56,7 +57,6 @@ impl Context {
     pub fn new(
         config: LocalConfig,
         local_id: NodeId,
-        metrics: MetricsTx,
         link_rate_limiters: Arc<RwLock<RateLimiterMap>>,
         scheduler_type: SchedulingDiscipline,
     ) -> Self {
@@ -66,16 +66,26 @@ impl Context {
             processor_channels: Arc::new(RwLock::new(Vec::new())),
             processor_senders: Arc::new(RwLock::new(FxHashMap::default())),
             tun_writers: Arc::new(RwLock::new(Vec::new())),
-            metrics_tx: metrics,
+            processor_handle: None,
             link_rate_limiters,
             udp_socket: None,
             scheduler_type,
         }
     }
 
+    // Set the processor handle
+    pub fn set_processor_handle(&mut self, processor_handle: ProcessorHandle) {
+        self.processor_handle = Some(processor_handle);
+    }
+
     // Create and start the single TUN device
     pub async fn start_tun_device(&mut self, tun_queues: Vec<Arc<tun_rs::AsyncDevice>>) {
-        let senders_to_proc = self.get_processor_txs().await;
+        let processor_handle = self
+            .processor_handle
+            .as_ref()
+            .expect("ProcessorHandle must be set before starting TUN device")
+            .clone();
+
         let mut tun_writers = self.tun_writers.write().await;
 
         for dev in tun_queues.iter() {
@@ -85,7 +95,7 @@ impl Context {
             tun_writers.push(writer);
 
             // Start a new Tokio task for reading continuously from this TUN device
-            let mut reader = TunReader::new(dev.clone(), senders_to_proc.clone());
+            let mut reader = TunReader::new(dev.clone(), processor_handle.clone());
 
             tokio::spawn(async move {
                 reader.start_reading().await;
@@ -104,11 +114,6 @@ impl Context {
                         Are TUN queues created successfully?",
             )
             .clone()
-    }
-
-    // metrics_tx is an mpsc unbounded sender that can be cloned.
-    pub fn get_metrics_tx(&self) -> MetricsTx {
-        self.metrics_tx.clone()
     }
 
     // Obtains the transmitters from processor mpsc channels.
@@ -228,10 +233,10 @@ impl Context {
             self.scheduler_type,
         );
 
-        let metrics_tx = self.metrics_tx.clone();
+        // TODO: Remove node_receiver from the context, since it is not used anywhere else
 
         tokio::spawn(async move {
-            node_receiver.start_receiving(metrics_tx).await;
+            node_receiver.start_receiving().await;
         });
 
         self.register_sender(node_id, node_sender).await;
@@ -243,8 +248,6 @@ impl Context {
         // gets the receiver txs from processor channels
         let senders_to_proc = self.get_processor_txs().await;
 
-        let metrics_tx = self.metrics_tx.clone();
-
         // uses the local ID for remote_node_id here because UDP is connectionless, so we cannot
         // identify which node the packet is from directly. It can, however, still be inferred
         // through the flow ID and the associated route.
@@ -254,7 +257,7 @@ impl Context {
         self.udp_socket = Some(sock);
 
         tokio::spawn(async move {
-            receiver.start_receiving(metrics_tx).await;
+            receiver.start_receiving().await;
         });
     }
 
@@ -310,10 +313,8 @@ impl Context {
         )
         .await;
 
-        let metrics_tx = self.metrics_tx.clone();
-
         tokio::spawn(async move {
-            node_receiver.start_receiving(metrics_tx).await;
+            node_receiver.start_receiving().await;
         });
 
         self.register_sender(node_id, node_sender).await;
