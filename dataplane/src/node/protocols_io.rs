@@ -36,7 +36,7 @@ impl TcpProtocolWriter {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 ProtocolWriterMessage::Send(data) => {
-                    self.writer.send(&data).await;
+                    (&mut self.writer).send(&data).await;
                 }
                 ProtocolWriterMessage::Shutdown => break,
             }
@@ -54,7 +54,7 @@ impl UdpProtocolWriter {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 ProtocolWriterMessage::Send(data) => {
-                    self.writer.send(&data).await;
+                    (&mut self.writer).send(&data).await;
                 }
                 ProtocolWriterMessage::Shutdown => break,
             }
