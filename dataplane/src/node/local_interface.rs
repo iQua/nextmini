@@ -8,6 +8,7 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::{ControllerConfigs, LocalConfig};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use tokio::sync::mpsc;
 
 /// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
@@ -145,6 +146,11 @@ impl TunReader {
             self.processor_handle.process_packet(packet).await;
         }
     }
+}
+
+/// Message types
+enum TunWriterMessage {
+    WritePacket(Packet),
 }
 
 /// Writes one packet to a TUN device.
