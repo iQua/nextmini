@@ -2,15 +2,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{Notify, RwLock, mpsc};
-
 use crossbeam_queue::ArrayQueue;
-
 use tracing::{error, warn};
 
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::packet::Packet;
+use crate::node::controller::ControllerHandle;
 use crate::node::protocols_io::ProtocolWriter;
+use crate::node::metrics::Collector;
 use crate::node::utils::RateLimiter;
+use crate::node::{FlowId, NodeId};
+
 
 /// The scheduling discipline.
 #[allow(unused)]
@@ -21,6 +23,9 @@ pub enum SchedulingDiscipline {
 }
 
 /// Defines the interface for all scheduling disciplines.
+/// A scheduler has two main tasks : 
+/// 1. Enqueue packets to the queue -> Send packets to the protocol writer
+/// 2. Collect metrics at regular intervals -> Send metrics to the controller via collector struct
 pub trait Scheduler {
     async fn run(&mut self);
     fn enqueue(&mut self, packet: Packet);
@@ -32,6 +37,12 @@ pub struct Fifo {
     // Receiver side of the mpsc channel (sent from scheduler handle)
     receiver: mpsc::Receiver<SchedulerMessage>, 
 
+    // tx to the collector 
+    metrics_tx: mpsc::UnboundedSender<(FlowId, NodeId, usize)>,
+    // The local node_id which is sent inside the metrics
+    local_id: NodeId,
+
+    // Other data used by scheduler
     queue: Arc<ArrayQueue<Packet>>,
     packets_dropped: usize,
     /// a closure that determines whether an inbound packet should be dropped or not
@@ -52,6 +63,8 @@ impl Fifo {
         drop_strategy: DropStrategy,
         protocol_writer: ProtocolWriter,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+        metrics_tx: mpsc::UnboundedSender<(FlowId, NodeId, usize)>,
+        local_id: NodeId,
     ) -> Self {
         let capacity_unit = CapacityUnit::Packets;
 
@@ -62,6 +75,8 @@ impl Fifo {
 
         Fifo {
             receiver,
+            metrics_tx,
+            local_id,
             queue: Arc::new(ArrayQueue::new(capacity)),
             packets_dropped: 0,
             drop_strategy: packet_drop,
@@ -76,9 +91,13 @@ impl Fifo {
 
 impl Scheduler for Fifo {
     async fn run(&mut self) {
+
         while let Some(message) = self.receiver.recv().await {
             match message {
                 SchedulerMessage::Enqueue(packet) => {
+                    self.metrics_tx.send(
+                        (packet.flow_id, self.local_id, packet.packet_size)
+                    ).unwrap(); 
                     self.enqueue(packet);
                 }
             }
@@ -200,19 +219,31 @@ impl SchedulerHandle {
         protocol_writer: ProtocolWriter,
         scheduler_type: SchedulingDiscipline,
 
+        controller_handle: ControllerHandle,
+        collection_rate: u64,
+        local_id: NodeId,
         capacity: usize,
         drop_strategy: DropStrategy,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
+        
+        let mut metrics_collector = Collector::new(
+            controller_handle, 
+            collection_rate
+        );
+        let metrics_tx = metrics_collector.get_metrics_tx();
+        
         let (sender, receiver) = mpsc::channel(mpsc_channel_size);
         let mut scheduler= match scheduler_type {
             SchedulingDiscipline::Fifo => {
                 Fifo::new(
-                    receiver, 
+                    receiver,
                     capacity, 
                     drop_strategy, 
                     protocol_writer, 
-                    rate_limiter
+                    rate_limiter,
+                    metrics_tx,
+                    local_id,
                 )
             } 
             SchedulingDiscipline::Wrr => {
@@ -220,7 +251,8 @@ impl SchedulerHandle {
             }
         };
         tokio::spawn(async move { 
-            scheduler.send_to_protocol_writer();    
+            metrics_collector.run().await;        // Spawn the metrics collector
+            scheduler.send_to_protocol_writer();  // Inside this method, the subscriber to the enqueue notification is spawned
             scheduler.run().await 
         });
         Self { sender }

@@ -6,7 +6,6 @@ use crate::node::{FlowId, NodeId};
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::metrics::{MetricsCollectorHandle};
 
 use std::collections::HashMap;
 use tracing::{debug, error};
@@ -32,7 +31,6 @@ struct Processor {
     // Handles to send to the next stage
     local_writer_handle: LocalWriterHandle,
     scheduler_handles: HashMap<NodeId, SchedulerHandle>,
-    metrics_collector_handle: MetricsCollectorHandle,
 }
 
 impl Processor {
@@ -43,7 +41,6 @@ impl Processor {
         while let Ok(msg) = self.receiver.recv_async().await {
             match msg {
                 ProcessorMessage::ProcessPacket(packet) => {
-                    self.metrics_collector_handle.collect_metrics(packet.flow_id, self.routing_table.local_id, packet.packet_size).await;
                     self.process_packet(packet).await;
                 }
                 ProcessorMessage::UpdateRoutingTable(new_table) => {
@@ -149,8 +146,6 @@ impl ProcessorHandle {
         local_writer: LocalWriterHandle,
         // The scheduler handles
         scheduler_handles: HashMap<NodeId, SchedulerHandle>,
-        // The metrics collector handle
-        metrics_collector_handle: MetricsCollectorHandle,
 
     ) -> Self {
         let (processor_sender, processor_receiver) = bounded(mpmc_channel_size);
@@ -160,7 +155,6 @@ impl ProcessorHandle {
                 routing_table: routing_table.clone(),
                 local_writer_handle: local_writer.clone(),
                 scheduler_handles: scheduler_handles.clone(),
-                metrics_collector_handle: metrics_collector_handle.clone(),
             };
             tokio::spawn(async move { actor.run().await });
         }
