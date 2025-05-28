@@ -11,17 +11,17 @@ use tokio::sync::mpsc;
 use fxhash::FxHashMap;
 use s2n_quic::stream::BidirectionalStream;
 
-use crate::dataplane::configs::LocalConfigs;
-use crate::dataplane::local_interface::{TunReader, TunWriter};
-use crate::dataplane::metrics::MetricsTx;
-use crate::dataplane::node_interface::{
+use crate::node::config::LocalConfig;
+use crate::node::local_interface::{TunReader, TunWriter};
+use crate::node::metrics::MetricsTx;
+use crate::node::node_interface::{
     NodeSender, create_quic_node_interfaces, create_tcp_node_interfaces, create_udp_node_receiver,
     create_udp_node_sender,
 };
-use crate::dataplane::packet::Packet;
-use crate::dataplane::scheduler::SchedulingDiscipline;
-use crate::dataplane::utils::RateLimiter;
-use crate::dataplane::{INTERNAL_Q_SIZE, NodeId, ProcessorChannel, RateLimiterMap};
+use crate::node::packet::Packet;
+use crate::node::scheduler::SchedulingDiscipline;
+use crate::node::utils::RateLimiter;
+use crate::node::{INTERNAL_Q_SIZE, NodeId, ProcessorChannel, RateLimiterMap};
 
 #[derive(Clone)]
 pub struct Context {
@@ -29,7 +29,7 @@ pub struct Context {
     pub local_id: NodeId,
 
     // Local configurations
-    configs: LocalConfigs,
+    config: LocalConfig,
 
     // Writers to the TUN interface, as shared writable vectors, where each queue corresponds to one writer
     tun_writers: Arc<RwLock<Vec<TunWriter>>>,
@@ -55,7 +55,7 @@ pub struct Context {
 
 impl Context {
     pub fn new(
-        configs: LocalConfigs,
+        config: LocalConfig,
         local_id: NodeId,
         metrics: MetricsTx,
         link_rate_limiters: Arc<RwLock<RateLimiterMap>>,
@@ -63,7 +63,7 @@ impl Context {
     ) -> Self {
         Self {
             local_id,
-            configs,
+            config,
             processor_channels: Arc::new(RwLock::new(Vec::new())),
             processor_senders: Arc::new(RwLock::new(FxHashMap::default())),
             tun_writers: Arc::new(RwLock::new(Vec::new())),
@@ -121,14 +121,14 @@ impl Context {
 
         if channels.is_empty() {
             // Channels don't exist yet, create a new mpsc channel for each queue
-            for i in 0..self.configs.num_packet_processors {
+            for i in 0..self.config.num_packet_processors {
                 let (tx, rx) = mpsc::channel(INTERNAL_Q_SIZE);
                 channels.insert(i, (tx.clone(), Some(rx)));
                 txs.push(tx);
             }
         } else {
             // Channels already exist, just get the txs
-            for i in 0..self.configs.num_packet_processors {
+            for i in 0..self.config.num_packet_processors {
                 let tx = match channels.get_mut(i) {
                     Some(channel) => channel.0.clone(),
                     None => {
@@ -151,7 +151,7 @@ impl Context {
         let mut rxs = vec![];
         if channels.is_empty() {
             // channels don't exist yet, create a new mpsc channel for each queue
-            for i in 0..self.configs.num_packet_processors {
+            for i in 0..self.config.num_packet_processors {
                 let (tx, rx) = mpsc::channel(INTERNAL_Q_SIZE);
                 // inserts None as the rx since we take rx into a vector to be returned
                 channels.insert(i, (tx, None));
@@ -159,7 +159,7 @@ impl Context {
             }
         } else {
             // channels already exist, just get the rxs
-            for i in 0..self.configs.num_packet_processors {
+            for i in 0..self.config.num_packet_processors {
                 let rx = match channels.get_mut(i) {
                     Some(channel) => {
                         // channel.1.take() can only be called once. Calling it more than once should
