@@ -6,21 +6,21 @@ use tokio::time::{Duration, sleep};
 use nextmini_messages::{DataplaneToController, Metric};
 
 use crate::node::{FlowId, NodeId};
-
+use crate::node::controller::ControllerHandle;
 pub struct Collector {
-    controller_tx: UnboundedSender<DataplaneToController>, // Should be changed to controller handle
+    controller_handle: ControllerHandle, // Should be changed to controller handle
     receiver: UnboundedReceiver<MetricsCollectorMessage>,
     collection_rate: u64,
 }
 
 impl Collector {
     pub fn new(
-        controller_tx: UnboundedSender<DataplaneToController>,
+        controller_handle: ControllerHandle,
         receiver: UnboundedReceiver<MetricsCollectorMessage>,
         collection_rate: u64,
     ) -> Self {
         Self {
-            controller_tx,
+            controller_handle,
             receiver,
             collection_rate,
         }
@@ -59,7 +59,7 @@ impl Collector {
             let msg = DataplaneToController::Metrics {
                 metrics: metrics_array,
             };
-            self.controller_tx.send(msg).unwrap();
+            self.controller_handle.send(msg).unwrap();
         }
     }
 }
@@ -78,11 +78,11 @@ pub struct MetricsCollectorHandle {
 impl MetricsCollectorHandle {
     pub fn new(
         collection_rate: u64,
-        controller_tx: UnboundedSender<DataplaneToController>,  
+        controller_handle: ControllerHandle,  
     ) -> Self {
         let (sender, receiver) = unbounded_channel();
         let mut collector = Collector::new(
-            controller_tx,
+            controller_handle,
             receiver,
             collection_rate,
         );
