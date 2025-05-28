@@ -1,8 +1,6 @@
-use crate::node::tcp::TcpProtocolWriterHandle;
-use crate::node::udp::UdpProtocolWriterHandle;
-use crate::node::quic::QuicProtocolWriterHandle;
-
-
+use crate::node::quic::{QuicProtocolReaderHandle, QuicProtocolWriterHandle};
+use crate::node::tcp::{TcpProtocolReaderHandle, TcpProtocolWriterHandle};
+use crate::node::udp::{UdpProtocolReaderHandle, UdpProtocolWriterHandle};
 
 pub enum ProtocolWriterMessage {
     Send(Vec<u8>),
