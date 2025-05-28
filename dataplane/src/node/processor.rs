@@ -2,15 +2,15 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
-use crate::node::{FlowId, NodeId};
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
+use crate::node::{FlowId, NodeId};
 
-use std::collections::HashMap;
-use tracing::{debug, error};
 use flume::bounded;
+use std::collections::HashMap;
 use tokio;
+use tracing::{debug, error};
 
 /// Actor Model Implementation
 
@@ -35,7 +35,6 @@ struct Processor {
 
 impl Processor {
     async fn run(&mut self) {
-
         // TODO : Integrate metrics_collector_handle
 
         while let Ok(msg) = self.receiver.recv_async().await {
@@ -123,16 +122,14 @@ impl Processor {
             }
         }
     }
-    
 }
 
 #[derive(Clone)]
-struct ProcessorHandle {
+pub struct ProcessorHandle {
     sender: flume::Sender<ProcessorMessage>,
 }
 
 impl ProcessorHandle {
-    
     pub fn new(
         // The size of the mpmc channel
         mpmc_channel_size: usize,
@@ -146,7 +143,6 @@ impl ProcessorHandle {
         local_writer: LocalWriterHandle,
         // The scheduler handles
         scheduler_handles: HashMap<NodeId, SchedulerHandle>,
-
     ) -> Self {
         let (processor_sender, processor_receiver) = bounded(mpmc_channel_size);
         for _ in 0..num_processors {
@@ -158,7 +154,9 @@ impl ProcessorHandle {
             };
             tokio::spawn(async move { actor.run().await });
         }
-        Self { sender: processor_sender }
+        Self {
+            sender: processor_sender,
+        }
     }
 
     pub async fn update_routing_table(&self, new_table: RoutingTable) {
