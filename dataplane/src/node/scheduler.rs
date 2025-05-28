@@ -1,18 +1,17 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{Notify, RwLock, mpsc};
 use crossbeam_queue::ArrayQueue;
+use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{error, warn};
 
-use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
-use crate::node::packet::Packet;
 use crate::node::controller::ControllerHandle;
-use crate::node::protocols_io::ProtocolWriter;
+use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::metrics::Collector;
+use crate::node::packet::Packet;
+use crate::node::protocols_io::ProtocolWriter;
 use crate::node::utils::RateLimiter;
 use crate::node::{FlowId, NodeId};
-
 
 /// The scheduling discipline.
 #[allow(unused)]
@@ -23,7 +22,7 @@ pub enum SchedulingDiscipline {
 }
 
 /// Defines the interface for all scheduling disciplines.
-/// A scheduler has two main tasks : 
+/// A scheduler has two main tasks :
 /// 1. Enqueue packets to the queue -> Send packets to the protocol writer
 /// 2. Collect metrics at regular intervals -> Send metrics to the controller via collector struct
 pub trait Scheduler {
@@ -35,9 +34,9 @@ pub trait Scheduler {
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
 pub struct Fifo {
     // Receiver side of the mpsc channel (sent from scheduler handle)
-    receiver: mpsc::Receiver<SchedulerMessage>, 
+    receiver: mpsc::Receiver<SchedulerMessage>,
 
-    // tx to the collector 
+    // tx to the collector
     metrics_tx: mpsc::UnboundedSender<(FlowId, NodeId, usize)>,
     // The local node_id which is sent inside the metrics
     local_id: NodeId,
@@ -48,7 +47,7 @@ pub struct Fifo {
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     packet_arrived: Arc<Notify>,
-    protocol_writer: ProtocolWriter,  // a handle to the protocol writer
+    protocol_writer: ProtocolWriter, // a handle to the protocol writer
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -91,14 +90,13 @@ impl Fifo {
 
 impl Scheduler for Fifo {
     async fn run(&mut self) {
-
         while let Some(message) = self.receiver.recv().await {
             match message {
                 SchedulerMessage::Enqueue(packet) => {
                     // Send metrics
-                    self.metrics_tx.send(
-                        (packet.flow_id, self.local_id, packet.packet_size)
-                    ).unwrap(); 
+                    self.metrics_tx
+                        .send((packet.flow_id, self.local_id, packet.packet_size))
+                        .unwrap();
 
                     // Enqueue the packet
                     self.enqueue(packet);
@@ -203,7 +201,6 @@ impl Drop for Fifo {
     }
 }
 
-
 /// Scheduler Handle Implementation
 /// A handle has two responsibilities :
 /// 1. Initialize the actor and other related struct -> Spawn them
@@ -231,42 +228,39 @@ impl SchedulerHandle {
         drop_strategy: DropStrategy,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
-        
         // Initialize the metrics collector
-        let mut metrics_collector = Collector::new(
-            controller_handle, 
-            collection_rate
-        );
+        let mut metrics_collector = Collector::new(controller_handle, collection_rate);
         let metrics_tx = metrics_collector.get_metrics_tx();
 
         // Initialize the scheduler actor
         let (sender, receiver) = mpsc::channel(mpsc_channel_size);
-        let mut scheduler= match scheduler_type {
-            SchedulingDiscipline::Fifo => {
-                Fifo::new(
-                    receiver,
-                    capacity, 
-                    drop_strategy, 
-                    protocol_writer, 
-                    rate_limiter,
-                    metrics_tx,
-                    local_id,
-                )
-            } 
+        let mut scheduler = match scheduler_type {
+            SchedulingDiscipline::Fifo => Fifo::new(
+                receiver,
+                capacity,
+                drop_strategy,
+                protocol_writer,
+                rate_limiter,
+                metrics_tx,
+                local_id,
+            ),
             SchedulingDiscipline::Wrr => {
                 panic!("Wrr scheduling discipline not implemented");
             }
         };
 
         // spawn all tasks
-        tokio::spawn(async move { 
-            metrics_collector.run().await;        // Spawn the metrics collector
-            scheduler.send_to_protocol_writer();  // Inside this method, the subscriber to the enqueue notification is spawned
-            scheduler.run().await 
+        tokio::spawn(async move {
+            metrics_collector.run().await; // Spawn the metrics collector
+            scheduler.send_to_protocol_writer(); // Inside this method, the subscriber to the enqueue notification is spawned
+            scheduler.run().await
         });
         Self { sender }
     }
     pub async fn send(&mut self, packet: Packet) {
-        self.sender.send(SchedulerMessage::Enqueue(packet)).await.unwrap();
+        self.sender
+            .send(SchedulerMessage::Enqueue(packet))
+            .await
+            .unwrap();
     }
 }
