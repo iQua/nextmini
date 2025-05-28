@@ -2,7 +2,7 @@ use std::io::Cursor;
 
 use byteorder::{BigEndian, ReadBytesExt};
 
-use crate::dataplane::{FlowId, PacketBuf};
+use crate::node::{FlowId, PacketBuf};
 
 #[derive(Debug)]
 pub struct Packet {

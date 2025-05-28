@@ -5,6 +5,7 @@
 use crate::node::NodeId;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
+use crate::node::scheduler::SchedulerHandle;
 
 use std::collections::HashMap;
 use tracing::{debug, error};

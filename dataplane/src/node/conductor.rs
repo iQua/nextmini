@@ -39,7 +39,7 @@ impl Conductor {
             },
             _ = self.shutdown_recv.recv() => {
                 // handles the local shutdown signal by cleaning up all the actors
-                conductor.shutdown().await;
+                self.shutdown().await;
             },
             _ = self.main_shutdown_recv.recv() => {
                 // handles the shutdown signal from the main tokio task

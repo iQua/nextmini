@@ -35,7 +35,7 @@ pub struct Fifo {
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     packet_arrived: Arc<Notify>,
-    protocol_writer_handle: ProtocolWriterHandle,
+    protocol_writer_handle: ProtocolWriterHandle,  // a handle to the protocol writer
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -177,6 +177,7 @@ pub enum SchedulerMessage {
     Enqueue(Packet),
 }
 
+// a handle is for one scheduler actor, a scheduler actor is for one node's protocol writer
 #[derive(Clone)]
 pub struct SchedulerHandle {
     sender: mpsc::Sender<SchedulerMessage>,
@@ -214,7 +215,7 @@ impl SchedulerHandle {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 SchedulerMessage::Enqueue(packet) => {
-                    scheduler.enqueue(packet);
+                    self.scheduler.enqueue(packet);
                 }
             }
         }
