@@ -5,10 +5,10 @@ use tokio::sync::mpsc::Sender;
 use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-use crate::dataplane::RECEIVE_BUF_SIZE;
-use crate::dataplane::configs::{ControllerConfigs, LocalConfigs};
-use crate::dataplane::packet::Packet;
-use crate::dataplane::processor::SenderLoadBalancer;
+use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::configs::{ControllerConfigs, LocalConfigs};
+use crate::node::packet::Packet;
+use crate::node::processor::SenderLoadBalancer;
 
 /// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {

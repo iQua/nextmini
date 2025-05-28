@@ -2,6 +2,7 @@ use crate::node::udp::{UdpReader, UdpWriter};
 use crate::node::tcp::{TcpReader, TcpWriter};
 use crate::node::quic::{QuicReader, QuicWriter};
 use crate::node::PacketBuf;
+
 pub enum ProtocolReader {
     Tcp(TcpReader),
     Udp(UdpReader),
@@ -18,6 +19,7 @@ impl ProtocolReader {
     }
 }
 
+#[derive(Clone)]
 pub enum ProtocolWriter {
     Tcp(TcpWriter),
     Udp(UdpWriter),

@@ -9,7 +9,7 @@ use tracing::{error, warn};
 
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::packet::Packet;
-use crate::node::protocols_io::ProtocolWriterHandle;
+use crate::node::protocols_io::ProtocolWriter;
 use crate::node::utils::RateLimiter;
 
 /// The scheduling discipline.
@@ -37,7 +37,7 @@ pub struct Fifo {
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     packet_arrived: Arc<Notify>,
-    protocol_writer_handle: ProtocolWriterHandle,  // a handle to the protocol writer
+    protocol_writer: ProtocolWriter,  // a handle to the protocol writer
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -50,7 +50,7 @@ impl Fifo {
         receiver: mpsc::Receiver<SchedulerMessage>,
         capacity: usize,
         drop_strategy: DropStrategy,
-        protocol_writer_handle: ProtocolWriterHandle,
+        protocol_writer: ProtocolWriter,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
         let capacity_unit = CapacityUnit::Packets;
@@ -66,7 +66,7 @@ impl Fifo {
             packets_dropped: 0,
             drop_strategy: packet_drop,
             packet_arrived: Arc::new(Notify::new()),
-            protocol_writer_handle,
+            protocol_writer,
             rate_limiter,
             shutdown: Arc::new(AtomicBool::new(false)),
             task_handle: None,
@@ -130,7 +130,7 @@ impl Scheduler for Fifo {
         let queue = self.queue.clone();
         let packet_arrived = self.packet_arrived.clone();
         let rate_limiter = self.rate_limiter.clone();
-        let writer = self.protocol_writer_handle.clone();
+        let mut writer = self.protocol_writer.clone();
         let shutdown_flag = self.shutdown.clone();
 
         let handle = tokio::spawn(async move {
@@ -197,7 +197,7 @@ pub struct SchedulerHandle {
 impl SchedulerHandle {
     pub fn new(
         mpsc_channel_size: usize,
-        protocol_writer_handle: ProtocolWriterHandle,
+        protocol_writer: ProtocolWriter,
         scheduler_type: SchedulingDiscipline,
 
         capacity: usize,
@@ -211,7 +211,7 @@ impl SchedulerHandle {
                     receiver, 
                     capacity, 
                     drop_strategy, 
-                    protocol_writer_handle, 
+                    protocol_writer, 
                     rate_limiter
                 )
             } 
