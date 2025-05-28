@@ -1,8 +1,6 @@
-use crate::node::protocols_io::ProtocolWriterMessage;
 use s2n_quic::stream::{ReceiveStream, SendStream};
-use tokio::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use tracing::{info, error};
+use tracing::{info};
 
 pub struct QuicServer {
     context: Context,
@@ -108,30 +106,18 @@ impl QuicReader {
     }
 }
 
-
-/// Actor Model Implementation
-
-
+#[derive(Clone)]
 pub struct QuicWriter {
-    receiver: mpsc::Receiver<ProtocolWriterMessage>,
     stream: Arc<Mutex<SendStream>>,
 }
 
 impl QuicWriter {
-    pub fn new(receiver: mpsc::Receiver<ProtocolWriterMessage>, stream: Arc<Mutex<SendStream>>) -> Self {
+    pub fn new(stream: Arc<Mutex<SendStream>>) -> Self {
         Self {
-            receiver,
             stream: stream.clone(),
         }
     }
-    pub async fn run(&mut self) {
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                ProtocolWriterMessage::Send(data) => self.send(&data).await,
-                ProtocolWriterMessage::Shutdown => break,
-            }
-        }
-    }
+
     pub async fn send(&mut self, buf: &[u8]) {
         let mut stream_guard = self.stream.lock().await;
 
@@ -140,44 +126,10 @@ impl QuicWriter {
             Err(e) => panic!("{e}"),
         };
     }
-}
 
-#[derive(Clone)]
-pub struct QuicWriterHandle {
-    sender: mpsc::Sender<ProtocolWriterMessage>,
-}
-
-impl QuicWriterHandle {
-    pub fn new_quic(stream: Arc<Mutex<SendStream>>) -> Self {
-        let (sender, receiver) = mpsc::channel(100);
-
-        let mut actor = QuicWriter {
-            receiver,
-            stream: stream.clone(),
-        };
-
-        tokio::spawn(async move {
-            actor.run().await;
-        });
-
-        Self { sender }
-    }
-    pub async fn send(&self, data: &[u8]) {
-        if let Err(_) = self
-            .sender
-            .send(ProtocolWriterMessage::Send(data.to_vec()))
-            .await
-        {
-            error!("Failed to send data through protocol writer channel");
-        }
-    }
-    pub async fn shutdown(&self) {
-        if let Err(_) = self
-            .sender
-            .send(ProtocolWriterMessage::Shutdown)
-            .await
-        {
-            error!("Failed to send shutdown message through protocol writer channel");
+    pub fn reproduce(&self) -> Self {
+        Self {
+            stream: self.stream.clone(),
         }
     }
 }

@@ -1,5 +1,8 @@
-use crate::node::protocols_io::ProtocolWriterMessage;
-use tokio::sync::mpsc;
+use crate::node::PacketBuf;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+
+
 #[derive(Clone)]
 pub struct UdpReader {
     sock: Arc<UdpSocket>,
@@ -18,53 +21,27 @@ impl UdpReader {
     }
 }
 
-
-/// Actor Model Implementation
-struct UdpProtocolWriter {
-    receiver: mpsc::Receiver<ProtocolWriterMessage>,
-    writer: UdpWriter,
-}
-
-impl UdpProtocolWriter {
-    async fn run(&mut self) {
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                ProtocolWriterMessage::Send(data) => {
-                    (&mut self.writer).send(&data).await;
-                }
-                ProtocolWriterMessage::Shutdown => break,
-            }
-        }
-    }
-}
-
 #[derive(Clone)]
-pub struct UdpProtocolWriterHandle {
-    sender: mpsc::Sender<ProtocolWriterMessage>,
+pub struct UdpWriter {
+    sock: Arc<UdpSocket>,
+    addr: String,
 }
 
-impl UdpProtocolWriterHandle {
-        pub fn new_udp(udp_writer: UdpWriter) -> Self {
-        let (sender, receiver) = mpsc::channel(100);
-
-        let mut actor = UdpProtocolWriter {
-            receiver,
-            writer: udp_writer,
-        };
-
-        tokio::spawn(async move {
-            actor.run().await;
-        });
-
-        Self { sender }
+impl UdpWriter {
+    pub fn new(sock: Arc<UdpSocket>, addr: String) -> Self {
+        Self { sock, addr }
     }
+
     pub async fn send(&self, data: &[u8]) {
-        if let Err(_) = self
-            .sender
-            .send(ProtocolWriterMessage::Send(data.to_vec()))
-            .await
-        {
-            error!("Failed to send data through protocol writer channel");
+        match self.sock.send_to(data, self.addr.as_str()).await {
+            Ok(_) => (),
+            Err(e) => panic!("{e}"),
         }
+    }
+
+    pub fn reproduce(&self) -> Self {
+        let sock = self.sock.clone();
+        let addr = self.addr.clone();
+        Self { sock, addr }
     }
 }

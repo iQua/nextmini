@@ -38,6 +38,7 @@ impl Collector {
         loop {
             sleep(Duration::from_secs(self.collection_rate)).await;
 
+            // The hashmap : flow_id -> (node_id, total_bytes)
             let mut data = FxHashMap::default();
 
             while let Ok((flow_id, node_id, n_bytes)) = self.metrics_rx.try_recv() {
