@@ -1,23 +1,23 @@
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use std::sync::{Arc, Mutex};
-use tracing::{info};
+use tracing::info;
 
 pub struct QuicServer {
     context: Context,
     processor_manager: Arc<RwLock<ProcessorManager>>,
-    configs: LocalConfigs,
+    config: LocalConfig,
 }
 
 impl QuicServer {
     pub fn new(
         context: Context,
-        configs: LocalConfigs,
+        config: LocalConfig,
         processor_manager: Arc<RwLock<ProcessorManager>>,
     ) -> Self {
         Self {
             context,
             processor_manager,
-            configs,
+            config,
         }
     }
 
