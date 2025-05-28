@@ -12,7 +12,7 @@ use fxhash::FxHashMap;
 use s2n_quic::stream::BidirectionalStream;
 
 use crate::node::config::LocalConfig;
-use crate::node::local_interface::{TunReader, TunWriter};
+use crate::node::local_interface::{TunReader, TunWriterHandle};
 use crate::node::metrics::MetricsTx;
 use crate::node::node_interface::{
     NodeSender, create_quic_node_interfaces, create_tcp_node_interfaces, create_udp_node_receiver,
@@ -32,7 +32,7 @@ pub struct Context {
     config: LocalConfig,
 
     // Writers to the TUN interface, as shared writable vectors, where each queue corresponds to one writer
-    tun_writers: Arc<RwLock<Vec<TunWriter>>>,
+    tun_writers: Arc<RwLock<Vec<TunWriterHandle>>>,
 
     // A vector of processor channels, each including a sender and a receiver for an mpsc channel
     processor_channels: Arc<RwLock<Vec<ProcessorChannel>>>,
@@ -82,7 +82,7 @@ impl Context {
         for dev in tun_queues.iter() {
             // tun_writers is a vector of queues for one TUN device
             // dev.clone() does not clone the device, it simply creates a new reference to it
-            let writer = TunWriter::new(dev.clone());
+            let writer = TunWriterHandle::new(dev.clone());
             tun_writers.push(writer);
 
             // Start a new Tokio task for reading continuously from this TUN device
@@ -95,7 +95,7 @@ impl Context {
     }
 
     // Get a reference of the TUN writer for the corresponding queue ID
-    pub async fn get_tun_writer(&self, queue_id: usize) -> TunWriter {
+    pub async fn get_tun_writer(&self, queue_id: usize) -> TunWriterHandle {
         self.tun_writers
             .read()
             .await
