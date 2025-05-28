@@ -151,22 +151,35 @@ struct ProcessorHandle {
 }
 
 impl ProcessorHandle {
+    
     pub fn new(
+        // The size of the mpmc channel
         mpmc_channel_size: usize,
+
+        // The number of processors
+        num_processors: usize,
+        // A copy of the routing table
         routing_table: RoutingTable,
+
+        // The local id
         local_id: NodeId,
+        // The local writer handle
         local_writer: LocalWriterHandle,
+        // The protocol senders
         protocol_senders: HashMap<NodeId, ProtocolSenderHandle>,
+        
     ) -> Self {
         let (processor_sender, processor_receiver) = bounded(mpmc_channel_size);
-        let mut actor = Processor {
-            receiver: processor_receiver,
-            routing_table,
-            local_id,
-            local_writer_handle: local_writer,
-            senders: protocol_senders,
-        };
-        tokio::spawn(async move { actor.run().await });
+        for _ in 0..num_processors {
+            let mut actor = Processor {
+                receiver: processor_receiver.clone(),
+                routing_table: routing_table.clone(),
+                local_id,
+                local_writer_handle: local_writer.clone(),
+                senders: protocol_senders.clone(),
+            };
+            tokio::spawn(async move { actor.run().await });
+        }
         Self { sender: processor_sender }
     }
 

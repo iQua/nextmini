@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, mpsc};
 
 use crossbeam_queue::ArrayQueue;
 
@@ -9,7 +9,6 @@ use tracing::{error, warn};
 
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::packet::Packet;
-use crate::node::protocols_io::ProtocolWriter;
 use crate::node::utils::RateLimiter;
 
 /// The scheduling discipline.
@@ -28,12 +27,15 @@ pub trait Scheduler {
 
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
 pub struct Fifo {
+    // Receiver side of the mpsc channel (sent from scheduler handle)
+    receiver: mpsc::Receiver<SchedulerMessage>, 
+
     queue: Arc<ArrayQueue<Packet>>,
     packets_dropped: usize,
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     packet_arrived: Arc<Notify>,
-    writer: ProtocolWriter,
+    protocol_writer_handle: ProtocolWriterHandle,
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
@@ -43,11 +45,12 @@ impl Fifo {
     const BATCH_SIZE: usize = 32;
 
     pub fn new(
+        receiver: mpsc::Receiver<SchedulerMessage>,
         capacity: usize,
         drop_strategy: DropStrategy,
-        writer: ProtocolWriter,
+        protocol_writer_handle: ProtocolWriterHandle,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
-    ) -> Fifo {
+    ) -> Self {
         let capacity_unit = CapacityUnit::Packets;
 
         let packet_drop: Box<dyn PacketDrop + Send + Sync> = match drop_strategy {
@@ -56,11 +59,12 @@ impl Fifo {
         };
 
         Fifo {
+            receiver,
             queue: Arc::new(ArrayQueue::new(capacity)),
             packets_dropped: 0,
             drop_strategy: packet_drop,
             packet_arrived: Arc::new(Notify::new()),
-            writer,
+            protocol_writer_handle,
             rate_limiter,
             shutdown: Arc::new(AtomicBool::new(false)),
             task_handle: None,
@@ -115,7 +119,7 @@ impl Scheduler for Fifo {
         let queue = self.queue.clone();
         let packet_arrived = self.packet_arrived.clone();
         let rate_limiter = self.rate_limiter.clone();
-        let mut writer = self.writer.reproduce();
+        let mut writer = self.protocol_writer_handle.clone();
         let shutdown_flag = self.shutdown.clone();
 
         let handle = tokio::spawn(async move {
@@ -130,7 +134,7 @@ impl Scheduler for Fifo {
 
                 while let Some(packet) = queue.pop() {
                     // Send raw packet data directly without protocol header
-                    writer.send(&packet.buf[0..packet.packet_size]).await;
+                    self.protocol_writer_handle.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
                     counter += 1;
 
@@ -162,6 +166,57 @@ impl Drop for Fifo {
         // Abort the task if it exists
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
+        }
+    }
+}
+
+
+/// Actor Model Implementation
+
+pub enum SchedulerMessage {
+    Enqueue(Packet),
+}
+
+#[derive(Clone)]
+pub struct SchedulerHandle {
+    sender: mpsc::Sender<SchedulerMessage>,
+}
+
+impl SchedulerHandle {
+    pub fn new(
+        mpsc_channel_size: usize,
+        protocol_writer_handle: ProtocolWriterHandle,
+        scheduler_type: SchedulingDiscipline,
+
+        capacity: usize,
+        drop_strategy: DropStrategy,
+        rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel(mpsc_channel_size);
+        let mut scheduler: Box<dyn Scheduler + Send + Sync> = match scheduler_type {
+            SchedulingDiscipline::Fifo => {
+                Box::new(Fifo::new(
+                    receiver, 
+                    capacity, 
+                    drop_strategy, 
+                    protocol_writer_handle, 
+                    rate_limiter
+                ))
+            } 
+            SchedulingDiscipline::Wrr => {
+                panic!("Wrr scheduling discipline not implemented");
+            }
+        };
+        tokio::spawn(async move { scheduler.run() });
+        Self { sender }
+    }
+    pub async fn run(&mut self) {
+        while let Some(message) = self.receiver.recv().await {
+            match message {
+                SchedulerMessage::Enqueue(packet) => {
+                    scheduler.enqueue(packet);
+                }
+            }
         }
     }
 }
