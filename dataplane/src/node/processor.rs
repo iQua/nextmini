@@ -2,116 +2,22 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::node::NodeId;
+use crate::node::packet::Packet;
+use crate::node::routes::RoutingTable;
 
-use fxhash::FxHashMap;
-use tokio::sync::RwLock;
-use tokio::sync::mpsc;
-
-use crate::dataplane::NodeId;
-use crate::dataplane::local_interface::TunWriter;
-use crate::dataplane::node_interface::NodeSender;
-use crate::dataplane::packet::Packet;
-use crate::dataplane::routes::RoutingTable;
-use crate::dataplane::{FlowId, FlowIdExt, context::Context, metrics::MetricsTx};
-use nextmini_messages::RoutingTableEntry;
-use tracing::{debug, error, warn};
-
-pub struct ProcessorManager {
-    context: Context,
-    proc_handles: VecDeque<tokio::task::JoinHandle<()>>,
-    proc_shutdown_flags: VecDeque<Arc<AtomicBool>>,
-    receiver_rxs: VecDeque<Arc<RwLock<mpsc::Receiver<Packet>>>>,
-    pub routing_table: RoutingTable,
-}
-
-impl ProcessorManager {
-    pub fn new(context: Context, mut receiver_rxs: Vec<mpsc::Receiver<Packet>>) -> Self {
-        let mut rxs = VecDeque::new();
-        let routing_table = RoutingTable::new(context.local_id);
-        for _ in 0..receiver_rxs.len() {
-            let rx = receiver_rxs.pop().unwrap();
-            rxs.push_back(Arc::new(RwLock::new(rx)));
-        }
-        Self {
-            context,
-            proc_handles: VecDeque::new(),
-            proc_shutdown_flags: VecDeque::new(),
-            receiver_rxs: rxs,
-            routing_table,
-        }
-    }
-
-    pub async fn update_simple_routes(&mut self, routes: Vec<RoutingTableEntry>) {
-        // Set base IPv4 address for node ID calculation (should be configurable)
-        self.routing_table.set_base_ipv4_addr([10, 0, 0, 0]);
-
-        // Install routes directly using RoutingTableEntry
-        self.routing_table.install_routes(routes);
-        self.swap_processors().await;
-    }
-
-    pub async fn update_processors(&mut self) {
-        self.swap_processors().await;
-    }
-
-    async fn swap_processors(&mut self) {
-        if self.proc_handles.is_empty() {
-            // If there is no processor running, we simply spawn new processors
-            self.spawn_processors().await;
-        } else {
-            // If there are processors running, we wait for new processors to spawn then shutdown old ones.
-            // Note that the new processors will be started immediately after spawning, but will be stuck waiting
-            // for rx writing guard at the beginning of the loop until the old processors are shutdown.
-            self.spawn_processors().await;
-            self.drop_processors().await;
-        }
-    }
-    async fn spawn_processors(&mut self) {
-        for i in 0..self.receiver_rxs.len() {
-            let receiver_rx = self.receiver_rxs[i].clone();
-            let shutdown_flag = Arc::new(AtomicBool::new(false));
-
-            let flg = shutdown_flag.clone();
-            let simple_table = self.routing_table.clone();
-            let senders = self.context.reproduce_senders().await;
-
-            let tun_writer = self.context.get_tun_writer(i).await;
-
-            let metrics_tx = self.context.get_metrics_tx();
-            let handle = tokio::task::spawn(async move {
-                let mut proc = Processor::new(
-                    receiver_rx,
-                    simple_table,
-                    senders,
-                    tun_writer,
-                    flg,
-                    metrics_tx,
-                );
-                proc.run().await;
-            });
-            self.proc_shutdown_flags.push_back(shutdown_flag);
-            self.proc_handles.push_back(handle);
-        }
-    }
-
-    pub async fn drop_processors(&mut self) {
-        for _ in 0..self.receiver_rxs.len() {
-            let flg = self.proc_shutdown_flags.pop_front().unwrap();
-            let hdl = self.proc_handles.pop_front().unwrap();
-            flg.store(true, Ordering::Relaxed);
-            //Wait for the processor to shutdown gracefully
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            //Drop the processor if it is still running
-            hdl.abort();
-        }
-    }
-}
-
+use std::collections::HashMap;
+use tracing::{debug, error};
+use flume::bounded;
+use tokio;
 
 /// Actor Model Implementation
+
+// Message type to processor
+pub enum ProcessorMessage {
+    ProcessPacket(Packet),
+    UpdateRoutingTable(RoutingTable),
+}
 
 // Processor: Processes packets and forwards them to the next hop
 struct Processor {
@@ -262,7 +168,7 @@ impl ProcessorHandle {
         routing_table: RoutingTable,
         // The local id
         local_id: NodeId,
-        
+
         // The local writer handle
         local_writer: LocalWriterHandle,
         // The scheduler handles
