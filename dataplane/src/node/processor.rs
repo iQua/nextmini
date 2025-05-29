@@ -2,6 +2,7 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
+use nextmini_messages::RoutingTableEntry;
 use crate::node::local_interface::TunWriterHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
@@ -20,7 +21,7 @@ use tracing::{debug, error};
 #[derive(Clone)]
 pub enum ProcessorMessage {
     ProcessPacket(Packet),
-    UpdateRoutingTable(RoutingTable),
+    UpdateRoutingTable(Vec<RoutingTableEntry>),
     // TODO : Implement the add node message
 }
 
@@ -57,8 +58,8 @@ impl Processor {
                 Some(ProcessorMessage::ProcessPacket(packet)) => {
                     self.process_packet(packet).await;
                 }
-                Some(ProcessorMessage::UpdateRoutingTable(new_table)) => {
-                    self.routing_table = new_table;
+                Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
+                    self.routing_table.install_routes(routes);
                 }
                 None => {
                     error!("Processor received an unexpected message");
@@ -149,9 +150,9 @@ pub struct ProcessorHandleforController {
     sender: broadcast::Sender<ProcessorMessage>,
 }
 impl ProcessorHandleforController {
-    pub async fn update_routing_table(&self, new_table: RoutingTable) {
+    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         self.sender
-            .send(ProcessorMessage::UpdateRoutingTable(new_table));
+            .send(ProcessorMessage::UpdateRoutingTable(routes));
     }
 }
 

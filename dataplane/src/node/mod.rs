@@ -1,7 +1,7 @@
 pub mod conductor;
 pub mod config;
 pub mod context;
-pub mod controller;
+pub mod coordinator;
 pub mod drop;
 pub mod local_interface;
 pub mod metrics;

@@ -5,23 +5,22 @@ use tokio::time::{Duration, interval};
 
 use nextmini_messages::{DataplaneToController, Metric};
 
-use crate::node::controller::ControllerHandle;
+use crate::node::coordinator::CoordinatorHandle;
 use crate::node::{FlowId, NodeId};
-use tracing::error;
 
 pub struct Collector {
-    controller_handle: ControllerHandle,
+    coordinator_handle: CoordinatorHandle,
     metrics_tx: UnboundedSender<(FlowId, NodeId, usize)>,
     metrics_rx: UnboundedReceiver<(FlowId, NodeId, usize)>,
 }
 
 impl Collector {
-    pub fn new(controller_handle: ControllerHandle) -> Self {
+    pub fn new(coordinator_handle: CoordinatorHandle) -> Self {
         let (metrics_tx, metrics_rx) = unbounded_channel();
         Self {
             metrics_tx,
             metrics_rx,
-            controller_handle,
+            coordinator_handle,
         }
     }
 
@@ -68,10 +67,8 @@ impl Collector {
                                 metrics: metrics_array,
                             };
                             
-                            // TODO : Fixed this after controller actor is implemented
-                            if let Err(e) = self.controller_handle.send(msg) {
-                                error!("Failed to send metrics to controller: {:?}", e);
-                            }
+                            // TODO : Fixed this after coordinator actor is implemented
+                            self.coordinator_handle.send_to_controller(msg).await;
                         }
                         // Clear data
                         data.clear();
