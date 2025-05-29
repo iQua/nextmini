@@ -1,6 +1,14 @@
 use crate::node::config::LocalConfig;
 use crate::node::processor::ProcessorHandleforController;
+use crate::node::scheduler::{SchedulingDiscipline, SchedulerHandle};
+use crate::node::drop::DropStrategy;
+use crate::node::NodeId;
+use crate::node::utils::RateLimiter;
+use crate::node::protocols_io::ProtocolWriter;
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -55,6 +63,16 @@ pub struct Coordinator {
     
     // Processor Handles
     processor_handle: ProcessorHandleforController,
+
+    // Data Required by the coordinator
+    local_id: NodeId,
+    // Data to intialize scheduler
+    scheduler_mpsc_channel_size: usize,
+    scheduler_type: SchedulingDiscipline,
+    coordinator_handle: CoordinatorHandle,
+    scheduler_queue_capacity: usize,
+    scheduler_drop_strategy: DropStrategy,
+    scheduler_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
 }
 
 impl Coordinator {
@@ -85,9 +103,20 @@ impl Coordinator {
                 // Use network interface
                 // 1. Request remote node connection via protocol protocols_client
                 // 2. get protocol writer handle
+                let protocol_writer: ProtocolWriter;
                 // 3. Create scheduler handle
+                let scheduler_handle = SchedulerHandle::new(
+                    self.scheduler_mpsc_channel_size,
+                    protocol_writer,
+                    self.scheduler_type,
+                    self.coordinator_handle.clone(),
+                    self.local_id,
+                    self.scheduler_queue_capacity,
+                    self.scheduler_drop_strategy.clone(),
+                    self.scheduler_rate_limiter.clone(),
+                );
                 // 4. Send add node message via processor handle
-                return;
+                self.processor_handle.add_node(node_id, scheduler_handle).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 // TODO : Implement set link rate

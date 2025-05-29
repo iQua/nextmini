@@ -22,7 +22,7 @@ use tracing::{debug, error};
 pub enum ProcessorMessage {
     ProcessPacket(Packet),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    // TODO : Implement the add node message
+    AddNode(NodeId, SchedulerHandle),
 }
 
 // Processor: Processes packets and forwards them to the next hop
@@ -60,6 +60,9 @@ impl Processor {
                 }
                 Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
                     self.routing_table.install_routes(routes);
+                }
+                Some(ProcessorMessage::AddNode(node_id, scheduler_handle)) => {
+                    self.scheduler_handles.insert(node_id, scheduler_handle);
                 }
                 None => {
                     error!("Processor received an unexpected message");
@@ -153,6 +156,10 @@ impl ProcessorHandleforController {
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         self.sender
             .send(ProcessorMessage::UpdateRoutingTable(routes));
+    }
+    pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
+        self.sender
+            .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
     }
 }
 
