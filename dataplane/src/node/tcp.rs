@@ -1,21 +1,19 @@
+use crate::node::PacketBuf;
+use crate::node::context::Context;
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
+use tokio::io::AsyncReadExt;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
-use std::io::Cursor;
-use crate::node::PacketBuf;
 
 pub struct TcpServer {
     context: Context,
-    processor_manager: Arc<RwLock<ProcessorManager>>,
 }
 
 impl TcpServer {
-    pub fn new(context: Context, processor_manager: Arc<RwLock<ProcessorManager>>) -> Self {
-        Self {
-            context,
-            processor_manager,
-        }
+    pub fn new(context: Context) -> Self {
+        Self { context }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -59,11 +57,11 @@ impl TcpServer {
             info!("Incoming connection from node {}...", node_id);
 
             self.context.add_tcp_node(node_id, stream).await;
-            self.processor_manager
-                .write()
-                .await
-                .update_processors()
-                .await;
+            // self.processor_manager
+            //     .write()
+            //     .await
+            //     .update_processors()
+            //     .await;
 
             info!("Connected to node {}.", node_id);
         }
