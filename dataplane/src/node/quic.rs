@@ -8,7 +8,7 @@ use s2n_quic::stream::{ReceiveStream, SendStream};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
 pub struct QuicServer {
