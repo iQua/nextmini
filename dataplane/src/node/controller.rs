@@ -64,8 +64,8 @@ pub struct Controller {
 }
 
 impl Controller {
-    pub async fn run(configs: LocalConfigs, shutdown_tx: watch::Sender<bool>) -> Controller {
-        let url = url::Url::parse(&configs.controller_addr).unwrap();
+    pub async fn run(config: LocalConfig, shutdown_tx: watch::Sender<bool>) -> Controller {
+        let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
         loop {
             match connect_async(url.as_str()).await {
@@ -82,14 +82,14 @@ impl Controller {
         }
 
         let startup_msg = DataplaneToController::StartUp {
-            private_network_name: configs.private_network_name.clone(),
-            private_network_addr: configs.private_network_addr.clone()
+            private_network_name: config.private_network_name.clone(),
+            private_network_addr: config.private_network_addr.clone()
                 + ":"
-                + &configs.private_network_port.clone(),
-            public_network_addr: configs.public_network_addr.clone()
+                + &config.private_network_port.clone(),
+            public_network_addr: config.public_network_addr.clone()
                 + ":"
-                + &configs.public_network_port.clone(),
-            node_id: configs.node_id.parse().ok(),
+                + &config.public_network_port.clone(),
+            node_id: config.node_id.parse().ok(),
         };
 
         ws_stream
@@ -110,18 +110,18 @@ impl Controller {
         let (sender_tx, sender_rx) = unbounded_channel::<DataplaneToController>();
 
         // Create local tun interface.
-        let tun_device = create_tun_device(configs.clone()).await;
+        let tun_device = create_tun_device(config.clone()).await;
 
         // Create metrics collector.
         let metrics_collector =
-            Collector::new(sender_tx.clone(), configs.metrics_collection_interval);
+            Collector::new(sender_tx.clone(), config.metrics_collection_interval);
 
         // Create link rate limiters.
         let link_rate_limiters = Arc::new(RwLock::new(HashMap::new()));
 
         // Create node manager.
         let mut context = Context::new(
-            configs.clone(),
+            config.clone(),
             controller_configs.node_id,
             metrics_collector.get_metrics_tx(),
             link_rate_limiters.clone(),
@@ -130,7 +130,7 @@ impl Controller {
 
         if controller_configs.protocol == Protocol::Udp {
             context
-                .init_udp_socket(configs.private_network_port.clone())
+                .init_udp_socket(config.private_network_port.clone())
                 .await;
         }
 
