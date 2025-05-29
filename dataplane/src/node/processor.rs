@@ -2,16 +2,16 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
+use crate::node::local_interface::TunWriterHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::local_interface::TunWriterHandle;
 use crate::node::{FlowId, NodeId};
 
 use flume::bounded;
 use std::collections::HashMap;
-use tokio::sync::broadcast;
 use tokio::select;
+use tokio::sync::broadcast;
 use tracing::{debug, error};
 
 /// Actor Model Implementation
@@ -40,12 +40,11 @@ struct Processor {
 
 impl Processor {
     async fn run(&mut self) {
-
-        loop{
+        loop {
             #[allow(unused_assignments)] // To satisfy the compiler
-            let mut msg: Option<ProcessorMessage> = None;  
+            let mut msg: Option<ProcessorMessage> = None;
 
-            select!{
+            select! {
                 Ok(writer_msg) = self.receiver_from_writer.recv_async() => {
                     msg = Some(writer_msg);
                 }
@@ -61,8 +60,8 @@ impl Processor {
                 Some(ProcessorMessage::UpdateRoutingTable(new_table)) => {
                     self.routing_table = new_table;
                 }
-                None =>{
-                    error!("Processor received an unexpected message"); 
+                None => {
+                    error!("Processor received an unexpected message");
                     break;
                 }
             }
@@ -167,8 +166,6 @@ impl ProcessorHandleforWriter {
     }
 }
 
-
-
 pub async fn init_processor_actor(
     mpmc_channel_size: usize,
     broadcast_channel_size: usize,
@@ -177,21 +174,26 @@ pub async fn init_processor_actor(
     tun_writer: TunWriterHandle,
     scheduler_handles: HashMap<NodeId, SchedulerHandle>,
 ) -> (ProcessorHandleforController, ProcessorHandleforWriter) {
-    let (controller_sender, _ ) = broadcast::channel(broadcast_channel_size);
+    let (controller_sender, _) = broadcast::channel(broadcast_channel_size);
     let (writer_sender, writer_receiver) = bounded(mpmc_channel_size);
 
-    let controller_handle = ProcessorHandleforController { sender: controller_sender.clone() };
-    let writer_handle = ProcessorHandleforWriter { sender: writer_sender };
+    let controller_handle = ProcessorHandleforController {
+        sender: controller_sender.clone(),
+    };
+    let writer_handle = ProcessorHandleforWriter {
+        sender: writer_sender,
+    };
 
     for _ in 0..num_processors {
         let mut actor = Processor {
             receiver_from_writer: writer_receiver.clone(),
-            receiver_from_controller: controller_sender.subscribe(),  // Potential ownership problem here
+            receiver_from_controller: controller_sender.subscribe(), // Potential ownership problem here
             routing_table: routing_table.clone(),
-            tun_writer_handle: tun_writer.clone(),  
+            tun_writer_handle: tun_writer.clone(),
             scheduler_handles: scheduler_handles.clone(),
         };
         tokio::spawn(async move { actor.run().await });
     }
+
     (controller_handle, writer_handle)
 }
