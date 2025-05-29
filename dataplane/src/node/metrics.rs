@@ -44,7 +44,7 @@ impl Collector {
                     flow_data.1 += n_bytes;
                 }
 
-                // Process buffer every 5 seconds
+                // Timer tick: calculate bandwidth metrics and transmit to controller
                 _ = metrics_tick.tick() => {
                     if !data.is_empty() {
                         let now = Utc::now();
