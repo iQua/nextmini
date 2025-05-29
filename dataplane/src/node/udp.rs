@@ -2,7 +2,6 @@ use crate::node::PacketBuf;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
-
 #[derive(Clone)]
 pub struct UdpReader {
     sock: Arc<UdpSocket>,
@@ -37,11 +36,5 @@ impl UdpWriter {
             Ok(_) => (),
             Err(e) => panic!("{e}"),
         }
-    }
-
-    pub fn reproduce(&self) -> Self {
-        let sock = self.sock.clone();
-        let addr = self.addr.clone();
-        Self { sock, addr }
     }
 }

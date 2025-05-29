@@ -10,17 +10,17 @@ use s2n_quic::stream::BidirectionalStream;
 use crate::node::metrics::MetricsTx;
 use crate::node::packet::Packet;
 use crate::node::processor::SenderLoadBalancer;
-use crate::node::protocols_io::{
-    ProtocolReader, ProtocolWriter, QuicReader, QuicWriter, TcpReader, TcpWriter, UdpReader,
-    UdpWriter,
-};
+use crate::node::protocols_io::{ProtocolReader, ProtocolWriter};
+use crate::node::quic::{QuicReader, QuicWriter};
 use crate::node::scheduler::SchedulingDiscipline;
 use crate::node::scheduler::{Fifo, Scheduler};
+use crate::node::tcp::{TcpReader, TcpWriter};
+use crate::node::udp::{UdpReader, UdpWriter};
 use crate::node::utils::RateLimiter;
 use crate::node::{FlowId, INTERNAL_Q_SIZE, NodeId, RECEIVE_BUF_SIZE};
 use tracing::error;
 
-pub fn create_tcp_node_interfaces(
+pub fn create_tcp_interface(
     stream: TcpStream,
     remote_node_id: NodeId,
     send_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
@@ -43,7 +43,7 @@ pub fn create_tcp_node_interfaces(
     )
 }
 
-pub async fn create_quic_node_interfaces(
+pub async fn create_quic_interface(
     stream: BidirectionalStream,
     remote_node_id: NodeId,
     send_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
@@ -68,7 +68,7 @@ pub async fn create_quic_node_interfaces(
     (node_receiver, node_sender)
 }
 
-pub fn create_udp_node_sender(
+pub fn create_udp_sender(
     sock: Arc<UdpSocket>,
     addr: String,
     send_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
@@ -81,7 +81,7 @@ pub fn create_udp_node_sender(
     )
 }
 
-pub fn create_udp_node_receiver(
+pub fn create_udp_receiver(
     sock: Arc<UdpSocket>,
     remote_node_id: NodeId,
     txs: Vec<mpsc::Sender<Packet>>,

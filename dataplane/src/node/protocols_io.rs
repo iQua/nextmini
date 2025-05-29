@@ -1,7 +1,7 @@
-use crate::node::udp::{UdpReader, UdpWriter};
-use crate::node::tcp::{TcpReader, TcpWriter};
-use crate::node::quic::{QuicReader, QuicWriter};
 use crate::node::PacketBuf;
+use crate::node::quic::{QuicReader, QuicWriter};
+use crate::node::tcp::{TcpReader, TcpWriter};
+use crate::node::udp::{UdpReader, UdpWriter};
 
 pub enum ProtocolReader {
     Tcp(TcpReader),
@@ -32,14 +32,6 @@ impl ProtocolWriter {
             Self::Tcp(writer) => writer.send(data).await,
             Self::Udp(writer) => writer.send(data).await,
             Self::Quic(writer) => writer.send(data).await,
-        }
-    }
-
-    pub fn reproduce(&self) -> Self {
-        match self {
-            Self::Tcp(writer) => Self::Tcp(writer.reproduce()),
-            Self::Udp(writer) => Self::Udp(writer.reproduce()),
-            Self::Quic(writer) => Self::Quic(writer.reproduce()),
         }
     }
 }

@@ -126,10 +126,4 @@ impl QuicWriter {
             Err(e) => panic!("{e}"),
         };
     }
-
-    pub fn reproduce(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
-        }
-    }
 }

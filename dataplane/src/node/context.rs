@@ -13,8 +13,8 @@ use s2n_quic::stream::BidirectionalStream;
 
 use crate::node::config::LocalConfig;
 use crate::node::local_interface::{TunReader, TunWriterHandle};
-use crate::node::node_interface::{
-    NodeSender, create_quic_node_interfaces, create_tcp_node_interfaces, create_udp_node_receiver,
+use crate::node::net_interface::{
+    NodeSender, create_quic_node_interface, create_tcp_interface, create_udp_node_receiver,
     create_udp_node_sender,
 };
 use crate::node::packet::Packet;
@@ -225,7 +225,7 @@ impl Context {
         let rate_limiter = self.get_link_rate_limiter(node_id).await;
 
         // creates TCP node interfaces
-        let (mut node_receiver, node_sender) = create_tcp_node_interfaces(
+        let (mut node_receiver, node_sender) = create_tcp_interface(
             stream,
             node_id,
             rate_limiter,
