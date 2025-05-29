@@ -67,7 +67,8 @@ impl Collector {
                             let msg = DataplaneToController::Metrics {
                                 metrics: metrics_array,
                             };
-                            // TODO: Change this to use the controller actor
+                            
+                            // TODO : Fixed this after controller actor is implemented
                             if let Err(e) = self.controller_handle.send(msg) {
                                 error!("Failed to send metrics to controller: {:?}", e);
                             }

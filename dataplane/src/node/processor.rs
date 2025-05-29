@@ -143,6 +143,7 @@ impl Processor {
     }
 }
 
+
 #[derive(Clone)]
 pub struct ProcessorHandleforController {
     sender: broadcast::Sender<ProcessorMessage>,
@@ -166,6 +167,8 @@ impl ProcessorHandleforWriter {
     }
 }
 
+
+// Spawned processor actor and returns handles for the controller and writer
 pub async fn init_processor_actor(
     mpmc_channel_size: usize,
     broadcast_channel_size: usize,
