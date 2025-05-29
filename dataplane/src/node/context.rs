@@ -13,13 +13,11 @@ use s2n_quic::stream::BidirectionalStream;
 
 use crate::node::config::LocalConfig;
 use crate::node::local_interface::{TunReader, TunWriterHandle};
-use crate::node::net_interface::{
-    NodeSender, create_quic_node_interface, create_tcp_interface, create_udp_node_receiver,
-    create_udp_node_sender,
-};
+use crate::node::net_interface::{NodeSender, create_quic_interface, create_tcp_interface};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulingDiscipline;
+use crate::node::udp::UdpReader;
 use crate::node::utils::RateLimiter;
 use crate::node::{INTERNAL_Q_SIZE, NodeId, ProcessorChannel, RateLimiterMap};
 
@@ -251,7 +249,7 @@ impl Context {
         // uses the local ID for remote_node_id here because UDP is connectionless, so we cannot
         // identify which node the packet is from directly. It can, however, still be inferred
         // through the flow ID and the associated route.
-        let mut receiver = create_udp_node_receiver(sock.clone(), self.local_id, senders_to_proc);
+        let mut receiver = UdpReader::create_receiver(sock.clone(), self.local_id, senders_to_proc);
 
         // puts back the UDP socket
         self.udp_socket = Some(sock);
@@ -280,8 +278,7 @@ impl Context {
         let rate_limiter = self.get_link_rate_limiter(node_id).await;
 
         let sock = self.udp_socket.take().unwrap();
-        let node_sender =
-            create_udp_node_sender(sock.clone(), addr, rate_limiter, self.scheduler_type);
+        let node_sender = Udp::create_sender(sock.clone(), addr, rate_limiter, self.scheduler_type);
 
         // puts back the UDP socket
         self.udp_socket = Some(sock);

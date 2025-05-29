@@ -12,9 +12,9 @@ pub enum ProtocolReader {
 impl ProtocolReader {
     pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
         match self {
-            Self::Tcp(reader) => reader.recv(buf).await,
-            Self::Udp(reader) => reader.recv(buf).await,
-            Self::Quic(reader) => reader.recv(buf).await,
+            Self::Tcp(reader) => reader.read(buf).await,
+            Self::Udp(reader) => reader.read(buf).await,
+            Self::Quic(reader) => reader.read(buf).await,
         }
     }
 }
@@ -29,9 +29,9 @@ pub enum ProtocolWriter {
 impl ProtocolWriter {
     pub async fn send(&mut self, data: &[u8]) {
         match self {
-            Self::Tcp(writer) => writer.send(data).await,
-            Self::Udp(writer) => writer.send(data).await,
-            Self::Quic(writer) => writer.send(data).await,
+            Self::Tcp(writer) => writer.write(data).await,
+            Self::Udp(writer) => writer.write(data).await,
+            Self::Quic(writer) => writer.write(data).await,
         }
     }
 }

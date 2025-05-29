@@ -68,31 +68,6 @@ pub async fn create_quic_interface(
     (node_receiver, node_sender)
 }
 
-pub fn create_udp_sender(
-    sock: Arc<UdpSocket>,
-    addr: String,
-    send_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
-    scheduler_type: SchedulingDiscipline,
-) -> NodeSender {
-    NodeSender::new(
-        ProtocolWriter::Udp(UdpWriter::new(sock, addr)),
-        send_rate_limiter,
-        scheduler_type,
-    )
-}
-
-pub fn create_udp_receiver(
-    sock: Arc<UdpSocket>,
-    remote_node_id: NodeId,
-    txs: Vec<mpsc::Sender<Packet>>,
-) -> NodeReceiver {
-    NodeReceiver {
-        remote_node_id,
-        reader: ProtocolReader::Udp(UdpReader::new(sock)),
-        tx: SenderLoadBalancer::new(txs),
-    }
-}
-
 pub struct NodeReceiver {
     remote_node_id: NodeId,
     reader: ProtocolReader,
@@ -103,7 +78,7 @@ impl NodeReceiver {
     pub async fn start_receiving(&mut self, metrics_tx: MetricsTx) {
         loop {
             let mut buf = [0; RECEIVE_BUF_SIZE];
-            let n = self.reader.recv(&mut buf).await;
+            let n = self.reader.read(&mut buf).await;
 
             // Skip empty or invalid packets to prevent downstream errors
             if n == 0 {
@@ -174,13 +149,5 @@ impl NodeSender {
 
     pub async fn send(&mut self, packet: Packet) {
         self.scheduler.enqueue(packet);
-    }
-
-    pub async fn reproduce(&self) -> Self {
-        Self::new(
-            self.writer.reproduce(),
-            self.rate_limiter.clone(),
-            self.scheduler_type,
-        )
     }
 }

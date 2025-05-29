@@ -77,7 +77,7 @@ impl TcpReader {
         Self { stream }
     }
 
-    pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
+    pub async fn read(&mut self, buf: &mut PacketBuf) -> usize {
         if let Err(e) = self.stream.read_exact(&mut buf[0..4]).await {
             eprintln!("Failed to read TCP header: {}", e);
             return 0;
@@ -104,19 +104,13 @@ impl TcpWriter {
         Self { stream }
     }
 
-    pub async fn send(&mut self, data: &[u8]) {
+    pub async fn write(&mut self, data: &[u8]) {
         let mut stream_guard = self.stream.lock().await;
         match stream_guard.write_all(data).await {
             Ok(_) => (),
             Err(e) => {
                 eprintln!("Failed to write TCP data: {}", e);
             }
-        }
-    }
-
-    pub fn reproduce(&self) -> Self {
-        Self {
-            stream: self.stream.clone(),
         }
     }
 }

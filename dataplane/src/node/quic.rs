@@ -85,7 +85,7 @@ impl QuicReader {
         Self { stream }
     }
 
-    pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
+    pub async fn read(&mut self, buf: &mut PacketBuf) -> usize {
         match self.stream.read_exact(&mut buf[0..4]).await {
             Ok(_) => (),
             Err(_) => {
@@ -118,7 +118,7 @@ impl QuicWriter {
         }
     }
 
-    pub async fn send(&mut self, buf: &[u8]) {
+    pub async fn write(&mut self, buf: &[u8]) {
         let mut stream_guard = self.stream.lock().await;
 
         match stream_guard.write_all(buf).await {
