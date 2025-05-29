@@ -3,6 +3,7 @@ use crate::node::config::LocalConfig;
 use crate::node::context::Context;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
@@ -19,7 +20,7 @@ impl QuicServer {
     pub async fn start_listening(&mut self, addr: &str) {
         let server_addr: SocketAddr = addr.parse().unwrap();
 
-        let mut server = match self.configs.quic_congestion_control {
+        let mut server = match self.config.quic_congestion_control {
             CongestionControl::Cubic => Server::builder()
                 .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
                 .expect("Failed to set TLS config")
