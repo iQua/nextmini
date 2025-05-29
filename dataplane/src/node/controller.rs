@@ -30,6 +30,7 @@ enum ControllerMessage {
     Shutdown,
 }
 
+#[derive(Clone)]
 pub struct ControllerHandle {
     sender: mpsc::Sender<ControllerMessage>,
 }

@@ -229,7 +229,7 @@ impl SchedulerHandle {
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
         // Initialize the metrics collector
-        let mut metrics_collector = Collector::new(controller_handle, collection_rate);
+        let mut metrics_collector = Collector::new(controller_handle);
         let metrics_tx = metrics_collector.get_metrics_tx();
 
         // Initialize the scheduler actor
