@@ -104,6 +104,7 @@ impl Scheduler for Fifo {
             }
         }
     }
+
     fn enqueue(&mut self, packet: Packet) {
         // drops the packet if the buffer is full
         let should_drop_packet =
@@ -220,9 +221,7 @@ impl SchedulerHandle {
         mpsc_channel_size: usize,
         protocol_writer: ProtocolWriter,
         scheduler_type: SchedulingDiscipline,
-
         controller_handle: ControllerHandle,
-        collection_rate: u64,
         local_id: NodeId,
         capacity: usize,
         drop_strategy: DropStrategy,
@@ -255,8 +254,10 @@ impl SchedulerHandle {
             scheduler.send_to_protocol_writer(); // Inside this method, the subscriber to the enqueue notification is spawned
             scheduler.run().await
         });
+
         Self { sender }
     }
+
     pub async fn send(&mut self, packet: Packet) {
         self.sender
             .send(SchedulerMessage::Enqueue(packet))
