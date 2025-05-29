@@ -8,7 +8,7 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::ProcessorHandleforReader;
 
 /// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
@@ -92,55 +92,91 @@ pub async fn create_tun_device(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
     }
 }
 
+/// Message types for TunReader
+enum TunReaderMessage {
+    Shutdown,
+}
+
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out
-/// via a ProcessorHandle
+/// via a ProcessorHandleforReader
 pub struct TunReader {
     dev: Arc<AsyncDevice>, // a shared reference to the device that can be cloned
-    processor_handle: ProcessorHandle,
+    processor_handle: ProcessorHandleforReader,
+    receiver: mpsc::Receiver<TunReaderMessage>,
 }
 
 impl TunReader {
-    pub fn new(dev: Arc<AsyncDevice>, processor_handle: ProcessorHandle) -> TunReader {
-        TunReader {
-            dev,
-            processor_handle,
-        }
-    }
-
-    pub async fn start_reading(&mut self) {
+    async fn run(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
         loop {
-            let n = match self.dev.recv(&mut buf).await {
-                Ok(n) => n,
-                Err(e) => {
-                    error!(
-                        "Failed to read from TUN device: {:?}: interface may be down. Retrying...",
-                        e
-                    );
-
-                    // Sleep briefly before retrying to avoid busy loop
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    continue;
+            tokio::select! {
+                msg = self.receiver.recv() => {
+                    if let Some(TunReaderMessage::Shutdown) = msg {
+                            info!("TunReader received shutdown signal, stopping...");
+                            break;
+                    }
                 }
-            };
 
-            // Skip empty packets
-            if n == 0 {
-                warn!("TunReader received an empty packet.");
-                continue;
+                // Read from TUN device
+                result = self.dev.recv(&mut buf) => {
+                    let n = match result {
+                        Ok(n) => n,
+                        Err(e) => {
+                            error!(
+                                "Failed to read from TUN device: {:?}: interface may be down. Retrying...",
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Skip empty packets
+                    if n == 0 {
+                        warn!("TunReader received an empty packet.");
+                        continue;
+                    }
+
+                    let packet = Packet::new(n, buf);
+
+                    // Check if packet creation was successful (non-zero flow_id indicates valid packet)
+                    if packet.flow_id == 0 {
+                        debug!("TunReader: Invalid packet received, dropping (size: {})", n);
+                        continue;
+                    }
+
+                    // Use ProcessorHandleforReader
+                    self.processor_handle.process_packet(packet).await;
+                }
             }
+        }
+    }
+}
 
-            let packet = Packet::new(n, buf);
+#[derive(Clone)]
+pub struct TunReaderHandle {
+    sender: mpsc::Sender<TunReaderMessage>,
+}
 
-            // Check if packet creation was successful (non-zero flow_id indicates valid packet)
-            if packet.flow_id == 0 {
-                debug!("TunReader: Invalid packet received, dropping (size: {})", n);
-                continue;
-            }
+impl TunReaderHandle {
+    pub fn new(dev: Arc<AsyncDevice>, processor_handle: ProcessorHandleforReader) -> Self {
+        let (sender, receiver) = mpsc::channel(10);
+        let mut actor = TunReader {
+            dev,
+            processor_handle,
+            receiver,
+        };
 
-            // Use processorhandle
-            self.processor_handle.process_packet(packet).await;
+        tokio::spawn(async move {
+            actor.run().await;
+        });
+
+        Self { sender }
+    }
+
+    pub async fn shutdown(&self) {
+        if let Err(e) = self.sender.send(TunReaderMessage::Shutdown).await {
+            error!("Failed to send shutdown signal to TunReader: {:?}", e);
         }
     }
 }
