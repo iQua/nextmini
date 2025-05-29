@@ -4,7 +4,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::node::{FlowId, PacketBuf};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Packet {
     pub flow_id: FlowId,
     pub packet_size: usize,

@@ -10,21 +10,25 @@ use crate::node::{FlowId, NodeId};
 
 use flume::bounded;
 use std::collections::HashMap;
-use tokio;
+use tokio::sync::broadcast;
+use tokio::select;
 use tracing::{debug, error};
 
 /// Actor Model Implementation
 
 // Message type to processor
+#[derive(Clone)]
 pub enum ProcessorMessage {
     ProcessPacket(Packet),
     UpdateRoutingTable(RoutingTable),
+    // TODO : Implement the add node message
 }
 
 // Processor: Processes packets and forwards them to the next hop
 struct Processor {
     // Processor Receiver
-    receiver: flume::Receiver<ProcessorMessage>,
+    receiver_from_writer: flume::Receiver<ProcessorMessage>,
+    receiver_from_controller: broadcast::Receiver<ProcessorMessage>,
 
     // Data Used by the processor
     routing_table: RoutingTable,
@@ -36,15 +40,30 @@ struct Processor {
 
 impl Processor {
     async fn run(&mut self) {
-        // TODO : Integrate metrics_collector_handle
 
-        while let Ok(msg) = self.receiver.recv_async().await {
+        loop{
+            #[allow(unused_assignments)] // To satisfy the compiler
+            let mut msg: Option<ProcessorMessage> = None;  
+
+            select!{
+                Ok(writer_msg) = self.receiver_from_writer.recv_async() => {
+                    msg = Some(writer_msg);
+                }
+                Ok(controller_msg) = self.receiver_from_controller.recv() => {
+                    msg = Some(controller_msg);
+                }
+            };
+
             match msg {
-                ProcessorMessage::ProcessPacket(packet) => {
+                Some(ProcessorMessage::ProcessPacket(packet)) => {
                     self.process_packet(packet).await;
                 }
-                ProcessorMessage::UpdateRoutingTable(new_table) => {
+                Some(ProcessorMessage::UpdateRoutingTable(new_table)) => {
                     self.routing_table = new_table;
+                }
+                None =>{
+                    error!("Processor received an unexpected message"); 
+                    break;
                 }
             }
         }
@@ -126,50 +145,53 @@ impl Processor {
 }
 
 #[derive(Clone)]
-pub struct ProcessorHandle {
-    sender: flume::Sender<ProcessorMessage>,
+pub struct ProcessorHandleforController {
+    sender: broadcast::Sender<ProcessorMessage>,
 }
-
-impl ProcessorHandle {
-    pub fn new(
-        // The size of the mpmc channel
-        mpmc_channel_size: usize,
-        // The number of processors
-        num_processors: usize,
-
-        // A copy of the routing table
-        routing_table: RoutingTable,
-
-        // The TUN writer handle
-        tun_writer: TunWriterHandle,
-        // The scheduler handles
-        scheduler_handles: HashMap<NodeId, SchedulerHandle>,
-    ) -> Self {
-        let (processor_sender, processor_receiver) = bounded(mpmc_channel_size);
-        for _ in 0..num_processors {
-            let mut actor = Processor {
-                receiver: processor_receiver.clone(),
-                routing_table: routing_table.clone(),
-                tun_writer_handle: tun_writer.clone(),
-                scheduler_handles: scheduler_handles.clone(),
-            };
-            tokio::spawn(async move { actor.run().await });
-        }
-        Self {
-            sender: processor_sender,
-        }
-    }
-
+impl ProcessorHandleforController {
     pub async fn update_routing_table(&self, new_table: RoutingTable) {
         self.sender
-            .send_async(ProcessorMessage::UpdateRoutingTable(new_table))
-            .await
-            .expect("Failed to send update to processor");
+            .send(ProcessorMessage::UpdateRoutingTable(new_table));
     }
+}
+
+#[derive(Clone)]
+pub struct ProcessorHandleforWriter {
+    sender: flume::Sender<ProcessorMessage>,
+}
+impl ProcessorHandleforWriter {
     pub async fn process_packet(&self, packet: Packet) {
         self.sender
-            .send_async(ProcessorMessage::ProcessPacket(packet))
-            .await
-            .expect("Failed to send packet to processor");
+            .send(ProcessorMessage::ProcessPacket(packet))
+            .expect("Failed to send packet to processor from writer");
     }
+}
+
+
+
+pub async fn init_processor_actor(
+    mpmc_channel_size: usize,
+    broadcast_channel_size: usize,
+    num_processors: usize,
+    routing_table: RoutingTable,
+    tun_writer: TunWriterHandle,
+    scheduler_handles: HashMap<NodeId, SchedulerHandle>,
+) -> (ProcessorHandleforController, ProcessorHandleforWriter) {
+    let (controller_sender, _ ) = broadcast::channel(broadcast_channel_size);
+    let (writer_sender, writer_receiver) = bounded(mpmc_channel_size);
+
+    let controller_handle = ProcessorHandleforController { sender: controller_sender.clone() };
+    let writer_handle = ProcessorHandleforWriter { sender: writer_sender };
+
+    for _ in 0..num_processors {
+        let mut actor = Processor {
+            receiver_from_writer: writer_receiver.clone(),
+            receiver_from_controller: controller_sender.subscribe(),  // Potential ownership problem here
+            routing_table: routing_table.clone(),
+            tun_writer_handle: tun_writer.clone(),  
+            scheduler_handles: scheduler_handles.clone(),
+        };
+        tokio::spawn(async move { actor.run().await });
+    }
+    (controller_handle, writer_handle)
 }
