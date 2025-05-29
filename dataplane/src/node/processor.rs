@@ -156,14 +156,14 @@ impl ProcessorHandleforController {
 }
 
 #[derive(Clone)]
-pub struct ProcessorHandleforWriter {
+pub struct ProcessorHandleforReader {
     sender: flume::Sender<ProcessorMessage>,
 }
-impl ProcessorHandleforWriter {
+impl ProcessorHandleforReader {
     pub async fn process_packet(&self, packet: Packet) {
         self.sender
             .send(ProcessorMessage::ProcessPacket(packet))
-            .expect("Failed to send packet to processor from writer");
+            .expect("Failed to send packet to processor from reader");
     }
 }
 
@@ -176,14 +176,14 @@ pub async fn init_processor_actor(
     routing_table: RoutingTable,
     tun_writer: TunWriterHandle,
     scheduler_handles: HashMap<NodeId, SchedulerHandle>,
-) -> (ProcessorHandleforController, ProcessorHandleforWriter) {
+) -> (ProcessorHandleforController, ProcessorHandleforReader) {
     let (controller_sender, _) = broadcast::channel(broadcast_channel_size);
     let (writer_sender, writer_receiver) = bounded(mpmc_channel_size);
 
     let controller_handle = ProcessorHandleforController {
         sender: controller_sender.clone(),
     };
-    let writer_handle = ProcessorHandleforWriter {
+    let reader_handle = ProcessorHandleforReader {
         sender: writer_sender,
     };
 
@@ -198,5 +198,5 @@ pub async fn init_processor_actor(
         tokio::spawn(async move { actor.run().await });
     }
 
-    (controller_handle, writer_handle)
+    (controller_handle, reader_handle)
 }
