@@ -1,25 +1,19 @@
+use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
+use crate::node::context::Context;
 use s2n_quic::stream::{ReceiveStream, SendStream};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
 pub struct QuicServer {
     context: Context,
-    processor_manager: Arc<RwLock<ProcessorManager>>,
     config: LocalConfig,
 }
 
 impl QuicServer {
-    pub fn new(
-        context: Context,
-        config: LocalConfig,
-        processor_manager: Arc<RwLock<ProcessorManager>>,
-    ) -> Self {
-        Self {
-            context,
-            processor_manager,
-            config,
-        }
+    pub fn new(context: Context, config: LocalConfig) -> Self {
+        Self { context, config }
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
