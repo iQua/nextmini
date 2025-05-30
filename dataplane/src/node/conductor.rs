@@ -18,7 +18,7 @@ pub struct Conductor {
 }
 
 impl Conductor {
-    pub fn new(main_shutdown_recv: mpsc::UnboundedReceiver) -> Self {
+    pub fn new(main_shutdown_recv: mpsc::UnboundedReceiver<()>) -> Self {
         let configs = LocalConfig::new();
         let (shutdown_send, shutdown_recv) = mpsc::unbounded_channel();
 

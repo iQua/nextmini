@@ -1,5 +1,6 @@
 /// Defines message enums for controller-dataplane communication.
 use serde::{Deserialize, Serialize};
+use clap::ValueEnum;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -24,9 +25,10 @@ pub struct Metric {
 }
 
 /// The transport protocol used to transfer data between nodes
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
+    #[default]
     Tcp,
     Udp,
     Quic,

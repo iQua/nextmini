@@ -118,16 +118,24 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub quic_congestion_control: CongestionControl,
 
-    /// The local network address
+    // The local network address
+    #[default((0, 0, 0, 0))]
+    #[arg(skip)]
     pub local_address: (u8, u8, u8, u8),
 
-    /// The local network mask
+    // The local network mask
+    #[default((0, 0, 0, 0))]
+    #[arg(skip)]
     pub local_netmask: (u8, u8, u8, u8),
 
-    /// The transport protocol: TCP, UDP, or QUIC
+    // The transport protocol: TCP, UDP, or QUIC
+    #[default(Protocol::Tcp)]
+    #[arg(long, value_enum)]
     pub protocol: Protocol,
 
-    /// The scheduling discipline
+    // The scheduling discipline
+    #[default(SchedulingDiscipline::Fifo)]
+    #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 }
 
@@ -243,5 +251,7 @@ impl LocalConfig {
         } else {
             panic!("Invalid startup message from the controller");
         }
+        
+        self.clone()
     }
 }

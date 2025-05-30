@@ -1,9 +1,10 @@
+use crossbeam_queue::ArrayQueue;
+use serde::Deserialize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use crossbeam_queue::ArrayQueue;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{error, warn};
+use clap::ValueEnum;
 
 use crate::node::coordinator::CoordinatorHandle;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -15,8 +16,10 @@ use crate::node::{FlowId, NodeId};
 
 /// The scheduling discipline.
 #[allow(unused)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum SchedulingDiscipline {
+    #[default]
     Fifo,
     Wrr,
 }

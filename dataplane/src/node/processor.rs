@@ -2,12 +2,12 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
-use nextmini_messages::RoutingTableEntry;
 use crate::node::local_interface::TunWriterHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
+use nextmini_messages::RoutingTableEntry;
 
 use flume::bounded;
 use std::collections::HashMap;
@@ -147,7 +147,6 @@ impl Processor {
     }
 }
 
-
 #[derive(Clone)]
 pub struct ProcessorHandleforController {
     sender: broadcast::Sender<ProcessorMessage>,
@@ -174,7 +173,6 @@ impl ProcessorHandleforReader {
             .expect("Failed to send packet to processor from reader");
     }
 }
-
 
 // Spawned processor actor and returns handles for the controller and writer
 pub async fn init_processor_actor(

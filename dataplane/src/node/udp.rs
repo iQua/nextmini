@@ -1,14 +1,12 @@
-use std::sync::Arc;
-
-use tokio::net::UdpSocket;
-use tokio::sync::{RwLock, mpsc};
-
 use crate::node::NodeId;
 use crate::node::PacketBuf;
 use crate::node::packet::Packet;
 use crate::node::protocols_io::{ProtocolReader, ProtocolWriter};
 use crate::node::scheduler::SchedulingDiscipline;
 use crate::node::utils::RateLimiter;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio::sync::{RwLock, mpsc};
 
 #[derive(Clone)]
 pub struct UdpReader {

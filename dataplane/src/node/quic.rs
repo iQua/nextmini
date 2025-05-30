@@ -1,24 +1,25 @@
 use crate::node::PacketBuf;
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
-use crate::node::context::Context;
+// use crate::node::context::Context;
 use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info;
 
 pub struct QuicServer {
-    context: Context,
+    // context: Context,
     config: LocalConfig,
 }
 
 impl QuicServer {
-    pub fn new(context: Context, config: LocalConfig) -> Self {
-        Self { context, config }
+    pub fn new(config: LocalConfig) -> Self {
+        Self { config }
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
@@ -47,7 +48,7 @@ impl QuicServer {
 
         while let Some(mut connection) = server.accept().await {
             // let processor_manager = self.processor_manager.clone();
-            let context = self.context.clone();
+            // let context = self.context.clone();
 
             tokio::spawn(async move {
                 info!("Connection accepted from {:?}.", connection.remote_addr());
@@ -63,7 +64,7 @@ impl QuicServer {
 
                     let node_id = u64::from_be_bytes(node_id_buf) as usize;
                     info!("Incoming connection from node {}...", node_id);
-                    context.add_quic_node(node_id, stream).await;
+                    // context.add_quic_node(node_id, stream).await;
 
                     // processor_manager.write().await.update_processors().await;
 
