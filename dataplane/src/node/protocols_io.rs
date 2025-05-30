@@ -1,16 +1,16 @@
 use crate::node::PacketBuf;
 use crate::node::processor::ProcessorHandleforReader;
 use crate::node::protocols_client::connect_tcp_node;
-use crate::node::quic::{QuicReader, QuicWriter};
+use crate::node::quic::{QuicReaderHandle, QuicWriterHandle};
 use crate::node::tcp::{TcpReaderHandle, TcpWriterHandle};
-use crate::node::udp::{UdpReader, UdpWriter};
+use crate::node::udp::{UdpReaderHandle, UdpWriterHandle};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub enum ProtocolReader {
     Tcp(TcpReaderHandle),
-    Udp(UdpReader),
-    Quic(QuicReader),
+    Udp(UdpReaderHandle),
+    Quic(QuicReaderHandle),
 }
 
 impl ProtocolReader {
@@ -26,8 +26,8 @@ impl ProtocolReader {
 #[derive(Clone)]
 pub enum ProtocolWriter {
     Tcp(TcpWriterHandle),
-    Udp(UdpWriter),
-    Quic(QuicWriter),
+    Udp(UdpWriterHandle),
+    Quic(QuicWriterHandle),
 }
 
 impl ProtocolWriter {
