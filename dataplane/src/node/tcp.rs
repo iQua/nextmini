@@ -120,15 +120,11 @@ impl TcpReader {
     }
 
     async fn read_packet(&mut self) -> Result<Packet, std::io::Error> {
-        // Read header
-        let mut header = [0u8; 4];
-        self.stream.read_exact(&mut header).await?;
-
-        let msg_len = header[2] as usize * 256 + header[3] as usize;
-
         let mut buf = [0u8; crate::node::RECEIVE_BUF_SIZE];
-        buf[0..4].copy_from_slice(&header);
+        // Read header
+        self.stream.read_exact(&mut buf[0..4]).await?;
 
+        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
         self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
         // New packet
