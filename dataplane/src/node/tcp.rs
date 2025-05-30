@@ -1,4 +1,5 @@
 use crate::node::PacketBuf;
+use crate::node::packet::Packet;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -71,7 +72,7 @@ impl TcpServer {
 }
 
 pub enum TcpReaderMessage {
-    ReadPacket(mpsc::Sender<Vec<u8>>),
+    Shutdown,
 }
 
 pub struct TcpReader {
@@ -94,56 +95,45 @@ impl TcpReader {
     }
 
     pub async fn run(mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                TcpReaderMessage::ReadPacket(response_sender) => {
-                    let mut buf = vec![0u8; 4];
-                    match self.stream.read_exact(&mut buf).await {
-                        Ok(_) => {
-                            let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-                            let mut data = vec![0u8; msg_len];
-                            data[0..4].copy_from_slice(&buf);
-
-                            match self.stream.read_exact(&mut data[4..msg_len]).await {
-                                Ok(_) => {
-                                    if let Err(e) = response_sender.send(data).await {
-                                        error!("Failed to send TCP read result: {}", e);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to read TCP data body: {}", e);
-                                    if let Err(e) = response_sender.send(vec![]).await {
-                                        error!("Failed to send empty TCP read result: {}", e);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to read TCP header: {}", e);
-                            if let Err(e) = response_sender.send(vec![]).await {
-                                error!("Failed to send empty TCP read result: {}", e);
-                            }
-                        }
+        loop {
+            if let Ok(msg) = self.receiver.try_recv() {
+                match msg {
+                    TcpReaderMessage::Shutdown => {
+                        info!("TcpReader received shutdown signal");
+                        break;
                     }
+                }
+            }
+
+            // Read from network
+            match self.read_packet().await {
+                Ok(packet) => {
+                    // Send packet via ProcessorHandleforReader
+                    self.processor_handle.process_packet(packet).await;
+                }
+                Err(e) => {
+                    error!("Failed to read TCP packet: {}", e);
+                    break;
                 }
             }
         }
     }
 
-    pub async fn read(&mut self, buf: &mut PacketBuf) -> usize {
-        if let Err(e) = self.stream.read_exact(&mut buf[0..4]).await {
-            error!("Failed to read TCP header: {}", e);
-            return 0;
-        }
+    async fn read_packet(&mut self) -> Result<Packet, std::io::Error> {
+        // Read header
+        let mut header = [0u8; 4];
+        self.stream.read_exact(&mut header).await?;
 
-        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
+        let msg_len = header[2] as usize * 256 + header[3] as usize;
 
-        if let Err(e) = self.stream.read_exact(&mut buf[4..msg_len]).await {
-            error!("Failed to read TCP data: {}", e);
-            return 0;
-        }
+        let mut buf = [0u8; crate::node::RECEIVE_BUF_SIZE];
+        buf[0..4].copy_from_slice(&header);
 
-        msg_len
+        self.stream.read_exact(&mut buf[4..msg_len]).await?;
+
+        // New packet
+        let packet = Packet::new(msg_len, buf);
+        Ok(packet)
     }
 }
 
@@ -164,28 +154,9 @@ impl TcpReaderHandle {
         Self { sender }
     }
 
-    pub async fn read(&mut self, buf: &mut PacketBuf) -> usize {
-        let (response_sender, mut response_receiver) = mpsc::channel(1);
-
-        if let Err(e) = self
-            .sender
-            .send(TcpReaderMessage::ReadPacket(response_sender))
-            .await
-        {
-            error!("Failed to send read request to TcpReader actor: {}", e);
-            return 0;
-        }
-
-        match response_receiver.recv().await {
-            Some(data) => {
-                let len = data.len().min(buf.len());
-                buf[..len].copy_from_slice(&data[..len]);
-                len
-            }
-            None => {
-                error!("Failed to receive response from TcpReader actor");
-                0
-            }
+    pub async fn shutdown(&mut self) {
+        if let Err(e) = self.sender.send(TcpReaderMessage::Shutdown).await {
+            error!("Failed to send shutdown message to TcpReader: {}", e);
         }
     }
 }
