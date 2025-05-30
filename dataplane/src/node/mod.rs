@@ -1,11 +1,11 @@
 pub mod conductor;
 pub mod config;
 pub mod context;
-pub mod coordinator;
+pub mod controller_interface;
 pub mod drop;
 pub mod local_interface;
 pub mod metrics;
-pub mod net_interface;
+pub mod network_interface;
 pub mod packet;
 pub mod processor;
 pub mod protocols_client;

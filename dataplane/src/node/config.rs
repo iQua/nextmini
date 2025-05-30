@@ -76,7 +76,8 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-    /// The interval at which metrics are collected and sent to the controller.
+    /// This is not used in metrics collector
+    /// The interval at which metrics are collected and sent to the controller
     #[default(1)]
     #[arg(long)]
     pub metrics_collection_interval: u64,

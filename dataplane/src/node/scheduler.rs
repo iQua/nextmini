@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{error, warn};
 
-use crate::node::coordinator::CoordinatorHandle;
+use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::metrics::Collector;
 use crate::node::packet::Packet;
@@ -224,14 +224,14 @@ impl SchedulerHandle {
         mpsc_channel_size: usize,
         protocol_writer: ProtocolWriter,
         scheduler_type: SchedulingDiscipline,
-        coordinator_handle: CoordinatorHandle,
+        controller_interface_handle: ControllerInterfaceHandle,
         local_id: NodeId,
         capacity: usize,
         drop_strategy: DropStrategy,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
         // Initialize the metrics collector
-        let mut metrics_collector = Collector::new(coordinator_handle);
+        let mut metrics_collector = Collector::new(controller_interface_handle);
         let metrics_tx = metrics_collector.get_metrics_tx();
 
         // Initialize the scheduler actor

@@ -5,22 +5,22 @@ use tokio::time::{Duration, interval};
 
 use nextmini_messages::{DataplaneToController, Metric};
 
-use crate::node::coordinator::CoordinatorHandle;
+use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct Collector {
-    coordinator_handle: CoordinatorHandle,
+    controller_interface_handle: ControllerInterfaceHandle,
     metrics_tx: UnboundedSender<(FlowId, NodeId, usize)>,
     metrics_rx: UnboundedReceiver<(FlowId, NodeId, usize)>,
 }
 
 impl Collector {
-    pub fn new(coordinator_handle: CoordinatorHandle) -> Self {
+    pub fn new(controller_interface_handle: ControllerInterfaceHandle) -> Self {
         let (metrics_tx, metrics_rx) = unbounded_channel();
         Self {
             metrics_tx,
             metrics_rx,
-            coordinator_handle,
+            controller_interface_handle,
         }
     }
 
@@ -68,7 +68,7 @@ impl Collector {
                             };
                             
                             // TODO : Fixed this after coordinator actor is implemented
-                            self.coordinator_handle.send_to_controller(msg).await;
+                            self.controller_interface_handle.send_metrics(msg).await;
                         }
                         // Clear data
                         data.clear();
