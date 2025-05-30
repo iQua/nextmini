@@ -9,16 +9,16 @@ use tokio::sync::Mutex;
 
 pub enum ProtocolReader {
     Tcp(TcpReaderHandle),
-    Udp(UdpReaderHandle),
+    // Udp(UdpReaderHandle),
     Quic(QuicReaderHandle),
 }
 
 impl ProtocolReader {
-    pub async fn recv(&mut self, buf: &mut PacketBuf) -> usize {
+    pub async fn shutdown(&mut self) {
         match self {
-            Self::Tcp(reader) => reader.read(buf).await,
-            Self::Udp(reader) => reader.read(buf).await,
-            Self::Quic(reader) => reader.read(buf).await,
+            Self::Tcp(reader) => reader.shutdown().await,
+            // Self::Udp(reader) => reader.shutdown().await,
+            Self::Quic(reader) => reader.shutdown().await,
         }
     }
 }
@@ -40,20 +40,30 @@ impl ProtocolWriter {
     }
 }
 
-pub async fn create_tcp_node(
+pub async fn create_node_connection(
     node_id: usize,
     addr: &str,
     local_id: usize,
     processor_handle: ProcessorHandleforReader,
+    protocol: Protocol,
 ) -> (ProtocolReader, ProtocolWriter) {
-    let stream = connect_tcp_node(local_id, addr, node_id).await;
-    let (reader, writer) = tokio::io::split(stream);
+    match protocol {
+        Protocol::Tcp => {
+            let stream = connect_tcp_node(local_id, addr, node_id).await;
+            let (reader, writer) = tokio::io::split(stream);
 
-    let tcp_reader = TcpReaderHandle::new(reader, processor_handle);
-    let tcp_writer = TcpWriterHandle::new(Arc::new(Mutex::new(writer)));
+            let tcp_reader = TcpReaderHandle::new(reader, processor_handle);
+            let tcp_writer = TcpWriterHandle::new(Arc::new(Mutex::new(writer)));
 
-    (
-        ProtocolReader::Tcp(tcp_reader),
-        ProtocolWriter::Tcp(tcp_writer),
-    )
+            (
+                ProtocolReader::Tcp(tcp_reader),
+                ProtocolWriter::Tcp(tcp_writer),
+            )
+        }
+
+        // TDDO: Implement UDP connection
+        Protocol::Udp => {}
+        // TODO: Implement QUIC connection
+        Protocol::Quic => {}
+    }
 }
