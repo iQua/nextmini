@@ -1,5 +1,5 @@
-use crate::node::PacketBuf;
 use crate::node::packet::Packet;
+use crate::node::RECEIVE_BUF_SIZE;
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -120,7 +120,7 @@ impl TcpReader {
     }
 
     async fn read_packet(&mut self) -> Result<Packet, std::io::Error> {
-        let mut buf = [0u8; crate::node::RECEIVE_BUF_SIZE];
+        let mut buf = [0u8; RECEIVE_BUF_SIZE];
         // Read header
         self.stream.read_exact(&mut buf[0..4]).await?;
 
@@ -139,7 +139,10 @@ pub struct TcpReaderHandle {
 }
 
 impl TcpReaderHandle {
-    pub fn new(reader: ReadHalf<TcpStream>, processor_handle: ProcessorHandleforReader) -> Self {
+    pub fn new(
+        reader: ReadHalf<TcpStream>,
+        processor_handle: ProcessorHandleforReader,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(100);
         let actor = TcpReader::new(reader, processor_handle, receiver);
 
@@ -156,6 +159,7 @@ impl TcpReaderHandle {
         }
     }
 }
+
 
 pub enum TcpWriterMessage {
     WritePacket(Vec<u8>),

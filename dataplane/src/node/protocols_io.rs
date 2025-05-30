@@ -1,4 +1,5 @@
 use crate::node::PacketBuf;
+use nextmini_messages::Protocol;
 use crate::node::processor::ProcessorHandleforReader;
 use crate::node::protocols_client::connect_tcp_node;
 use crate::node::quic::{QuicReaderHandle, QuicWriterHandle};
@@ -6,6 +7,10 @@ use crate::node::tcp::{TcpReaderHandle, TcpWriterHandle};
 use crate::node::udp::{UdpReaderHandle, UdpWriterHandle};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+
+//  TODO : convert the following into Actor design (NetworkInterface)
+
 
 pub enum ProtocolReader {
     Tcp(TcpReaderHandle),
@@ -52,13 +57,10 @@ pub async fn create_node_connection(
             let stream = connect_tcp_node(local_id, addr, node_id).await;
             let (reader, writer) = tokio::io::split(stream);
 
-            let tcp_reader = TcpReaderHandle::new(reader, processor_handle);
-            let tcp_writer = TcpWriterHandle::new(Arc::new(Mutex::new(writer)));
+            let tcp_reader_handle = TcpReaderHandle::new(reader, processor_handle);
+            let tcp_writer_handle = TcpWriterHandle::new(Arc::new(Mutex::new(writer)));
 
-            (
-                ProtocolReader::Tcp(tcp_reader),
-                ProtocolWriter::Tcp(tcp_writer),
-            )
+            (ProtocolReader::Tcp(tcp_reader_handle), ProtocolWriter::Tcp(tcp_writer_handle))
         }
 
         // TDDO: Implement UDP connection
