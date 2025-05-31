@@ -3,7 +3,7 @@
 // a TUN writer.
 
 use crate::node::config::LocalConfig;
-use crate::node::local_interface::TunWriterHandle;
+use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
@@ -39,8 +39,8 @@ struct Processor {
     shutdown: mpsc::UnboundedSender<()>,
 
     // Handles to send to the next stage
-    tun_writer_handle: TunWriterHandle,
-    scheduler_handles: HashMap<NodeId, SchedulerHandle>,
+    local_interface: LocalInterfaceHandle,
+    schedulers: HashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
@@ -68,7 +68,7 @@ impl Processor {
                     self.routing_table.install_routes(routes);
                 }
                 Some(ProcessorMessage::AddNode(node_id, scheduler_handle)) => {
-                    self.scheduler_handles.insert(node_id, scheduler_handle);
+                    self.schedulers.insert(node_id, scheduler_handle);
                 }
                 None => {
                     error!("Processor received an unexpected message");
@@ -128,10 +128,10 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            self.tun_writer_handle.write_packet(packet).await;
+            self.local_interface.write_packet(packet).await;
             Ok(())
         } else {
-            match self.scheduler_handles.get_mut(&next_hop_id) {
+            match self.schedulers.get_mut(&next_hop_id) {
                 Some(scheduler_handle) => {
                     debug!(
                         "Forwarding packet to node {} for flow {} (size: {})",
@@ -154,15 +154,15 @@ impl Processor {
 }
 
 #[derive(Clone)]
-pub struct ProcessorHandle{
+pub struct ProcessorHandle {
     controller_sender: broadcast::Sender<ProcessorMessage>,
     writer_sender: flume::Sender<ProcessorMessage>,
 }
 
-impl ProcessorHandle{
+impl ProcessorHandle {
     pub fn new(
         config: LocalConfig,
-        tun_writer: TunWriterHandle,
+        local_interface: LocalInterfaceHandle,
         shutdown: mpsc::UnboundedSender<()>,
     ) -> Self {
         let (controller_sender, _) = broadcast::channel(config.processor_broadcast_channel_size);
@@ -171,15 +171,15 @@ impl ProcessorHandle{
         for _ in 0..config.num_packet_processors {
             let mut actor = Processor {
                 receiver_from_network_interface: writer_receiver.clone(),
-                receiver_from_controller: controller_sender.subscribe(), 
+                receiver_from_controller: controller_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
-                tun_writer_handle: tun_writer.clone(),
-                scheduler_handles: HashMap::new(),
+                local_interface: local_interface.clone(),
+                schedulers: HashMap::new(),
                 shutdown: shutdown.clone(),
             };
             tokio::spawn(async move { actor.run().await });
         }
-        Self{
+        Self {
             controller_sender,
             writer_sender,
         }
