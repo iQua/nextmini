@@ -64,7 +64,7 @@ impl Conductor {
 
         // starts the controller interface actor, providing it with the shutdown channel
         let controller_interface =
-            ControllerInterfaceHandle::new(self.config.clone(), self.shutdown_send.clone());
+            ControllerInterfaceHandle::new(self.config.clone(), processor, self.shutdown_send.clone());
     }
 
     pub async fn shutdown(&self) {

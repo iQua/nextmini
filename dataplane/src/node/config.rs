@@ -12,6 +12,7 @@ use nextmini_messages::{ControllerToDataplane, Protocol};
 
 use crate::node::NodeId;
 use crate::node::scheduler::SchedulingDiscipline;
+use crate::node::drop::DropStrategy;
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
@@ -138,6 +139,21 @@ pub struct LocalConfig {
     #[default(SchedulingDiscipline::Fifo)]
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
+
+    // The size of the mpsc channel for the scheduler
+    #[default(100)]
+    #[arg(long)]    
+    pub scheduler_mpsc_channel_size: usize,
+
+    // The capacity of the scheduler queue
+    #[default(100)]
+    #[arg(long)]
+    pub scheduler_queue_capacity: usize,
+
+    // The drop strategy for the scheduler
+    #[default(DropStrategy::TailDrop)]
+    #[arg(long, value_enum)]
+    pub scheduler_drop_strategy: DropStrategy,  
 }
 
 impl LocalConfig {

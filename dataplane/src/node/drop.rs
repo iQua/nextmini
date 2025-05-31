@@ -1,5 +1,6 @@
 //! Implements packet drop strategies for the scheduler.
 
+use clap::ValueEnum;
 use rand::SeedableRng;
 use rand::distr::Distribution;
 use rand::distr::Uniform;
@@ -14,8 +15,9 @@ pub enum CapacityUnit {
 }
 
 /// The packet drop strategy.
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, ValueEnum, Default)]
 pub enum DropStrategy {
+    #[default]
     TailDrop,
     Red,
 }

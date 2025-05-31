@@ -4,7 +4,7 @@ use crate::node::scheduler::{SchedulingDiscipline, SchedulerHandle};
 use crate::node::drop::DropStrategy;
 use crate::node::NodeId;
 use crate::node::utils::RateLimiter;
-use crate::node::protocols_io::ProtocolWriter;
+use crate::node::protocols_io::NetworkInterface;
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use std::sync::Arc;
@@ -30,20 +30,14 @@ pub struct ControllerInterfaceHandle {
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-
         processor_handle: ProcessorHandleforController,
-        scheduler_mpsc_channel_size: usize,
-        scheduler_type: SchedulingDiscipline,
-        local_id: NodeId,
-        scheduler_queue_capacity: usize,
-        scheduler_drop_strategy: DropStrategy,
-        scheduler_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+        shutdown_send: mpsc::UnboundedSender<()>,
     ) -> Self {
         // create unbounded channel for controller sender
         let (sender, receiver) = mpsc::unbounded_channel();
 
         // Initialize the controller interface handle and connect to the controller
-        let mut controller_interface_handle = Self { config, sender };
+        let mut controller_interface_handle = Self { config: config.clone(), sender};
         let ws_stream = controller_interface_handle.connect().await;
 
         let (controller_sender_stream, controller_receiver_stream) = ws_stream.split();
@@ -57,13 +51,13 @@ impl ControllerInterfaceHandle {
         let mut controller_receiver = ControllerReceiver {
             controller_receiver_stream,
             processor_handle: processor_handle,
-            scheduler_mpsc_channel_size,
-            scheduler_type,
+            scheduler_mpsc_channel_size: config.scheduler_mpsc_channel_size,
+            scheduler_type: config.scheduler_type,
             controller_interface_handle: controller_interface_handle.clone(),
-            local_id,
-            scheduler_queue_capacity,
-            scheduler_drop_strategy,
-            scheduler_rate_limiter,
+            local_id: config.node_id,
+            scheduler_queue_capacity: config.scheduler_queue_capacity,
+            scheduler_drop_strategy: config.scheduler_drop_strategy.clone(),
+            scheduler_rate_limiter: Arc::new(RwLock::new(None)),
         };
 
         tokio::spawn(async move { controller_sender.run().await });
@@ -185,7 +179,7 @@ impl ControllerReceiver{
                 addr,
             } => {
                 // TODO : Implement network interface handle
-                let protocol_writer: ProtocolWriter = NetworkInterface::new(protocol, node_id, addr);
+                let protocol_writer;
 
                 let scheduler_handle = SchedulerHandle::new(
                     self.scheduler_mpsc_channel_size,

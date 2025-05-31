@@ -5,7 +5,6 @@ pub mod controller_interface;
 pub mod drop;
 pub mod local_interface;
 pub mod metrics;
-pub mod network_interface;
 pub mod packet;
 pub mod processor;
 pub mod protocols_client;
