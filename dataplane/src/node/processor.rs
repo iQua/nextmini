@@ -49,11 +49,11 @@ impl Processor {
 
             select! {
                 // Packets from the network_interface and local_interface
-                Ok(network_interface_msg) = self.receiver_from_network_interface.recv_async() => {
+                Ok(network_interface_msg) = self.net_interface_receiver.recv_async() => {
                     msg = Some(network_interface_msg);
                 }
                 // Control messages from the controller interface
-                Ok(controller_msg) = self.receiver_from_controller.recv() => {
+                Ok(controller_msg) = self.controller_receiver.recv() => {
                     msg = Some(controller_msg);
                 }
             };
@@ -195,6 +195,6 @@ impl ProcessorHandle {
     pub async fn process_packet(&self, packet: Packet) {
         self.net_interface_sender
             .send(ProcessorMessage::ProcessPacket(packet))
-            .expect("Failed to send a packet from the network interface to the processor.");
+            .unwrap();
     }
 }
