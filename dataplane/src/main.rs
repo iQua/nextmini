@@ -11,7 +11,7 @@ use std::error::Error;
 
 use tokio::signal;
 use tokio::sync::mpsc;
-use tokio_util::task_tracker::TaskTracker;
+use tokio_util::task::task_tracker::TaskTracker;
 
 use tracing::info;
 

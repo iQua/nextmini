@@ -1,5 +1,3 @@
-use tracing::{error, info};
-
 use nextmini_messages::Protocol;
 
 use crate::node::config::LocalConfig;
