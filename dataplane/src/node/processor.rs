@@ -148,61 +148,49 @@ impl Processor {
 }
 
 #[derive(Clone)]
-pub struct ProcessorHandleforController {
-    sender: broadcast::Sender<ProcessorMessage>,
+pub struct ProcessorHandle{
+    controller_sender: broadcast::Sender<ProcessorMessage>,
+    writer_sender: flume::Sender<ProcessorMessage>,
 }
-impl ProcessorHandleforController {
+
+impl ProcessorHandle{
+    pub fn new(
+        mpmc_channel_size: usize,
+        broadcast_channel_size: usize,
+        num_processors: usize,
+        routing_table: RoutingTable,
+        tun_writer: TunWriterHandle,
+        scheduler_handles: HashMap<NodeId, SchedulerHandle>,
+    ) -> Self {
+        let (controller_sender, _) = broadcast::channel(broadcast_channel_size);
+        let (writer_sender, writer_receiver) = bounded(mpmc_channel_size);
+
+        for _ in 0..num_processors {
+            let mut actor = Processor {
+                receiver_from_writer: writer_receiver.clone(),
+                receiver_from_controller: controller_sender.subscribe(), 
+                routing_table: routing_table.clone(),
+                tun_writer_handle: tun_writer.clone(),
+                scheduler_handles: scheduler_handles.clone(),
+            };
+            tokio::spawn(async move { actor.run().await });
+        }
+        Self{
+            controller_sender,
+            writer_sender,
+        }
+    }
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        self.sender
+        self.controller_sender
             .send(ProcessorMessage::UpdateRoutingTable(routes));
     }
     pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
-        self.sender
+        self.controller_sender
             .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
     }
-}
-
-#[derive(Clone)]
-pub struct ProcessorHandleforReader {
-    sender: flume::Sender<ProcessorMessage>,
-}
-impl ProcessorHandleforReader {
     pub async fn process_packet(&self, packet: Packet) {
-        self.sender
+        self.writer_sender
             .send(ProcessorMessage::ProcessPacket(packet))
             .expect("Failed to send packet to processor from reader");
     }
-}
-
-// Spawned processor actor and returns handles for the controller and writer
-pub async fn init_processor_actor(
-    mpmc_channel_size: usize,
-    broadcast_channel_size: usize,
-    num_processors: usize,
-    routing_table: RoutingTable,
-    tun_writer: TunWriterHandle,
-    scheduler_handles: HashMap<NodeId, SchedulerHandle>,
-) -> (ProcessorHandleforController, ProcessorHandleforReader) {
-    let (controller_sender, _) = broadcast::channel(broadcast_channel_size);
-    let (writer_sender, writer_receiver) = bounded(mpmc_channel_size);
-
-    let controller_handle = ProcessorHandleforController {
-        sender: controller_sender.clone(),
-    };
-    let reader_handle = ProcessorHandleforReader {
-        sender: writer_sender,
-    };
-
-    for _ in 0..num_processors {
-        let mut actor = Processor {
-            receiver_from_writer: writer_receiver.clone(),
-            receiver_from_controller: controller_sender.subscribe(), // Potential ownership problem here
-            routing_table: routing_table.clone(),
-            tun_writer_handle: tun_writer.clone(),
-            scheduler_handles: scheduler_handles.clone(),
-        };
-        tokio::spawn(async move { actor.run().await });
-    }
-
-    (controller_handle, reader_handle)
 }
