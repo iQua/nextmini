@@ -89,6 +89,16 @@ pub struct LocalConfig {
     #[arg(long)]
     pub num_packet_processors: usize,
 
+    /// The size of the mpsc channel for the processor
+    #[default(100)]
+    #[arg(long)]
+    pub processor_mpsc_channel_size: usize,
+
+    /// The size of the broadcast channel for the processor
+    #[default(100)]
+    #[arg(long)]
+    pub processor_broadcast_channel_size: usize,
+
     /// The address of the local network interface to use for communicating between nodes on the same subnet.
     #[default("".to_string())]
     #[arg(long)]

@@ -2,6 +2,7 @@
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
 
+use crate::node::config::LocalConfig;
 use crate::node::local_interface::TunWriterHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
@@ -12,7 +13,7 @@ use nextmini_messages::RoutingTableEntry;
 use flume::bounded;
 use std::collections::HashMap;
 use tokio::select;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error};
 
 /// Actor Model Implementation
@@ -28,11 +29,14 @@ pub enum ProcessorMessage {
 // Processor: Processes packets and forwards them to the next hop
 struct Processor {
     // Processor Receiver
-    receiver_from_writer: flume::Receiver<ProcessorMessage>,
+    receiver_from_network_interface: flume::Receiver<ProcessorMessage>,
     receiver_from_controller: broadcast::Receiver<ProcessorMessage>,
 
     // Data Used by the processor
     routing_table: RoutingTable,
+
+    // TODO : Implement shutdown logic
+    shutdown: mpsc::UnboundedSender<()>,
 
     // Handles to send to the next stage
     tun_writer_handle: TunWriterHandle,
@@ -46,9 +50,11 @@ impl Processor {
             let mut msg: Option<ProcessorMessage> = None;
 
             select! {
-                Ok(writer_msg) = self.receiver_from_writer.recv_async() => {
-                    msg = Some(writer_msg);
+                // Packets from the network_interface and local_interface
+                Ok(network_interface_msg) = self.receiver_from_network_interface.recv_async() => {
+                    msg = Some(network_interface_msg);
                 }
+                // Control messages from the controller interface
                 Ok(controller_msg) = self.receiver_from_controller.recv() => {
                     msg = Some(controller_msg);
                 }
@@ -155,23 +161,21 @@ pub struct ProcessorHandle{
 
 impl ProcessorHandle{
     pub fn new(
-        mpmc_channel_size: usize,
-        broadcast_channel_size: usize,
-        num_processors: usize,
-        routing_table: RoutingTable,
+        config: LocalConfig,
         tun_writer: TunWriterHandle,
-        scheduler_handles: HashMap<NodeId, SchedulerHandle>,
+        shutdown: mpsc::UnboundedSender<()>,
     ) -> Self {
-        let (controller_sender, _) = broadcast::channel(broadcast_channel_size);
-        let (writer_sender, writer_receiver) = bounded(mpmc_channel_size);
+        let (controller_sender, _) = broadcast::channel(config.processor_broadcast_channel_size);
+        let (writer_sender, writer_receiver) = bounded(config.processor_mpsc_channel_size);
 
-        for _ in 0..num_processors {
+        for _ in 0..config.num_packet_processors {
             let mut actor = Processor {
-                receiver_from_writer: writer_receiver.clone(),
+                receiver_from_network_interface: writer_receiver.clone(),
                 receiver_from_controller: controller_sender.subscribe(), 
-                routing_table: routing_table.clone(),
+                routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
                 tun_writer_handle: tun_writer.clone(),
-                scheduler_handles: scheduler_handles.clone(),
+                scheduler_handles: HashMap::new(),
+                shutdown: shutdown.clone(),
             };
             tokio::spawn(async move { actor.run().await });
         }

@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
+use crate::node::processor::ProcessorHandle;
 
 pub struct Conductor {
     config: LocalConfig,

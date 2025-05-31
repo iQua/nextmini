@@ -1,5 +1,5 @@
 use crate::node::config::LocalConfig;
-use crate::node::processor::ProcessorHandleforController;
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::{SchedulingDiscipline, SchedulerHandle};
 use crate::node::drop::DropStrategy;
 use crate::node::NodeId;
@@ -27,10 +27,11 @@ pub struct ControllerInterfaceHandle {
 }
 
 // TODO : Implement shutdown logic
+// TODO : Decide how to pass processor handle to protocol reader
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-        processor_handle: ProcessorHandleforController,
+        processor_handle: ProcessorHandle,
         shutdown_send: mpsc::UnboundedSender<()>,
     ) -> Self {
         // create unbounded channel for controller sender
@@ -125,7 +126,7 @@ impl ControllerInterfaceHandle {
 
 pub struct ControllerReceiver{
     controller_receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    processor_handle: ProcessorHandleforController,
+    processor_handle: ProcessorHandle,
 
     scheduler_mpsc_channel_size: usize,
     scheduler_type: SchedulingDiscipline,
