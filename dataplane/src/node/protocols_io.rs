@@ -142,8 +142,8 @@ impl NetworkInterfaceHandle {
 #[derive(Clone)]
 pub enum NetworkInterfaceWriter {
     Tcp(TcpWriterHandle),
-    // Udp(UdpReaderHandle),
-    // Quic(QuicReaderHandle),
+    // Udp(UdpWritererHandle),
+    // Quic(QuicWriterHandle),
 }
 
 impl NetworkInterfaceWriter {
@@ -153,9 +153,5 @@ impl NetworkInterfaceWriter {
             // Self::Udp(writer) => writer.send(data).await,
             // Self::Quic(writer) => writer.send(data).await,
         }
-    }
-
-    pub fn reproduce(&self) -> Self {
-        self.clone()
     }
 }
