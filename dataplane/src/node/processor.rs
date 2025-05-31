@@ -1,6 +1,12 @@
 // A processor is designed to process inbound packets from either a NodeReceiver or a TUN reader,
 // and uses a routing table to determine how it should be sent out: to either a NodeSender or
 // a TUN writer.
+use std::collections::HashMap;
+
+use flume;
+use tokio::select;
+use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, error};
 
 use crate::node::config::LocalConfig;
 use crate::node::local_interface::LocalInterfaceHandle;
@@ -10,15 +16,7 @@ use crate::node::scheduler::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
 use nextmini_messages::RoutingTableEntry;
 
-use flume::bounded;
-use std::collections::HashMap;
-use tokio::select;
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error};
-
-/// Actor Model Implementation
-
-// Message type to processor
+// Message types to the processor actor.
 #[derive(Clone)]
 pub enum ProcessorMessage {
     ProcessPacket(Packet),
@@ -26,11 +24,11 @@ pub enum ProcessorMessage {
     AddNode(NodeId, SchedulerHandle),
 }
 
-// Processor: Processes packets and forwards them to the next hop
+// Processes packets and forwards them to the next hop.
 struct Processor {
     // Processor Receiver
-    receiver_from_network_interface: flume::Receiver<ProcessorMessage>,
-    receiver_from_controller: broadcast::Receiver<ProcessorMessage>,
+    net_interface_receiver: flume::Receiver<ProcessorMessage>,
+    controller_receiver: broadcast::Receiver<ProcessorMessage>,
 
     // Data Used by the processor
     routing_table: RoutingTable,
@@ -116,11 +114,10 @@ impl Processor {
                 error
             })?;
 
-        self.send_packet_to_next_hop(packet, next_hop_id, packet_flow_id)
-            .await
+        self.send_packet(packet, next_hop_id, packet_flow_id).await
     }
 
-    async fn send_packet_to_next_hop(
+    async fn send_packet(
         &mut self,
         packet: Packet,
         next_hop_id: NodeId,
@@ -156,7 +153,7 @@ impl Processor {
 #[derive(Clone)]
 pub struct ProcessorHandle {
     controller_sender: broadcast::Sender<ProcessorMessage>,
-    writer_sender: flume::Sender<ProcessorMessage>,
+    net_interface_sender: flume::Sender<ProcessorMessage>,
 }
 
 impl ProcessorHandle {
@@ -166,12 +163,13 @@ impl ProcessorHandle {
         shutdown: mpsc::UnboundedSender<()>,
     ) -> Self {
         let (controller_sender, _) = broadcast::channel(config.processor_broadcast_channel_size);
-        let (writer_sender, writer_receiver) = bounded(config.processor_mpsc_channel_size);
+        let (net_interface_sender, net_interface_receiver) =
+            flume::bounded(config.processor_mpsc_channel_size);
 
         for _ in 0..config.num_packet_processors {
             let mut actor = Processor {
-                receiver_from_network_interface: writer_receiver.clone(),
-                receiver_from_controller: controller_sender.subscribe(),
+                net_interface_receiver: net_interface_receiver.clone(),
+                controller_receiver: controller_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
                 local_interface: local_interface.clone(),
                 schedulers: HashMap::new(),
@@ -181,20 +179,22 @@ impl ProcessorHandle {
         }
         Self {
             controller_sender,
-            writer_sender,
+            net_interface_sender,
         }
     }
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         self.controller_sender
             .send(ProcessorMessage::UpdateRoutingTable(routes));
     }
+
     pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
         self.controller_sender
             .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
     }
+
     pub async fn process_packet(&self, packet: Packet) {
-        self.writer_sender
+        self.net_interface_sender
             .send(ProcessorMessage::ProcessPacket(packet))
-            .expect("Failed to send packet to processor from reader");
+            .expect("Failed to send a packet from the network interface to the processor.");
     }
 }
