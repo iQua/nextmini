@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
+use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 
 pub struct Conductor {
@@ -55,7 +56,6 @@ impl Conductor {
         // signal the conductor to shut down when needed
         let local_interface = LocalInterfaceHandle::new(self.config.clone());
 
-        
         // starts the processor actor, providing them with the local interface and the shutdown
         // channel
         let processor = ProcessorHandle::new(
@@ -63,12 +63,15 @@ impl Conductor {
             local_interface,
             self.shutdown_send.clone(),
         );
-        
+
         // starts the controller interface actor, providing it with the shutdown channel
-        let controller_interface =
-        ControllerInterfaceHandle::new(self.config.clone(), processor, self.shutdown_send.clone());
-        
-        // Should start protocol server here. 
+        let controller_interface = ControllerInterfaceHandle::new(
+            self.config.clone(),
+            processor,
+            self.shutdown_send.clone(),
+        );
+
+        // Should start protocol server here.
         // Protocol server needs processor handle to add new remote node connection
     }
 

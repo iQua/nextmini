@@ -2,6 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
@@ -10,7 +11,66 @@ use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-/// Converts a netmask tuple to prefix length. Used in 'create_tun_device()'.
+/// Message types for the LocalInterface, which manages the LocalReader and LocalWriter actors.
+pub enum LocalInterfaceMessage {
+    // the processor writes a packet to the local interface
+    WritePacket(Packet),
+    Shutdown,
+}
+
+/// Handle for Processor to interact with LocalInterface
+#[derive(Clone)]
+pub struct LocalInterfaceHandle {
+    read_sender: mpsc::Sender<LocalReaderMessage>,
+    write_sender: mpsc::Sender<LocalInterfaceMessage>,
+}
+
+impl LocalInterfaceHandle {
+    pub fn new(config: LocalConfig) -> Self {
+        let (read_sender, read_receiver) = mpsc::channel(config.channel_capacity);
+        let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
+
+        let writer = LocalWriter::new(config.clone(), write_receiver);
+        let reader = LocalReader::new(config, read_receiver);
+
+        tokio::spawn(async move {
+            reader.run().await;
+        });
+
+        tokio::spawn(async move {
+            writer.run().await;
+        });
+
+        Self {
+            read_sender,
+            write_sender,
+        }
+    }
+
+    pub async fn write_packet(
+        &self,
+        packet: Packet,
+    ) -> Result<(), SendError<LocalInterfaceMessage>> {
+        self.write_sender
+            .send(LocalInterfaceMessage::WritePacket(packet))
+            .await
+    }
+
+    pub async fn shutdown(&self) -> Result<(), SendError<LocalInterfaceMessage>> {
+        // Handle the first send operation, but ignore its specific error type
+        if let Err(_) = self.read_sender.send(LocalReaderMessage::Shutdown).await {
+            // if it fails, we continue with shutting down the local interface writer
+            error!("Failed to send a shutdown message to the local interface reader.");
+        }
+
+        // Return the result of the write_sender operation
+        self.write_sender
+            .send(LocalInterfaceMessage::Shutdown)
+            .await
+    }
+}
+
+/// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
     let mask_u32 = u32::from_be_bytes([mask.0, mask.1, mask.2, mask.3]);
     mask_u32.count_ones() as u8
@@ -233,47 +293,6 @@ impl LocalWriterHandle {
             .await
         {
             error!("Failed to send packet to LocalWriter actor: {:?}", e);
-        }
-    }
-}
-
-/// For Processor to call LocalInterfaceHandle
-#[derive(Clone)]
-pub struct LocalInterfaceHandle {
-    local_writer_handles: Vec<LocalWriterHandle>,
-    _local_reader_handles: Vec<LocalReaderHandle>, // Not used
-}
-
-impl LocalInterfaceHandle {
-    pub fn new(tun_queues: Vec<Arc<AsyncDevice>>, processor_handle: ProcessorHandle) -> Self {
-        // Create one LocalWriter for each TUN queue
-        let mut local_writer_handles = Vec::new();
-        let mut local_reader_handles = Vec::new();
-        for queue in &tun_queues {
-            let writer_handle = LocalWriterHandle::new(queue.clone());
-            local_writer_handles.push(writer_handle);
-
-            let reader_handle = LocalReaderHandle::new(queue.clone(), processor_handle.clone());
-            local_reader_handles.push(reader_handle);
-        }
-
-        Self {
-            local_writer_handles,
-            _local_reader_handles: local_reader_handles,
-        }
-    }
-    // The i-th processor uses the writer at index i
-    // like what previously was done in old design
-    // each processor to write to its own TUN queue(LocalWriter)
-    pub async fn write_packet(&self, packet: Packet, writer_index: usize) {
-        if let Some(writer) = self.local_writer_handles.get(writer_index) {
-            writer.write_packet(packet).await; // Get the writer at the specified index from the vector
-        } else {
-            error!(
-                "Invalid writer index: {}, available writers: {}",
-                writer_index,
-                self.local_writer_handles.len()
-            );
         }
     }
 }

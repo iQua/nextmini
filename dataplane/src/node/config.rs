@@ -11,8 +11,8 @@ use tracing::info;
 use nextmini_messages::{ControllerToDataplane, Protocol};
 
 use crate::node::NodeId;
-use crate::node::scheduler::SchedulingDiscipline;
 use crate::node::drop::DropStrategy;
+use crate::node::scheduler::SchedulingDiscipline;
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
@@ -89,15 +89,10 @@ pub struct LocalConfig {
     #[arg(long)]
     pub num_packet_processors: usize,
 
-    /// The size of the mpsc channel for the processor
+    /// The capacity for all channels between actors
     #[default(100)]
     #[arg(long)]
-    pub processor_mpsc_channel_size: usize,
-
-    /// The size of the broadcast channel for the processor
-    #[default(100)]
-    #[arg(long)]
-    pub processor_broadcast_channel_size: usize,
+    pub channel_capacity: usize,
 
     /// The address of the local network interface to use for communicating between nodes on the same subnet.
     #[default("".to_string())]
@@ -152,7 +147,7 @@ pub struct LocalConfig {
 
     // The size of the mpsc channel for the scheduler
     #[default(100)]
-    #[arg(long)]    
+    #[arg(long)]
     pub scheduler_mpsc_channel_size: usize,
 
     // The capacity of the scheduler queue
@@ -163,7 +158,7 @@ pub struct LocalConfig {
     // The drop strategy for the scheduler
     #[default(DropStrategy::TailDrop)]
     #[arg(long, value_enum)]
-    pub scheduler_drop_strategy: DropStrategy,  
+    pub scheduler_drop_strategy: DropStrategy,
 }
 
 impl LocalConfig {
@@ -278,7 +273,7 @@ impl LocalConfig {
         } else {
             panic!("Invalid startup message from the controller");
         }
-        
+
         self.clone()
     }
 }

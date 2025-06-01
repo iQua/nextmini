@@ -16,7 +16,7 @@ use crate::node::scheduler::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
 use nextmini_messages::RoutingTableEntry;
 
-// Message types to the processor actor.
+// Message types for the processor actor.
 #[derive(Clone)]
 pub enum ProcessorMessage {
     ProcessPacket(Packet),
@@ -165,8 +165,8 @@ impl ProcessorHandle {
         local_interface: LocalInterfaceHandle,
         shutdown: mpsc::UnboundedSender<()>,
     ) -> Self {
-        let (controller_sender, _) = broadcast::channel(config.processor_broadcast_channel_size);
-        let (packet_sender, packet_receiver) = flume::bounded(config.processor_mpsc_channel_size);
+        let (controller_sender, _) = broadcast::channel(config.channel_capacity);
+        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for i in 0..config.num_packet_processors {
             let mut actor = Processor {
