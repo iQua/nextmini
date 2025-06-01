@@ -199,12 +199,8 @@ impl ControllerToDataplaneReceiver {
                 )
                 .await;
 
-                let scheduler = SchedulerHandle::new(
-                    self.config.clone(),
-                    node_id,
-                    network_interface,
-                    self.controller_interface.clone(),
-                );
+                let scheduler =
+                    SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 
                 self.processors.add_node(node_id, scheduler).await;
             }

@@ -1,17 +1,12 @@
 use std::collections::VecDeque;
 
-use chrono::Utc;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval};
 use tracing::warn;
-
-use nextmini_messages::{DataplaneToController, Metric};
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
-use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
@@ -42,19 +37,12 @@ impl SchedulerHandle {
         config: LocalConfig,
         local_id: NodeId,
         net_interface: NetworkInterfaceHandle,
-        controller_interface: ControllerInterfaceHandle,
     ) -> Self {
         // creates the mpsc channel for sending packets to the scheduler
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
 
         let mut scheduler = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => Fifo::new(
-                config,
-                local_id,
-                net_interface,
-                controller_interface,
-                receiver,
-            ),
+            SchedulingDiscipline::Fifo => Fifo::new(config, local_id, net_interface, receiver),
             SchedulingDiscipline::Wrr => {
                 panic!("Wrr scheduling discipline not implemented");
             }
@@ -91,7 +79,6 @@ pub struct Fifo {
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     net_interface: NetworkInterfaceHandle,
-    controller_interface: ControllerInterfaceHandle,
     /// a mpsc receiver for other actors to send packets to this scheduler
     receiver: mpsc::Receiver<SchedulerMessage>,
 }
@@ -101,7 +88,6 @@ impl Fifo {
         config: LocalConfig,
         local_id: NodeId,
         net_interface: NetworkInterfaceHandle,
-        controller_interface: ControllerInterfaceHandle,
         receiver: mpsc::Receiver<SchedulerMessage>,
     ) -> Self {
         let capacity = config.queue_capacity;
@@ -119,7 +105,6 @@ impl Fifo {
             packets_dropped: 0,
             drop_strategy: packet_drop,
             net_interface,
-            controller_interface,
             receiver,
         }
     }
@@ -127,9 +112,6 @@ impl Fifo {
 
 impl Scheduler for Fifo {
     async fn run(&mut self) {
-        let mut metrics_tick =
-            interval(Duration::from_secs(self.config.metrics_collection_interval));
-
         while let Some(packet) = self.queue.pop_front() {
             tokio::select! {
                 // sends a packet from the queue to the network interface
@@ -140,25 +122,6 @@ impl Scheduler for Fifo {
                     match message {
                         SchedulerMessage::Enqueue(packet) => {
                             self.enqueue(packet);
-                        }
-                    }
-                },
-                // timer tick: calculate bandwidth metrics and transmit to controller
-                _ = metrics_tick.tick() => {
-                    if !self.queue.is_empty() {
-                        let now = Utc::now();
-                        let metrics = self.queue.iter().map(|p| {
-                            Metric {
-                                flow_id: p.flow_id.to_be_bytes(),
-                                bps: 8 * p.packet_size / self.config.metrics_collection_interval as usize,
-                                src_node_id: Some(self.local_id),
-                                time_read: now,
-                            }
-                        }).collect::<Vec<_>>();
-
-                        if !metrics.is_empty() {
-                            let msg = DataplaneToController::Metrics { metrics };
-                            self.controller_interface.send_metrics(msg).await;
                         }
                     }
                 }
