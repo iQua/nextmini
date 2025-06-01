@@ -1,7 +1,5 @@
-use std::sync::Arc;
-
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
@@ -15,40 +13,38 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::processor::ProcessorHandle;
-use crate::node::protocols_io::NetworkInterface;
-use crate::node::scheduler::{SchedulerHandle, SchedulingDiscipline};
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     config: LocalConfig,
-    controller_sender: mpsc::UnboundedSender<DataplaneToController>,
+    northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
     pub async fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        // creates an unbounded channel for sending messages to the controller
-        let (controller_sender, controller_receiver) = mpsc::unbounded_channel();
+        // creates an unbounded channel, the 'northbridge', for sending messages to the controller
+        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
         let mut controller_interface = Self {
             config: config.clone(),
-            controller_sender,
+            northbridge_sender,
         };
 
         // connects to the controller over WebSockets
         let ws_stream = controller_interface.connect().await;
 
-        let (controller_sender_stream, controller_receiver_stream) = ws_stream.split();
+        let (sender_stream, receiver_stream) = ws_stream.split();
 
         // Initialize the controller sender and receiver
-        let mut controller_sender = ControllerSender {
-            controller_sender_stream,
-            controller_receiver,
+        let mut controller_sender = DataplaneToControllerSender {
+            sender_stream,
+            northbridge_receiver,
         };
 
-        let mut controller_receiver = ControllerReceiver {
+        let mut controller_receiver = ControllerToDataplaneReceiver {
             config,
-            controller_receiver_stream,
+            receiver_stream,
             processors,
             controller_interface: controller_interface.clone(),
         };
@@ -110,33 +106,61 @@ impl ControllerInterfaceHandle {
     }
 
     pub async fn send_metrics(&self, msg: DataplaneToController) {
-        self.controller_sender.send(msg);
+        self.northbridge_sender.send(msg);
     }
 }
 
-// Receive messages from the controller and broadcast them to the processor
-pub struct ControllerReceiver {
+
+pub struct DataplaneToControllerSender {
+    northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
+    sender_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
+}
+
+impl DataplaneToControllerSender {
+    pub async fn run(&mut self) {
+        let mut ping_interval = interval(Duration::from_secs(30)); // Send ping every 30 seconds
+
+        loop {
+            tokio::select! {
+                Some(msg) = self.northbridge_receiver.recv() => {
+                    self.send_msg(msg).await;
+                }
+                _ = ping_interval.tick() => {
+                    self.sender_stream
+                        .send(Message::Ping(vec![].into()))
+                        .await
+                        .expect("Failed to send ping to controller");
+                }
+            }
+        }
+    }
+
+    async fn send_msg(&mut self, msg: DataplaneToController) {
+        self.sender_stream
+            .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+            .await
+            .expect("Failed to send message to controller");
+    }
+}
+
+// Receives messages from the controller and broadcasts them to the processors.
+pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
-    controller_receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
     controller_interface: ControllerInterfaceHandle,
 }
 
-impl ControllerReceiver {
+impl ControllerToDataplaneReceiver {
     pub async fn run(&mut self) {
         loop {
-            let msg = match self.controller_receiver_stream.next().await.unwrap() {
+            let msg = match self.receiver_stream.next().await.unwrap() {
                 Ok(msg) => msg,
                 Err(e) => {
-                    info!("Connection with the controller is broken. Restarting node state..");
-                    info!("Connection Lost with Error: {:?}", e);
+                    error!("Disconnected from the controller. Restarting the node...");
+                    error!("Error: {:?}", e);
 
-                    // TODO : update the shutdown logic according to how controller interface is implemented
-                    // self.shutdown_tx
-                    //     .send(true)
-                    //     .expect("Failed to send shutdown signal to main task");
-
-                    return;
+                    break;
                 }
             };
 
@@ -199,37 +223,5 @@ impl ControllerReceiver {
             }
             _ => error!("Received unsupported message type from controller."),
         }
-    }
-}
-
-pub struct ControllerSender {
-    receiver: mpsc::UnboundedReceiver<DataplaneToController>,
-    controller_sender_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-}
-
-impl ControllerSender {
-    pub async fn run(&mut self) {
-        let mut ping_interval = interval(Duration::from_secs(30)); // Send ping every 30 seconds
-
-        loop {
-            tokio::select! {
-                Some(msg) = self.receiver.recv() => {
-                    self.send_msg(msg).await;
-                }
-                _ = ping_interval.tick() => {
-                    self.controller_sender_stream
-                        .send(Message::Ping(vec![].into()))
-                        .await
-                        .expect("Failed to send ping to controller");
-                }
-            }
-        }
-    }
-
-    async fn send_msg(&mut self, msg: DataplaneToController) {
-        self.controller_sender_stream
-            .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-            .await
-            .expect("Failed to send message to controller");
     }
 }
