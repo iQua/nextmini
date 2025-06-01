@@ -1,8 +1,9 @@
-use clap::ValueEnum;
-use crossbeam_queue::ArrayQueue;
-use serde::Deserialize;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use clap::ValueEnum;
+use serde::Deserialize;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{error, warn};
 
@@ -99,7 +100,7 @@ pub struct Fifo {
     local_id: NodeId,
 
     // Other data used by scheduler
-    queue: Arc<ArrayQueue<Packet>>,
+    queue: Arc<VecDeque<Packet>>,
     packets_dropped: usize,
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
@@ -130,7 +131,7 @@ impl Fifo {
         Fifo {
             receiver,
             local_id,
-            queue: Arc::new(ArrayQueue::new(capacity)),
+            queue: Arc::new(VecDeque::with_capacity(capacity)),
             packets_dropped: 0,
             drop_strategy: packet_drop,
             packet_arrived: Arc::new(Notify::new()),

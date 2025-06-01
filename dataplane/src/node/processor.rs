@@ -8,13 +8,14 @@ use tokio::select;
 use tokio::sync::broadcast;
 use tracing::{debug, error};
 
+use nextmini_messages::RoutingTableEntry;
+
 use crate::node::config::LocalConfig;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
-use nextmini_messages::RoutingTableEntry;
 
 // Message types for the processor actor.
 #[derive(Clone)]
