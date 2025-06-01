@@ -48,7 +48,7 @@ impl Processor {
             let mut msg: Option<ProcessorMessage> = None;
 
             select! {
-                // Packets from all sources (network interface, local interface)
+                // Packets from both sources (network interface, local interface)
                 Ok(packet_msg) = self.packet_receiver.recv_async() => {
                     msg = Some(packet_msg);
                 }
