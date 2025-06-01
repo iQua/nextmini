@@ -27,7 +27,7 @@ pub enum ProcessorMessage {
 // Processes packets and forwards them to the next hop.
 struct Processor {
     // Processor Receiver
-    net_interface_receiver: flume::Receiver<ProcessorMessage>,
+    packet_receiver: flume::Receiver<ProcessorMessage>, // Receive packets from local or network interfaces
     controller_receiver: broadcast::Receiver<ProcessorMessage>,
 
     // Data Used by the processor
@@ -48,9 +48,9 @@ impl Processor {
             let mut msg: Option<ProcessorMessage> = None;
 
             select! {
-                // Packets from the network_interface and local_interface
-                Ok(network_interface_msg) = self.net_interface_receiver.recv_async() => {
-                    msg = Some(network_interface_msg);
+                // Packets from all sources (network interface, local interface)
+                Ok(packet_msg) = self.packet_receiver.recv_async() => {
+                    msg = Some(packet_msg);
                 }
                 // Control messages from the controller interface
                 Ok(controller_msg) = self.controller_receiver.recv() => {
@@ -153,7 +153,7 @@ impl Processor {
 #[derive(Clone)]
 pub struct ProcessorHandle {
     controller_sender: broadcast::Sender<ProcessorMessage>,
-    net_interface_sender: flume::Sender<ProcessorMessage>,
+    packet_sender: flume::Sender<ProcessorMessage>,
 }
 
 impl ProcessorHandle {
@@ -163,12 +163,11 @@ impl ProcessorHandle {
         shutdown: mpsc::UnboundedSender<()>,
     ) -> Self {
         let (controller_sender, _) = broadcast::channel(config.processor_broadcast_channel_size);
-        let (net_interface_sender, net_interface_receiver) =
-            flume::bounded(config.processor_mpsc_channel_size);
+        let (packet_sender, packet_receiver) = flume::bounded(config.processor_mpsc_channel_size);
 
         for _ in 0..config.num_packet_processors {
             let mut actor = Processor {
-                net_interface_receiver: net_interface_receiver.clone(),
+                packet_receiver: packet_receiver.clone(),
                 controller_receiver: controller_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
                 local_interface: local_interface.clone(),
@@ -179,7 +178,7 @@ impl ProcessorHandle {
         }
         Self {
             controller_sender,
-            net_interface_sender,
+            packet_sender,
         }
     }
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
@@ -193,7 +192,7 @@ impl ProcessorHandle {
     }
 
     pub async fn process_packet(&self, packet: Packet) {
-        self.net_interface_sender
+        self.packet_sender
             .send(ProcessorMessage::ProcessPacket(packet))
             .unwrap();
     }
