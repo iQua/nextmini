@@ -55,7 +55,6 @@ impl Conductor {
         // signal the conductor to shut down when needed
         let local_interface = LocalInterfaceHandle::new(self.config.clone());
 
-        // Should start protocol server here as well
         
         // starts the processor actor, providing them with the local interface and the shutdown
         // channel
@@ -64,10 +63,13 @@ impl Conductor {
             local_interface,
             self.shutdown_send.clone(),
         );
-
+        
         // starts the controller interface actor, providing it with the shutdown channel
         let controller_interface =
-            ControllerInterfaceHandle::new(self.config.clone(), processor, self.shutdown_send.clone());
+        ControllerInterfaceHandle::new(self.config.clone(), processor, self.shutdown_send.clone());
+        
+        // Should start protocol server here. 
+        // Protocol server needs processor handle to add new remote node connection
     }
 
     pub async fn shutdown(&self) {

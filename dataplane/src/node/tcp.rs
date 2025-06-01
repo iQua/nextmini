@@ -1,5 +1,7 @@
 use crate::node::packet::Packet;
 use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::processor::ProcessorHandle;
+
 use std::io::Cursor;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -8,16 +10,16 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
 
-use super::processor::ProcessorHandleforReader;
 
 pub struct TcpServer {
-    // context: Context,
+    processor_handle: ProcessorHandle,
 }
 
 impl TcpServer {
-    // pub fn new(context: Context) -> Self {
-    //     Self { context }
-    // }
+
+    pub fn new(processor_handle: ProcessorHandle) -> Self {
+        Self {processor_handle}
+    }
 
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
@@ -59,51 +61,38 @@ impl TcpServer {
 
             info!("Incoming connection from node {}...", node_id);
 
-            // self.context.add_tcp_node(node_id, stream).await;
-            // self.processor_manager
-            //     .write()
-            //     .await
-            //     .update_processors()
-            //     .await;
+            // Add new node : There are three potential ways
+            // 1. Change processor's 'scheduler' hashmap directly
+            // 2. Add a new message type for processor handle
+            // 3. Redesign in compatiable with the current ControllerToDataplane::AddNode message
 
             info!("Connected to node {}.", node_id);
         }
     }
 }
 
-pub enum TcpReaderMessage {
-    Shutdown,
-}
-
 pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
-    processor_handle: ProcessorHandleforReader,
-    receiver: mpsc::Receiver<TcpReaderMessage>,
+    processor_handle: ProcessorHandle,
 }
 
 impl TcpReader {
     pub fn new(
         stream: ReadHalf<TcpStream>,
-        processor_handle: ProcessorHandleforReader,
-        receiver: mpsc::Receiver<TcpReaderMessage>,
+        processor_handle: ProcessorHandle,
     ) -> Self {
         Self {
             stream,
             processor_handle,
-            receiver,
         }
     }
 
     pub async fn run(mut self) {
         loop {
-            if let Ok(msg) = self.receiver.try_recv() {
-                match msg {
-                    TcpReaderMessage::Shutdown => {
-                        info!("TcpReader received shutdown signal");
-                        break;
-                    }
-                }
-            }
+
+            // TODO : Shutdown logic
+            // 1. Send shutdown message to scheduler and break the loop when error
+            // 2. Receive shutdown message from scheduler and break the loop
 
             // Read from network
             match self.read_packet().await {
@@ -133,89 +122,31 @@ impl TcpReader {
     }
 }
 
-#[derive(Clone)]
-pub struct TcpReaderHandle {
-    sender: mpsc::Sender<TcpReaderMessage>,
-}
-
-impl TcpReaderHandle {
-    pub fn new(
-        reader: ReadHalf<TcpStream>,
-        processor_handle: ProcessorHandleforReader,
-    ) -> Self {
-        let (sender, receiver) = mpsc::channel(100);
-        let actor = TcpReader::new(reader, processor_handle, receiver);
-
-        tokio::spawn(async move {
-            actor.run().await;
-        });
-
-        Self { sender }
-    }
-
-    pub async fn shutdown(&mut self) {
-        if let Err(e) = self.sender.send(TcpReaderMessage::Shutdown).await {
-            error!("Failed to send shutdown message to TcpReader: {}", e);
-        }
-    }
-}
-
-
-pub enum TcpWriterMessage {
-    WritePacket(Vec<u8>),
-}
-
 pub struct TcpWriter {
     stream: Arc<Mutex<WriteHalf<TcpStream>>>,
-    receiver: mpsc::Receiver<TcpWriterMessage>,
+    receiver: mpsc::Receiver<Packet>,
 }
 
 impl TcpWriter {
     pub fn new(
         stream: Arc<Mutex<WriteHalf<TcpStream>>>,
-        receiver: mpsc::Receiver<TcpWriterMessage>,
+        receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         Self { stream, receiver }
     }
 
     pub async fn run(mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                TcpWriterMessage::WritePacket(data) => {
-                    let mut stream_guard = self.stream.lock().await;
-                    if let Err(e) = stream_guard.write_all(&data).await {
-                        error!("Failed to write TCP data: {}", e);
-                    }
-                }
+        while let Some(packet) = self.receiver.recv().await {
+
+            // TODO : Shutdown logic
+            // 1. Send shutdown message to scheduler and break the loop when error
+            // 2. Receive shutdown message from scheduler and break the loop
+
+            let mut stream_guard = self.stream.lock().await;
+            if let Err(e) = stream_guard.write_all(&packet.buf).await {
+                error!("Failed to write TCP data: {}", e);
             }
         }
     }
 }
 
-#[derive(Clone)]
-pub struct TcpWriterHandle {
-    sender: mpsc::Sender<TcpWriterMessage>,
-}
-
-impl TcpWriterHandle {
-    pub fn new(stream: Arc<Mutex<WriteHalf<TcpStream>>>) -> Self {
-        let (sender, receiver) = mpsc::channel(100);
-        let actor = TcpWriter::new(stream, receiver);
-
-        tokio::spawn(async move {
-            actor.run().await;
-        });
-
-        Self { sender }
-    }
-
-    pub async fn write(&mut self, data: &[u8]) {
-        if let Err(e) = self
-            .sender
-            .send(TcpWriterMessage::WritePacket(data.to_vec()))
-            .await
-        {
-            error!("Failed to send packet to TcpWriter actor: {:?}", e);
-        }
-    }
-}
