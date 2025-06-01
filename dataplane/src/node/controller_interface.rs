@@ -12,6 +12,7 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
+use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
 
@@ -189,11 +190,18 @@ impl ControllerToDataplaneReceiver {
                 node_id,
                 addr,
             } => {
-                let protocol_writer;
+                let network_interface = NetworkInterfaceHandle::new(
+                    self.processors.clone(),
+                    &addr,
+                    self.config.node_id,
+                    node_id,
+                    protocol,
+                )
+                .await;
 
                 let scheduler_handle = SchedulerHandle::new(
                     self.config.clone(),
-                    protocol_writer,
+                    network_interface,
                     self.controller_interface.clone(),
                 );
 
