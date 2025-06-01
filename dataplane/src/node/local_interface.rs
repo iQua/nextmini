@@ -10,7 +10,7 @@ use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-/// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
+/// Converts a netmask tuple to prefix length. Used in 'create_tun_device()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
     let mask_u32 = u32::from_be_bytes([mask.0, mask.1, mask.2, mask.3]);
     mask_u32.count_ones() as u8
@@ -153,78 +153,6 @@ impl LocalReader {
     }
 }
 
-/// Message types
-pub enum LocalInterfaceMessage {
-    /// Call by processor to write a packet to the local device
-    WritePacket(Packet),
-    Shutdown,
-}
-
-pub struct LocalInterface {
-    receiver: mpsc::Receiver<LocalInterfaceMessage>,
-    local_writer_handle: LocalWriterHandle,
-    processor_handle: ProcessorHandle,
-}
-
-impl LocalInterface {
-    pub async fn run(&mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                LocalInterfaceMessage::WritePacket(packet) => {
-                    // Processors call LocalWriterHandle.write_packet()
-                    self.local_writer_handle.write_packet(packet).await;
-                }
-                LocalInterfaceMessage::Shutdown => {
-                    info!("LocalInterface received shutdown signal, stopping...");
-                    break;
-                }
-            }
-        }
-    }
-}
-
-/// Handle for Processor to interact with LocalInterface
-#[derive(Clone)]
-pub struct LocalInterfaceHandle {
-    sender: mpsc::Sender<LocalInterfaceMessage>,
-}
-
-impl LocalInterfaceHandle {
-    pub fn new(tun_devices: Vec<Arc<AsyncDevice>>, processor_handle: ProcessorHandle) -> Self {
-        let (sender, receiver) = mpsc::channel(100);
-
-        let writer_handle = LocalWriterHandle::new(tun_devices[0].clone());
-
-        let mut actor = LocalInterface {
-            receiver,
-            local_writer_handle,
-            processor_handle,
-        };
-
-        tokio::spawn(async move {
-            actor.run().await;
-        });
-
-        Self { sender }
-    }
-
-    pub async fn write_packet(&self, packet: Packet) {
-        if let Err(e) = self
-            .sender
-            .send(LocalInterfaceMessage::WritePacket(packet))
-            .await
-        {
-            error!("Failed to send write request to LocalInterface: {:?}", e);
-        }
-    }
-
-    pub async fn shutdown(&self) {
-        if let Err(e) = self.sender.send(LocalInterfaceMessage::Shutdown).await {
-            error!("Failed to send shutdown signal to LocalInterface: {:?}", e);
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct LocalReaderHandle {
     sender: mpsc::Sender<LocalReaderMessage>,
@@ -305,6 +233,47 @@ impl LocalWriterHandle {
             .await
         {
             error!("Failed to send packet to LocalWriter actor: {:?}", e);
+        }
+    }
+}
+
+/// For Processor to call LocalInterfaceHandle
+#[derive(Clone)]
+pub struct LocalInterfaceHandle {
+    local_writer_handles: Vec<LocalWriterHandle>,
+    _local_reader_handles: Vec<LocalReaderHandle>, // Not used
+}
+
+impl LocalInterfaceHandle {
+    pub fn new(tun_queues: Vec<Arc<AsyncDevice>>, processor_handle: ProcessorHandle) -> Self {
+        // Create one LocalWriter for each TUN queue
+        let mut local_writer_handles = Vec::new();
+        let mut local_reader_handles = Vec::new();
+        for queue in &tun_queues {
+            let writer_handle = LocalWriterHandle::new(queue.clone());
+            local_writer_handles.push(writer_handle);
+
+            let reader_handle = LocalReaderHandle::new(queue.clone(), processor_handle.clone());
+            local_reader_handles.push(reader_handle);
+        }
+
+        Self {
+            local_writer_handles,
+            _local_reader_handles: local_reader_handles,
+        }
+    }
+    // The i-th processor uses the writer at index i
+    // like what previously was done in old design
+    // each processor to write to its own TUN queue(LocalWriter)
+    pub async fn write_packet(&self, packet: Packet, writer_index: usize) {
+        if let Some(writer) = self.local_writer_handles.get(writer_index) {
+            writer.write_packet(packet).await; // Get the writer at the specified index from the vector
+        } else {
+            error!(
+                "Invalid writer index: {}, available writers: {}",
+                writer_index,
+                self.local_writer_handles.len()
+            );
         }
     }
 }

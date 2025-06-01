@@ -39,6 +39,9 @@ struct Processor {
     // Handles to send to the next stage
     local_interface: LocalInterfaceHandle,
     schedulers: HashMap<NodeId, SchedulerHandle>,
+    
+    // Index of the writer to use for local delivery
+    writer_index: usize,
 }
 
 impl Processor {
@@ -125,7 +128,7 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            self.local_interface.write_packet(packet).await;
+            self.local_interface.write_packet(packet, self.writer_index).await;
             Ok(())
         } else {
             match self.schedulers.get_mut(&next_hop_id) {
@@ -165,7 +168,7 @@ impl ProcessorHandle {
         let (controller_sender, _) = broadcast::channel(config.processor_broadcast_channel_size);
         let (packet_sender, packet_receiver) = flume::bounded(config.processor_mpsc_channel_size);
 
-        for _ in 0..config.num_packet_processors {
+        for i in 0..config.num_packet_processors {
             let mut actor = Processor {
                 packet_receiver: packet_receiver.clone(),
                 controller_receiver: controller_sender.subscribe(),
@@ -173,6 +176,7 @@ impl ProcessorHandle {
                 local_interface: local_interface.clone(),
                 schedulers: HashMap::new(),
                 shutdown: shutdown.clone(),
+                writer_index: i,
             };
             tokio::spawn(async move { actor.run().await });
         }
