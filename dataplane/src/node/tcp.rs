@@ -1,4 +1,5 @@
 use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::network_interface::NetworkInterfaceMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
@@ -84,14 +85,10 @@ impl TcpReader {
 
     pub async fn run(mut self) {
         loop {
-            // TODO : Shutdown logic
-            // 1. Send shutdown message to scheduler and break the loop when error
-            // 2. Receive shutdown message from scheduler and break the loop
-
-            // Read from network
+            // Try to read a packet from the network
             match self.read_packet().await {
                 Ok(packet) => {
-                    // Send packet via ProcessorHandleforReader
+                    // Forward the packet to the processor
                     self.processor_handle.process_packet(packet).await;
                 }
                 Err(e) => {
@@ -102,40 +99,56 @@ impl TcpReader {
         }
     }
 
+    /// Read a single packet from the stream
     async fn read_packet(&mut self) -> Result<Packet, std::io::Error> {
         let mut buf = [0u8; RECEIVE_BUF_SIZE];
-        // Read header
+
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
+
         self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
-        // New packet
-        let packet = Packet::new(msg_len, buf);
-        Ok(packet)
+        // Return the packet
+        Ok(Packet::new(msg_len, buf))
     }
 }
 
 pub struct TcpWriter {
     stream: Arc<Mutex<WriteHalf<TcpStream>>>,
-    receiver: mpsc::Receiver<Packet>,
+    receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl TcpWriter {
-    pub fn new(stream: Arc<Mutex<WriteHalf<TcpStream>>>, receiver: mpsc::Receiver<Packet>) -> Self {
+    pub fn new(
+        stream: Arc<Mutex<WriteHalf<TcpStream>>>,
+        receiver: mpsc::Receiver<NetworkInterfaceMessage>,
+    ) -> Self {
         Self { stream, receiver }
     }
 
     pub async fn run(mut self) {
-        while let Some(packet) = self.receiver.recv().await {
-            // TODO : Shutdown logic
-            // 1. Send shutdown message to scheduler and break the loop when error
-            // 2. Receive shutdown message from scheduler and break the loop
-
-            let mut stream_guard = self.stream.lock().await;
-            if let Err(e) = stream_guard.write_all(&packet.buf).await {
-                error!("Failed to write TCP data: {}", e);
+        while let Some(msg) = self.receiver.recv().await {
+            match msg {
+                NetworkInterfaceMessage::SendPacket(packet) => {
+                    let result = self.write_packet(&packet).await;
+                    if let Err(e) = result {
+                        error!("Failed to write packet: {}", e);
+                    }
+                }
+                NetworkInterfaceMessage::Shutdown => {
+                    break;
+                }
             }
         }
+    }
+
+    /// Write packet to the stream
+    async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
+        let mut stream_guard = self.stream.lock().await;
+        stream_guard
+            .write_all(&packet.buf[0..packet.packet_size])
+            .await?;
+        Ok(())
     }
 }
