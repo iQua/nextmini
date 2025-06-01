@@ -1,5 +1,5 @@
-use crate::node::packet::Packet;
 use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
 use std::io::Cursor;
@@ -10,15 +10,13 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
 
-
 pub struct TcpServer {
     processor_handle: ProcessorHandle,
 }
 
 impl TcpServer {
-
     pub fn new(processor_handle: ProcessorHandle) -> Self {
-        Self {processor_handle}
+        Self { processor_handle }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -77,10 +75,7 @@ pub struct TcpReader {
 }
 
 impl TcpReader {
-    pub fn new(
-        stream: ReadHalf<TcpStream>,
-        processor_handle: ProcessorHandle,
-    ) -> Self {
+    pub fn new(stream: ReadHalf<TcpStream>, processor_handle: ProcessorHandle) -> Self {
         Self {
             stream,
             processor_handle,
@@ -89,7 +84,6 @@ impl TcpReader {
 
     pub async fn run(mut self) {
         loop {
-
             // TODO : Shutdown logic
             // 1. Send shutdown message to scheduler and break the loop when error
             // 2. Receive shutdown message from scheduler and break the loop
@@ -128,16 +122,12 @@ pub struct TcpWriter {
 }
 
 impl TcpWriter {
-    pub fn new(
-        stream: Arc<Mutex<WriteHalf<TcpStream>>>,
-        receiver: mpsc::Receiver<Packet>,
-    ) -> Self {
+    pub fn new(stream: Arc<Mutex<WriteHalf<TcpStream>>>, receiver: mpsc::Receiver<Packet>) -> Self {
         Self { stream, receiver }
     }
 
     pub async fn run(mut self) {
         while let Some(packet) = self.receiver.recv().await {
-
             // TODO : Shutdown logic
             // 1. Send shutdown message to scheduler and break the loop when error
             // 2. Receive shutdown message from scheduler and break the loop
@@ -149,4 +139,3 @@ impl TcpWriter {
         }
     }
 }
-

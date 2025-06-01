@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{error, warn};
 
+use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::metrics::Collector;
@@ -24,6 +25,61 @@ pub enum SchedulingDiscipline {
     Wrr,
 }
 
+/// The types of messages sent to the scheduler actors.
+pub enum SchedulerMessage {
+    Enqueue(Packet),
+}
+
+// a handle is for one scheduler actor, a scheduler actor is for one node's protocol writer
+#[derive(Clone)]
+pub struct SchedulerHandle {
+    sender: mpsc::Sender<SchedulerMessage>,
+}
+
+impl SchedulerHandle {
+    pub fn new(
+        config: LocalConfig,
+        protocol_writer: ProtocolWriter,
+        controller_interface_handle: ControllerInterfaceHandle,
+    ) -> Self {
+        // Initialize the metrics collector
+        let mut metrics_collector = Collector::new(controller_interface_handle);
+        let metrics_tx = metrics_collector.get_metrics_tx();
+
+        // Initialize the scheduler actor
+        let (sender, receiver) = mpsc::channel(mpsc_channel_size);
+        let mut scheduler = match scheduler_type {
+            SchedulingDiscipline::Fifo => Fifo::new(
+                receiver,
+                config.queue_capacity,
+                config.drop_strategy,
+                protocol_writer,
+                metrics_tx,
+                config.local_id,
+            ),
+            SchedulingDiscipline::Wrr => {
+                panic!("Wrr scheduling discipline not implemented");
+            }
+        };
+
+        // spawn all tasks
+        tokio::spawn(async move {
+            metrics_collector.run().await; // Spawn the metrics collector
+            scheduler.send_to_protocol_writer(); // Inside this method, the subscriber to the enqueue notification is spawned
+            scheduler.run().await
+        });
+
+        Self { sender }
+    }
+
+    pub async fn send(&mut self, packet: Packet) {
+        self.sender
+            .send(SchedulerMessage::Enqueue(packet))
+            .await
+            .unwrap();
+    }
+}
+
 /// Defines the interface for all scheduling disciplines.
 /// A scheduler has two main tasks :
 /// 1. Enqueue packets to the queue -> Send packets to the protocol writer
@@ -39,8 +95,6 @@ pub struct Fifo {
     // Receiver side of the mpsc channel (sent from scheduler handle)
     receiver: mpsc::Receiver<SchedulerMessage>,
 
-    // tx to the collector
-    metrics_tx: mpsc::UnboundedSender<(FlowId, NodeId, usize)>,
     // The local node_id which is sent inside the metrics
     local_id: NodeId,
 
@@ -51,7 +105,6 @@ pub struct Fifo {
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     packet_arrived: Arc<Notify>,
     protocol_writer: ProtocolWriter, // a handle to the protocol writer
-    rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     shutdown: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -65,7 +118,6 @@ impl Fifo {
         drop_strategy: DropStrategy,
         protocol_writer: ProtocolWriter,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
-        metrics_tx: mpsc::UnboundedSender<(FlowId, NodeId, usize)>,
         local_id: NodeId,
     ) -> Self {
         let capacity_unit = CapacityUnit::Packets;
@@ -77,14 +129,12 @@ impl Fifo {
 
         Fifo {
             receiver,
-            metrics_tx,
             local_id,
             queue: Arc::new(ArrayQueue::new(capacity)),
             packets_dropped: 0,
             drop_strategy: packet_drop,
             packet_arrived: Arc::new(Notify::new()),
             protocol_writer,
-            rate_limiter,
             shutdown: Arc::new(AtomicBool::new(false)),
             task_handle: None,
         }
@@ -96,11 +146,6 @@ impl Scheduler for Fifo {
         while let Some(message) = self.receiver.recv().await {
             match message {
                 SchedulerMessage::Enqueue(packet) => {
-                    // Send metrics
-                    self.metrics_tx
-                        .send((packet.flow_id, self.local_id, packet.packet_size))
-                        .unwrap();
-
                     // Enqueue the packet
                     self.enqueue(packet);
                 }
@@ -173,19 +218,6 @@ impl Scheduler for Fifo {
                     counter += 1;
 
                     writer.send(&packet.buf[0..packet.packet_size]).await; // Scheduler -> NetworkInterfaceHandle
-
-                    // Apply rate limiting at batch boundaries or when queue is empty
-                    if counter >= Self::BATCH_SIZE || queue.is_empty() {
-                        if let Some(limiter) = rate_limiter.read().await.as_ref() {
-                            if tokens > 0 {
-                                limiter.consume((tokens as f64) * 8.0).await;
-                            }
-                        }
-
-                        // Reset counters for next batch
-                        counter = 0;
-                        tokens = 0;
-                    }
                 }
             }
         });
@@ -203,69 +235,5 @@ impl Drop for Fifo {
         if let Some(handle) = self.task_handle.take() {
             handle.abort();
         }
-    }
-}
-
-/// Scheduler Handle Implementation
-/// A handle has two responsibilities :
-/// 1. Initialize the actor and other related struct -> Spawn them
-/// 2. It has a method that allows other actors to send msg to actor via this handle
-pub enum SchedulerMessage {
-    Enqueue(Packet),
-}
-
-// a handle is for one scheduler actor, a scheduler actor is for one node's protocol writer
-#[derive(Clone)]
-pub struct SchedulerHandle {
-    sender: mpsc::Sender<SchedulerMessage>,
-}
-
-impl SchedulerHandle {
-    pub fn new(
-        mpsc_channel_size: usize,
-        protocol_writer: ProtocolWriter,
-        scheduler_type: SchedulingDiscipline,
-        controller_interface_handle: ControllerInterfaceHandle,
-        local_id: NodeId,
-        capacity: usize,
-        drop_strategy: DropStrategy,
-        rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
-    ) -> Self {
-        // Initialize the metrics collector
-        let mut metrics_collector = Collector::new(controller_interface_handle);
-        let metrics_tx = metrics_collector.get_metrics_tx();
-
-        // Initialize the scheduler actor
-        let (sender, receiver) = mpsc::channel(mpsc_channel_size);
-        let mut scheduler = match scheduler_type {
-            SchedulingDiscipline::Fifo => Fifo::new(
-                receiver,
-                capacity,
-                drop_strategy,
-                protocol_writer,
-                rate_limiter,
-                metrics_tx,
-                local_id,
-            ),
-            SchedulingDiscipline::Wrr => {
-                panic!("Wrr scheduling discipline not implemented");
-            }
-        };
-
-        // spawn all tasks
-        tokio::spawn(async move {
-            metrics_collector.run().await; // Spawn the metrics collector
-            scheduler.send_to_protocol_writer(); // Inside this method, the subscriber to the enqueue notification is spawned
-            scheduler.run().await
-        });
-
-        Self { sender }
-    }
-
-    pub async fn send(&mut self, packet: Packet) {
-        self.sender
-            .send(SchedulerMessage::Enqueue(packet))
-            .await
-            .unwrap();
     }
 }

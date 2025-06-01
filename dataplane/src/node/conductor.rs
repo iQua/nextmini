@@ -28,18 +28,22 @@ impl Conductor {
     pub async fn new(main_shutdown_recv: mpsc::UnboundedReceiver<()>) -> Self {
         let config = LocalConfig::new();
 
-        // starts the processor actor with the shutdown channel
+        // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
 
-        // starts the local interface, providing it with the shutdown channel so that it can
-        // signal the conductor to shut down when needed
+        // starts the local interface actor, providing it with a handle of the processors
         let local_interface = LocalInterfaceHandle::new(config.clone(), processors.clone());
 
-        // connects processor with its downstream local interface writers to send packets out
+        // connects the processors with its downstream local interface writers to send packets out
         processors.connect_local_interface(local_interface.clone());
 
-        // starts the controller interface actor, providing it with the shutdown channel
-        let controller_interface = ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
+        // To be implemented: starts the network interface
+
+        // To be implemented: connects the processors with its downstream schedulers
+
+        // starts the controller interface actor
+        let controller_interface =
+            ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
 
         Conductor {
             config,

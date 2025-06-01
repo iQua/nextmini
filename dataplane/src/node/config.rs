@@ -150,15 +150,10 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 
-    // The size of the mpsc channel for the scheduler
+    // The capacity of each scheduler queue
     #[default(100)]
     #[arg(long)]
-    pub scheduler_mpsc_channel_size: usize,
-
-    // The capacity of the scheduler queue
-    #[default(100)]
-    #[arg(long)]
-    pub scheduler_queue_capacity: usize,
+    pub queue_capacity: usize,
 
     // The drop strategy for the scheduler
     #[default(DropStrategy::TailDrop)]

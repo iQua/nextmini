@@ -1,12 +1,3 @@
-use crate::node::NodeId;
-use crate::node::config::LocalConfig;
-use crate::node::drop::DropStrategy;
-use crate::node::processor::ProcessorHandle;
-use crate::node::protocols_io::NetworkInterface;
-use crate::node::scheduler::{SchedulerHandle, SchedulingDiscipline};
-use crate::node::utils::RateLimiter;
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
-
 use std::sync::Arc;
 
 use tokio::net::TcpStream;
@@ -18,53 +9,54 @@ use tokio_tungstenite::{
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-
 use tracing::{error, info};
+
+use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+
+use crate::node::config::LocalConfig;
+use crate::node::processor::ProcessorHandle;
+use crate::node::protocols_io::NetworkInterface;
+use crate::node::scheduler::{SchedulerHandle, SchedulingDiscipline};
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     config: LocalConfig,
-    sender: mpsc::UnboundedSender<DataplaneToController>,
+    controller_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
-// TODO : Implement shutdown logic
-// TODO : Decide how to pass processor handle to protocol reader
+/// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
-    pub async fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        // create unbounded channel for controller sender
-        let (sender, receiver) = mpsc::unbounded_channel();
+    pub async fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        // creates an unbounded channel for sending messages to the controller
+        let (controller_sender, controller_receiver) = mpsc::unbounded_channel();
 
-        // Initialize the controller interface handle and connect to the controller
-        let mut controller_interface_handle = Self {
+        let mut controller_interface = Self {
             config: config.clone(),
-            sender,
+            controller_sender,
         };
-        let ws_stream = controller_interface_handle.connect().await;
+
+        // connects to the controller over WebSockets
+        let ws_stream = controller_interface.connect().await;
 
         let (controller_sender_stream, controller_receiver_stream) = ws_stream.split();
 
         // Initialize the controller sender and receiver
         let mut controller_sender = ControllerSender {
             controller_sender_stream,
-            receiver,
+            controller_receiver,
         };
 
         let mut controller_receiver = ControllerReceiver {
+            config,
             controller_receiver_stream,
-            processor_handle: processor_handle,
-            scheduler_mpsc_channel_size: config.scheduler_mpsc_channel_size,
-            scheduler_type: config.scheduler_type,
-            controller_interface_handle: controller_interface_handle.clone(),
-            local_id: config.node_id,
-            scheduler_queue_capacity: config.scheduler_queue_capacity,
-            scheduler_drop_strategy: config.scheduler_drop_strategy.clone(),
-            scheduler_rate_limiter: Arc::new(RwLock::new(None)),
+            processors,
+            controller_interface: controller_interface.clone(),
         };
 
         tokio::spawn(async move { controller_sender.run().await });
         tokio::spawn(async move { controller_receiver.run().await });
 
-        controller_interface_handle
+        controller_interface
     }
 
     pub async fn connect(&mut self) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
@@ -118,22 +110,16 @@ impl ControllerInterfaceHandle {
     }
 
     pub async fn send_metrics(&self, msg: DataplaneToController) {
-        self.sender.send(msg);
+        self.controller_sender.send(msg);
     }
 }
 
 // Receive messages from the controller and broadcast them to the processor
 pub struct ControllerReceiver {
+    config: LocalConfig,
     controller_receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
-    processor_handle: ProcessorHandle,
-
-    scheduler_mpsc_channel_size: usize,
-    scheduler_type: SchedulingDiscipline,
-    controller_interface_handle: ControllerInterfaceHandle,
-    local_id: NodeId,
-    scheduler_queue_capacity: usize,
-    scheduler_drop_strategy: DropStrategy,
-    scheduler_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+    processors: ProcessorHandle,
+    controller_interface: ControllerInterfaceHandle,
 }
 
 impl ControllerReceiver {
@@ -182,18 +168,11 @@ impl ControllerReceiver {
                 let protocol_writer;
 
                 let scheduler_handle = SchedulerHandle::new(
-                    self.scheduler_mpsc_channel_size,
+                    config: config.clone(),
                     protocol_writer,
-                    self.scheduler_type,
-                    self.controller_interface_handle.clone(),
-                    self.local_id,
-                    self.scheduler_queue_capacity,
-                    self.scheduler_drop_strategy.clone(),
-                    self.scheduler_rate_limiter.clone(),
+                    self.controller_interface.clone(),
                 );
-                self.processor_handle
-                    .add_node(node_id, scheduler_handle)
-                    .await;
+                self.processors.add_node(node_id, scheduler_handle).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 // TODO : Implement set link rate
@@ -216,7 +195,7 @@ impl ControllerReceiver {
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!("Installing {} routes.", routes.len());
-                self.processor_handle.update_routing_table(routes).await;
+                self.processors.update_routing_table(routes).await;
             }
             _ => error!("Received unsupported message type from controller."),
         }
