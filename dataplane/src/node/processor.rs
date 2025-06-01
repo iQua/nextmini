@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use flume;
 use tokio::select;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tracing::{debug, error};
 
 use crate::node::config::LocalConfig;
