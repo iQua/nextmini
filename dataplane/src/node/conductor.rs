@@ -52,17 +52,15 @@ impl Conductor {
     }
 
     pub async fn start(&self) {
+        // starts the processor actor with the shutdown channel
+        let processor = ProcessorHandle::new(self.config.clone(), self.shutdown_send.clone());
+
         // starts the local interface, providing it with the shutdown channel so that it can
         // signal the conductor to shut down when needed
-        let local_interface = LocalInterfaceHandle::new(self.config.clone());
+        let local_interface = LocalInterfaceHandle::new(self.config.clone(), processor.clone());
 
-        // starts the processor actor, providing them with the local interface and the shutdown
-        // channel
-        let processor = ProcessorHandle::new(
-            self.config.clone(),
-            local_interface,
-            self.shutdown_send.clone(),
-        );
+        // connects processor with its downstream local interface to send data to applications
+        processor.connect_local_interface(local_interface.clone());
 
         // starts the controller interface actor, providing it with the shutdown channel
         let controller_interface = ControllerInterfaceHandle::new(

@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
+use flume;
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
@@ -12,6 +12,7 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
 /// Message types for the LocalInterface, which manages the LocalReader and LocalWriter actors.
+#[derive(Clone)]
 pub enum LocalInterfaceMessage {
     // the processor writes a packet to the local interface
     WritePacket(Packet),
@@ -21,21 +22,32 @@ pub enum LocalInterfaceMessage {
 /// Handle for Processor to interact with LocalInterface
 #[derive(Clone)]
 pub struct LocalInterfaceHandle {
-    read_sender: mpsc::Sender<LocalInterfaceMessage>,
-    write_sender: mpsc::Sender<LocalInterfaceMessage>,
+    shutdown_sender: broadcast::Sender<LocalInterfaceMessage>,
+    write_sender: flume::Sender<LocalInterfaceMessage>,
 }
 
 impl LocalInterfaceHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(config: LocalConfig, processor: ProcessorHandle) -> Self {
         // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
         // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
         let tun_devices = Self::create_tun_devices(config.clone());
 
-        let (read_sender, read_receiver) = mpsc::channel(config.channel_capacity);
-        let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
+        // for sending the shutdown signal to the local interface readers
+        let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
 
-        let reader = LocalReader::new(config, read_receiver);
-        let writer = LocalWriter::new(config.clone(), write_receiver);
+        // for the processors to send packets to the local interface writers
+        let (write_sender, write_receiver) = flume::bounded(config.channel_capacity);
+
+        let mut reader = LocalReader {
+            shutdown_receiver: shutdown_sender.subscribe(),
+            processor: processor.clone(),
+            devices: tun_devices.clone(),
+        };
+        let mut writer = LocalWriter {
+            shutdown_receiver: shutdown_sender.subscribe(),
+            packet_receiver: write_receiver,
+            devices: tun_devices,
+        };
 
         tokio::spawn(async move {
             reader.run().await;
@@ -46,22 +58,19 @@ impl LocalInterfaceHandle {
         });
 
         Self {
-            read_sender,
+            shutdown_sender,
             write_sender,
         }
     }
 
     pub async fn write_packet(&self, packet: Packet) {
-        self.write_sender
-            .send(LocalInterfaceMessage::WritePacket(packet))
-            .await;
+        let _ = self
+            .write_sender
+            .send(LocalInterfaceMessage::WritePacket(packet));
     }
 
     pub async fn shutdown(&self) {
-        self.read_sender.send(LocalInterfaceMessage::Shutdown).await;
-        self.write_sender
-            .send(LocalInterfaceMessage::Shutdown)
-            .await;
+        let _ = self.shutdown_sender.send(LocalInterfaceMessage::Shutdown);
     }
 
     /// Converts a netmask tuple to prefix length. Used in 'LocalInterfaceHandle::create_tun_device()'.
@@ -74,7 +83,7 @@ impl LocalInterfaceHandle {
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
         #[cfg(target_os = "linux")]
         {
-            let num_queues = config.num_packet_processors;
+            let num_queues = config.num_tun_queues;
 
             let if_name = config.tun_interface_name.clone();
             let ipv4_addr = config.local_address;
@@ -149,25 +158,26 @@ impl LocalInterfaceHandle {
 
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
-    dev: Arc<AsyncDevice>, // a shared reference to the device that can be cloned
+    devices: Vec<Arc<AsyncDevice>>,
+    shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     processor: ProcessorHandle,
-    receiver: mpsc::Receiver<LocalInterfaceMessage>,
 }
 
 impl LocalReader {
     async fn run(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
+        let dev = &self.devices[0]; // Use first device for now
 
         loop {
             tokio::select! {
-                msg = self.receiver.recv() => {
-                    if let Some(LocalInterfaceMessage::Shutdown) = msg {
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
                             info!("LocalReader received shutdown signal, stopping...");
                             break;
                     }
                 }
                 // reads from the local TUN device
-                result = self.dev.recv(&mut buf) => {
+                result = dev.recv(&mut buf) => {
                     let n = match result {
                         Ok(n) => n,
                         Err(e) => {
@@ -203,23 +213,28 @@ impl LocalReader {
 
 /// Writes one packet to a TUN device.
 struct LocalWriter {
-    receiver: mpsc::Receiver<LocalInterfaceMessage>,
-    dev: Arc<AsyncDevice>,
+    shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
+    packet_receiver: flume::Receiver<LocalInterfaceMessage>,
+    devices: Vec<Arc<AsyncDevice>>,
 }
 
 impl LocalWriter {
     async fn run(&mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                LocalInterfaceMessage::Shutdown => {
-                    info!("LocalWriter received shutdown signal, stopping...");
-                    break;
-                }
-                LocalInterfaceMessage::WritePacket(packet) => {
-                    let buf = &packet.buf[0..packet.packet_size];
+        let dev = &self.devices[0]; // Use first device for now
 
-                    if let Err(e) = self.dev.send(buf).await {
-                        error!("Failed to write to the local TUN device: {:?}", e);
+        loop {
+            tokio::select! {
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                            info!("LocalWriter received shutdown signal, stopping...");
+                            break;
+                    }
+                }
+                msg = self.packet_receiver.recv_async() => {
+                    if let Ok(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                        let buf = &packet.buf[0..packet.packet_size];
+
+                        let _ = dev.send(buf).await;
                     }
                 }
             }

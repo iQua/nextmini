@@ -22,6 +22,58 @@ pub enum ProcessorMessage {
     ProcessPacket(Packet),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
+    ConnectLocalInterface(LocalInterfaceHandle),
+}
+
+#[derive(Clone)]
+pub struct ProcessorHandle {
+    controller_sender: broadcast::Sender<ProcessorMessage>,
+    packet_sender: flume::Sender<ProcessorMessage>,
+}
+
+impl ProcessorHandle {
+    pub fn new(config: LocalConfig, shutdown: mpsc::UnboundedSender<()>) -> Self {
+        let (controller_sender, _) = broadcast::channel(config.channel_capacity);
+        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
+
+        for i in 0..config.num_packet_processors {
+            let mut actor = Processor {
+                packet_receiver: packet_receiver.clone(),
+                controller_receiver: controller_sender.subscribe(),
+                routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
+                local_interface: None,
+                schedulers: HashMap::new(),
+                shutdown: shutdown.clone(),
+                writer_index: i,
+            };
+            tokio::spawn(async move { actor.run().await });
+        }
+        Self {
+            controller_sender,
+            packet_sender,
+        }
+    }
+
+    pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
+        self.controller_sender
+            .send(ProcessorMessage::ConnectLocalInterface(local_interface));
+    }
+
+    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+        self.controller_sender
+            .send(ProcessorMessage::UpdateRoutingTable(routes));
+    }
+
+    pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
+        self.controller_sender
+            .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
+    }
+
+    pub async fn process_packet(&self, packet: Packet) {
+        self.packet_sender
+            .send(ProcessorMessage::ProcessPacket(packet))
+            .unwrap();
+    }
 }
 
 // Processes packets and forwards them to the next hop.
@@ -37,7 +89,7 @@ struct Processor {
     shutdown: mpsc::UnboundedSender<()>,
 
     // Handles to send to the next stage
-    local_interface: LocalInterfaceHandle,
+    local_interface: Option<LocalInterfaceHandle>,
     schedulers: HashMap<NodeId, SchedulerHandle>,
 
     // Index of the writer to use for local delivery
@@ -70,6 +122,9 @@ impl Processor {
                 }
                 Some(ProcessorMessage::AddNode(node_id, scheduler_handle)) => {
                     self.schedulers.insert(node_id, scheduler_handle);
+                }
+                Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {
+                    self.local_interface = Some(local_interface);
                 }
                 None => {
                     error!("Processor received an unexpected message");
@@ -117,13 +172,19 @@ impl Processor {
                 error
             })?;
 
-        self.send_packet(packet, next_hop_id, packet_flow_id).await
+        self.send_packet(packet, next_hop_id, packet_flow_id).await;
+        Ok(())
     }
 
-    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId, packet_flow_id: FlowId) {
+    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId, packet_flow_id: FlowId) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            self.local_interface.write_packet(packet).await;
+            if let Some(ref local_interface) = self.local_interface {
+                local_interface.write_packet(packet).await;
+                Ok(())
+            } else {
+                Err("Local interface not connected".to_string())
+            }
         } else {
             match self.schedulers.get_mut(&next_hop_id) {
                 Some(scheduler_handle) => {
@@ -144,54 +205,5 @@ impl Processor {
                 }
             }
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct ProcessorHandle {
-    controller_sender: broadcast::Sender<ProcessorMessage>,
-    packet_sender: flume::Sender<ProcessorMessage>,
-}
-
-impl ProcessorHandle {
-    pub fn new(
-        config: LocalConfig,
-        local_interface: LocalInterfaceHandle,
-        shutdown: mpsc::UnboundedSender<()>,
-    ) -> Self {
-        let (controller_sender, _) = broadcast::channel(config.channel_capacity);
-        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
-
-        for i in 0..config.num_packet_processors {
-            let mut actor = Processor {
-                packet_receiver: packet_receiver.clone(),
-                controller_receiver: controller_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
-                local_interface: local_interface.clone(),
-                schedulers: HashMap::new(),
-                shutdown: shutdown.clone(),
-                writer_index: i,
-            };
-            tokio::spawn(async move { actor.run().await });
-        }
-        Self {
-            controller_sender,
-            packet_sender,
-        }
-    }
-    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        self.controller_sender
-            .send(ProcessorMessage::UpdateRoutingTable(routes));
-    }
-
-    pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
-        self.controller_sender
-            .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
-    }
-
-    pub async fn process_packet(&self, packet: Packet) {
-        self.packet_sender
-            .send(ProcessorMessage::ProcessPacket(packet))
-            .unwrap();
     }
 }

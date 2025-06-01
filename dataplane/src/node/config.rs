@@ -83,6 +83,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub metrics_collection_interval: u64,
 
+    /// The number of local TUN queues to use to send and receive packets.
+    #[default(1)]
+    #[arg(long)]
+    pub num_tun_queues: usize,
+
     /// The number of packet processors to use to process packets. Recommended to use a larger number on a machine
     /// with multiple cores for greater throughput. Use the number of CPU cores if set to 0.
     #[default(0)]
