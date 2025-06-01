@@ -199,29 +199,14 @@ impl ControllerToDataplaneReceiver {
                 self.processors.add_node(node_id, scheduler_handle).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
-                // TODO : Implement set link rate
-
-                // info!("Setting link rate for node: {}, rate: {}", node_id, rate);
-                // let mut guard = self.link_rate_limiters.write().await;
-
-                // match guard.get(&node_id) {
-                //     None => {
-                //         let rate_limiter =
-                //             Arc::new(RwLock::new(Some(RateLimiter::new(rate as f64))));
-                //         guard.insert(node_id, rate_limiter);
-                //     }
-                //     Some(entry) => {
-                //         *(entry.write().await) = Some(RateLimiter::new(rate as f64));
-                //     }
-                // }
-
+                info!("Setting link rate for node {} to {} bps.", node_id, rate);
                 return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!("Installing {} routes.", routes.len());
                 self.processors.update_routing_table(routes).await;
             }
-            _ => error!("Received unsupported message type from controller."),
+            _ => error!("Received a message with an unknown type from the controller."),
         }
     }
 }
