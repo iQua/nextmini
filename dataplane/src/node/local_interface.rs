@@ -89,7 +89,7 @@ impl LocalInterfaceHandle {
 
             let if_name = config.tun_interface_name.clone();
             let ipv4_addr = config.local_address;
-            let ipv4_prefix = mask_to_prefix(config.local_netmask);
+            let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
 
             let dev = DeviceBuilder::new()
                 .name(&if_name)
