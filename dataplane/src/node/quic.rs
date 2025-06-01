@@ -1,16 +1,19 @@
-use crate::node::PacketBuf;
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
-// use crate::node::context::Context;
+use crate::node::processor::ProcessorHandle;
+use crate::node::packet::Packet;
+use crate::node::RECEIVE_BUF_SIZE;
+
 use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
+use crate::node::network_interface::NetworkInterfaceMessage;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::info;
+use tracing::{info, error};
 
 pub struct QuicServer {
     // context: Context,
@@ -78,19 +81,35 @@ impl QuicServer {
 }
 
 pub struct QuicReader {
+    processor_handle: ProcessorHandle,
     stream: ReceiveStream,
 }
 
 impl QuicReader {
-    pub fn new(stream: ReceiveStream) -> Self {
-        Self { stream }
+    pub fn new(processor_handle: ProcessorHandle, stream: ReceiveStream) -> Self {
+        Self { processor_handle, stream }
     }
 
-    pub async fn read(&mut self, buf: &mut PacketBuf) -> usize {
+    pub async fn run(&mut self) {
+        loop {
+            let packet = self.read().await;
+            match packet {
+                Ok(packet) => {
+                    self.processor_handle.process_packet(packet);
+                }
+                Err(e) => {
+                    error!("Failed to read packet: {}", e);
+                }
+            }
+        }
+    }
+    pub async fn read(&mut self) -> Result<Packet, std::io::Error> {
+        let mut buf = [0u8; RECEIVE_BUF_SIZE];
+
         match self.stream.read_exact(&mut buf[0..4]).await {
             Ok(_) => (),
             Err(_) => {
-                return 0;
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to read packet length"));
             }
         }
 
@@ -99,32 +118,49 @@ impl QuicReader {
         match self.stream.read_exact(&mut buf[4..msg_len]).await {
             Ok(_) => (),
             Err(_) => {
-                return 0;
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to read packet"));
             }
         }
 
-        msg_len
+        Ok(Packet::new(msg_len, buf))
     }
 }
 
-#[derive(Clone)]
 pub struct QuicWriter {
     stream: Arc<Mutex<SendStream>>,
+    receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl QuicWriter {
-    pub fn new(stream: Arc<Mutex<SendStream>>) -> Self {
+    pub fn new(stream: Arc<Mutex<SendStream>>, receiver: mpsc::Receiver<NetworkInterfaceMessage>) -> Self {
         Self {
             stream: stream.clone(),
+            receiver,
         }
     }
 
-    pub async fn write(&mut self, buf: &[u8]) {
+    pub async fn run(&mut self) {
+        while let Some(msg) = self.receiver.recv().await {
+            match msg {
+                NetworkInterfaceMessage::SendPacket(packet) => {
+                    let result = self.write_packet(&packet).await;
+                    if let Err(e) = result {
+                        error!("Failed to write packet: {}", e);
+                    }
+                }
+                NetworkInterfaceMessage::Shutdown => {
+                    break;
+                }   
+            }
+        }
+    }
+
+    pub async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
         let mut stream_guard = self.stream.lock().await;
 
-        match stream_guard.write_all(buf).await {
-            Ok(_) => (),
-            Err(e) => panic!("{e}"),
-        };
+        match stream_guard.write_all(&packet.buf).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }

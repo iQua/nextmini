@@ -1,8 +1,12 @@
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::protocols_client::connect_tcp_node;
+use crate::node::protocols_client::connect_quic_node;
 use crate::node::tcp::{TcpReader, TcpWriter};
+use crate::node::quic::{QuicReader, QuicWriter};
 use nextmini_messages::Protocol;
+
+use s2n_quic::stream::BidirectionalStream;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tracing::info;
@@ -16,7 +20,7 @@ pub enum NetworkInterfaceMessage {
 
 /// Should be created in controller_interface and used in scheduler to send packets
 pub struct NetworkInterfaceHandle {
-    sender: mpsc::Sender<NetworkInterfaceMessage>,
+    pub sender: mpsc::Sender<NetworkInterfaceMessage>,
 }
 
 impl NetworkInterfaceHandle {
@@ -73,8 +77,19 @@ impl NetworkInterfaceHandle {
                 });
             }
             Protocol::Quic => {
-                // QUIC implementation (not implemented yet)
-                info!("QUIC protocol not implemented yet");
+                let stream = connect_quic_node(local_node_id, addr, remote_node_id).await;
+                let (receive_stream, send_stream) = stream.split();
+
+                let mut quic_reader = QuicReader::new(processor_handle, receive_stream);
+                let mut quic_writer = QuicWriter::new(Arc::new(Mutex::new(send_stream)), receiver);
+
+                tokio::spawn(async move {
+                    quic_reader.run().await;
+                });
+
+                tokio::spawn(async move {
+                    quic_writer.run().await;
+                });
             }
             Protocol::Udp => {
                 // UDP implementation (not implemented yet)
