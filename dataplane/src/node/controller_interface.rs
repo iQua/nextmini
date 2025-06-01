@@ -13,6 +13,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::processor::ProcessorHandle;
+use crate::node::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -184,14 +185,14 @@ impl ControllerToDataplaneReceiver {
                 node_id,
                 addr,
             } => {
-                // TODO : Get NetworkInterfaceHandle Here
                 let protocol_writer;
 
                 let scheduler_handle = SchedulerHandle::new(
-                    config: config.clone(),
+                    self.config.clone(),
                     protocol_writer,
                     self.controller_interface.clone(),
                 );
+
                 self.processors.add_node(node_id, scheduler_handle).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
