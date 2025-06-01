@@ -110,7 +110,7 @@ impl ControllerInterfaceHandle {
     }
 }
 
-
+/// Sends messages from the dataplane to the controller over WebSockets.
 pub struct DataplaneToControllerSender {
     northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
     sender_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -123,7 +123,10 @@ impl DataplaneToControllerSender {
         loop {
             tokio::select! {
                 Some(msg) = self.northbridge_receiver.recv() => {
-                    self.send_msg(msg).await;
+                    self.sender_stream
+                        .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                        .await
+                        .expect("Failed to send message to controller");
                 }
                 _ = ping_interval.tick() => {
                     self.sender_stream
@@ -133,13 +136,6 @@ impl DataplaneToControllerSender {
                 }
             }
         }
-    }
-
-    async fn send_msg(&mut self, msg: DataplaneToController) {
-        self.sender_stream
-            .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-            .await
-            .expect("Failed to send message to controller");
     }
 }
 
