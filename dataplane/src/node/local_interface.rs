@@ -8,7 +8,7 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandleforReader;
+use crate::node::processor::ProcessorHandle;
 
 /// Converts a netmask tuple to prefix length. Used in 'create_tun_devices()'.
 fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
@@ -98,10 +98,10 @@ enum LocalReaderMessage {
 }
 
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out
-/// via a ProcessorHandleforReader
+/// via a ProcessorHandle
 pub struct LocalReader {
     dev: Arc<AsyncDevice>, // a shared reference to the device that can be cloned
-    processor_handle: ProcessorHandleforReader,
+    processor_handle: ProcessorHandle,
     receiver: mpsc::Receiver<LocalReaderMessage>,
 }
 
@@ -145,7 +145,7 @@ impl LocalReader {
                         continue;
                     }
 
-                    // Use ProcessorHandleforReader
+                    // Use ProcessorHandle
                     self.processor_handle.process_packet(packet).await;
                 }
             }
@@ -159,7 +159,7 @@ pub struct LocalReaderHandle {
 }
 
 impl LocalReaderHandle {
-    pub fn new(dev: Arc<AsyncDevice>, processor_handle: ProcessorHandleforReader) -> Self {
+    pub fn new(dev: Arc<AsyncDevice>, processor_handle: ProcessorHandle) -> Self {
         let (sender, receiver) = mpsc::channel(10);
         let mut actor = LocalReader {
             dev,
