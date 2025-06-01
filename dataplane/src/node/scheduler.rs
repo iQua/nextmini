@@ -11,8 +11,8 @@ use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::metrics::Collector;
+use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
-use crate::node::protocols_io::ProtocolWriter;
 use crate::node::utils::RateLimiter;
 use crate::node::{FlowId, NodeId};
 
