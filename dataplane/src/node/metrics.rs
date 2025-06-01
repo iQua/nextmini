@@ -9,18 +9,18 @@ use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct Collector {
-    controller_interface_handle: ControllerInterfaceHandle,
+    controller_interface: ControllerInterfaceHandle,
     metrics_tx: UnboundedSender<(FlowId, NodeId, usize)>,
     metrics_rx: UnboundedReceiver<(FlowId, NodeId, usize)>,
 }
 
 impl Collector {
-    pub fn new(controller_interface_handle: ControllerInterfaceHandle) -> Self {
+    pub fn new(controller_interface: ControllerInterfaceHandle) -> Self {
         let (metrics_tx, metrics_rx) = unbounded_channel();
         Self {
             metrics_tx,
             metrics_rx,
-            controller_interface_handle,
+            controller_interface,
         }
     }
 
@@ -37,13 +37,13 @@ impl Collector {
 
         loop {
             tokio::select! {
-                // Receive new metrics data
+                // receives new metrics data
                 Some((flow_id, node_id, n_bytes)) = self.metrics_rx.recv() => {
                     let flow_data = data.entry(flow_id).or_insert_with(|| (node_id, 0));
                     flow_data.1 += n_bytes;
                 }
 
-                // Timer tick: calculate bandwidth metrics and transmit to controller
+                // timer tick: calculate bandwidth metrics and transmit to controller
                 _ = metrics_tick.tick() => {
                     if !data.is_empty() {
                         let now = Utc::now();
@@ -66,11 +66,10 @@ impl Collector {
                             let msg = DataplaneToController::Metrics {
                                 metrics: metrics_array,
                             };
-                            
-                            // TODO : Fixed this after coordinator actor is implemented
-                            self.controller_interface_handle.send_metrics(msg).await;
+
+                            self.controller_interface.send_metrics(msg).await;
                         }
-                        // Clear data
+
                         data.clear();
                     }
                 }

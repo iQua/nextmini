@@ -123,9 +123,7 @@ impl Scheduler for Fifo {
     async fn run(&mut self) {
         while let Some(packet) = self.queue.pop_front() {
             tokio::select! {
-                _ = async {
-                    self.net_interface.send(packet).await;
-                } => {}
+                _ = self.net_interface.send(packet) => {}
                 Some(message) = self.receiver.recv() => {
                     // a packet arrives from the processors
                     match message {

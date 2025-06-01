@@ -58,9 +58,9 @@ impl Conductor {
         let mut main_shutdown_recv = self.main_shutdown_recv.take().unwrap();
 
         tokio::select! {
-            _ = async { self.start().await; } => {
+            _ = self.start() => {
                 // At this point, the conductor actor has finished normally
-            },
+            }
             _ = main_shutdown_recv.recv() => {
                 // handles the shutdown signal from the main tokio task
                 self.shutdown().await;

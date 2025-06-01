@@ -101,8 +101,8 @@ impl Processor {
         loop {
             let msg = tokio::select! {
                 // packets from the inbound network or local interfaces
-                Ok(packet_msg) = self.packet_receiver.recv_async() => {
-                    Some(packet_msg)
+                Ok(packet) = self.packet_receiver.recv_async() => {
+                    Some(packet)
                 }
                 // messages from the controller interface or the conductor
                 Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
