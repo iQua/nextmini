@@ -63,7 +63,7 @@ impl NetworkInterfaceHandle {
                 let stream = connect_tcp_node(local_node_id, addr, remote_node_id).await;
                 let (reader, writer) = tokio::io::split(stream);
 
-                let tcp_reader = TcpReader::new(reader, processor_handle);
+                let tcp_reader = TcpReader::new(reader, processor_handle, remote_node_id);
 
                 let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
 

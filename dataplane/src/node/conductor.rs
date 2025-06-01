@@ -2,6 +2,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
+use crate::node::protocols_server;
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the connection with the controller actor, all processor actors,
 /// the local reader and writer actors, and the metrics collector actor.
@@ -72,6 +73,13 @@ impl Conductor {
         info!("Nextmini is starting...");
         // Should start protocol server here.
         // Protocol server needs processor handle to add new remote node connection
+        // Start protocol server for incoming connections
+        protocols_server::start_protocols_server(
+            self.config.protocol.clone(),
+            self.config.clone(),
+            self.processors.clone(),
+        )
+        .await;
     }
 
     pub async fn shutdown(&self) {

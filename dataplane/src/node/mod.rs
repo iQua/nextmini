@@ -8,7 +8,6 @@ pub mod network_interface;
 pub mod packet;
 pub mod processor;
 pub mod protocols_client;
-pub mod protocols_io;
 pub mod protocols_server;
 pub mod quic;
 pub mod routes;

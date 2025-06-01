@@ -75,7 +75,8 @@ impl TcpServer {
             // set up the mpsc channel for the network interface
             let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
             // create the reader and writer
-            let reader = TcpReader::new(reader, self.processor_handle.clone());
+            // Pass remote_node_id to TcpReader
+            let reader = TcpReader::new(reader, self.processor_handle.clone(), node_id);
             let writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
             tokio::spawn(async move {
                 reader.run().await;
@@ -89,7 +90,7 @@ impl TcpServer {
             let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 
             // Use processor hashmap
-            self.processor_handle.add_node(node_id, scheduler);
+            self.processor_handle.add_node(node_id, scheduler).await;
             info!("Connected to node {}.", node_id);
         }
     }
@@ -98,13 +99,20 @@ impl TcpServer {
 pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
     processor_handle: ProcessorHandle,
+    remote_node_id: usize,
 }
 
 impl TcpReader {
-    pub fn new(stream: ReadHalf<TcpStream>, processor_handle: ProcessorHandle) -> Self {
+    // Constructor updated to include remote_node_id
+    pub fn new(
+        stream: ReadHalf<TcpStream>,
+        processor_handle: ProcessorHandle,
+        remote_node_id: usize,
+    ) -> Self {
         Self {
             stream,
             processor_handle,
+            remote_node_id,
         }
     }
 
