@@ -3,6 +3,8 @@ use crate::node::config::LocalConfig;
 use crate::node::processor::ProcessorHandle;
 use crate::node::packet::Packet;
 use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::network_interface::NetworkInterfaceHandle;
+use crate::node::scheduler::SchedulerHandle;
 
 use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
@@ -16,13 +18,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{info, error};
 
 pub struct QuicServer {
-    // context: Context,
     config: LocalConfig,
+    processor_handle: ProcessorHandle,
 }
 
 impl QuicServer {
-    pub fn new(config: LocalConfig) -> Self {
-        Self { config }
+    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
+        Self { config, processor_handle }
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
@@ -50,8 +52,8 @@ impl QuicServer {
         };
 
         while let Some(mut connection) = server.accept().await {
-            // let processor_manager = self.processor_manager.clone();
-            // let context = self.context.clone();
+            let processor_handle = self.processor_handle.clone();
+            let config = self.config.clone();
 
             tokio::spawn(async move {
                 info!("Connection accepted from {:?}.", connection.remote_addr());
@@ -67,9 +69,21 @@ impl QuicServer {
 
                     let node_id = u64::from_be_bytes(node_id_buf) as usize;
                     info!("Incoming connection from node {}...", node_id);
-                    // context.add_quic_node(node_id, stream).await;
 
-                    // processor_manager.write().await.update_processors().await;
+                    // Consider redesign network interface to avoid creation here
+                    let (receive_stream, send_stream) = stream.split();
+                    let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
+                    let mut quic_reader = QuicReader::new(processor_handle.clone(), receive_stream);
+                    let mut quic_writer = QuicWriter::new(Arc::new(Mutex::new(send_stream)), receiver);
+                    tokio::spawn(async move {
+                        quic_reader.run().await;
+                    });
+                    tokio::spawn(async move {
+                        quic_writer.run().await;
+                    });
+                    let network_interface = NetworkInterfaceHandle { sender };
+                    let scheduler = SchedulerHandle::new(config.clone(), node_id, network_interface);
+                    processor_handle.add_node(node_id, scheduler).await;    
 
                     info!("Connected.");
                 } else {
