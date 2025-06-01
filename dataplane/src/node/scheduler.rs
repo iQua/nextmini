@@ -1,20 +1,16 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::ValueEnum;
 use serde::Deserialize;
-use tokio::sync::{Notify, RwLock, mpsc};
-use tracing::{error, warn};
+use tokio::sync::mpsc;
+use tracing::warn;
 
+use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
-use crate::node::metrics::Collector;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
-use crate::node::utils::RateLimiter;
-use crate::node::{FlowId, NodeId};
 
 /// The scheduling discipline.
 #[allow(unused)]
@@ -40,34 +36,28 @@ pub struct SchedulerHandle {
 impl SchedulerHandle {
     pub fn new(
         config: LocalConfig,
-        protocol_writer: ProtocolWriter,
-        controller_interface_handle: ControllerInterfaceHandle,
+        net_interface: NetworkInterfaceHandle,
+        controller_interface: ControllerInterfaceHandle,
     ) -> Self {
-        // Initialize the metrics collector
-        let mut metrics_collector = Collector::new(controller_interface_handle);
-        let metrics_tx = metrics_collector.get_metrics_tx();
+        // creates the mpsc channel for sending packets to the scheduler
+        let (sender, receiver) = mpsc::channel(config.channel_capacity);
 
-        // Initialize the scheduler actor
-        let (sender, receiver) = mpsc::channel(mpsc_channel_size);
-        let mut scheduler = match scheduler_type {
+        let mut scheduler = match config.scheduler_type {
             SchedulingDiscipline::Fifo => Fifo::new(
-                receiver,
+                config.node_id,
                 config.queue_capacity,
-                config.drop_strategy,
-                protocol_writer,
-                metrics_tx,
-                config.local_id,
+                config.scheduler_drop_strategy,
+                net_interface,
+                controller_interface,
+                receiver,
             ),
             SchedulingDiscipline::Wrr => {
                 panic!("Wrr scheduling discipline not implemented");
             }
         };
 
-        // spawn all tasks
         tokio::spawn(async move {
-            metrics_collector.run().await; // Spawn the metrics collector
-            scheduler.send_to_protocol_writer(); // Inside this method, the subscriber to the enqueue notification is spawned
-            scheduler.run().await
+            scheduler.run().await;
         });
 
         Self { sender }
@@ -82,44 +72,33 @@ impl SchedulerHandle {
 }
 
 /// Defines the interface for all scheduling disciplines.
-/// A scheduler has two main tasks :
-/// 1. Enqueue packets to the queue -> Send packets to the protocol writer
-/// 2. Collect metrics at regular intervals -> Send metrics to the controller via collector struct
 pub trait Scheduler {
     async fn run(&mut self);
     fn enqueue(&mut self, packet: Packet);
-    fn send_to_protocol_writer(&mut self);
 }
 
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
 pub struct Fifo {
-    // Receiver side of the mpsc channel (sent from scheduler handle)
-    receiver: mpsc::Receiver<SchedulerMessage>,
-
-    // The local node_id which is sent inside the metrics
     local_id: NodeId,
-
-    // Other data used by scheduler
-    queue: Arc<VecDeque<Packet>>,
+    queue: VecDeque<Packet>,
+    /// the number of packets dropped so far
     packets_dropped: usize,
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
-    packet_arrived: Arc<Notify>,
-    protocol_writer: ProtocolWriter, // a handle to the protocol writer
-    shutdown: Arc<AtomicBool>,
-    task_handle: Option<tokio::task::JoinHandle<()>>,
+    net_interface: NetworkInterfaceHandle,
+    controller_interface: ControllerInterfaceHandle,
+    /// a mpsc receiver for other actors to send packets to this scheduler
+    receiver: mpsc::Receiver<SchedulerMessage>,
 }
 
 impl Fifo {
-    const BATCH_SIZE: usize = 32;
-
     pub fn new(
-        receiver: mpsc::Receiver<SchedulerMessage>,
+        local_id: NodeId,
         capacity: usize,
         drop_strategy: DropStrategy,
-        protocol_writer: ProtocolWriter,
-        rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
-        local_id: NodeId,
+        net_interface: NetworkInterfaceHandle,
+        controller_interface: ControllerInterfaceHandle,
+        receiver: mpsc::Receiver<SchedulerMessage>,
     ) -> Self {
         let capacity_unit = CapacityUnit::Packets;
 
@@ -129,27 +108,32 @@ impl Fifo {
         };
 
         Fifo {
-            receiver,
             local_id,
-            queue: Arc::new(VecDeque::with_capacity(capacity)),
+            queue: VecDeque::with_capacity(capacity),
             packets_dropped: 0,
             drop_strategy: packet_drop,
-            packet_arrived: Arc::new(Notify::new()),
-            protocol_writer,
-            shutdown: Arc::new(AtomicBool::new(false)),
-            task_handle: None,
+            net_interface,
+            controller_interface,
+            receiver,
         }
     }
 }
 
 impl Scheduler for Fifo {
     async fn run(&mut self) {
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                SchedulerMessage::Enqueue(packet) => {
-                    // Enqueue the packet
-                    self.enqueue(packet);
-                }
+        while let Some(packet) = self.queue.pop_front() {
+            tokio::select! {
+                _ = async {
+                    self.net_interface.send(packet).await;
+                } => {}
+                Some(message) = self.receiver.recv() => {
+                    // a packet arrives from the processors
+                    match message {
+                        SchedulerMessage::Enqueue(packet) => {
+                            self.enqueue(packet);
+                        }
+                    }
+                },
             }
         }
     }
@@ -174,67 +158,6 @@ impl Scheduler for Fifo {
             return;
         }
 
-        if self.queue.push(packet).is_err() {
-            self.packets_dropped += 1;
-            error!(
-                "FIFO: Failed to enqueue packet, queue may be smaller than drop strategy accounts for or concurrent issue. Total drops: {}",
-                self.packets_dropped
-            );
-            return;
-        }
-
-        self.packet_arrived.notify_one();
-    }
-
-    fn send_to_protocol_writer(&mut self) {
-        // Shutdown any existing task first
-        if let Some(handle) = self.task_handle.take() {
-            self.shutdown.store(true, Ordering::Relaxed);
-            self.packet_arrived.notify_one();
-            handle.abort();
-        }
-
-        // Reset shutdown flag for new task
-        self.shutdown.store(false, Ordering::Relaxed);
-
-        let queue = self.queue.clone();
-        let packet_arrived = self.packet_arrived.clone();
-        let rate_limiter = self.rate_limiter.clone();
-        let mut writer = self.protocol_writer.clone();
-        let shutdown_flag = self.shutdown.clone();
-
-        let handle = tokio::spawn(async move {
-            let mut tokens: usize = 0; // accumulated total bytes sent
-            let mut counter: usize = 0; // accumulated number of packets sent
-            loop {
-                packet_arrived.notified().await;
-
-                if shutdown_flag.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                while let Some(packet) = queue.pop() {
-                    // Send raw packet data directly without protocol header
-                    tokens += packet.packet_size;
-                    counter += 1;
-
-                    writer.send(&packet.buf[0..packet.packet_size]).await; // Scheduler -> NetworkInterfaceHandle
-                }
-            }
-        });
-
-        self.task_handle = Some(handle);
-    }
-}
-
-impl Drop for Fifo {
-    fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
-        self.packet_arrived.notify_one();
-
-        // Abort the task if it exists
-        if let Some(handle) = self.task_handle.take() {
-            handle.abort();
-        }
+        self.queue.push_back(packet);
     }
 }
