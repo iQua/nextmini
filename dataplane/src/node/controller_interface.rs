@@ -50,8 +50,12 @@ impl ControllerInterfaceHandle {
             controller_interface: controller_interface.clone(),
         };
 
-        tokio::spawn(async move { controller_sender.run().await });
-        tokio::spawn(async move { controller_receiver.run().await });
+        tokio::spawn(async move {
+            controller_sender.run().await;
+        });
+        tokio::spawn(async move {
+            controller_receiver.run().await;
+        });
 
         controller_interface
     }

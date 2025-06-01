@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use flume;
-use tokio::select;
+use tokio;
 use tokio::sync::broadcast;
 use tracing::{debug, error};
 
@@ -15,7 +15,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::routes::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowId, NodeId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
 #[derive(Clone)]
@@ -28,44 +28,46 @@ pub enum ProcessorMessage {
 
 #[derive(Clone)]
 pub struct ProcessorHandle {
-    controller_sender: broadcast::Sender<ProcessorMessage>,
+    broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorMessage>,
 }
 
 impl ProcessorHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (controller_sender, _) = broadcast::channel(config.channel_capacity);
+        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
-        for i in 0..config.num_packet_processors {
-            let mut actor = Processor {
+        for _ in 0..config.num_packet_processors {
+            let mut proc = Processor {
                 packet_receiver: packet_receiver.clone(),
-                controller_receiver: controller_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
+                broadcast_receiver: broadcast_sender.subscribe(),
+                routing_table: RoutingTable::new(config.node_id),
                 local_interface: None,
                 schedulers: HashMap::new(),
-                writer_index: i,
             };
-            tokio::spawn(async move { actor.run().await });
+
+            tokio::spawn(async move {
+                proc.run().await;
+            });
         }
         Self {
-            controller_sender,
+            broadcast_sender,
             packet_sender,
         }
     }
 
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
-        self.controller_sender
+        self.broadcast_sender
             .send(ProcessorMessage::ConnectLocalInterface(local_interface));
     }
 
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        self.controller_sender
+        self.broadcast_sender
             .send(ProcessorMessage::UpdateRoutingTable(routes));
     }
 
     pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
-        self.controller_sender
+        self.broadcast_sender
             .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
     }
 
@@ -78,35 +80,33 @@ impl ProcessorHandle {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
-    // Processor Receiver
-    packet_receiver: flume::Receiver<ProcessorMessage>, // Receive packets from local or network interfaces
-    controller_receiver: broadcast::Receiver<ProcessorMessage>,
+    // receives packets from the network interface or local interface
+    packet_receiver: flume::Receiver<ProcessorMessage>,
 
-    // Data Used by the processor
+    // receives messages from the broadcast channel (from the controller interface or the conductor)
+    broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+
+    // the routing table
     routing_table: RoutingTable,
 
-    // Handles to send to the next stage
+    // the local interface
     local_interface: Option<LocalInterfaceHandle>,
-    schedulers: HashMap<NodeId, SchedulerHandle>,
 
-    // Index of the writer to use for local delivery
-    writer_index: usize,
+    // schedulers, one for each outbound network interface
+    schedulers: HashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
     async fn run(&mut self) {
         loop {
-            #[allow(unused_assignments)] // To satisfy the compiler
-            let mut msg: Option<ProcessorMessage> = None;
-
-            select! {
-                // Packets from both sources (network interface, local interface)
+            let msg = tokio::select! {
+                // packets from the inbound network or local interfaces
                 Ok(packet_msg) = self.packet_receiver.recv_async() => {
-                    msg = Some(packet_msg);
+                    Some(packet_msg)
                 }
-                // Control messages from the controller interface
-                Ok(controller_msg) = self.controller_receiver.recv() => {
-                    msg = Some(controller_msg);
+                // messages from the controller interface or the conductor
+                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
+                    Some(broadcast_msg)
                 }
             };
 
@@ -131,8 +131,17 @@ impl Processor {
         }
     }
 
+    /// Process inbound packets for outbound delivery
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
+
+        debug!(
+            "Processing packet for flow {}:{} -> {}:{}",
+            packet_flow_id.src_ip(),
+            packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(),
+            packet_flow_id.dst_port()
+        );
 
         // Select route_id for new flow at source node
         let route_id = self
@@ -169,10 +178,20 @@ impl Processor {
                 error
             })?;
 
-        self.send_packet(packet, next_hop_id, packet_flow_id).await;
-        Ok(())
+        debug!(
+            "Flow {}:{} -> {}:{} selected route_id {} → next_hop {}.",
+            packet_flow_id.src_ip(),
+            packet_flow_id.src_port(),
+            packet_flow_id.dst_ip(),
+            packet_flow_id.dst_port(),
+            route_id,
+            next_hop_id
+        );
+
+        self.send_packet(packet, next_hop_id, packet_flow_id).await
     }
 
+    /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
     async fn send_packet(
         &mut self,
         packet: Packet,
@@ -185,15 +204,16 @@ impl Processor {
                 local_interface.write_packet(packet).await;
                 Ok(())
             } else {
-                Err("Local interface not connected".to_string())
+                Err("The local interface has not yet been connected.".to_string())
             }
         } else {
             match self.schedulers.get_mut(&next_hop_id) {
                 Some(scheduler_handle) => {
                     debug!(
-                        "Forwarding packet to node {} for flow {} (size: {})",
+                        "Forwarding a packet to node {} for flow {} (size: {})",
                         next_hop_id, packet_flow_id, packet.packet_size
                     );
+
                     scheduler_handle.send(packet).await;
                     Ok(())
                 }
@@ -203,6 +223,7 @@ impl Processor {
                         next_hop_id, packet_flow_id
                     );
                     error!("{}", error);
+
                     Err(error)
                 }
             }
