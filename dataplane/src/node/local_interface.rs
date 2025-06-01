@@ -92,28 +92,28 @@ pub async fn create_tun_device(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
     }
 }
 
-/// Message types for TunReader
-enum TunReaderMessage {
+/// Message types for LocalReader
+enum LocalReaderMessage {
     Shutdown,
 }
 
 /// Reads packets asynchronously from a TUN device in a Tokio task, and sends them out
 /// via a ProcessorHandleforReader
-pub struct TunReader {
+pub struct LocalReader {
     dev: Arc<AsyncDevice>, // a shared reference to the device that can be cloned
     processor_handle: ProcessorHandleforReader,
-    receiver: mpsc::Receiver<TunReaderMessage>,
+    receiver: mpsc::Receiver<LocalReaderMessage>,
 }
 
-impl TunReader {
+impl LocalReader {
     async fn run(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 
         loop {
             tokio::select! {
                 msg = self.receiver.recv() => {
-                    if let Some(TunReaderMessage::Shutdown) = msg {
-                            info!("TunReader received shutdown signal, stopping...");
+                    if let Some(LocalReaderMessage::Shutdown) = msg {
+                            info!("LocalReader received shutdown signal, stopping...");
                             break;
                     }
                 }
@@ -133,7 +133,7 @@ impl TunReader {
 
                     // Skip empty packets
                     if n == 0 {
-                        warn!("TunReader received an empty packet.");
+                        warn!("LocalReader received an empty packet.");
                         continue;
                     }
 
@@ -141,7 +141,7 @@ impl TunReader {
 
                     // Check if packet creation was successful (non-zero flow_id indicates valid packet)
                     if packet.flow_id == 0 {
-                        debug!("TunReader: Invalid packet received, dropping (size: {})", n);
+                        debug!("LocalReader: Invalid packet received, dropping (size: {})", n);
                         continue;
                     }
 
@@ -154,14 +154,14 @@ impl TunReader {
 }
 
 #[derive(Clone)]
-pub struct TunReaderHandle {
-    sender: mpsc::Sender<TunReaderMessage>,
+pub struct LocalReaderHandle {
+    sender: mpsc::Sender<LocalReaderMessage>,
 }
 
-impl TunReaderHandle {
+impl LocalReaderHandle {
     pub fn new(dev: Arc<AsyncDevice>, processor_handle: ProcessorHandleforReader) -> Self {
         let (sender, receiver) = mpsc::channel(10);
-        let mut actor = TunReader {
+        let mut actor = LocalReader {
             dev,
             processor_handle,
             receiver,
@@ -175,28 +175,28 @@ impl TunReaderHandle {
     }
 
     pub async fn shutdown(&self) {
-        if let Err(e) = self.sender.send(TunReaderMessage::Shutdown).await {
-            error!("Failed to send shutdown signal to TunReader: {:?}", e);
+        if let Err(e) = self.sender.send(LocalReaderMessage::Shutdown).await {
+            error!("Failed to send shutdown signal to LocalReader: {:?}", e);
         }
     }
 }
 
 /// Message types
-enum TunWriterMessage {
+enum LocalWriterMessage {
     WritePacket(Packet),
 }
 
 /// Writes one packet to a TUN device.
-struct TunWriter {
-    receiver: mpsc::Receiver<TunWriterMessage>,
+struct LocalWriter {
+    receiver: mpsc::Receiver<LocalWriterMessage>,
     dev: Arc<AsyncDevice>,
 }
 
-impl TunWriter {
+impl LocalWriter {
     async fn run(&mut self) {
         while let Some(msg) = self.receiver.recv().await {
             match msg {
-                TunWriterMessage::WritePacket(packet) => {
+                LocalWriterMessage::WritePacket(packet) => {
                     let buf = &packet.buf[0..packet.packet_size];
 
                     if let Err(e) = self.dev.send(buf).await {
@@ -208,16 +208,16 @@ impl TunWriter {
     }
 }
 
-/// TunWriterHandle
+/// LocalWriterHandle
 #[derive(Clone)]
-pub struct TunWriterHandle {
-    sender: mpsc::Sender<TunWriterMessage>,
+pub struct LocalWriterHandle {
+    sender: mpsc::Sender<LocalWriterMessage>,
 }
 
-impl TunWriterHandle {
+impl LocalWriterHandle {
     pub fn new(dev: Arc<AsyncDevice>) -> Self {
         let (sender, receiver) = mpsc::channel(100);
-        let mut actor = TunWriter { receiver, dev };
+        let mut actor = LocalWriter { receiver, dev };
 
         tokio::spawn(async move {
             actor.run().await;
@@ -229,10 +229,10 @@ impl TunWriterHandle {
     pub async fn write_packet(&self, packet: Packet) {
         if let Err(e) = self
             .sender
-            .send(TunWriterMessage::WritePacket(packet))
+            .send(LocalWriterMessage::WritePacket(packet))
             .await
         {
-            error!("Failed to send packet to TunWriter actor: {:?}", e);
+            error!("Failed to send packet to LocalWriter actor: {:?}", e);
         }
     }
 }
