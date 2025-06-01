@@ -72,7 +72,7 @@ impl LocalInterfaceHandle {
     }
 
     pub async fn shutdown(&self) {
-        let _ = self.shutdown_sender.send(LocalInterfaceMessage::Shutdown);
+        self.shutdown_sender.send(LocalInterfaceMessage::Shutdown);
     }
 
     /// Converts a netmask tuple to prefix length. Used in 'LocalInterfaceHandle::create_tun_device()'.

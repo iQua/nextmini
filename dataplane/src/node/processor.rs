@@ -32,7 +32,7 @@ pub struct ProcessorHandle {
 }
 
 impl ProcessorHandle {
-    pub fn new(config: LocalConfig, shutdown: mpsc::UnboundedSender<()>) -> Self {
+    pub fn new(config: LocalConfig) -> Self {
         let (controller_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
@@ -43,7 +43,6 @@ impl ProcessorHandle {
                 routing_table: RoutingTable::new(config.node_id), // config.node_id is local node ID
                 local_interface: None,
                 schedulers: HashMap::new(),
-                shutdown: shutdown.clone(),
                 writer_index: i,
             };
             tokio::spawn(async move { actor.run().await });
@@ -84,9 +83,6 @@ struct Processor {
 
     // Data Used by the processor
     routing_table: RoutingTable,
-
-    // TODO : Implement shutdown logic
-    shutdown: mpsc::UnboundedSender<()>,
 
     // Handles to send to the next stage
     local_interface: Option<LocalInterfaceHandle>,
@@ -176,7 +172,12 @@ impl Processor {
         Ok(())
     }
 
-    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId, packet_flow_id: FlowId) -> Result<(), String> {
+    async fn send_packet(
+        &mut self,
+        packet: Packet,
+        next_hop_id: NodeId,
+        packet_flow_id: FlowId,
+    ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
             if let Some(ref local_interface) = self.local_interface {

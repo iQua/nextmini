@@ -1,24 +1,25 @@
-use crate::node::config::LocalConfig;
-use crate::node::processor::ProcessorHandle;
-use crate::node::scheduler::{SchedulingDiscipline, SchedulerHandle};
-use crate::node::drop::DropStrategy;
 use crate::node::NodeId;
-use crate::node::utils::RateLimiter;
+use crate::node::config::LocalConfig;
+use crate::node::drop::DropStrategy;
+use crate::node::processor::ProcessorHandle;
 use crate::node::protocols_io::NetworkInterface;
+use crate::node::scheduler::{SchedulerHandle, SchedulingDiscipline};
+use crate::node::utils::RateLimiter;
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use std::sync::Arc;
 
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio::time::{Duration, interval};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
+};
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 
-use tracing::{info,error};
-
+use tracing::{error, info};
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -29,16 +30,15 @@ pub struct ControllerInterfaceHandle {
 // TODO : Implement shutdown logic
 // TODO : Decide how to pass processor handle to protocol reader
 impl ControllerInterfaceHandle {
-    pub async fn new(
-        config: LocalConfig,
-        processor_handle: ProcessorHandle,
-        shutdown_send: mpsc::UnboundedSender<()>,
-    ) -> Self {
+    pub async fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
         // create unbounded channel for controller sender
         let (sender, receiver) = mpsc::unbounded_channel();
 
         // Initialize the controller interface handle and connect to the controller
-        let mut controller_interface_handle = Self { config: config.clone(), sender};
+        let mut controller_interface_handle = Self {
+            config: config.clone(),
+            sender,
+        };
         let ws_stream = controller_interface_handle.connect().await;
 
         let (controller_sender_stream, controller_receiver_stream) = ws_stream.split();
@@ -67,7 +67,7 @@ impl ControllerInterfaceHandle {
         controller_interface_handle
     }
 
-    pub async fn connect(&mut self) -> WebSocketStream<MaybeTlsStream<TcpStream>>{
+    pub async fn connect(&mut self) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
         let url = url::Url::parse(&self.config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
         loop {
@@ -96,7 +96,6 @@ impl ControllerInterfaceHandle {
             node_id: self.config.node_id.to_string().parse().ok(),
         };
 
-        
         ws_stream
             .send(Message::binary(rmp_serde::to_vec(&startup_msg).unwrap()))
             .await
@@ -118,15 +117,13 @@ impl ControllerInterfaceHandle {
         ws_stream
     }
 
-    pub async fn send_metrics(&self, msg: DataplaneToController){
-        self.sender
-        .send(msg);
+    pub async fn send_metrics(&self, msg: DataplaneToController) {
+        self.sender.send(msg);
     }
-
 }
 
 // Receive messages from the controller and broadcast them to the processor
-pub struct ControllerReceiver{
+pub struct ControllerReceiver {
     controller_receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processor_handle: ProcessorHandle,
 
@@ -139,7 +136,7 @@ pub struct ControllerReceiver{
     scheduler_rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
 }
 
-impl ControllerReceiver{
+impl ControllerReceiver {
     pub async fn run(&mut self) {
         loop {
             let msg = match self.controller_receiver_stream.next().await.unwrap() {
@@ -194,7 +191,9 @@ impl ControllerReceiver{
                     self.scheduler_drop_strategy.clone(),
                     self.scheduler_rate_limiter.clone(),
                 );
-                self.processor_handle.add_node(node_id, scheduler_handle).await;
+                self.processor_handle
+                    .add_node(node_id, scheduler_handle)
+                    .await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 // TODO : Implement set link rate
@@ -224,12 +223,12 @@ impl ControllerReceiver{
     }
 }
 
-pub struct ControllerSender{
+pub struct ControllerSender {
     receiver: mpsc::UnboundedReceiver<DataplaneToController>,
     controller_sender_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
 }
 
-impl ControllerSender{
+impl ControllerSender {
     pub async fn run(&mut self) {
         let mut ping_interval = interval(Duration::from_secs(30)); // Send ping every 30 seconds
 
