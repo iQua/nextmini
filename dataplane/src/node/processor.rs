@@ -39,7 +39,7 @@ struct Processor {
     // Handles to send to the next stage
     local_interface: LocalInterfaceHandle,
     schedulers: HashMap<NodeId, SchedulerHandle>,
-    
+
     // Index of the writer to use for local delivery
     writer_index: usize,
 }
@@ -120,16 +120,10 @@ impl Processor {
         self.send_packet(packet, next_hop_id, packet_flow_id).await
     }
 
-    async fn send_packet(
-        &mut self,
-        packet: Packet,
-        next_hop_id: NodeId,
-        packet_flow_id: FlowId,
-    ) -> Result<(), String> {
+    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId, packet_flow_id: FlowId) {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            self.local_interface.write_packet(packet, self.writer_index).await;
-            Ok(())
+            self.local_interface.write_packet(packet).await;
         } else {
             match self.schedulers.get_mut(&next_hop_id) {
                 Some(scheduler_handle) => {
