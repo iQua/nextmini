@@ -1,11 +1,11 @@
 use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::config::LocalConfig;
+use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::network_interface::NetworkInterfaceMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::network_interface::NetworkInterfaceHandle;
 use nextmini_messages::Protocol;
-use crate::node::config::LocalConfig;
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -22,7 +22,10 @@ pub struct TcpServer {
 
 impl TcpServer {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        Self { config, processor_handle }
+        Self {
+            config,
+            processor_handle,
+        }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -64,7 +67,7 @@ impl TcpServer {
             };
 
             info!("Incoming connection from node {}...", node_id);
-            
+
             // Consider redesign network interface to avoid creation here
 
             //Split the stream into reader and writer
@@ -85,7 +88,6 @@ impl TcpServer {
             // create the scheduler handle
             let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 
-            
             // Use processor hashmap
             self.processor_handle.add_node(node_id, scheduler);
             info!("Connected to node {}.", node_id);
