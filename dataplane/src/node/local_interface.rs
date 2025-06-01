@@ -11,15 +11,14 @@ use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-/// Message types for the LocalInterface, which manages the LocalReader and LocalWriter actors.
+/// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
 pub enum LocalInterfaceMessage {
-    // the processor writes a packet to the local interface
-    WritePacket(Packet),
-    Shutdown,
+    WritePacket(Packet), // the processor sends a packet to the application via the local interface
+    Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
 }
 
-/// Handle for Processor to interact with LocalInterface
+/// Handle for Processors to interact with LocalInterface
 #[derive(Clone)]
 pub struct LocalInterfaceHandle {
     shutdown_sender: broadcast::Sender<LocalInterfaceMessage>,
@@ -32,30 +31,33 @@ impl LocalInterfaceHandle {
         // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
         let tun_devices = Self::create_tun_devices(config.clone());
 
-        // for sending the shutdown signal to the local interface readers
+        // a broadcast channel for sending the shutdown signal to both local interface readers and writers
         let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
 
-        // for the processors to send packets to the local interface writers
+        // an MPMC channel for the processors to send packets to the local interface writers
         let (write_sender, write_receiver) = flume::bounded(config.channel_capacity);
 
-        let mut reader = LocalReader {
-            shutdown_receiver: shutdown_sender.subscribe(),
-            processor: processor.clone(),
-            devices: tun_devices.clone(),
-        };
-        let mut writer = LocalWriter {
-            shutdown_receiver: shutdown_sender.subscribe(),
-            packet_receiver: write_receiver,
-            devices: tun_devices,
-        };
+        for dev in tun_devices.iter() {
+            let mut reader = LocalReader {
+                shutdown_receiver: shutdown_sender.subscribe(),
+                processor: processor.clone(),
+                device: dev.clone(),
+            };
 
-        tokio::spawn(async move {
-            reader.run().await;
-        });
+            let mut writer = LocalWriter {
+                shutdown_receiver: shutdown_sender.subscribe(),
+                packet_receiver: write_receiver.clone(),
+                device: dev.clone(),
+            };
 
-        tokio::spawn(async move {
-            writer.run().await;
-        });
+            tokio::spawn(async move {
+                reader.run().await;
+            });
+
+            tokio::spawn(async move {
+                writer.run().await;
+            });
+        }
 
         Self {
             shutdown_sender,
@@ -158,7 +160,7 @@ impl LocalInterfaceHandle {
 
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
-    devices: Vec<Arc<AsyncDevice>>,
+    device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     processor: ProcessorHandle,
 }
@@ -166,7 +168,6 @@ pub struct LocalReader {
 impl LocalReader {
     async fn run(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
-        let dev = &self.devices[0]; // Use first device for now
 
         loop {
             tokio::select! {
@@ -177,7 +178,7 @@ impl LocalReader {
                     }
                 }
                 // reads from the local TUN device
-                result = dev.recv(&mut buf) => {
+                result = self.device.recv(&mut buf) => {
                     let n = match result {
                         Ok(n) => n,
                         Err(e) => {
@@ -213,15 +214,14 @@ impl LocalReader {
 
 /// Writes one packet to a TUN device.
 struct LocalWriter {
+    device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
+
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     packet_receiver: flume::Receiver<LocalInterfaceMessage>,
-    devices: Vec<Arc<AsyncDevice>>,
 }
 
 impl LocalWriter {
     async fn run(&mut self) {
-        let dev = &self.devices[0]; // Use first device for now
-
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
@@ -234,7 +234,7 @@ impl LocalWriter {
                     if let Ok(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         let buf = &packet.buf[0..packet.packet_size];
 
-                        let _ = dev.send(buf).await;
+                        let _ = self.device.send(buf).await;
                     }
                 }
             }
