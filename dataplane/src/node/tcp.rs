@@ -2,6 +2,10 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::network_interface::NetworkInterfaceMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::scheduler::SchedulerHandle;
+use crate::node::network_interface::NetworkInterfaceHandle;
+use nextmini_messages::Protocol;
+use crate::node::config::LocalConfig;
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -12,12 +16,13 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::{error, info};
 
 pub struct TcpServer {
+    config: LocalConfig,
     processor_handle: ProcessorHandle,
 }
 
 impl TcpServer {
-    pub fn new(processor_handle: ProcessorHandle) -> Self {
-        Self { processor_handle }
+    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
+        Self { config, processor_handle }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -59,12 +64,30 @@ impl TcpServer {
             };
 
             info!("Incoming connection from node {}...", node_id);
+            
+            // Consider redesign network interface to avoid creation here
 
-            // Add new node : There are three potential ways
-            // 1. Change processor's 'scheduler' hashmap directly
-            // 2. Add a new message type for processor handle
-            // 3. Redesign in compatiable with the current ControllerToDataplane::AddNode message
+            //Split the stream into reader and writer
+            let (reader, writer) = tokio::io::split(stream);
+            // set up the mpsc channel for the network interface
+            let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
+            // create the reader and writer
+            let reader = TcpReader::new(reader, self.processor_handle.clone());
+            let writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
+            tokio::spawn(async move {
+                reader.run().await;
+            });
+            tokio::spawn(async move {
+                writer.run().await;
+            });
+            // create the network interface handle manually
+            let network_interface = NetworkInterfaceHandle { sender };
+            // create the scheduler handle
+            let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 
+            
+            // Use processor hashmap
+            self.processor_handle.add_node(node_id, scheduler);
             info!("Connected to node {}.", node_id);
         }
     }
