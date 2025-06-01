@@ -131,12 +131,12 @@ pub struct LocalConfig {
     pub quic_congestion_control: CongestionControl,
 
     // The local network address
-    #[default((0, 0, 0, 0))]
+    #[default(10, 0, 0, 1)]
     #[arg(skip)]
     pub local_address: (u8, u8, u8, u8),
 
     // The local network mask
-    #[default((0, 0, 0, 0))]
+    #[default(255, 255, 255, 0)]
     #[arg(skip)]
     pub local_netmask: (u8, u8, u8, u8),
 

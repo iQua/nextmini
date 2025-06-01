@@ -16,7 +16,6 @@ pub mod protocols_server;
 pub mod quic;
 pub mod tcp;
 pub mod udp;
-pub mod utils;
 
 /// The maximum Maximum Transmission Unit (MTU).
 const MAX_MTU: usize = 6400;
