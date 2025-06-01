@@ -18,25 +18,11 @@ pub mod tcp;
 pub mod udp;
 pub mod utils;
 
-use std::collections::HashMap;
-
-use std::sync::Arc;
-
-use tokio::sync::RwLock;
-use tokio::sync::mpsc;
-
-use crate::node::packet::Packet;
-use crate::node::utils::RateLimiter;
-
 /// The maximum Maximum Transmission Unit (MTU).
 const MAX_MTU: usize = 6400;
 
 /// The buffer size for ProtocolReader to receive a packet from the network.
 const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
-
-/// The maximum number of packets allowed in Tokio's bounded mpsc (multi-producer, single-consumer) channels,
-/// used throughout the dataplane implementation
-const INTERNAL_Q_SIZE: usize = 10000;
 
 /// The flow ID is a 128-bit integer, used to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16)
 /// + dst_port(16) + reserved(32)
@@ -78,9 +64,3 @@ pub type NodeId = usize;
 
 /// The packet buffer, used for receiving a packet from the network.
 type PacketBuf = [u8; RECEIVE_BUF_SIZE];
-
-/// Each processor channel includes a sender and a receiver for an mpsc channel.
-type ProcessorChannel = (mpsc::Sender<Packet>, Option<mpsc::Receiver<Packet>>);
-
-/// A hashmap from node IDs to rate limiters (optional)
-type RateLimiterMap = HashMap<NodeId, Arc<RwLock<Option<RateLimiter>>>>;
