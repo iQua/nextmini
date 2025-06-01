@@ -199,13 +199,14 @@ impl ControllerToDataplaneReceiver {
                 )
                 .await;
 
-                let scheduler_handle = SchedulerHandle::new(
+                let scheduler = SchedulerHandle::new(
                     self.config.clone(),
+                    node_id,
                     network_interface,
                     self.controller_interface.clone(),
                 );
 
-                self.processors.add_node(node_id, scheduler_handle).await;
+                self.processors.add_node(node_id, scheduler).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 info!("Setting link rate for node {} to {} bps.", node_id, rate);

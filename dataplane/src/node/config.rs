@@ -79,7 +79,7 @@ pub struct LocalConfig {
 
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller
-    #[default(1)]
+    #[default(5)]
     #[arg(long)]
     pub metrics_collection_interval: u64,
 

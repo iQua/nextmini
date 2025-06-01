@@ -1,9 +1,13 @@
 use std::collections::VecDeque;
 
+use chrono::Utc;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
 use tracing::warn;
+
+use nextmini_messages::{DataplaneToController, Metric};
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
@@ -22,12 +26,12 @@ pub enum SchedulingDiscipline {
     Wrr,
 }
 
-/// The types of messages sent to the scheduler actors.
+/// The types of messages sent to the scheduler.
 pub enum SchedulerMessage {
     Enqueue(Packet),
 }
 
-// a handle is for one scheduler actor, a scheduler actor is for one node's protocol writer
+/// The handle for the scheduler actor, which is between the processors and the network interface.
 #[derive(Clone)]
 pub struct SchedulerHandle {
     sender: mpsc::Sender<SchedulerMessage>,
@@ -36,6 +40,7 @@ pub struct SchedulerHandle {
 impl SchedulerHandle {
     pub fn new(
         config: LocalConfig,
+        local_id: NodeId,
         net_interface: NetworkInterfaceHandle,
         controller_interface: ControllerInterfaceHandle,
     ) -> Self {
@@ -44,9 +49,8 @@ impl SchedulerHandle {
 
         let mut scheduler = match config.scheduler_type {
             SchedulingDiscipline::Fifo => Fifo::new(
-                config.node_id,
-                config.queue_capacity,
-                config.scheduler_drop_strategy,
+                config,
+                local_id,
                 net_interface,
                 controller_interface,
                 receiver,
@@ -79,6 +83,7 @@ pub trait Scheduler {
 
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
 pub struct Fifo {
+    config: LocalConfig,
     local_id: NodeId,
     queue: VecDeque<Packet>,
     /// the number of packets dropped so far
@@ -93,21 +98,22 @@ pub struct Fifo {
 
 impl Fifo {
     pub fn new(
+        config: LocalConfig,
         local_id: NodeId,
-        capacity: usize,
-        drop_strategy: DropStrategy,
         net_interface: NetworkInterfaceHandle,
         controller_interface: ControllerInterfaceHandle,
         receiver: mpsc::Receiver<SchedulerMessage>,
     ) -> Self {
+        let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
 
-        let packet_drop: Box<dyn PacketDrop + Send + Sync> = match drop_strategy {
+        let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
             DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
             DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
         };
 
         Fifo {
+            config,
             local_id,
             queue: VecDeque::with_capacity(capacity),
             packets_dropped: 0,
@@ -121,9 +127,14 @@ impl Fifo {
 
 impl Scheduler for Fifo {
     async fn run(&mut self) {
+        let mut metrics_tick =
+            interval(Duration::from_secs(self.config.metrics_collection_interval));
+
         while let Some(packet) = self.queue.pop_front() {
             tokio::select! {
+                // sends a packet from the queue to the network interface
                 _ = self.net_interface.send(packet) => {}
+                // receives a packet from the processors
                 Some(message) = self.receiver.recv() => {
                     // a packet arrives from the processors
                     match message {
@@ -132,6 +143,25 @@ impl Scheduler for Fifo {
                         }
                     }
                 },
+                // timer tick: calculate bandwidth metrics and transmit to controller
+                _ = metrics_tick.tick() => {
+                    if !self.queue.is_empty() {
+                        let now = Utc::now();
+                        let metrics = self.queue.iter().map(|p| {
+                            Metric {
+                                flow_id: p.flow_id.to_be_bytes(),
+                                bps: 8 * p.packet_size / self.config.metrics_collection_interval as usize,
+                                src_node_id: Some(self.local_id),
+                                time_read: now,
+                            }
+                        }).collect::<Vec<_>>();
+
+                        if !metrics.is_empty() {
+                            let msg = DataplaneToController::Metrics { metrics };
+                            self.controller_interface.send_metrics(msg).await;
+                        }
+                    }
+                }
             }
         }
     }
