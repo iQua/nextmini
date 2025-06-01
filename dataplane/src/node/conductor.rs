@@ -55,6 +55,8 @@ impl Conductor {
         // signal the conductor to shut down when needed
         let local_interface = LocalInterfaceHandle::new(self.config.clone());
 
+        // Should start protocol server here as well
+        
         // starts the processor actor, providing them with the local interface and the shutdown
         // channel
         let processor = ProcessorHandle::new(

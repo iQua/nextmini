@@ -169,9 +169,10 @@ impl Scheduler for Fifo {
 
                 while let Some(packet) = queue.pop() {
                     // Send raw packet data directly without protocol header
-                    writer.send(&packet.buf[0..packet.packet_size]).await;
                     tokens += packet.packet_size;
                     counter += 1;
+
+                    writer.send(&packet.buf[0..packet.packet_size]).await; // Scheduler -> NetworkInterfaceHandle
 
                     // Apply rate limiting at batch boundaries or when queue is empty
                     if counter >= Self::BATCH_SIZE || queue.is_empty() {

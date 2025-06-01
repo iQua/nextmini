@@ -67,11 +67,6 @@ impl ControllerInterfaceHandle {
         controller_interface_handle
     }
 
-    pub async fn send_metrics(&self, msg: DataplaneToController){
-        self.sender
-        .send(msg);
-    }
-
     pub async fn connect(&mut self) -> WebSocketStream<MaybeTlsStream<TcpStream>>{
         let url = url::Url::parse(&self.config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -122,8 +117,15 @@ impl ControllerInterfaceHandle {
 
         ws_stream
     }
+
+    pub async fn send_metrics(&self, msg: DataplaneToController){
+        self.sender
+        .send(msg);
+    }
+
 }
 
+// Receive messages from the controller and broadcast them to the processor
 pub struct ControllerReceiver{
     controller_receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processor_handle: ProcessorHandle,
@@ -179,7 +181,7 @@ impl ControllerReceiver{
                 node_id,
                 addr,
             } => {
-                // TODO : Implement network interface handle
+                // TODO : Get NetworkInterfaceHandle Here
                 let protocol_writer;
 
                 let scheduler_handle = SchedulerHandle::new(
@@ -196,6 +198,7 @@ impl ControllerReceiver{
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 // TODO : Implement set link rate
+
                 // info!("Setting link rate for node: {}, rate: {}", node_id, rate);
                 // let mut guard = self.link_rate_limiters.write().await;
 
@@ -209,6 +212,7 @@ impl ControllerReceiver{
                 //         *(entry.write().await) = Some(RateLimiter::new(rate as f64));
                 //     }
                 // }
+
                 return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {
