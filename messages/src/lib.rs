@@ -1,6 +1,6 @@
+use clap::ValueEnum;
 /// Defines message enums for controller-dataplane communication.
 use serde::{Deserialize, Serialize};
-use clap::ValueEnum;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -44,7 +44,6 @@ pub enum ControllerToDataplane {
         protocol: Protocol,
     },
     AddNode {
-        protocol: Protocol,
         node_id: usize,
         addr: String,
     },

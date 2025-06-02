@@ -78,7 +78,6 @@ impl ControllerInterfaceHandle {
             }
         }
 
-        // Need to check if  current message information is correct
         let startup_msg = DataplaneToController::StartUp {
             private_network_name: self.config.private_network_name.clone(),
             private_network_addr: self.config.private_network_addr.clone()
@@ -116,7 +115,7 @@ impl ControllerInterfaceHandle {
     }
 }
 
-/// Sends messages from the dataplane to the controller over WebSockets.
+/// An actor used for sending messages from the dataplane to the controller over WebSockets.
 pub struct DataplaneToControllerSender {
     northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
     sender_stream: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
@@ -145,7 +144,7 @@ impl DataplaneToControllerSender {
     }
 }
 
-// Receives messages from the controller and broadcasts them to the processors.
+/// An actor used for receiving messages from the controller and broadcasts them to the processors.
 pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
@@ -185,19 +184,9 @@ impl ControllerToDataplaneReceiver {
 
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
-            ControllerToDataplane::AddNode {
-                protocol,
-                node_id,
-                addr,
-            } => {
-                let network_interface = NetworkInterfaceHandle::new(
-                    self.processors.clone(),
-                    &addr,
-                    self.config.node_id,
-                    node_id,
-                    protocol,
-                )
-                .await;
+            ControllerToDataplane::AddNode { node_id, addr } => {
+                let network_interface =
+                    NetworkInterfaceHandle::new(self.config.clone(), self.processors.clone()).await;
 
                 let scheduler =
                     SchedulerHandle::new(self.config.clone(), node_id, network_interface);

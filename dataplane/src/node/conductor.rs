@@ -78,7 +78,7 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Udp => {
-                // UDP implementation not ready yet
+                // To be implemented
             }
             Protocol::Tcp => {
                 if public_port == private_port {

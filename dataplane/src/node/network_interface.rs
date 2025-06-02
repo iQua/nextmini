@@ -1,14 +1,17 @@
+use std::sync::Arc;
+
+use s2n_quic::stream::BidirectionalStream;
+use tokio::sync::{Mutex, mpsc};
+
+use nextmini_messages::Protocol;
+
+use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::protocols_client::connect_quic_node;
 use crate::node::protocols_client::connect_tcp_node;
 use crate::node::quic::{QuicReader, QuicWriter};
 use crate::node::tcp::{TcpReader, TcpWriter};
-use nextmini_messages::Protocol;
-use s2n_quic::stream::BidirectionalStream;
-use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-use tracing::info;
 
 /// Messages sent to the network interface actor, which manages NetworkReader and Writer actors
 #[derive(Debug)]
@@ -17,78 +20,53 @@ pub enum NetworkInterfaceMessage {
     Shutdown,
 }
 
-/// Should be created in controller_interface and used in scheduler to send packets
+/// The network interface handle, used for sending and receiving packets over the network.
 pub struct NetworkInterfaceHandle {
     pub sender: mpsc::Sender<NetworkInterfaceMessage>,
 }
 
 impl NetworkInterfaceHandle {
-    /// Create a new network interface connected to a remote node
-    pub async fn new(
-        processor_handle: ProcessorHandle,
-        addr: &str,
-        local_node_id: usize,
-        remote_node_id: usize,
-        protocol: Protocol,
-    ) -> Self {
+    /// Creates and runs a new network interface actor.
+    pub async fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
-        let network_interface = Self { sender };
 
-        network_interface
-            .create_connection(
-                addr,
-                local_node_id,
-                remote_node_id,
-                protocol,
-                processor_handle,
-                receiver,
-            )
-            .await;
+        let network_interface = NetworkInterface {
+            config,
+            processors,
+            receiver,
+        };
 
-        network_interface
-    }
+        network_interface.run().await;
 
-    /// Create a network interface from an inbound TCP connection
-    pub async fn from_inbound_connection(
-        stream: tokio::net::TcpStream,
-        processor_handle: ProcessorHandle,
-        remote_node_id: usize,
-    ) -> Self {
-        let (reader, writer) = tokio::io::split(stream);
-        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
-        
-        let tcp_reader = TcpReader::new(reader, processor_handle);
-        let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
-        
-        tokio::spawn(async move {
-            tcp_reader.run().await;
-        });
-        
-        tokio::spawn(async move {
-            tcp_writer.run().await;
-        });
-        
         Self { sender }
     }
 
-    pub async fn create_connection(
-        &self,
-        addr: &str,
-        local_node_id: usize,
-        remote_node_id: usize,
-        protocol: Protocol,
-        processor_handle: ProcessorHandle,
-        receiver: mpsc::Receiver<NetworkInterfaceMessage>,
-    ) {
-        match protocol {
+    /// Send a packet through the network interface
+    pub async fn send(&self, packet: Packet) {
+        self.sender
+            .send(NetworkInterfaceMessage::SendPacket(packet))
+            .await
+            .unwrap();
+    }
+}
+
+/// The network interface actor, used for sending and receiving packets over the network.
+pub struct NetworkInterface {
+    config: LocalConfig,
+    processors: ProcessorHandle,
+    pub receiver: mpsc::Receiver<NetworkInterfaceMessage>,
+}
+
+impl NetworkInterface {
+    pub async fn run(&self) {
+        match self.config.protocol {
             Protocol::Tcp => {
-                // Request connection to remote node server
+                /// requests a connection to the remote node
                 let stream = connect_tcp_node(local_node_id, addr, remote_node_id).await;
                 let (reader, writer) = tokio::io::split(stream);
 
-                let tcp_reader = TcpReader::new(reader, processor_handle);
-
-                let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
+                let tcp_reader = TcpReader::new(reader, self.processors);
+                let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), self.receiver);
 
                 tokio::spawn(async move {
                     tcp_reader.run().await;
@@ -114,17 +92,8 @@ impl NetworkInterfaceHandle {
                 });
             }
             Protocol::Udp => {
-                // UDP implementation (not implemented yet)
-                info!("UDP protocol not implemented yet");
+                // To be implemented
             }
         }
-    }
-
-    /// Send a packet through the network interface
-    pub async fn send(&self, packet: Packet) {
-        self.sender
-            .send(NetworkInterfaceMessage::SendPacket(packet))
-            .await
-            .unwrap();
     }
 }

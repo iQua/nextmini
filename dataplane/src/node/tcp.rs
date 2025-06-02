@@ -28,6 +28,27 @@ impl TcpServer {
         }
     }
 
+    /// Create a network interface from an inbound TCP connection
+    async fn from_inbound_connection(
+        stream: tokio::net::TcpStream,
+        processor_handle: ProcessorHandle,
+        remote_node_id: usize,
+    ) {
+        let (reader, writer) = tokio::io::split(stream);
+        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
+
+        let tcp_reader = TcpReader::new(reader, processor_handle);
+        let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
+
+        tokio::spawn(async move {
+            tcp_reader.run().await;
+        });
+
+        tokio::spawn(async move {
+            tcp_writer.run().await;
+        });
+    }
+
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -68,13 +89,10 @@ impl TcpServer {
 
             info!("Incoming connection from node {}...", node_id);
 
-            // Use unified approach for handling inbound connections
-            let network_interface = NetworkInterfaceHandle::from_inbound_connection(
-                stream,
-                self.processor_handle.clone(),
-                node_id,
-            )
-            .await;
+            // handles inbound connections
+            let network_interface =
+                TcpServer::from_inbound_connection(stream, self.processor_handle.clone(), node_id)
+                    .await;
 
             // create the scheduler handle
             let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
