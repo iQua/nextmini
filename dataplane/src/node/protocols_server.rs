@@ -49,8 +49,6 @@ pub async fn start_protocols_server(
                         .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                         .await;
                 });
-
-                return;
             }else{
                 let mut quic_server =
                     QuicServer::new(configs.clone(), processor_handle.clone());
