@@ -73,7 +73,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
-    #[default(1)]
+    #[default(0)]
     #[arg(long)]
     pub node_id: NodeId,
 
@@ -273,7 +273,7 @@ impl LocalConfig {
         } else {
             panic!("Invalid startup message from the controller");
         }
-
+        info!("Controller start up message received by dataplane node with node ID: {}", self.node_id);
         self.clone()
     }
 }

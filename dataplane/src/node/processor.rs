@@ -67,8 +67,10 @@ impl ProcessorHandle {
     }
 
     pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
-        self.broadcast_sender
-            .send(ProcessorMessage::AddNode(node_id, scheduler_handle));
+        match self.broadcast_sender.send(ProcessorMessage::AddNode(node_id, scheduler_handle)) {
+            Ok(_) => (),
+            Err(e) => error!("Failed to send AddNode message by processor handle: {}", e),
+        }
     }
 
     pub async fn process_packet(&self, packet: Packet) {
@@ -112,12 +114,13 @@ impl Processor {
 
             match msg {
                 Some(ProcessorMessage::ProcessPacket(packet)) => {
-                    self.process_packet(packet).await;
+                    let _ =self.process_packet(packet).await;
                 }
                 Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
                     self.routing_table.install_routes(routes);
                 }
                 Some(ProcessorMessage::AddNode(node_id, scheduler_handle)) => {
+                    println!("Adding node: {}", node_id);
                     self.schedulers.insert(node_id, scheduler_handle);
                 }
                 Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {

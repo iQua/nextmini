@@ -98,22 +98,32 @@ async fn handle_connection(
                             "Received StartUp message from {} (public), {} (private), requested ID: {:?}",
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
+                        
+                        let assign_new_id = match maybe_node_id {
+                            Some(0) => true, // ID is present but is 0
+                            None => true,    // ID is not present
+                            Some(_) => false // ID is present and not 0
+                        };
 
-                        let node_id = if let Some(id) = maybe_node_id {
-                            id
-                        } else {
-                            // if node_id is not specified, assign a new one that is not used
+                        let node_id = if assign_new_id {
+                            // Logic to assign a new ID (copied from your original 'else' block)
                             let node_ws_guard = node_ws.read().await;
-
                             let new_id = if node_ws_guard.is_empty() {
                                 1
                             } else {
                                 *node_ws_guard.keys().max().unwrap_or(&0) + 1
                             };
 
-                            info!("Assigning a new node ID: {}.", new_id);
-
+                            if let Some(0) = maybe_node_id {
+                                info!("Node ID is 0, assigning a new node ID: {}.", new_id);
+                            } else { // Implies maybe_node_id was None
+                                info!("Node ID is None, assigning a new node ID: {}.", new_id);
+                            }
+                            
                             new_id
+                        } else {
+                            // ID was Some(id) and id was not 0
+                            maybe_node_id.unwrap() // Safe to unwrap here due to the logic above
                         };
 
                         // checks if the node_id is already used
