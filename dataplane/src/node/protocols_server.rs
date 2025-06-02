@@ -19,25 +19,20 @@ pub async fn start_protocols_server(
         Protocol::Tcp => {
             if public_port == private_port {
                 let mut tcp_server = TcpServer::new(configs.clone(), processor_handle.clone());
-                tokio::spawn(async move {
-                    tcp_server
-                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                        .await;
-                });
+                tcp_server
+                    .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                    .await;
             } else {
                 let mut tcp_server_public = TcpServer::new(configs.clone(), processor_handle.clone());
-                tokio::spawn(async move {
-                    tcp_server_public
-                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                        .await;
-                });
-
-                let mut tcp_server_private = TcpServer::new(configs.clone(), processor_handle.clone());
-                tokio::spawn(async move {
-                    tcp_server_private
-                        .start_listening(&format!("{}:{}", "0.0.0.0", private_port))
-                        .await;
-                });
+                let mut tcp_server_private = TcpServer::new(configs, processor_handle);
+                
+                let public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                let private_addr = format!("{}:{}", "0.0.0.0", private_port);
+                
+                tokio::select! {
+                    _ = tcp_server_public.start_listening(&public_addr) => {},
+                    _ = tcp_server_private.start_listening(&private_addr) => {},
+                }
             }
         }
         Protocol::Quic => {
