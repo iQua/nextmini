@@ -8,9 +8,6 @@ default-run = "nextmini"
 name = "nextmini"
 path = "src/main.rs"
 
-[features]
-test-actors = []
-
 [dependencies]
 byteorder = "1.5"
 bytes = "1"
