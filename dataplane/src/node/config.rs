@@ -73,7 +73,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
-    #[default(0)]
+    #[default(1)]
     #[arg(long)]
     pub node_id: NodeId,
 
