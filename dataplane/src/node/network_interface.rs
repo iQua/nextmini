@@ -2,7 +2,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use s2n_quic::stream::BidirectionalStream;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
@@ -18,7 +18,7 @@ pub enum NetworkInterfaceMessage {
     Shutdown,
 }
 
-enum NetworkStream {
+pub enum NetworkStream {
     Tcp(TcpStream),
     Quic(BidirectionalStream),
 }
@@ -29,30 +29,6 @@ pub struct NetworkInterfaceHandle {
 }
 
 impl NetworkInterfaceHandle {
-    /// Creates and runs a new network interface actor as a client.
-    pub async fn new_as_client(
-        config: LocalConfig,
-        remote_addr: String,
-        remote_node_id: NodeId,
-        processors: ProcessorHandle,
-    ) -> Self {
-        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(config.channel_capacity);
-
-        let network_interface = NetworkInterface {
-            config,
-            processors,
-            receiver,
-        };
-
-        // there is no need to call tokio::spawn here, as the reader and writer tasks will be
-        // spawned in run() itself
-        network_interface
-            .run_as_client(remote_node_id, remote_addr)
-            .await;
-
-        Self { sender }
-    }
-
     /// Creates and runs a new network interface actor from an existing TCP or QUIC stream.
     pub async fn new(
         config: LocalConfig,
@@ -69,6 +45,30 @@ impl NetworkInterfaceHandle {
         };
 
         network_interface.run(stream, remote_node_id);
+
+        Self { sender }
+    }
+
+    /// Creates and runs a new network interface actor as a client.
+    pub async fn new_as_client(
+        config: LocalConfig,
+        remote_node_id: NodeId,
+        remote_addr: String,
+        processors: ProcessorHandle,
+    ) -> Self {
+        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(config.channel_capacity);
+
+        let network_interface = NetworkInterface {
+            config,
+            processors,
+            receiver,
+        };
+
+        // there is no need to call tokio::spawn here, as the reader and writer tasks will be
+        // spawned in run() itself
+        network_interface
+            .run_as_client(remote_node_id, remote_addr)
+            .await;
 
         Self { sender }
     }

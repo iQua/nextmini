@@ -44,8 +44,8 @@ pub enum ControllerToDataplane {
         protocol: Protocol,
     },
     AddNode {
-        node_id: usize,
-        addr: String,
+        remote_node_id: usize,
+        remote_addr: String,
     },
     InstallRoutes {
         routes: Vec<RoutingTableEntry>,

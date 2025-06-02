@@ -255,8 +255,8 @@ async fn handle_connection(
 
                             // sends an AddNode message to the new node
                             let msg = ControllerToDataplane::AddNode {
-                                node_id: node.id as usize,
-                                addr,
+                                remote_node_id: node.id as usize,
+                                remote_addr: addr,
                             };
 
                             // informs the existing nodes about the new node by updating their connections

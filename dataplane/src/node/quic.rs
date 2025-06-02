@@ -75,17 +75,6 @@ impl QuicServer {
                     info!("Incoming connection from node {}...", node_id);
 
                     // Consider redesign network interface to avoid creation here
-                    let (receive_stream, send_stream) = stream.split();
-                    let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
-                    let mut quic_reader = QuicReader::new(processor_handle.clone(), receive_stream);
-                    let mut quic_writer =
-                        QuicWriter::new(Arc::new(Mutex::new(send_stream)), receiver);
-                    tokio::spawn(async move {
-                        quic_reader.run().await;
-                    });
-                    tokio::spawn(async move {
-                        quic_writer.run().await;
-                    });
                     let network_interface = NetworkInterfaceHandle { sender };
                     let scheduler =
                         SchedulerHandle::new(config.clone(), node_id, network_interface);

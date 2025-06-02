@@ -177,19 +177,22 @@ impl ControllerToDataplaneReceiver {
 
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
-            ControllerToDataplane::AddNode { node_id, addr } => {
-                let network_interface = NetworkInterfaceHandle::new(
+            ControllerToDataplane::AddNode {
+                remote_node_id,
+                remote_addr,
+            } => {
+                let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
-                    node_id,
-                    addr,
+                    remote_node_id,
+                    remote_addr,
                     self.processors.clone(),
                 )
                 .await;
 
                 let scheduler =
-                    SchedulerHandle::new(self.config.clone(), node_id, network_interface);
+                    SchedulerHandle::new(self.config.clone(), remote_node_id, network_interface);
 
-                self.processors.add_node(node_id, scheduler).await;
+                self.processors.add_node(remote_node_id, scheduler).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 info!("Setting link rate for node {} to {} bps.", node_id, rate);
