@@ -46,7 +46,7 @@ services:
       - postgres
     ports:
       - 3000:3000
-    command: /bin/bash -c "sleep 2 && /var/nextmini/controller"
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
 
   node1:
     container_name: node1
@@ -67,7 +67,7 @@ services:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 15 && /var/nextmini/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
@@ -89,7 +89,7 @@ services:
       - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 25 && /var/nextmini/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
@@ -111,4 +111,4 @@ services:
       - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 35 && /var/nextmini/nextmini ws://controller:3000"
