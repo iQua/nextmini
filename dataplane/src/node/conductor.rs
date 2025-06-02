@@ -12,6 +12,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
+use crate::node::udp::UdpReader;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -78,7 +79,10 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Udp => {
-                // To be implemented
+                let mut udp_reader = UdpReader::new(self.config.clone(), self.processors.clone());
+                tokio::spawn(async move {
+                    udp_reader.start_listening(&format!("{}:{}", "0.0.0.0", public_port)).await;
+                });
             }
             Protocol::Tcp => {
                 if public_port == private_port {

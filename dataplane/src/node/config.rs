@@ -1,4 +1,6 @@
 use tokio_tungstenite::tungstenite::{Error, Message};
+use tokio::net::UdpSocket;
+use std::sync::Arc;
 
 use clap_serde_derive::ClapSerde;
 use clap_serde_derive::clap;
@@ -71,6 +73,10 @@ pub struct LocalConfig {
     #[default("8080".to_string())]
     #[arg(long)]
     pub public_network_port: String,
+
+    #[serde(skip)]
+    #[arg(skip)]
+    pub udp_socket: Arc<Option<Arc<UdpSocket>>>,
 
     #[default(0)]
     #[arg(long)]

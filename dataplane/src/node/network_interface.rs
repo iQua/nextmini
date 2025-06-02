@@ -10,7 +10,7 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
-
+use crate::node::udp::UdpWriter;
 /// Messages sent to the network interface actor, which manages NetworkReader and Writer actors
 #[derive(Debug)]
 pub enum NetworkInterfaceMessage {
@@ -114,8 +114,11 @@ impl NetworkInterface {
 
                 self.run(NetworkStream::Quic(stream));
             }
-            Protocol::Udp => {
-                // To be implemented.
+            Protocol::Udp => {  
+                let udp_writer = UdpWriter::new(self.config.clone(), self.receiver, remote_addr);
+                tokio::spawn(async move {
+                    udp_writer.run().await;
+                });
             }
         }
     }
