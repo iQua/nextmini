@@ -16,7 +16,7 @@ use crate::dataplane::context::Context;
 use crate::dataplane::processor::ProcessorManager;
 
 // Starts current node's protocol server according to the protocol type.
-pub async fn start_protocols_server(
+pub async fn start_server(
     protocol: Protocol,
     configs: LocalConfigs,
     mut context: Context,
@@ -88,7 +88,6 @@ pub async fn start_protocols_server(
         }
     }
 }
-
 
 pub struct TcpServer {
     context: Context,

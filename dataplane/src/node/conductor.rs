@@ -2,7 +2,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::protocols_server;
+use crate::node::server;
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the connection with the controller actor, all processor actors,
 /// the local reader and writer actors, and the metrics collector actor.
@@ -38,10 +38,6 @@ impl Conductor {
         // connects the processors with its downstream local interface writers to send packets out
         processors.connect_local_interface(local_interface.clone());
 
-        // To be implemented: starts the network interface
-
-        // To be implemented: connects the processors with its downstream schedulers
-
         // starts the controller interface actor
         let controller_interface =
             ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
@@ -69,24 +65,14 @@ impl Conductor {
         }
     }
 
+    /// Starts a TCP or QUIC server, and listens for incoming connections.
     pub async fn start(&self) {
         info!("Nextmini is starting...");
-        // Should start protocol server here.
-        // Protocol server needs processor handle to add new remote node connection
-        // Start protocol server for incoming connections
-        protocols_server::start_protocols_server(
-            self.config.protocol.clone(),
-            self.config.clone(),
-            self.processors.clone(),
-        )
-        .await;
+
+        server::start_server(self.config.clone(), self.processors.clone()).await;
     }
 
     pub async fn shutdown(&self) {
-        // Here we would clean up all the actors and resources
-        // For example, we could send a shutdown signal to the controller interface,
-        // processor, and local interface actors.
-        // This is a placeholder for the actual shutdown logic.
         info!("Nextmini is shutting down...");
 
         self.local_interface.shutdown().await;

@@ -8,10 +8,10 @@ pub mod network_interface;
 pub mod packet;
 pub mod processor;
 pub mod protocols_client;
-pub mod protocols_server;
 pub mod quic;
 pub mod routes;
 pub mod scheduler;
+pub mod server;
 pub mod tcp;
 pub mod udp;
 

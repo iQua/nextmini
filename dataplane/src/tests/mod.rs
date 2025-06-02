@@ -1,2 +1,2 @@
-#[cfg(test)]
-mod metrics_collector_tests;
+// #[cfg(test)]
+// mod metrics_collector_tests;

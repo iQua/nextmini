@@ -9,9 +9,9 @@ pub mod packet;
 pub mod processor;
 pub mod protocols_client;
 pub mod protocols_io;
-pub mod protocols_server;
 pub mod routes;
 pub mod scheduler;
+pub mod server;
 pub mod utils;
 
 use std::collections::HashMap;
