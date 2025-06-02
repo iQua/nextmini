@@ -60,41 +60,39 @@ impl QuicServer {
             let config = self.config.clone();
             let processors = self.processors.clone();
 
-            tokio::spawn(async move {
-                info!("Connection accepted from {:?}.", connection.remote_addr());
+            info!("Connection accepted from {:?}.", connection.remote_addr());
 
-                if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
-                    let mut node_id_buf: [u8; 8] = [0; 8];
+            if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
+                let mut node_id_buf: [u8; 8] = [0; 8];
 
-                    if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                        info!("Failed to read node ID: {}", e);
-                        connection.close(0u32.into());
-                        return;
-                    }
-
-                    let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
-
-                    info!("Incoming connection from node {}...", remote_node_id);
-
-                    // handles an inbound connection from a new client
-                    let network_interface = NetworkInterfaceHandle::new(
-                        config.clone(),
-                        NetworkStream::Quic(stream),
-                        processors.clone(),
-                    )
-                    .await;
-
-                    // creates the scheduler handle
-                    let scheduler = SchedulerHandle::new(config.clone(), network_interface);
-
-                    // adds the scheduler to send packets to the new node
-                    processors.add_node(remote_node_id, scheduler).await;
-
-                    info!("Connected to node {} with QUIC.", remote_node_id);
-                } else {
+                if let Err(e) = stream.read_exact(&mut node_id_buf).await {
+                    info!("Failed to read node ID: {}", e);
                     connection.close(0u32.into());
+                    return;
                 }
-            });
+
+                let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
+
+                info!("Incoming connection from node {}...", remote_node_id);
+
+                // handles an inbound connection from a new client
+                let network_interface = NetworkInterfaceHandle::new(
+                    config.clone(),
+                    NetworkStream::Quic(stream),
+                    processors.clone(),
+                )
+                .await;
+
+                // creates the scheduler handle
+                let scheduler = SchedulerHandle::new(config.clone(), network_interface);
+
+                // adds the scheduler to send packets to the new node
+                processors.add_node(remote_node_id, scheduler).await;
+
+                info!("Connected to node {} with QUIC.", remote_node_id);
+            } else {
+                connection.close(0u32.into());
+            }
         }
     }
 }
