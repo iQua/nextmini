@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
@@ -100,6 +101,49 @@ impl TcpServer {
             // Use processor hashmap
             self.processor_handle.add_node(node_id, scheduler).await;
             info!("Connected to node {}.", node_id);
+        }
+    }
+}
+
+pub struct TcpClient {
+    pub config: LocalConfig,
+}
+
+impl TcpClient {
+    pub async fn connect(&self, remote_addr: &str, remote_node_id: usize) -> TcpStream {
+        let mut retry_count = 0;
+        const MAX_RETRY: usize = 10;
+        let mut delay = Duration::from_secs(1);
+
+        loop {
+            match TcpStream::connect(remote_addr).await {
+                Ok(mut stream) => {
+                    stream
+                        .write_all(&self.config.node_id.to_be_bytes())
+                        .await
+                        .expect("Failed to send local node id to the node");
+
+                    info!("Connected to node {} with TCP.", remote_node_id);
+
+                    return stream;
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to connect to node address {} with error: {}, retrying in {}s.",
+                        remote_addr,
+                        e,
+                        delay.as_secs()
+                    );
+                    tokio::time::sleep(delay).await;
+                    retry_count += 1;
+
+                    if retry_count >= MAX_RETRY {
+                        panic!("Maximum retry reached for TCP connection to {remote_addr}");
+                    }
+
+                    delay = delay.mul_f32(1.5); // Exponential backoff
+                }
+            }
         }
     }
 }

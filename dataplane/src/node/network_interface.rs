@@ -12,7 +12,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::protocols_client::connect_quic_node;
 use crate::node::protocols_client::connect_tcp_node;
 use crate::node::quic::{QuicReader, QuicWriter};
-use crate::node::tcp::{TcpReader, TcpWriter};
+use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
 
 /// Messages sent to the network interface actor, which manages NetworkReader and Writer actors
 #[derive(Debug)]
@@ -71,13 +71,15 @@ impl NetworkInterface {
     pub async fn run(&self) {
         match self.config.protocol {
             Protocol::Tcp => {
-                // requests a connection to the remote node
-                let stream = connect_tcp_node(
-                    self.config.node_id,
-                    self.remote_addr.as_str(),
-                    self.remote_node_id,
-                )
-                .await;
+                // connects to the remote node
+                let tcp_client = TcpClient {
+                    config: self.config.clone(),
+                };
+
+                let stream = tcp_client
+                    .connect(self.remote_addr.as_str(), self.remote_node_id)
+                    .await;
+
                 let (reader, writer) = tokio::io::split(stream);
 
                 let tcp_reader = TcpReader::new(reader, self.processors.clone());
