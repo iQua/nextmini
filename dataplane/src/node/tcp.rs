@@ -1,3 +1,12 @@
+use std::io::Cursor;
+use std::sync::Arc;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{ReadHalf, WriteHalf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Mutex, mpsc};
+use tracing::{error, info};
+
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
@@ -5,15 +14,6 @@ use crate::node::network_interface::NetworkInterfaceMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
-use nextmini_messages::Protocol;
-
-use std::io::Cursor;
-use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::io::{ReadHalf, WriteHalf};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, mpsc};
-use tracing::{error, info};
 
 pub struct TcpServer {
     config: LocalConfig,
@@ -72,9 +72,10 @@ impl TcpServer {
             let network_interface = NetworkInterfaceHandle::from_inbound_connection(
                 stream,
                 self.processor_handle.clone(),
-                node_id
-            ).await;
-            
+                node_id,
+            )
+            .await;
+
             // create the scheduler handle
             let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 

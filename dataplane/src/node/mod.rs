@@ -11,14 +11,13 @@ pub mod protocols_client;
 pub mod quic;
 pub mod routes;
 pub mod scheduler;
-pub mod server;
 pub mod tcp;
 pub mod udp;
 
 /// The maximum Maximum Transmission Unit (MTU).
 const MAX_MTU: usize = 6400;
 
-/// The buffer size for ProtocolReader to receive a packet from the network.
+/// The buffer size for the network interface reader to receive a packet from the network.
 const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 
 /// The flow ID is a 128-bit integer, used to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16)
