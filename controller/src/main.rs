@@ -106,7 +106,7 @@ async fn handle_connection(
                         };
 
                         let node_id = if assign_new_id {
-                            // Logic to assign a new ID (copied from your original 'else' block)
+                            // assigns a new node ID
                             let node_ws_guard = node_ws.read().await;
                             let new_id = if node_ws_guard.is_empty() {
                                 1
@@ -114,17 +114,12 @@ async fn handle_connection(
                                 *node_ws_guard.keys().max().unwrap_or(&0) + 1
                             };
 
-                            if let Some(0) = maybe_node_id {
-                                info!("Node ID is 0, assigning a new node ID: {}.", new_id);
-                            } else {
-                                // Implies maybe_node_id was None
-                                info!("Node ID is None, assigning a new node ID: {}.", new_id);
-                            }
+                            info!("Assigning a new node ID: {}.", new_id);
 
                             new_id
                         } else {
                             // ID was Some(id) and id was not 0
-                            maybe_node_id.unwrap() // Safe to unwrap here due to the logic above
+                            maybe_node_id.unwrap()
                         };
 
                         // checks if the node_id is already used
