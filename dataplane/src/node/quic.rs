@@ -1,22 +1,23 @@
-use crate::node::config::CongestionControl;
-use crate::node::config::LocalConfig;
-use crate::node::processor::ProcessorHandle;
-use crate::node::packet::Packet;
-use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::network_interface::NetworkInterfaceHandle;
-use crate::node::scheduler::SchedulerHandle;
+use std::net::SocketAddr;
+use std::path::Path;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{Mutex, mpsc};
 
 use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::{ReceiveStream, SendStream};
-use std::net::SocketAddr;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-use crate::node::network_interface::NetworkInterfaceMessage;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{info, error};
+use tracing::{error, info};
 
+use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::config::CongestionControl;
+use crate::node::config::LocalConfig;
+use crate::node::network_interface::NetworkInterfaceHandle;
+use crate::node::packet::Packet;
+use crate::node::processor::ProcessorHandle;
+use crate::node::scheduler::SchedulerHandle;
+
+use crate::node::network_interface::NetworkInterfaceMessage;
 pub struct QuicServer {
     config: LocalConfig,
     processor_handle: ProcessorHandle,
@@ -24,7 +25,10 @@ pub struct QuicServer {
 
 impl QuicServer {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        Self { config, processor_handle }
+        Self {
+            config,
+            processor_handle,
+        }
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
@@ -74,7 +78,8 @@ impl QuicServer {
                     let (receive_stream, send_stream) = stream.split();
                     let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
                     let mut quic_reader = QuicReader::new(processor_handle.clone(), receive_stream);
-                    let mut quic_writer = QuicWriter::new(Arc::new(Mutex::new(send_stream)), receiver);
+                    let mut quic_writer =
+                        QuicWriter::new(Arc::new(Mutex::new(send_stream)), receiver);
                     tokio::spawn(async move {
                         quic_reader.run().await;
                     });
@@ -82,8 +87,9 @@ impl QuicServer {
                         quic_writer.run().await;
                     });
                     let network_interface = NetworkInterfaceHandle { sender };
-                    let scheduler = SchedulerHandle::new(config.clone(), node_id, network_interface);
-                    processor_handle.add_node(node_id, scheduler).await;    
+                    let scheduler =
+                        SchedulerHandle::new(config.clone(), node_id, network_interface);
+                    processor_handle.add_node(node_id, scheduler).await;
 
                     info!("Connected.");
                 } else {
@@ -101,7 +107,10 @@ pub struct QuicReader {
 
 impl QuicReader {
     pub fn new(processor_handle: ProcessorHandle, stream: ReceiveStream) -> Self {
-        Self { processor_handle, stream }
+        Self {
+            processor_handle,
+            stream,
+        }
     }
 
     pub async fn run(&mut self) {
@@ -123,7 +132,10 @@ impl QuicReader {
         match self.stream.read_exact(&mut buf[0..4]).await {
             Ok(_) => (),
             Err(_) => {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to read packet length"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to read packet length",
+                ));
             }
         }
 
@@ -132,7 +144,10 @@ impl QuicReader {
         match self.stream.read_exact(&mut buf[4..msg_len]).await {
             Ok(_) => (),
             Err(_) => {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to read packet"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Failed to read packet",
+                ));
             }
         }
 
@@ -141,16 +156,13 @@ impl QuicReader {
 }
 
 pub struct QuicWriter {
-    stream: Arc<Mutex<SendStream>>,
+    stream: SendStream,
     receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl QuicWriter {
-    pub fn new(stream: Arc<Mutex<SendStream>>, receiver: mpsc::Receiver<NetworkInterfaceMessage>) -> Self {
-        Self {
-            stream: stream.clone(),
-            receiver,
-        }
+    pub fn new(stream: SendStream, receiver: mpsc::Receiver<NetworkInterfaceMessage>) -> Self {
+        Self { stream, receiver }
     }
 
     pub async fn run(&mut self) {
@@ -164,17 +176,12 @@ impl QuicWriter {
                 }
                 NetworkInterfaceMessage::Shutdown => {
                     break;
-                }   
+                }
             }
         }
     }
 
     pub async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
-        let mut stream_guard = self.stream.lock().await;
-
-        match stream_guard.write_all(&packet.buf).await {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.stream.write_all(&packet.buf).await
     }
 }

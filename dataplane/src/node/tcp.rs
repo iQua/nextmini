@@ -4,13 +4,14 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::NetworkInterfaceHandle;
-use crate::node::network_interface::NetworkInterfaceMessage;
+use crate::node::network_interface::{
+    NetworkInterfaceHandle, NetworkInterfaceMessage, NetworkStream,
+};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
@@ -23,29 +24,6 @@ pub struct TcpServer {
 impl TcpServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self { config, processors }
-    }
-
-    /// Create a network interface from an inbound TCP connection
-    async fn from_inbound_connection(
-        stream: tokio::net::TcpStream,
-        processors: ProcessorHandle,
-        remote_node_id: usize,
-    ) -> NetworkInterfaceHandle {
-        let (reader, writer) = tokio::io::split(stream);
-        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
-
-        let tcp_reader = TcpReader::new(reader, processors);
-        let tcp_writer = TcpWriter::new(writer, receiver);
-
-        tokio::spawn(async move {
-            tcp_reader.run().await;
-        });
-
-        tokio::spawn(async move {
-            tcp_writer.run().await;
-        });
-
-        NetworkInterfaceHandle { sender }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -78,7 +56,7 @@ impl TcpServer {
 
             let mut cursor = Cursor::new(&node_id_buf);
 
-            let node_id = match cursor.read_u64().await {
+            let remote_node_id = match cursor.read_u64().await {
                 Ok(id) => id as usize,
                 Err(e) => {
                     error!("Failed to parse node ID: {}", e);
@@ -86,18 +64,24 @@ impl TcpServer {
                 }
             };
 
-            info!("Incoming connection from node {}...", node_id);
+            info!("Incoming connection from node {}...", remote_node_id);
 
-            // handles inbound connections
-            let network_interface =
-                TcpServer::from_inbound_connection(stream, self.processors.clone(), node_id).await;
+            // handles an inbound connection from a new client
+            let network_interface = NetworkInterfaceHandle::new(
+                self.config.clone(),
+                NetworkStream::Tcp(stream),
+                remote_node_id,
+                self.processors.clone(),
+            )
+            .await;
 
             // creates the scheduler handle
-            let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
+            let scheduler =
+                SchedulerHandle::new(self.config.clone(), remote_node_id, network_interface);
 
-            // Use processor hashmap
-            self.processors.add_node(node_id, scheduler).await;
-            info!("Connected to node {}.", node_id);
+            // adds the scheduler to send packets to the new node
+            self.processors.add_node(remote_node_id, scheduler).await;
+            info!("Connected to node {}.", remote_node_id);
         }
     }
 }
