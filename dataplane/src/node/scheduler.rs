@@ -6,7 +6,6 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::warn;
 
-use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
@@ -34,16 +33,12 @@ pub struct SchedulerHandle {
 }
 
 impl SchedulerHandle {
-    pub fn new(
-        config: LocalConfig,
-        local_id: NodeId,
-        net_interface: NetworkInterfaceHandle,
-    ) -> Self {
+    pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
         // creates the mpsc channel for sending packets to the scheduler
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
 
         let mut scheduler = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => Fifo::new(config, local_id, net_interface, receiver),
+            SchedulingDiscipline::Fifo => Fifo::new(config, net_interface, receiver),
             SchedulingDiscipline::Wrr => {
                 panic!("Wrr scheduling discipline not implemented");
             }
@@ -73,8 +68,6 @@ pub trait Scheduler {
 
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
 pub struct Fifo {
-    config: LocalConfig,
-    local_id: NodeId,
     queue: VecDeque<Packet>,
     /// the number of packets dropped so far
     packets_dropped: usize,
@@ -88,7 +81,6 @@ pub struct Fifo {
 impl Fifo {
     pub fn new(
         config: LocalConfig,
-        local_id: NodeId,
         net_interface: NetworkInterfaceHandle,
         receiver: mpsc::Receiver<SchedulerMessage>,
     ) -> Self {
@@ -101,8 +93,6 @@ impl Fifo {
         };
 
         Fifo {
-            config,
-            local_id,
             queue: VecDeque::with_capacity(capacity),
             packets_dropped: 0,
             drop_strategy: packet_drop,

@@ -70,14 +70,12 @@ impl TcpServer {
             let network_interface = NetworkInterfaceHandle::new(
                 self.config.clone(),
                 NetworkStream::Tcp(stream),
-                remote_node_id,
                 self.processors.clone(),
             )
             .await;
 
             // creates the scheduler handle
-            let scheduler =
-                SchedulerHandle::new(self.config.clone(), remote_node_id, network_interface);
+            let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
             // adds the scheduler to send packets to the new node
             self.processors.add_node(remote_node_id, scheduler).await;
@@ -91,7 +89,7 @@ pub struct TcpClient {
 }
 
 impl TcpClient {
-    pub async fn connect(&self, remote_addr: &str, remote_node_id: usize) -> TcpStream {
+    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);

@@ -1,34 +1,35 @@
+use bytes::Bytes;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 
-use s2n_quic::Server;
 use s2n_quic::provider::congestion_controller;
+use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
+use s2n_quic::{Client, Server, client};
 use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::NetworkInterfaceHandle;
+use crate::node::network_interface::{
+    NetworkInterfaceHandle, NetworkInterfaceMessage, NetworkStream,
+};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
 
-use crate::node::network_interface::NetworkInterfaceMessage;
 pub struct QuicServer {
     config: LocalConfig,
-    processor_handle: ProcessorHandle,
+    processors: ProcessorHandle,
 }
 
 impl QuicServer {
-    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        Self {
-            config,
-            processor_handle,
-        }
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        Self { config, processors }
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
@@ -56,8 +57,8 @@ impl QuicServer {
         };
 
         while let Some(mut connection) = server.accept().await {
-            let processor_handle = self.processor_handle.clone();
             let config = self.config.clone();
+            let processors = self.processors.clone();
 
             tokio::spawn(async move {
                 info!("Connection accepted from {:?}.", connection.remote_addr());
@@ -71,16 +72,25 @@ impl QuicServer {
                         return;
                     }
 
-                    let node_id = u64::from_be_bytes(node_id_buf) as usize;
-                    info!("Incoming connection from node {}...", node_id);
+                    let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
 
-                    // Consider redesign network interface to avoid creation here
-                    let network_interface = NetworkInterfaceHandle { sender };
-                    let scheduler =
-                        SchedulerHandle::new(config.clone(), node_id, network_interface);
-                    processor_handle.add_node(node_id, scheduler).await;
+                    info!("Incoming connection from node {}...", remote_node_id);
 
-                    info!("Connected.");
+                    // handles an inbound connection from a new client
+                    let network_interface = NetworkInterfaceHandle::new(
+                        config.clone(),
+                        NetworkStream::Quic(stream),
+                        processors.clone(),
+                    )
+                    .await;
+
+                    // creates the scheduler handle
+                    let scheduler = SchedulerHandle::new(config.clone(), network_interface);
+
+                    // adds the scheduler to send packets to the new node
+                    processors.add_node(remote_node_id, scheduler).await;
+
+                    info!("Connected to node {} with QUIC.", remote_node_id);
                 } else {
                     connection.close(0u32.into());
                 }
@@ -89,61 +99,115 @@ impl QuicServer {
     }
 }
 
+pub struct QuicClient {
+    pub config: LocalConfig,
+}
+
+impl QuicClient {
+    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
+        let client = Client::builder()
+            .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
+            .expect("Failed to set TLS configuration")
+            .with_io("0.0.0.0:0")
+            .expect("Failed to bind the client")
+            .start()
+            .expect("Failed to start client");
+
+        let mut retry_count = 0;
+        const MAX_RETRY: usize = 10;
+
+        let mut connection = loop {
+            let addr: SocketAddr = remote_addr.parse().unwrap();
+            let connect = client::Connect::new(addr).with_server_name("Strato");
+
+            match client.connect(connect).await {
+                Ok(mut connection) => {
+                    connection
+                        .keep_alive(true)
+                        .expect("Unable to keep the connection alive");
+                    break connection;
+                }
+                Err(e) => {
+                    info!(
+                        "Failed to initiate quic connection to {addr}, error: {e} retrying in 1 second"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+
+            retry_count += 1;
+
+            if retry_count >= MAX_RETRY {
+                panic!(
+                    "Maximum retry reached to establish a QUIC connection to {}. Aborting.",
+                    addr
+                );
+            }
+        };
+
+        let mut stream = connection
+            .open_bidirectional_stream()
+            .await
+            .expect("Failed to establish handshake stream");
+
+        info!("Connecting to node {} with QUIC...", remote_node_id);
+
+        stream
+            .send(Bytes::copy_from_slice(&self.config.node_id.to_be_bytes()))
+            .await
+            .expect("Failed to send local node id to the node");
+
+        info!("Connected to node {} with QUIC.", remote_node_id);
+
+        stream
+    }
+}
+
+/// An actor that reads packets from a QUIC stream.
 pub struct QuicReader {
-    processor_handle: ProcessorHandle,
     stream: ReceiveStream,
+    processors: ProcessorHandle,
 }
 
 impl QuicReader {
-    pub fn new(processor_handle: ProcessorHandle, stream: ReceiveStream) -> Self {
-        Self {
-            processor_handle,
-            stream,
-        }
+    pub fn new(stream: ReceiveStream, processors: ProcessorHandle) -> Self {
+        Self { processors, stream }
     }
 
     pub async fn run(&mut self) {
         loop {
-            let packet = self.read().await;
-            match packet {
-                Ok(packet) => {
-                    self.processor_handle.process_packet(packet);
-                }
-                Err(e) => {
-                    error!("Failed to read packet: {}", e);
-                }
+            if let Ok(packet) = self.read().await {
+                self.processors.process_packet(packet).await;
             }
         }
     }
+
     pub async fn read(&mut self) -> Result<Packet, std::io::Error> {
         let mut buf = [0u8; RECEIVE_BUF_SIZE];
 
-        match self.stream.read_exact(&mut buf[0..4]).await {
-            Ok(_) => (),
-            Err(_) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to read packet length",
-                ));
-            }
+        if let Err(_) = self.stream.read_exact(&mut buf[0..4]).await {
+            error!("Failed to read the length of a packet.");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Failed to read packet length",
+            ));
         }
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
 
-        match self.stream.read_exact(&mut buf[4..msg_len]).await {
-            Ok(_) => (),
-            Err(_) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to read packet",
-                ));
-            }
+        if let Err(_) = self.stream.read_exact(&mut buf[4..msg_len]).await {
+            error!("Failed to read a packet.");
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Failed to read packet data",
+            ));
         }
 
         Ok(Packet::new(msg_len, buf))
     }
 }
 
+/// An actor that writes packets to a QUIC stream.
 pub struct QuicWriter {
     stream: SendStream,
     receiver: mpsc::Receiver<NetworkInterfaceMessage>,

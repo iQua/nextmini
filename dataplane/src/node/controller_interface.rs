@@ -104,7 +104,12 @@ impl ControllerInterfaceHandle {
     }
 
     pub async fn send_metrics(&self, msg: DataplaneToController) {
-        self.northbridge_sender.send(msg);
+        if let Err(e) = self.northbridge_sender.send(msg) {
+            error!(
+                "Error sending metrics to the controller interface actor: {}",
+                e
+            );
+        };
     }
 }
 
@@ -189,8 +194,7 @@ impl ControllerToDataplaneReceiver {
                 )
                 .await;
 
-                let scheduler =
-                    SchedulerHandle::new(self.config.clone(), remote_node_id, network_interface);
+                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
                 self.processors.add_node(remote_node_id, scheduler).await;
             }

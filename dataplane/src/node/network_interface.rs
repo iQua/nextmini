@@ -1,14 +1,14 @@
+use nextmini_messages::Protocol;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use s2n_quic::stream::BidirectionalStream;
-use tracing::info;
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::quic::{QuicReader, QuicWriter};
+use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
 
 /// Messages sent to the network interface actor, which manages NetworkReader and Writer actors
@@ -33,7 +33,6 @@ impl NetworkInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
         stream: NetworkStream,
-        remote_node_id: NodeId,
         processors: ProcessorHandle,
     ) -> Self {
         let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(config.channel_capacity);
@@ -44,7 +43,7 @@ impl NetworkInterfaceHandle {
             receiver,
         };
 
-        network_interface.run(stream, remote_node_id);
+        network_interface.run(stream);
 
         Self { sender }
     }
@@ -92,21 +91,40 @@ pub struct NetworkInterface {
 impl NetworkInterface {
     pub async fn run_as_client(self, remote_node_id: NodeId, remote_addr: String) {
         // connects to the remote node
-        let tcp_client = TcpClient {
-            config: self.config.clone(),
-        };
+        match self.config.protocol {
+            Protocol::Tcp => {
+                let tcp_client = TcpClient {
+                    config: self.config.clone(),
+                };
 
-        let stream = tcp_client
-            .connect(remote_addr.as_str(), remote_node_id)
-            .await;
+                let stream = tcp_client
+                    .connect(remote_node_id, remote_addr.as_str())
+                    .await;
 
-        self.run(NetworkStream::Tcp(stream), remote_node_id);
+                self.run(NetworkStream::Tcp(stream));
+            }
+            Protocol::Quic => {
+                let quic_client = QuicClient {
+                    config: self.config.clone(),
+                };
+
+                let stream = quic_client
+                    .connect(remote_node_id, remote_addr.as_str())
+                    .await;
+
+                self.run(NetworkStream::Quic(stream));
+            }
+            Protocol::Udp => {
+                // To be implemented.
+            }
+        }
     }
 
-    pub fn run(self, stream: NetworkStream, remote_node_id: NodeId) {
+    pub fn run(self, stream: NetworkStream) {
         match stream {
             NetworkStream::Tcp(stream) => {
                 let (reader, writer) = tokio::io::split(stream);
+
                 let tcp_reader = TcpReader::new(reader, self.processors);
                 let tcp_writer = TcpWriter::new(writer, self.receiver);
 
@@ -120,10 +138,9 @@ impl NetworkInterface {
             }
             NetworkStream::Quic(stream) => {
                 let (receive_stream, send_stream) = stream.split();
-                let mut quic_reader = QuicReader::new(self.processors, receive_stream);
-                let mut quic_writer = QuicWriter::new(send_stream, self.receiver);
 
-                info!("Connected to node {}.", remote_node_id);
+                let mut quic_reader = QuicReader::new(receive_stream, self.processors);
+                let mut quic_writer = QuicWriter::new(send_stream, self.receiver);
 
                 tokio::spawn(async move {
                     quic_reader.run().await;

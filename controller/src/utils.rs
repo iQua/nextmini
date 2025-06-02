@@ -49,7 +49,10 @@ pub fn build_startup_response(
 }
 
 pub fn build_add_node_message(node_id: usize, addr: String) -> ControllerToDataplane {
-    ControllerToDataplane::AddNode { node_id, addr }
+    ControllerToDataplane::AddNode {
+        remote_node_id: node_id,
+        remote_addr: addr,
+    }
 }
 
 /// Builds route-level next-hop information for a specific node.

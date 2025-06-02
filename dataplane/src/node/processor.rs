@@ -13,7 +13,7 @@ use nextmini_messages::RoutingTableEntry;
 use crate::node::config::LocalConfig;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
-use crate::node::routes::RoutingTable;
+use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -57,17 +57,34 @@ impl ProcessorHandle {
     }
 
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
-        self.broadcast_sender
-            .send(ProcessorMessage::ConnectLocalInterface(local_interface));
+        if let Err(e) = self
+            .broadcast_sender
+            .send(ProcessorMessage::ConnectLocalInterface(local_interface))
+        {
+            error!(
+                "Error connecting the processors to the local interface: {}.",
+                e
+            );
+        };
     }
 
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        self.broadcast_sender
-            .send(ProcessorMessage::UpdateRoutingTable(routes));
+        if let Err(e) = self
+            .broadcast_sender
+            .send(ProcessorMessage::UpdateRoutingTable(routes))
+        {
+            error!(
+                "Error sending the UpdateRoutingTable message to the processors: {}",
+                e
+            );
+        };
     }
 
     pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
-        match self.broadcast_sender.send(ProcessorMessage::AddNode(node_id, scheduler_handle)) {
+        match self
+            .broadcast_sender
+            .send(ProcessorMessage::AddNode(node_id, scheduler_handle))
+        {
             Ok(_) => (),
             Err(e) => error!("Failed to send AddNode message by processor handle: {}", e),
         }
@@ -114,7 +131,7 @@ impl Processor {
 
             match msg {
                 Some(ProcessorMessage::ProcessPacket(packet)) => {
-                    let _ =self.process_packet(packet).await;
+                    let _ = self.process_packet(packet).await;
                 }
                 Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
                     self.routing_table.install_routes(routes);

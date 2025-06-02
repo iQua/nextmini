@@ -40,11 +40,6 @@ impl RoutingTable {
         }
     }
 
-    /// Set the base IPv4 address for node ID calculation
-    pub fn set_base_ipv4_addr(&mut self, base_addr: [u8; 4]) {
-        self.base_ipv4_addr = base_addr;
-    }
-
     /// Install all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         info!(
