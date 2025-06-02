@@ -68,24 +68,13 @@ impl TcpServer {
 
             info!("Incoming connection from node {}...", node_id);
 
-            // Consider redesign network interface to avoid creation here
-
-            //Split the stream into reader and writer
-            let (reader, writer) = tokio::io::split(stream);
-            // set up the mpsc channel for the network interface
-            let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
-            // create the reader and writer
-            // Pass remote_node_id to TcpReader
-            let reader = TcpReader::new(reader, self.processor_handle.clone());
-            let writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
-            tokio::spawn(async move {
-                reader.run().await;
-            });
-            tokio::spawn(async move {
-                writer.run().await;
-            });
-            // create the network interface handle manually
-            let network_interface = NetworkInterfaceHandle { sender };
+            // Use unified approach for handling inbound connections
+            let network_interface = NetworkInterfaceHandle::from_inbound_connection(
+                stream,
+                self.processor_handle.clone(),
+                node_id
+            ).await;
+            
             // create the scheduler handle
             let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 

@@ -48,6 +48,29 @@ impl NetworkInterfaceHandle {
         network_interface
     }
 
+    /// Create a network interface from an inbound TCP connection
+    pub async fn from_inbound_connection(
+        stream: tokio::net::TcpStream,
+        processor_handle: ProcessorHandle,
+        remote_node_id: usize,
+    ) -> Self {
+        let (reader, writer) = tokio::io::split(stream);
+        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
+        
+        let tcp_reader = TcpReader::new(reader, processor_handle);
+        let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
+        
+        tokio::spawn(async move {
+            tcp_reader.run().await;
+        });
+        
+        tokio::spawn(async move {
+            tcp_writer.run().await;
+        });
+        
+        Self { sender }
+    }
+
     pub async fn create_connection(
         &self,
         addr: &str,
