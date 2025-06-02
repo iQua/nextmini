@@ -18,7 +18,7 @@ use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
 use crate::models::{Node, Route};
 use crate::utils::{
-    build_add_node_message, build_routes_for_node, build_startup_message, create_new_virtual_addr,
+    build_add_node_message, build_routes_for_node, build_startup_response, create_new_virtual_addr,
 };
 
 mod config;
@@ -82,7 +82,7 @@ async fn handle_connection(
                 let dataplane_msg = match rmp_serde::from_slice::<DataplaneToController>(&data) {
                     Ok(msg) => msg,
                     Err(e) => {
-                        info!("Failed to parse dataplane message: {}", e);
+                        error!("Failed to parse dataplane message: {}", e);
                         continue;
                     }
                 };
@@ -124,7 +124,7 @@ async fn handle_connection(
 
                         // checks if the node_id is already used
                         if node_ws.read().await.contains_key(&node_id) {
-                            info!("Node ID {} is already used.", node_id);
+                            warn!("Node ID {} is already used.", node_id);
                             continue;
                         }
 
@@ -136,7 +136,7 @@ async fn handle_connection(
                         ) {
                             Some(addr) => addr,
                             None => {
-                                info!(
+                                error!(
                                     "Error: Failed to create a virtual address for node {}",
                                     node_id
                                 );
@@ -193,7 +193,7 @@ async fn handle_connection(
                         }
 
                         // Send startup response
-                        let response = build_startup_message(
+                        let response = build_startup_response(
                             node_id,
                             virtual_addr,
                             config.net_mask,
@@ -400,8 +400,8 @@ async fn handle_connection(
                                 }
                             }
                         } else {
-                            info!(
-                                "Warning: Received metrics but no node ID is associated with this connection."
+                            warn!(
+                                "Received metrics but no node ID is associated with this connection."
                             );
                         }
                     }
@@ -411,8 +411,8 @@ async fn handle_connection(
                 // just received a ping message to keep the connection alive. Do nothing.
                 continue;
             }
-            Ok(_) => info!(
-                "Warning: Received a message that is not a binary or a ping message. Something may be wrong."
+            Ok(_) => warn!(
+                "Received a message that is not a binary or a ping message. Something may be wrong."
             ),
             Err(e) => {
                 error!("Error receiving the message: {}", e);

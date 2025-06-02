@@ -1,12 +1,11 @@
-use core::panic;
+use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
 use clap_serde_derive::clap;
 use clap_serde_derive::clap::Parser;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
-use serde_json::Value;
-use tracing::info;
+use tracing::{error, info, warn};
 
 use nextmini_messages::{ControllerToDataplane, Protocol};
 
@@ -255,25 +254,49 @@ impl LocalConfig {
         cfgs
     }
 
-    pub fn init(&mut self, data: Value) -> Self {
-        let startup_message: ControllerToDataplane = serde_json::from_value(data).unwrap();
+    pub fn update(&mut self, response: Result<Message, Error>) {
+        match response {
+            Ok(Message::Binary(data)) => {
+                let controller_response =
+                    match rmp_serde::from_slice::<ControllerToDataplane>(&data) {
+                        Ok(response) => response,
+                        Err(e) => {
+                            error!("Failed to parse a message from the controller: {}", e);
+                            return;
+                        }
+                    };
 
-        if let ControllerToDataplane::StartUp {
-            node_id,
-            addr,
-            net_mask,
-            protocol,
-        } = startup_message
-        {
-            self.node_id = node_id;
-            self.local_address = (addr[0], addr[1], addr[2], addr[3]);
-            self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
-            self.protocol = protocol;
-            self.scheduler_type = SchedulingDiscipline::Fifo;
-        } else {
-            panic!("Invalid startup message from the controller");
+                match controller_response {
+                    ControllerToDataplane::StartUp {
+                        node_id,
+                        addr,
+                        net_mask,
+                        protocol,
+                    } => {
+                        self.node_id = node_id;
+                        self.local_address = (addr[0], addr[1], addr[2], addr[3]);
+                        self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
+                        self.protocol = protocol;
+                        self.scheduler_type = SchedulingDiscipline::Fifo;
+
+                        info!(
+                            "Node {} received a startup response from the controller. Local configuration has been updated.",
+                            self.node_id
+                        );
+                    }
+                    _ => {
+                        error!(
+                            "A message with an unexpected type has been received from the controller."
+                        );
+                    }
+                }
+            }
+            Ok(_) => warn!(
+                "Received a message that is not a binary or a ping message. Something may be wrong."
+            ),
+            Err(e) => {
+                error!("Error receiving the message: {}", e);
+            }
         }
-        info!("Controller start up message received by dataplane node with node ID: {}", self.node_id);
-        self.clone()
     }
 }

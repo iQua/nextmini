@@ -92,20 +92,13 @@ impl ControllerInterfaceHandle {
         ws_stream
             .send(Message::binary(rmp_serde::to_vec(&startup_msg).unwrap()))
             .await
-            .expect("Failed to send startup request to server");
+            .expect("Failed to send the startup message to the controller");
 
-        // Need to check what each method does here
-        let msg = ws_stream.next().await.unwrap().unwrap();
-        let controller_configs_raw = match msg {
-            Message::Binary(data) => {
-                rmp_serde::from_slice(&data).expect("Invalid MessagePack message")
-            }
-            _ => panic!("Invalid data received from server, expected binary"),
-        };
-
-        // Obtain the complete config and store inside the controller interface handle
-        let config = self.config.init(controller_configs_raw);
-        self.config = config;
+        // waits for the controller's response
+        if let Some(response) = ws_stream.next().await {
+            // updates the local configuration with settings from the controller
+            self.config.update(response);
+        }
 
         ws_stream
     }
@@ -185,8 +178,13 @@ impl ControllerToDataplaneReceiver {
     async fn process_control_msg(&mut self, msg: ControllerToDataplane) {
         match msg {
             ControllerToDataplane::AddNode { node_id, addr } => {
-                let network_interface =
-                    NetworkInterfaceHandle::new(self.config.clone(), self.processors.clone()).await;
+                let network_interface = NetworkInterfaceHandle::new(
+                    self.config.clone(),
+                    node_id,
+                    addr,
+                    self.processors.clone(),
+                )
+                .await;
 
                 let scheduler =
                     SchedulerHandle::new(self.config.clone(), node_id, network_interface);

@@ -5,6 +5,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use nextmini_messages::Protocol;
 
+use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -27,11 +28,18 @@ pub struct NetworkInterfaceHandle {
 
 impl NetworkInterfaceHandle {
     /// Creates and runs a new network interface actor.
-    pub async fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+    pub async fn new(
+        config: LocalConfig,
+        remote_node_id: NodeId,
+        remote_addr: String,
+        processors: ProcessorHandle,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
 
         let network_interface = NetworkInterface {
             config,
+            remote_node_id,
+            remote_addr,
             processors,
             receiver,
         };
@@ -53,6 +61,8 @@ impl NetworkInterfaceHandle {
 /// The network interface actor, used for sending and receiving packets over the network.
 pub struct NetworkInterface {
     config: LocalConfig,
+    remote_node_id: NodeId,
+    remote_addr: String,
     processors: ProcessorHandle,
     pub receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
@@ -61,11 +71,16 @@ impl NetworkInterface {
     pub async fn run(&self) {
         match self.config.protocol {
             Protocol::Tcp => {
-                /// requests a connection to the remote node
-                let stream = connect_tcp_node(local_node_id, addr, remote_node_id).await;
+                // requests a connection to the remote node
+                let stream = connect_tcp_node(
+                    self.config.node_id,
+                    self.remote_addr.as_str(),
+                    self.remote_node_id,
+                )
+                .await;
                 let (reader, writer) = tokio::io::split(stream);
 
-                let tcp_reader = TcpReader::new(reader, self.processors);
+                let tcp_reader = TcpReader::new(reader, self.processors.clone());
                 let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), self.receiver);
 
                 tokio::spawn(async move {
@@ -77,11 +92,17 @@ impl NetworkInterface {
                 });
             }
             Protocol::Quic => {
-                let stream = connect_quic_node(local_node_id, addr, remote_node_id).await;
+                let stream = connect_quic_node(
+                    self.config.node_id,
+                    self.remote_addr.as_str(),
+                    self.remote_node_id,
+                )
+                .await;
                 let (receive_stream, send_stream) = stream.split();
 
-                let mut quic_reader = QuicReader::new(processor_handle, receive_stream);
-                let mut quic_writer = QuicWriter::new(Arc::new(Mutex::new(send_stream)), receiver);
+                let mut quic_reader = QuicReader::new(self.processors.clone(), receive_stream);
+                let mut quic_writer =
+                    QuicWriter::new(Arc::new(Mutex::new(send_stream)), self.receiver);
 
                 tokio::spawn(async move {
                     quic_reader.run().await;
