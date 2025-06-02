@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -64,6 +65,7 @@ impl SchedulerHandle {
 }
 
 /// Defines the interface for all scheduling disciplines.
+#[async_trait]
 pub trait Scheduler {
     async fn run(&mut self);
     fn enqueue(&mut self, packet: Packet);
@@ -110,6 +112,7 @@ impl Fifo {
     }
 }
 
+#[async_trait]
 impl Scheduler for Fifo {
     async fn run(&mut self) {
         while let Some(packet) = self.queue.pop_front() {

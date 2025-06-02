@@ -9,39 +9,6 @@ use tracing::info;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::{Client, client::Connect};
 
-pub async fn connect_tcp_node(local_id: usize, addr: &str, node_id: usize) -> TcpStream {
-    let mut retry_count = 0;
-    const MAX_RETRY: usize = 10;
-    let mut delay = Duration::from_secs(1);
-
-    loop {
-        match TcpStream::connect(addr).await {
-            Ok(mut stream) => {
-                stream
-                    .write_all(&local_id.to_be_bytes())
-                    .await
-                    .expect("Failed to send local node id to the node");
-                info!("Connected to node {} with TCP.", node_id);
-                return stream;
-            }
-            Err(e) => {
-                info!(
-                    "Failed to connect to node addr: {}, error: {}, retrying in {}s",
-                    addr,
-                    e,
-                    delay.as_secs()
-                );
-                tokio::time::sleep(delay).await;
-                retry_count += 1;
-                if retry_count >= MAX_RETRY {
-                    panic!("Maximum retry reached for TCP connection to {addr}");
-                }
-                delay = delay.mul_f32(1.5); // Exponential backoff
-            }
-        }
-    }
-}
-
 pub async fn connect_quic_node(local_id: usize, addr: &str, node_id: usize) -> BidirectionalStream {
     let client = Client::builder()
         .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))

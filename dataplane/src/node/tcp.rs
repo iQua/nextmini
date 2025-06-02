@@ -1,5 +1,4 @@
 use std::io::Cursor;
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,28 +17,25 @@ use crate::node::scheduler::SchedulerHandle;
 
 pub struct TcpServer {
     config: LocalConfig,
-    processor_handle: ProcessorHandle,
+    processors: ProcessorHandle,
 }
 
 impl TcpServer {
-    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        Self {
-            config,
-            processor_handle,
-        }
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        Self { config, processors }
     }
 
     /// Create a network interface from an inbound TCP connection
     async fn from_inbound_connection(
         stream: tokio::net::TcpStream,
-        processor_handle: ProcessorHandle,
+        processors: ProcessorHandle,
         remote_node_id: usize,
-    ) {
+    ) -> NetworkInterfaceHandle {
         let (reader, writer) = tokio::io::split(stream);
         let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
 
-        let tcp_reader = TcpReader::new(reader, processor_handle);
-        let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), receiver);
+        let tcp_reader = TcpReader::new(reader, processors);
+        let tcp_writer = TcpWriter::new(writer, receiver);
 
         tokio::spawn(async move {
             tcp_reader.run().await;
@@ -48,6 +44,8 @@ impl TcpServer {
         tokio::spawn(async move {
             tcp_writer.run().await;
         });
+
+        NetworkInterfaceHandle { sender }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -92,14 +90,13 @@ impl TcpServer {
 
             // handles inbound connections
             let network_interface =
-                TcpServer::from_inbound_connection(stream, self.processor_handle.clone(), node_id)
-                    .await;
+                TcpServer::from_inbound_connection(stream, self.processors.clone(), node_id).await;
 
-            // create the scheduler handle
+            // creates the scheduler handle
             let scheduler = SchedulerHandle::new(self.config.clone(), node_id, network_interface);
 
             // Use processor hashmap
-            self.processor_handle.add_node(node_id, scheduler).await;
+            self.processors.add_node(node_id, scheduler).await;
             info!("Connected to node {}.", node_id);
         }
     }
@@ -150,57 +147,44 @@ impl TcpClient {
 
 pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
-    processor_handle: ProcessorHandle,
+    processors: ProcessorHandle,
 }
 
 impl TcpReader {
-    // Constructor updated to include remote_node_id
-    pub fn new(stream: ReadHalf<TcpStream>, processor_handle: ProcessorHandle) -> Self {
-        Self {
-            stream,
-            processor_handle,
-        }
+    pub fn new(stream: ReadHalf<TcpStream>, processors: ProcessorHandle) -> Self {
+        Self { stream, processors }
     }
 
     pub async fn run(mut self) {
         loop {
-            // Try to read a packet from the network
-            match self.read_packet().await {
-                Ok(packet) => {
-                    // Forward the packet to the processor
-                    self.processor_handle.process_packet(packet).await;
-                }
-                Err(e) => {
-                    error!("Failed to read TCP packet: {}", e);
-                    break;
-                }
+            // reads a packet from the TCP connection
+            if let Ok(packet) = self.read_packet().await {
+                // forwards the packet to the processor
+                self.processors.process_packet(packet).await;
             }
         }
     }
 
-    /// Read a single packet from the stream
+    /// Reads a single packet from the TCP connection.
     async fn read_packet(&mut self) -> Result<Packet, std::io::Error> {
         let mut buf = [0u8; RECEIVE_BUF_SIZE];
-
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-
         self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
-        // Return the packet
         Ok(Packet::new(msg_len, buf))
     }
 }
 
 pub struct TcpWriter {
-    stream: Arc<Mutex<WriteHalf<TcpStream>>>,
+    stream: WriteHalf<TcpStream>,
     receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl TcpWriter {
     pub fn new(
-        stream: Arc<Mutex<WriteHalf<TcpStream>>>,
+        stream: WriteHalf<TcpStream>,
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
     ) -> Self {
         Self { stream, receiver }
@@ -224,8 +208,7 @@ impl TcpWriter {
 
     /// Write packet to the stream
     async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
-        let mut stream_guard = self.stream.lock().await;
-        stream_guard
+        self.stream
             .write_all(&packet.buf[0..packet.packet_size])
             .await?;
         Ok(())

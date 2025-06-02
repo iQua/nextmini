@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use s2n_quic::stream::BidirectionalStream;
 use tokio::sync::{Mutex, mpsc};
 
 use nextmini_messages::Protocol;
@@ -10,7 +9,7 @@ use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::protocols_client::connect_quic_node;
-use crate::node::protocols_client::connect_tcp_node;
+
 use crate::node::quic::{QuicReader, QuicWriter};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
 
@@ -34,7 +33,7 @@ impl NetworkInterfaceHandle {
         remote_addr: String,
         processors: ProcessorHandle,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(100);
+        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(config.channel_capacity);
 
         let network_interface = NetworkInterface {
             config,
@@ -44,6 +43,8 @@ impl NetworkInterfaceHandle {
             receiver,
         };
 
+        // there is no need to call tokio::spawn here, as the reader and writer tasks will be
+        // spawned in run() itself
         network_interface.run().await;
 
         Self { sender }
@@ -68,7 +69,7 @@ pub struct NetworkInterface {
 }
 
 impl NetworkInterface {
-    pub async fn run(&self) {
+    pub async fn run(self) {
         match self.config.protocol {
             Protocol::Tcp => {
                 // connects to the remote node
@@ -76,14 +77,13 @@ impl NetworkInterface {
                     config: self.config.clone(),
                 };
 
-                let stream = tcp_client
+                let tcp_stream = tcp_client
                     .connect(self.remote_addr.as_str(), self.remote_node_id)
                     .await;
+                let (reader, writer) = tokio::io::split(tcp_stream);
 
-                let (reader, writer) = tokio::io::split(stream);
-
-                let tcp_reader = TcpReader::new(reader, self.processors.clone());
-                let tcp_writer = TcpWriter::new(Arc::new(Mutex::new(writer)), self.receiver);
+                let tcp_reader = TcpReader::new(reader, self.processors);
+                let tcp_writer = TcpWriter::new(writer, self.receiver);
 
                 tokio::spawn(async move {
                     tcp_reader.run().await;

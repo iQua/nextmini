@@ -72,7 +72,7 @@ impl ControllerInterfaceHandle {
                     break;
                 }
                 Err(e) => {
-                    info!("Failed to connect to the controller: {}. Retrying...", e);
+                    error!("Failed to connect to the controller: {}. Retrying...", e);
                     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
                 }
             }
