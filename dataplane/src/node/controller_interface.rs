@@ -82,6 +82,7 @@ impl ControllerInterfaceHandle {
             }
         }
 
+        info!("Sending startup message to controller with node_id: {:?}", self.config.node_id);
         let startup_msg = DataplaneToController::StartUp {
             private_network_name: self.config.private_network_name.clone(),
             private_network_addr: self.config.private_network_addr.clone()
@@ -99,9 +100,14 @@ impl ControllerInterfaceHandle {
             .expect("Failed to send the startup message to the controller");
 
         // waits for the controller's response
+        debug!("Waiting for controller response...");
         if let Some(response) = ws_stream.next().await {
+            debug!("Received response from controller, updating config");
             // updates the local configuration with settings from the controller
             self.config.update(response);
+            info!("Config updated, node_id is now: {}", self.config.node_id);
+        } else {
+            error!("No response received from controller!");
         }
 
         ws_stream

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{warn, info, debug, error};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -43,19 +43,28 @@ impl SchedulerHandle {
                 panic!("Wrr scheduling discipline not implemented");
             }
         };
-
+        
+        // for debugging purposes, could be removed later
         tokio::spawn(async move {
+            debug!("Scheduler task starting");
             scheduler.run().await;
+            debug!("Scheduler task terminated");
         });
 
         Self { sender }
     }
 
     pub async fn send(&mut self, packet: Packet) {
-        self.sender
-            .send(SchedulerMessage::Enqueue(packet))
-            .await
-            .unwrap();
+        debug!("Sending packet to scheduler, flow_id={}", packet.flow_id);
+        
+        match self.sender.send(SchedulerMessage::Enqueue(packet)).await {
+            Ok(_) => {
+                debug!("Packet successfully sent to scheduler");
+            }
+            Err(e) => {
+                error!("Failed to send packet to scheduler: {}", e);
+            }
+        }
     }
 }
 
@@ -87,6 +96,8 @@ impl Fifo {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
 
+        debug!("Creating FIFO scheduler with capacity {}", capacity);
+
         let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
             DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
             DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
@@ -105,21 +116,34 @@ impl Fifo {
 #[async_trait]
 impl Scheduler for Fifo {
     async fn run(&mut self) {
+        debug!("FIFO scheduler starting to process packets");
+        
         while let Some(packet) = self.queue.pop_front() {
+            debug!("Processing packet from queue, flow_id={}", packet.flow_id);
+            
             tokio::select! {
                 // sends a packet from the queue to the network interface
-                _ = self.net_interface.send(packet) => {}
+                result = self.net_interface.send(packet) => {
+                    if result.is_err() {
+                        error!("Failed to send packet to network interface");
+                    } else {
+                        debug!("Sent packet to network interface");
+                    }
+                }
                 // receives a packet from the processors
                 Some(message) = self.receiver.recv() => {
                     // a packet arrives from the processors
                     match message {
                         SchedulerMessage::Enqueue(packet) => {
+                            debug!("Received new packet to enqueue, flow_id={}", packet.flow_id);
                             self.enqueue(packet);
                         }
                     }
                 }
             }
         }
+        
+        debug!("FIFO scheduler queue empty, waiting for new packets");
     }
 
     fn enqueue(&mut self, packet: Packet) {

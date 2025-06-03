@@ -131,4 +131,10 @@ impl RoutingTable {
     pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
         self.route_next_hop.get(&route_id).copied()
     }
+
+    /// Update the local node ID
+    pub fn update_node_id(&mut self, node_id: NodeId) {
+        info!("Updating routing table local_id from {} to {}", self.local_id, node_id);
+        self.local_id = node_id;
+    }
 }

@@ -35,20 +35,31 @@ impl Conductor {
         let config = LocalConfig::new();
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
-        
+
         // connects the processors with its downstream local interface writers to send packets out
-        let controller_interface = ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
-        
+        let controller_interface =
+            ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
+
         // gets the configuration from controller_interface
         let updated_config = controller_interface.get_config();
-        
+
+        // updates processor node ID if it changed
+        if updated_config.node_id != config.node_id {
+            info!(
+                "Node ID changed from {} to {}, updating processors",
+                config.node_id, updated_config.node_id
+            );
+            processors.update_node_id(updated_config.node_id).await;
+        }
+
         // starts local_interface using the configuration from controller_interface, which is updated
-        let local_interface = LocalInterfaceHandle::new(updated_config, processors.clone());
-        
+        let local_interface = LocalInterfaceHandle::new(updated_config.clone(), processors.clone());
+
         processors.connect_local_interface(local_interface.clone());
 
         Conductor {
-            config,
+            // use updated config
+            config: updated_config,
             local_interface,
             processors,
             controller_interface,
@@ -76,7 +87,7 @@ impl Conductor {
 
         // gets the configuration from controller_interface
         let config = self.controller_interface.get_config();
-        
+
         let public_port = config.public_network_port.clone();
         let private_port = config.private_network_port.clone();
 
@@ -84,13 +95,14 @@ impl Conductor {
             Protocol::Udp => {
                 let mut udp_reader = UdpReader::new(config.clone(), self.processors.clone());
                 tokio::spawn(async move {
-                    udp_reader.start_listening(&format!("{}:{}", "0.0.0.0", public_port)).await;
+                    udp_reader
+                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                        .await;
                 });
             }
             Protocol::Tcp => {
                 if public_port == private_port {
-                    let mut tcp_server =
-                        TcpServer::new(config.clone(), self.processors.clone());
+                    let mut tcp_server = TcpServer::new(config.clone(), self.processors.clone());
                     tcp_server
                         .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                         .await;
@@ -111,24 +123,21 @@ impl Conductor {
             }
             Protocol::Quic => {
                 if public_port == private_port {
-                    let mut quic_server =
-                        QuicServer::new(config.clone(), self.processors.clone());
+                    let mut quic_server = QuicServer::new(config.clone(), self.processors.clone());
                     tokio::spawn(async move {
                         quic_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                             .await;
                     });
                 } else {
-                    let mut quic_server =
-                        QuicServer::new(config.clone(), self.processors.clone());
+                    let mut quic_server = QuicServer::new(config.clone(), self.processors.clone());
                     tokio::spawn(async move {
                         quic_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                             .await;
                     });
 
-                    let mut quic_server =
-                        QuicServer::new(config.clone(), self.processors.clone());
+                    let mut quic_server = QuicServer::new(config.clone(), self.processors.clone());
                     tokio::spawn(async move {
                         quic_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", private_port))

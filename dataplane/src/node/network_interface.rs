@@ -73,11 +73,22 @@ impl NetworkInterfaceHandle {
     }
 
     /// Send a packet through the network interface
-    pub async fn send(&self, packet: Packet) {
-        self.sender
-            .send(NetworkInterfaceMessage::SendPacket(packet))
-            .await
-            .unwrap();
+    // pub async fn send(&self, packet: Packet) {
+    //     self.sender
+    //         .send(NetworkInterfaceMessage::SendPacket(packet))
+    //         .await
+    //         .unwrap();
+    
+    /// for debugging purposes, should be removed later
+    pub async fn send(&self, packet: Packet) -> Result<(), String> {
+        match self.sender.send(NetworkInterfaceMessage::SendPacket(packet)).await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let error = format!("Failed to send packet to network interface: {}", e);
+                tracing::error!("{}", error);
+                Err(error)
+            }
+        }
     }
 }
 
