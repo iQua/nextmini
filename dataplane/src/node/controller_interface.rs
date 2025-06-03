@@ -1,13 +1,13 @@
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, interval, sleep};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
@@ -82,7 +82,10 @@ impl ControllerInterfaceHandle {
             }
         }
 
-        info!("Sending startup message to controller with node_id: {:?}", self.config.node_id);
+        debug!(
+            "Sending startup message to controller with node_id: {:?}",
+            self.config.node_id
+        );
         let startup_msg = DataplaneToController::StartUp {
             private_network_name: self.config.private_network_name.clone(),
             private_network_addr: self.config.private_network_addr.clone()
@@ -100,12 +103,13 @@ impl ControllerInterfaceHandle {
             .expect("Failed to send the startup message to the controller");
 
         // waits for the controller's response
-        debug!("Waiting for controller response...");
         if let Some(response) = ws_stream.next().await {
-            debug!("Received response from controller, updating config");
             // updates the local configuration with settings from the controller
             self.config.update(response);
-            info!("Config updated, node_id is now: {}", self.config.node_id);
+            debug!(
+                "Connected to controller, assigned node_id: {}",
+                self.config.node_id
+            );
         } else {
             error!("No response received from controller!");
         }
@@ -196,16 +200,49 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
+                debug!(
+                    "Received AddNode message for node {} at address {}",
+                    remote_node_id, remote_addr
+                );
+                // Node starts up with node_id = 0
+                // Controller also immediately starts sending AddNode messages to tell this node about other nodes
+                // AddNode messages might arrive before the node_id assignment is processed
+                // So we need to wait for the node_id to be assigned before processing AddNode messages
+                // Wait for valid node_id (max 5 seconds)
+                let start_time = std::time::Instant::now();
+                let updated_config = loop {
+                    let config = self.controller_interface.get_config();
+                    if config.node_id != 0 {
+                        break config;
+                    }
+
+                    if start_time.elapsed() > Duration::from_secs(5) {
+                        error!(
+                            "Timeout waiting for node_id assignment. Skipping connection to node {}",
+                            remote_node_id
+                        );
+                        return;
+                    }
+
+                    warn!("Local node_id is still 0, waiting for assignment...");
+                    sleep(Duration::from_millis(100)).await;
+                };
+
+                debug!(
+                    "Creating network interface for remote node {}",
+                    remote_node_id
+                );
                 let network_interface = NetworkInterfaceHandle::new_as_client(
-                    self.config.clone(),
+                    updated_config.clone(),
                     remote_node_id,
-                    remote_addr,
+                    remote_addr.clone(),
                     self.processors.clone(),
                 )
                 .await;
 
-                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+                let scheduler = SchedulerHandle::new(updated_config.clone(), network_interface);
 
+                debug!("Connected to node {} at {}", remote_node_id, remote_addr);
                 self.processors.add_node(remote_node_id, scheduler).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
@@ -215,6 +252,13 @@ impl ControllerToDataplaneReceiver {
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!("Installing {} routes.", routes.len());
                 self.processors.update_routing_table(routes).await;
+                // uses for debugging
+                // if !routes.is_empty() {
+                //     debug!("Installing {} routes", routes.len());
+                //     self.processors.update_routing_table(routes).await;
+                // } else {
+                //     warn!("Received empty routes list from controller");
+                // }
             }
             _ => error!("Received a message with an unknown type from the controller."),
         }

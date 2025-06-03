@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
@@ -97,8 +97,13 @@ impl TcpClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
+                    let local_node_id = self.config.node_id; // gets the updated local node_id
+                    debug!(
+                        "Connecting to node {} with local node_id {}",
+                        remote_node_id, local_node_id
+                    );
                     stream
-                        .write_all(&self.config.node_id.to_be_bytes())
+                        .write_all(&local_node_id.to_be_bytes())
                         .await
                         .expect("Failed to send local node id to the node");
 

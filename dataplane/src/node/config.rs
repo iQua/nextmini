@@ -1,13 +1,13 @@
-use tokio_tungstenite::tungstenite::{Error, Message};
-use tokio::net::UdpSocket;
 use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
 use clap_serde_derive::clap;
 use clap_serde_derive::clap::Parser;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use nextmini_messages::{ControllerToDataplane, Protocol};
 
@@ -256,6 +256,15 @@ impl LocalConfig {
         }
 
         info!("Using local configuration: {:#?}", cfgs);
+        // debug!(
+        //     "Node configuration loaded: node_id={}, private_addr={}:{}, public_addr={}:{}, protocol={:?}",
+        //     cfgs.node_id,
+        //     cfgs.private_network_addr,
+        //     cfgs.private_network_port,
+        //     cfgs.public_network_addr,
+        //     cfgs.public_network_port,
+        //     cfgs.protocol
+        // );
 
         cfgs
     }

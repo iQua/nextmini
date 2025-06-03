@@ -89,7 +89,7 @@ impl ProcessorHandle {
             .broadcast_sender
             .send(ProcessorMessage::AddNode(node_id, scheduler_handle))
         {
-            Ok(_) => (),
+            Ok(_) => debug!("Sent AddNode message for node {}", node_id),
             Err(e) => error!("Failed to send AddNode message by processor handle: {}", e),
         }
     }
@@ -149,8 +149,17 @@ impl Processor {
                     self.routing_table.install_routes(routes);
                 }
                 Some(ProcessorMessage::AddNode(node_id, scheduler_handle)) => {
-                    println!("Adding node: {}", node_id);
+                    if node_id == 0 {
+                        error!("Attempted to add invalid node_id=0 to scheduler map, ignoring");
+                        continue;
+                    }
+                    
+                    let is_new = !self.schedulers.contains_key(&node_id);
                     self.schedulers.insert(node_id, scheduler_handle);
+                    
+                    if is_new {
+                        info!("Added node {} to scheduler map", node_id);
+                    }
                 }
                 Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {
                     self.local_interface = Some(local_interface);
