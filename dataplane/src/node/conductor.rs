@@ -40,7 +40,6 @@ impl Conductor {
         config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
-        // starts local_interface using the configuration from controller_interface, which is updated
         let local_interface = LocalInterfaceHandle::new(config.clone(), processors.clone());
 
         processors.connect_local_interface(local_interface.clone());
