@@ -1,13 +1,13 @@
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval, sleep};
+use tokio::time::{Duration, interval};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
@@ -212,43 +212,20 @@ impl ControllerToDataplaneReceiver {
                     "Received AddNode message for node {} at address {}",
                     remote_node_id, remote_addr
                 );
-                // Node starts up with node_id = 0
-                // Controller also immediately starts sending AddNode messages to tell this node about other nodes
-                // AddNode messages might arrive before the node_id assignment is processed
-                // So we need to wait for the node_id to be assigned before processing AddNode messages
-                // Wait for valid node_id (max 5 seconds)
-                let start_time = std::time::Instant::now();
-                let updated_config = loop {
-                    let config = self.controller_interface.get_config();
-                    if config.node_id != 0 {
-                        break config;
-                    }
-
-                    if start_time.elapsed() > Duration::from_secs(5) {
-                        error!(
-                            "Timeout waiting for node_id assignment. Skipping connection to node {}",
-                            remote_node_id
-                        );
-                        return;
-                    }
-
-                    warn!("Local node_id is still 0, waiting for assignment...");
-                    sleep(Duration::from_millis(100)).await;
-                };
 
                 debug!(
                     "Creating network interface for remote node {}",
                     remote_node_id
                 );
                 let network_interface = NetworkInterfaceHandle::new_as_client(
-                    updated_config.clone(),
+                    self.config.clone(),
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
                 )
                 .await;
 
-                let scheduler = SchedulerHandle::new(updated_config.clone(), network_interface);
+                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
                 debug!("Connected to node {} at {}", remote_node_id, remote_addr);
                 self.processors.add_node(remote_node_id, scheduler).await;
