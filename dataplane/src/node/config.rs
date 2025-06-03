@@ -100,7 +100,8 @@ pub struct LocalConfig {
     pub num_packet_processors: usize,
 
     /// The capacity for all channels between actors
-    #[default(100)]
+    #[default(1000)]
+    // Default value is 10000, 998 Mbits/sec;
     #[arg(long)]
     pub channel_capacity: usize,
 
@@ -156,7 +157,7 @@ pub struct LocalConfig {
     pub scheduler_type: SchedulingDiscipline,
 
     // The capacity of each scheduler queue
-    #[default(100)]
+    #[default(1000)]
     #[arg(long)]
     pub queue_capacity: usize,
 

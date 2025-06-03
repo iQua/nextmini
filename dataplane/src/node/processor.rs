@@ -164,13 +164,7 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
-        debug!(
-            "Processing packet for flow {}:{} -> {}:{}",
-            packet_flow_id.src_ip(),
-            packet_flow_id.src_port(),
-            packet_flow_id.dst_ip(),
-            packet_flow_id.dst_port()
-        );
+
 
         // Select route_id for new flow at source node
         let route_id = self
@@ -207,15 +201,7 @@ impl Processor {
                 error
             })?;
 
-        debug!(
-            "Flow {}:{} -> {}:{} selected route_id {} → next_hop {}.",
-            packet_flow_id.src_ip(),
-            packet_flow_id.src_port(),
-            packet_flow_id.dst_ip(),
-            packet_flow_id.dst_port(),
-            route_id,
-            next_hop_id
-        );
+
 
         self.send_packet(packet, next_hop_id, packet_flow_id).await
     }
@@ -229,10 +215,7 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-            debug!(
-                "Local delivery: Delivering packet for flow {} (size: {}) to local interface",
-                packet_flow_id, packet.packet_size
-            );
+
             if let Some(ref local_interface) = self.local_interface {
                 local_interface.write_packet(packet).await;
                 debug!("Local delivery: Packet successfully written to local interface");
