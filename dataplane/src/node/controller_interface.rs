@@ -18,27 +18,19 @@ use crate::node::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
-    config: LocalConfig,
+    pub config: LocalConfig,
+    pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
-    pub fn get_config(&self) -> LocalConfig {
-        self.config.clone()
-    }
-
-    pub async fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+    pub async fn new(config: LocalConfig) -> Self {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
-        let mut controller_interface = Self {
-            config: config.clone(),
-            northbridge_sender,
-        };
-
         // connects to the controller over WebSockets
-        let ws_stream = controller_interface.connect().await;
+        let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
@@ -46,6 +38,12 @@ impl ControllerInterfaceHandle {
         let mut controller_sender = DataplaneToControllerSender {
             sender_stream,
             northbridge_receiver,
+        };
+
+        let controller_interface = Self {
+            config: config.clone(),
+            processors: processors.clone(),
+            northbridge_sender,
         };
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
@@ -65,8 +63,14 @@ impl ControllerInterfaceHandle {
         controller_interface
     }
 
-    pub async fn connect(&mut self) -> WebSocketStream<MaybeTlsStream<TcpStream>> {
-        let url = url::Url::parse(&self.config.controller_addr).unwrap();
+    pub async fn connect(
+        mut config: LocalConfig,
+    ) -> (
+        LocalConfig,
+        ProcessorHandle,
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+    ) {
+        let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
         loop {
             match connect_async(url.as_str()).await {
@@ -84,17 +88,17 @@ impl ControllerInterfaceHandle {
 
         debug!(
             "Sending startup message to controller with node_id: {:?}",
-            self.config.node_id
+            config.node_id
         );
         let startup_msg = DataplaneToController::StartUp {
-            private_network_name: self.config.private_network_name.clone(),
-            private_network_addr: self.config.private_network_addr.clone()
+            private_network_name: config.private_network_name.clone(),
+            private_network_addr: config.private_network_addr.clone()
                 + ":"
-                + &self.config.private_network_port.clone(),
-            public_network_addr: self.config.public_network_addr.clone()
+                + &config.private_network_port.clone(),
+            public_network_addr: config.public_network_addr.clone()
                 + ":"
-                + &self.config.public_network_port.clone(),
-            node_id: self.config.node_id.to_string().parse().ok(),
+                + &config.public_network_port.clone(),
+            node_id: config.node_id.to_string().parse().ok(),
         };
 
         ws_stream
@@ -105,16 +109,20 @@ impl ControllerInterfaceHandle {
         // waits for the controller's response
         if let Some(response) = ws_stream.next().await {
             // updates the local configuration with settings from the controller
-            self.config.update(response);
+            config.update(response);
+
             debug!(
                 "Connected to controller, assigned node_id: {}",
-                self.config.node_id
+                config.node_id
             );
         } else {
             error!("No response received from controller!");
         }
 
-        ws_stream
+        // starts the processor actor
+        let processors = ProcessorHandle::new(config.clone());
+
+        (config, processors, ws_stream)
     }
 
     pub async fn send_metrics(&self, msg: DataplaneToController) {
