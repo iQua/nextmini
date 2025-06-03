@@ -7,7 +7,7 @@ use clap_serde_derive::clap;
 use clap_serde_derive::clap::Parser;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use nextmini_messages::{ControllerToDataplane, Protocol};
 

@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use crate::node::FlowId;
 use crate::node::FlowIdExt;

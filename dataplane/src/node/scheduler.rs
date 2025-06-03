@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
