@@ -256,16 +256,6 @@ impl LocalConfig {
         }
 
         info!("Using local configuration: {:#?}", cfgs);
-        // debug!(
-        //     "Node configuration loaded: node_id={}, private_addr={}:{}, public_addr={}:{}, protocol={:?}",
-        //     cfgs.node_id,
-        //     cfgs.private_network_addr,
-        //     cfgs.private_network_port,
-        //     cfgs.public_network_addr,
-        //     cfgs.public_network_port,
-        //     cfgs.protocol
-        // );
-
         cfgs
     }
 

@@ -24,7 +24,6 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    UpdateNodeId(NodeId),
 }
 
 #[derive(Clone)]
@@ -37,9 +36,6 @@ impl ProcessorHandle {
     pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
-
-        // for debugging purposes, could be removed later
-        debug!("Creating ProcessorHandle with node ID: {}", config.node_id);
 
         for _ in 0..config.num_packet_processors {
             let mut proc = Processor {
@@ -99,14 +95,6 @@ impl ProcessorHandle {
             .send(ProcessorMessage::ProcessPacket(packet))
             .unwrap();
     }
-
-    pub async fn update_node_id(&self, node_id: NodeId) {
-        if let Err(e) = self.broadcast_sender.send(ProcessorMessage::UpdateNodeId(node_id)) {
-            error!("Failed to send UpdateNodeId message to processors: {}", e);
-        } else {
-            info!("Updated processor node ID to {}", node_id);
-        }
-    }
 }
 
 // Processes packets and forwards them to the next hop.
@@ -153,19 +141,16 @@ impl Processor {
                         error!("Attempted to add invalid node_id=0 to scheduler map, ignoring");
                         continue;
                     }
-                    
+
                     let is_new = !self.schedulers.contains_key(&node_id);
                     self.schedulers.insert(node_id, scheduler_handle);
-                    
+
                     if is_new {
                         info!("Added node {} to scheduler map", node_id);
                     }
                 }
                 Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {
                     self.local_interface = Some(local_interface);
-                }
-                Some(ProcessorMessage::UpdateNodeId(node_id)) => {
-                    self.routing_table.update_node_id(node_id);
                 }
                 None => {
                     error!("Processor received an unexpected message");
@@ -244,8 +229,13 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
+            debug!(
+                "Local delivery: Delivering packet for flow {} (size: {}) to local interface",
+                packet_flow_id, packet.packet_size
+            );
             if let Some(ref local_interface) = self.local_interface {
                 local_interface.write_packet(packet).await;
+                debug!("Local delivery: Packet successfully written to local interface");
                 Ok(())
             } else {
                 Err("The local interface has not yet been connected.".to_string())

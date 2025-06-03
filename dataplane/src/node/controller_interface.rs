@@ -237,13 +237,6 @@ impl ControllerToDataplaneReceiver {
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!("Installing {} routes.", routes.len());
                 self.processors.update_routing_table(routes).await;
-                // uses for debugging
-                // if !routes.is_empty() {
-                //     debug!("Installing {} routes", routes.len());
-                //     self.processors.update_routing_table(routes).await;
-                // } else {
-                //     warn!("Received empty routes list from controller");
-                // }
             }
             _ => error!("Received a message with an unknown type from the controller."),
         }

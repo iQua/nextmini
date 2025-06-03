@@ -132,16 +132,5 @@ impl RoutingTable {
         self.route_next_hop.get(&route_id).copied()
     }
 
-    // update the local node ID after receiving a new one from the controller
-    pub fn update_node_id(&mut self, node_id: NodeId) {
-        // // need to check if the node_id is valid
-        // if node_id == 0 {
-        //     error!("Attempt to update routing table with invalid node_id=0");
-        //     return;
-        // }
 
-        if self.local_id != node_id {
-            self.local_id = node_id;
-        }
-    }
 }
