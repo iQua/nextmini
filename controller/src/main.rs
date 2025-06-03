@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
+use tracing_subscriber;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
@@ -32,6 +33,8 @@ type NodeWriterMap = Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>;
 
 #[tokio::main]
 async fn main() {
+
+    tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
