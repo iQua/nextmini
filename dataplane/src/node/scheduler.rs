@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{warn, info, debug, error};
+use tracing::{debug, error, info, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -43,7 +43,7 @@ impl SchedulerHandle {
                 panic!("Wrr scheduling discipline not implemented");
             }
         };
-        
+
         // for debugging purposes, could be removed later
         tokio::spawn(async move {
             debug!("Scheduler task starting");
@@ -56,7 +56,7 @@ impl SchedulerHandle {
 
     pub async fn send(&mut self, packet: Packet) {
         debug!("Sending packet to scheduler, flow_id={}", packet.flow_id);
-        
+
         match self.sender.send(SchedulerMessage::Enqueue(packet)).await {
             Ok(_) => {
                 debug!("Packet successfully sent to scheduler");
@@ -117,22 +117,27 @@ impl Fifo {
 impl Scheduler for Fifo {
     async fn run(&mut self) {
         debug!("FIFO scheduler starting to process packets");
-        
-        while let Some(packet) = self.queue.pop_front() {
-            debug!("Processing packet from queue, flow_id={}", packet.flow_id);
-            
+
+        loop {
             tokio::select! {
-                // sends a packet from the queue to the network interface
-                result = self.net_interface.send(packet) => {
-                    if result.is_err() {
-                        error!("Failed to send packet to network interface");
+                // Using biased makes sure a packet is immediately sent but sacrifices with changing branches every time
+                biased;
+
+                // Only ready when a packet is in the queue
+                packet = async {
+                    if let Some(packet) = self.queue.pop_front() {
+                        debug!("Processing packet from queue, flow_id={}", packet.flow_id);
+                        packet
                     } else {
-                        debug!("Sent packet to network interface");
+                        debug!("FIFO scheduler queue empty, waiting for new packets");
+                        std::future::pending::<Packet>().await
                     }
+                } => {
+                    debug!("Sent packet to network interface");
+                    self.net_interface.send(packet).await;
                 }
-                // receives a packet from the processors
+
                 Some(message) = self.receiver.recv() => {
-                    // a packet arrives from the processors
                     match message {
                         SchedulerMessage::Enqueue(packet) => {
                             debug!("Received new packet to enqueue, flow_id={}", packet.flow_id);
@@ -140,10 +145,14 @@ impl Scheduler for Fifo {
                         }
                     }
                 }
+
+                // todo : implement shutdown logic for scheduler
+                // else => {
+                //     debug!("Shutting down FIFO scheduler gracefully");
+                //     break;
+                // }
             }
         }
-        
-        debug!("FIFO scheduler queue empty, waiting for new packets");
     }
 
     fn enqueue(&mut self, packet: Packet) {
