@@ -24,6 +24,10 @@ pub struct ControllerInterfaceHandle {
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
+    pub fn get_config(&self) -> LocalConfig {
+        self.config.clone()
+    }
+
     pub async fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();

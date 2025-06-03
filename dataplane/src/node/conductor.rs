@@ -33,19 +33,19 @@ pub struct Conductor {
 impl Conductor {
     pub async fn new(main_shutdown_recv: mpsc::UnboundedReceiver<()>) -> Self {
         let config = LocalConfig::new();
-
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
-
-        // starts the local interface actor, providing it with a handle of the processors
-        let local_interface = LocalInterfaceHandle::new(config.clone(), processors.clone());
-
+        
         // connects the processors with its downstream local interface writers to send packets out
+        let controller_interface = ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
+        
+        // gets the configuration from controller_interface
+        let updated_config = controller_interface.get_config();
+        
+        // starts local_interface using the configuration from controller_interface, which is updated
+        let local_interface = LocalInterfaceHandle::new(updated_config, processors.clone());
+        
         processors.connect_local_interface(local_interface.clone());
-
-        // starts the controller interface actor
-        let controller_interface =
-            ControllerInterfaceHandle::new(config.clone(), processors.clone()).await;
 
         Conductor {
             config,
@@ -74,12 +74,15 @@ impl Conductor {
     pub async fn start(&self) {
         info!("Nextmini is starting...");
 
-        let public_port = self.config.public_network_port.clone();
-        let private_port = self.config.private_network_port.clone();
+        // gets the configuration from controller_interface
+        let config = self.controller_interface.get_config();
+        
+        let public_port = config.public_network_port.clone();
+        let private_port = config.private_network_port.clone();
 
-        match self.config.protocol {
+        match config.protocol {
             Protocol::Udp => {
-                let mut udp_reader = UdpReader::new(self.config.clone(), self.processors.clone());
+                let mut udp_reader = UdpReader::new(config.clone(), self.processors.clone());
                 tokio::spawn(async move {
                     udp_reader.start_listening(&format!("{}:{}", "0.0.0.0", public_port)).await;
                 });
@@ -87,15 +90,15 @@ impl Conductor {
             Protocol::Tcp => {
                 if public_port == private_port {
                     let mut tcp_server =
-                        TcpServer::new(self.config.clone(), self.processors.clone());
+                        TcpServer::new(config.clone(), self.processors.clone());
                     tcp_server
                         .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                         .await;
                 } else {
                     let mut tcp_server_public =
-                        TcpServer::new(self.config.clone(), self.processors.clone());
+                        TcpServer::new(config.clone(), self.processors.clone());
                     let mut tcp_server_private =
-                        TcpServer::new(self.config.clone(), self.processors.clone());
+                        TcpServer::new(config.clone(), self.processors.clone());
 
                     let public_addr = format!("{}:{}", "0.0.0.0", public_port);
                     let private_addr = format!("{}:{}", "0.0.0.0", private_port);
@@ -109,7 +112,7 @@ impl Conductor {
             Protocol::Quic => {
                 if public_port == private_port {
                     let mut quic_server =
-                        QuicServer::new(self.config.clone(), self.processors.clone());
+                        QuicServer::new(config.clone(), self.processors.clone());
                     tokio::spawn(async move {
                         quic_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
@@ -117,7 +120,7 @@ impl Conductor {
                     });
                 } else {
                     let mut quic_server =
-                        QuicServer::new(self.config.clone(), self.processors.clone());
+                        QuicServer::new(config.clone(), self.processors.clone());
                     tokio::spawn(async move {
                         quic_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
@@ -125,7 +128,7 @@ impl Conductor {
                     });
 
                     let mut quic_server =
-                        QuicServer::new(self.config.clone(), self.processors.clone());
+                        QuicServer::new(config.clone(), self.processors.clone());
                     tokio::spawn(async move {
                         quic_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", private_port))
