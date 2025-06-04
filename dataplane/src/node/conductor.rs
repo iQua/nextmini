@@ -2,7 +2,7 @@
 /// the dataplane node, including the connection with the controller actor, all processor actors,
 /// the local reader and writer actors, and the metrics collector actor.
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::info;
 
 use nextmini_messages::Protocol;
 
@@ -69,10 +69,8 @@ impl Conductor {
 
     /// Starts the server and, if needed, listens for incoming connections.
     pub async fn start(&self) {
-        info!("Nextmini is starting...");
-
-        debug!(
-            "Starting Nextmini node {} on {}:{}",
+        info!(
+            "Starting Nextmini node {} on {}:{}...",
             self.config.node_id, self.config.private_network_addr, self.config.private_network_port
         );
 

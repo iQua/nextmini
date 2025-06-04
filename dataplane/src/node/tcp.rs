@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::time::Duration;
 
+use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
@@ -153,7 +154,7 @@ impl TcpReader {
     }
 
     /// Reads a single packet from the TCP connection.
-    async fn read_packet(&mut self) -> Result<Packet, std::io::Error> {
+    async fn read_packet(&mut self) -> Result<Packet> {
         let mut buf = [0u8; RECEIVE_BUF_SIZE];
         self.stream.read_exact(&mut buf[0..4]).await?;
 
@@ -181,8 +182,7 @@ impl TcpWriter {
         while let Some(msg) = self.receiver.recv().await {
             match msg {
                 NetworkInterfaceMessage::SendPacket(packet) => {
-                    let result = self.write_packet(&packet).await;
-                    if let Err(e) = result {
+                    if let Err(e) = self.write_packet(&packet).await {
                         error!("Failed to write packet: {}", e);
                     }
                 }
@@ -193,11 +193,12 @@ impl TcpWriter {
         }
     }
 
-    /// Write packet to the stream
-    async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
+    /// Writes a packet to the network using QUIC.
+    async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
         self.stream
             .write_all(&packet.buf[0..packet.packet_size])
             .await?;
+
         Ok(())
     }
 }

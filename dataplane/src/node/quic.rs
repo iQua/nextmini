@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
+use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
@@ -179,32 +180,18 @@ impl QuicReader {
 
     pub async fn run(&mut self) {
         loop {
-            if let Ok(packet) = self.read().await {
+            if let Ok(packet) = self.read_packet().await {
                 self.processors.process_packet(packet).await;
             }
         }
     }
 
-    pub async fn read(&mut self) -> Result<Packet, std::io::Error> {
+    async fn read_packet(&mut self) -> Result<Packet> {
         let mut buf = [0u8; RECEIVE_BUF_SIZE];
-
-        if let Err(_) = self.stream.read_exact(&mut buf[0..4]).await {
-            error!("Failed to read the length of a packet.");
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Failed to read packet length",
-            ));
-        }
+        self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-
-        if let Err(_) = self.stream.read_exact(&mut buf[4..msg_len]).await {
-            error!("Failed to read a packet.");
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Failed to read packet data",
-            ));
-        }
+        self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
         Ok(Packet::new(msg_len, buf))
     }
@@ -225,9 +212,8 @@ impl QuicWriter {
         while let Some(msg) = self.receiver.recv().await {
             match msg {
                 NetworkInterfaceMessage::SendPacket(packet) => {
-                    let result = self.write_packet(&packet).await;
-                    if let Err(e) = result {
-                        error!("Failed to write packet: {}", e);
+                    if let Err(e) = self.write_packet(&packet).await {
+                        error!("Failed to send a packet via QUIC: {}", e);
                     }
                 }
                 NetworkInterfaceMessage::Shutdown => {
@@ -237,7 +223,12 @@ impl QuicWriter {
         }
     }
 
-    pub async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
-        self.stream.write_all(&packet.buf[0..packet.packet_size]).await
+    // Sends a packet to the network via QUIC.
+    async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
+        self.stream
+            .write_all(&packet.buf[0..packet.packet_size])
+            .await?;
+
+        Ok(())
     }
 }
