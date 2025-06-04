@@ -157,7 +157,7 @@ impl FifoReader {
             self.packets_dropped += 1;
 
             warn!(
-                "FIFO: Scheduler dropped packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
+                "FIFO: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
                 packet.flow_id,
                 packet.packet_size,
                 self.queue.len(),
@@ -170,8 +170,10 @@ impl FifoReader {
 
         if self.queue.push(packet).is_err() {
             self.packets_dropped += 1;
+
+            warn!("FIFO: Scheduler dropped a packet as the queue is full.");
         } else {
-            // Notify the consumer task that a packet has arrived and the queue becomes 'non-empty' now
+            // notifies the consumer task that a packet has arrived and the queue becomes 'non-empty' now
             self.queue_not_empty.notify_one();
         }
     }
