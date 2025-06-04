@@ -10,7 +10,8 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
-use crate::node::udp::UdpWriter;
+use crate::node::udp::UdpRelay;
+
 /// Messages sent to the network interface actor, which manages NetworkReader and Writer actors
 #[derive(Debug)]
 pub enum NetworkInterfaceMessage {
@@ -78,10 +79,14 @@ impl NetworkInterfaceHandle {
     //         .send(NetworkInterfaceMessage::SendPacket(packet))
     //         .await
     //         .unwrap();
-    
+
     /// for debugging purposes, should be removed later
     pub async fn send(&self, packet: Packet) -> Result<(), String> {
-        match self.sender.send(NetworkInterfaceMessage::SendPacket(packet)).await {
+        match self
+            .sender
+            .send(NetworkInterfaceMessage::SendPacket(packet))
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) => {
                 let error = format!("Failed to send packet to network interface: {}", e);
@@ -125,10 +130,11 @@ impl NetworkInterface {
 
                 self.run(NetworkStream::Quic(stream));
             }
-            Protocol::Udp => {  
-                let udp_writer = UdpWriter::new(self.config.clone(), self.receiver, remote_addr);
+            Protocol::Udp => {
+                let udp_relay = UdpRelay::new(self.config.clone(), self.receiver, remote_addr);
+
                 tokio::spawn(async move {
-                    udp_writer.run().await;
+                    udp_relay.run().await;
                 });
             }
         }

@@ -12,7 +12,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
-use crate::node::udp::UdpReader;
+use crate::node::udp::UdpServer;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -79,7 +79,7 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Udp => {
-                let mut udp_reader = UdpReader::new(self.config.clone(), self.processors.clone());
+                let mut udp_reader = UdpServer::new(self.config.clone(), self.processors.clone());
                 udp_reader
                     .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                     .await;

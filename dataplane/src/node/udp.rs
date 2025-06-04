@@ -11,13 +11,13 @@ use crate::node::network_interface::NetworkInterfaceMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-pub struct UdpReader {
+pub struct UdpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
     socket: Option<Arc<UdpSocket>>,
 }
 
-impl UdpReader {
+impl UdpServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self {
             config,
@@ -53,13 +53,13 @@ impl UdpReader {
     }
 }
 
-pub struct UdpWriter {
+pub struct UdpRelay {
     receiver: mpsc::Receiver<NetworkInterfaceMessage>,
     socket: Arc<UdpSocket>,
     remote_addr: String,
 }
 
-impl UdpWriter {
+impl UdpRelay {
     pub fn new(
         config: LocalConfig,
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
