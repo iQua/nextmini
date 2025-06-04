@@ -238,6 +238,6 @@ impl QuicWriter {
     }
 
     pub async fn write_packet(&mut self, packet: &Packet) -> Result<(), std::io::Error> {
-        self.stream.write_all(&packet.buf).await
+        self.stream.write_all(&packet.buf[0..packet.packet_size]).await
     }
 }
