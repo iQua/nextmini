@@ -150,7 +150,7 @@ impl FifoReader {
         // drops the packet based on the drop strategy
         let should_drop_packet =
             self.drop_strategy
-                .should_drop(packet.packet_size, self.queue.len(), self.capacity);
+                .should_drop(packet.packet_size, self.queue.len(), self.queue.len());
 
         // the case that this packet will be dropped
         if should_drop_packet {
