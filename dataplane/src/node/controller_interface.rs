@@ -7,7 +7,7 @@ use tokio_tungstenite::{
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
@@ -86,10 +86,6 @@ impl ControllerInterfaceHandle {
             }
         }
 
-        debug!(
-            "Sending startup message to controller with node_id: {:?}",
-            config.node_id
-        );
         let startup_msg = DataplaneToController::StartUp {
             private_network_name: config.private_network_name.clone(),
             private_network_addr: config.private_network_addr.clone()
@@ -110,11 +106,6 @@ impl ControllerInterfaceHandle {
         if let Some(response) = ws_stream.next().await {
             // updates the local configuration with settings from the controller
             config.update(response);
-
-            debug!(
-                "Connected to controller, assigned node_id: {}",
-                config.node_id
-            );
         } else {
             error!("No response received from controller!");
         }
@@ -208,15 +199,6 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
-                debug!(
-                    "Received AddNode message for node {} at address {}",
-                    remote_node_id, remote_addr
-                );
-
-                debug!(
-                    "Creating network interface for remote node {}",
-                    remote_node_id
-                );
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
@@ -227,11 +209,13 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                debug!("Connected to node {} at {}", remote_node_id, remote_addr);
                 self.processors.add_node(remote_node_id, scheduler).await;
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
-                info!("Setting link rate for node {} to {} bps.", node_id, rate);
+                info!(
+                    "Setting the link rate for node {} to {} bps.",
+                    node_id, rate
+                );
                 return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {

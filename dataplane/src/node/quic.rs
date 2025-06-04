@@ -11,7 +11,7 @@ use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
@@ -152,10 +152,7 @@ impl QuicClient {
         info!("Connecting to node {} with QUIC...", remote_node_id);
 
         let local_node_id = self.config.node_id;
-        debug!(
-            "Connecting to node {} with local node_id {}",
-            remote_node_id, local_node_id
-        );
+
         stream
             .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
             .await

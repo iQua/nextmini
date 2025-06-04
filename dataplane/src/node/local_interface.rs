@@ -207,7 +207,6 @@ impl LocalReader {
 
                     // checks if packet creation was successful (non-zero flow_id indicates valid packet)
                     if packet.flow_id == 0 {
-                        debug!("LocalReader: Invalid packet received, dropping (size: {})", n);
                         continue;
                     }
 
