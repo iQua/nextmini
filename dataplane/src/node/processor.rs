@@ -5,7 +5,6 @@ use std::collections::HashMap;
 
 use tokio;
 use tokio::sync::broadcast;
-use tokio::sync::mpsc::error::SendError;
 
 use flume;
 use tracing::{debug, error, info};
