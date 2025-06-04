@@ -7,7 +7,7 @@ use tokio::sync::mpsc::error::SendError;
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -181,7 +181,7 @@ struct FifoWriter {
     pub queue: Arc<ArrayQueue<Packet>>,
     /// the network interface handle
     pub net_interface: NetworkInterfaceHandle,
-    /// Notify for signaling when the queue has items to be consumed
+    /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
 }
 
@@ -193,7 +193,12 @@ impl FifoWriter {
             match self.queue.pop() {
                 Some(packet) => {
                     // sends the packet
-                    let _ = self.net_interface.send(packet).await;
+                    if let Err(e) = self.net_interface.send(packet).await {
+                        error!(
+                            "Scheduler: Error sending a packet to the network interface: {}.",
+                            e
+                        );
+                    }
                 }
                 None => {
                     // the scheduler's queue is empty, waits for notification
