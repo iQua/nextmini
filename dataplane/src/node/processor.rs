@@ -5,9 +5,10 @@ use std::collections::HashMap;
 
 use tokio;
 use tokio::sync::broadcast;
+use tokio::sync::broadcast::error::SendError;
 
 use flume;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 use nextmini_messages::RoutingTableEntry;
 
@@ -81,14 +82,16 @@ impl ProcessorHandle {
         };
     }
 
-    pub async fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
-        match self
+    pub async fn add_node(
+        &self,
+        node_id: NodeId,
+        scheduler: SchedulerHandle,
+    ) -> Result<(), SendError<ProcessorMessage>> {
+        let _ = self
             .broadcast_sender
-            .send(ProcessorMessage::AddNode(node_id, scheduler))
-        {
-            Ok(_) => debug!("Sent AddNode message for node {}", node_id),
-            Err(e) => error!("Failed to send AddNode message by processor handle: {}", e),
-        }
+            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
+
+        Ok(())
     }
 
     pub async fn process_packet(&self, packet: Packet) {

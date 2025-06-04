@@ -79,7 +79,16 @@ impl TcpServer {
             let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
             // adds the scheduler to send packets to the new node
-            self.processors.add_node(remote_node_id, scheduler).await;
+            if let Err(e) = self.processors.add_node(remote_node_id, scheduler).await {
+                error!(
+                    "Failed to add node {} with address {}: {}",
+                    remote_node_id,
+                    listener.local_addr().unwrap(),
+                    e
+                );
+                continue;
+            }
+
             info!("Connected to node {}.", remote_node_id);
         }
     }

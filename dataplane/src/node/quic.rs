@@ -88,7 +88,16 @@ impl QuicServer {
                 let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
                 // adds the scheduler to send packets to the new node
-                processors.add_node(remote_node_id, scheduler).await;
+                if let Err(e) = processors.add_node(remote_node_id, scheduler).await {
+                    error!(
+                        "Failed to add node {} with address {}: {}",
+                        remote_node_id,
+                        connection.remote_addr().unwrap(),
+                        e
+                    );
+                    connection.close(0u32.into());
+                    continue;
+                }
 
                 info!("Connected to node {} with QUIC.", remote_node_id);
             } else {

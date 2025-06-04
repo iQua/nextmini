@@ -209,7 +209,12 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                self.processors.add_node(remote_node_id, scheduler).await;
+                if let Err(e) = self.processors.add_node(remote_node_id, scheduler).await {
+                    error!(
+                        "Failed to add node {} with address {}: {}",
+                        remote_node_id, remote_addr, e
+                    );
+                }
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 info!(
