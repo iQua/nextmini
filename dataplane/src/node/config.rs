@@ -256,7 +256,6 @@ impl LocalConfig {
             cfgs.num_packet_processors = num_cpus::get();
         }
 
-        info!("Using local configuration: {:#?}", cfgs);
         cfgs
     }
 
@@ -285,10 +284,7 @@ impl LocalConfig {
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
 
-                        info!(
-                            "Node {} received a startup response from the controller. Local configuration has been updated.",
-                            self.node_id
-                        );
+                        info!("Using local configuration: {:#?}", self);
                     }
                     _ => {
                         error!(
