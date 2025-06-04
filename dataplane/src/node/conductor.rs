@@ -82,11 +82,9 @@ impl Conductor {
         match self.config.protocol {
             Protocol::Udp => {
                 let mut udp_reader = UdpReader::new(self.config.clone(), self.processors.clone());
-                tokio::spawn(async move {
-                    udp_reader
-                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                        .await;
-                });
+                udp_reader
+                    .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                    .await;
             }
             Protocol::Tcp => {
                 if public_port == private_port {
@@ -114,27 +112,22 @@ impl Conductor {
                 if public_port == private_port {
                     let mut quic_server =
                         QuicServer::new(self.config.clone(), self.processors.clone());
-                    tokio::spawn(async move {
-                        quic_server
-                            .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                            .await;
-                    });
+                    quic_server
+                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                        .await;
                 } else {
-                    let mut quic_server =
+                    let mut quic_server_public =
                         QuicServer::new(self.config.clone(), self.processors.clone());
-                    tokio::spawn(async move {
-                        quic_server
-                            .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                            .await;
-                    });
+                    let mut quic_server_private =
+                        QuicServer::new(self.config.clone(), self.processors.clone());
 
-                    let mut quic_server =
-                        QuicServer::new(self.config.clone(), self.processors.clone());
-                    tokio::spawn(async move {
-                        quic_server
-                            .start_listening(&format!("{}:{}", "0.0.0.0", private_port))
-                            .await;
-                    });
+                    let public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    let private_addr = format!("{}:{}", "0.0.0.0", private_port);
+
+                    tokio::select! {
+                        _ = quic_server_public.start_listening(&public_addr) => {},
+                        _ = quic_server_private.start_listening(&private_addr) => {},
+                    }
                 }
             }
         }
