@@ -1,8 +1,10 @@
-use nextmini_messages::Protocol;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 
 use s2n_quic::stream::BidirectionalStream;
+
+use nextmini_messages::Protocol;
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
@@ -73,27 +75,14 @@ impl NetworkInterfaceHandle {
         Self { sender }
     }
 
-    /// Send a packet through the network interface
-    // pub async fn send(&self, packet: Packet) {
-    //     self.sender
-    //         .send(NetworkInterfaceMessage::SendPacket(packet))
-    //         .await
-    //         .unwrap();
-
-    /// for debugging purposes, should be removed later
-    pub async fn send(&self, packet: Packet) -> Result<(), String> {
-        match self
+    // Sends a packet through the network interface.
+    pub async fn send(&self, packet: Packet) -> Result<(), SendError<NetworkInterfaceMessage>> {
+        let _ = self
             .sender
             .send(NetworkInterfaceMessage::SendPacket(packet))
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let error = format!("Failed to send packet to network interface: {}", e);
-                tracing::error!("{}", error);
-                Err(error)
-            }
-        }
+            .await?;
+
+        Ok(())
     }
 }
 

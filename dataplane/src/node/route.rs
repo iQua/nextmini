@@ -5,9 +5,7 @@ use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
 use tracing::{debug, info};
 
-use crate::node::FlowId;
-use crate::node::FlowIdExt;
-use crate::node::NodeId;
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 /// The routing table in the dataplane.
 #[derive(Clone)]
@@ -117,8 +115,10 @@ impl RoutingTable {
         };
 
         debug!(
-            "Route ID {} is selected for destination {}:{} from {} available routes.",
+            "Route ID {} is selected for source {}:{} → destination {}:{} from {} available routes.",
             selected_route_id,
+            flow_id.src_ip(),
+            flow_id.src_port(),
             flow_id.dst_ip(),
             flow_id.dst_port(),
             available_routes.len()
@@ -131,6 +131,4 @@ impl RoutingTable {
     pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
         self.route_next_hop.get(&route_id).copied()
     }
-
-
 }
