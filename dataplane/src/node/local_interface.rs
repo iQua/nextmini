@@ -65,10 +65,15 @@ impl LocalInterfaceHandle {
         }
     }
 
-    pub async fn write_packet(&self, packet: Packet) {
+    pub async fn write_packet(
+        &self,
+        packet: Packet,
+    ) -> Result<(), flume::SendError<LocalInterfaceMessage>> {
         let _ = self
             .write_sender
-            .send(LocalInterfaceMessage::WritePacket(packet));
+            .send(LocalInterfaceMessage::WritePacket(packet))?;
+
+        Ok(())
     }
 
     pub async fn shutdown(&self) {
@@ -217,7 +222,6 @@ impl LocalReader {
 /// Writes one packet to a TUN device.
 struct LocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
-
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     packet_receiver: flume::Receiver<LocalInterfaceMessage>,
 }

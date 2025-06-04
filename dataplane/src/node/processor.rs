@@ -3,9 +3,11 @@
 // a TUN writer.
 use std::collections::HashMap;
 
-use flume;
 use tokio;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc::error::SendError;
+
+use flume;
 use tracing::{debug, error, info};
 
 use nextmini_messages::RoutingTableEntry;
@@ -14,7 +16,7 @@ use crate::node::config::LocalConfig;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::{SchedulerHandle, SchedulerMessage};
 use crate::node::{FlowId, NodeId};
 
 // Message types for the processor actor.
@@ -80,10 +82,10 @@ impl ProcessorHandle {
         };
     }
 
-    pub async fn add_node(&self, node_id: NodeId, scheduler_handle: SchedulerHandle) {
+    pub async fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
         match self
             .broadcast_sender
-            .send(ProcessorMessage::AddNode(node_id, scheduler_handle))
+            .send(ProcessorMessage::AddNode(node_id, scheduler))
         {
             Ok(_) => debug!("Sent AddNode message for node {}", node_id),
             Err(e) => error!("Failed to send AddNode message by processor handle: {}", e),
@@ -136,14 +138,14 @@ impl Processor {
                 Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
                     self.routing_table.install_routes(routes);
                 }
-                Some(ProcessorMessage::AddNode(node_id, scheduler_handle)) => {
+                Some(ProcessorMessage::AddNode(node_id, scheduler)) => {
                     if node_id == 0 {
                         error!("Attempted to add invalid node_id=0 to scheduler map, ignoring");
                         continue;
                     }
 
                     let is_new = !self.schedulers.contains_key(&node_id);
-                    self.schedulers.insert(node_id, scheduler_handle);
+                    self.schedulers.insert(node_id, scheduler);
 
                     if is_new {
                         info!("Added node {} to scheduler map", node_id);
@@ -211,33 +213,43 @@ impl Processor {
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
             // Local delivery
-
             if let Some(ref local_interface) = self.local_interface {
-                local_interface.write_packet(packet).await;
-                debug!("Local delivery: Packet successfully written to local interface");
-                Ok(())
+                if let Err(e) = local_interface.write_packet(packet).await {
+                    let error = format!(
+                        "Failed to send a packet with flow ID {} to the local interface: {}",
+                        packet_flow_id, e
+                    );
+                    error!("{}", error);
+
+                    Err(error)
+                } else {
+                    Ok(())
+                }
             } else {
                 Err("The local interface has not yet been connected.".to_string())
             }
         } else {
             match self.schedulers.get_mut(&next_hop_id) {
-                Some(scheduler_handle) => {
-                    debug!(
-                        "Forwarding a packet to node {} for flow {} (size: {})",
-                        next_hop_id, packet_flow_id, packet.packet_size
-                    );
+                Some(scheduler) => {
+                    if let Err(e) = scheduler.send(packet).await {
+                        let error = format!(
+                            "Failed to send a packet with flow ID {} to the scheduler for next hop {}: {}",
+                            packet_flow_id, next_hop_id, e
+                        );
+                        error!("{}", error);
 
-                    scheduler_handle.send(packet).await;
-                    Ok(())
+                        Err(error)
+                    } else {
+                        Ok(())
+                    }
                 }
                 None => {
-                    let error = format!(
+                    error!(
                         "Next hop node {} is offline or unreachable for flow {}: connection may have been lost.",
                         next_hop_id, packet_flow_id
                     );
-                    error!("{}", error);
 
-                    Err(error)
+                    Ok(())
                 }
             }
         }
