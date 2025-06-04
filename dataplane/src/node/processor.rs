@@ -15,7 +15,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::{FlowId, NodeId};
 
 // Message types for the processor actor.
 #[derive(Clone)]
@@ -164,8 +164,6 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
-
-
         // Select route_id for new flow at source node
         let route_id = self
             .routing_table
@@ -200,8 +198,6 @@ impl Processor {
 
                 error
             })?;
-
-
 
         self.send_packet(packet, next_hop_id, packet_flow_id).await
     }

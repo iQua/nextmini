@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::Deserialize;
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::warn;
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -39,32 +39,20 @@ impl SchedulerHandle {
 
         let mut scheduler = match config.scheduler_type {
             SchedulingDiscipline::Fifo => Fifo::new(config, net_interface, receiver),
-            SchedulingDiscipline::Wrr => {
-                panic!("Wrr scheduling discipline not implemented");
+            _ => {
+                panic!("This scheduling discipline has not yet been implemented.");
             }
         };
 
-        // for debugging purposes, could be removed later
         tokio::spawn(async move {
-            debug!("Scheduler task starting");
             scheduler.run().await;
-            debug!("Scheduler task terminated");
         });
 
         Self { sender }
     }
 
     pub async fn send(&mut self, packet: Packet) {
-        debug!("Sending packet to scheduler, flow_id={}", packet.flow_id);
-
-        match self.sender.send(SchedulerMessage::Enqueue(packet)).await {
-            Ok(_) => {
-                debug!("Packet successfully sent to scheduler");
-            }
-            Err(e) => {
-                error!("Failed to send packet to scheduler: {}", e);
-            }
-        }
+        self.sender.send(SchedulerMessage::Enqueue(packet)).await;
     }
 }
 
@@ -96,8 +84,6 @@ impl Fifo {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
 
-        debug!("Creating FIFO scheduler with capacity {}", capacity);
-
         let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
             DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
             DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
@@ -116,8 +102,6 @@ impl Fifo {
 #[async_trait]
 impl Scheduler for Fifo {
     async fn run(&mut self) {
-        debug!("FIFO scheduler starting to process packets");
-
         loop {
             tokio::select! {
                 // Using biased makes sure a packet is immediately sent but sacrifices with changing branches every time
@@ -126,21 +110,17 @@ impl Scheduler for Fifo {
                 // Only ready when a packet is in the queue
                 packet = async {
                     if let Some(packet) = self.queue.pop_front() {
-                        debug!("Processing packet from queue, flow_id={}", packet.flow_id);
                         packet
                     } else {
-                        debug!("FIFO scheduler queue empty, waiting for new packets");
                         std::future::pending::<Packet>().await
                     }
                 } => {
-                    debug!("Sent packet to network interface");
                     self.net_interface.send(packet).await;
                 }
 
                 Some(message) = self.receiver.recv() => {
                     match message {
                         SchedulerMessage::Enqueue(packet) => {
-                            debug!("Received new packet to enqueue, flow_id={}", packet.flow_id);
                             self.enqueue(packet);
                         }
                     }
