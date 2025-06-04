@@ -81,10 +81,11 @@ impl Fifo {
             DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
         };
 
+        let scheduler_queue = Arc::new(ArrayQueue::new(capacity));
         let queue_not_empty = Arc::new(Notify::new());
 
         let mut reader = FifoReader {
-            queue: Arc::new(ArrayQueue::new(capacity)),
+            queue: scheduler_queue.clone(),
             packets_dropped: 0,
             drop_strategy: packet_drop,
             receiver,
@@ -93,7 +94,7 @@ impl Fifo {
         };
 
         let mut writer = FifoWriter {
-            queue: Arc::new(ArrayQueue::new(capacity)),
+            queue: scheduler_queue,
             net_interface,
             queue_not_empty,
         };
@@ -125,11 +126,11 @@ struct FifoReader {
     pub packets_dropped: usize,
     /// a closure that determines whether an inbound packet should be dropped or not
     pub drop_strategy: Box<dyn PacketDrop + Send + Sync>,
-    /// a mpsc receiver for other actors to send packets to this scheduler
+    /// the receiver for an mpsc channel, for other actors to send packets to this reader
     pub receiver: mpsc::Receiver<SchedulerMessage>,
-    /// Notify for signaling when queue has items (for consumer)
+    /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
-    /// Maximum queue capacity
+    /// maximum queue capacity
     pub capacity: usize,
 }
 
@@ -140,15 +141,13 @@ impl FifoReader {
             match message {
                 SchedulerMessage::InboundPacket(packet) => {
                     self.enqueue(packet);
-                    // Notify consumer that queue is not empty
-                    self.queue_not_empty.notify_one();
                 }
             }
         }
     }
 
     fn enqueue(&mut self, packet: Packet) {
-        // drops the packet if the buffer is full
+        // drops the packet based on the drop strategy
         let should_drop_packet =
             self.drop_strategy
                 .should_drop(packet.packet_size, self.queue.len(), self.capacity);
@@ -158,7 +157,7 @@ impl FifoReader {
             self.packets_dropped += 1;
 
             warn!(
-                "FIFO: Scheduler dropped packet for flow {} (size: {}) - queue length: {}/{}, drops: {}",
+                "FIFO: Scheduler dropped packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
                 packet.flow_id,
                 packet.packet_size,
                 self.queue.len(),
@@ -169,11 +168,10 @@ impl FifoReader {
             return;
         }
 
-        // Try to push to queue, if full then drop
         if self.queue.push(packet).is_err() {
             self.packets_dropped += 1;
         } else {
-            // Notify consumer that the queue becomes 'not empty' now
+            // Notify the consumer task that a packet has arrived and the queue becomes 'non-empty' now
             self.queue_not_empty.notify_one();
         }
     }
@@ -183,7 +181,7 @@ struct FifoWriter {
     pub queue: Arc<ArrayQueue<Packet>>,
     /// the network interface handle
     pub net_interface: NetworkInterfaceHandle,
-    /// Notify for signaling when queue has items (for consumer)
+    /// Notify for signaling when the queue has items to be consumed
     pub queue_not_empty: Arc<Notify>,
 }
 
@@ -191,7 +189,7 @@ impl FifoWriter {
     // Consumer task: pops packets from the queue and sends them out
     async fn run(&mut self) {
         loop {
-            // Try to dequeue a packet
+            // tries to dequeue a packet
             match self.queue.pop() {
                 Some(packet) => {
                     // sends the packet
