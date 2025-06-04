@@ -1,9 +1,11 @@
 use std::collections::VecDeque;
 
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
+
 use async_trait::async_trait;
 use clap::ValueEnum;
 use serde::Deserialize;
-use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::node::config::LocalConfig;
@@ -23,7 +25,7 @@ pub enum SchedulingDiscipline {
 
 /// The types of messages sent to the scheduler.
 pub enum SchedulerMessage {
-    Enqueue(Packet),
+    InboundPacket(Packet),
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
@@ -51,8 +53,13 @@ impl SchedulerHandle {
         Self { sender }
     }
 
-    pub async fn send(&mut self, packet: Packet) {
-        self.sender.send(SchedulerMessage::Enqueue(packet)).await;
+    // Sends a packet to the scheduler.
+    pub async fn send(&mut self, packet: Packet) -> Result<(), SendError<NetworkInterfaceMessage>> {
+        self.sender
+            .send(SchedulerMessage::InboundPacket(packet))
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -120,7 +127,7 @@ impl Scheduler for Fifo {
 
                 Some(message) = self.receiver.recv() => {
                     match message {
-                        SchedulerMessage::Enqueue(packet) => {
+                        SchedulerMessage::InboundPacket(packet) => {
                             self.enqueue(packet);
                         }
                     }
@@ -144,6 +151,7 @@ impl Scheduler for Fifo {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
+
             warn!(
                 "FIFO: Scheduler dropped packet for flow {} (size: {}) - queue length: {}/{}, drops: {}",
                 packet.flow_id,
@@ -152,6 +160,7 @@ impl Scheduler for Fifo {
                 self.queue.capacity(),
                 self.packets_dropped
             );
+
             return;
         }
 
