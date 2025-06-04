@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use flume;
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::RECEIVE_BUF_SIZE;
