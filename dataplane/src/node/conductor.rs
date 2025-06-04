@@ -79,8 +79,8 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Udp => {
-                let mut udp_reader = UdpServer::new(self.config.clone(), self.processors.clone());
-                udp_reader
+                let mut udp_server = UdpServer::new(self.config.clone(), self.processors.clone());
+                udp_server
                     .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                     .await;
             }

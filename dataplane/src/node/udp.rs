@@ -91,7 +91,10 @@ impl UdpRelay {
         // UdpSocket.send_to() returns the number of bytes sent
         let _ = self
             .socket
-            .send_to(&packet.buf[..packet.packet_size], self.remote_addr.as_str())
+            .send_to(
+                &packet.buf[0..packet.packet_size],
+                self.remote_addr.as_str(),
+            )
             .await?;
 
         Ok(())
