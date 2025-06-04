@@ -1,6 +1,6 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
-/// the dataplane node, including the connection with the controller actor, all processor actors,
-/// the local reader and writer actors, and the metrics collector actor.
+/// the dataplane node, including the controller interface actor, the processor actor, and the local
+/// interface actor.
 use tokio::sync::mpsc;
 use tracing::info;
 

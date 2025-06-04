@@ -1,6 +1,7 @@
-// A processor is designed to process inbound packets from either a NodeReceiver or a TUN reader,
-// and uses a routing table to determine how it should be sent out: to either a NodeSender or
-// a TUN writer.
+/// A processor actor is designed to forward packets from its upstream actors (LocalInterface
+/// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
+/// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
+/// processing and routing of network packets.
 use std::collections::HashMap;
 
 use tokio;
