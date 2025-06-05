@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::net::UdpSocket;
+use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
@@ -76,7 +77,7 @@ pub struct LocalConfig {
 
     #[serde(skip)]
     #[arg(skip)]
-    pub udp_socket: Arc<Option<Arc<UdpSocket>>>,
+    pub udp_socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
 
     #[default(0)]
     #[arg(long)]

@@ -28,14 +28,18 @@ impl UdpServer {
 
     /// Binds the UDP socket, updates the configuration, and starts listening for packets.
     pub async fn start_listening(&mut self, addr: &String) {
-        let socket = Arc::new(
-            UdpSocket::bind(addr)
-                .await
-                .unwrap_or_else(|_| panic!("Failed to bind the UDP socket.")),
-        );
+        if let Ok(mut guard) = self.config.udp_socket.try_write() {
+            if !guard.is_some() {
+                let socket = Arc::new(
+                    UdpSocket::bind(addr)
+                        .await
+                        .unwrap_or_else(|_| panic!("Failed to bind the UDP socket.")),
+                );
+                *guard = Some(socket.clone());
+            }
+        }
 
-        self.socket = Some(socket.clone());
-        self.config.udp_socket = Arc::new(Some(socket.clone()));
+        self.socket = self.config.udp_socket.read().await.clone();
 
         loop {
             if let Ok(packet) = self.read_packet().await {
@@ -60,12 +64,24 @@ pub struct UdpRelay {
 }
 
 impl UdpRelay {
-    pub fn new(
+    pub async fn new(
         config: LocalConfig,
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
         remote_addr: String,
     ) -> Self {
-        let socket = config.udp_socket.as_ref().clone().unwrap();
+        if let Ok(mut guard) = config.udp_socket.try_write() {
+            if !guard.is_some() {
+                let addr = format!("{}:{}", "0.0.0.0", config.public_network_port);
+                let socket = Arc::new(
+                    UdpSocket::bind(addr)
+                        .await
+                        .unwrap_or_else(|_| panic!("Failed to bind the UDP socket.")),
+                );
+                *guard = Some(socket.clone());
+            }
+        }
+        let guard = config.udp_socket.read().await;
+        let socket = guard.as_ref().unwrap().clone();
         Self {
             receiver,
             socket,
