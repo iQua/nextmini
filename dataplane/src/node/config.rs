@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::net::UdpSocket;
-use tokio::sync::OnceCell;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
@@ -76,10 +75,10 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
-    #[default(Arc::new(OnceCell::new()))]
+    #[default(None)]
     #[serde(skip)]
     #[arg(skip)]
-    pub udp_socket: Arc<OnceCell<Arc<UdpSocket>>>,
+    pub udp_socket: Option<Arc<UdpSocket>>,
 
     #[default(Arc::new(AtomicBool::new(false)))]
     #[serde(skip)]

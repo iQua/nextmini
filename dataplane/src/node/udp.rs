@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
@@ -26,24 +25,14 @@ impl UdpServer {
         }
     }
 
-    /// Binds the UDP socket, updates the configuration, and starts listening for packets.
-    pub async fn start_listening(&mut self, addr: &str) {
-        // checks if socket is already initialized using AtomicBool
-        if !self.config.udp_socket_initialized.load(Ordering::Acquire) {
-            let socket = Arc::new(
-                UdpSocket::bind(addr)
-                    .await
-                    .unwrap_or_else(|_| panic!("Failed to bind the UDP socket")),
-            );
+    /// starts listening for incoming packets
+    pub async fn start_listening(&mut self, _addr: &str) {
+        // socket should already be initialized by controller interface
+        self.socket = self.config.udp_socket.clone();
 
-            // this will try to initialize the socket, ignore the error if already initialized
-            let _ = self.config.udp_socket.set(socket);
-            self.config
-                .udp_socket_initialized
-                .store(true, Ordering::Release);
+        if self.socket.is_none() {
+            panic!("UDP socket was not initialized in config");
         }
-
-        self.socket = Some(self.config.udp_socket.get().unwrap().clone());
 
         loop {
             if let Ok(packet) = self.read_packet().await {
@@ -73,21 +62,13 @@ impl UdpRelay {
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
         remote_addr: String,
     ) -> Self {
-        // checks if socket is already initialized using AtomicBool
-        if !config.udp_socket_initialized.load(Ordering::Acquire) {
-            let addr = format!("{}:{}", "0.0.0.0", config.public_network_port);
-            let socket = Arc::new(
-                UdpSocket::bind(addr)
-                    .await
-                    .unwrap_or_else(|_| panic!("Failed to bind the UDP socket")),
-            );
+        // socket should already be initialized by controller interface
+        let socket = config
+            .udp_socket
+            .as_ref()
+            .unwrap()
+            .clone();
 
-            // this will try to initialize the socket, ignore the error if already initialized
-            let _ = config.udp_socket.set(socket);
-            config.udp_socket_initialized.store(true, Ordering::Release);
-        }
-
-        let socket = config.udp_socket.get().unwrap().clone();
         Self {
             receiver,
             socket,
