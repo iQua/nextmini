@@ -184,7 +184,7 @@ impl ControllerToDataplaneReceiver {
                 Ok(msg) => msg,
                 Err(e) => {
                     error!("Disconnected from the controller. Restarting the node...");
-                    error!("Error: {:?}", e);
+                    error!("{:?}", e);
 
                     break;
                 }
@@ -225,7 +225,7 @@ impl ControllerToDataplaneReceiver {
 
                 if let Err(e) = self.processors.add_node(remote_node_id, scheduler).await {
                     error!(
-                        "Failed to add node {} with address {}: {}",
+                        "Failed to add node {} with address {}: {}.",
                         remote_node_id, remote_addr, e
                     );
                 }
@@ -238,7 +238,12 @@ impl ControllerToDataplaneReceiver {
                 return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {
-                info!("Installing {} routes.", routes.len());
+                info!(
+                    "Installing {} routes on node {}.",
+                    routes.len(),
+                    self.config.node_id
+                );
+
                 self.processors.update_routing_table(routes).await;
             }
             _ => error!("Received a message with an unknown type from the controller."),

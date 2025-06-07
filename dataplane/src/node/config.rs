@@ -287,8 +287,6 @@ impl LocalConfig {
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
-
-                        info!("Using local configuration: {:#?}", self);
                     }
                     _ => {
                         error!(

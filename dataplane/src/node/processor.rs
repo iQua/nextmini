@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 
 use flume;
-use tracing::{error, info};
+use tracing::error;
 
 use nextmini_messages::RoutingTableEntry;
 
@@ -142,17 +142,8 @@ impl Processor {
                     self.routing_table.install_routes(routes);
                 }
                 Some(ProcessorMessage::AddNode(node_id, scheduler)) => {
-                    if node_id == 0 {
-                        error!("Attempted to add invalid node_id=0 to scheduler map, ignoring");
-                        continue;
-                    }
-
-                    let is_new = !self.schedulers.contains_key(&node_id);
+                    // updates the scheduler for a given node ID
                     self.schedulers.insert(node_id, scheduler);
-
-                    if is_new {
-                        info!("Added node {} to scheduler map", node_id);
-                    }
                 }
                 Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {
                     self.local_interface = Some(local_interface);
@@ -215,7 +206,7 @@ impl Processor {
         packet_flow_id: FlowId,
     ) -> Result<(), String> {
         if next_hop_id == self.routing_table.local_id {
-            // Local delivery
+            // local delivery
             if let Some(ref local_interface) = self.local_interface {
                 if let Err(e) = local_interface.write_packet(packet).await {
                     let error = format!(
