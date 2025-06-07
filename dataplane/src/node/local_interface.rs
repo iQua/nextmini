@@ -74,20 +74,19 @@ impl LocalInterfaceHandle {
         packet: Packet,
     ) -> Result<(), mpsc::error::SendError<LocalInterfaceMessage>> {
         // rapidhash flow_id to LocalWriter
-        let writer_idx = self.hash_flow_to_local_writer(packet.flow_id);
+        let sender = self.select_writer_sender(packet.flow_id);
 
-        self.write_senders[writer_idx]
+        sender
             .send(LocalInterfaceMessage::WritePacket(packet))
             .await?;
 
         Ok(())
     }
 
-    // splits only one LocalWriter and multiple LocalWriters
-    fn hash_flow_to_local_writer(&self, flow_id: FlowId) -> usize {
+    fn select_writer_sender(&self, flow_id: FlowId) -> &mpsc::Sender<LocalInterfaceMessage> {
         match self.write_senders.len() {
-            1 => 0,
-            n => (rapidhash(&flow_id.to_le_bytes()) as usize) % n,
+            1 => &self.write_senders[0],
+            n => &self.write_senders[(rapidhash(&flow_id.to_le_bytes()) as usize) % n],
         }
     }
 

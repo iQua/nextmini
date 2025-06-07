@@ -102,18 +102,18 @@ impl ProcessorHandle {
 
     pub async fn process_packet(&self, packet: Packet) {
         // rapidhash flow_id to processor
-        let processor_idx = self.hash_flow_to_processor(packet.flow_id);
+        let sender = self.select_processor_sender(packet.flow_id);
 
-        self.packet_senders[processor_idx]
+        sender
             .send(ProcessorMessage::ProcessPacket(packet))
             .await
             .unwrap();
     }
 
-    fn hash_flow_to_processor(&self, flow_id: FlowId) -> usize {
+    fn select_processor_sender(&self, flow_id: FlowId) -> &mpsc::Sender<ProcessorMessage> {
         match self.packet_senders.len() {
-            1 => 0,
-            n => (rapidhash(&flow_id.to_le_bytes()) as usize) % n,
+            1 => &self.packet_senders[0],
+            n => &self.packet_senders[(rapidhash(&flow_id.to_le_bytes()) as usize) % n],
         }
     }
 }
