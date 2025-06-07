@@ -34,7 +34,7 @@ pub fn create_new_virtual_addr(
 }
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
-pub fn build_startup_message(
+pub fn build_startup_response(
     node_id: usize,
     virtual_addr: [u8; 4],
     net_mask: [u8; 4],
@@ -48,15 +48,10 @@ pub fn build_startup_message(
     }
 }
 
-pub fn build_add_node_message(
-    protocol: Protocol,
-    node_id: usize,
-    addr: String,
-) -> ControllerToDataplane {
+pub fn build_add_node_message(node_id: usize, addr: String) -> ControllerToDataplane {
     ControllerToDataplane::AddNode {
-        protocol,
-        node_id,
-        addr,
+        remote_node_id: node_id,
+        remote_addr: addr,
     }
 }
 

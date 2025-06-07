@@ -332,7 +332,7 @@ impl ControllerSender {
         loop {
             tokio::select! {
                 Some(msg) = self.rx.recv() => {
-                    self.send_msg(msg).await;
+                    self.send(msg).await;
                 }
                 _ = ping_interval.tick() => {
                     self.controller_sender_stream
@@ -344,7 +344,7 @@ impl ControllerSender {
         }
     }
 
-    async fn send_msg(&mut self, msg: DataplaneToController) {
+    async fn send(&mut self, msg: DataplaneToController) {
         self.controller_sender_stream
             .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
             .await

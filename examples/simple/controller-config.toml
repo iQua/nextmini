@@ -1,4 +1,4 @@
-protocol = "quic"
+protocol = "udp"
 
 [topology]
 type = "full_mesh"

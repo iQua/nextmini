@@ -11,14 +11,15 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
+use tracing_subscriber;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 
 use crate::config::{Config, get_config};
-use crate::db::init_db;
+use crate::db::{init_db, setup_notification};
 use crate::models::{Node, Route};
 use crate::utils::{
-    build_add_node_message, build_routes_for_node, build_startup_message, create_new_virtual_addr,
+    build_add_node_message, build_routes_for_node, build_startup_response, create_new_virtual_addr,
 };
 
 mod config;
@@ -32,6 +33,7 @@ type NodeWriterMap = Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>;
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
@@ -42,7 +44,7 @@ async fn main() {
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
     // Set up database notifications
-    db::setup_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
@@ -82,7 +84,7 @@ async fn handle_connection(
                 let dataplane_msg = match rmp_serde::from_slice::<DataplaneToController>(&data) {
                     Ok(msg) => msg,
                     Err(e) => {
-                        info!("Failed to parse dataplane message: {}", e);
+                        error!("Failed to parse dataplane message: {}", e);
                         continue;
                     }
                 };
@@ -99,12 +101,15 @@ async fn handle_connection(
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
 
-                        let node_id = if let Some(id) = maybe_node_id {
-                            id
-                        } else {
-                            // if node_id is not specified, assign a new one that is not used
-                            let node_ws_guard = node_ws.read().await;
+                        let assign_new_id = match maybe_node_id {
+                            Some(0) => true,  // ID is present but is 0
+                            None => true,     // ID is not present
+                            Some(_) => false, // ID is present and not 0
+                        };
 
+                        let node_id = if assign_new_id {
+                            // assigns a new node ID
+                            let node_ws_guard = node_ws.read().await;
                             let new_id = if node_ws_guard.is_empty() {
                                 1
                             } else {
@@ -114,11 +119,14 @@ async fn handle_connection(
                             info!("Assigning a new node ID: {}.", new_id);
 
                             new_id
+                        } else {
+                            // ID was Some(id) and id was not 0
+                            maybe_node_id.unwrap()
                         };
 
                         // checks if the node_id is already used
                         if node_ws.read().await.contains_key(&node_id) {
-                            info!("Node ID {} is already used.", node_id);
+                            warn!("Node ID {} is already used.", node_id);
                             continue;
                         }
 
@@ -130,10 +138,7 @@ async fn handle_connection(
                         ) {
                             Some(addr) => addr,
                             None => {
-                                info!(
-                                    "Error: Failed to create a virtual address for node {}",
-                                    node_id
-                                );
+                                error!("Failed to create a virtual address for node {}.", node_id);
                                 continue;
                             }
                         };
@@ -187,7 +192,7 @@ async fn handle_connection(
                         }
 
                         // Send startup response
-                        let response = build_startup_message(
+                        let response = build_startup_response(
                             node_id,
                             virtual_addr,
                             config.net_mask,
@@ -249,9 +254,8 @@ async fn handle_connection(
 
                             // sends an AddNode message to the new node
                             let msg = ControllerToDataplane::AddNode {
-                                protocol: config.protocol.clone(),
-                                node_id: node.id as usize,
-                                addr,
+                                remote_node_id: node.id as usize,
+                                remote_addr: addr,
                             };
 
                             // informs the existing nodes about the new node by updating their connections
@@ -265,8 +269,8 @@ async fn handle_connection(
                                     "Sent an AddNode message for node {} to node {}.",
                                     node.id, node_id
                                 ),
-                                Err(e) => info!(
-                                    "Error: Failed to send an AddNode message to node {}: {}.",
+                                Err(e) => error!(
+                                    "Failed to send an AddNode message to node {}: {}.",
                                     node_id, e
                                 ),
                             }
@@ -280,8 +284,7 @@ async fn handle_connection(
                                         new_node.public_network_addr.clone()
                                     };
 
-                                let msg =
-                                    build_add_node_message(config.protocol.clone(), node_id, addr);
+                                let msg = build_add_node_message(node_id, addr);
 
                                 let node_ws_guard = node_ws.read().await;
 
@@ -295,11 +298,11 @@ async fn handle_connection(
                                         .await
                                     {
                                         Ok(_) => info!(
-                                            "Sent AddNode message for new node {} to existing node {}",
+                                            "Sent an AddNode message for new node {} to existing node {}.",
                                             node_id, node.id
                                         ),
-                                        Err(e) => info!(
-                                            "Error: Failed to send AddNode message to existing node {}: {}",
+                                        Err(e) => error!(
+                                            "Failed to send AddNode message to existing node {}: {}.",
                                             node.id, e
                                         ),
                                     }
@@ -330,18 +333,21 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => info!("Sent InstallRoutes message to node {}", node_id),
-                                Err(e) => info!(
-                                    "Error: Failed to send InstallRoutes message to node {}: {}",
+                                Ok(_) => {
+                                    info!("Sent an InstallRoutes message to node {}.", node_id)
+                                }
+                                Err(e) => error!(
+                                    "Failed to send InstallRoutes message to node {}: {}.",
                                     node_id, e
                                 ),
                             }
                         } else {
-                            info!("No routes to install for node {}", node_id);
+                            error!("No routes to install for node {}.", node_id);
                         }
 
                         // sets the link rates
                         info!("Setting link rates for node {}", node_id);
+
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
                                 let msg = ControllerToDataplane::SetLinkRate {
@@ -356,11 +362,11 @@ async fn handle_connection(
                                     .await
                                 {
                                     Ok(_) => info!(
-                                        "Set link rate for node {} to node {} at {} bps",
+                                        "Set link rate for node {} to node {} at {} bps.",
                                         node_id, link_rate.dst_node_id, link_rate.bandwidth
                                     ),
-                                    Err(e) => info!(
-                                        "Error: Failed to send SetLinkRate message to node {}: {}",
+                                    Err(e) => error!(
+                                        "Failed to send the SetLinkRate message to node {}: {}.",
                                         node_id, e
                                     ),
                                 }
@@ -396,8 +402,8 @@ async fn handle_connection(
                                 }
                             }
                         } else {
-                            info!(
-                                "Warning: Received metrics but no node ID is associated with this connection."
+                            warn!(
+                                "Received metrics but no node ID is associated with this connection."
                             );
                         }
                     }
@@ -407,8 +413,8 @@ async fn handle_connection(
                 // just received a ping message to keep the connection alive. Do nothing.
                 continue;
             }
-            Ok(_) => info!(
-                "Warning: Received a message that is not a binary or a ping message. Something may be wrong."
+            Ok(_) => warn!(
+                "Received a message that is not a binary or a ping message. Something may be wrong."
             ),
             Err(e) => {
                 error!("Error receiving the message: {}", e);

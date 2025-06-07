@@ -1,3 +1,4 @@
+use clap::ValueEnum;
 /// Defines message enums for controller-dataplane communication.
 use serde::{Deserialize, Serialize};
 
@@ -24,9 +25,10 @@ pub struct Metric {
 }
 
 /// The transport protocol used to transfer data between nodes
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
+    #[default]
     Tcp,
     Udp,
     Quic,
@@ -42,9 +44,8 @@ pub enum ControllerToDataplane {
         protocol: Protocol,
     },
     AddNode {
-        protocol: Protocol,
-        node_id: usize,
-        addr: String,
+        remote_node_id: usize,
+        remote_addr: String,
     },
     InstallRoutes {
         routes: Vec<RoutingTableEntry>,

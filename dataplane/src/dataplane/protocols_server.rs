@@ -15,7 +15,8 @@ use crate::dataplane::configs::{CongestionControl, LocalConfigs};
 use crate::dataplane::context::Context;
 use crate::dataplane::processor::ProcessorManager;
 
-pub async fn start_protocols_server(
+// Starts current node's protocol server according to the protocol type.
+pub async fn start_server(
     protocol: Protocol,
     configs: LocalConfigs,
     mut context: Context,
@@ -101,6 +102,7 @@ impl TcpServer {
         }
     }
 
+    // create TcpListener and accept all incoming connections from other nodes.
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -141,7 +143,15 @@ impl TcpServer {
 
             info!("Incoming connection from node {}...", node_id);
 
+            // add the new node to the context
+            // which should send message to create new scheduler, protocol reader and protocol writer
             self.context.add_tcp_node(node_id, stream).await;
+
+            // In the old design
+            // a node receiver (take readhalf of the TcpStream) is created and spawned in the context
+            // a node sender (take writehalf of the TcpStream)
+            // is created and stored in the hashmap(nodeid -> node_sender) in the context
+            // This hashmap is copied to the processor manager
             self.processor_manager
                 .write()
                 .await
