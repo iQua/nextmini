@@ -120,9 +120,9 @@ impl NetworkInterface {
                 self.run(NetworkStream::Quic(stream));
             }
             Protocol::Udp => {
-                let udp_relay = UdpRelay::new(self.config.clone(), self.receiver, remote_addr);
-
                 tokio::spawn(async move {
+                    let udp_relay =
+                        UdpRelay::new(self.config.clone(), self.receiver, remote_addr).await;
                     udp_relay.run().await;
                 });
             }

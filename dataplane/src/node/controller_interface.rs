@@ -1,4 +1,6 @@
-use tokio::net::TcpStream;
+use std::sync::Arc;
+
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tokio_tungstenite::{
@@ -107,7 +109,19 @@ impl ControllerInterfaceHandle {
             // updates the local configuration with settings from the controller
             config.update(response);
         } else {
-            error!("No response received from controller!");
+            error!("No response has been received from controller.");
+        }
+
+        if config.protocol == nextmini_messages::Protocol::Udp {
+            // checks if the UDP socket has already been bound to a port
+            if config.udp_socket.is_none() {
+                let bind_addr = format!("{}:{}", "0.0.0.0", config.public_network_port);
+
+                if let Ok(socket) = UdpSocket::bind(bind_addr).await {
+                    config.udp_socket = Some(Arc::new(socket));
+                    info!("The UDP socket has been initialized successfully.");
+                }
+            }
         }
 
         // starts the processor actor
@@ -170,7 +184,7 @@ impl ControllerToDataplaneReceiver {
                 Ok(msg) => msg,
                 Err(e) => {
                     error!("Disconnected from the controller. Restarting the node...");
-                    error!("Error: {:?}", e);
+                    error!("{:?}", e);
 
                     break;
                 }
@@ -211,7 +225,7 @@ impl ControllerToDataplaneReceiver {
 
                 if let Err(e) = self.processors.add_node(remote_node_id, scheduler).await {
                     error!(
-                        "Failed to add node {} with address {}: {}",
+                        "Failed to add node {} with address {}: {}.",
                         remote_node_id, remote_addr, e
                     );
                 }
@@ -224,7 +238,12 @@ impl ControllerToDataplaneReceiver {
                 return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {
-                info!("Installing {} routes.", routes.len());
+                info!(
+                    "Installing {} routes on node {}.",
+                    routes.len(),
+                    self.config.node_id
+                );
+
                 self.processors.update_routing_table(routes).await;
             }
             _ => error!("Received a message with an unknown type from the controller."),

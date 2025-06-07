@@ -33,7 +33,6 @@ type NodeWriterMap = Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>;
 
 #[tokio::main]
 async fn main() {
-
     tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
@@ -139,10 +138,7 @@ async fn handle_connection(
                         ) {
                             Some(addr) => addr,
                             None => {
-                                error!(
-                                    "Error: Failed to create a virtual address for node {}",
-                                    node_id
-                                );
+                                error!("Failed to create a virtual address for node {}.", node_id);
                                 continue;
                             }
                         };
@@ -273,8 +269,8 @@ async fn handle_connection(
                                     "Sent an AddNode message for node {} to node {}.",
                                     node.id, node_id
                                 ),
-                                Err(e) => info!(
-                                    "Error: Failed to send an AddNode message to node {}: {}.",
+                                Err(e) => error!(
+                                    "Failed to send an AddNode message to node {}: {}.",
                                     node_id, e
                                 ),
                             }
@@ -302,11 +298,11 @@ async fn handle_connection(
                                         .await
                                     {
                                         Ok(_) => info!(
-                                            "Sent AddNode message for new node {} to existing node {}",
+                                            "Sent an AddNode message for new node {} to existing node {}.",
                                             node_id, node.id
                                         ),
-                                        Err(e) => info!(
-                                            "Error: Failed to send AddNode message to existing node {}: {}",
+                                        Err(e) => error!(
+                                            "Failed to send AddNode message to existing node {}: {}.",
                                             node.id, e
                                         ),
                                     }
@@ -337,18 +333,21 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => info!("Sent InstallRoutes message to node {}", node_id),
-                                Err(e) => info!(
-                                    "Error: Failed to send InstallRoutes message to node {}: {}",
+                                Ok(_) => {
+                                    info!("Sent an InstallRoutes message to node {}.", node_id)
+                                }
+                                Err(e) => error!(
+                                    "Failed to send InstallRoutes message to node {}: {}.",
                                     node_id, e
                                 ),
                             }
                         } else {
-                            info!("No routes to install for node {}", node_id);
+                            error!("No routes to install for node {}.", node_id);
                         }
 
                         // sets the link rates
                         info!("Setting link rates for node {}", node_id);
+
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
                                 let msg = ControllerToDataplane::SetLinkRate {
@@ -363,11 +362,11 @@ async fn handle_connection(
                                     .await
                                 {
                                     Ok(_) => info!(
-                                        "Set link rate for node {} to node {} at {} bps",
+                                        "Set link rate for node {} to node {} at {} bps.",
                                         node_id, link_rate.dst_node_id, link_rate.bandwidth
                                     ),
-                                    Err(e) => info!(
-                                        "Error: Failed to send SetLinkRate message to node {}: {}",
+                                    Err(e) => error!(
+                                        "Failed to send the SetLinkRate message to node {}: {}.",
                                         node_id, e
                                     ),
                                 }

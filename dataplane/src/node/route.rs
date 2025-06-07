@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -40,12 +40,6 @@ impl RoutingTable {
 
     /// Install all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
-        info!(
-            "RoutingTable: Installing {} routes for local_id {}",
-            routes.len(),
-            self.local_id
-        );
-
         // Clear existing data
         self.route_next_hop.clear();
         self.available_routes.clear();
@@ -65,7 +59,7 @@ impl RoutingTable {
                 .or_default()
                 .push(route.route_id);
 
-            info!(
+            debug!(
                 "RoutingTable: Installed route {} ({} → {}): the next hop is {}.",
                 route.route_id, route.src_node_id, route.dst_node_id, route.next_hop
             );

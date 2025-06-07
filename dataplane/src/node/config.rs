@@ -1,4 +1,5 @@
 use std::sync::Arc;
+
 use tokio::net::UdpSocket;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
@@ -74,13 +75,16 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
-    #[serde(skip)]
-    #[arg(skip)]
-    pub udp_socket: Arc<Option<Arc<UdpSocket>>>,
-
     #[default(0)]
     #[arg(long)]
     pub node_id: NodeId,
+
+    /// The UDP socket bound to a specific port for receiving packets. It is bound to the public network port
+    /// by calling UdpSocket::bind() in ControllerInterface::connect().
+    #[default(None)]
+    #[serde(skip)]
+    #[arg(skip)]
+    pub udp_socket: Option<Arc<UdpSocket>>,
 
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller
@@ -283,8 +287,6 @@ impl LocalConfig {
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
-
-                        info!("Using local configuration: {:#?}", self);
                     }
                     _ => {
                         error!(

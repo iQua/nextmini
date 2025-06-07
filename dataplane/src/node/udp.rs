@@ -1,42 +1,29 @@
 use std::sync::Arc;
 
-use tokio::io::Result;
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
-use tracing::error;
-
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use tokio::io::Result;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
+use tracing::error;
 
 pub struct UdpServer {
-    config: LocalConfig,
+    socket: Arc<UdpSocket>,
     processors: ProcessorHandle,
-    socket: Option<Arc<UdpSocket>>,
 }
 
 impl UdpServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self {
-            config,
-            processors,
-            socket: None,
-        }
+        let socket = config.udp_socket.clone().unwrap();
+
+        Self { socket, processors }
     }
 
-    /// Binds the UDP socket, updates the configuration, and starts listening for packets.
-    pub async fn start_listening(&mut self, addr: &String) {
-        let socket = Arc::new(
-            UdpSocket::bind(addr)
-                .await
-                .unwrap_or_else(|_| panic!("Failed to bind the UDP socket.")),
-        );
-
-        self.socket = Some(socket.clone());
-        self.config.udp_socket = Arc::new(Some(socket.clone()));
-
+    /// starts listening for incoming packets
+    pub async fn start_listening(&mut self, _addr: &str) {
         loop {
             if let Ok(packet) = self.read_packet().await {
                 self.processors.process_packet(packet).await;
@@ -47,7 +34,7 @@ impl UdpServer {
     /// Reads a packet from a UDP socket.
     async fn read_packet(&mut self) -> Result<Packet> {
         let mut buf = [0; RECEIVE_BUF_SIZE];
-        let len = self.socket.as_ref().unwrap().recv(&mut buf[..]).await?;
+        let len = self.socket.recv(&mut buf).await?;
 
         Ok(Packet::new(len, buf))
     }
@@ -60,12 +47,13 @@ pub struct UdpRelay {
 }
 
 impl UdpRelay {
-    pub fn new(
+    pub async fn new(
         config: LocalConfig,
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
         remote_addr: String,
     ) -> Self {
-        let socket = config.udp_socket.as_ref().clone().unwrap();
+        let socket = config.udp_socket.clone().unwrap();
+
         Self {
             receiver,
             socket,
@@ -89,12 +77,8 @@ impl UdpRelay {
     /// Writes a packet to the UDP socket.
     async fn write_packet(&self, packet: &Packet) -> Result<()> {
         // UdpSocket.send_to() returns the number of bytes sent
-        let _ = self
-            .socket
-            .send_to(
-                &packet.buf[0..packet.packet_size],
-                self.remote_addr.as_str(),
-            )
+        self.socket
+            .send_to(&packet.buf[0..packet.packet_size], &self.remote_addr)
             .await?;
 
         Ok(())
