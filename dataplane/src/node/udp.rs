@@ -17,9 +17,7 @@ pub struct UdpServer {
 
 impl UdpServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        let Some(socket) = config.udp_socket.clone() else {
-            panic!("UDP socket is not configured");
-        };
+        let socket = config.udp_socket.clone().unwrap();
 
         Self { socket, processors }
     }
@@ -54,9 +52,7 @@ impl UdpRelay {
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
         remote_addr: String,
     ) -> Self {
-        let Some(socket) = config.udp_socket.clone() else {
-            panic!("UDP socket is not configured");
-        };
+        let socket = config.udp_socket.clone().unwrap();
 
         Self {
             receiver,
