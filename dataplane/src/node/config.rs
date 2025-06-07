@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+
 use tokio::net::UdpSocket;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
@@ -75,19 +75,16 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
+    #[default(0)]
+    #[arg(long)]
+    pub node_id: NodeId,
+
+    /// The UDP socket bound to a specific port for receiving packets. It is bound to the public network port
+    /// by calling UdpSocket::bind() in ControllerInterface::connect().
     #[default(None)]
     #[serde(skip)]
     #[arg(skip)]
     pub udp_socket: Option<Arc<UdpSocket>>,
-
-    #[default(Arc::new(AtomicBool::new(false)))]
-    #[serde(skip)]
-    #[arg(skip)]
-    pub udp_socket_initialized: Arc<AtomicBool>,
-
-    #[default(0)]
-    #[arg(long)]
-    pub node_id: NodeId,
 
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller

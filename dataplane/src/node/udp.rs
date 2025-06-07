@@ -11,29 +11,21 @@ use tokio::sync::mpsc;
 use tracing::error;
 
 pub struct UdpServer {
-    config: LocalConfig,
+    socket: Arc<UdpSocket>,
     processors: ProcessorHandle,
-    socket: Option<Arc<UdpSocket>>,
 }
 
 impl UdpServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self {
-            config,
-            processors,
-            socket: None,
-        }
+        let Some(socket) = config.udp_socket.clone() else {
+            panic!("UDP socket is not configured");
+        };
+
+        Self { socket, processors }
     }
 
     /// starts listening for incoming packets
     pub async fn start_listening(&mut self, _addr: &str) {
-        // socket should already be initialized by controller interface
-        self.socket = self.config.udp_socket.clone();
-
-        if self.socket.is_none() {
-            panic!("UDP socket was not initialized in config");
-        }
-
         loop {
             if let Ok(packet) = self.read_packet().await {
                 self.processors.process_packet(packet).await;
@@ -44,7 +36,7 @@ impl UdpServer {
     /// Reads a packet from a UDP socket.
     async fn read_packet(&mut self) -> Result<Packet> {
         let mut buf = [0; RECEIVE_BUF_SIZE];
-        let len = self.socket.as_ref().unwrap().recv(&mut buf).await?;
+        let len = self.socket.recv(&mut buf).await?;
 
         Ok(Packet::new(len, buf))
     }
@@ -62,12 +54,9 @@ impl UdpRelay {
         receiver: mpsc::Receiver<NetworkInterfaceMessage>,
         remote_addr: String,
     ) -> Self {
-        // socket should already be initialized by controller interface
-        let socket = config
-            .udp_socket
-            .as_ref()
-            .unwrap()
-            .clone();
+        let Some(socket) = config.udp_socket.clone() else {
+            panic!("UDP socket is not configured");
+        };
 
         Self {
             receiver,

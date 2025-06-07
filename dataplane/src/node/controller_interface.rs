@@ -1,4 +1,5 @@
 use std::sync::Arc;
+
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
@@ -108,22 +109,17 @@ impl ControllerInterfaceHandle {
             // updates the local configuration with settings from the controller
             config.update(response);
         } else {
-            error!("No response received from controller!");
+            error!("No response has been received from controller.");
         }
 
-        // initializes UDP socket if protocol is UDP after receive the msgs from Controller (after config update or it would be tcp)
         if config.protocol == nextmini_messages::Protocol::Udp {
-            let bind_addr = format!("{}:{}", "0.0.0.0", config.public_network_port);
-            match UdpSocket::bind(bind_addr).await {
-                Ok(socket) => {
+            // checks if the UDP socket has already been bound to a port
+            if config.udp_socket.is_none() {
+                let bind_addr = format!("{}:{}", "0.0.0.0", config.public_network_port);
+
+                if let Ok(socket) = UdpSocket::bind(bind_addr).await {
                     config.udp_socket = Some(Arc::new(socket));
-                    config
-                        .udp_socket_initialized
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    info!("UDP socket initialized successfully in controller interface");
-                }
-                Err(e) => {
-                    error!("Failed to bind UDP socket in controller interface: {}", e);
+                    info!("The UDP socket has been initialized successfully.");
                 }
             }
         }
