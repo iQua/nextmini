@@ -8,7 +8,8 @@ use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 
-use flume;
+use rapidhash::rapidhash;
+use tokio::sync::mpsc;
 use tracing::error;
 
 use nextmini_messages::RoutingTableEntry;
@@ -32,17 +33,21 @@ pub enum ProcessorMessage {
 #[derive(Clone)]
 pub struct ProcessorHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
-    packet_sender: flume::Sender<ProcessorMessage>,
+    packet_senders: Vec<mpsc::Sender<ProcessorMessage>>, // stores multiple processors
 }
 
 impl ProcessorHandle {
     pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
-        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
+        let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
         for _ in 0..config.num_packet_processors {
+            // for each Processor, creates one MPSC channel
+            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+            packet_senders.push(packet_sender);
+
             let mut proc = Processor {
-                packet_receiver: packet_receiver.clone(),
+                packet_receiver,
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
                 local_interface: None,
@@ -55,7 +60,7 @@ impl ProcessorHandle {
         }
         Self {
             broadcast_sender,
-            packet_sender,
+            packet_senders,
         }
     }
 
@@ -96,16 +101,27 @@ impl ProcessorHandle {
     }
 
     pub async fn process_packet(&self, packet: Packet) {
-        self.packet_sender
+        // rapidhash flow_id to processor
+        let processor_idx = self.hash_flow_to_processor(packet.flow_id);
+
+        self.packet_senders[processor_idx]
             .send(ProcessorMessage::ProcessPacket(packet))
+            .await
             .unwrap();
+    }
+
+    fn hash_flow_to_processor(&self, flow_id: FlowId) -> usize {
+        match self.packet_senders.len() {
+            1 => 0,
+            n => (rapidhash(&flow_id.to_le_bytes()) as usize) % n,
+        }
     }
 }
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
     // receives packets from the network interface or local interface
-    packet_receiver: flume::Receiver<ProcessorMessage>,
+    packet_receiver: mpsc::Receiver<ProcessorMessage>,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
@@ -125,7 +141,7 @@ impl Processor {
         loop {
             let msg = tokio::select! {
                 // packets from the inbound network or local interfaces
-                Ok(packet) = self.packet_receiver.recv_async() => {
+                Some(packet) = self.packet_receiver.recv() => {
                     Some(packet)
                 }
                 // messages from the controller interface or the conductor

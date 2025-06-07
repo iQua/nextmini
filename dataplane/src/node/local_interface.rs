@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use flume;
-use tokio::sync::broadcast;
+use rapidhash::rapidhash;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
@@ -10,6 +10,7 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, NodeId};
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
@@ -22,7 +23,7 @@ pub enum LocalInterfaceMessage {
 #[derive(Clone)]
 pub struct LocalInterfaceHandle {
     shutdown_sender: broadcast::Sender<LocalInterfaceMessage>,
-    write_sender: flume::Sender<LocalInterfaceMessage>,
+    write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
 }
 
 impl LocalInterfaceHandle {
@@ -34,10 +35,13 @@ impl LocalInterfaceHandle {
         // a broadcast channel for sending the shutdown signal to both local interface readers and writers
         let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
 
-        // an MPMC channel for the processors to send packets to the local interface writers
-        let (write_sender, write_receiver) = flume::bounded(config.channel_capacity);
+        let mut write_senders = Vec::with_capacity(tun_devices.len());
 
         for dev in tun_devices.iter() {
+            // for each LocalWriter, creates its MPSC channel
+            let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
+            write_senders.push(write_sender);
+
             let mut reader = LocalReader {
                 shutdown_receiver: shutdown_sender.subscribe(),
                 processor: processor.clone(),
@@ -46,7 +50,7 @@ impl LocalInterfaceHandle {
 
             let mut writer = LocalWriter {
                 shutdown_receiver: shutdown_sender.subscribe(),
-                packet_receiver: write_receiver.clone(),
+                packet_receiver: write_receiver,
                 device: dev.clone(),
             };
 
@@ -61,19 +65,30 @@ impl LocalInterfaceHandle {
 
         Self {
             shutdown_sender,
-            write_sender,
+            write_senders,
         }
     }
 
     pub async fn write_packet(
         &self,
         packet: Packet,
-    ) -> Result<(), flume::SendError<LocalInterfaceMessage>> {
-        let _ = self
-            .write_sender
-            .send(LocalInterfaceMessage::WritePacket(packet))?;
+    ) -> Result<(), mpsc::error::SendError<LocalInterfaceMessage>> {
+        // rapidhash flow_id to LocalWriter
+        let writer_idx = self.hash_flow_to_local_writer(packet.flow_id);
+
+        self.write_senders[writer_idx]
+            .send(LocalInterfaceMessage::WritePacket(packet))
+            .await?;
 
         Ok(())
+    }
+
+    // splits only one LocalWriter and multiple LocalWriters
+    fn hash_flow_to_local_writer(&self, flow_id: FlowId) -> usize {
+        match self.write_senders.len() {
+            1 => 0,
+            n => (rapidhash(&flow_id.to_le_bytes()) as usize) % n,
+        }
     }
 
     pub async fn shutdown(&self) {
@@ -222,7 +237,7 @@ impl LocalReader {
 struct LocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
-    packet_receiver: flume::Receiver<LocalInterfaceMessage>,
+    packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
 }
 
 impl LocalWriter {
@@ -235,8 +250,8 @@ impl LocalWriter {
                             break;
                     }
                 }
-                msg = self.packet_receiver.recv_async() => {
-                    if let Ok(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                msg = self.packet_receiver.recv() => {
+                    if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         let buf = &packet.buf[0..packet.packet_size];
 
                         let _ = self.device.send(buf).await;
