@@ -7,8 +7,6 @@ use std::collections::HashMap;
 use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
-
-use rapidhash::rapidhash;
 use tokio::sync::mpsc;
 use tracing::error;
 
@@ -19,7 +17,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowId, NodeId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
 #[derive(Clone)]
@@ -33,7 +31,7 @@ pub enum ProcessorMessage {
 #[derive(Clone)]
 pub struct ProcessorHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
-    packet_senders: Vec<mpsc::Sender<ProcessorMessage>>, // stores multiple processors
+    packet_senders: Vec<mpsc::Sender<ProcessorMessage>>,
 }
 
 impl ProcessorHandle {
@@ -101,20 +99,13 @@ impl ProcessorHandle {
     }
 
     pub async fn process_packet(&self, packet: Packet) {
-        // rapidhash flow_id to processor
-        let sender = self.select_processor_sender(packet.flow_id);
+        let idx = packet.flow_id.hash() % self.packet_senders.len();
+        let sender = &self.packet_senders[idx];
 
         sender
             .send(ProcessorMessage::ProcessPacket(packet))
             .await
             .unwrap();
-    }
-
-    fn select_processor_sender(&self, flow_id: FlowId) -> &mpsc::Sender<ProcessorMessage> {
-        match self.packet_senders.len() {
-            1 => &self.packet_senders[0],
-            n => &self.packet_senders[(rapidhash(&flow_id.to_le_bytes()) as usize) % n],
-        }
     }
 }
 

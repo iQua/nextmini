@@ -1,16 +1,15 @@
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use rapidhash::rapidhash;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
+use crate::node::FlowIdExt;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::{FlowId, NodeId};
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
@@ -73,21 +72,14 @@ impl LocalInterfaceHandle {
         &self,
         packet: Packet,
     ) -> Result<(), mpsc::error::SendError<LocalInterfaceMessage>> {
-        // rapidhash flow_id to LocalWriter
-        let sender = self.select_writer_sender(packet.flow_id);
+        let idx = packet.flow_id.hash() % self.write_senders.len();
+        let sender = &self.write_senders[idx];
 
         sender
             .send(LocalInterfaceMessage::WritePacket(packet))
             .await?;
 
         Ok(())
-    }
-
-    fn select_writer_sender(&self, flow_id: FlowId) -> &mpsc::Sender<LocalInterfaceMessage> {
-        match self.write_senders.len() {
-            1 => &self.write_senders[0],
-            n => &self.write_senders[(rapidhash(&flow_id.to_le_bytes()) as usize) % n],
-        }
     }
 
     pub async fn shutdown(&self) {

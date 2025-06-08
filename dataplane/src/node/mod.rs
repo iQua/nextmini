@@ -13,6 +13,10 @@ pub mod scheduler;
 pub mod tcp;
 pub mod udp;
 
+use std::hash::Hasher;
+
+use rapidhash::RapidInlineHasher;
+
 /// The node ID.
 pub type NodeId = usize;
 
@@ -34,28 +38,38 @@ pub trait FlowIdExt {
     fn dst_ip(&self) -> std::net::Ipv4Addr;
     fn src_port(&self) -> u16;
     fn dst_port(&self) -> u16;
+    fn hash(&self) -> usize;
 }
 
 impl FlowIdExt for FlowId {
+    /// Extracts the source IP
     fn src_ip(&self) -> std::net::Ipv4Addr {
-        // Extract source IP
         let src_u32 = (self >> 96) as u32;
         std::net::Ipv4Addr::from(src_u32)
     }
 
+    /// Extracts the destination IP
     fn dst_ip(&self) -> std::net::Ipv4Addr {
-        // Extract destination IP
         let dst_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
         std::net::Ipv4Addr::from(dst_u32)
     }
 
+    /// Extracts the source port
     fn src_port(&self) -> u16 {
-        // Extract source port
         ((self >> 48) & 0xFFFF) as u16
     }
 
+    /// Extracts the destination port
     fn dst_port(&self) -> u16 {
-        // Extract destination port
         ((self >> 32) & 0xFFFF) as u16
+    }
+
+    /// Computes the hash value using RapidHash, a fast and deterministic hash function
+    fn hash(&self) -> usize {
+        let mut hasher = RapidInlineHasher::default();
+        hasher.write(&self.to_be_bytes());
+        let hash = hasher.finish();
+
+        hash as usize
     }
 }
