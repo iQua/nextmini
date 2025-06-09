@@ -240,7 +240,7 @@ impl LocalReader {
 
                     if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
                         info!(
-                            "Processor: packets with out-of-order = {}, total = {}",
+                            "LocalReader: packets with out-of-order = {}, total = {}",
                             self.ooo, self.total
                         );
                         self.ooo += 1;
