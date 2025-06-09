@@ -47,6 +47,8 @@ impl LocalInterfaceHandle {
                 processor: processor.clone(),
                 device: dev.clone(),
                 seq_tracker: HashMap::new(), // tracks the sequence number of the last processed packet
+                ooo: 0,
+                total: 0,
             };
 
             let mut writer = LocalWriter {
@@ -54,6 +56,8 @@ impl LocalInterfaceHandle {
                 packet_receiver: write_receiver,
                 device: dev.clone(),
                 seq_tracker: HashMap::new(), // tracks the sequence number of the last written packet
+                ooo: 0,
+                total: 0,
             };
 
             tokio::spawn(async move {
@@ -181,6 +185,8 @@ pub struct LocalReader {
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     processor: ProcessorHandle,
     seq_tracker: HashMap<FlowId, u32>, // tracks the sequence number of the last processed packet
+    ooo: u32,
+    total: u32,
 }
 
 impl LocalReader {
@@ -233,13 +239,17 @@ impl LocalReader {
                     ]);
 
                     if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
-                        info!("LocalReader: packet with out-of-order sequence number: {}", seq_num);
-                        self.seq_tracker
-                                .insert(packet.flow_id, seq_num);
+                        info!(
+                            "Processor: packets with out-of-order = {}, total = {}",
+                            self.ooo, self.total
+                        );
+                        self.ooo += 1;
+                        self.seq_tracker.insert(packet.flow_id, seq_num);
                     } else {
-                        self.seq_tracker
-                                .insert(packet.flow_id, seq_num);
+                        self.seq_tracker.insert(packet.flow_id, seq_num);
                     }
+
+                    self.total += 1;
 
                     // sends to the processor for routing and forwarding
                     self.processor.process_packet(packet).await;
@@ -255,6 +265,8 @@ struct LocalWriter {
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
     seq_tracker: HashMap<FlowId, u32>,
+    ooo: u32,
+    total: u32,
 }
 
 impl LocalWriter {
@@ -281,13 +293,16 @@ impl LocalWriter {
                         ]);
 
                         if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
-                            info!("LocalWriter: packet with out-of-order sequence number: {}", seq_num);
+                            info!("LocalWriter: packets with out-of-order = {}, total = {}", self.ooo, self.total);
+                            self.ooo += 1;
                             self.seq_tracker
                                     .insert(packet.flow_id, seq_num);
                         } else {
                             self.seq_tracker
                                     .insert(packet.flow_id, seq_num);
                         }
+
+                        self.total += 1;
 
                         let buf = &packet.buf[0..packet.packet_size];
 

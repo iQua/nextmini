@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -105,8 +105,12 @@ impl RoutingTable {
             let hash_result = self
                 .jump_hasher
                 .slot(&flow_id, available_routes.len() as u32);
-            //available_routes[hash_result as usize]
-            available_routes[0]
+            info!(
+                "Jump hash selected route ID: {}",
+                available_routes[hash_result as usize]
+            );
+
+            available_routes[hash_result as usize]
         };
 
         debug!(

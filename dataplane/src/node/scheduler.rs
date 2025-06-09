@@ -100,6 +100,8 @@ impl Fifo {
             net_interface,
             queue_not_empty,
             seq_tracker: HashMap::new(), // initializes the sequence tracker to 0
+            ooo: 0,
+            total: 0,
         };
 
         tokio::spawn(async move {
@@ -189,6 +191,8 @@ struct FifoWriter {
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
     seq_tracker: HashMap<FlowId, u32>, // tracks the sequence number of packets to detect out-of-order delivery
+    ooo: u32,                          // out-of-order packets
+    total: u32,                        // total packets processed
 }
 
 impl FifoWriter {
@@ -211,13 +215,16 @@ impl FifoWriter {
 
                     if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
                         info!(
-                            "Scheduler: packet with out-of-order sequence number: {}",
-                            seq_num
+                            "Processor: packets with out-of-order = {}, total = {}",
+                            self.ooo, self.total
                         );
+                        self.ooo += 1;
                         self.seq_tracker.insert(packet.flow_id, seq_num);
                     } else {
                         self.seq_tracker.insert(packet.flow_id, seq_num);
                     }
+
+                    self.total += 1;
 
                     // sends the packet
                     if let Err(e) = self.net_interface.send(packet).await {
