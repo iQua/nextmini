@@ -50,7 +50,7 @@ impl ProcessorHandle {
                 routing_table: RoutingTable::new(config.node_id),
                 local_interface: None,
                 schedulers: HashMap::new(),
-                seq_tracker: 0, // initializes the sequence tracker to 0
+                seq_tracker: HashMap::new(), // initializes the sequence tracker to 0
             };
 
             tokio::spawn(async move {
@@ -128,7 +128,7 @@ struct Processor {
     // schedulers, one for each outbound network interface
     schedulers: HashMap<NodeId, SchedulerHandle>,
 
-    seq_tracker: u32, // tracks the sequence number of packets to detect out-of-order delivery
+    seq_tracker: HashMap<FlowId, u32>, // tracks the sequence number of packets to detect out-of-order delivery
 }
 
 impl Processor {
@@ -217,14 +217,18 @@ impl Processor {
             packet.buf[tcp_offset + 7],
         ]);
 
-        if seq_num < self.seq_tracker {
+        if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
             info!(
                 "Processor: packet with out-of-order sequence number: {}",
                 seq_num
             );
-            self.seq_tracker = seq_num;
+            self.seq_tracker
+                .entry(packet.flow_id)
+                .and_modify(|e| *e = seq_num);
         } else {
-            self.seq_tracker = seq_num;
+            self.seq_tracker
+                .entry(packet.flow_id)
+                .and_modify(|e| *e = seq_num);
         }
 
         self.send_packet(packet, next_hop_id, packet_flow_id).await

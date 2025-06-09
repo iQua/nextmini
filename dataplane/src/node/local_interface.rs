@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -5,11 +6,11 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-use crate::node::FlowIdExt;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, FlowIdExt};
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
@@ -45,14 +46,14 @@ impl LocalInterfaceHandle {
                 shutdown_receiver: shutdown_sender.subscribe(),
                 processor: processor.clone(),
                 device: dev.clone(),
-                seq_tracker: 0, // tracks the sequence number of the last processed packet
+                seq_tracker: HashMap::new(), // tracks the sequence number of the last processed packet
             };
 
             let mut writer = LocalWriter {
                 shutdown_receiver: shutdown_sender.subscribe(),
                 packet_receiver: write_receiver,
                 device: dev.clone(),
-                seq_tracker: 0, // tracks the sequence number of the last written packet
+                seq_tracker: HashMap::new(), // tracks the sequence number of the last written packet
             };
 
             tokio::spawn(async move {
@@ -179,7 +180,7 @@ pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     processor: ProcessorHandle,
-    seq_tracker: u32, // tracks the sequence number of the last processed packet
+    seq_tracker: HashMap<FlowId, u32>, // tracks the sequence number of the last processed packet
 }
 
 impl LocalReader {
@@ -231,11 +232,15 @@ impl LocalReader {
                         packet.buf[tcp_offset + 7],
                     ]);
 
-                    if seq_num < self.seq_tracker {
+                    if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
                         info!("LocalReader: packet with out-of-order sequence number: {}", seq_num);
-                        self.seq_tracker = seq_num;
+                        self.seq_tracker
+                            .entry(packet.flow_id)
+                            .and_modify(|e| *e = seq_num);
                     } else {
-                        self.seq_tracker = seq_num;
+                        self.seq_tracker
+                            .entry(packet.flow_id)
+                            .and_modify(|e| *e = seq_num);
                     }
 
                     // sends to the processor for routing and forwarding
@@ -251,7 +256,7 @@ struct LocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
-    seq_tracker: u32,
+    seq_tracker: HashMap<FlowId, u32>,
 }
 
 impl LocalWriter {
@@ -277,11 +282,18 @@ impl LocalWriter {
                             packet.buf[tcp_offset + 7],
                         ]);
 
-                        if seq_num < self.seq_tracker {
-                            info!("LocalWriter: packet with out-of-order sequence number: {}", seq_num);
-                            self.seq_tracker = seq_num;
+                        if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
+                            info!(
+                                "Processor: packet with out-of-order sequence number: {}",
+                                seq_num
+                            );
+                            self.seq_tracker
+                                .entry(packet.flow_id)
+                                .and_modify(|e| *e = seq_num);
                         } else {
-                            self.seq_tracker = seq_num;
+                            self.seq_tracker
+                                .entry(packet.flow_id)
+                                .and_modify(|e| *e = seq_num);
                         }
 
                         let buf = &packet.buf[0..packet.packet_size];
