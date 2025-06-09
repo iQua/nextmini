@@ -45,12 +45,14 @@ impl LocalInterfaceHandle {
                 shutdown_receiver: shutdown_sender.subscribe(),
                 processor: processor.clone(),
                 device: dev.clone(),
+                seq_tracker: 0, // tracks the sequence number of the last processed packet
             };
 
             let mut writer = LocalWriter {
                 shutdown_receiver: shutdown_sender.subscribe(),
                 packet_receiver: write_receiver,
                 device: dev.clone(),
+                seq_tracker: 0, // tracks the sequence number of the last written packet
             };
 
             tokio::spawn(async move {
@@ -72,7 +74,8 @@ impl LocalInterfaceHandle {
         &self,
         packet: Packet,
     ) -> Result<(), mpsc::error::SendError<LocalInterfaceMessage>> {
-        let idx = packet.flow_id.hash() % self.write_senders.len();
+        // let idx = packet.flow_id.hash() % self.write_senders.len();
+        let idx = 0;
         let sender = &self.write_senders[idx];
 
         sender
@@ -176,6 +179,7 @@ pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     processor: ProcessorHandle,
+    seq_tracker: u32, // tracks the sequence number of the last processed packet
 }
 
 impl LocalReader {
@@ -216,6 +220,24 @@ impl LocalReader {
                         continue;
                     }
 
+                    let ihl = (packet.buf[0] & 0x0F) as usize;
+                    let ip_header_len = ihl * 4;
+                    let tcp_offset = ip_header_len;
+
+                    let seq_num = u32::from_be_bytes([
+                        packet.buf[tcp_offset + 4],
+                        packet.buf[tcp_offset + 5],
+                        packet.buf[tcp_offset + 6],
+                        packet.buf[tcp_offset + 7],
+                    ]);
+
+                    if seq_num < self.seq_tracker {
+                        info!("LocalReader: packet with out-of-order sequence number: {}", seq_num);
+                        self.seq_tracker = seq_num;
+                    } else {
+                        self.seq_tracker = seq_num;
+                    }
+
                     // sends to the processor for routing and forwarding
                     self.processor.process_packet(packet).await;
                 }
@@ -229,6 +251,7 @@ struct LocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    seq_tracker: u32,
 }
 
 impl LocalWriter {
@@ -243,6 +266,24 @@ impl LocalWriter {
                 }
                 msg = self.packet_receiver.recv() => {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                        let ihl = (packet.buf[0] & 0x0F) as usize;
+                        let ip_header_len = ihl * 4;
+                        let tcp_offset = ip_header_len;
+
+                        let seq_num = u32::from_be_bytes([
+                            packet.buf[tcp_offset + 4],
+                            packet.buf[tcp_offset + 5],
+                            packet.buf[tcp_offset + 6],
+                            packet.buf[tcp_offset + 7],
+                        ]);
+
+                        if seq_num < self.seq_tracker {
+                            info!("LocalWriter: packet with out-of-order sequence number: {}", seq_num);
+                            self.seq_tracker = seq_num;
+                        } else {
+                            self.seq_tracker = seq_num;
+                        }
+
                         let buf = &packet.buf[0..packet.packet_size];
 
                         let _ = self.device.send(buf).await;

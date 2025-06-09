@@ -105,7 +105,8 @@ impl RoutingTable {
             let hash_result = self
                 .jump_hasher
                 .slot(&flow_id, available_routes.len() as u32);
-            available_routes[hash_result as usize]
+            //available_routes[hash_result as usize]
+            available_routes[0]
         };
 
         debug!(

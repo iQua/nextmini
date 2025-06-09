@@ -7,7 +7,7 @@ use tokio::sync::mpsc::error::SendError;
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
@@ -97,6 +97,7 @@ impl Fifo {
             queue: scheduler_queue,
             net_interface,
             queue_not_empty,
+            seq_tracker: 0, // initializes the sequence tracker to 0
         };
 
         tokio::spawn(async move {
@@ -185,6 +186,7 @@ struct FifoWriter {
     pub net_interface: NetworkInterfaceHandle,
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
+    seq_tracker: u32, // tracks the sequence number of packets to detect out-of-order delivery
 }
 
 impl FifoWriter {
@@ -194,6 +196,27 @@ impl FifoWriter {
             // tries to dequeue a packet
             match self.queue.pop() {
                 Some(packet) => {
+                    let ihl = (packet.buf[0] & 0x0F) as usize;
+                    let ip_header_len = ihl * 4;
+                    let tcp_offset = ip_header_len;
+
+                    let seq_num = u32::from_be_bytes([
+                        packet.buf[tcp_offset + 4],
+                        packet.buf[tcp_offset + 5],
+                        packet.buf[tcp_offset + 6],
+                        packet.buf[tcp_offset + 7],
+                    ]);
+
+                    if seq_num < self.seq_tracker {
+                        info!(
+                            "LocalReader: packet with out-of-order sequence number: {}",
+                            seq_num
+                        );
+                        self.seq_tracker = seq_num;
+                    } else {
+                        self.seq_tracker = seq_num;
+                    }
+
                     // sends the packet
                     if let Err(e) = self.net_interface.send(packet).await {
                         error!(
