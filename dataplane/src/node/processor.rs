@@ -222,13 +222,9 @@ impl Processor {
                 "Processor: packet with out-of-order sequence number: {}",
                 seq_num
             );
-            self.seq_tracker
-                .entry(packet.flow_id)
-                .and_modify(|e| *e = seq_num);
+            self.seq_tracker.insert(packet.flow_id, seq_num);
         } else {
-            self.seq_tracker
-                .entry(packet.flow_id)
-                .and_modify(|e| *e = seq_num);
+            self.seq_tracker.insert(packet.flow_id, seq_num);
         }
 
         self.send_packet(packet, next_hop_id, packet_flow_id).await

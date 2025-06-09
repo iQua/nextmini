@@ -235,12 +235,10 @@ impl LocalReader {
                     if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
                         info!("LocalReader: packet with out-of-order sequence number: {}", seq_num);
                         self.seq_tracker
-                            .entry(packet.flow_id)
-                            .and_modify(|e| *e = seq_num);
+                                .insert(packet.flow_id, seq_num);
                     } else {
                         self.seq_tracker
-                            .entry(packet.flow_id)
-                            .and_modify(|e| *e = seq_num);
+                                .insert(packet.flow_id, seq_num);
                     }
 
                     // sends to the processor for routing and forwarding
@@ -283,17 +281,12 @@ impl LocalWriter {
                         ]);
 
                         if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
-                            info!(
-                                "Processor: packet with out-of-order sequence number: {}",
-                                seq_num
-                            );
+                            info!("LocalWriter: packet with out-of-order sequence number: {}", seq_num);
                             self.seq_tracker
-                                .entry(packet.flow_id)
-                                .and_modify(|e| *e = seq_num);
+                                    .insert(packet.flow_id, seq_num);
                         } else {
                             self.seq_tracker
-                                .entry(packet.flow_id)
-                                .and_modify(|e| *e = seq_num);
+                                    .insert(packet.flow_id, seq_num);
                         }
 
                         let buf = &packet.buf[0..packet.packet_size];
