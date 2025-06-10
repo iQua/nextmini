@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
 
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::BidirectionalStream;
@@ -16,9 +15,7 @@ use tracing::{error, info};
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::{
-    NetworkInterfaceHandle, NetworkInterfaceMessage, NetworkStream,
-};
+use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
@@ -206,31 +203,15 @@ impl QuicReader {
 /// An actor that writes packets to a QUIC stream.
 pub struct QuicWriter {
     stream: SendStream,
-    receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl QuicWriter {
-    pub fn new(stream: SendStream, receiver: mpsc::Receiver<NetworkInterfaceMessage>) -> Self {
-        Self { stream, receiver }
-    }
-
-    pub async fn run(&mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                NetworkInterfaceMessage::SendPacket(packet) => {
-                    if let Err(e) = self.write_packet(&packet).await {
-                        error!("Failed to send a packet via QUIC: {}", e);
-                    }
-                }
-                NetworkInterfaceMessage::Shutdown => {
-                    break;
-                }
-            }
-        }
+    pub fn new(stream: SendStream) -> Self {
+        Self { stream }
     }
 
     // Sends a packet to the network via QUIC.
-    async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
+    pub async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
         self.stream
             .write_all(&packet.buf[0..packet.packet_size])
             .await?;

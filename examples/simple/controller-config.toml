@@ -1,4 +1,4 @@
-protocol = "tcp"
+protocol = "quic"
 
 [topology]
 type = "full_mesh"

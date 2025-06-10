@@ -5,14 +5,11 @@ use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::{
-    NetworkInterfaceHandle, NetworkInterfaceMessage, NetworkStream,
-};
+use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
@@ -173,34 +170,15 @@ impl TcpReader {
 
 pub struct TcpWriter {
     stream: WriteHalf<TcpStream>,
-    receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl TcpWriter {
-    pub fn new(
-        stream: WriteHalf<TcpStream>,
-        receiver: mpsc::Receiver<NetworkInterfaceMessage>,
-    ) -> Self {
-        Self { stream, receiver }
-    }
-
-    pub async fn run(mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                NetworkInterfaceMessage::SendPacket(packet) => {
-                    if let Err(e) = self.write_packet(&packet).await {
-                        error!("Failed to write packet: {}", e);
-                    }
-                }
-                NetworkInterfaceMessage::Shutdown => {
-                    break;
-                }
-            }
-        }
+    pub fn new(stream: WriteHalf<TcpStream>) -> Self {
+        Self { stream }
     }
 
     /// Writes a packet to the network using QUIC.
-    async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
+    pub async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
         self.stream
             .write_all(&packet.buf[0..packet.packet_size])
             .await?;

@@ -1,6 +1,6 @@
+use std::io::Error;
+
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
 
 use s2n_quic::stream::BidirectionalStream;
 
@@ -12,23 +12,33 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
-use crate::node::udp::UdpRelay;
-
-/// Messages sent to the network interface actor, which manages NetworkReader and Writer actors
-#[derive(Debug)]
-pub enum NetworkInterfaceMessage {
-    SendPacket(Packet),
-    Shutdown,
-}
+use crate::node::udp::UdpWriter;
 
 pub enum NetworkStream {
     Tcp(TcpStream),
     Quic(BidirectionalStream),
 }
 
+pub enum ProtocolWriter {
+    Tcp(TcpWriter),
+    Udp(UdpWriter),
+    Quic(QuicWriter),
+}
+
+impl ProtocolWriter {
+    /// Writes a packet to the underlying protocol writer.
+    pub async fn write_packet(&mut self, packet: Packet) -> Result<(), Error> {
+        match self {
+            ProtocolWriter::Tcp(writer) => writer.write_packet(&packet).await,
+            ProtocolWriter::Udp(writer) => writer.write_packet(&packet).await,
+            ProtocolWriter::Quic(writer) => writer.write_packet(&packet).await,
+        }
+    }
+}
+
 /// The network interface handle, used for sending and receiving packets over the network.
 pub struct NetworkInterfaceHandle {
-    pub sender: mpsc::Sender<NetworkInterfaceMessage>,
+    pub writer: ProtocolWriter,
 }
 
 impl NetworkInterfaceHandle {
@@ -38,17 +48,13 @@ impl NetworkInterfaceHandle {
         stream: NetworkStream,
         processors: ProcessorHandle,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(config.channel_capacity);
+        // unlike a typical actor where a channel for sending messages to the network interface actor,
+        // we directly return the protocol's writer (such as TcpWriter or QuicWrtiter) to the caller
+        let network_interface = NetworkInterface { config, processors };
 
-        let network_interface = NetworkInterface {
-            config,
-            processors,
-            receiver,
-        };
+        let writer = network_interface.init(stream);
 
-        network_interface.run(stream);
-
-        Self { sender }
+        Self { writer }
     }
 
     /// Creates and runs a new network interface actor as a client.
@@ -58,29 +64,20 @@ impl NetworkInterfaceHandle {
         remote_addr: String,
         processors: ProcessorHandle,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel::<NetworkInterfaceMessage>(config.channel_capacity);
+        let network_interface = NetworkInterface { config, processors };
 
-        let network_interface = NetworkInterface {
-            config,
-            processors,
-            receiver,
-        };
-
-        // there is no need to call tokio::spawn here, as the reader and writer tasks will be
-        // spawned in run() itself
-        network_interface
-            .run_as_client(remote_node_id, remote_addr)
+        // there is no need to call tokio::spawn here, as the reader task will be
+        // spawned in init() itself
+        let writer = network_interface
+            .init_as_client(remote_node_id, remote_addr)
             .await;
 
-        Self { sender }
+        Self { writer }
     }
 
     // Sends a packet through the network interface.
-    pub async fn send(&self, packet: Packet) -> Result<(), SendError<NetworkInterfaceMessage>> {
-        let _ = self
-            .sender
-            .send(NetworkInterfaceMessage::SendPacket(packet))
-            .await?;
+    pub async fn send(&mut self, packet: Packet) -> Result<(), Error> {
+        let _ = self.writer.write_packet(packet).await?;
 
         Ok(())
     }
@@ -90,11 +87,14 @@ impl NetworkInterfaceHandle {
 pub struct NetworkInterface {
     config: LocalConfig,
     processors: ProcessorHandle,
-    pub receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl NetworkInterface {
-    pub async fn run_as_client(self, remote_node_id: NodeId, remote_addr: String) {
+    pub async fn init_as_client(
+        self,
+        remote_node_id: NodeId,
+        remote_addr: String,
+    ) -> ProtocolWriter {
         // connects to the remote node
         match self.config.protocol {
             Protocol::Tcp => {
@@ -106,7 +106,7 @@ impl NetworkInterface {
                     .connect(remote_node_id, remote_addr.as_str())
                     .await;
 
-                self.run(NetworkStream::Tcp(stream));
+                self.init(NetworkStream::Tcp(stream))
             }
             Protocol::Quic => {
                 let quic_client = QuicClient {
@@ -117,47 +117,41 @@ impl NetworkInterface {
                     .connect(remote_node_id, remote_addr.as_str())
                     .await;
 
-                self.run(NetworkStream::Quic(stream));
+                self.init(NetworkStream::Quic(stream))
             }
             Protocol::Udp => {
-                tokio::spawn(async move {
-                    let udp_relay =
-                        UdpRelay::new(self.config.clone(), self.receiver, remote_addr).await;
-                    udp_relay.run().await;
-                });
+                let udp_writer = UdpWriter::new(self.config.clone(), remote_addr);
+
+                ProtocolWriter::Udp(udp_writer)
             }
         }
     }
 
-    pub fn run(self, stream: NetworkStream) {
+    pub fn init(self, stream: NetworkStream) -> ProtocolWriter {
         match stream {
             NetworkStream::Tcp(stream) => {
                 let (reader, writer) = tokio::io::split(stream);
 
                 let tcp_reader = TcpReader::new(reader, self.processors);
-                let tcp_writer = TcpWriter::new(writer, self.receiver);
+                let tcp_writer = TcpWriter::new(writer);
 
                 tokio::spawn(async move {
                     tcp_reader.run().await;
                 });
 
-                tokio::spawn(async move {
-                    tcp_writer.run().await;
-                });
+                ProtocolWriter::Tcp(tcp_writer)
             }
             NetworkStream::Quic(stream) => {
                 let (receive_stream, send_stream) = stream.split();
 
                 let mut quic_reader = QuicReader::new(receive_stream, self.processors);
-                let mut quic_writer = QuicWriter::new(send_stream, self.receiver);
+                let quic_writer = QuicWriter::new(send_stream);
 
                 tokio::spawn(async move {
                     quic_reader.run().await;
                 });
 
-                tokio::spawn(async move {
-                    quic_writer.run().await;
-                });
+                ProtocolWriter::Quic(quic_writer)
             }
         }
     }
