@@ -150,7 +150,6 @@ impl Processor {
                                         batch.push(packet);
                                     }
                                     _ => {
-                                        println!("batch.len() = {}", batch.len());
                                         break;
                                     }
                                 }

@@ -166,7 +166,7 @@ pub struct LocalConfig {
     pub queue_capacity: usize,
 
     // The batch size for the processor to process packets at once
-    #[default(100)]
+    #[default(256)]
     #[arg(long)]
     pub processor_batch_size: usize,
 
