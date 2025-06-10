@@ -1,4 +1,4 @@
-protocol = "udp"
+protocol = "tcp"
 
 [topology]
 type = "full_mesh"
