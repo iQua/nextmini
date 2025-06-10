@@ -48,8 +48,9 @@ impl NetworkInterfaceHandle {
         stream: NetworkStream,
         processors: ProcessorHandle,
     ) -> Self {
-        // unlike a typical actor where a channel for sending messages to the network interface actor,
-        // we directly return the protocol's writer (such as TcpWriter or QuicWrtiter) to the caller
+        // unlike a typical actor that uses a channel for sending messages to the network interface actor,
+        // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
+        // for the sake of improved performance and simplicity.
         let network_interface = NetworkInterface { config, processors };
 
         let writer = network_interface.init(stream);
