@@ -241,9 +241,31 @@ impl LocalWriter {
                 }
                 msg = self.packet_receiver.recv() => {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
-                        let buf = &packet.buf[0..packet.packet_size];
+                        let mut buffer = vec![packet];
 
-                        let _ = self.device.send(buf).await;
+                        while let Ok(message) = self.packet_receiver.try_recv() {
+                            match message {
+                                LocalInterfaceMessage::WritePacket(p) => {
+                                    buffer.push(p);
+                                }
+                                _ => {
+                                    // no more packets in the channel
+                                    continue;
+                                }
+                            }
+                        }
+
+                        for packet in buffer {
+                            let buf = &packet.buf[0..packet.packet_size];
+                            if let Err(_) = self.device.try_send(buf) {
+                                if let Err(e) = self.device.send(buf).await {
+                                    error!(
+                                        "Failed to write packet to the TUN device: {}. Dropped.",
+                                        e
+                                    );
+                                }
+                            }
+                        };
                     }
                 }
             }
