@@ -45,7 +45,7 @@ impl ProcessorHandle {
             packet_senders.push(packet_sender);
 
             let mut proc = Processor {
-                config,
+                batch_size: config.processor_batch_size,
                 packet_receiver,
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -112,7 +112,8 @@ impl ProcessorHandle {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
-    config: LocalConfig,
+    // the number of packets to be received at once without yielding to other tasks
+    batch_size: usize,
 
     // receives packets from the network interface or local interface
     packet_receiver: mpsc::Receiver<ProcessorMessage>,
@@ -138,16 +139,28 @@ impl Processor {
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
                         ProcessorMessage::ProcessPacket(first_packet) => {
-                            self.process_packet(first_packet).await;
+                            let mut batch = vec![first_packet];
 
                             // Start processing packets in batches
-                            for _ in 0..self.config.processor_batch_size {
+                            // while batch.len() < self.batch_size {
+                            for _ in 0..self.batch_size {
                                 match self.packet_receiver.try_recv() {
                                     Ok(ProcessorMessage::ProcessPacket(packet)) => {
-                                        self.process_packet(packet).await;
+                                        batch.push(packet);
                                     }
                                     _ => break, // No more packets available
                                 }
+                            }
+
+                            // Process all packets in the batch concurrently
+                            // let futures = batch.into_iter().map(|packet| self.process_packet(packet));
+                            // let _ = futures::future::join_all(futures).await;
+
+                            // processes packets sequentially
+                            for packet in batch {
+                                if let Err(e) = self.process_packet(packet).await {
+                                    error!("Failed to process packet: {}", e);
+                                };
                             }
                         }
                         other_msg => {
@@ -248,28 +261,10 @@ impl Processor {
                 Err("The local interface has not yet been connected.".to_string())
             }
         } else {
-            match self.schedulers.get_mut(&next_hop_id) {
-                Some(scheduler) => {
-                    if let Err(e) = scheduler.send(packet).await {
-                        let error = format!(
-                            "Failed to send a packet with flow ID {} to the scheduler for next hop {}: {}",
-                            packet_flow_id, next_hop_id, e
-                        );
-                        error!("{}", error);
-
-                        Err(error)
-                    } else {
-                        Ok(())
-                    }
-                }
-                None => {
-                    error!(
-                        "Next hop node {} is offline or unreachable for flow {}: connection may have been lost.",
-                        next_hop_id, packet_flow_id
-                    );
-
-                    Ok(())
-                }
+            if let Some(scheduler) = self.schedulers.get_mut(&next_hop_id) {
+                scheduler.send(packet).await.map_err(|e| e.to_string())
+            } else {
+                Ok(()) // the scheduler is offline, ignore
             }
         }
     }
