@@ -185,7 +185,7 @@ impl Processor {
     }
 
     /// Process inbound packets for outbound delivery
-    fn process_packet(&self, packet: Packet) {
+    fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
         // selects the route ID for a new flow
