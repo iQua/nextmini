@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
 
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
@@ -175,7 +174,9 @@ impl FifoReader {
             warn!("FIFO: Scheduler dropped a packet as the queue is full.");
         } else {
             // notifies the consumer task that a packet has arrived and the queue becomes 'non-empty' now
+            // if self.queue.len() > 50 {
             self.queue_not_empty.notify_one();
+            // }
         }
     }
 }
