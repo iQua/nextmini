@@ -74,7 +74,7 @@ impl LocalInterfaceHandle {
 
         if let Err(e) = sender.try_send(LocalInterfaceMessage::WritePacket(packet)) {
             error!(
-                "Error sending a packet to the local interface writer: {}. The packet will be dropped.",
+                "Error sending a packet to the local interface writer: {}. Dropped.",
                 e
             );
         }
@@ -249,7 +249,7 @@ impl LocalWriter {
                                     buffer.push(p);
                                 }
                                 _ => {
-                                    // no more packets in the channel
+                                    // no more packets remaining in the channel
                                     break;
                                 }
                             }
