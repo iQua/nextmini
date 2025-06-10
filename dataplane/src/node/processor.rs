@@ -8,7 +8,7 @@ use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::error;
 
 use nextmini_messages::RoutingTableEntry;
 
@@ -17,7 +17,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::{FlowId, NodeId};
 
 // Message types for the processor actor.
 #[derive(Clone)]
@@ -50,9 +50,6 @@ impl ProcessorHandle {
                 routing_table: RoutingTable::new(config.node_id),
                 local_interface: None,
                 schedulers: HashMap::new(),
-                seq_tracker: HashMap::new(), // initializes the sequence tracker to 0
-                ooo: 0,
-                total: 0,
             };
 
             tokio::spawn(async move {
@@ -129,10 +126,6 @@ struct Processor {
 
     // schedulers, one for each outbound network interface
     schedulers: HashMap<NodeId, SchedulerHandle>,
-
-    seq_tracker: HashMap<FlowId, u32>, // tracks the sequence number of packets to detect out-of-order delivery
-    ooo: u32,
-    total: u32,
 }
 
 impl Processor {
@@ -209,30 +202,6 @@ impl Processor {
 
                 error
             })?;
-
-        let ihl = (packet.buf[0] & 0x0F) as usize;
-        let ip_header_len = ihl * 4;
-        let tcp_offset = ip_header_len;
-
-        let seq_num = u32::from_be_bytes([
-            packet.buf[tcp_offset + 4],
-            packet.buf[tcp_offset + 5],
-            packet.buf[tcp_offset + 6],
-            packet.buf[tcp_offset + 7],
-        ]);
-
-        if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
-            info!(
-                "Processor: packets with out-of-order = {}, total = {}",
-                self.ooo, self.total
-            );
-            self.ooo += 1;
-            self.seq_tracker.insert(packet.flow_id, seq_num);
-        } else {
-            self.seq_tracker.insert(packet.flow_id, seq_num);
-        }
-
-        self.total += 1;
 
         self.send_packet(packet, next_hop_id, packet_flow_id).await
     }
