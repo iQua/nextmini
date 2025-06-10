@@ -137,10 +137,20 @@ struct FifoReader {
 impl FifoReader {
     async fn run(&mut self) {
         // producer task: receives packets and enqueues them
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                SchedulerMessage::InboundPacket(packet) => {
-                    self.enqueue(packet);
+        loop {
+            if let Some(message) = self.receiver.recv().await {
+                match message {
+                    SchedulerMessage::InboundPacket(packet) => {
+                        self.enqueue(packet);
+                    }
+                }
+
+                while let Ok(message) = self.receiver.try_recv() {
+                    match message {
+                        SchedulerMessage::InboundPacket(packet) => {
+                            self.enqueue(packet);
+                        }
+                    }
                 }
             }
         }

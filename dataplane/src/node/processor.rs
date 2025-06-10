@@ -45,7 +45,6 @@ impl ProcessorHandle {
             packet_senders.push(packet_sender);
 
             let mut proc = Processor {
-                batch_size: config.processor_batch_size,
                 packet_receiver,
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -99,7 +98,7 @@ impl ProcessorHandle {
         Ok(())
     }
 
-    pub async fn process_packet(&self, packet: Packet) {
+    pub fn process_packet(&self, packet: Packet) {
         let idx = packet.flow_id.hash() % self.packet_senders.len();
         let sender = &self.packet_senders[idx];
 
@@ -114,9 +113,6 @@ impl ProcessorHandle {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
-    // the number of packets to be received at once without yielding to other tasks
-    batch_size: usize,
-
     // receives packets from the network interface or local interface
     packet_receiver: mpsc::Receiver<ProcessorMessage>,
 
@@ -143,10 +139,11 @@ impl Processor {
                         ProcessorMessage::ProcessPacket(first_packet) => {
                             // Start a batch with the first packet
                             self.process_packet(first_packet);
+
                             // Start processing packets in batches
-                            for _ in 0..self.batch_size {
-                                match self.packet_receiver.try_recv() {
-                                    Ok(ProcessorMessage::ProcessPacket(packet)) => {
+                            while let Ok(message) = self.packet_receiver.try_recv() {
+                                match message {
+                                    ProcessorMessage::ProcessPacket(packet) => {
                                         self.process_packet(packet);
                                     }
                                     _ => {

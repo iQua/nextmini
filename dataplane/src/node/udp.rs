@@ -26,7 +26,7 @@ impl UdpServer {
     pub async fn start_listening(&mut self, _addr: &str) {
         loop {
             if let Ok(packet) = self.read_packet().await {
-                self.processors.process_packet(packet).await;
+                self.processors.process_packet(packet);
             }
         }
     }

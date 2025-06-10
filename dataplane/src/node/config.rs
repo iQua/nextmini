@@ -165,11 +165,6 @@ pub struct LocalConfig {
     #[arg(long)]
     pub queue_capacity: usize,
 
-    // The batch size for the processor to process packets at once
-    #[default(1000)]
-    #[arg(long)]
-    pub processor_batch_size: usize,
-
     // The drop strategy for the scheduler
     #[default(DropStrategy::TailDrop)]
     #[arg(long, value_enum)]

@@ -215,7 +215,7 @@ impl LocalReader {
                     }
 
                     // sends to the processor for routing and forwarding
-                    self.processor.process_packet(packet).await;
+                    self.processor.process_packet(packet);
                 }
             }
         }
