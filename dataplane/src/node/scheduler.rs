@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::Notify;
@@ -8,9 +7,8 @@ use tokio::sync::mpsc::error::SendError;
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
-use crate::node::FlowId;
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
@@ -99,9 +97,6 @@ impl Fifo {
             queue: scheduler_queue,
             net_interface,
             queue_not_empty,
-            seq_tracker: HashMap::new(), // initializes the sequence tracker to 0
-            ooo: 0,
-            total: 0,
         };
 
         tokio::spawn(async move {
@@ -190,9 +185,6 @@ struct FifoWriter {
     pub net_interface: NetworkInterfaceHandle,
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
-    seq_tracker: HashMap<FlowId, u32>, // tracks the sequence number of packets to detect out-of-order delivery
-    ooo: u32,                          // out-of-order packets
-    total: u32,                        // total packets processed
 }
 
 impl FifoWriter {
@@ -202,30 +194,6 @@ impl FifoWriter {
             // tries to dequeue a packet
             match self.queue.pop() {
                 Some(packet) => {
-                    let ihl = (packet.buf[0] & 0x0F) as usize;
-                    let ip_header_len = ihl * 4;
-                    let tcp_offset = ip_header_len;
-
-                    let seq_num = u32::from_be_bytes([
-                        packet.buf[tcp_offset + 4],
-                        packet.buf[tcp_offset + 5],
-                        packet.buf[tcp_offset + 6],
-                        packet.buf[tcp_offset + 7],
-                    ]);
-
-                    if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
-                        info!(
-                            "Processor: packets with out-of-order = {}, total = {}",
-                            self.ooo, self.total
-                        );
-                        self.ooo += 1;
-                        self.seq_tracker.insert(packet.flow_id, seq_num);
-                    } else {
-                        self.seq_tracker.insert(packet.flow_id, seq_num);
-                    }
-
-                    self.total += 1;
-
                     // sends the packet
                     if let Err(e) = self.net_interface.send(packet).await {
                         error!(

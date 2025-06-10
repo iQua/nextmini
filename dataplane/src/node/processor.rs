@@ -17,7 +17,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowId, NodeId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
 #[derive(Clone)]
@@ -99,8 +99,7 @@ impl ProcessorHandle {
     }
 
     pub async fn process_packet(&self, packet: Packet) {
-        //let idx = packet.flow_id.hash() % self.packet_senders.len();
-        let idx = 0;
+        let idx = packet.flow_id.hash() % self.packet_senders.len();
         let sender = &self.packet_senders[idx];
 
         sender
