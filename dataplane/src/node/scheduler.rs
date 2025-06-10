@@ -53,7 +53,7 @@ impl SchedulerHandle {
     }
 
     // Sends a packet to the scheduler.
-    pub async fn send(&mut self, packet: Packet) -> Result<(), SendError<SchedulerMessage>> {
+    pub async fn send(&self, packet: Packet) -> Result<(), SendError<SchedulerMessage>> {
         self.sender
             .send(SchedulerMessage::InboundPacket(packet))
             .await?;

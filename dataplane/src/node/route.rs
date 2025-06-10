@@ -84,7 +84,7 @@ impl RoutingTable {
 
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
-    pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
+    pub fn select_route_for_flow(&self, flow_id: FlowId) -> Option<usize> {
         if flow_id == 0 {
             // The flow ID cannot be successfully extracted, no routing is possible
             return Some(0);

@@ -8,7 +8,7 @@ use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tracing::error;
+use tracing::{error, warn};
 
 use nextmini_messages::RoutingTableEntry;
 
@@ -103,10 +103,12 @@ impl ProcessorHandle {
         let idx = packet.flow_id.hash() % self.packet_senders.len();
         let sender = &self.packet_senders[idx];
 
-        sender
-            .send(ProcessorMessage::ProcessPacket(packet))
-            .await
-            .unwrap();
+        if let Err(e) = sender.try_send(ProcessorMessage::ProcessPacket(packet)) {
+            warn!(
+                "Error sending a packet to the processor: {}. The processor may be overloaded.",
+                e
+            );
+        }
     }
 }
 
@@ -142,26 +144,28 @@ impl Processor {
                             let mut batch = vec![first_packet];
 
                             // Start processing packets in batches
-                            // while batch.len() < self.batch_size {
-                            for _ in 0..self.batch_size {
+                            while batch.len() < self.batch_size {
                                 match self.packet_receiver.try_recv() {
                                     Ok(ProcessorMessage::ProcessPacket(packet)) => {
                                         batch.push(packet);
                                     }
-                                    _ => break, // No more packets available
+                                    _ => {
+                                        println!("batch.len() = {}", batch.len());
+                                        break;
+                                    }
                                 }
                             }
 
                             // Process all packets in the batch concurrently
-                            // let futures = batch.into_iter().map(|packet| self.process_packet(packet));
-                            // let _ = futures::future::join_all(futures).await;
+                            let futures = batch.into_iter().map(|packet| self.process_packet(packet));
+                            let _ = futures::future::join_all(futures).await;
 
                             // processes packets sequentially
-                            for packet in batch {
-                                if let Err(e) = self.process_packet(packet).await {
-                                    error!("Failed to process packet: {}", e);
-                                };
-                            }
+                            // for packet in batch {
+                            //     if let Err(e) = self.process_packet(packet).await {
+                            //         error!("Failed to process packet: {}", e);
+                            //     };
+                            // }
                         }
                         other_msg => {
                             // Handle other messages that are not packets
@@ -196,7 +200,7 @@ impl Processor {
     }
 
     /// Process inbound packets for outbound delivery
-    async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
+    async fn process_packet(&self, packet: Packet) -> Result<(), String> {
         let packet_flow_id = packet.flow_id;
 
         // Select route_id for new flow at source node
@@ -238,7 +242,7 @@ impl Processor {
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
     async fn send_packet(
-        &mut self,
+        &self,
         packet: Packet,
         next_hop_id: NodeId,
         packet_flow_id: FlowId,
@@ -261,7 +265,7 @@ impl Processor {
                 Err("The local interface has not yet been connected.".to_string())
             }
         } else {
-            if let Some(scheduler) = self.schedulers.get_mut(&next_hop_id) {
+            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
                 scheduler.send(packet).await.map_err(|e| e.to_string())
             } else {
                 Ok(()) // the scheduler is offline, ignore
