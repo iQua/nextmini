@@ -45,6 +45,7 @@ impl ProcessorHandle {
             packet_senders.push(packet_sender);
 
             let mut proc = Processor {
+                config,
                 packet_receiver,
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -111,6 +112,8 @@ impl ProcessorHandle {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
+    config: LocalConfig,
+
     // receives packets from the network interface or local interface
     packet_receiver: mpsc::Receiver<ProcessorMessage>,
 
@@ -130,35 +133,51 @@ struct Processor {
 impl Processor {
     async fn run(&mut self) {
         loop {
-            let msg = tokio::select! {
-                // packets from the inbound network or local interfaces
-                Some(packet) = self.packet_receiver.recv() => {
-                    Some(packet)
-                }
-                // messages from the controller interface or the conductor
-                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
-                    Some(broadcast_msg)
-                }
-            };
+            tokio::select! {
+                // Wait for the first packet or a broadcast message
+                Some(msg) = self.packet_receiver.recv() => {
+                    match msg {
+                        ProcessorMessage::ProcessPacket(first_packet) => {
+                            self.process_packet(first_packet).await;
 
-            match msg {
-                Some(ProcessorMessage::ProcessPacket(packet)) => {
-                    let _ = self.process_packet(packet).await;
+                            // Start processing packets in batches
+                            for _ in 0..self.config.processor_batch_size {
+                                match self.packet_receiver.try_recv() {
+                                    Ok(ProcessorMessage::ProcessPacket(packet)) => {
+                                        self.process_packet(packet).await;
+                                    }
+                                    _ => break, // No more packets available
+                                }
+                            }
+                        }
+                        other_msg => {
+                            // Handle other messages that are not packets
+                            self.handle_message(other_msg).await;
+                        }
+                    }
                 }
-                Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
-                    self.routing_table.install_routes(routes);
+                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
+                    self.handle_message(broadcast_msg).await;
                 }
-                Some(ProcessorMessage::AddNode(node_id, scheduler)) => {
-                    // updates the scheduler for a given node ID
-                    self.schedulers.insert(node_id, scheduler);
-                }
-                Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {
-                    self.local_interface = Some(local_interface);
-                }
-                None => {
-                    error!("Processor received an unexpected message");
-                    break;
-                }
+            }
+        }
+    }
+
+    // New helper method to handle non-packet messages
+    async fn handle_message(&mut self, msg: ProcessorMessage) {
+        match msg {
+            ProcessorMessage::UpdateRoutingTable(routes) => {
+                self.routing_table.install_routes(routes);
+            }
+            ProcessorMessage::AddNode(node_id, scheduler) => {
+                // updates the scheduler for a given node ID
+                self.schedulers.insert(node_id, scheduler);
+            }
+            ProcessorMessage::ConnectLocalInterface(local_interface) => {
+                self.local_interface = Some(local_interface);
+            }
+            ProcessorMessage::ProcessPacket(_) => {
+                error!("Unexpected ProcessPacket message found. Something went wrong.");
             }
         }
     }
@@ -182,9 +201,8 @@ impl Processor {
             })?;
 
         if route_id == 0 {
-            // no route can be possible as the flow ID is not valid (represented as a value of 0)
-            // perhaps a non-IPv4 packet?
-            // drops the packet without forwarding it
+            // No route can be possible as the flow ID is not valid (represented as a value of 0)
+            // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
             return Err("No route can be selected".to_string());
         }
 
