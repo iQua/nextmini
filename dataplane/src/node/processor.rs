@@ -20,9 +20,12 @@ use crate::node::scheduler::SchedulerHandle;
 use crate::node::{FlowIdExt, NodeId};
 
 // Message types for the processor actor.
+pub enum ProcessorPacket {
+    ProcessPacket(Packet),
+}
+
 #[derive(Clone)]
 pub enum ProcessorMessage {
-    ProcessPacket(Packet),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
@@ -31,7 +34,7 @@ pub enum ProcessorMessage {
 #[derive(Clone)]
 pub struct ProcessorHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
-    packet_senders: Vec<mpsc::Sender<ProcessorMessage>>,
+    packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
 }
 
 impl ProcessorHandle {
@@ -102,7 +105,7 @@ impl ProcessorHandle {
         let idx = packet.flow_id.hash() % self.packet_senders.len();
         let sender = &self.packet_senders[idx];
 
-        if let Err(e) = sender.try_send(ProcessorMessage::ProcessPacket(packet)) {
+        if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
             warn!(
                 "Error sending a packet to the processor: {}. The processor may be overloaded.",
                 e
@@ -114,7 +117,7 @@ impl ProcessorHandle {
 // Processes packets and forwards them to the next hop.
 struct Processor {
     // receives packets from the network interface or local interface
-    packet_receiver: mpsc::Receiver<ProcessorMessage>,
+    packet_receiver: mpsc::Receiver<ProcessorPacket>,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
@@ -136,25 +139,14 @@ impl Processor {
                 // Wait for the first packet or a broadcast message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
-                        ProcessorMessage::ProcessPacket(first_packet) => {
+                        ProcessorPacket::ProcessPacket(first_packet) => {
                             // Start a batch with the first packet
                             self.process_packet(first_packet);
 
                             // Start processing packets in batches
-                            while let Ok(message) = self.packet_receiver.try_recv() {
-                                match message {
-                                    ProcessorMessage::ProcessPacket(packet) => {
-                                        self.process_packet(packet);
-                                    }
-                                    _ => {
-                                        break;
-                                    }
-                                }
+                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
+                                self.process_packet(packet);
                             }
-                        }
-                        other_msg => {
-                            // Handle other messages that are not packets
-                            self.handle_message(other_msg).await;
                         }
                     }
                 }
@@ -177,9 +169,6 @@ impl Processor {
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(local_interface);
-            }
-            ProcessorMessage::ProcessPacket(_) => {
-                error!("Unexpected ProcessPacket message found. Something went wrong.");
             }
         }
     }

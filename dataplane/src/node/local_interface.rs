@@ -13,15 +13,18 @@ use crate::node::processor::ProcessorHandle;
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
+pub enum ShutdownMessage {
+    Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
+}
+
 pub enum LocalInterfaceMessage {
     WritePacket(Packet), // the processor sends a packet to the application via the local interface
-    Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
 }
 
 /// Handle for Processors to interact with LocalInterface
 #[derive(Clone)]
 pub struct LocalInterfaceHandle {
-    shutdown_sender: broadcast::Sender<LocalInterfaceMessage>,
+    shutdown_sender: broadcast::Sender<ShutdownMessage>,
     write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
 }
 
@@ -81,7 +84,7 @@ impl LocalInterfaceHandle {
     }
 
     pub async fn shutdown(&self) {
-        if let Err(e) = self.shutdown_sender.send(LocalInterfaceMessage::Shutdown) {
+        if let Err(e) = self.shutdown_sender.send(ShutdownMessage::Shutdown) {
             error!("Error shutting down all the actors: {}", e);
         };
     }
@@ -172,7 +175,7 @@ impl LocalInterfaceHandle {
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
-    shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     processor: ProcessorHandle,
 }
 
@@ -183,7 +186,7 @@ impl LocalReader {
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
-                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
                             info!("LocalReader received shutdown signal, stopping...");
                             break;
                     }
@@ -225,7 +228,7 @@ impl LocalReader {
 /// Writes one packet to a TUN device.
 struct LocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
-    shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
 }
 
@@ -234,7 +237,7 @@ impl LocalWriter {
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
-                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
                             info!("LocalWriter received shutdown signal, stopping...");
                             break;
                     }
@@ -247,10 +250,6 @@ impl LocalWriter {
                             match message {
                                 LocalInterfaceMessage::WritePacket(p) => {
                                     buffer.push(p);
-                                }
-                                _ => {
-                                    // no more packets remaining in the channel
-                                    break;
                                 }
                             }
                         }

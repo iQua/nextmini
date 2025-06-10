@@ -2,7 +2,7 @@ use byteorder::{BigEndian, ByteOrder};
 
 use crate::node::{FlowId, PacketBuf};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Packet {
     pub flow_id: FlowId,
     pub packet_size: usize,
