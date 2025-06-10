@@ -141,30 +141,19 @@ impl Processor {
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
                         ProcessorMessage::ProcessPacket(first_packet) => {
-                            let mut batch = vec![first_packet];
-
+                            // Start a batch with the first packet
+                            self.process_packet(first_packet);
                             // Start processing packets in batches
-                            while batch.len() < self.batch_size {
+                            for _ in 0..self.batch_size {
                                 match self.packet_receiver.try_recv() {
                                     Ok(ProcessorMessage::ProcessPacket(packet)) => {
-                                        batch.push(packet);
+                                        self.process_packet(packet);
                                     }
                                     _ => {
                                         break;
                                     }
                                 }
                             }
-
-                            // Process all packets in the batch concurrently
-                            let futures = batch.into_iter().map(|packet| self.process_packet(packet));
-                            let _ = futures::future::join_all(futures).await;
-
-                            // processes packets sequentially
-                            // for packet in batch {
-                            //     if let Err(e) = self.process_packet(packet).await {
-                            //         error!("Failed to process packet: {}", e);
-                            //     };
-                            // }
                         }
                         other_msg => {
                             // Handle other messages that are not packets
@@ -199,75 +188,46 @@ impl Processor {
     }
 
     /// Process inbound packets for outbound delivery
-    async fn process_packet(&self, packet: Packet) -> Result<(), String> {
+    fn process_packet(&self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        // Select route_id for new flow at source node
-        let route_id = self
-            .routing_table
-            .select_route_for_flow(packet_flow_id)
-            .ok_or_else(|| {
-                let error = format!(
-                    "No route is found for flow {}: the routing table may be misconfigured",
-                    packet_flow_id
-                );
-                error!("{}", error);
+        // selects the route ID for a new flow
+        if let Some(route_id) = self.routing_table.select_route_for_flow(packet_flow_id) {
+            if route_id == 0 {
+                // No route can be possible as the flow ID is not valid (represented as a value of 0)
+                // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
+                error!("No route can be selected.");
+            }
 
-                error
-            })?;
-
-        if route_id == 0 {
-            // No route can be possible as the flow ID is not valid (represented as a value of 0)
-            // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
-            return Err("No route can be selected".to_string());
-        }
-
-        // Route the packet to its next hop
-        let next_hop_id = self
-            .routing_table
-            .get_next_hop_by_route(route_id)
-            .ok_or_else(|| {
-                let error = format!(
-                    "No next hop is found for route id {} on flow {}: routing inconsistency detected",
+            // routes the packet to its next hop
+            if let Some(next_hop_id) = self.routing_table.get_next_hop_by_route(route_id) {
+                self.send_packet(packet, next_hop_id);
+            } else {
+                error!(
+                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
                     route_id, packet_flow_id
                 );
-                error!("{}", error);
-
-                error
-            })?;
-
-        self.send_packet(packet, next_hop_id, packet_flow_id).await
+            }
+        } else {
+            error!(
+                "No route is found for flow {}: the routing table may be misconfigured.",
+                packet_flow_id
+            );
+        }
     }
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
-    async fn send_packet(
-        &self,
-        packet: Packet,
-        next_hop_id: NodeId,
-        packet_flow_id: FlowId,
-    ) -> Result<(), String> {
+    fn send_packet(&self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery
             if let Some(ref local_interface) = self.local_interface {
-                if let Err(e) = local_interface.write_packet(packet).await {
-                    let error = format!(
-                        "Failed to send a packet with flow ID {} to the local interface: {}",
-                        packet_flow_id, e
-                    );
-                    error!("{}", error);
-
-                    Err(error)
-                } else {
-                    Ok(())
-                }
+                local_interface.write_packet(packet);
             } else {
-                Err("The local interface has not yet been connected.".to_string())
+                error!("The local interface has not yet been connected.");
             }
         } else {
             if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-                scheduler.send(packet).await.map_err(|e| e.to_string())
-            } else {
-                Ok(()) // the scheduler is offline, ignore
+                scheduler.send(packet);
             }
         }
     }

@@ -68,18 +68,16 @@ impl LocalInterfaceHandle {
         }
     }
 
-    pub async fn write_packet(
-        &self,
-        packet: Packet,
-    ) -> Result<(), mpsc::error::SendError<LocalInterfaceMessage>> {
+    pub fn write_packet(&self, packet: Packet) {
         let idx = packet.flow_id.hash() % self.write_senders.len();
         let sender = &self.write_senders[idx];
 
-        sender
-            .send(LocalInterfaceMessage::WritePacket(packet))
-            .await?;
-
-        Ok(())
+        if let Err(e) = sender.try_send(LocalInterfaceMessage::WritePacket(packet)) {
+            error!(
+                "Error sending a packet to the local interface writer: {}. The packet will be dropped.",
+                e
+            );
+        }
     }
 
     pub async fn shutdown(&self) {

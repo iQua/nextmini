@@ -53,12 +53,13 @@ impl SchedulerHandle {
     }
 
     // Sends a packet to the scheduler.
-    pub async fn send(&self, packet: Packet) -> Result<(), SendError<SchedulerMessage>> {
-        self.sender
-            .send(SchedulerMessage::InboundPacket(packet))
-            .await?;
-
-        Ok(())
+    pub fn send(&self, packet: Packet) {
+        if let Err(e) = self
+            .sender
+            .try_send(SchedulerMessage::InboundPacket(packet))
+        {
+            error!("Scheduler: Error sending a packet to the scheduler: {}.", e);
+        }
     }
 }
 
