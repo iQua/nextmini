@@ -250,7 +250,7 @@ impl LocalWriter {
                                 }
                                 _ => {
                                     // no more packets in the channel
-                                    continue;
+                                    break;
                                 }
                             }
                         }
