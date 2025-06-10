@@ -25,6 +25,17 @@ pub enum CongestionControl {
     Cubic,
 }
 
+/// The processing mode for processing packets
+#[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ProcessingMode {
+    /// mode with no packet reordering
+    #[default]
+    Normal,
+    /// mpmc mode with packet reordering
+    Multipath,
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
@@ -169,6 +180,16 @@ pub struct LocalConfig {
     #[default(DropStrategy::TailDrop)]
     #[arg(long, value_enum)]
     pub scheduler_drop_strategy: DropStrategy,
+
+    // The processing mode for processing packets
+    #[default(ProcessingMode::Normal)]
+    #[arg(long, value_enum)]
+    pub processing_mode: ProcessingMode,
+
+    // Reorder tolerance for the multipath mode
+    #[default(4)]
+    #[arg(long)]
+    pub reorder_tolerance: usize,
 }
 
 impl LocalConfig {
