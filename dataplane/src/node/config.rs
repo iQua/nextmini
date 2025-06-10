@@ -28,11 +28,15 @@ pub enum CongestionControl {
 /// The processing mode for processing packets
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
-pub enum ProcessingMode {
-    /// mode with no packet reordering
+pub enum Feature {
+    /// The sequential feature guarantees that no packets are reordered throughout the entire path,
+    /// by processing packets consistently using one of the packet processors.
     #[default]
-    Normal,
-    /// mpmc mode with packet reordering
+    Sequential,
+    /// The multipath feature allows packets to be processed in parallel by multiple packet processors,
+    /// therefore packets may be reordered. They are put back in order before being sent to the TUN interface.
+    /// This feature is useful for high throughput applications, when a flow can be split into multiple
+    /// paths over the network.
     Multipath,
 }
 
@@ -182,9 +186,9 @@ pub struct LocalConfig {
     pub scheduler_drop_strategy: DropStrategy,
 
     // The processing mode for processing packets
-    #[default(ProcessingMode::Normal)]
+    #[default(Feature::Sequential)]
     #[arg(long, value_enum)]
-    pub processing_mode: ProcessingMode,
+    pub feature: Feature,
 
     // Reorder tolerance for the multipath mode
     #[default(4)]
