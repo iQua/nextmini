@@ -6,7 +6,7 @@ use tokio::net::UdpSocket;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
 
 pub struct UdpServer {
     socket: Arc<UdpSocket>,

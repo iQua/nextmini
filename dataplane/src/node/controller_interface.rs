@@ -15,7 +15,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
 use crate::node::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
@@ -223,7 +223,7 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                if let Err(e) = self.processors.add_node(remote_node_id, scheduler).await {
+                if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
                     error!(
                         "Failed to add node {} with address {}: {}.",
                         remote_node_id, remote_addr, e
@@ -244,7 +244,7 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                self.processors.update_routing_table(routes).await;
+                self.processors.update_routing_table(routes);
             }
             _ => error!("Received a message with an unknown type from the controller."),
         }

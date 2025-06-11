@@ -9,7 +9,7 @@ use nextmini_messages::Protocol;
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
 use crate::node::udp::UdpServer;

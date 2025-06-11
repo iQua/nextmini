@@ -4,6 +4,7 @@
 /// processing and routing of network packets.
 use std::collections::HashMap;
 
+use flume;
 use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
@@ -12,7 +13,7 @@ use tracing::{error, warn};
 
 use nextmini_messages::RoutingTableEntry;
 
-use crate::node::config::LocalConfig;
+use crate::node::config::{Feature, LocalConfig};
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
@@ -32,14 +33,103 @@ pub enum ProcessorMessage {
 }
 
 #[derive(Clone)]
-pub struct ProcessorHandle {
+pub enum ProcessorHandle {
+    Sequential(SequentialProcHandle),
+    Concurrent(ConcurrentProcHandle),
+}
+
+#[derive(Clone)]
+pub struct ConcurrentProcHandle {
+    broadcast_sender: broadcast::Sender<ProcessorMessage>,
+    packet_sender: flume::Sender<ProcessorPacket>,
+}
+
+pub trait ProcessorHandleExt {
+    fn new(config: LocalConfig) -> Self;
+    fn add_node(
+        &self,
+        node_id: NodeId,
+        scheduler: SchedulerHandle,
+    ) -> Result<(), SendError<ProcessorMessage>>;
+    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle);
+    fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage>;
+    fn update_routing_table(&self, routes: Vec<RoutingTableEntry>);
+    fn process_packet(&self, packet: Packet);
+}
+
+impl ProcessorHandleExt for ProcessorHandle {
+    fn new(config: LocalConfig) -> Self {
+        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+
+        match config.feature {
+            Feature::Sequential => {
+                ProcessorHandle::Sequential(SequentialProcHandle::new(config, broadcast_sender))
+            }
+            Feature::Concurrent => {
+                ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config, broadcast_sender))
+            }
+        }
+    }
+
+    fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage> {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
+            ProcessorHandle::Concurrent(handle) => &handle.broadcast_sender,
+        }
+    }
+
+    fn add_node(
+        &self,
+        node_id: NodeId,
+        scheduler: SchedulerHandle,
+    ) -> Result<(), SendError<ProcessorMessage>> {
+        let _ = self
+            .broadcast_sender()
+            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
+
+        Ok(())
+    }
+
+    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectLocalInterface(local_interface))
+        {
+            error!(
+                "Error connecting the processors to the local interface: {}.",
+                e
+            );
+        };
+    }
+
+    fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::UpdateRoutingTable(routes))
+        {
+            error!(
+                "Error sending the UpdateRoutingTable message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    fn process_packet(&self, packet: Packet) {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.process_packet(packet),
+            ProcessorHandle::Concurrent(handle) => &handle.process_packet(packet),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct SequentialProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
 }
 
-impl ProcessorHandle {
-    pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+impl SequentialProcHandle {
+    pub fn new(config: LocalConfig, broadcast_sender: broadcast::Sender<ProcessorMessage>) -> Self {
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
         for _ in 0..config.num_packet_processors {
@@ -59,46 +149,11 @@ impl ProcessorHandle {
                 proc.run().await;
             });
         }
+
         Self {
             broadcast_sender,
             packet_senders,
         }
-    }
-
-    pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
-        if let Err(e) = self
-            .broadcast_sender
-            .send(ProcessorMessage::ConnectLocalInterface(local_interface))
-        {
-            error!(
-                "Error connecting the processors to the local interface: {}.",
-                e
-            );
-        };
-    }
-
-    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        if let Err(e) = self
-            .broadcast_sender
-            .send(ProcessorMessage::UpdateRoutingTable(routes))
-        {
-            error!(
-                "Error sending the UpdateRoutingTable message to the processors: {}",
-                e
-            );
-        };
-    }
-
-    pub async fn add_node(
-        &self,
-        node_id: NodeId,
-        scheduler: SchedulerHandle,
-    ) -> Result<(), SendError<ProcessorMessage>> {
-        let _ = self
-            .broadcast_sender
-            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
-
-        Ok(())
     }
 
     pub fn process_packet(&self, packet: Packet) {

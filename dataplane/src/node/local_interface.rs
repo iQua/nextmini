@@ -9,7 +9,7 @@ use crate::node::FlowIdExt;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]

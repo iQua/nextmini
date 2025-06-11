@@ -17,7 +17,7 @@ use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
 use crate::node::scheduler::SchedulerHandle;
 
 pub struct QuicServer {
@@ -85,7 +85,7 @@ impl QuicServer {
                 let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
                 // adds the scheduler to send packets to the new node
-                if let Err(e) = processors.add_node(remote_node_id, scheduler).await {
+                if let Err(e) = processors.add_node(remote_node_id, scheduler) {
                     error!(
                         "Failed to add node {} with address {}: {}",
                         remote_node_id,
