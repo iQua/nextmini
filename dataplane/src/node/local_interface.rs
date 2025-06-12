@@ -1,8 +1,3 @@
-use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::{Feature, LocalConfig};
-use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
-use crate::node::{FlowId, FlowIdExt};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::Ipv4Addr;
@@ -10,6 +5,14 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
+#[cfg(target_os = "linux")]
+use tun_rs::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
+
+use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::config::{Feature, LocalConfig};
+use crate::node::packet::Packet;
+use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, FlowIdExt};
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
@@ -44,11 +47,33 @@ impl LocalInterfaceHandle {
             let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
             write_senders.push(write_sender);
 
-            let mut reader = LocalReader {
-                shutdown_receiver: shutdown_sender.subscribe(),
-                processor: processor.clone(),
-                device: dev.clone(),
-            };
+            #[cfg(target_os = "linux")]
+            {
+                let mut reader = LocalReader {
+                    shutdown_receiver: shutdown_sender.subscribe(),
+                    device: dev.clone(),
+                    processor: processor.clone(),
+                    original_buffer: vec![0; VIRTIO_NET_HDR_LEN + 65535],
+                    packet_buffers: vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE],
+                    packet_sizes: vec![0; IDEAL_BATCH_SIZE],
+                };
+
+                tokio::spawn(async move {
+                    reader.run().await;
+                });
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let mut reader = LocalReader {
+                    shutdown_receiver: shutdown_sender.subscribe(),
+                    processor: processor.clone(),
+                    device: dev.clone(),
+                };
+
+                tokio::spawn(async move {
+                    reader.run().await;
+                });
+            }
 
             let mut writer = LocalWriter::new(
                 config.clone(),
@@ -56,10 +81,6 @@ impl LocalInterfaceHandle {
                 shutdown_sender.subscribe(),
                 write_receiver,
             );
-
-            tokio::spawn(async move {
-                reader.run().await;
-            });
 
             tokio::spawn(async move {
                 writer.run().await;
@@ -114,7 +135,8 @@ impl LocalInterfaceHandle {
                     None,
                 )
                 .mtu(config.mtu as u16)
-                .multi_queue(true)
+                .multi_queue(true) // enables multi-queue support
+                .offload(true) // enables TSO support
                 .build_async()
                 .expect("Failed to create tun device");
 
@@ -174,6 +196,18 @@ impl LocalInterfaceHandle {
 }
 
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
+#[cfg(target_os = "linux")]
+pub struct LocalReader {
+    device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+    processor: ProcessorHandle,
+    // for TSO support on Linux
+    original_buffer: Vec<u8>,
+    packet_buffers: Vec<Vec<u8>>,
+    packet_sizes: Vec<usize>,
+}
+
+#[cfg(not(target_os = "linux"))]
 pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
@@ -182,44 +216,97 @@ pub struct LocalReader {
 
 impl LocalReader {
     async fn run(&mut self) {
-        let mut buf = [0; RECEIVE_BUF_SIZE];
+        #[cfg(target_os = "linux")]
+        {
+            loop {
+                tokio::select! {
+                    msg = self.shutdown_receiver.recv() => {
+                        if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                                info!("LocalReader received shutdown signal, stopping...");
+                                break;
+                        }
+                    }
+                    // receives packets with TSO support
+                    result = self.device.recv_multiple(
+                        &mut self.original_buffer,
+                        &mut self.packet_buffers,
+                        &mut self.packet_sizes,
+                        0
+                    ) => {
+                        let num_packets = match result {
+                            Ok(num) => num,
+                            Err(e) => {
+                                error!("Failed to read from TUN device: {:?}", e);
+                                continue;
+                            }
+                        };
 
-        loop {
-            tokio::select! {
-                msg = self.shutdown_receiver.recv() => {
-                    if let Ok(ShutdownMessage::Shutdown) = msg {
-                            info!("LocalReader received shutdown signal, stopping...");
-                            break;
+                        // processes each packet
+                        let batch: Vec<Packet> = Vec::new();
+
+                        for i in 0..num_packets {
+                            let packet_size = self.packet_sizes[i];
+                            // skips empty packets
+                            if packet_size == 0 {
+                                warn!("LocalReader received an empty packet."); //keeps the original design
+                                continue;
+                            }
+
+                            // uses slice to avoid copying
+                            let packet = Packet::from_slice(packet_size, &self.packet_buffers[i]);
+
+                            // checks if packet creation was successful (non-zero flow_id indicates valid packet)
+                            if packet.flow_id == 0 {
+                                continue;
+                            }
+
+                            // sends to the processor for routing and forwarding
+                            self.processor.process_packet(packet);
+                        }
                     }
                 }
-                // reads from the local TUN device
-                result = self.device.recv(&mut buf) => {
-                    let n = match result {
-                        Ok(n) => n,
-                        Err(e) => {
-                            error!(
-                                "Failed to read from TUN device: {:?}: interface may be down. Retrying...",
-                                e
-                            );
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let mut buf = [0; RECEIVE_BUF_SIZE];
+
+            loop {
+                tokio::select! {
+                    msg = self.shutdown_receiver.recv() => {
+                        if let Ok(ShutdownMessage::Shutdown) = msg {
+                                info!("LocalReader received shutdown signal, stopping...");
+                                break;
+                        }
+                    }
+                    // reads from the local TUN device
+                    result = self.device.recv(&mut buf) => {
+                        let n = match result {
+                            Ok(n) => n,
+                            Err(e) => {
+                                error!(
+                                    "Failed to read from TUN device: {:?}: interface may be down. Retrying...",
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+                        // skips empty packets
+                        if n == 0 {
+                            warn!("LocalReader received an empty packet.");
                             continue;
                         }
-                    };
 
-                    // skips empty packets
-                    if n == 0 {
-                        warn!("LocalReader received an empty packet.");
-                        continue;
+                        let packet = Packet::new(n, buf);
+
+                        // checks if packet creation was successful (non-zero flow_id indicates valid packet)
+                        if packet.flow_id == 0 {
+                            continue;
+                        }
+
+                        // sends to the processor for routing and forwarding
+                        self.processor.process_packet(packet);
                     }
-
-                    let packet = Packet::new(n, buf);
-
-                    // checks if packet creation was successful (non-zero flow_id indicates valid packet)
-                    if packet.flow_id == 0 {
-                        continue;
-                    }
-
-                    // sends to the processor for routing and forwarding
-                    self.processor.process_packet(packet);
                 }
             }
         }
@@ -281,6 +368,92 @@ impl SequentialLocalWriter {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    async fn run(&mut self) {
+        let mut pending_packets: Vec<Packet> = Vec::new();
+        let batch_timeout = tokio::time::Duration::from_micros(100);
+
+        loop {
+            tokio::select! {
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                        if !pending_packets.is_empty() {
+                            let _ = self.send_batch(&mut pending_packets).await;
+                        }
+                        info!("LocalWriter received shutdown signal, stopping...");
+                        break;
+                    }
+                }
+                // tokio::mpsc recv
+                msg = self.packet_receiver.recv() => {
+                    if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                        pending_packets.push(packet);
+
+                        while let Ok(message) = self.packet_receiver.try_recv() {
+                            match message {
+                                LocalInterfaceMessage::WritePacket(p) => {
+                                    pending_packets.push(p);
+                                }
+                            }
+                        }
+
+                        // sends packets if reaches IDEAL_BATCH_SIZE
+                        if pending_packets.len() >= IDEAL_BATCH_SIZE {
+                            let _ = self.send_batch(&mut pending_packets).await;
+                        }
+                    }
+                }
+                // sends to the TUN device anyway every once in a while (100 milliseconds)
+                _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
+                    let _ = self.send_batch(&mut pending_packets).await;
+                }
+            }
+        }
+
+        async fn send_batch(&mut self, packets: &mut Vec<Packet>) -> Result<(), std::io::Error> {
+            if packets.is_empty() {
+                return Ok(());
+            }
+
+            // prepares buffers for TSO
+            self.packet_buffers.clear();
+            self.packet_buffers.reserve(packets.len());
+
+            // needs memory copying for now
+            for packet in packets.iter() {
+                let mut buf = vec![0u8; VIRTIO_NET_HDR_LEN + packet.packet_size];
+                buf[VIRTIO_NET_HDR_LEN..VIRTIO_NET_HDR_LEN + packet.packet_size]
+                    .copy_from_slice(&packet.buf[..packet.packet_size]);
+                self.packet_buffers.push(buf);
+            }
+
+            match self
+                .device
+                .send_multiple(
+                    &mut self.gro_table,
+                    &mut self.packet_buffers,
+                    VIRTIO_NET_HDR_LEN,
+                )
+                .await
+            {
+                Ok(_) => {
+                    packets.clear();
+                    Ok(())
+                }
+                Err(e) => {
+                    // if batch sending fails, falls back to sending packets individually
+                    for packet in packets.drain(..) {
+                        let buf = &packet.buf[0..packet.packet_size];
+                        let _ = self.device.send(buf).await;
+                    }
+
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     async fn run(&mut self) {
         loop {
             tokio::select! {
