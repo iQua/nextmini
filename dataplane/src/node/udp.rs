@@ -31,7 +31,7 @@ impl UdpServer {
 
     /// Reads a packet from a UDP socket.
     async fn read_packet(&mut self) -> Result<Packet> {
-        let mut buf = [0; RECEIVE_BUF_SIZE];
+        let mut buf = vec![0; RECEIVE_BUF_SIZE];
         let len = self.socket.recv(&mut buf).await?;
 
         Ok(Packet::new(len, buf))

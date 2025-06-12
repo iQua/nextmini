@@ -56,4 +56,15 @@ impl Packet {
             0
         }
     }
+
+    /// for TSO support: avoids copying the buffer
+    #[cfg(target_os = "linux")]
+    pub fn from_slice(packet_size: usize, slice: &[u8]) -> Self {
+        let buf = slice[..packet_size].to_vec();
+        Self {
+            flow_id: Self::get_flow_id_from_buf(&buf),
+            packet_size,
+            buf,
+        }
+    }
 }

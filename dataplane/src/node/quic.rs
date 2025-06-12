@@ -190,7 +190,7 @@ impl QuicReader {
     }
 
     async fn read_packet(&mut self) -> Result<Packet> {
-        let mut buf = [0; RECEIVE_BUF_SIZE];
+        let mut buf = vec![0; RECEIVE_BUF_SIZE];
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
