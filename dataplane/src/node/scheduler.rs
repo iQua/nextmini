@@ -51,7 +51,7 @@ impl SchedulerHandle {
         Self { sender }
     }
 
-    // Sends a packet to the scheduler.
+    // Sends a packet to the scheduler for sequential feature.
     pub fn send(&self, packet: Packet) {
         if let Err(e) = self
             .sender
@@ -59,6 +59,16 @@ impl SchedulerHandle {
         {
             error!("Scheduler: Error sending a packet to the scheduler: {}.", e);
         }
+    }
+
+    // Sends a packet to the scheduler for concurrent feature.
+    pub async fn send_async(
+        &self,
+        packet: Packet,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<SchedulerMessage>> {
+        self.sender
+            .send(SchedulerMessage::InboundPacket(packet))
+            .await
     }
 }
 
