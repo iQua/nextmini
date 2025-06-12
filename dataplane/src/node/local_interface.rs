@@ -1,7 +1,7 @@
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::packet::Packet;
-use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
+use crate::node::processor::ProcessorHandle;
 use crate::node::{FlowId, FlowIdExt};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};

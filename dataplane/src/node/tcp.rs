@@ -11,7 +11,7 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
-use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
 
 pub struct TcpServer {

@@ -15,7 +15,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
-use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
@@ -125,7 +125,7 @@ impl ControllerInterfaceHandle {
         }
 
         // starts the processor actor
-        let processors = ProcessorHandleExt::new(config.clone());
+        let processors = ProcessorHandle::new(config.clone());
 
         (config, processors, ws_stream)
     }

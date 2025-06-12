@@ -9,7 +9,7 @@ use nextmini_messages::Protocol;
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::{LocalInterfaceHandle, LocalInterfaceHandleExt};
-use crate::node::processor::{ProcessorHandle, ProcessorHandleExt};
+use crate::node::processor::ProcessorHandle;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
 use crate::node::udp::UdpServer;
@@ -40,7 +40,8 @@ impl Conductor {
         config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
-        let local_interface: LocalInterfaceHandle = LocalInterfaceHandleExt::new(config.clone(), processors.clone());
+        let local_interface: LocalInterfaceHandle =
+            LocalInterfaceHandleExt::new(config.clone(), processors.clone());
 
         processors.connect_local_interface(local_interface.clone());
 

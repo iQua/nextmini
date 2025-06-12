@@ -76,21 +76,8 @@ impl ConcurrentProcHandle {
     }
 }
 
-pub trait ProcessorHandleExt {
-    fn new(config: LocalConfig) -> Self;
-    fn add_node(
-        &self,
-        node_id: NodeId,
-        scheduler: SchedulerHandle,
-    ) -> Result<(), SendError<ProcessorMessage>>;
-    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle);
-    fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage>;
-    fn update_routing_table(&self, routes: Vec<RoutingTableEntry>);
-    fn process_packet(&self, packet: Packet);
-}
-
-impl ProcessorHandleExt for ProcessorHandle {
-    fn new(config: LocalConfig) -> Self {
+impl ProcessorHandle {
+    pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
 
         match config.feature {
@@ -103,14 +90,14 @@ impl ProcessorHandleExt for ProcessorHandle {
         }
     }
 
-    fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage> {
+    pub fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage> {
         match self {
             ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
             ProcessorHandle::Concurrent(handle) => &handle.broadcast_sender,
         }
     }
 
-    fn add_node(
+    pub fn add_node(
         &self,
         node_id: NodeId,
         scheduler: SchedulerHandle,
@@ -122,7 +109,7 @@ impl ProcessorHandleExt for ProcessorHandle {
         Ok(())
     }
 
-    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
+    pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::ConnectLocalInterface(local_interface))
@@ -134,7 +121,7 @@ impl ProcessorHandleExt for ProcessorHandle {
         };
     }
 
-    fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+    pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::UpdateRoutingTable(routes))
@@ -146,7 +133,7 @@ impl ProcessorHandleExt for ProcessorHandle {
         };
     }
 
-    fn process_packet(&self, packet: Packet) {
+    pub fn process_packet(&self, packet: Packet) {
         match self {
             ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
             ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
