@@ -17,6 +17,18 @@ pub struct LocalReader {
 }
 
 impl LocalReader {
+    pub fn new(
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        processor: ProcessorHandle,
+    ) -> Self {
+        Self {
+            device,
+            shutdown_receiver,
+            processor,
+        }
+    }
+
     pub async fn run(&mut self) {
         let mut buf = [0; RECEIVE_BUF_SIZE];
 

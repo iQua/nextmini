@@ -1,17 +1,12 @@
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, Notify, broadcast, mpsc};
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
-use tun_rs::{AsyncDevice, DeviceBuilder, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
+use tun_rs::{AsyncDevice, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
-use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::{Feature, LocalConfig};
+use crate::node::local_interface::ShutdownMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::{FlowId, FlowIdExt};
 
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
@@ -25,7 +20,22 @@ pub struct LocalReader {
 }
 
 impl LocalReader {
-    async fn run(&mut self) {
+    pub fn new(
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        processor: ProcessorHandle,
+    ) -> Self {
+        Self {
+            device,
+            shutdown_receiver,
+            processor,
+            original_buffer: vec![0; VIRTIO_NET_HDR_LEN + 65535],
+            packet_buffers: vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE],
+            packet_sizes: vec![0; IDEAL_BATCH_SIZE],
+        }
+    }
+
+    pub async fn run(&mut self) {
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {

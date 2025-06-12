@@ -1,25 +1,23 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
-use tracing::{error, info, warn};
-use tun_rs::{AsyncDevice, DeviceBuilder, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
+use tracing::{error, info};
+use tun_rs::{AsyncDevice, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
-use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::FlowId;
 use crate::node::config::{Feature, LocalConfig};
+use crate::node::local_interface::{LocalInterfaceMessage, ShutdownMessage};
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
-use crate::node::{FlowId, FlowIdExt};
 
-enum LocalWriter {
+pub enum LocalWriter {
     Sequential(SequentialLocalWriter),
     Concurrent(ConcurrentLocalWriterProducer),
 }
 
 impl LocalWriter {
-    fn new(
+    pub fn new(
         config: LocalConfig,
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
@@ -40,7 +38,7 @@ impl LocalWriter {
         }
     }
 
-    async fn run(&mut self) {
+    pub async fn run(&mut self) {
         match self {
             LocalWriter::Sequential(writer) => writer.run().await,
             LocalWriter::Concurrent(writer_producer) => writer_producer.run().await,
@@ -58,6 +56,7 @@ struct BatchLocalWriter {
 impl BatchLocalWriter {
     fn new(device: Arc<AsyncDevice>) -> Self {
         Self {
+            device,
             gro_table: GROTable::default(),
             packet_buffers: Vec::new(),
         }
@@ -108,7 +107,7 @@ impl BatchLocalWriter {
 }
 
 /// Writes packets to a TUN device.
-struct SequentialLocalWriter {
+pub struct SequentialLocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -127,17 +126,17 @@ impl SequentialLocalWriter {
         }
     }
 
-    async fn run(&mut self) {
+    pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
         let batch_timeout = tokio::time::Duration::from_micros(100);
-        let batch_writer = BatchLocalWriter::new(self.device.clone());
+        let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
                     if let Ok(ShutdownMessage::Shutdown) = msg {
                         if !pending_packets.is_empty() {
-                            let _ = self.send_batch(&mut pending_packets).await;
+                            let _ = batch_writer.write(&mut pending_packets).await;
                         }
 
                         info!("LocalWriter received shutdown signal, stopping...");
@@ -212,7 +211,7 @@ impl Ord for SequencedPacket {
     }
 }
 
-struct ConcurrentLocalWriterProducer {
+pub struct ConcurrentLocalWriterProducer {
     config: LocalConfig,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -223,7 +222,7 @@ struct ConcurrentLocalWriterProducer {
 }
 
 impl ConcurrentLocalWriterProducer {
-    fn new(
+    pub fn new(
         config: LocalConfig,
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
@@ -239,8 +238,6 @@ impl ConcurrentLocalWriterProducer {
             active_flows: active_flows.clone(),
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
-            gro_table: GROTable::default(),
-            packet_buffers: Vec::new(),
         };
 
         tokio::spawn(async move {
@@ -259,7 +256,7 @@ impl ConcurrentLocalWriterProducer {
         }
     }
 
-    async fn run(&mut self) {
+    pub async fn run(&mut self) {
         loop {
             tokio::select! {
                 msg = self.packet_receiver.recv() => {
@@ -319,8 +316,8 @@ struct ConcurrentLocalWriterConsumer {
 
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
-        let pending_packets: Vec<Packet> = Vec::new();
-        let batch_writer = BatchLocalWriter::new(self.device.clone());
+        let mut pending_packets: Vec<Packet> = Vec::new();
+        let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
             tokio::select! {

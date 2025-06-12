@@ -2,6 +2,7 @@ pub mod conductor;
 pub mod config;
 pub mod controller_interface;
 pub mod drop;
+pub mod local_interface;
 pub mod metrics;
 pub mod network_interface;
 pub mod packet;
@@ -13,14 +14,10 @@ pub mod tcp;
 pub mod udp;
 
 #[cfg(target_os = "linux")]
-pub mod local_interface_tso;
-#[cfg(target_os = "linux")]
 pub mod local_reader_tso;
 #[cfg(target_os = "linux")]
 pub mod local_writer_tso;
 
-#[cfg(not(target_os = "linux"))]
-pub mod local_interface;
 #[cfg(not(target_os = "linux"))]
 pub mod local_reader;
 #[cfg(not(target_os = "linux"))]
