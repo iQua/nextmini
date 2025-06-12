@@ -178,21 +178,7 @@ impl FifoReader {
             return;
         }
 
-        let ihl = (packet.buf[0] & 0x0F) as usize;
-        let ip_header_len = ihl * 4;
-        let tcp_offset = ip_header_len;
-
-        // checks if the packet is TCP by examining the protocol field in the IP header (offset 9)
-        let is_tcp = packet.buf[9] == 6; // 6 is the protocol number for TCP
-
-        // extracts TCP flags from the TCP header (offset +13 contains the flags byte)
-        let tcp_flags = packet.buf[tcp_offset + 13];
-
-        // checks specific TCP flags
-        let is_syn = is_tcp && (tcp_flags & 0x02) != 0; // SYN flag is bit 1
-        let is_fin = is_tcp && (tcp_flags & 0x01) != 0; // FIN flag is bit 0
-        let is_rst = is_tcp && (tcp_flags & 0x04) != 0; // RST flag is bit 2
-        let is_ack = is_tcp && (tcp_flags & 0x10) != 0; // ACK flag is bit 4
+        let is_tcp_data = packet.is_tcp_data();
 
         if self.queue.push(packet).is_err() {
             self.packets_dropped += 1;
@@ -201,11 +187,13 @@ impl FifoReader {
         } else {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
-            if !is_tcp || is_syn || is_fin || is_rst || is_ack {
-                self.queue_not_empty.notify_one();
-            } else if self.queue.len() > self.capacity / 2 {
-                // if the queue is more than half full, it notifies the consumer task that a packet has arrived
-                // and the queue becomes 'non-empty' now
+            if is_tcp_data {
+                if self.queue.len() > self.capacity / 2 {
+                    // if the queue is more than half full, it notifies the consumer task that a packet has arrived
+                    // and the queue becomes 'non-empty' now
+                    self.queue_not_empty.notify_one();
+                }
+            } else {
                 self.queue_not_empty.notify_one();
             }
         }

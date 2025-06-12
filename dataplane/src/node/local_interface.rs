@@ -261,10 +261,6 @@ impl LocalWriter {
     }
 }
 
-pub trait LocalWriterExt {
-    async fn run(&mut self);
-}
-
 /// Writes one packet to a TUN device.
 struct SequentialLocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
@@ -284,9 +280,7 @@ impl SequentialLocalWriter {
             packet_receiver,
         }
     }
-}
 
-impl LocalWriterExt for SequentialLocalWriter {
     async fn run(&mut self) {
         loop {
             tokio::select! {
@@ -374,81 +368,6 @@ struct ConcurrentLocalWriterProducer {
     queue_not_empty: Arc<Notify>,
 }
 
-impl LocalWriterExt for ConcurrentLocalWriterProducer {
-    async fn run(&mut self) {
-        loop {
-            tokio::select! {
-                msg = self.packet_receiver.recv() => {
-                    if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
-                        let flow_id = packet.flow_id;
-                        let ihl = (packet.buf[0] & 0x0F) as usize;
-                        let ip_header_len = ihl * 4;
-                        let tcp_offset = ip_header_len;
-
-                        // extracts the sequence number from the TCP header
-                        let seq_num = u32::from_be_bytes([
-                            packet.buf[tcp_offset + 4],
-                            packet.buf[tcp_offset + 5],
-                            packet.buf[tcp_offset + 6],
-                            packet.buf[tcp_offset + 7],
-                        ]);
-
-                        // sends the packet out to the TUN device if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
-                        // if it is a TCP packet, it is sequenced and stored in the queue
-
-                        // checks if the packet is TCP by examining the protocol field in the IP header (offset 9)
-                        let is_tcp = packet.buf[9] == 6; // 6 is the protocol number for TCP
-
-                        // extracts TCP flags from the TCP header (offset +13 contains the flags byte)
-                        let tcp_flags = packet.buf[tcp_offset + 13];
-
-                        // checks specific TCP flags
-                        let is_syn = is_tcp && (tcp_flags & 0x02) != 0; // SYN flag is bit 1
-                        let is_fin = is_tcp && (tcp_flags & 0x01) != 0; // FIN flag is bit 0
-                        let is_rst = is_tcp && (tcp_flags & 0x04) != 0; // RST flag is bit 2
-                        let is_ack = is_tcp && (tcp_flags & 0x10) != 0; // ACK flag is bit 4
-
-                        // Send immediately for non-TCP or control packets
-                        if !is_tcp || is_syn || is_fin || is_rst || is_ack {
-                            let buf = &packet.buf[0..packet.packet_size];
-                            if let Err(e) = self.device.send(buf).await {
-                                error!("Failed to send packet to TUN device: {:?}", e);
-                            }
-                            continue;
-                        }
-
-                        // if it is a TCP packet without these flags, it is sequenced and stored in the queue
-                        let sequenced_packet = SequencedPacket { seq: seq_num, packet };
-                        {
-                            let mut queue_map = self.queue_map.lock().await;
-                            let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
-                            let was_empty = heap.is_empty();
-                            heap.push(sequenced_packet);
-
-                            if was_empty {
-                                let mut active_flows = self.active_flows.lock().await;
-                                active_flows.insert(flow_id);
-                            }
-
-                            // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
-                            // guaranteed to be consumed in a relatively ordered manner
-                            if heap.len() > self.config.reorder_tolerance {
-                                self.queue_not_empty.notify_one();
-                            }
-                        }
-                    }
-                }
-                msg = self.shutdown_receiver.recv() => {
-                    if let Ok(ShutdownMessage::Shutdown) = msg {
-                        info!("ConcurrentLocalWriter producer received shutdown signal, stopping...");
-                        break;
-                    }
-                }
-            }
-        }
-    }
-}
-
 impl ConcurrentLocalWriterProducer {
     fn new(
         config: LocalConfig,
@@ -481,6 +400,55 @@ impl ConcurrentLocalWriterProducer {
             queue_map,
             active_flows,
             queue_not_empty,
+        }
+    }
+
+    async fn run(&mut self) {
+        loop {
+            tokio::select! {
+                msg = self.packet_receiver.recv() => {
+                    if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                        let flow_id = packet.flow_id;
+
+                        // sends the packet out to the TUN device if it is not a TCP packet, or if it is SYN, FIN,
+                        // RST, or ACK
+                        if !packet.is_tcp_data() {
+                            let buf = &packet.buf[0..packet.packet_size];
+                            if let Err(e) = self.device.send(buf).await {
+                                error!("Failed to send packet to TUN device: {:?}", e);
+                            }
+
+                            continue;
+                        }
+
+                        // if it is a TCP packet, it is sequenced and stored in the queue
+                        let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
+                        {
+                            let mut queue_map = self.queue_map.lock().await;
+                            let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
+                            let was_empty = heap.is_empty();
+                            heap.push(sequenced_packet);
+
+                            if was_empty {
+                                let mut active_flows = self.active_flows.lock().await;
+                                active_flows.insert(flow_id);
+                            }
+
+                            // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
+                            // guaranteed to be consumed in a relatively ordered manner
+                            if heap.len() > self.config.reorder_tolerance {
+                                self.queue_not_empty.notify_one();
+                            }
+                        }
+                    }
+                }
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
+                        info!("ConcurrentLocalWriter producer received shutdown signal, stopping...");
+                        break;
+                    }
+                }
+            }
         }
     }
 }
