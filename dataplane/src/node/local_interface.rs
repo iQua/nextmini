@@ -11,46 +11,6 @@ use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-// for reordering in concurrent feature
-#[derive(Debug)]
-struct SequencedPacket {
-    seq: u32,
-    packet: Packet,
-}
-
-impl SequencedPacket {
-    fn seq_less(a: u32, b: u32) -> bool {
-        let diff = a.wrapping_sub(b) as i32;
-        diff < 0
-    }
-}
-
-impl PartialEq for SequencedPacket {
-    fn eq(&self, other: &Self) -> bool {
-        self.seq == other.seq
-    }
-}
-
-impl Eq for SequencedPacket {}
-
-impl PartialOrd for SequencedPacket {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SequencedPacket {
-    fn cmp(&self, other: &Self) -> Ordering {
-        if self.seq == other.seq {
-            Ordering::Equal
-        } else if Self::seq_less(self.seq, other.seq) {
-            Ordering::Greater
-        } else {
-            Ordering::Less
-        }
-    }
-}
-
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
 pub enum ShutdownMessage {
@@ -63,74 +23,12 @@ pub enum LocalInterfaceMessage {
 
 /// Handle for Processors to interact with LocalInterface
 #[derive(Clone)]
-pub enum LocalInterfaceHandle {
-    Sequential(SequentialLocalInterfaceHandle),
-    Concurrent(ConcurrentLocalInterfaceHandle),
-}
-
-#[derive(Clone)]
-pub struct SequentialLocalInterfaceHandle {
+pub struct LocalInterfaceHandle {
     shutdown_sender: broadcast::Sender<ShutdownMessage>,
     write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
-}
-
-#[derive(Clone)]
-pub struct ConcurrentLocalInterfaceHandle {
-    shutdown_sender: broadcast::Sender<ShutdownMessage>,
-    write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
-}
-
-pub trait LocalInterfaceHandleExt {
-    fn new(config: LocalConfig, processor: ProcessorHandle) -> Self;
-    async fn shutdown(&self);
-}
-
-impl LocalInterfaceHandleExt for LocalInterfaceHandle {
-    fn new(config: LocalConfig, processor: ProcessorHandle) -> Self {
-        match config.feature {
-            Feature::Sequential => LocalInterfaceHandle::Sequential(
-                SequentialLocalInterfaceHandle::new(config, processor),
-            ),
-            Feature::Concurrent => LocalInterfaceHandle::Concurrent(
-                ConcurrentLocalInterfaceHandle::new(config, processor),
-            ),
-        }
-    }
-
-    async fn shutdown(&self) {
-        match self {
-            LocalInterfaceHandle::Sequential(handle) => handle.shutdown().await,
-            LocalInterfaceHandle::Concurrent(handle) => handle.shutdown().await,
-        }
-    }
 }
 
 impl LocalInterfaceHandle {
-    // sequential feature
-    pub fn write_packet(&self, packet: Packet) {
-        match self {
-            LocalInterfaceHandle::Sequential(handle) => handle.write_packet(packet),
-            LocalInterfaceHandle::Concurrent(_) => {
-                error!("Use write_packet_async instead.");
-            }
-        }
-    }
-    // concurrent feature async write
-    pub async fn write_packet_async(
-        &self,
-        packet: Packet,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<LocalInterfaceMessage>> {
-        match self {
-            LocalInterfaceHandle::Sequential(handle) => {
-                handle.write_packet(packet);
-                Ok(())
-            }
-            LocalInterfaceHandle::Concurrent(handle) => handle.write_packet_async(packet).await,
-        }
-    }
-}
-
-impl SequentialLocalInterfaceHandle {
     pub fn new(config: LocalConfig, processor: ProcessorHandle) -> Self {
         // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
         // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
@@ -152,18 +50,18 @@ impl SequentialLocalInterfaceHandle {
                 device: dev.clone(),
             };
 
-            let writer = LocalWriter::Sequential(SequentialLocalWriter {
-                shutdown_receiver: shutdown_sender.subscribe(),
-                packet_receiver: write_receiver,
-                device: dev.clone(),
-            });
+            let mut writer = LocalWriter::new(
+                config.clone(),
+                dev.clone(),
+                shutdown_sender.subscribe(),
+                write_receiver,
+            );
 
             tokio::spawn(async move {
                 reader.run().await;
             });
 
             tokio::spawn(async move {
-                let mut writer = writer;
                 writer.run().await;
             });
         }
@@ -275,66 +173,6 @@ impl SequentialLocalInterfaceHandle {
     }
 }
 
-impl ConcurrentLocalInterfaceHandle {
-    pub fn new(config: LocalConfig, processor: ProcessorHandle) -> Self {
-        let tun_devices = SequentialLocalInterfaceHandle::create_tun_devices(config.clone());
-        let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
-        let mut write_senders = Vec::with_capacity(tun_devices.len());
-
-        for dev in tun_devices.iter() {
-            let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
-            write_senders.push(write_sender);
-
-            let mut reader = LocalReader {
-                shutdown_receiver: shutdown_sender.subscribe(),
-                processor: processor.clone(),
-                device: dev.clone(),
-            };
-            // concurrent writer
-            let writer = LocalWriter::Concurrent(ConcurrentLocalWriter::new(
-                config.clone(),
-                shutdown_sender.subscribe(),
-                write_receiver,
-                dev.clone(),
-            ));
-
-            tokio::spawn(async move {
-                reader.run().await;
-            });
-
-            tokio::spawn(async move {
-                let mut writer = writer;
-                writer.run().await;
-            });
-        }
-
-        Self {
-            shutdown_sender,
-            write_senders,
-        }
-    }
-    // send() method for concurrent mode with mpsc producer-consumer pattern
-    pub async fn write_packet_async(
-        &self,
-        packet: Packet,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<LocalInterfaceMessage>> {
-        let idx = packet.flow_id.hash() % self.write_senders.len();
-        let sender = &self.write_senders[idx];
-
-        sender
-            .send(LocalInterfaceMessage::WritePacket(packet))
-            .await?;
-
-        Ok(())
-    }
-
-    pub async fn shutdown(&self) {
-        if let Err(e) = self.shutdown_sender.send(ShutdownMessage::Shutdown) {
-            error!("Error shutting down all the concurrent actors: {}", e);
-        };
-    }
-}
-
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
@@ -390,20 +228,41 @@ impl LocalReader {
 
 enum LocalWriter {
     Sequential(SequentialLocalWriter),
-    Concurrent(ConcurrentLocalWriter),
+    Concurrent(ConcurrentLocalWriterProducer),
+}
+
+impl LocalWriter {
+    fn new(
+        config: LocalConfig,
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    ) -> Self {
+        match &config.feature {
+            Feature::Sequential => LocalWriter::Sequential(SequentialLocalWriter::new(
+                device,
+                shutdown_receiver,
+                packet_receiver,
+            )),
+            Feature::Concurrent => LocalWriter::Concurrent(ConcurrentLocalWriterProducer::new(
+                config,
+                device,
+                shutdown_receiver,
+                packet_receiver,
+            )),
+        }
+    }
+
+    async fn run(&mut self) {
+        match self {
+            LocalWriter::Sequential(writer) => writer.run().await,
+            LocalWriter::Concurrent(writer_producer) => writer_producer.run().await,
+        }
+    }
 }
 
 pub trait LocalWriterExt {
     async fn run(&mut self);
-}
-
-impl LocalWriterExt for LocalWriter {
-    async fn run(&mut self) {
-        match self {
-            LocalWriter::Sequential(writer) => writer.run().await,
-            LocalWriter::Concurrent(writer) => writer.run().await,
-        }
-    }
 }
 
 /// Writes one packet to a TUN device.
@@ -411,6 +270,20 @@ struct SequentialLocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+}
+
+impl SequentialLocalWriter {
+    fn new(
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    ) -> Self {
+        Self {
+            device,
+            shutdown_receiver,
+            packet_receiver,
+        }
+    }
 }
 
 impl LocalWriterExt for SequentialLocalWriter {
@@ -453,8 +326,45 @@ impl LocalWriterExt for SequentialLocalWriter {
     }
 }
 
-// concurrent LocalWriter
-struct ConcurrentLocalWriter {
+struct SequencedPacket {
+    seq: u32,
+    packet: Packet,
+}
+
+impl SequencedPacket {
+    fn seq_less(a: u32, b: u32) -> bool {
+        let diff = a.wrapping_sub(b) as i32;
+        diff < 0
+    }
+}
+
+impl PartialEq for SequencedPacket {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+    }
+}
+
+impl Eq for SequencedPacket {}
+
+impl PartialOrd for SequencedPacket {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SequencedPacket {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.seq == other.seq {
+            Ordering::Equal
+        } else if Self::seq_less(self.seq, other.seq) {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
+    }
+}
+
+struct ConcurrentLocalWriterProducer {
     config: LocalConfig,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -464,7 +374,7 @@ struct ConcurrentLocalWriter {
     queue_not_empty: Arc<Notify>,
 }
 
-impl LocalWriterExt for ConcurrentLocalWriter {
+impl LocalWriterExt for ConcurrentLocalWriterProducer {
     async fn run(&mut self) {
         loop {
             tokio::select! {
@@ -539,12 +449,12 @@ impl LocalWriterExt for ConcurrentLocalWriter {
     }
 }
 
-impl ConcurrentLocalWriter {
+impl ConcurrentLocalWriterProducer {
     fn new(
         config: LocalConfig,
+        device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
-        device: Arc<AsyncDevice>,
     ) -> Self {
         let queue_map = Arc::new(Mutex::new(HashMap::new()));
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
@@ -556,9 +466,6 @@ impl ConcurrentLocalWriter {
             active_flows: active_flows.clone(),
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
-            seq_tracker: HashMap::new(),
-            ooo: 0,
-            total: 0,
         };
 
         tokio::spawn(async move {
@@ -584,9 +491,6 @@ struct ConcurrentLocalWriterConsumer {
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     device: Arc<AsyncDevice>,
     queue_not_empty: Arc<Notify>,
-    seq_tracker: HashMap<FlowId, u32>,
-    ooo: u32,
-    total: u32,
 }
 
 impl ConcurrentLocalWriterConsumer {
@@ -616,28 +520,6 @@ impl ConcurrentLocalWriterConsumer {
                         if let Some(sp) = sequenced_packet {
                             let packet = sp.packet;
                             let buf = &packet.buf[0..packet.packet_size];
-
-                            let ihl = (packet.buf[0] & 0x0F) as usize;
-                            let ip_header_len = ihl * 4;
-                            let tcp_offset = ip_header_len;
-                            let seq_num = u32::from_be_bytes([
-                                packet.buf[tcp_offset + 4],
-                                packet.buf[tcp_offset + 5],
-                                packet.buf[tcp_offset + 6],
-                                packet.buf[tcp_offset + 7],
-                            ]);
-
-                            if seq_num < *self.seq_tracker.get(&packet.flow_id).unwrap_or(&0) {
-                                info!(
-                                    "LocalWriterConsumer: packets with out-of-order = {}, total = {}",
-                                    self.ooo, self.total
-                                );
-                                self.ooo += 1;
-                                self.seq_tracker.insert(packet.flow_id, seq_num);
-                            } else {
-                                self.seq_tracker.insert(packet.flow_id, seq_num);
-                            }
-                            self.total += 1;
 
                             let _ = self.device.send(buf).await;
 

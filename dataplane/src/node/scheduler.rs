@@ -60,16 +60,6 @@ impl SchedulerHandle {
             error!("Scheduler: Error sending a packet to the scheduler: {}.", e);
         }
     }
-
-    // Sends a packet to the scheduler for concurrent feature.
-    pub async fn send_async(
-        &self,
-        packet: Packet,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<SchedulerMessage>> {
-        self.sender
-            .send(SchedulerMessage::InboundPacket(packet))
-            .await
-    }
 }
 
 /// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
