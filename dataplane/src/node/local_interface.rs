@@ -73,7 +73,7 @@ impl LocalInterfaceHandle {
     }
 
     pub fn write_packet(&self, packet: Packet) {
-        let idx = packet.flow_id.hash() % self.write_senders.len();
+        let idx = packet.flow_id.hash(self.write_senders.len());
         let sender = &self.write_senders[idx];
 
         if let Err(e) = sender.try_send(LocalInterfaceMessage::WritePacket(packet)) {

@@ -135,7 +135,7 @@ impl SequentialProcHandle {
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        let idx = packet.flow_id.hash() % self.packet_senders.len();
+        let idx = packet.flow_id.hash(self.packet_senders.len());
         let sender = &self.packet_senders[idx];
 
         if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {

@@ -13,9 +13,7 @@ pub mod scheduler;
 pub mod tcp;
 pub mod udp;
 
-use std::hash::Hasher;
-
-use rapidhash::RapidInlineHasher;
+use jumphash::JumpHasher;
 
 /// The node ID.
 pub type NodeId = usize;
@@ -38,7 +36,7 @@ pub trait FlowIdExt {
     fn dst_ip(&self) -> std::net::Ipv4Addr;
     fn src_port(&self) -> u16;
     fn dst_port(&self) -> u16;
-    fn hash(&self) -> usize;
+    fn hash(&self, capacity: usize) -> usize;
 }
 
 impl FlowIdExt for FlowId {
@@ -64,11 +62,10 @@ impl FlowIdExt for FlowId {
         ((self >> 32) & 0xFFFF) as u16
     }
 
-    /// Computes the hash value using RapidHash, a fast and deterministic hash function
-    fn hash(&self) -> usize {
-        let mut hasher = RapidInlineHasher::default();
-        hasher.write(&self.to_be_bytes());
-        let hash = hasher.finish();
+    /// Computes the hash value using Jump Hash, a consistent hash function
+    fn hash(&self, capacity: usize) -> usize {
+        let hasher = JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321);
+        let hash = hasher.slot(&self, capacity as u32);
 
         hash as usize
     }

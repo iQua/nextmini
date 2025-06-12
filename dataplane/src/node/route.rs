@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 
+use ahash::AHashMap;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
-use rapidhash::RapidHashMap;
 use tracing::{debug, info};
 
 use crate::node::{FlowId, FlowIdExt, NodeId};
@@ -17,28 +17,28 @@ pub struct RoutingTable {
     base_ipv4_addr: [u8; 4],
 
     /// Source-destination pair -> available route IDs
-    available_routes: RapidHashMap<(Ipv4Addr, Ipv4Addr), Vec<usize>>,
+    available_routes: AHashMap<(Ipv4Addr, Ipv4Addr), Vec<usize>>,
 
     /// Route ID -> next hop
-    route_next_hop: RapidHashMap<usize, NodeId>,
+    route_next_hop: AHashMap<usize, NodeId>,
 
     /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
 
     /// Cache for flow to route ID mappings
-    cache: RapidHashMap<FlowId, usize>,
+    cache: AHashMap<FlowId, usize>,
 }
 
 impl RoutingTable {
     pub fn new(local_id: NodeId) -> Self {
         Self {
-            route_next_hop: RapidHashMap::default(),
-            available_routes: RapidHashMap::default(),
+            route_next_hop: AHashMap::default(),
+            available_routes: AHashMap::default(),
             local_id,
             base_ipv4_addr: [10, 0, 0, 0],
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
-            cache: RapidHashMap::default(),
+            cache: AHashMap::default(),
         }
     }
 

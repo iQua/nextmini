@@ -34,5 +34,5 @@ nextmini-messages = { path = "../messages" }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 jumphash = "0.1"
-rapidhash = "1.4"
+ahash = "0.8"
 flume = "0.11"
