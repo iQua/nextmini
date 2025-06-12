@@ -202,7 +202,7 @@ impl SequentialProcHandle {
     }
 }
 
-pub enum Processor {
+enum Processor {
     Sequential(SequentialProcessor),
     Concurrent(ConcurrentProcessor),
 }
