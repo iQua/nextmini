@@ -13,6 +13,8 @@ pub mod scheduler;
 pub mod tcp;
 pub mod udp;
 
+use jumphash::JumpHasher;
+
 /// The node ID.
 pub type NodeId = usize;
 
@@ -34,28 +36,37 @@ pub trait FlowIdExt {
     fn dst_ip(&self) -> std::net::Ipv4Addr;
     fn src_port(&self) -> u16;
     fn dst_port(&self) -> u16;
+    fn hash(&self, capacity: usize) -> usize;
 }
 
 impl FlowIdExt for FlowId {
+    /// Extracts the source IP
     fn src_ip(&self) -> std::net::Ipv4Addr {
-        // Extract source IP
         let src_u32 = (self >> 96) as u32;
         std::net::Ipv4Addr::from(src_u32)
     }
 
+    /// Extracts the destination IP
     fn dst_ip(&self) -> std::net::Ipv4Addr {
-        // Extract destination IP
         let dst_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
         std::net::Ipv4Addr::from(dst_u32)
     }
 
+    /// Extracts the source port
     fn src_port(&self) -> u16 {
-        // Extract source port
         ((self >> 48) & 0xFFFF) as u16
     }
 
+    /// Extracts the destination port
     fn dst_port(&self) -> u16 {
-        // Extract destination port
         ((self >> 32) & 0xFFFF) as u16
+    }
+
+    /// Computes the hash value using Jump Hash, a consistent hash function
+    fn hash(&self, capacity: usize) -> usize {
+        let hasher = JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321);
+        let hash = hasher.slot(&self, capacity as u32);
+
+        hash as usize
     }
 }

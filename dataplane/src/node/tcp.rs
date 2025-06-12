@@ -5,14 +5,11 @@ use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::{
-    NetworkInterfaceHandle, NetworkInterfaceMessage, NetworkStream,
-};
+use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
@@ -79,7 +76,7 @@ impl TcpServer {
             let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
             // adds the scheduler to send packets to the new node
-            if let Err(e) = self.processors.add_node(remote_node_id, scheduler).await {
+            if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
                 error!(
                     "Failed to add node {} with address {}: {}",
                     remote_node_id,
@@ -154,14 +151,14 @@ impl TcpReader {
             // reads a packet from the TCP connection
             if let Ok(packet) = self.read_packet().await {
                 // forwards the packet to the processor
-                self.processors.process_packet(packet).await;
+                self.processors.process_packet(packet);
             }
         }
     }
 
     /// Reads a single packet from the TCP connection.
     async fn read_packet(&mut self) -> Result<Packet> {
-        let mut buf = [0u8; RECEIVE_BUF_SIZE];
+        let mut buf = [0; RECEIVE_BUF_SIZE];
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
@@ -173,34 +170,15 @@ impl TcpReader {
 
 pub struct TcpWriter {
     stream: WriteHalf<TcpStream>,
-    receiver: mpsc::Receiver<NetworkInterfaceMessage>,
 }
 
 impl TcpWriter {
-    pub fn new(
-        stream: WriteHalf<TcpStream>,
-        receiver: mpsc::Receiver<NetworkInterfaceMessage>,
-    ) -> Self {
-        Self { stream, receiver }
-    }
-
-    pub async fn run(mut self) {
-        while let Some(msg) = self.receiver.recv().await {
-            match msg {
-                NetworkInterfaceMessage::SendPacket(packet) => {
-                    if let Err(e) = self.write_packet(&packet).await {
-                        error!("Failed to write packet: {}", e);
-                    }
-                }
-                NetworkInterfaceMessage::Shutdown => {
-                    break;
-                }
-            }
-        }
+    pub fn new(stream: WriteHalf<TcpStream>) -> Self {
+        Self { stream }
     }
 
     /// Writes a packet to the network using QUIC.
-    async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
+    pub async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
         self.stream
             .write_all(&packet.buf[0..packet.packet_size])
             .await?;

@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use tokio::sync::Notify;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::SendError;
 
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
@@ -53,12 +52,16 @@ impl SchedulerHandle {
     }
 
     // Sends a packet to the scheduler.
-    pub async fn send(&mut self, packet: Packet) -> Result<(), SendError<SchedulerMessage>> {
-        self.sender
-            .send(SchedulerMessage::InboundPacket(packet))
-            .await?;
-
-        Ok(())
+    pub fn send(&self, packet: Packet) {
+        if let Err(e) = self
+            .sender
+            .try_send(SchedulerMessage::InboundPacket(packet))
+        {
+            error!(
+                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
+                e
+            );
+        }
     }
 }
 
@@ -137,10 +140,20 @@ struct FifoReader {
 impl FifoReader {
     async fn run(&mut self) {
         // producer task: receives packets and enqueues them
-        while let Some(message) = self.receiver.recv().await {
-            match message {
-                SchedulerMessage::InboundPacket(packet) => {
-                    self.enqueue(packet);
+        loop {
+            if let Some(message) = self.receiver.recv().await {
+                match message {
+                    SchedulerMessage::InboundPacket(packet) => {
+                        self.enqueue(packet);
+                    }
+                }
+
+                while let Ok(message) = self.receiver.try_recv() {
+                    match message {
+                        SchedulerMessage::InboundPacket(packet) => {
+                            self.enqueue(packet);
+                        }
+                    }
                 }
             }
         }
@@ -168,13 +181,24 @@ impl FifoReader {
             return;
         }
 
+        let is_tcp_data = packet.is_tcp_data();
+
         if self.queue.push(packet).is_err() {
             self.packets_dropped += 1;
 
             warn!("FIFO: Scheduler dropped a packet as the queue is full.");
         } else {
-            // notifies the consumer task that a packet has arrived and the queue becomes 'non-empty' now
-            self.queue_not_empty.notify_one();
+            // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
+            // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
+            if is_tcp_data {
+                if self.queue.len() > self.capacity / 2 {
+                    // if the queue is more than half full, it notifies the consumer task that a packet has arrived
+                    // and the queue becomes 'non-empty' now
+                    self.queue_not_empty.notify_one();
+                }
+            } else {
+                self.queue_not_empty.notify_one();
+            }
         }
     }
 }

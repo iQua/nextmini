@@ -1,5 +1,5 @@
+use ahash::AHashMap;
 use chrono::Utc;
-use fxhash::FxHashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 
@@ -33,7 +33,7 @@ impl Collector {
         let mut metrics_tick = interval(Duration::from_secs(5));
 
         // HashMap: flow_id -> (node_id, total_bytes)
-        let mut data = FxHashMap::default();
+        let mut data = AHashMap::default();
 
         loop {
             tokio::select! {

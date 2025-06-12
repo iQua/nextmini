@@ -1,28 +1,31 @@
+use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::config::{Feature, LocalConfig};
+use crate::node::packet::Packet;
+use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, FlowIdExt};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-
-use flume;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
-use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::LocalConfig;
-use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
-
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
+pub enum ShutdownMessage {
+    Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
+}
+
 pub enum LocalInterfaceMessage {
     WritePacket(Packet), // the processor sends a packet to the application via the local interface
-    Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
 }
 
 /// Handle for Processors to interact with LocalInterface
 #[derive(Clone)]
 pub struct LocalInterfaceHandle {
-    shutdown_sender: broadcast::Sender<LocalInterfaceMessage>,
-    write_sender: flume::Sender<LocalInterfaceMessage>,
+    shutdown_sender: broadcast::Sender<ShutdownMessage>,
+    write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
 }
 
 impl LocalInterfaceHandle {
@@ -34,21 +37,25 @@ impl LocalInterfaceHandle {
         // a broadcast channel for sending the shutdown signal to both local interface readers and writers
         let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
 
-        // an MPMC channel for the processors to send packets to the local interface writers
-        let (write_sender, write_receiver) = flume::bounded(config.channel_capacity);
+        let mut write_senders = Vec::with_capacity(tun_devices.len());
 
         for dev in tun_devices.iter() {
+            // for each LocalWriter, creates its MPSC channel
+            let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
+            write_senders.push(write_sender);
+
             let mut reader = LocalReader {
                 shutdown_receiver: shutdown_sender.subscribe(),
                 processor: processor.clone(),
                 device: dev.clone(),
             };
 
-            let mut writer = LocalWriter {
-                shutdown_receiver: shutdown_sender.subscribe(),
-                packet_receiver: write_receiver.clone(),
-                device: dev.clone(),
-            };
+            let mut writer = LocalWriter::new(
+                config.clone(),
+                dev.clone(),
+                shutdown_sender.subscribe(),
+                write_receiver,
+            );
 
             tokio::spawn(async move {
                 reader.run().await;
@@ -61,23 +68,24 @@ impl LocalInterfaceHandle {
 
         Self {
             shutdown_sender,
-            write_sender,
+            write_senders,
         }
     }
 
-    pub async fn write_packet(
-        &self,
-        packet: Packet,
-    ) -> Result<(), flume::SendError<LocalInterfaceMessage>> {
-        let _ = self
-            .write_sender
-            .send(LocalInterfaceMessage::WritePacket(packet))?;
+    pub fn write_packet(&self, packet: Packet) {
+        let idx = packet.flow_id.hash(self.write_senders.len());
+        let sender = &self.write_senders[idx];
 
-        Ok(())
+        if let Err(e) = sender.try_send(LocalInterfaceMessage::WritePacket(packet)) {
+            error!(
+                "Error sending a packet to the local interface writer: {}. Dropped.",
+                e
+            );
+        }
     }
 
     pub async fn shutdown(&self) {
-        if let Err(e) = self.shutdown_sender.send(LocalInterfaceMessage::Shutdown) {
+        if let Err(e) = self.shutdown_sender.send(ShutdownMessage::Shutdown) {
             error!("Error shutting down all the actors: {}", e);
         };
     }
@@ -168,7 +176,7 @@ impl LocalInterfaceHandle {
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
-    shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     processor: ProcessorHandle,
 }
 
@@ -179,7 +187,7 @@ impl LocalReader {
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
-                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
                             info!("LocalReader received shutdown signal, stopping...");
                             break;
                     }
@@ -211,35 +219,295 @@ impl LocalReader {
                     }
 
                     // sends to the processor for routing and forwarding
-                    self.processor.process_packet(packet).await;
+                    self.processor.process_packet(packet);
                 }
             }
         }
     }
 }
 
-/// Writes one packet to a TUN device.
-struct LocalWriter {
-    device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
-    shutdown_receiver: broadcast::Receiver<LocalInterfaceMessage>,
-    packet_receiver: flume::Receiver<LocalInterfaceMessage>,
+enum LocalWriter {
+    Sequential(SequentialLocalWriter),
+    Concurrent(ConcurrentLocalWriterProducer),
 }
 
 impl LocalWriter {
+    fn new(
+        config: LocalConfig,
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    ) -> Self {
+        match &config.feature {
+            Feature::Sequential => LocalWriter::Sequential(SequentialLocalWriter::new(
+                device,
+                shutdown_receiver,
+                packet_receiver,
+            )),
+            Feature::Concurrent => LocalWriter::Concurrent(ConcurrentLocalWriterProducer::new(
+                config,
+                device,
+                shutdown_receiver,
+                packet_receiver,
+            )),
+        }
+    }
+
+    async fn run(&mut self) {
+        match self {
+            LocalWriter::Sequential(writer) => writer.run().await,
+            LocalWriter::Concurrent(writer_producer) => writer_producer.run().await,
+        }
+    }
+}
+
+/// Writes one packet to a TUN device.
+struct SequentialLocalWriter {
+    device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+    packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+}
+
+impl SequentialLocalWriter {
+    fn new(
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    ) -> Self {
+        Self {
+            device,
+            shutdown_receiver,
+            packet_receiver,
+        }
+    }
+
     async fn run(&mut self) {
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
-                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
                             info!("LocalWriter received shutdown signal, stopping...");
                             break;
                     }
                 }
-                msg = self.packet_receiver.recv_async() => {
-                    if let Ok(LocalInterfaceMessage::WritePacket(packet)) = msg {
-                        let buf = &packet.buf[0..packet.packet_size];
+                msg = self.packet_receiver.recv() => {
+                    if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                        let mut buffer = vec![packet];
 
-                        let _ = self.device.send(buf).await;
+                        while let Ok(message) = self.packet_receiver.try_recv() {
+                            match message {
+                                LocalInterfaceMessage::WritePacket(p) => {
+                                    buffer.push(p);
+                                }
+                            }
+                        }
+
+                        for packet in buffer {
+                            let buf = &packet.buf[0..packet.packet_size];
+                            if let Err(_) = self.device.try_send(buf) {
+                                if let Err(e) = self.device.send(buf).await {
+                                    error!(
+                                        "Failed to write packet to the TUN device: {}. Dropped.",
+                                        e
+                                    );
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SequencedPacket {
+    seq: u32,
+    packet: Packet,
+}
+
+impl SequencedPacket {
+    fn seq_less(a: u32, b: u32) -> bool {
+        let diff = a.wrapping_sub(b) as i32;
+        diff < 0
+    }
+}
+
+impl PartialEq for SequencedPacket {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+    }
+}
+
+impl Eq for SequencedPacket {}
+
+impl PartialOrd for SequencedPacket {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SequencedPacket {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if self.seq == other.seq {
+            Ordering::Equal
+        } else if Self::seq_less(self.seq, other.seq) {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
+    }
+}
+
+struct ConcurrentLocalWriterProducer {
+    config: LocalConfig,
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+    packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    device: Arc<AsyncDevice>,
+    queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
+    active_flows: Arc<Mutex<HashSet<FlowId>>>,
+    queue_not_empty: Arc<Notify>,
+}
+
+impl ConcurrentLocalWriterProducer {
+    fn new(
+        config: LocalConfig,
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    ) -> Self {
+        let queue_map = Arc::new(Mutex::new(HashMap::new()));
+        let active_flows = Arc::new(Mutex::new(HashSet::new()));
+        let queue_not_empty = Arc::new(Notify::new());
+
+        let consumer = ConcurrentLocalWriterConsumer {
+            shutdown_receiver: shutdown_receiver.resubscribe(),
+            queue_map: queue_map.clone(),
+            active_flows: active_flows.clone(),
+            device: device.clone(),
+            queue_not_empty: queue_not_empty.clone(),
+        };
+
+        tokio::spawn(async move {
+            let mut consumer = consumer;
+            consumer.run().await;
+        });
+
+        Self {
+            config,
+            shutdown_receiver,
+            packet_receiver,
+            device,
+            queue_map,
+            active_flows,
+            queue_not_empty,
+        }
+    }
+
+    async fn run(&mut self) {
+        loop {
+            tokio::select! {
+                msg = self.packet_receiver.recv() => {
+                    if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
+                        let flow_id = packet.flow_id;
+
+                        // sends the packet out to the TUN device if it is not a TCP packet, or if it is SYN, FIN,
+                        // RST, or ACK
+                        if !packet.is_tcp_data() {
+                            let buf = &packet.buf[0..packet.packet_size];
+                            if let Err(e) = self.device.send(buf).await {
+                                error!("Failed to send packet to TUN device: {:?}", e);
+                            }
+
+                            continue;
+                        }
+
+                        // if it is a TCP packet, it is sequenced and stored in the queue
+                        let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
+                        {
+                            let mut queue_map = self.queue_map.lock().await;
+                            let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
+                            let was_empty = heap.is_empty();
+                            heap.push(sequenced_packet);
+
+                            if was_empty {
+                                let mut active_flows = self.active_flows.lock().await;
+                                active_flows.insert(flow_id);
+                            }
+
+                            // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
+                            // guaranteed to be consumed in a relatively ordered manner
+                            if heap.len() > self.config.reorder_tolerance {
+                                self.queue_not_empty.notify_one();
+                            }
+                        }
+                    }
+                }
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
+                        info!("ConcurrentLocalWriter producer received shutdown signal, stopping...");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct ConcurrentLocalWriterConsumer {
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+    queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
+    active_flows: Arc<Mutex<HashSet<FlowId>>>,
+    device: Arc<AsyncDevice>,
+    queue_not_empty: Arc<Notify>,
+}
+
+impl ConcurrentLocalWriterConsumer {
+    async fn run(&mut self) {
+        loop {
+            tokio::select! {
+                _ = self.queue_not_empty.notified() => {
+                    loop {
+                        let flow_id = {
+                            let active_flows = self.active_flows.lock().await;
+                            if let Some(&flow_id) = active_flows.iter().next() {
+                                flow_id
+                            } else {
+                                break;
+                            }
+                        };
+
+                        let sequenced_packet = {
+                            let mut queue_map = self.queue_map.lock().await;
+                            if let Some(heap) = queue_map.get_mut(&flow_id) {
+                                heap.pop()
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some(sp) = sequenced_packet {
+                            let packet = sp.packet;
+                            let buf = &packet.buf[0..packet.packet_size];
+
+                            let _ = self.device.send(buf).await;
+
+                            let queue_map = self.queue_map.lock().await;
+                            if let Some(heap) = queue_map.get(&flow_id) {
+                                if heap.is_empty() {
+                                    let mut active_flows = self.active_flows.lock().await;
+                                    active_flows.remove(&flow_id);
+                                }
+                            }
+                        } else {
+                            let mut active_flows = self.active_flows.lock().await;
+                            active_flows.remove(&flow_id);
+                        }
+                    }
+                }
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
+                        info!("ConcurrentLocalWriter consumer received shutdown signal, stopping...");
+                        break;
                     }
                 }
             }

@@ -3,65 +3,72 @@
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 
+use flume;
 use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
-
-use flume;
-use tracing::error;
+use tokio::sync::mpsc;
+use tracing::{error, warn};
 
 use nextmini_messages::RoutingTableEntry;
 
-use crate::node::config::LocalConfig;
+use crate::node::config::{Feature, LocalConfig};
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowId, NodeId};
+use crate::node::{FlowIdExt, NodeId};
 
 // Message types for the processor actor.
+pub enum ProcessorPacket {
+    ProcessPacket(Packet),
+}
+
 #[derive(Clone)]
 pub enum ProcessorMessage {
-    ProcessPacket(Packet),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
 }
 
 #[derive(Clone)]
-pub struct ProcessorHandle {
-    broadcast_sender: broadcast::Sender<ProcessorMessage>,
-    packet_sender: flume::Sender<ProcessorMessage>,
+pub enum ProcessorHandle {
+    Sequential(SequentialProcHandle),
+    Concurrent(ConcurrentProcHandle),
 }
 
 impl ProcessorHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
-        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
-
-        for _ in 0..config.num_packet_processors {
-            let mut proc = Processor {
-                packet_receiver: packet_receiver.clone(),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
-                local_interface: None,
-                schedulers: HashMap::new(),
-            };
-
-            tokio::spawn(async move {
-                proc.run().await;
-            });
+        match config.feature {
+            Feature::Sequential => ProcessorHandle::Sequential(SequentialProcHandle::new(config)),
+            Feature::Concurrent => ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config)),
         }
-        Self {
-            broadcast_sender,
-            packet_sender,
+    }
+
+    pub fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage> {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
+            ProcessorHandle::Concurrent(handle) => &handle.broadcast_sender,
         }
+    }
+
+    pub fn add_node(
+        &self,
+        node_id: NodeId,
+        scheduler: SchedulerHandle,
+    ) -> Result<(), SendError<ProcessorMessage>> {
+        let _ = self
+            .broadcast_sender()
+            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
+
+        Ok(())
     }
 
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
-            .broadcast_sender
+            .broadcast_sender()
             .send(ProcessorMessage::ConnectLocalInterface(local_interface))
         {
             error!(
@@ -71,9 +78,9 @@ impl ProcessorHandle {
         };
     }
 
-    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+    pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         if let Err(e) = self
-            .broadcast_sender
+            .broadcast_sender()
             .send(ProcessorMessage::UpdateRoutingTable(routes))
         {
             error!(
@@ -83,29 +90,156 @@ impl ProcessorHandle {
         };
     }
 
-    pub async fn add_node(
-        &self,
-        node_id: NodeId,
-        scheduler: SchedulerHandle,
-    ) -> Result<(), SendError<ProcessorMessage>> {
-        let _ = self
-            .broadcast_sender
-            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
+    pub fn process_packet(&self, packet: Packet) {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
+            ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
+        }
+    }
+}
 
-        Ok(())
+#[derive(Clone)]
+pub struct SequentialProcHandle {
+    broadcast_sender: broadcast::Sender<ProcessorMessage>,
+    packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
+}
+
+impl SequentialProcHandle {
+    pub fn new(config: LocalConfig) -> Self {
+        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
+
+        for _ in 0..config.num_packet_processors {
+            // for each Processor, creates one MPSC channel
+            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+            packet_senders.push(packet_sender);
+
+            let proc = Processor {
+                packet_receiver: PacketReceiver::Sequential(packet_receiver),
+                broadcast_receiver: broadcast_sender.subscribe(),
+                routing_table: RoutingTable::new(config.node_id),
+                local_interface: None,
+                schedulers: HashMap::new(),
+            };
+
+            tokio::spawn(async move {
+                let mut proc = proc;
+                proc.run().await;
+            });
+        }
+
+        Self {
+            broadcast_sender,
+            packet_senders,
+        }
     }
 
-    pub async fn process_packet(&self, packet: Packet) {
-        self.packet_sender
-            .send(ProcessorMessage::ProcessPacket(packet))
-            .unwrap();
+    pub fn process_packet(&self, packet: Packet) {
+        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let sender = &self.packet_senders[idx];
+
+        if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+            warn!(
+                "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                e
+            );
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ConcurrentProcHandle {
+    broadcast_sender: broadcast::Sender<ProcessorMessage>,
+    packet_sender: flume::Sender<ProcessorPacket>,
+}
+
+impl ConcurrentProcHandle {
+    pub fn new(config: LocalConfig) -> Self {
+        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
+
+        for _ in 0..config.num_packet_processors {
+            let proc = Processor {
+                packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
+                broadcast_receiver: broadcast_sender.subscribe(),
+                routing_table: RoutingTable::new(config.node_id),
+                local_interface: None,
+                schedulers: HashMap::new(),
+            };
+
+            tokio::spawn(async move {
+                let mut proc = proc;
+                proc.run().await;
+            });
+        }
+
+        Self {
+            broadcast_sender,
+            packet_sender,
+        }
+    }
+
+    pub fn process_packet(&self, packet: Packet) {
+        if let Err(e) = self
+            .packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!(
+                "ConcurrentProcHandle: Error sending a packet to the processor: {}",
+                e
+            );
+        }
+    }
+}
+
+pub enum PacketReceiver {
+    Sequential(mpsc::Receiver<ProcessorPacket>),
+    Concurrent(flume::Receiver<ProcessorPacket>),
+}
+
+#[derive(Debug)]
+pub enum PacketTryRecvError {
+    FlumeRecvError(flume::TryRecvError),
+    MpscRecvError(mpsc::error::TryRecvError),
+}
+
+impl Display for PacketTryRecvError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PacketTryRecvError::FlumeRecvError(err) => {
+                write!(f, "Error receiving from a flume mpmc channel: {}", err)
+            }
+            PacketTryRecvError::MpscRecvError(err) => {
+                write!(f, "Error receiving from a mpsc channel: {}", err)
+            }
+        }
+    }
+}
+
+impl PacketReceiver {
+    pub async fn recv(&mut self) -> Option<ProcessorPacket> {
+        match self {
+            PacketReceiver::Sequential(receiver) => receiver.recv().await,
+            PacketReceiver::Concurrent(receiver) => receiver.recv_async().await.ok(),
+        }
+    }
+
+    pub fn try_recv(&mut self) -> Result<ProcessorPacket, PacketTryRecvError> {
+        match self {
+            PacketReceiver::Sequential(receiver) => receiver
+                .try_recv()
+                .map_err(PacketTryRecvError::MpscRecvError),
+            PacketReceiver::Concurrent(receiver) => receiver
+                .try_recv()
+                .map_err(PacketTryRecvError::FlumeRecvError),
+        }
     }
 }
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
     // receives packets from the network interface or local interface
-    packet_receiver: flume::Receiver<ProcessorMessage>,
+    packet_receiver: PacketReceiver,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
@@ -123,128 +257,85 @@ struct Processor {
 impl Processor {
     async fn run(&mut self) {
         loop {
-            let msg = tokio::select! {
-                // packets from the inbound network or local interfaces
-                Ok(packet) = self.packet_receiver.recv_async() => {
-                    Some(packet)
-                }
-                // messages from the controller interface or the conductor
-                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
-                    Some(broadcast_msg)
-                }
-            };
+            tokio::select! {
+                // Wait for the first packet or a broadcast message
+                Some(msg) = self.packet_receiver.recv() => {
+                    match msg {
+                        ProcessorPacket::ProcessPacket(first_packet) => {
+                            // Start a batch with the first packet
+                            self.process_packet(first_packet);
 
-            match msg {
-                Some(ProcessorMessage::ProcessPacket(packet)) => {
-                    let _ = self.process_packet(packet).await;
+                            // Start processing packets in batches
+                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
+                                self.process_packet(packet);
+                            }
+                        }
+                    }
                 }
-                Some(ProcessorMessage::UpdateRoutingTable(routes)) => {
-                    self.routing_table.install_routes(routes);
+                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
+                    self.handle_message(broadcast_msg).await;
                 }
-                Some(ProcessorMessage::AddNode(node_id, scheduler)) => {
-                    // updates the scheduler for a given node ID
-                    self.schedulers.insert(node_id, scheduler);
-                }
-                Some(ProcessorMessage::ConnectLocalInterface(local_interface)) => {
-                    self.local_interface = Some(local_interface);
-                }
-                None => {
-                    error!("Processor received an unexpected message");
-                    break;
-                }
+            }
+        }
+    }
+
+    // New helper method to handle non-packet messages
+    async fn handle_message(&mut self, msg: ProcessorMessage) {
+        match msg {
+            ProcessorMessage::UpdateRoutingTable(routes) => {
+                self.routing_table.install_routes(routes);
+            }
+            ProcessorMessage::AddNode(node_id, scheduler) => {
+                // updates the scheduler for a given node ID
+                self.schedulers.insert(node_id, scheduler);
+            }
+            ProcessorMessage::ConnectLocalInterface(local_interface) => {
+                self.local_interface = Some(local_interface);
             }
         }
     }
 
     /// Process inbound packets for outbound delivery
-    async fn process_packet(&mut self, packet: Packet) -> Result<(), String> {
+    fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        // Select route_id for new flow at source node
-        let route_id = self
-            .routing_table
-            .select_route_for_flow(packet_flow_id)
-            .ok_or_else(|| {
-                let error = format!(
-                    "No route is found for flow {}: the routing table may be misconfigured",
-                    packet_flow_id
-                );
-                error!("{}", error);
+        // selects the route ID for a new flow
+        if let Some(route_id) = self.routing_table.select_route_for_flow(packet_flow_id) {
+            if route_id == 0 {
+                // No route can be possible as the flow ID is not valid (represented as a value of 0)
+                // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
+                error!("No route can be selected.");
+            }
 
-                error
-            })?;
-
-        if route_id == 0 {
-            // no route can be possible as the flow ID is not valid (represented as a value of 0)
-            // perhaps a non-IPv4 packet?
-            // drops the packet without forwarding it
-            return Err("No route can be selected".to_string());
-        }
-
-        // Route the packet to its next hop
-        let next_hop_id = self
-            .routing_table
-            .get_next_hop_by_route(route_id)
-            .ok_or_else(|| {
-                let error = format!(
-                    "No next hop is found for route id {} on flow {}: routing inconsistency detected",
+            // routes the packet to its next hop
+            if let Some(next_hop_id) = self.routing_table.get_next_hop_by_route(route_id) {
+                self.send_packet(packet, next_hop_id);
+            } else {
+                error!(
+                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
                     route_id, packet_flow_id
                 );
-                error!("{}", error);
-
-                error
-            })?;
-
-        self.send_packet(packet, next_hop_id, packet_flow_id).await
+            }
+        } else {
+            error!(
+                "No route is found for flow {}: the routing table may be misconfigured.",
+                packet_flow_id
+            );
+        }
     }
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
-    async fn send_packet(
-        &mut self,
-        packet: Packet,
-        next_hop_id: NodeId,
-        packet_flow_id: FlowId,
-    ) -> Result<(), String> {
+    fn send_packet(&self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery
             if let Some(ref local_interface) = self.local_interface {
-                if let Err(e) = local_interface.write_packet(packet).await {
-                    let error = format!(
-                        "Failed to send a packet with flow ID {} to the local interface: {}",
-                        packet_flow_id, e
-                    );
-                    error!("{}", error);
-
-                    Err(error)
-                } else {
-                    Ok(())
-                }
+                local_interface.write_packet(packet);
             } else {
-                Err("The local interface has not yet been connected.".to_string())
+                error!("The local interface has not yet been connected.");
             }
         } else {
-            match self.schedulers.get_mut(&next_hop_id) {
-                Some(scheduler) => {
-                    if let Err(e) = scheduler.send(packet).await {
-                        let error = format!(
-                            "Failed to send a packet with flow ID {} to the scheduler for next hop {}: {}",
-                            packet_flow_id, next_hop_id, e
-                        );
-                        error!("{}", error);
-
-                        Err(error)
-                    } else {
-                        Ok(())
-                    }
-                }
-                None => {
-                    error!(
-                        "Next hop node {} is offline or unreachable for flow {}: connection may have been lost.",
-                        next_hop_id, packet_flow_id
-                    );
-
-                    Ok(())
-                }
+            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
+                scheduler.send(packet);
             }
         }
     }

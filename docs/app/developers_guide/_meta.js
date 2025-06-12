@@ -1,3 +1,1 @@
-export default {
-  examples: "Examples",
-};
+export default {};

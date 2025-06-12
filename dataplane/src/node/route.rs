@@ -1,9 +1,9 @@
 use std::net::Ipv4Addr;
 
+use ahash::AHashMap;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
-use std::collections::HashMap;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -17,34 +17,39 @@ pub struct RoutingTable {
     base_ipv4_addr: [u8; 4],
 
     /// Source-destination pair -> available route IDs
-    available_routes: HashMap<(Ipv4Addr, Ipv4Addr), Vec<usize>>,
+    available_routes: AHashMap<(Ipv4Addr, Ipv4Addr), Vec<usize>>,
 
     /// Route ID -> next hop
-    route_next_hop: HashMap<usize, NodeId>,
+    route_next_hop: AHashMap<usize, NodeId>,
 
     /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
+
+    /// Cache for flow to route ID mappings
+    cache: AHashMap<FlowId, usize>,
 }
 
 impl RoutingTable {
     pub fn new(local_id: NodeId) -> Self {
         Self {
-            route_next_hop: HashMap::new(),
-            available_routes: HashMap::new(),
+            route_next_hop: AHashMap::default(),
+            available_routes: AHashMap::default(),
             local_id,
             base_ipv4_addr: [10, 0, 0, 0],
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
+            cache: AHashMap::default(),
         }
     }
 
     /// Install all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
-        // Clear existing data
+        // clears existing data
         self.route_next_hop.clear();
         self.available_routes.clear();
+        self.cache.clear();
 
-        // Build the routing table from routes
+        // builds the routing table from routes
         for route in routes {
             // source-destination pair → available route IDs
             let src_ip = self.node_id_to_ip(route.src_node_id);
@@ -86,8 +91,13 @@ impl RoutingTable {
     /// when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
         if flow_id == 0 {
-            // The flow ID cannot be successfully extracted, no routing is possible
+            // the flow ID cannot be successfully extracted, no routing is possible
             return Some(0);
+        }
+
+        // checks the cache first
+        if let Some(route_id) = self.cache.get(&flow_id) {
+            return Some(*route_id);
         }
 
         // obtains the source-destination pair as the key for the available routes
@@ -96,17 +106,24 @@ impl RoutingTable {
         // gets the available routes for this source-destination pair
         let available_routes = self.available_routes.get(&src_dst_pair)?;
 
-        // Use jump hash to select among the available routes
+        // uses jump hash to select among the available routes
         let selected_route_id = if available_routes.len() == 1 {
             available_routes[0]
         } else {
-            // Applies a deterministic consistent hash function using jump hash for load balancing;
-            // The same flow ID always maps to the same route ID.
+            // applies a deterministic consistent hash function using jump hash for load balancing;
+            // the same flow ID always maps to the same route ID
             let hash_result = self
                 .jump_hasher
                 .slot(&flow_id, available_routes.len() as u32);
+            info!(
+                "Jump hash selected route ID: {}",
+                available_routes[hash_result as usize]
+            );
             available_routes[hash_result as usize]
         };
+
+        // stores the selected route into the cache
+        self.cache.insert(flow_id, selected_route_id);
 
         debug!(
             "Route ID {} is selected for source {}:{} → destination {}:{} from {} available routes.",
