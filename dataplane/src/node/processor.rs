@@ -140,7 +140,7 @@ impl SequentialProcHandle {
 
         if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
             warn!(
-                "Error sending a packet to the processor: {}. The processor may be overloaded.",
+                "SequentialProcHandle: Error sending a packet to the processor: {}.",
                 e
             );
         }
@@ -180,9 +180,15 @@ impl ConcurrentProcHandle {
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        self.packet_sender
-            .send(ProcessorPacket::ProcessPacket(packet))
-            .unwrap();
+        if let Err(e) = self
+            .packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!(
+                "ConcurrentProcHandle: Error sending a packet to the processor: {}",
+                e
+            );
+        }
     }
 }
 

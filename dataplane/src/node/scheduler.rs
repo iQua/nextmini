@@ -51,13 +51,16 @@ impl SchedulerHandle {
         Self { sender }
     }
 
-    // Sends a packet to the scheduler for sequential feature.
+    // Sends a packet to the scheduler.
     pub fn send(&self, packet: Packet) {
         if let Err(e) = self
             .sender
             .try_send(SchedulerMessage::InboundPacket(packet))
         {
-            error!("Scheduler: Error sending a packet to the scheduler: {}.", e);
+            error!(
+                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
+                e
+            );
         }
     }
 }
