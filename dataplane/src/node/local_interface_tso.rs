@@ -1,16 +1,17 @@
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info};
-use tun_rs::{AsyncDevice, DeviceBuilder};
+use tokio::sync::{Mutex, Notify, broadcast, mpsc};
+use tracing::{error, info, warn};
+use tun_rs::{AsyncDevice, DeviceBuilder, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
-use crate::node::FlowIdExt;
-use crate::node::config::LocalConfig;
-use crate::node::local_reader::LocalReader;
-use crate::node::local_writer::LocalWriter;
+use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::config::{Feature, LocalConfig};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, FlowIdExt};
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
@@ -47,8 +48,11 @@ impl LocalInterfaceHandle {
 
             let mut reader = LocalReader {
                 shutdown_receiver: shutdown_sender.subscribe(),
-                processor: processor.clone(),
                 device: dev.clone(),
+                processor: processor.clone(),
+                original_buffer: vec![0; VIRTIO_NET_HDR_LEN + 65535],
+                packet_buffers: vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE],
+                packet_sizes: vec![0; IDEAL_BATCH_SIZE],
             };
 
             tokio::spawn(async move {
@@ -99,22 +103,52 @@ impl LocalInterfaceHandle {
 
     /// Creates local TUN devices for communicating with the application.
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
+        let num_queues = config.num_tun_queues;
+
+        let if_name = config.tun_interface_name.clone();
         let ipv4_addr = config.local_address;
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
 
         let dev = DeviceBuilder::new()
+            .name(&if_name)
             .ipv4(
                 Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
                 ipv4_prefix,
                 None,
             )
             .mtu(config.mtu as u16)
+            .multi_queue(true) // enables multi-queue support
+            .offload(true) // enables TSO support
             .build_async()
             .expect("Failed to create tun device");
 
-        // creates a single TUN queue on non-Linux platforms without multi-queue support
-        info!("Creating one TUN queue on non-Linux platforms without multi-queue support.");
-        let queues = vec![Arc::new(dev)];
+        let mut queues = Vec::with_capacity(num_queues);
+
+        // creates multiple TUN queues with error handling
+        info!("Creating {num_queues} TUN queues.");
+        for _ in 0..num_queues - 1 {
+            match dev.try_clone() {
+                Ok(cloned_dev) => {
+                    queues.push(Arc::new(cloned_dev));
+                }
+                Err(e) => {
+                    // if we are unable to create all the queues, use what we have
+                    warn!(
+                        "Could not create all TUN queues ({}), continuing with {} queues",
+                        e,
+                        queues.len()
+                    );
+                    break;
+                }
+            }
+        }
+
+        queues.push(Arc::new(dev));
+
+        // ensures that we have at least one queue
+        if queues.is_empty() {
+            panic!("Failed to create even a single TUN queue. Terminating.");
+        }
 
         queues
     }
