@@ -7,8 +7,10 @@ use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
-use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::{Feature, LocalConfig};
+use crate::node::FlowIdExt;
+use crate::node::config::LocalConfig;
+use crate::node::local_reader_tso::LocalReader;
+use crate::node::local_writer_tso::LocalWriter;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::{FlowId, FlowIdExt};
