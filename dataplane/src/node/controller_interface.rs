@@ -125,7 +125,7 @@ impl ControllerInterfaceHandle {
         }
 
         // starts the processor actor
-        let processors = ProcessorHandle::new(config.clone());
+        let processors = ProcessorHandleExt::new(config.clone());
 
         (config, processors, ws_stream)
     }
