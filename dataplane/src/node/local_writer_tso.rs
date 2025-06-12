@@ -257,6 +257,8 @@ impl ConcurrentLocalWriterProducer {
     }
 
     pub async fn run(&mut self) {
+        let mut batch_writer = BatchLocalWriter::new(self.device.clone());
+
         loop {
             tokio::select! {
                 msg = self.packet_receiver.recv() => {
@@ -266,8 +268,7 @@ impl ConcurrentLocalWriterProducer {
                         // sends the packet out to the TUN device if it is not a TCP packet, or if it is SYN, FIN,
                         // RST, or ACK
                         if !packet.is_tcp_data() {
-                            let buf = &packet.buf[0..packet.packet_size];
-                            if let Err(e) = self.device.send(buf).await {
+                            if let Err(e) = batch_writer.write(&mut vec![packet]).await {
                                 error!("Failed to send packet to TUN device: {:?}", e);
                             }
 
