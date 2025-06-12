@@ -47,6 +47,16 @@ impl Packet {
         is_tcp && !is_syn && !is_fin && !is_rst && !is_ack
     }
 
+    /// for tso support, avoids copying the buffer
+    pub fn from_slice(packet_size: usize, slice: &[u8]) -> Self {
+        let buf = slice[..packet_size].to_vec();
+        Self {
+            flow_id: Self::get_flow_id_from_buf(&buf),
+            packet_size,
+            buf,
+        }
+    }
+
     fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
         if buf[0] >> 4 == 4 {
             let src_dst_ip = BigEndian::read_u64(&buf[12..20]);

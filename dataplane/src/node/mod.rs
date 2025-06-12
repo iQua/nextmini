@@ -25,7 +25,7 @@ const MAX_MTU: usize = 6400;
 const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 
 /// The packet buffer, used for receiving a packet from the network.
-type PacketBuf = [u8; RECEIVE_BUF_SIZE];
+type PacketBuf = Vec<u8>;
 
 /// The flow ID is a 128-bit integer, used to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16)
 /// + dst_port(16) + reserved(32)

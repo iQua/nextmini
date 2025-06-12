@@ -2,9 +2,11 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, DeviceBuilder};
+
 #[cfg(target_os = "linux")]
 use tun_rs::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
@@ -221,7 +223,7 @@ impl LocalReader {
             loop {
                 tokio::select! {
                     msg = self.shutdown_receiver.recv() => {
-                        if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                        if let Ok(ShutdownMessage::Shutdown) = msg {
                                 info!("LocalReader received shutdown signal, stopping...");
                                 break;
                         }
@@ -242,8 +244,6 @@ impl LocalReader {
                         };
 
                         // processes each packet
-                        let batch: Vec<Packet> = Vec::new();
-
                         for i in 0..num_packets {
                             let packet_size = self.packet_sizes[i];
                             // skips empty packets
@@ -297,7 +297,7 @@ impl LocalReader {
                             continue;
                         }
 
-                        let packet = Packet::new(n, buf);
+                        let packet = Packet::new(n, buf.to_vec());
 
                         // checks if packet creation was successful (non-zero flow_id indicates valid packet)
                         if packet.flow_id == 0 {
@@ -349,6 +349,15 @@ impl LocalWriter {
 }
 
 /// Writes one packet to a TUN device.
+#[cfg(target_os = "linux")]
+struct SequentialLocalWriter {
+    device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
+    shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+    packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    gro_table: GROTable,
+    packet_buffers: Vec<Vec<u8>>,
+}
+#[cfg(not(target_os = "linux"))]
 struct SequentialLocalWriter {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
@@ -356,6 +365,22 @@ struct SequentialLocalWriter {
 }
 
 impl SequentialLocalWriter {
+    #[cfg(target_os = "linux")]
+    fn new(
+        device: Arc<AsyncDevice>,
+        shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
+        packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+    ) -> Self {
+        Self {
+            device,
+            shutdown_receiver,
+            packet_receiver,
+            gro_table: GROTable::default(),
+            packet_buffers: Vec::new(),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
     fn new(
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
@@ -376,15 +401,16 @@ impl SequentialLocalWriter {
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
-                    if let Ok(LocalInterfaceMessage::Shutdown) = msg {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
                         if !pending_packets.is_empty() {
                             let _ = self.send_batch(&mut pending_packets).await;
                         }
+
                         info!("LocalWriter received shutdown signal, stopping...");
                         break;
                     }
                 }
-                // tokio::mpsc recv
+                // receives packets from the mpsc channel
                 msg = self.packet_receiver.recv() => {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         pending_packets.push(packet);
@@ -397,7 +423,7 @@ impl SequentialLocalWriter {
                             }
                         }
 
-                        // sends packets if reaches IDEAL_BATCH_SIZE
+                        // sends packets if the buffer reaches IDEAL_BATCH_SIZE
                         if pending_packets.len() >= IDEAL_BATCH_SIZE {
                             let _ = self.send_batch(&mut pending_packets).await;
                         }
@@ -409,46 +435,48 @@ impl SequentialLocalWriter {
                 }
             }
         }
+    }
 
-        async fn send_batch(&mut self, packets: &mut Vec<Packet>) -> Result<(), std::io::Error> {
-            if packets.is_empty() {
-                return Ok(());
+    #[cfg(target_os = "linux")]
+    async fn send_batch(&mut self, packets: &mut Vec<Packet>) -> Result<(), std::io::Error> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        // prepares buffers for TSO
+        self.packet_buffers.clear();
+        self.packet_buffers.reserve(packets.len());
+
+        // needs memory copying for now
+        for packet in packets.iter() {
+            let mut buf = vec![0; VIRTIO_NET_HDR_LEN + packet.packet_size];
+            buf[VIRTIO_NET_HDR_LEN..VIRTIO_NET_HDR_LEN + packet.packet_size]
+                .copy_from_slice(&packet.buf[..packet.packet_size]);
+
+            self.packet_buffers.push(buf);
+        }
+
+        match self
+            .device
+            .send_multiple(
+                &mut self.gro_table,
+                &mut self.packet_buffers,
+                VIRTIO_NET_HDR_LEN,
+            )
+            .await
+        {
+            Ok(_) => {
+                packets.clear();
+                Ok(())
             }
-
-            // prepares buffers for TSO
-            self.packet_buffers.clear();
-            self.packet_buffers.reserve(packets.len());
-
-            // needs memory copying for now
-            for packet in packets.iter() {
-                let mut buf = vec![0u8; VIRTIO_NET_HDR_LEN + packet.packet_size];
-                buf[VIRTIO_NET_HDR_LEN..VIRTIO_NET_HDR_LEN + packet.packet_size]
-                    .copy_from_slice(&packet.buf[..packet.packet_size]);
-                self.packet_buffers.push(buf);
-            }
-
-            match self
-                .device
-                .send_multiple(
-                    &mut self.gro_table,
-                    &mut self.packet_buffers,
-                    VIRTIO_NET_HDR_LEN,
-                )
-                .await
-            {
-                Ok(_) => {
-                    packets.clear();
-                    Ok(())
+            Err(e) => {
+                // if batch sending fails, falls back to sending packets individually
+                for packet in packets.drain(..) {
+                    let buf = &packet.buf[0..packet.packet_size];
+                    let _ = self.device.send(buf).await;
                 }
-                Err(e) => {
-                    // if batch sending fails, falls back to sending packets individually
-                    for packet in packets.drain(..) {
-                        let buf = &packet.buf[0..packet.packet_size];
-                        let _ = self.device.send(buf).await;
-                    }
 
-                    Err(e)
-                }
+                Err(e)
             }
         }
     }
