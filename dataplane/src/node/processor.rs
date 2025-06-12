@@ -18,7 +18,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowIdExt, NodeId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -445,12 +445,7 @@ impl ConcurrentProcessor {
     }
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
-    async fn send_packet(
-        &mut self,
-        packet: Packet,
-        next_hop_id: NodeId,
-        packet_flow_id: crate::node::FlowId,
-    ) {
+    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId, packet_flow_id: FlowId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery
             if let Some(ref local_interface) = self.local_interface {
