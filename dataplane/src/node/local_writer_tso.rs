@@ -1,6 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
+use tokio::time::Duration;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info};
@@ -128,7 +129,7 @@ impl SequentialLocalWriter {
 
     pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = tokio::time::Duration::from_micros(100);
+        let batch_timeout = Duration::from_micros(100);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -318,10 +319,21 @@ struct ConcurrentLocalWriterConsumer {
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
+        let batch_timeout = Duration::from_micros(100);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
             tokio::select! {
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
+                        info!("ConcurrentLocalWriter consumer received shutdown signal, stopping...");
+                        if !pending_packets.is_empty() {
+                            let _ = batch_writer.write(&mut pending_packets).await;
+                        }
+
+                        break;
+                    }
+                }
                 _ = self.queue_not_empty.notified() => {
                     loop {
                         let flow_id = {
@@ -351,27 +363,16 @@ impl ConcurrentLocalWriterConsumer {
                                 let _ = batch_writer.write(&mut pending_packets).await;
                                 pending_packets.clear();
                             }
-
-                            let queue_map = self.queue_map.lock().await;
-                            if let Some(heap) = queue_map.get(&flow_id) {
-                                if heap.is_empty() {
-                                    let mut active_flows = self.active_flows.lock().await;
-                                    active_flows.remove(&flow_id);
-                                }
-                            }
                         } else {
                             let mut active_flows = self.active_flows.lock().await;
                             active_flows.remove(&flow_id);
                         }
                     }
-
-                    let _ = batch_writer.write(&mut pending_packets).await;
                 }
-                msg = self.shutdown_receiver.recv() => {
-                    if let Ok(ShutdownMessage::Shutdown) = msg {
-                        info!("ConcurrentLocalWriter consumer received shutdown signal, stopping...");
-                        break;
-                    }
+                // sends to the TUN device anyway every once in a while (100 milliseconds)
+                _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
+                    let _ = batch_writer.write(&mut pending_packets).await;
+                    pending_packets.clear();
                 }
             }
         }

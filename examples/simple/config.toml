@@ -1,5 +1,5 @@
 private_network_interface = "eth0"
 private_network_name = "net1"
 num_tun_queues = 1
-num_packet_processors = 10
-feature = "concurrent"
+num_packet_processors = 2
+feature = "sequential"
