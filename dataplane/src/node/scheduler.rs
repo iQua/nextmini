@@ -13,8 +13,6 @@ use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
 
-const BATCH_SIZE: usize = 64;
-
 /// The scheduling discipline.
 #[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
@@ -104,8 +102,8 @@ impl Fifo {
             queue_not_empty,
         };
 
-        tokio::task::spawn_blocking(move || {
-            let _ = reader.run();
+        tokio::task::spawn(async move {
+            let _ = reader.run().await;
         });
 
         tokio::task::spawn(async move {
@@ -140,10 +138,10 @@ struct FifoReader {
 }
 
 impl FifoReader {
-    fn run(&mut self) {
+    async fn run(&mut self) {
         // producer task: receives packets and enqueues them
         loop {
-            if let Some(message) = self.receiver.blocking_recv() {
+            if let Some(message) = self.receiver.recv().await {
                 match message {
                     SchedulerMessage::InboundPacket(packet) => {
                         self.enqueue(packet);
@@ -193,7 +191,7 @@ impl FifoReader {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.queue.len() > 5 {
+                if self.queue.len() > 2 {
                     // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
                     // and the queue becomes 'non-empty' now
                     self.queue_not_empty.notify_one();
@@ -216,7 +214,7 @@ struct FifoWriter {
 // Consumer task: pops packets from the queue and sends them out
 impl FifoWriter {
     async fn run(&mut self) {
-        let mut batch = Vec::with_capacity(BATCH_SIZE);
+        let mut batch = Vec::new();
 
         loop {
             // Wait for notification if queue is empty

@@ -4,8 +4,6 @@
 /// processing and routing of network packets.
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::thread;
-use std::time::Duration;
 
 use flume;
 use tokio;
@@ -124,8 +122,8 @@ impl SequentialProcHandle {
                 schedulers: HashMap::new(),
             };
 
-            tokio::task::spawn_blocking(move || {
-                proc.run();
+            tokio::spawn(async move {
+                proc.run().await;
             });
         }
 
@@ -168,8 +166,8 @@ impl ConcurrentProcHandle {
                 schedulers: HashMap::new(),
             };
 
-            tokio::task::spawn_blocking(move || {
-                proc.run();
+            tokio::spawn(async move {
+                proc.run().await;
             });
         }
 
@@ -217,10 +215,10 @@ impl Display for PacketTryRecvError {
 }
 
 impl PacketReceiver {
-    pub fn recv(&mut self) -> Option<ProcessorPacket> {
+    pub async fn recv(&mut self) -> Option<ProcessorPacket> {
         match self {
-            PacketReceiver::Sequential(receiver) => receiver.blocking_recv(),
-            PacketReceiver::Concurrent(receiver) => receiver.recv().ok(),
+            PacketReceiver::Sequential(receiver) => receiver.recv().await,
+            PacketReceiver::Concurrent(receiver) => receiver.recv_async().await.ok(),
         }
     }
 
@@ -255,54 +253,32 @@ struct Processor {
 }
 
 impl Processor {
-    fn run(&mut self) {
+    async fn run(&mut self) {
         loop {
-            // Wait for the first packet or a broadcast message
-            match self.packet_receiver.try_recv() {
-                Ok(ProcessorPacket::ProcessPacket(packet)) => {
-                    self.process_packet(packet);
+            tokio::select! {
+                // Wait for the first packet or a broadcast message
+                Some(msg) = self.packet_receiver.recv() => {
+                    match msg {
+                        ProcessorPacket::ProcessPacket(first_packet) => {
+                            // Start a batch with the first packet
+                            self.process_packet(first_packet);
 
-                    // drains additional packets if available
-                    while let Ok(ProcessorPacket::ProcessPacket(packet)) =
-                        self.packet_receiver.try_recv()
-                    {
-                        self.process_packet(packet);
+                            // Start processing packets in batches
+                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
+                                self.process_packet(packet);
+                            }
+                        }
                     }
                 }
-                Err(PacketTryRecvError::MpscRecvError(mpsc::error::TryRecvError::Empty))
-                | Err(PacketTryRecvError::FlumeRecvError(flume::TryRecvError::Empty)) => {
-                    // No packet available, move to check broadcast
-                }
-                Err(e) => {
-                    error!("Error receiving packet: {}", e);
-                    break;
-                }
-            }
-
-            // Check broadcast receiver
-            match self.broadcast_receiver.try_recv() {
-                Ok(msg) => {
-                    self.handle_message(msg);
-                    // Drain additional broadcast messages if available
-                    while let Ok(msg) = self.broadcast_receiver.try_recv() {
-                        self.handle_message(msg);
-                    }
-                }
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    // No broadcast message available
-                }
-                Err(e) => {
-                    error!("Error receiving broadcast message: {}", e);
-                    break;
+                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
+                    self.handle_message(broadcast_msg).await;
                 }
             }
         }
-
-        thread::sleep(Duration::from_millis(1));
     }
 
     // New helper method to handle non-packet messages
-    fn handle_message(&mut self, msg: ProcessorMessage) {
+    async fn handle_message(&mut self, msg: ProcessorMessage) {
         match msg {
             ProcessorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
