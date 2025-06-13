@@ -13,7 +13,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
