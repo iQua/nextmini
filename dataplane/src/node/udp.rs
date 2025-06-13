@@ -62,4 +62,14 @@ impl UdpWriter {
 
         Ok(())
     }
+
+    /// Writes a batch of packets to the UDP socket.
+    pub async fn write_packets(&self, packets: Vec<Packet>) -> Result<()> {
+        for packet in packets {
+            self.socket
+                .send_to(&packet.buf[0..packet.packet_size], &self.remote_addr)
+                .await?;
+        }
+        Ok(())
+    }
 }

@@ -38,20 +38,8 @@ impl ProtocolWriter {
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
         match self {
             ProtocolWriter::Tcp(writer) => writer.write_packets(packets).await,
-            ProtocolWriter::Udp(writer) => {
-                // TODO
-                for packet in packets {
-                    writer.write_packet(&packet).await?;
-                }
-                Ok(())
-            }
-            ProtocolWriter::Quic(writer) => {
-                // TODO
-                for packet in packets {
-                    writer.write_packet(&packet).await?;
-                }
-                Ok(())
-            }
+            ProtocolWriter::Udp(writer) => writer.write_packets(packets).await,
+            ProtocolWriter::Quic(writer) => writer.write_packets(packets).await,
         }
     }
 }
