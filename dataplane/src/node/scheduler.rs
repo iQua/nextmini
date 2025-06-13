@@ -213,27 +213,38 @@ struct FifoWriter {
     pub queue_not_empty: Arc<Notify>,
 }
 
+// Consumer task: pops packets from the queue and sends them out
 impl FifoWriter {
-    // Consumer task: pops packets from the queue and sends them out
     async fn run(&mut self) {
-        let mut batch = Vec::new();
+        let mut batch = Vec::with_capacity(BATCH_SIZE);
 
         loop {
-            batch.clear();
+            // Wait for notification if queue is empty
+            if self.queue.is_empty() {
+                self.queue_not_empty.notified().await;
+            }
 
+            // Drain packets from queue efficiently
             while let Some(packet) = self.queue.pop() {
                 batch.push(packet);
             }
 
+            // Send batch if we have packets
             if !batch.is_empty() {
-                let outbound_packets = std::mem::take(&mut batch);
-                if let Err(e) = self.net_interface.send_batch(outbound_packets).await {
-                    error!("FifoWriter: Error sending batch of packets: {}", e);
-                }
+                self.send_batch(&mut batch).await;
             }
+        }
+    }
 
-            // the scheduler's queue is empty, waits for notification
-            self.queue_not_empty.notified().await;
+    async fn send_batch(&mut self, batch: &mut Vec<Packet>) {
+        let packets = std::mem::take(batch);
+
+        if let Err(e) = self.net_interface.send_batch(packets).await {
+            error!(
+                "FifoWriter: Error sending batch of {} packets: {}",
+                batch.capacity(),
+                e
+            );
         }
     }
 }

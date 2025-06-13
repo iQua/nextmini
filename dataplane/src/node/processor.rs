@@ -4,6 +4,8 @@
 /// processing and routing of network packets.
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::thread;
+use std::time::Duration;
 
 use flume;
 use tokio;
@@ -296,7 +298,7 @@ impl Processor {
             }
         }
 
-        std::thread::yield_now();
+        thread::sleep(Duration::from_millis(1));
     }
 
     // New helper method to handle non-packet messages
