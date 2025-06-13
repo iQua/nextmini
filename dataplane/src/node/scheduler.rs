@@ -229,15 +229,15 @@ impl FifoWriter {
 
             // Send batch if we have packets
             if !batch.is_empty() {
-                self.send_batch(&mut batch).await;
+                self.send_packets(&mut batch).await;
             }
         }
     }
 
-    async fn send_batch(&mut self, batch: &mut Vec<Packet>) {
+    async fn send_packets(&mut self, batch: &mut Vec<Packet>) {
         let packets = std::mem::take(batch);
 
-        if let Err(e) = self.net_interface.send_batch(packets).await {
+        if let Err(e) = self.net_interface.send_packets(packets).await {
             error!(
                 "FifoWriter: Error sending batch of {} packets: {}",
                 batch.capacity(),

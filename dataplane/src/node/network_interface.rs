@@ -96,13 +96,6 @@ impl NetworkInterfaceHandle {
         Self { writer }
     }
 
-    // Sends a packet through the network interface.
-    pub async fn send(&mut self, packet: Packet) -> Result<(), Error> {
-        let _ = self.writer.write_packet(packet).await?;
-
-        Ok(())
-    }
-
     // Sends packets in batch through the network interface.
     pub async fn send_packets(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
         let _ = self.writer.write_packets(packets).await?;
