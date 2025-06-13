@@ -13,6 +13,8 @@ use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
 
+const BATCH_SIZE: usize = 64;
+
 /// The scheduling discipline.
 #[allow(unused)]
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
@@ -214,23 +216,31 @@ struct FifoWriter {
 impl FifoWriter {
     // Consumer task: pops packets from the queue and sends them out
     async fn run(&mut self) {
+        let mut batch = Vec::with_capacity(BATCH_SIZE);
         loop {
-            // tries to dequeue a packet
-            match self.queue.pop() {
-                Some(packet) => {
-                    // sends the packet
-                    if let Err(e) = self.net_interface.send(packet).await {
-                        error!(
-                            "Scheduler: Error sending a packet to the network interface: {}.",
-                            e
-                        );
+            while let Some(packet) = self.queue.pop() {
+                batch.push(packet);
+                if batch.len() >= BATCH_SIZE {
+                    let batch_to_send =
+                        std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
+                    if let Err(e) = self.net_interface.send_batch(batch_to_send).await {
+                        error!("FifoWriter: Error sending a full batch of packets: {}", e);
                     }
                 }
-                None => {
-                    // the scheduler's queue is empty, waits for notification
-                    self.queue_not_empty.notified().await;
+            }
+
+            if !batch.is_empty() {
+                let batch_to_send = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
+                if let Err(e) = self.net_interface.send_batch(batch_to_send).await {
+                    error!(
+                        "FifoWriter: Error sending a partial batch of packets: {}",
+                        e
+                    );
                 }
             }
+
+            // the scheduler's queue is empty, waits for notification
+            self.queue_not_empty.notified().await;
         }
     }
 }

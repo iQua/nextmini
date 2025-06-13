@@ -34,6 +34,27 @@ impl ProtocolWriter {
             ProtocolWriter::Quic(writer) => writer.write_packet(&packet).await,
         }
     }
+
+    /// trys to use batching for tcp writing packets
+    pub async fn write_batch(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
+        match self {
+            ProtocolWriter::Tcp(writer) => writer.write_batch(packets).await,
+            ProtocolWriter::Udp(writer) => {
+                // TODO
+                for packet in packets {
+                    writer.write_packet(&packet).await?;
+                }
+                Ok(())
+            }
+            ProtocolWriter::Quic(writer) => {
+                // TODO
+                for packet in packets {
+                    writer.write_packet(&packet).await?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// The network interface handle, used for sending and receiving packets over the network.
@@ -79,6 +100,13 @@ impl NetworkInterfaceHandle {
     // Sends a packet through the network interface.
     pub async fn send(&mut self, packet: Packet) -> Result<(), Error> {
         let _ = self.writer.write_packet(packet).await?;
+
+        Ok(())
+    }
+
+    // Sends packets in batch through the network interface.
+    pub async fn send_batch(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
+        let _ = self.writer.write_batch(packets).await?;
 
         Ok(())
     }
