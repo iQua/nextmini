@@ -188,52 +188,31 @@ impl TcpWriter {
     }
 
     /// Writes multiple packets in batch using vectored I/O.
-    pub async fn write_batch(&mut self, packets: Vec<Packet>) -> Result<()> {
+    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         if packets.is_empty() {
             return Ok(());
         }
-        // creates a vector of IoSlices from the packets
-        let slices: Vec<IoSlice> = packets
+
+        // first creates IoSlice objects from packet buffers
+        let mut io_slices: Vec<IoSlice> = packets
             .iter()
-            .map(|p| IoSlice::new(&p.buf[0..p.packet_size]))
+            .map(|packet| IoSlice::new(&packet.buf[0..packet.packet_size]))
             .collect();
 
-        let mut written_so_far = 0;
-        let total_bytes: usize = slices.iter().map(|s| s.len()).sum();
+        let mut slices = io_slices.as_mut_slice();
 
-        while written_so_far < total_bytes {
-            let mut current_pos = 0;
-            let mut start_slice_index = 0;
-            // finds the slice where the next write should start.
-            for (i, slice) in slices.iter().enumerate() {
-                if current_pos + slice.len() > written_so_far {
-                    start_slice_index = i;
-                    break;
-                }
-                current_pos += slice.len();
-            }
-
-            // needs to find which slices to write
-            let mut slices_to_write = Vec::with_capacity(slices.len() - start_slice_index);
-            let offset_in_first_slice = written_so_far - current_pos;
-
-            slices_to_write.push(IoSlice::new(
-                &slices[start_slice_index][offset_in_first_slice..],
-            ));
-            if start_slice_index + 1 < slices.len() {
-                slices_to_write.extend_from_slice(&slices[start_slice_index + 1..]);
-            }
-
-            let written_this_call = self.stream.write_vectored(&slices_to_write).await?;
+        while !slices.is_empty() {
+            let written_this_call = self.stream.write_vectored(&slices).await?;
 
             if written_this_call == 0 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
-                    "write_vectored could not write any bytes",
+                    "write_vectored returned 0",
                 ));
             }
 
-            written_so_far += written_this_call;
+            // advances the slices to skip the written data
+            IoSlice::advance_slices(&mut slices, written_this_call);
         }
 
         Ok(())

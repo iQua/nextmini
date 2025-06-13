@@ -216,26 +216,19 @@ struct FifoWriter {
 impl FifoWriter {
     // Consumer task: pops packets from the queue and sends them out
     async fn run(&mut self) {
-        let mut batch = Vec::with_capacity(BATCH_SIZE);
+        let mut batch = Vec::new();
+
         loop {
+            batch.clear();
+
             while let Some(packet) = self.queue.pop() {
                 batch.push(packet);
-                if batch.len() >= BATCH_SIZE {
-                    let batch_to_send =
-                        std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
-                    if let Err(e) = self.net_interface.send_batch(batch_to_send).await {
-                        error!("FifoWriter: Error sending a full batch of packets: {}", e);
-                    }
-                }
             }
 
             if !batch.is_empty() {
-                let batch_to_send = std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
-                if let Err(e) = self.net_interface.send_batch(batch_to_send).await {
-                    error!(
-                        "FifoWriter: Error sending a partial batch of packets: {}",
-                        e
-                    );
+                let outbound_packets = std::mem::take(&mut batch);
+                if let Err(e) = self.net_interface.send_batch(outbound_packets).await {
+                    error!("FifoWriter: Error sending batch of packets: {}", e);
                 }
             }
 

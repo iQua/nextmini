@@ -38,7 +38,7 @@ impl ProtocolWriter {
     /// trys to use batching for tcp writing packets
     pub async fn write_batch(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
         match self {
-            ProtocolWriter::Tcp(writer) => writer.write_batch(packets).await,
+            ProtocolWriter::Tcp(writer) => writer.write_packets(packets).await,
             ProtocolWriter::Udp(writer) => {
                 // TODO
                 for packet in packets {
