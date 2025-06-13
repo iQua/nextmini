@@ -180,11 +180,6 @@ pub struct LocalConfig {
     #[arg(long)]
     pub queue_capacity: usize,
 
-    // The number of packets that channels are to be drained in one go
-    #[default(128)]
-    #[arg(long)]
-    pub batch_size: usize,
-
     // The drop strategy for the scheduler
     #[default(DropStrategy::TailDrop)]
     #[arg(long, value_enum)]

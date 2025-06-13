@@ -94,7 +94,6 @@ impl Fifo {
             receiver,
             queue_not_empty: queue_not_empty.clone(),
             capacity,
-            batch_size: config.batch_size,
         };
 
         let mut writer = FifoWriter {
@@ -136,49 +135,28 @@ struct FifoReader {
     pub queue_not_empty: Arc<Notify>,
     /// maximum queue capacity
     pub capacity: usize,
-    /// batch size for processing packets
-    pub batch_size: usize,
 }
 
 impl FifoReader {
     async fn run(&mut self) {
         // producer task: receives packets and enqueues them
         loop {
-            // processes any immediately available packets first (non-blocking)
-            let processed_packets = self.process_available_packets().await;
-
-            // if we have already processed a full batch, yield control briefly
-            if processed_packets >= self.batch_size {
-                tokio::task::yield_now().await;
-                continue;
-            }
-
-            // waits for a new inbound packet
             if let Some(message) = self.receiver.recv().await {
                 match message {
                     SchedulerMessage::InboundPacket(packet) => {
                         self.enqueue(packet);
                     }
                 }
-            }
-        }
-    }
 
-    // Helper method to process all immediately available packets
-    async fn process_available_packets(&mut self) -> usize {
-        let mut processed = 0;
-
-        while processed < self.batch_size {
-            match self.receiver.try_recv() {
-                Ok(SchedulerMessage::InboundPacket(packet)) => {
-                    self.enqueue(packet);
-                    processed += 1;
+                while let Ok(message) = self.receiver.try_recv() {
+                    match message {
+                        SchedulerMessage::InboundPacket(packet) => {
+                            self.enqueue(packet);
+                        }
+                    }
                 }
-                Err(_) => break, // No more packets available
             }
         }
-
-        processed
     }
 
     fn enqueue(&mut self, packet: Packet) {
@@ -213,7 +191,7 @@ impl FifoReader {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.queue.len() > 50 {
+                if self.queue.len() > 2 {
                     // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
                     // and the queue becomes 'non-empty' now
                     self.queue_not_empty.notify_one();
@@ -251,15 +229,15 @@ impl FifoWriter {
 
             // Send batch if we have packets
             if !batch.is_empty() {
-                self.send_packets(&mut batch).await;
+                self.send_batch(&mut batch).await;
             }
         }
     }
 
-    async fn send_packets(&mut self, batch: &mut Vec<Packet>) {
+    async fn send_batch(&mut self, batch: &mut Vec<Packet>) {
         let packets = std::mem::take(batch);
 
-        if let Err(e) = self.net_interface.send_packets(packets).await {
+        if let Err(e) = self.net_interface.send_batch(packets).await {
             error!(
                 "FifoWriter: Error sending batch of {} packets: {}",
                 batch.capacity(),
