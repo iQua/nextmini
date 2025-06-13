@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use tokio::net::{TcpStream, UdpSocket};
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
 use tokio_tungstenite::{
@@ -112,17 +110,6 @@ impl ControllerInterfaceHandle {
             error!("No response has been received from controller.");
         }
 
-        if config.protocol == nextmini_messages::Protocol::Udp {
-            // checks if the UDP socket has already been bound to a port
-            if config.udp_socket.is_none() {
-                let bind_addr = format!("{}:{}", "0.0.0.0", config.public_network_port);
-
-                if let Ok(socket) = UdpSocket::bind(bind_addr).await {
-                    config.udp_socket = Some(Arc::new(socket));
-                    info!("The UDP socket has been initialized successfully.");
-                }
-            }
-        }
 
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());

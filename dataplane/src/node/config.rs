@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use tokio::net::UdpSocket;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
@@ -94,12 +91,6 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-    /// The UDP socket bound to a specific port for receiving packets. It is bound to the public network port
-    /// by calling UdpSocket::bind() in ControllerInterface::connect().
-    #[default(None)]
-    #[serde(skip)]
-    #[arg(skip)]
-    pub udp_socket: Option<Arc<UdpSocket>>,
 
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller
@@ -165,7 +156,7 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub local_netmask: (u8, u8, u8, u8),
 
-    // The transport protocol: TCP, UDP, or QUIC
+    // The transport protocol: TCP or QUIC
     #[default(Protocol::Tcp)]
     #[arg(long, value_enum)]
     pub protocol: Protocol,

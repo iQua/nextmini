@@ -275,41 +275,6 @@ async fn handle_connection(
                                 ),
                             }
 
-                            // For UDP, also notifies the existing node about the new node
-                            if config.protocol == Protocol::Udp {
-                                let addr =
-                                    if new_node.private_network_name == node.private_network_name {
-                                        new_node.private_network_addr.clone()
-                                    } else {
-                                        new_node.public_network_addr.clone()
-                                    };
-
-                                let msg = build_add_node_message(node_id, addr);
-
-                                let node_ws_guard = node_ws.read().await;
-
-                                if let Some(ws_arc) =
-                                    node_ws_guard.get(&(node.id as usize)).cloned()
-                                {
-                                    match ws_arc
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                                        .await
-                                    {
-                                        Ok(_) => info!(
-                                            "Sent an AddNode message for new node {} to existing node {}.",
-                                            node_id, node.id
-                                        ),
-                                        Err(e) => error!(
-                                            "Failed to send AddNode message to existing node {}: {}.",
-                                            node.id, e
-                                        ),
-                                    }
-                                } else {
-                                    warn!("Could not find WebSocket for node {}", node.id);
-                                }
-                            }
                         }
 
                         // installs routes

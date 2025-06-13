@@ -30,7 +30,6 @@ pub struct Metric {
 pub enum Protocol {
     #[default]
     Tcp,
-    Udp,
     Quic,
 }
 

@@ -12,7 +12,6 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
-use crate::node::udp::UdpWriter;
 
 pub enum NetworkStream {
     Tcp(TcpStream),
@@ -21,7 +20,6 @@ pub enum NetworkStream {
 
 pub enum ProtocolWriter {
     Tcp(TcpWriter),
-    Udp(UdpWriter),
     Quic(QuicWriter),
 }
 
@@ -30,7 +28,6 @@ impl ProtocolWriter {
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
         match self {
             ProtocolWriter::Tcp(writer) => writer.write_packets(packets).await,
-            ProtocolWriter::Udp(writer) => writer.write_packets(packets).await,
             ProtocolWriter::Quic(writer) => writer.write_packets(packets).await,
         }
     }
@@ -119,11 +116,6 @@ impl NetworkInterface {
                     .await;
 
                 self.init(NetworkStream::Quic(stream))
-            }
-            Protocol::Udp => {
-                let udp_writer = UdpWriter::new(self.config.clone(), remote_addr);
-
-                ProtocolWriter::Udp(udp_writer)
             }
         }
     }
