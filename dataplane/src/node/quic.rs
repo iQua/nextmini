@@ -211,16 +211,7 @@ impl QuicWriter {
         Self { stream }
     }
 
-    /// Writes a packet to the network via QUIC.
-    pub async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
-        self.stream
-            .write_all(&packet.buf[0..packet.packet_size])
-            .await?;
-
-        Ok(())
-    }
-
-    /// Writes multiple packets in batch using vectored I/O.
+    /// Writes multiple packets to the QUIC network stream.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         if packets.is_empty() {
             return Ok(());
