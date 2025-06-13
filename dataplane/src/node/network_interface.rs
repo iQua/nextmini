@@ -26,7 +26,6 @@ pub enum ProtocolWriter {
 }
 
 impl ProtocolWriter {
-    /// Writes a packet to the underlying protocol writer.
     pub async fn write_packet(&mut self, packet: Packet) -> Result<(), Error> {
         match self {
             ProtocolWriter::Tcp(writer) => writer.write_packet(&packet).await,
@@ -35,8 +34,8 @@ impl ProtocolWriter {
         }
     }
 
-    /// trys to use batching for tcp writing packets
-    pub async fn write_batch(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
+    /// Writes a vector of packets to the underlying protocol writer.
+    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
         match self {
             ProtocolWriter::Tcp(writer) => writer.write_packets(packets).await,
             ProtocolWriter::Udp(writer) => {
@@ -105,8 +104,8 @@ impl NetworkInterfaceHandle {
     }
 
     // Sends packets in batch through the network interface.
-    pub async fn send_batch(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
-        let _ = self.writer.write_batch(packets).await?;
+    pub async fn send_packets(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
+        let _ = self.writer.write_packets(packets).await?;
 
         Ok(())
     }

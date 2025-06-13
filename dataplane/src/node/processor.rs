@@ -115,6 +115,7 @@ impl SequentialProcHandle {
             packet_senders.push(packet_sender);
 
             let mut proc = Processor {
+                config: config.clone(),
                 packet_receiver: PacketReceiver::Sequential(packet_receiver),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -159,6 +160,7 @@ impl ConcurrentProcHandle {
 
         for _ in 0..config.num_packet_processors {
             let mut proc = Processor {
+                config: config.clone(),
                 packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -236,6 +238,8 @@ impl PacketReceiver {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
+    config: LocalConfig,
+
     // receives packets from the network interface or local interface
     packet_receiver: PacketReceiver,
 
@@ -255,26 +259,45 @@ struct Processor {
 impl Processor {
     async fn run(&mut self) {
         loop {
-            tokio::select! {
-                // Wait for the first packet or a broadcast message
-                Some(msg) = self.packet_receiver.recv() => {
-                    match msg {
-                        ProcessorPacket::ProcessPacket(first_packet) => {
-                            // Start a batch with the first packet
-                            self.process_packet(first_packet);
+            // Process any immediately available packets first (non-blocking)
+            let processed_packets = self.process_available_packets();
 
-                            // Start processing packets in batches
-                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
-                                self.process_packet(packet);
-                            }
-                        }
-                    }
+            // If we processed a full batch, yield control to handle broadcast messages
+            if processed_packets >= self.config.batch_size {
+                // Check for broadcast messages without blocking
+                if let Ok(broadcast_msg) = self.broadcast_receiver.try_recv() {
+                    self.handle_message(broadcast_msg).await;
+                }
+                continue;
+            }
+
+            // If no packets were immediately available, wait for either packets or broadcasts
+            tokio::select! {
+                Some(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.recv() => {
+                    self.process_packet(packet);
                 }
                 Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
                     self.handle_message(broadcast_msg).await;
                 }
             }
         }
+    }
+
+    // Helper method to process all immediately available packets
+    fn process_available_packets(&mut self) -> usize {
+        let mut processed = 0;
+
+        while processed < self.config.batch_size {
+            match self.packet_receiver.try_recv() {
+                Ok(ProcessorPacket::ProcessPacket(packet)) => {
+                    self.process_packet(packet);
+                    processed += 1;
+                }
+                Err(_) => break, // No more packets available
+            }
+        }
+
+        processed
     }
 
     // New helper method to handle non-packet messages
