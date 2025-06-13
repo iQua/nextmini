@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use std::time::Duration;
 
+use std::io::IoSlice;
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
@@ -177,11 +178,33 @@ impl TcpWriter {
         Self { stream }
     }
 
-    /// Writes a packet to the network using QUIC.
-    pub async fn write_packet(&mut self, packet: &Packet) -> Result<()> {
-        self.stream
-            .write_all(&packet.buf[0..packet.packet_size])
-            .await?;
+    /// Writes multiple packets to the TCP network stream.
+    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        // first creates IoSlice objects from packet buffers
+        let mut io_slices: Vec<IoSlice> = packets
+            .iter()
+            .map(|packet| IoSlice::new(&packet.buf[0..packet.packet_size]))
+            .collect();
+
+        let mut slices = io_slices.as_mut_slice();
+
+        while !slices.is_empty() {
+            let written_this_call = self.stream.write_vectored(&slices).await?;
+
+            if written_this_call == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "write_vectored returned 0",
+                ));
+            }
+
+            // advances the slices to skip the written data
+            IoSlice::advance_slices(&mut slices, written_this_call);
+        }
 
         Ok(())
     }

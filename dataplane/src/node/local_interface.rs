@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
@@ -158,7 +158,7 @@ impl LocalInterfaceHandle {
                 }
                 Err(e) => {
                     // if we are unable to create all the queues, use what we have
-                    warn!(
+                    error!(
                         "Could not create all TUN queues ({}), continuing with {} queues",
                         e,
                         queues.len()

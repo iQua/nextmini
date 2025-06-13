@@ -12,7 +12,6 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
-use crate::node::udp::UdpServer;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -79,12 +78,6 @@ impl Conductor {
         let private_port = self.config.private_network_port.clone();
 
         match self.config.protocol {
-            Protocol::Udp => {
-                let mut udp_server = UdpServer::new(self.config.clone(), self.processors.clone());
-                udp_server
-                    .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                    .await;
-            }
             Protocol::Tcp => {
                 if public_port == private_port {
                     let mut tcp_server =

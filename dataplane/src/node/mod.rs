@@ -11,7 +11,6 @@ pub mod quic;
 pub mod route;
 pub mod scheduler;
 pub mod tcp;
-pub mod udp;
 
 #[cfg(target_os = "linux")]
 pub mod local_reader_tso;

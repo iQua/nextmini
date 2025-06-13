@@ -48,13 +48,6 @@ pub fn build_startup_response(
     }
 }
 
-pub fn build_add_node_message(node_id: usize, addr: String) -> ControllerToDataplane {
-    ControllerToDataplane::AddNode {
-        remote_node_id: node_id,
-        remote_addr: addr,
-    }
-}
-
 /// Builds route-level next-hop information for a specific node.
 pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<ControllerToDataplane> {
     let mut route_entries: Vec<RoutingTableEntry> = Vec::new();

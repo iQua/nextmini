@@ -102,11 +102,11 @@ impl Fifo {
             queue_not_empty,
         };
 
-        tokio::spawn(async move {
+        tokio::task::spawn(async move {
             let _ = reader.run().await;
         });
 
-        tokio::spawn(async move {
+        tokio::task::spawn(async move {
             let _ = writer.run().await;
         });
 
@@ -191,8 +191,8 @@ impl FifoReader {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.queue.len() > self.capacity / 2 {
-                    // if the queue is more than half full, it notifies the consumer task that a packet has arrived
+                if self.queue.len() > 2 {
+                    // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
                     // and the queue becomes 'non-empty' now
                     self.queue_not_empty.notify_one();
                 }
@@ -211,26 +211,38 @@ struct FifoWriter {
     pub queue_not_empty: Arc<Notify>,
 }
 
+// Consumer task: pops packets from the queue and sends them out
 impl FifoWriter {
-    // Consumer task: pops packets from the queue and sends them out
     async fn run(&mut self) {
+        let mut batch = Vec::new();
+
         loop {
-            // tries to dequeue a packet
-            match self.queue.pop() {
-                Some(packet) => {
-                    // sends the packet
-                    if let Err(e) = self.net_interface.send(packet).await {
-                        error!(
-                            "Scheduler: Error sending a packet to the network interface: {}.",
-                            e
-                        );
-                    }
-                }
-                None => {
-                    // the scheduler's queue is empty, waits for notification
-                    self.queue_not_empty.notified().await;
-                }
+            // Wait for notification if queue is empty
+            if self.queue.is_empty() {
+                self.queue_not_empty.notified().await;
             }
+
+            // Drain packets from queue efficiently
+            while let Some(packet) = self.queue.pop() {
+                batch.push(packet);
+            }
+
+            // Send batch if we have packets
+            if !batch.is_empty() {
+                self.send_packets(&mut batch).await;
+            }
+        }
+    }
+
+    async fn send_packets(&mut self, batch: &mut Vec<Packet>) {
+        let packets = std::mem::take(batch);
+
+        if let Err(e) = self.net_interface.send(packets).await {
+            error!(
+                "FifoWriter: Error sending batch of {} packets: {}",
+                batch.capacity(),
+                e
+            );
         }
     }
 }

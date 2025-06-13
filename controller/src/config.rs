@@ -60,7 +60,7 @@ pub struct Config {
     #[serde(default = "default_net_mask")]
     pub net_mask: [u8; 4],
 
-    /// The transport protocol: TCP, UDP, or QUIC.
+    /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
     pub protocol: Protocol,
 

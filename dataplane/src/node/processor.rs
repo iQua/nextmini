@@ -114,7 +114,7 @@ impl SequentialProcHandle {
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
-            let proc = Processor {
+            let mut proc = Processor {
                 packet_receiver: PacketReceiver::Sequential(packet_receiver),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -123,7 +123,6 @@ impl SequentialProcHandle {
             };
 
             tokio::spawn(async move {
-                let mut proc = proc;
                 proc.run().await;
             });
         }
@@ -159,7 +158,7 @@ impl ConcurrentProcHandle {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
-            let proc = Processor {
+            let mut proc = Processor {
                 packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -168,7 +167,6 @@ impl ConcurrentProcHandle {
             };
 
             tokio::spawn(async move {
-                let mut proc = proc;
                 proc.run().await;
             });
         }
