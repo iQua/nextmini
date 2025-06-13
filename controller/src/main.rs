@@ -18,9 +18,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, Protocol};
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
 use crate::models::{Node, Route};
-use crate::utils::{
-    build_add_node_message, build_routes_for_node, build_startup_response, create_new_virtual_addr,
-};
+use crate::utils::{build_routes_for_node, build_startup_response, create_new_virtual_addr};
 
 mod config;
 mod db;
@@ -274,7 +272,6 @@ async fn handle_connection(
                                     node_id, e
                                 ),
                             }
-
                         }
 
                         // installs routes

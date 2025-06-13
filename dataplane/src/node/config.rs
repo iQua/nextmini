@@ -91,7 +91,6 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller
     #[default(5)]
@@ -111,7 +110,6 @@ pub struct LocalConfig {
 
     /// The capacity for all channels between actors
     #[default(1000)]
-    // Default value is 10000, 998 Mbits/sec;
     #[arg(long)]
     pub channel_capacity: usize,
 
