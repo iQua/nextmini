@@ -114,7 +114,7 @@ impl SequentialProcHandle {
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
-            let proc = Processor {
+            let mut proc = Processor {
                 packet_receiver: PacketReceiver::Sequential(packet_receiver),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -122,9 +122,8 @@ impl SequentialProcHandle {
                 schedulers: HashMap::new(),
             };
 
-            tokio::spawn(async move {
-                let mut proc = proc;
-                proc.run().await;
+            tokio::task::spawn_blocking(move || {
+                proc.run();
             });
         }
 
@@ -159,7 +158,7 @@ impl ConcurrentProcHandle {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
-            let proc = Processor {
+            let mut proc = Processor {
                 packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
@@ -167,9 +166,8 @@ impl ConcurrentProcHandle {
                 schedulers: HashMap::new(),
             };
 
-            tokio::spawn(async move {
-                let mut proc = proc;
-                proc.run().await;
+            tokio::task::spawn_blocking(move || {
+                proc.run();
             });
         }
 
@@ -217,10 +215,10 @@ impl Display for PacketTryRecvError {
 }
 
 impl PacketReceiver {
-    pub async fn recv(&mut self) -> Option<ProcessorPacket> {
+    pub fn recv(&mut self) -> Option<ProcessorPacket> {
         match self {
-            PacketReceiver::Sequential(receiver) => receiver.recv().await,
-            PacketReceiver::Concurrent(receiver) => receiver.recv_async().await.ok(),
+            PacketReceiver::Sequential(receiver) => receiver.blocking_recv(),
+            PacketReceiver::Concurrent(receiver) => receiver.recv().ok(),
         }
     }
 
@@ -255,32 +253,54 @@ struct Processor {
 }
 
 impl Processor {
-    async fn run(&mut self) {
+    fn run(&mut self) {
         loop {
-            tokio::select! {
-                // Wait for the first packet or a broadcast message
-                Some(msg) = self.packet_receiver.recv() => {
-                    match msg {
-                        ProcessorPacket::ProcessPacket(first_packet) => {
-                            // Start a batch with the first packet
-                            self.process_packet(first_packet);
+            // Wait for the first packet or a broadcast message
+            match self.packet_receiver.try_recv() {
+                Ok(ProcessorPacket::ProcessPacket(packet)) => {
+                    self.process_packet(packet);
 
-                            // Start processing packets in batches
-                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
-                                self.process_packet(packet);
-                            }
-                        }
+                    // drains additional packets if available
+                    while let Ok(ProcessorPacket::ProcessPacket(packet)) =
+                        self.packet_receiver.try_recv()
+                    {
+                        self.process_packet(packet);
                     }
                 }
-                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
-                    self.handle_message(broadcast_msg).await;
+                Err(PacketTryRecvError::MpscRecvError(mpsc::error::TryRecvError::Empty))
+                | Err(PacketTryRecvError::FlumeRecvError(flume::TryRecvError::Empty)) => {
+                    // No packet available, move to check broadcast
+                }
+                Err(e) => {
+                    error!("Error receiving packet: {}", e);
+                    break;
+                }
+            }
+
+            // Check broadcast receiver
+            match self.broadcast_receiver.try_recv() {
+                Ok(msg) => {
+                    self.handle_message(msg);
+                    // Drain additional broadcast messages if available
+                    while let Ok(msg) = self.broadcast_receiver.try_recv() {
+                        self.handle_message(msg);
+                    }
+                }
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    // No broadcast message available
+                }
+                Err(e) => {
+                    error!("Error receiving broadcast message: {}", e);
+                    break;
                 }
             }
         }
+
+        std::thread::yield_now();
     }
 
     // New helper method to handle non-packet messages
-    async fn handle_message(&mut self, msg: ProcessorMessage) {
+    fn handle_message(&mut self, msg: ProcessorMessage) {
         match msg {
             ProcessorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);

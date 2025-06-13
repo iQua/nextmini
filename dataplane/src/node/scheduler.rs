@@ -102,11 +102,11 @@ impl Fifo {
             queue_not_empty,
         };
 
-        tokio::spawn(async move {
-            let _ = reader.run().await;
+        tokio::task::spawn_blocking(move || {
+            let _ = reader.run();
         });
 
-        tokio::spawn(async move {
+        tokio::task::spawn(async move {
             let _ = writer.run().await;
         });
 
@@ -138,10 +138,10 @@ struct FifoReader {
 }
 
 impl FifoReader {
-    async fn run(&mut self) {
+    fn run(&mut self) {
         // producer task: receives packets and enqueues them
         loop {
-            if let Some(message) = self.receiver.recv().await {
+            if let Some(message) = self.receiver.blocking_recv() {
                 match message {
                     SchedulerMessage::InboundPacket(packet) => {
                         self.enqueue(packet);
@@ -191,8 +191,8 @@ impl FifoReader {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.queue.len() > self.capacity / 2 {
-                    // if the queue is more than half full, it notifies the consumer task that a packet has arrived
+                if self.queue.len() > 5 {
+                    // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
                     // and the queue becomes 'non-empty' now
                     self.queue_not_empty.notify_one();
                 }
