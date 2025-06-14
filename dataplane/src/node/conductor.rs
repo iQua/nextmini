@@ -1,6 +1,9 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processor actor, and the local
 /// interface actor.
+use std::net::Ipv4Addr;
+use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tracing::info;
 
@@ -10,14 +13,19 @@ use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
+use crate::node::processor::ProcessorMessage;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
+use crate::node::user_space_tcp::UserSpaceTcpSource;
 
 pub struct Conductor {
     config: LocalConfig,
 
     /// the local interface readers and writers
     local_interface: LocalInterfaceHandle,
+
+    /// the user-space TCP source
+    user_space_tcp: Option<UserSpaceTcpSource>,
 
     /// the processors
     processors: ProcessorHandle,
@@ -41,12 +49,33 @@ impl Conductor {
 
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone());
-
         processors.connect_local_interface(local_interface.clone());
+
+        let user_space_tcp = if let Some(ip_str) = &config.user_space_tcp_ip {
+            let ip_addr = ip_str
+                .parse::<Ipv4Addr>()
+                .expect("Invalid IP address for the user-space TCP source.");
+
+            let (tcp_source, _packet_sender) =
+                UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
+
+            processors
+                .broadcast_sender()
+                .send(ProcessorMessage::ConnectLocalDestination(
+                    ip_addr,
+                    Arc::new(tcp_source.clone()),
+                ))
+                .expect("Failed to connect to the user-space TCP source.");
+
+            Some(tcp_source)
+        } else {
+            None
+        };
 
         Conductor {
             config,
             local_interface,
+            user_space_tcp,
             processors,
             controller_interface,
             main_shutdown_recv: Some(main_shutdown_recv),
@@ -55,6 +84,10 @@ impl Conductor {
 
     pub async fn run(&mut self) {
         let mut main_shutdown_recv = self.main_shutdown_recv.take().unwrap();
+
+        if let Some(tcp_source) = &self.user_space_tcp {
+            tcp_source.start();
+        }
 
         tokio::select! {
             _ = self.start() => {

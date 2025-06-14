@@ -6,6 +6,7 @@ use tracing::{error, info};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
+use crate::node::LocalDestination;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -30,11 +31,18 @@ pub enum LocalInterfaceMessage {
     WritePacket(Packet), // the processor sends a packet to the application via the local interface
 }
 
-/// Handle for Processors to interact with LocalInterface
-#[derive(Clone)]
+/// Handle for Processors to interact with LocalInterface.
+#[derive(Clone, Debug)]
 pub struct LocalInterfaceHandle {
     shutdown_sender: broadcast::Sender<ShutdownMessage>,
     write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
+}
+
+/// Implements the common LocalDestination trait, shared between the TUN interface and user-space TCP sources.
+impl LocalDestination for LocalInterfaceHandle {
+    fn send_packet(&self, packet: Packet) {
+        self.write_packet(packet);
+    }
 }
 
 impl LocalInterfaceHandle {

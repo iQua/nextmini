@@ -29,7 +29,7 @@ pub enum SchedulerMessage {
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SchedulerHandle {
     sender: mpsc::Sender<SchedulerMessage>,
 }

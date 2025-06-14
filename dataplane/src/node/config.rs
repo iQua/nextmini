@@ -91,6 +91,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
+    // The IP address for the user-space TCP source.
+    #[default(None)]
+    #[arg(long)]
+    pub user_space_tcp_ip: Option<String>,
+
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller
     #[default(5)]

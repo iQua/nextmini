@@ -80,7 +80,7 @@ impl RoutingTable {
     }
 
     /// Converts a node ID to its IP address based on the base address.
-    fn node_id_to_ip(&self, node_id: usize) -> Ipv4Addr {
+    pub fn node_id_to_ip(&self, node_id: usize) -> Ipv4Addr {
         let base_ip = u32::from_be_bytes(self.base_ipv4_addr);
         let ip_addr = base_ip + node_id as u32;
 

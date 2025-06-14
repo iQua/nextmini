@@ -2,9 +2,11 @@
 /// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::net::Ipv4Addr;
+use std::sync::Arc;
 
+use ahash::AHashMap;
 use flume;
 use tokio;
 use tokio::sync::broadcast;
@@ -14,6 +16,7 @@ use tracing::{error, warn};
 
 use nextmini_messages::RoutingTableEntry;
 
+use crate::node::LocalDestination;
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
@@ -26,14 +29,15 @@ pub enum ProcessorPacket {
     ProcessPacket(Packet),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
+    ConnectLocalDestination(Ipv4Addr, Arc<dyn LocalDestination>),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ProcessorHandle {
     Sequential(SequentialProcHandle),
     Concurrent(ConcurrentProcHandle),
@@ -98,7 +102,7 @@ impl ProcessorHandle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SequentialProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
@@ -118,8 +122,8 @@ impl SequentialProcHandle {
                 packet_receiver: PacketReceiver::Sequential(packet_receiver),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
-                local_interface: None,
-                schedulers: HashMap::new(),
+                local_destinations: AHashMap::new(),
+                schedulers: AHashMap::new(),
             };
 
             tokio::spawn(async move {
@@ -146,7 +150,7 @@ impl SequentialProcHandle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConcurrentProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
@@ -162,8 +166,8 @@ impl ConcurrentProcHandle {
                 packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_receiver: broadcast_sender.subscribe(),
                 routing_table: RoutingTable::new(config.node_id),
-                local_interface: None,
-                schedulers: HashMap::new(),
+                local_destinations: AHashMap::new(),
+                schedulers: AHashMap::new(),
             };
 
             tokio::spawn(async move {
@@ -245,11 +249,11 @@ struct Processor {
     // the routing table
     routing_table: RoutingTable,
 
-    // the local interface
-    local_interface: Option<LocalInterfaceHandle>,
+    // a hashmap to support multiple local destinations: the TUN interface and user-space TCP sources.
+    local_destinations: AHashMap<Ipv4Addr, Arc<dyn LocalDestination>>,
 
     // schedulers, one for each outbound network interface
-    schedulers: HashMap<NodeId, SchedulerHandle>,
+    schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
@@ -288,7 +292,14 @@ impl Processor {
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
-                self.local_interface = Some(local_interface);
+                self.local_destinations.insert(
+                    self.routing_table
+                        .node_id_to_ip(self.routing_table.local_id),
+                    Arc::new(local_interface),
+                );
+            }
+            ProcessorMessage::ConnectLocalDestination(ip, dest) => {
+                self.local_destinations.insert(ip, dest);
             }
         }
     }
@@ -322,14 +333,18 @@ impl Processor {
         }
     }
 
-    /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
+    /// Sends a packet to its destined next hop, including local delivery to the TUN interface or
+    /// user-space TCP sources.
     fn send_packet(&self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
-            // local delivery
-            if let Some(ref local_interface) = self.local_interface {
-                local_interface.write_packet(packet);
+            // local delivery: use the destination IP address to distinguish between the TUN interface
+            // and user-space TCP sources
+            let dst_ip = packet.flow_id.dst_ip();
+
+            if let Some(dest) = self.local_destinations.get(&dst_ip) {
+                dest.send_packet(packet);
             } else {
-                error!("The local interface has not yet been connected.");
+                error!("No local destination for IP: {}", dst_ip);
             }
         } else {
             if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
