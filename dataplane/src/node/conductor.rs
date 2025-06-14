@@ -56,8 +56,7 @@ impl Conductor {
                 .parse::<Ipv4Addr>()
                 .expect("Invalid IP address for the user-space TCP source.");
 
-            let (tcp_source, _packet_sender) =
-                UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
+            let tcp_source = UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
 
             processors
                 .broadcast_sender()

@@ -24,11 +24,7 @@ pub struct UserSpaceTcpSource {
 }
 
 impl UserSpaceTcpSource {
-    pub fn new(
-        config: LocalConfig,
-        ip_addr: Ipv4Addr,
-        processor_handle: ProcessorHandle,
-    ) -> (Self, flume::Sender<Packet>) {
+    pub fn new(config: LocalConfig, ip_addr: Ipv4Addr, processor_handle: ProcessorHandle) -> Self {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         let tcp_source = Self {
@@ -39,7 +35,7 @@ impl UserSpaceTcpSource {
             packet_receiver,
         };
 
-        (tcp_source, packet_sender)
+        tcp_source
     }
 
     /// Starts the user-space TCP source as a virtual device.
