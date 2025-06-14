@@ -78,8 +78,10 @@ impl UserSpaceTcpSource {
         let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
         let tcp_handle = sockets.add(tcp_socket);
 
-        // connects to a remote endpoint: needs to be revised to obtain the destination IP and
-        // port number from the local (or controller's) configuration file
+        // Connects to a remote endpoint: needs to be revised to obtain the destination IP and
+        // port number from the local (or controller's) configuration file. In addition, the
+        // current user-space TCP source is a client-only implementation, as it does not implement
+        // bind(), listen(), and accept().
         let remote_addr = IpAddress::v4(192, 168, 1, 1);
         let remote_port = 80;
         {
