@@ -42,6 +42,7 @@ impl UserSpaceTcpSource {
         (tcp_source, packet_sender)
     }
 
+    /// Starts the user-space TCP source as a virtual device.
     pub fn start(&self) {
         let device = VirtualDevice {
             config: self.config.clone(),
@@ -49,10 +50,12 @@ impl UserSpaceTcpSource {
             sender: self.processor_handle.clone(),
         };
 
+        // sets up Layer 2
         let config = Config::new(smoltcp::wire::HardwareAddress::Ethernet(
             smoltcp::wire::EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
         ));
 
+        // sets up Layer 3 using the provided IP address
         let mut iface = Interface::new(config, &mut device.clone(), Instant::now());
         iface.update_ip_addrs(|addrs| {
             addrs
@@ -68,13 +71,15 @@ impl UserSpaceTcpSource {
                 .unwrap();
         });
 
+        // creates the TCP socket
         let mut sockets = SocketSet::new(vec![]);
         let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
         let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
         let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
         let tcp_handle = sockets.add(tcp_socket);
 
-        // connects to a remote endpoint
+        // connects to a remote endpoint: needs to be revised to obtain the destination IP and
+        // port number from the local (or controller's) configuration file
         let remote_addr = IpAddress::v4(192, 168, 1, 1);
         let remote_port = 80;
         {
@@ -84,14 +89,14 @@ impl UserSpaceTcpSource {
                 .unwrap();
         }
 
-        let _processor_handle = self.processor_handle.clone();
-
+        // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         thread::spawn(move || {
             loop {
                 let now = Instant::now();
                 iface.poll(now, &mut device.clone(), &mut sockets);
 
                 let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
+
                 if socket.can_send() {
                     socket.send_slice(b"Hello from user-space TCP!").unwrap();
                 }
@@ -142,7 +147,7 @@ impl Device for VirtualDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ethernet;
-        caps.max_transmission_unit = 1500;
+        caps.max_transmission_unit = self.config.mtu as usize;
         caps
     }
 }
@@ -168,7 +173,10 @@ impl smoltcp::phy::TxToken for PacketTxToken {
         let mut buf = vec![0; len];
         let result = f(&mut buf);
         let packet = Packet::new(len, buf);
-        self.0.process_packet(packet); // Use non-blocking send
+
+        // uses non-blocking send() to send the outbound packet
+        self.0.process_packet(packet);
+
         result
     }
 }

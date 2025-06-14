@@ -85,10 +85,6 @@ impl Conductor {
     pub async fn run(&mut self) {
         let mut main_shutdown_recv = self.main_shutdown_recv.take().unwrap();
 
-        if let Some(tcp_source) = &self.user_space_tcp {
-            tcp_source.start();
-        }
-
         tokio::select! {
             _ = self.start() => {
                 // At this point, the conductor actor has finished normally
@@ -107,6 +103,12 @@ impl Conductor {
             self.config.node_id, self.config.private_network_addr, self.config.private_network_port
         );
 
+        // if configured, starts the user-space TCP source
+        if let Some(tcp_source) = &self.user_space_tcp {
+            tcp_source.start();
+        }
+
+        // starts listening with either TCP or QUIC on published ports (private and/or public)
         let public_port = self.config.public_network_port.clone();
         let private_port = self.config.private_network_port.clone();
 
