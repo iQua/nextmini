@@ -76,7 +76,7 @@ impl UserSpaceTcpSource {
         // port number from the local (or controller's) configuration file. In addition, the
         // current user-space TCP source is a client-only implementation, as it does not implement
         // bind(), listen(), and accept().
-        let remote_addr = IpAddress::v4(10, 0, 0, 2); // virtual IP address for test purposes
+        let remote_addr = IpAddress::v4(172, 16, 8, 5); // server container IP address for test purposes
         let remote_port = 6969; // port number for test purposes
         {
             let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
