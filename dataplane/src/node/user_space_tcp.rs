@@ -46,10 +46,8 @@ impl UserSpaceTcpSource {
             sender: self.processor_handle.clone(),
         };
 
-        // sets up Layer 2
-        let config = Config::new(smoltcp::wire::HardwareAddress::Ethernet(
-            smoltcp::wire::EthernetAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
-        ));
+        // sets up for IP layer without needing hardware address
+        let config = Config::new(smoltcp::wire::HardwareAddress::Ip);
 
         // sets up Layer 3 using the provided IP address
         let mut iface = Interface::new(config, &mut device.clone(), Instant::now());
@@ -78,8 +76,8 @@ impl UserSpaceTcpSource {
         // port number from the local (or controller's) configuration file. In addition, the
         // current user-space TCP source is a client-only implementation, as it does not implement
         // bind(), listen(), and accept().
-        let remote_addr = IpAddress::v4(172, 16, 8, 2);
-        let remote_port = 80;
+        let remote_addr = IpAddress::v4(10, 0, 0, 2); // virtual IP address for test purposes
+        let remote_port = 6969; // port number for test purposes
         {
             let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
             socket
@@ -144,7 +142,7 @@ impl Device for VirtualDevice {
 
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
-        caps.medium = Medium::Ethernet;
+        caps.medium = Medium::Ip; // needs IP packet format
         caps.max_transmission_unit = self.config.mtu as usize;
         caps
     }
