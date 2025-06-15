@@ -92,7 +92,4 @@ services:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "
-      apk add --no-cache socat &&
-      socat TCP-LISTEN:6969,fork,reuseaddr EXEC:'cat' &
-      sleep 10 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 10 && /var/nextmini/nextmini ws://controller:3000"
