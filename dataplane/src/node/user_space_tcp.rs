@@ -67,40 +67,86 @@ impl UserSpaceTcpSource {
 
         // creates the TCP socket
         let mut sockets = SocketSet::new(vec![]);
-        let tcp_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-        let tcp_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-        let tcp_socket = tcp::Socket::new(tcp_rx_buffer, tcp_tx_buffer);
-        let tcp_handle = sockets.add(tcp_socket);
 
         // Connects to a remote endpoint: needs to be revised to obtain the destination IP and
         // port number from the local (or controller's) configuration file. In addition, the
         // current user-space TCP source is a client-only implementation, as it does not implement
         // bind(), listen(), and accept().
-        let remote_addr = IpAddress::v4(172, 16, 8, 5); // server container IP address for test purposes
-        let remote_port = 6969; // port number for test purposes
-        {
-            let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
-            socket
-                .connect(iface.context(), (remote_addr, remote_port), 12345)
-                .unwrap();
-        }
+
+        // create server socket
+        let server_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+        let server_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+        let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
+        let server_handle = sockets.add(server_socket);
+
+        // create client socket
+        let client_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+        let client_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+        let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
+        let client_handle = sockets.add(client_socket);
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         thread::spawn(move || {
+            let mut client_connected = false;
+            let mut device = device;
+
             loop {
                 let now = Instant::now();
-                iface.poll(now, &mut device.clone(), &mut sockets);
+                iface.poll(now, &mut device, &mut sockets);
 
-                let socket = sockets.get_mut::<tcp::Socket>(tcp_handle);
+                // Server socket handling
+                {
+                    let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
 
-                if socket.can_send() {
-                    socket.send_slice(b"Hello from user-space TCP!").unwrap();
+                    if !server_socket.is_active() && !server_socket.is_listening() {
+                        server_socket.listen(6969).unwrap();
+                        info!("Server listening on port 6969");
+                    }
+
+                    if server_socket.is_active() {
+                        if server_socket.can_recv() {
+                            let mut buffer = [0u8; 1024];
+                            if let Ok(len) = server_socket.recv_slice(&mut buffer) {
+                                info!("Server received {} bytes", len);
+                                // echo the data back
+                                if server_socket.can_send() {
+                                    server_socket.send_slice(&buffer[..len]).unwrap();
+                                }
+                            }
+                        }
+                    }
                 }
 
-                if socket.may_recv() {
-                    let mut buffer = [0u8; 1024];
-                    if let Ok(len) = socket.recv_slice(&mut buffer) {
-                        info!("Received {} bytes: {:?}", len, &buffer[..len]);
+                // Client socket handling
+                {
+                    let client_socket = sockets.get_mut::<tcp::Socket>(client_handle);
+
+                    if !client_connected && !client_socket.is_open() {
+                        let remote_addr = IpAddress::v4(172, 16, 8, 5); // server container IP address for test purposes
+                        let remote_port = 6969; // port number for test purposes
+
+                        client_socket
+                            .connect(iface.context(), (remote_addr, remote_port), 12345)
+                            .unwrap();
+                        info!("Client connecting to {}:{}", remote_addr, remote_port);
+                    }
+
+                    if client_socket.is_active() && !client_connected {
+                        client_connected = true;
+                        info!("Client connected successfully");
+                    }
+
+                    if client_socket.is_active() && client_socket.can_send() {
+                        client_socket
+                            .send_slice(b"Hello from user-space TCP!")
+                            .unwrap();
+                    }
+
+                    if client_socket.may_recv() {
+                        let mut buffer = [0u8; 1024];
+                        if let Ok(len) = client_socket.recv_slice(&mut buffer) {
+                            info!("Client received {} bytes: {:?}", len, &buffer[..len]);
+                        }
                     }
                 }
 
