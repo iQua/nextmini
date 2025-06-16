@@ -38,12 +38,18 @@ pub fn build_startup_response(
     node_id: usize,
     virtual_addr: [u8; 4],
     net_mask: [u8; 4],
+    smoltcp_addr: [u8; 4],
+    smoltcp_net_mask: [u8; 4],
+    smoltcp_port: u16,
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
         addr: virtual_addr,
         net_mask,
+        smoltcp_addr,
+        smoltcp_net_mask,
+        smoltcp_port,
         protocol,
     }
 }

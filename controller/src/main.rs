@@ -128,7 +128,7 @@ async fn handle_connection(
                             continue;
                         }
 
-                        // assigns a virtual address to this node
+                        // assigns a virtual address to this node for tun interface
                         let virtual_addr = match create_new_virtual_addr(
                             config.base_addr,
                             config.net_mask,
@@ -136,10 +136,33 @@ async fn handle_connection(
                         ) {
                             Some(addr) => addr,
                             None => {
-                                error!("Failed to create a virtual address for node {}.", node_id);
+                                error!(
+                                    "Failed to create a tun virtual address for node {}.",
+                                    node_id
+                                );
                                 continue;
                             }
                         };
+
+                        // assigns a virtual address to this node for smoltcp interface
+                        let smoltcp_addr = match create_new_virtual_addr(
+                            config.smoltcp_base_addr,
+                            config.smoltcp_net_mask,
+                            node_id,
+                        ) {
+                            Some(addr) => addr,
+                            None => {
+                                error!(
+                                    "Failed to create a smoltcp virtual address for node {}.",
+                                    node_id
+                                );
+                                continue;
+                            }
+                        };
+
+                        let smoltcp_port = config.smoltcp_port_range[0]
+                            + (node_id as u16
+                                % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
 
                         let virtual_network_addr = virtual_addr
                             .iter()
@@ -147,12 +170,21 @@ async fn handle_connection(
                             .collect::<Vec<_>>()
                             .join(".");
 
+                        // add smoltcp logic
+                        let smoltcp_virtual_addr = smoltcp_addr
+                            .iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join(".");
+
                         info!(
-                            "Created new node {} with private address {}, public address {}, and virtual address {}.",
+                            "Created new node {} with private address {}, public address {}, tun virtual address {}, and smoltcp vitrual address {}:{}.",
                             node_id,
                             private_network_addr,
                             public_network_addr,
                             &virtual_network_addr,
+                            &smoltcp_virtual_addr,
+                            smoltcp_port,
                         );
 
                         let new_node = Node {
@@ -161,18 +193,22 @@ async fn handle_connection(
                             private_network_addr,
                             public_network_addr,
                             virtual_network_addr,
+                            smoltcp_virtual_addr,
+                            smoltcp_port: smoltcp_port as i32,
                         };
 
                         // Insert node into database
                         match sqlx::query(
                             r#"
-                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr)
-                            VALUES ($1, $2, $3, $4, $5)
+                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr, smoltcp_virtual_addr, smoltcp_port)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7)
                             ON CONFLICT (id) DO UPDATE SET
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
                                 public_network_addr = EXCLUDED.public_network_addr,
-                                virtual_network_addr = EXCLUDED.virtual_network_addr
+                                virtual_network_addr = EXCLUDED.virtual_network_addr,
+                                smoltcp_virtual_addr = EXCLUDED.smoltcp_virtual_addr,
+                                smoltcp_port = EXCLUDED.smoltcp_port
                             "#
                         )
                         .bind(new_node.id)
@@ -180,6 +216,8 @@ async fn handle_connection(
                         .bind(&new_node.private_network_addr)
                         .bind(&new_node.public_network_addr)
                         .bind(&new_node.virtual_network_addr)
+                        .bind(&new_node.smoltcp_virtual_addr)
+                        .bind(new_node.smoltcp_port)
                         .execute(&*db_pool)
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
@@ -194,6 +232,9 @@ async fn handle_connection(
                             node_id,
                             virtual_addr,
                             config.net_mask,
+                            smoltcp_addr,
+                            config.smoltcp_net_mask,
+                            smoltcp_port,
                             config.protocol.clone(),
                         );
 

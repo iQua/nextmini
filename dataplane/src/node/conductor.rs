@@ -51,10 +51,13 @@ impl Conductor {
             LocalInterfaceHandle::new(config.clone(), processors.clone());
         processors.connect_local_interface(local_interface.clone());
 
-        let user_space_tcp = if let Some(ip_str) = &config.user_space_tcp_ip {
-            let ip_addr = ip_str
-                .parse::<Ipv4Addr>()
-                .expect("Invalid IP address for the user-space TCP source.");
+        let user_space_tcp = if config.user_space_smoltcp_ip != (0, 0, 0, 0) {
+            let ip_addr = Ipv4Addr::new(
+                config.user_space_smoltcp_ip.0,
+                config.user_space_smoltcp_ip.1,
+                config.user_space_smoltcp_ip.2,
+                config.user_space_smoltcp_ip.3,
+            );
 
             let tcp_source = UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
 

@@ -40,6 +40,9 @@ pub enum ControllerToDataplane {
         node_id: usize,
         addr: [u8; 4],
         net_mask: [u8; 4],
+        smoltcp_addr: [u8; 4],
+        smoltcp_net_mask: [u8; 4],
+        smoltcp_port: u16,
         protocol: Protocol,
     },
     AddNode {

@@ -91,11 +91,6 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-    // The IP address for the user-space TCP source.
-    #[default(None)]
-    #[arg(long)]
-    pub user_space_tcp_ip: Option<String>,
-
     /// This is not used in metrics collector
     /// The interval at which metrics are collected and sent to the controller
     #[default(5)]
@@ -188,6 +183,21 @@ pub struct LocalConfig {
     #[default(4)]
     #[arg(long)]
     pub reorder_tolerance: usize,
+
+    // The user-space smoltcp ip address from controller
+    #[default(192, 168, 0, 1)]
+    #[arg(skip)]
+    pub user_space_smoltcp_ip: (u8, u8, u8, u8),
+
+    // The user-space smoltcp network mask from controller
+    #[default(255, 255, 255, 0)]
+    #[arg(skip)]
+    pub user_space_smoltcp_netmask: (u8, u8, u8, u8),
+
+    // The user-space smoltcp port from controller
+    #[default(6000)]
+    #[arg(skip)]
+    pub user_space_smoltcp_port: u16,
 }
 
 impl LocalConfig {
@@ -299,11 +309,28 @@ impl LocalConfig {
                         node_id,
                         addr,
                         net_mask,
+                        smoltcp_addr,
+                        smoltcp_net_mask,
+                        smoltcp_port,
                         protocol,
                     } => {
                         self.node_id = node_id;
                         self.local_address = (addr[0], addr[1], addr[2], addr[3]);
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
+                        // update smoltcp ip and netmask
+                        self.user_space_smoltcp_ip = (
+                            smoltcp_addr[0],
+                            smoltcp_addr[1],
+                            smoltcp_addr[2],
+                            smoltcp_addr[3],
+                        );
+                        self.user_space_smoltcp_netmask = (
+                            smoltcp_net_mask[0],
+                            smoltcp_net_mask[1],
+                            smoltcp_net_mask[2],
+                            smoltcp_net_mask[3],
+                        );
+                        self.user_space_smoltcp_port = smoltcp_port;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

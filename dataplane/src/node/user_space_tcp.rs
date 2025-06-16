@@ -86,6 +86,8 @@ impl UserSpaceTcpSource {
         let client_handle = sockets.add(client_socket);
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
+        let smoltcp_port = self.config.user_space_smoltcp_port;
+
         thread::spawn(move || {
             let mut client_connected = false;
             let mut device = device;
@@ -99,8 +101,8 @@ impl UserSpaceTcpSource {
                     let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
 
                     if !server_socket.is_active() && !server_socket.is_listening() {
-                        server_socket.listen(6969).unwrap();
-                        info!("Server listening on port 6969");
+                        server_socket.listen(smoltcp_port).unwrap();
+                        info!("Server listening on port {}", smoltcp_port);
                     }
 
                     if server_socket.is_active() {
@@ -122,8 +124,8 @@ impl UserSpaceTcpSource {
                     let client_socket = sockets.get_mut::<tcp::Socket>(client_handle);
 
                     if !client_connected && !client_socket.is_open() {
-                        let remote_addr = IpAddress::v4(172, 16, 8, 5); // server container IP address for test purposes
-                        let remote_port = 6969; // port number for test purposes
+                        let remote_addr = IpAddress::v4(192, 168, 0, 2); // hardcode the node2 ip addr for test
+                        let remote_port = 6002; // node2 port number
 
                         client_socket
                             .connect(iface.context(), (remote_addr, remote_port), 12345)

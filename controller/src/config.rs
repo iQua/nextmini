@@ -60,6 +60,18 @@ pub struct Config {
     #[serde(default = "default_net_mask")]
     pub net_mask: [u8; 4],
 
+    /// The base ipv4 address for user-space smoltcp network
+    #[serde(default = "default_smoltcp_base_addr")]
+    pub smoltcp_base_addr: [u8; 4],
+
+    /// The net mask for user-space smoltcp network
+    #[serde(default = "default_smoltcp_net_mask")]
+    pub smoltcp_net_mask: [u8; 4],
+
+    /// The port range for user-space smoltcp tcp connections
+    #[serde(default = "default_smoltcp_port_range")]
+    pub smoltcp_port_range: [u16; 2],
+
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
     pub protocol: Protocol,
@@ -102,6 +114,21 @@ fn default_base_addr() -> [u8; 4] {
 fn default_net_mask() -> [u8; 4] {
     // accommodates up to 255 * 255 nodes in the private network
     [255, 255, 0, 0]
+}
+
+/// The default base ipv4 address for user-space smoltcp network
+fn default_smoltcp_base_addr() -> [u8; 4] {
+    [192, 168, 0, 0]
+}
+
+/// The default net mask for user-space smoltcp network
+fn default_smoltcp_net_mask() -> [u8; 4] {
+    [255, 255, 255, 0]
+}
+
+/// The default port range for user-space smoltcp connections
+fn default_smoltcp_port_range() -> [u16; 2] {
+    [6000, 8000]
 }
 
 /// The default transport protocol: QUIC
@@ -161,6 +188,9 @@ impl Default for Config {
             port: default_port(),
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
+            smoltcp_base_addr: default_smoltcp_base_addr(),
+            smoltcp_net_mask: default_smoltcp_net_mask(),
+            smoltcp_port_range: default_smoltcp_port_range(),
             protocol: default_protocol(),
             routes: Vec::new(),
             link_rates: Vec::new(),
