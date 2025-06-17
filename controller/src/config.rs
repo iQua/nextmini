@@ -20,6 +20,13 @@ pub struct SmoltcpConnection {
     pub smoltcp_server_port: u16,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmoltcpTrafficConfig {
+    pub data_size: usize,
+    pub total_bytes: u64,
+    pub send_interval_ms: u64,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DBConfig {
     pub user: String,
@@ -100,6 +107,10 @@ pub struct Config {
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
 
+    /// Smoltcp traffic generation configuration
+    #[serde(default = "default_smoltcp_traffic")]
+    pub smoltcp_traffic: SmoltcpTrafficConfig,
+
     /// Topology configuration for automatic route generation.
     #[serde(default)]
     pub topology: Topology,
@@ -151,6 +162,15 @@ fn default_smoltcp_port_range() -> [u16; 2] {
 /// The default server port for smoltcp
 fn default_smoltcp_server_port() -> u16 {
     8888
+}
+
+/// The default smoltcp traffic configuration
+fn default_smoltcp_traffic() -> SmoltcpTrafficConfig {
+    SmoltcpTrafficConfig {
+        data_size: 1024,
+        total_bytes: 10_000_000,
+        send_interval_ms: 10,
+    }
 }
 
 /// The default transport protocol: QUIC
@@ -218,6 +238,7 @@ impl Default for Config {
             routes: Vec::new(),
             smoltcp_connections: Vec::new(),
             link_rates: Vec::new(),
+            smoltcp_traffic: default_smoltcp_traffic(),
             topology: Topology::default(),
             db: default_db_config(),
         }

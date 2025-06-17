@@ -4,6 +4,10 @@ protocol = "tcp"
 type = "full_mesh"
 n_nodes = 2
 
+[smoltcp_traffic]
+data_size = 2048
+total_bytes = 20000000     # 20MB
+# send_interval_ms = 1
 
 [[smoltcp_connections]]
 src_node_id = 1

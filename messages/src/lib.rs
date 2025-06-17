@@ -46,6 +46,9 @@ pub enum ControllerToDataplane {
         smoltcp_server_port: u16,
         smoltcp_remote_addr: [u8; 4],
         protocol: Protocol,
+        smoltcp_data_size: usize,
+        smoltcp_total_bytes: u64,
+        smoltcp_send_interval_ms: u64,
     },
     AddNode {
         remote_node_id: usize,

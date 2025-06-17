@@ -89,6 +89,8 @@ impl UserSpaceTcpSource {
         let server_port = self.config.smoltcp_server_port; // fixed server port for smoltcp
         let client_port = self.config.smoltcp_client_port; // port assigned by controller
         let remote_addr = self.config.smoltcp_remote_addr; // the remote address
+        let data_size = self.config.smoltcp_data_size;
+        let mut bytes_left = self.config.smoltcp_total_bytes;
         thread::spawn(move || {
             let mut client_connected = false;
             let mut device = device;
@@ -108,13 +110,13 @@ impl UserSpaceTcpSource {
 
                     if server_socket.is_active() {
                         if server_socket.can_recv() {
-                            let mut buffer = [0u8; 1024];
+                            let mut buffer = [0u8; 4096];
                             if let Ok(len) = server_socket.recv_slice(&mut buffer) {
                                 info!("Server received {} bytes", len);
                                 // echo the data back
-                                if server_socket.can_send() {
-                                    server_socket.send_slice(&buffer[..len]).unwrap();
-                                }
+                                // if server_socket.can_send() {
+                                //     server_socket.send_slice(&buffer[..len]).unwrap();
+                                // }
                             }
                         }
                     }
@@ -149,14 +151,25 @@ impl UserSpaceTcpSource {
                         info!("Client connected successfully");
                     }
 
-                    if client_socket.is_active() && client_socket.can_send() {
-                        client_socket
-                            .send_slice(b"Hello from user-space TCP!")
-                            .unwrap();
+                    // sending packets
+                    if client_socket.is_active() && client_socket.can_send() && bytes_left > 0 {
+                        let data_block = vec![0xAA; data_size];
+                        match client_socket.send_slice(&data_block) {
+                            Ok(sent) => {
+                                bytes_left -= sent as u64;
+
+                                if bytes_left == 0 {
+                                    info!("Total bytes sent");
+                                }
+                            }
+                            Err(_) => {
+                                error!("Failed to send data block, packets dropped");
+                            }
+                        }
                     }
 
                     if client_socket.may_recv() {
-                        let mut buffer = [0u8; 1024];
+                        let mut buffer = [0u8; 4096];
                         if let Ok(len) = client_socket.recv_slice(&mut buffer) {
                             info!("Client received {} bytes: {:?}", len, &buffer[..len]);
                         }

@@ -207,6 +207,18 @@ pub struct LocalConfig {
     #[default((0, 0, 0, 0))]
     #[arg(skip)]
     pub smoltcp_remote_addr: (u8, u8, u8, u8),
+
+    #[default(1024)]
+    #[arg(skip)]
+    pub smoltcp_data_size: usize,
+
+    #[default(10000000)]
+    #[arg(skip)]
+    pub smoltcp_total_bytes: u64,
+
+    #[default(10)]
+    #[arg(skip)]
+    pub smoltcp_send_interval_ms: u64,
 }
 
 impl LocalConfig {
@@ -324,6 +336,9 @@ impl LocalConfig {
                         smoltcp_server_port,
                         smoltcp_remote_addr,
                         protocol,
+                        smoltcp_data_size,
+                        smoltcp_total_bytes,
+                        smoltcp_send_interval_ms,
                     } => {
                         self.node_id = node_id;
                         self.local_address = (addr[0], addr[1], addr[2], addr[3]);
@@ -349,6 +364,9 @@ impl LocalConfig {
                             smoltcp_remote_addr[2],
                             smoltcp_remote_addr[3],
                         );
+                        self.smoltcp_data_size = smoltcp_data_size;
+                        self.smoltcp_total_bytes = smoltcp_total_bytes;
+                        self.smoltcp_send_interval_ms = smoltcp_send_interval_ms;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

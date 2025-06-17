@@ -249,6 +249,9 @@ async fn handle_connection(
                             config.smoltcp_server_port,
                             remote_addr,
                             config.protocol.clone(),
+                            config.smoltcp_traffic.data_size,
+                            config.smoltcp_traffic.total_bytes,
+                            config.smoltcp_traffic.send_interval_ms,
                         );
 
                         match write_arc
