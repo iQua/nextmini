@@ -1,7 +1,6 @@
 use std::io::Error;
 
 use tokio::net::TcpStream;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use s2n_quic::stream::BidirectionalStream;
 
