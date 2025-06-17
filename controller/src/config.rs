@@ -12,6 +12,14 @@ pub struct Route {
     pub route: Vec<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmoltcpConnection {
+    pub src_node_id: usize,
+    pub dst_node_id: usize,
+    #[serde(default = "default_smoltcp_server_port")]
+    pub smoltcp_server_port: u16,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DBConfig {
     pub user: String,
@@ -97,6 +105,11 @@ pub struct Config {
     pub topology: Topology,
 
     /// Should database be reset before starting the controller?
+
+    /// smoltcp connections configuration
+    #[serde(default)]
+    pub smoltcp_connections: Vec<SmoltcpConnection>,
+
     /// The database configuration.
     #[serde(default = "default_db_config")]
     pub db: DBConfig,
@@ -203,6 +216,7 @@ impl Default for Config {
             smoltcp_server_port: default_smoltcp_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
+            smoltcp_connections: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),
             db: default_db_config(),

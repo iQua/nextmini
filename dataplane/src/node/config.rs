@@ -203,6 +203,10 @@ pub struct LocalConfig {
     #[default(8888)]
     #[arg(skip)]
     pub smoltcp_server_port: u16,
+
+    #[default((0, 0, 0, 0))]
+    #[arg(skip)]
+    pub smoltcp_remote_addr: (u8, u8, u8, u8),
 }
 
 impl LocalConfig {
@@ -318,6 +322,7 @@ impl LocalConfig {
                         smoltcp_net_mask,
                         smoltcp_port,
                         smoltcp_server_port,
+                        smoltcp_remote_addr,
                         protocol,
                     } => {
                         self.node_id = node_id;
@@ -338,6 +343,12 @@ impl LocalConfig {
                         );
                         self.smoltcp_client_port = smoltcp_port;
                         self.smoltcp_server_port = smoltcp_server_port;
+                        self.smoltcp_remote_addr = (
+                            smoltcp_remote_addr[0],
+                            smoltcp_remote_addr[1],
+                            smoltcp_remote_addr[2],
+                            smoltcp_remote_addr[3],
+                        );
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

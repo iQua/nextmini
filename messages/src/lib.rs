@@ -44,6 +44,7 @@ pub enum ControllerToDataplane {
         smoltcp_net_mask: [u8; 4],
         smoltcp_port: u16,
         smoltcp_server_port: u16,
+        smoltcp_remote_addr: [u8; 4],
         protocol: Protocol,
     },
     AddNode {

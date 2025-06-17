@@ -228,6 +228,17 @@ async fn handle_connection(
                         }
 
                         // Send startup response
+                        let remote_addr = config
+                            .smoltcp_connections
+                            .iter()
+                            .find(|c| c.src_node_id == node_id)
+                            .and_then(|conn| create_new_virtual_addr(
+                                config.smoltcp_base_addr,
+                                config.smoltcp_net_mask,
+                                conn.dst_node_id,
+                            ))
+                            .unwrap_or([0, 0, 0, 0]);
+
                         let response = build_startup_response(
                             node_id,
                             virtual_addr,
@@ -236,6 +247,7 @@ async fn handle_connection(
                             config.smoltcp_net_mask,
                             smoltcp_port,
                             config.smoltcp_server_port,
+                            remote_addr,
                             config.protocol.clone(),
                         );
 
