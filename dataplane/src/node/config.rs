@@ -195,7 +195,7 @@ pub struct LocalConfig {
     pub user_space_smoltcp_netmask: (u8, u8, u8, u8),
 
     // The user-space smoltcp port from controller (used as client port)
-    #[default(10000)]
+    #[default(49152)]
     #[arg(skip)]
     pub smoltcp_client_port: u16,
 
