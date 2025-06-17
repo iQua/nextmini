@@ -194,10 +194,15 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub user_space_smoltcp_netmask: (u8, u8, u8, u8),
 
-    // The user-space smoltcp port from controller
-    #[default(6000)]
+    // The user-space smoltcp port from controller (used as client port)
+    #[default(10000)]
     #[arg(skip)]
-    pub user_space_smoltcp_port: u16,
+    pub smoltcp_client_port: u16,
+
+    // Fixed server port for smoltcp server (from controller)
+    #[default(8888)]
+    #[arg(skip)]
+    pub smoltcp_server_port: u16,
 }
 
 impl LocalConfig {
@@ -312,6 +317,7 @@ impl LocalConfig {
                         smoltcp_addr,
                         smoltcp_net_mask,
                         smoltcp_port,
+                        smoltcp_server_port,
                         protocol,
                     } => {
                         self.node_id = node_id;
@@ -330,7 +336,8 @@ impl LocalConfig {
                             smoltcp_net_mask[2],
                             smoltcp_net_mask[3],
                         );
-                        self.user_space_smoltcp_port = smoltcp_port;
+                        self.smoltcp_client_port = smoltcp_port;
+                        self.smoltcp_server_port = smoltcp_server_port;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

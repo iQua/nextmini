@@ -86,8 +86,8 @@ impl UserSpaceTcpSource {
         let client_handle = sockets.add(client_socket);
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
-        let smoltcp_port = self.config.user_space_smoltcp_port;
-
+        let server_port = self.config.smoltcp_server_port; // fixed server port for smoltcp
+        let client_port = self.config.smoltcp_client_port; // port assigned by controller
         thread::spawn(move || {
             let mut client_connected = false;
             let mut device = device;
@@ -101,8 +101,8 @@ impl UserSpaceTcpSource {
                     let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
 
                     if !server_socket.is_active() && !server_socket.is_listening() {
-                        server_socket.listen(smoltcp_port).unwrap();
-                        info!("Server listening on port {}", smoltcp_port);
+                        server_socket.listen(server_port).unwrap();
+                        info!("Server listening on port {}", server_port);
                     }
 
                     if server_socket.is_active() {
@@ -125,12 +125,15 @@ impl UserSpaceTcpSource {
 
                     if !client_connected && !client_socket.is_open() {
                         let remote_addr = IpAddress::v4(192, 168, 0, 2); // hardcode the node2 ip addr for test
-                        let remote_port = 6002; // node2 port number
+                        let remote_port = server_port; // connect to the server port
 
                         client_socket
-                            .connect(iface.context(), (remote_addr, remote_port), 12345)
+                            .connect(iface.context(), (remote_addr, remote_port), client_port)
                             .unwrap();
-                        info!("Client connecting to {}:{}", remote_addr, remote_port);
+                        info!(
+                            "Client connecting from port {} to {}:{}",
+                            client_port, remote_addr, remote_port
+                        );
                     }
 
                     if client_socket.is_active() && !client_connected {

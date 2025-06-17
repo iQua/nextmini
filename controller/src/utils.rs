@@ -41,6 +41,7 @@ pub fn build_startup_response(
     smoltcp_addr: [u8; 4],
     smoltcp_net_mask: [u8; 4],
     smoltcp_port: u16,
+    smoltcp_server_port: u16,
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
@@ -50,6 +51,7 @@ pub fn build_startup_response(
         smoltcp_addr,
         smoltcp_net_mask,
         smoltcp_port,
+        smoltcp_server_port,
         protocol,
     }
 }

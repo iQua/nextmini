@@ -68,9 +68,13 @@ pub struct Config {
     #[serde(default = "default_smoltcp_net_mask")]
     pub smoltcp_net_mask: [u8; 4],
 
-    /// The port range for user-space smoltcp tcp connections
+    /// The port range for user-space smoltcp tcp connections (client ports)
     #[serde(default = "default_smoltcp_port_range")]
     pub smoltcp_port_range: [u16; 2],
+
+    /// The fixed server port for smoltcp server
+    #[serde(default = "default_smoltcp_server_port")]
+    pub smoltcp_server_port: u16,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -128,7 +132,12 @@ fn default_smoltcp_net_mask() -> [u8; 4] {
 
 /// The default port range for user-space smoltcp connections
 fn default_smoltcp_port_range() -> [u16; 2] {
-    [6000, 8000]
+    [49152, 65535]
+}
+
+/// The default server port for smoltcp
+fn default_smoltcp_server_port() -> u16 {
+    8888
 }
 
 /// The default transport protocol: QUIC
@@ -191,6 +200,7 @@ impl Default for Config {
             smoltcp_base_addr: default_smoltcp_base_addr(),
             smoltcp_net_mask: default_smoltcp_net_mask(),
             smoltcp_port_range: default_smoltcp_port_range(),
+            smoltcp_server_port: default_smoltcp_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
             link_rates: Vec::new(),
