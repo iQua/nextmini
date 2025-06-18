@@ -234,15 +234,12 @@ impl TcpWriter {
 
         if let Some(ref collector) = self.metrics_collector {
             for packet in &packets {
-                let flow_id_bytes = packet.flow_id.to_be_bytes();
-                let metric = nextmini_messages::Metric {
-                    flow_id: flow_id_bytes,
-                    local_node_id: self.local_node_id,
-                    remote_node_id: self.remote_node_id,
-                    bps: packet.packet_size,
-                    time_read: chrono::Utc::now(),
-                };
-                collector.send(metric);
+                collector.send(
+                    packet.flow_id,
+                    self.local_node_id,
+                    self.remote_node_id,
+                    packet.packet_size,
+                );
             }
         }
 
