@@ -24,6 +24,7 @@ use crate::node::{FlowIdExt, NodeId};
 // Message types for the processor actor.
 pub enum ProcessorPacket {
     ProcessPacket(Packet),
+    SetRateLimiter(NodeId, f64),
 }
 
 #[derive(Clone)]
@@ -96,6 +97,13 @@ impl ProcessorHandle {
             ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
         }
     }
+
+    pub fn set_rate_limiter(&self, node_id: NodeId, rate_bps: f64) {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.set_rate_limiter(node_id, rate_bps),
+            ProcessorHandle::Concurrent(handle) => handle.set_rate_limiter(node_id, rate_bps),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -144,6 +152,17 @@ impl SequentialProcHandle {
             );
         }
     }
+
+    pub fn set_rate_limiter(&self, node_id: NodeId, rate_bps: f64) {
+        let sender = &self.packet_senders[0];
+
+        if let Err(e) = sender.try_send(ProcessorPacket::SetRateLimiter(node_id, rate_bps)) {
+            warn!(
+                "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                e
+            );
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -181,6 +200,18 @@ impl ConcurrentProcHandle {
         if let Err(e) = self
             .packet_sender
             .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!(
+                "ConcurrentProcHandle: Error sending a packet to the processor: {}",
+                e
+            );
+        }
+    }
+
+    pub fn set_rate_limiter(&self, node_id: NodeId, rate_bps: f64) {
+        if let Err(e) = self
+            .packet_sender
+            .try_send(ProcessorPacket::SetRateLimiter(node_id, rate_bps))
         {
             warn!(
                 "ConcurrentProcHandle: Error sending a packet to the processor: {}",
@@ -266,6 +297,11 @@ impl Processor {
                             // Start processing packets in batches
                             while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
                                 self.process_packet(packet);
+                            }
+                        }
+                        ProcessorPacket::SetRateLimiter(node_id, rate_bps) => {
+                            if let Some(scheduler) = self.schedulers.get_mut(&node_id) {
+                                scheduler.set_rate_limiter(rate_bps);
                             }
                         }
                     }

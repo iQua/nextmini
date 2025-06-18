@@ -110,7 +110,6 @@ impl ControllerInterfaceHandle {
             error!("No response has been received from controller.");
         }
 
-
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
 
@@ -222,6 +221,7 @@ impl ControllerToDataplaneReceiver {
                     "Setting the link rate for node {} to {} bps.",
                     node_id, rate
                 );
+                self.processors.set_rate_limiter(node_id, rate as f64);
                 return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {
