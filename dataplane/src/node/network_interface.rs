@@ -98,7 +98,6 @@ impl NetworkInterface {
         remote_addr: String,
         metrics_collector: Option<CollectorHandle>,
     ) -> ProtocolWriter {
-        let local_node_id = self.config.node_id;
         // connects to the remote node
         match self.config.protocol {
             Protocol::Tcp => {
@@ -110,17 +109,11 @@ impl NetworkInterface {
                     .connect(remote_node_id, remote_addr.as_str())
                     .await;
 
-                let (reader, writer) = tokio::io::split(tcp_stream);
-
-                let tcp_reader = TcpReader::new(reader, self.processors);
-                let tcp_writer =
-                    TcpWriter::new(writer, metrics_collector, local_node_id, remote_node_id);
-
-                tokio::spawn(async move {
-                    tcp_reader.run().await;
-                });
-
-                ProtocolWriter::Tcp(tcp_writer)
+                self.init(
+                    NetworkStream::Tcp(tcp_stream),
+                    metrics_collector,
+                    remote_node_id,
+                )
             }
             Protocol::Quic => {
                 let quic_client = QuicClient {
@@ -131,21 +124,11 @@ impl NetworkInterface {
                     .connect(remote_node_id, remote_addr.as_str())
                     .await;
 
-                let (receive_stream, send_stream) = quic_stream.split();
-
-                let mut quic_reader = QuicReader::new(receive_stream, self.processors);
-                let quic_writer = QuicWriter::new(
-                    send_stream,
+                self.init(
+                    NetworkStream::Quic(quic_stream),
                     metrics_collector,
-                    local_node_id,
                     remote_node_id,
-                );
-
-                tokio::spawn(async move {
-                    quic_reader.run().await;
-                });
-
-                ProtocolWriter::Quic(quic_writer)
+                )
             }
         }
     }
