@@ -1,0 +1,139 @@
+use ahash::AHashMap;
+use chrono::Utc;
+
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::time::{Duration, interval};
+
+use nextmini_messages::{DataplaneToController, Metric};
+
+use crate::node::controller_interface::ControllerInterfaceHandle;
+use crate::node::{FlowId, NodeId};
+
+pub struct FlowMetric {
+    flow_id: FlowId,
+    local_node_id: NodeId,
+    remote_node_id: NodeId,
+    bytes: usize,
+}
+
+impl FlowMetric {
+    pub fn new(flow_id: FlowId, local_node_id: NodeId, remote_node_id: NodeId) -> Self {
+        Self {
+            flow_id,
+            local_node_id,
+            remote_node_id,
+            bytes: 0,
+        }
+    }
+}
+
+pub enum FlowMetricMessage {
+    FlowMetric(FlowMetric),
+}
+
+#[derive(Clone)]
+pub struct ControllerReporterHandle {
+    sender: UnboundedSender<FlowMetricMessage>,
+}
+
+impl ControllerReporterHandle {
+    pub fn new(controller: ControllerInterfaceHandle) -> Self {
+        let (sender, receiver) = unbounded_channel();
+
+        let mut reporter = ControllerReporter::new(controller, receiver);
+
+        tokio::spawn(async move {
+            reporter.run().await;
+        });
+
+        Self { sender }
+    }
+
+    pub fn send(
+        &self,
+        flow_id: FlowId,
+        local_node_id: NodeId,
+        remote_node_id: NodeId,
+        bytes: usize,
+    ) {
+        self.sender
+            .send(FlowMetricMessage::FlowMetric(FlowMetric {
+                flow_id,
+                local_node_id,
+                remote_node_id,
+                bytes,
+            }))
+            .unwrap();
+    }
+}
+
+pub struct ControllerReporter {
+    controller: ControllerInterfaceHandle,
+    receiver: UnboundedReceiver<FlowMetricMessage>,
+    flow_metrics: AHashMap<FlowId, FlowMetric>,
+}
+
+impl ControllerReporter {
+    pub fn new(
+        controller: ControllerInterfaceHandle,
+        receiver: UnboundedReceiver<FlowMetricMessage>,
+    ) -> Self {
+        Self {
+            controller,
+            receiver,
+            flow_metrics: AHashMap::default(),
+        }
+    }
+
+    pub async fn run(&mut self) {
+        // Transmit metrics every 5 seconds
+        let mut metrics_tick = interval(Duration::from_secs(5));
+
+        loop {
+            tokio::select! {
+                // receives new metrics data
+                Some(FlowMetricMessage::FlowMetric(metric)) = self.receiver.recv() => {
+                    let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
+                        FlowMetric::new(
+                            metric.flow_id,
+                            metric.local_node_id,
+                            metric.remote_node_id,
+                        ));
+
+                    (*flow_metric).bytes += metric.bytes;
+                }
+                // timer tick: calculate flow rates and transmit to the controller
+                _ = metrics_tick.tick() => {
+                    if !self.flow_metrics.is_empty() {
+                        let now = Utc::now();
+                        let mut metrics_array = Vec::new();
+
+                        const COLLECTION_INTERVAL_SECS: f64 = 5.0;
+
+                        for flow_metric in self.flow_metrics.values() {
+                            let bps = (8.0 * flow_metric.bytes as f64 / COLLECTION_INTERVAL_SECS) as usize;
+
+                            metrics_array.push(Metric {
+                                flow_id: flow_metric.flow_id.to_be_bytes(),
+                                bps,
+                                local_node_id: flow_metric.local_node_id,
+                                remote_node_id: flow_metric.remote_node_id,
+                                time_read: now,
+                            });
+                        }
+
+                        if !metrics_array.is_empty() {
+                            let msg = DataplaneToController::Metrics {
+                                metrics: metrics_array,
+                            };
+
+                            self.controller.send(msg).await;
+                        }
+
+                        self.flow_metrics.clear();
+                    }
+                }
+            }
+        }
+    }
+}

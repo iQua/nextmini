@@ -8,13 +8,8 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
-use nextmini_messages::DataplaneToController;
-use tokio::sync::mpsc;
-
-use crate::node::NodeId;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
-use crate::node::metrics::CollectorHandle;
 use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -23,20 +18,11 @@ use crate::node::scheduler::SchedulerHandle;
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
-    northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 impl TcpServer {
-    pub fn new(
-        config: LocalConfig,
-        processors: ProcessorHandle,
-        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
-    ) -> Self {
-        Self {
-            config,
-            processors,
-            northbridge_sender,
-        }
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        Self { config, processors }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -84,8 +70,6 @@ impl TcpServer {
                 self.config.clone(),
                 NetworkStream::Tcp(stream),
                 self.processors.clone(),
-                self.northbridge_sender.clone(),
-                remote_node_id,
             )
             .await;
 
@@ -187,26 +171,11 @@ impl TcpReader {
 
 pub struct TcpWriter {
     stream: WriteHalf<TcpStream>,
-    metrics_collector: Option<CollectorHandle>,
-    local_node_id: NodeId,
-    remote_node_id: NodeId,
 }
 
 impl TcpWriter {
-    pub fn new(
-        stream: WriteHalf<TcpStream>,
-        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
-        local_node_id: NodeId,
-        remote_node_id: NodeId,
-    ) -> Self {
-        let metrics_collector = Some(CollectorHandle::new(northbridge_sender));
-
-        Self {
-            stream,
-            metrics_collector,
-            local_node_id,
-            remote_node_id,
-        }
+    pub fn new(stream: WriteHalf<TcpStream>) -> Self {
+        Self { stream }
     }
 
     /// Writes multiple packets to the TCP network stream.
@@ -235,17 +204,6 @@ impl TcpWriter {
 
             // advances the slices to skip the written data
             IoSlice::advance_slices(&mut slices, written_this_call);
-        }
-
-        if let Some(ref collector) = self.metrics_collector {
-            for packet in &packets {
-                collector.send(
-                    packet.flow_id,
-                    self.local_node_id,
-                    self.remote_node_id,
-                    packet.packet_size,
-                );
-            }
         }
 
         Ok(())

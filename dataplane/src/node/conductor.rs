@@ -9,7 +9,6 @@ use nextmini_messages::Protocol;
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
-
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
@@ -81,25 +80,16 @@ impl Conductor {
         match self.config.protocol {
             Protocol::Tcp => {
                 if public_port == private_port {
-                    let mut tcp_server = TcpServer::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                        self.controller_interface.northbridge_sender.clone(),
-                    );
+                    let mut tcp_server =
+                        TcpServer::new(self.config.clone(), self.processors.clone());
                     tcp_server
                         .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                         .await;
                 } else {
-                    let mut tcp_server_public = TcpServer::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                        self.controller_interface.northbridge_sender.clone(),
-                    );
-                    let mut tcp_server_private = TcpServer::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                        self.controller_interface.northbridge_sender.clone(),
-                    );
+                    let mut tcp_server_public =
+                        TcpServer::new(self.config.clone(), self.processors.clone());
+                    let mut tcp_server_private =
+                        TcpServer::new(self.config.clone(), self.processors.clone());
 
                     let public_addr = format!("{}:{}", "0.0.0.0", public_port);
                     let private_addr = format!("{}:{}", "0.0.0.0", private_port);
@@ -112,25 +102,16 @@ impl Conductor {
             }
             Protocol::Quic => {
                 if public_port == private_port {
-                    let mut quic_server = QuicServer::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                        self.controller_interface.northbridge_sender.clone(),
-                    );
+                    let mut quic_server =
+                        QuicServer::new(self.config.clone(), self.processors.clone());
                     quic_server
                         .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                         .await;
                 } else {
-                    let mut quic_server_public = QuicServer::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                        self.controller_interface.northbridge_sender.clone(),
-                    );
-                    let mut quic_server_private = QuicServer::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                        self.controller_interface.northbridge_sender.clone(),
-                    );
+                    let mut quic_server_public =
+                        QuicServer::new(self.config.clone(), self.processors.clone());
+                    let mut quic_server_private =
+                        QuicServer::new(self.config.clone(), self.processors.clone());
 
                     let public_addr = format!("{}:{}", "0.0.0.0", public_port);
                     let private_addr = format!("{}:{}", "0.0.0.0", private_port);

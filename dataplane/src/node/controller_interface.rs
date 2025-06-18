@@ -115,6 +115,16 @@ impl ControllerInterfaceHandle {
 
         (config, processors, ws_stream)
     }
+
+    /// Sends a message to the controller.
+    pub async fn send(&self, msg: DataplaneToController) {
+        if let Err(e) = self.northbridge_sender.send(msg) {
+            error!(
+                "Error sending messages to the controller interface actor: {}",
+                e
+            );
+        };
+    }
 }
 
 /// An actor used for sending messages from the dataplane to the controller over WebSockets.
@@ -195,7 +205,6 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
-                    self.controller_interface.northbridge_sender.clone(),
                 )
                 .await;
 
