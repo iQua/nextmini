@@ -338,21 +338,21 @@ async fn handle_connection(
                     DataplaneToController::Metrics { metrics } => {
                         if let Some(_) = current_node_id {
                             for metric in metrics {
-                                if metric.bps == 0 {
+                                if metric.bytes == 0 {
                                     continue;
                                 }
 
                                 // Direct mapping to database schema that matches Metric struct
                                 match sqlx::query(
                                     r#"
-                                    INSERT INTO metrics (flow_id, local_node_id, remote_node_id, bps, time_read)
+                                    INSERT INTO metrics (flow_id, local_node_id, remote_node_id, bytes, time_read)
                                     VALUES ($1, $2, $3, $4, $5)
                                     "#
                                 )
                                 .bind(metric.flow_id.as_ref())
                                 .bind(metric.local_node_id as i32)
                                 .bind(metric.remote_node_id as i32)
-                                .bind(metric.bps as i32)
+                                .bind(metric.bytes as i32)
                                 .bind(metric.time_read)
                                 .execute(&*db_pool)
                                 .await {

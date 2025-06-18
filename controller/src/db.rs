@@ -64,7 +64,7 @@ async fn create_db(pool: &Pool<Postgres>) {
             flow_id BYTEA NOT NULL,
             local_node_id INTEGER NOT NULL,
             remote_node_id INTEGER NOT NULL,
-            bps INTEGER NOT NULL,
+            bytes INTEGER NOT NULL,
             time_read TIMESTAMP NOT NULL
         )
         "#,
@@ -130,7 +130,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
             flow_id BYTEA NOT NULL,
             local_node_id INTEGER NOT NULL,
             remote_node_id INTEGER NOT NULL,
-            bps INTEGER NOT NULL,
+            bytes INTEGER NOT NULL,
             time_read TIMESTAMP NOT NULL
         )
         "#,

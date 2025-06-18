@@ -93,14 +93,10 @@ impl ControllerReporter {
                         let now = Utc::now();
                         let mut metrics_array = Vec::new();
 
-                        const COLLECTION_INTERVAL_SECS: f64 = 5.0;
-
                         for flow_metric in self.flow_metrics.values() {
-                            let bps = (8.0 * flow_metric.bytes as f64 / COLLECTION_INTERVAL_SECS) as usize;
-
                             metrics_array.push(Metric {
                                 flow_id: flow_metric.flow_id.to_be_bytes(),
-                                bps,
+                                bytes: flow_metric.bytes,
                                 local_node_id: flow_metric.local_node_id,
                                 remote_node_id: flow_metric.remote_node_id,
                                 time_read: now,
