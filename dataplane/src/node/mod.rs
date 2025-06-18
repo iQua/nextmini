@@ -2,6 +2,7 @@ pub mod conductor;
 pub mod config;
 pub mod controller_interface;
 pub mod drop;
+pub mod link_rate_limiter;
 pub mod local_interface;
 pub mod metrics;
 pub mod network_interface;
