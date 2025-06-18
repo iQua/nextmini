@@ -9,7 +9,7 @@ use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
 pub enum CollectorMessage {
-    Metric(FlowId, NodeId, NodeId, usize), // sending content may change change according to where handle is actually used
+    Metric(FlowId, NodeId, NodeId, usize),
 }
 
 #[derive(Clone)]
