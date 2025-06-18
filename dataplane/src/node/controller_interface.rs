@@ -200,12 +200,13 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
+                let metrics_collector = CollectorHandle::new(self.controller_interface.clone());
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
-                    None,
+                    Some(metrics_collector),
                 )
                 .await;
 
