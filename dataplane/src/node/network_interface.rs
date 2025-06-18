@@ -119,16 +119,11 @@ impl NetworkInterfaceHandle {
 pub struct NetworkInterface {
     config: LocalConfig,
     processors: ProcessorHandle,
-    remote_node_id: Option<NodeId>,
 }
 
 impl NetworkInterface {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self {
-            config,
-            processors,
-            remote_node_id: None,
-        }
+        Self { config, processors }
     }
 
     pub async fn init_as_client(
@@ -136,8 +131,6 @@ impl NetworkInterface {
         remote_node_id: NodeId,
         remote_addr: String,
     ) -> ProtocolWriter {
-        self.remote_node_id = Some(remote_node_id);
-
         // connects to the remote node
         match self.config.protocol {
             Protocol::Tcp => {
