@@ -1,17 +1,17 @@
 use std::io::Error;
 
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 
 use s2n_quic::stream::BidirectionalStream;
 
-use nextmini_messages::{DataplaneToController, Protocol};
+use nextmini_messages::Protocol;
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
+use crate::node::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::tcp::{TcpClient, TcpReader, TcpWriter};
 
 pub enum NetworkStream {
@@ -36,6 +36,9 @@ impl ProtocolWriter {
 
 /// The network interface handle, used for sending and receiving packets over the network.
 pub struct NetworkInterfaceHandle {
+    local_id: NodeId,
+    remote_node_id: NodeId,
+    reporter: Option<ControllerReporterHandle>,
     pub writer: ProtocolWriter,
 }
 
@@ -53,7 +56,12 @@ impl NetworkInterfaceHandle {
 
         let writer = network_interface.init(stream);
 
-        Self { writer }
+        Self {
+            local_id: 0,
+            remote_node_id: 0,
+            reporter: None,
+            writer,
+        }
     }
 
     /// Creates and runs a new network interface actor as a client.
@@ -62,7 +70,10 @@ impl NetworkInterfaceHandle {
         remote_node_id: NodeId,
         remote_addr: String,
         processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
     ) -> Self {
+        let local_id = config.node_id;
+
         let mut network_interface = NetworkInterface::new(config, processors);
 
         // there is no need to call tokio::spawn here, as the reader task will be
@@ -71,12 +82,34 @@ impl NetworkInterfaceHandle {
             .init_as_client(remote_node_id, remote_addr)
             .await;
 
-        Self { writer }
+        Self {
+            local_id,
+            remote_node_id,
+            reporter: Some(reporter),
+            writer,
+        }
     }
 
     // Sends packets in batch through the network interface.
     pub async fn send(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
+        let mut flow_metrics: Vec<FlowMetric> = Vec::new();
+
+        for packet in packets.iter() {
+            let metric = FlowMetric {
+                flow_id: packet.flow_id,
+                local_node_id: self.local_id,
+                remote_node_id: self.remote_node_id,
+                bytes: packet.packet_size,
+            };
+
+            flow_metrics.push(metric);
+        }
+
         let _ = self.writer.write_packets(packets).await?;
+
+        if let Some(reporter) = self.reporter.clone() {
+            reporter.send(flow_metrics);
+        }
 
         Ok(())
     }

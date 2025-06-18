@@ -14,13 +14,14 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
+use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
-    pub northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
@@ -46,11 +47,13 @@ impl ControllerInterfaceHandle {
             northbridge_sender,
         };
 
+        let reporter = ControllerReporterHandle::new(controller_interface.clone());
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config,
             receiver_stream,
             processors,
-            controller_interface: controller_interface.clone(),
+            reporter,
         };
 
         tokio::spawn(async move {
@@ -161,7 +164,7 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
-    controller_interface: ControllerInterfaceHandle,
+    reporter: ControllerReporterHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -205,6 +208,7 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
+                    self.reporter.clone(),
                 )
                 .await;
 

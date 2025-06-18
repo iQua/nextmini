@@ -3,6 +3,7 @@ use chrono::Utc;
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
+use tracing::error;
 
 use nextmini_messages::{DataplaneToController, Metric};
 
@@ -10,21 +11,10 @@ use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct FlowMetric {
-    flow_id: FlowId,
-    local_node_id: NodeId,
-    remote_node_id: NodeId,
-    bytes: usize,
-}
-
-impl FlowMetric {
-    pub fn new(flow_id: FlowId, local_node_id: NodeId, remote_node_id: NodeId) -> Self {
-        Self {
-            flow_id,
-            local_node_id,
-            remote_node_id,
-            bytes: 0,
-        }
-    }
+    pub flow_id: FlowId,
+    pub local_node_id: NodeId,
+    pub remote_node_id: NodeId,
+    pub bytes: usize,
 }
 
 pub enum FlowMetricMessage {
@@ -49,21 +39,15 @@ impl ControllerReporterHandle {
         Self { sender }
     }
 
-    pub fn send(
-        &self,
-        flow_id: FlowId,
-        local_node_id: NodeId,
-        remote_node_id: NodeId,
-        bytes: usize,
-    ) {
-        self.sender
-            .send(FlowMetricMessage::FlowMetric(FlowMetric {
-                flow_id,
-                local_node_id,
-                remote_node_id,
-                bytes,
-            }))
-            .unwrap();
+    pub fn send(&self, metrics: Vec<FlowMetric>) {
+        for metric in metrics {
+            if let Err(e) = self.sender.send(FlowMetricMessage::FlowMetric(metric)) {
+                error!(
+                    "Error sending a flow metric to the controller reporter: {}",
+                    e
+                );
+            }
+        }
     }
 }
 
@@ -94,11 +78,12 @@ impl ControllerReporter {
                 // receives new metrics data
                 Some(FlowMetricMessage::FlowMetric(metric)) = self.receiver.recv() => {
                     let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
-                        FlowMetric::new(
-                            metric.flow_id,
-                            metric.local_node_id,
-                            metric.remote_node_id,
-                        ));
+                        FlowMetric {
+                            flow_id: metric.flow_id,
+                            local_node_id: metric.local_node_id,
+                            remote_node_id: metric.remote_node_id,
+                            bytes: 0
+                        });
 
                     (*flow_metric).bytes += metric.bytes;
                 }

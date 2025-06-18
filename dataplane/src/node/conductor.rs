@@ -22,9 +22,6 @@ pub struct Conductor {
     /// the processors
     processors: ProcessorHandle,
 
-    /// the controller interface actor, which communicates with the controller
-    controller_interface: ControllerInterfaceHandle,
-
     /// used by the main tokio task to shutdown the conductor
     main_shutdown_recv: Option<mpsc::UnboundedReceiver<()>>,
 }
@@ -48,7 +45,6 @@ impl Conductor {
             config,
             local_interface,
             processors,
-            controller_interface,
             main_shutdown_recv: Some(main_shutdown_recv),
         }
     }
