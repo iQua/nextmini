@@ -44,8 +44,8 @@ impl Conductor {
         let processors = controller_interface.processors.clone();
 
         // creates the metrics collector
-        let metrics_collector = CollectorHandle::new(controller_interface.clone());
-
+        let metrics_collector = CollectorHandle::new(controller_interface.northbridge_sender.clone());
+        
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone());
 

@@ -2,10 +2,10 @@ use ahash::AHashMap;
 use chrono::Utc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
+use tracing::error;
 
 use nextmini_messages::{DataplaneToController, Metric};
 
-use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
 pub enum CollectorMessage {
@@ -18,11 +18,11 @@ pub struct CollectorHandle {
 }
 
 impl CollectorHandle {
-    pub fn new(controller_interface: ControllerInterfaceHandle) -> Self {
+    pub fn new(metrics_sender: UnboundedSender<DataplaneToController>) -> Self {
         let (sender, receiver) = unbounded_channel();
         let mut collector = Collector {
             receiver,
-            controller_interface: controller_interface.clone(),
+            metrics_sender,
         };
 
         tokio::spawn(async move {
@@ -51,7 +51,7 @@ impl CollectorHandle {
 }
 
 pub struct Collector {
-    controller_interface: ControllerInterfaceHandle,
+    metrics_sender: UnboundedSender<DataplaneToController>,
     receiver: UnboundedReceiver<CollectorMessage>,
 }
 
@@ -96,7 +96,9 @@ impl Collector {
                                 metrics: metrics_array,
                             };
 
-                            self.controller_interface.send_metrics(msg).await;
+                            if let Err(e) = self.metrics_sender.send(msg) {
+                                error!("Error sending metrics to controller: {}", e);
+                            }
                         }
 
                         data.clear();

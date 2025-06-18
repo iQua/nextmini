@@ -12,7 +12,6 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
-use crate::node::metrics::CollectorHandle;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
@@ -21,7 +20,7 @@ use crate::node::scheduler::SchedulerHandle;
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
-    northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    pub northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
@@ -116,15 +115,6 @@ impl ControllerInterfaceHandle {
 
         (config, processors, ws_stream)
     }
-
-    pub async fn send_metrics(&self, msg: DataplaneToController) {
-        if let Err(e) = self.northbridge_sender.send(msg) {
-            error!(
-                "Error sending metrics to the controller interface actor: {}",
-                e
-            );
-        };
-    }
 }
 
 /// An actor used for sending messages from the dataplane to the controller over WebSockets.
@@ -200,13 +190,12 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
-                let metrics_collector = CollectorHandle::new(self.controller_interface.clone());
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
-                    Some(metrics_collector),
+                    None,
                 )
                 .await;
 
