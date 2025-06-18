@@ -100,7 +100,7 @@ impl Fifo {
         let scheduler_queue = Arc::new(ArrayQueue::new(capacity));
         let queue_not_empty = Arc::new(Notify::new());
 
-        // Oneshot channel for reader to send rate limiter config to writer (only once)
+        // Setting rate limiter only once for the writer
         let (rate_limiter_sender, rate_limiter_receiver) = oneshot::channel();
 
         let mut reader = FifoReader {
@@ -154,7 +154,7 @@ struct FifoReader {
     pub queue_not_empty: Arc<Notify>,
     /// maximum queue capacity
     pub capacity: usize,
-    /// rate limiter sender for sending rate limiter config to writer
+    /// sending rate limiter to writer side only once
     pub rate_limiter_sender: Option<oneshot::Sender<f64>>,
 }
 
@@ -242,7 +242,7 @@ struct FifoWriter {
     pub queue_not_empty: Arc<Notify>,
     /// rate limiter for the writer
     pub rate_limiter: Option<RateLimiter>,
-    /// rate limiter receiver for receiving rate limiter config from reader
+    /// receiving rate limiter from reader side only once
     pub rate_limiter_receiver: Option<oneshot::Receiver<f64>>,
 }
 
@@ -252,9 +252,10 @@ impl FifoWriter {
         let mut batch = Vec::new();
 
         loop {
-            if let Some(mut receiver) = self.rate_limiter_receiver.take() {
-                if let Ok(rate_bps) = receiver.await {
+            if let Some(receiver) = self.rate_limiter_receiver.as_mut() {
+                if let Ok(rate_bps) = receiver.try_recv() {
                     self.rate_limiter = Some(RateLimiter::new(rate_bps));
+                    self.rate_limiter_receiver = None;
                 }
             }
 
