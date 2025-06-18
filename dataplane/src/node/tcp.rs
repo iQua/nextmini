@@ -8,6 +8,9 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
+use nextmini_messages::DataplaneToController;
+use tokio::sync::mpsc;
+
 use crate::node::NodeId;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
@@ -20,19 +23,19 @@ use crate::node::scheduler::SchedulerHandle;
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
-    metrics_collector: Option<CollectorHandle>,
+    northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 impl TcpServer {
     pub fn new(
         config: LocalConfig,
         processors: ProcessorHandle,
-        metrics_collector: Option<CollectorHandle>,
+        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
     ) -> Self {
         Self {
             config,
             processors,
-            metrics_collector,
+            northbridge_sender,
         }
     }
 
@@ -81,7 +84,7 @@ impl TcpServer {
                 self.config.clone(),
                 NetworkStream::Tcp(stream),
                 self.processors.clone(),
-                self.metrics_collector.clone(),
+                self.northbridge_sender.clone(),
                 remote_node_id,
             )
             .await;
@@ -192,10 +195,12 @@ pub struct TcpWriter {
 impl TcpWriter {
     pub fn new(
         stream: WriteHalf<TcpStream>,
-        metrics_collector: Option<CollectorHandle>,
+        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
         local_node_id: NodeId,
         remote_node_id: NodeId,
     ) -> Self {
+        let metrics_collector = Some(CollectorHandle::new(northbridge_sender));
+
         Self {
             stream,
             metrics_collector,

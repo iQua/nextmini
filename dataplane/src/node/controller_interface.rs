@@ -15,7 +15,6 @@ use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::metrics::CollectorHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -196,7 +195,7 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
-                    Some(CollectorHandle::new(self.controller_interface.northbridge_sender.clone())),
+                    self.controller_interface.northbridge_sender.clone(),
                 )
                 .await;
 

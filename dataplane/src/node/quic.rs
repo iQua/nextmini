@@ -13,6 +13,9 @@ use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
 use tracing::{error, info};
 
+use nextmini_messages::DataplaneToController;
+use tokio::sync::mpsc;
+
 use crate::node::NodeId;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
@@ -26,19 +29,19 @@ use crate::node::scheduler::SchedulerHandle;
 pub struct QuicServer {
     config: LocalConfig,
     processors: ProcessorHandle,
-    metrics_collector: Option<CollectorHandle>,
+    northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
 impl QuicServer {
     pub fn new(
         config: LocalConfig,
         processors: ProcessorHandle,
-        metrics_collector: Option<CollectorHandle>,
+        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
     ) -> Self {
         Self {
             config,
             processors,
-            metrics_collector,
+            northbridge_sender,
         }
     }
 
@@ -90,7 +93,7 @@ impl QuicServer {
                     config.clone(),
                     NetworkStream::Quic(stream),
                     processors.clone(),
-                    self.metrics_collector.clone(),
+                    self.northbridge_sender.clone(),
                     remote_node_id,
                 )
                 .await;
@@ -225,10 +228,12 @@ pub struct QuicWriter {
 impl QuicWriter {
     pub fn new(
         stream: SendStream,
-        metrics_collector: Option<CollectorHandle>,
+        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
         local_node_id: NodeId,
         remote_node_id: NodeId,
     ) -> Self {
+        let metrics_collector = Some(CollectorHandle::new(northbridge_sender));
+
         Self {
             stream,
             metrics_collector,
