@@ -15,14 +15,25 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
 
+use super::reporter::ControllerReporterHandle;
+
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
+    reporter: ControllerReporterHandle,
 }
 
 impl TcpServer {
-    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self { config, processors }
+    pub fn new(
+        config: LocalConfig,
+        processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
+    ) -> Self {
+        Self {
+            config,
+            processors,
+            reporter,
+        }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -70,6 +81,7 @@ impl TcpServer {
                 self.config.clone(),
                 NetworkStream::Tcp(stream),
                 self.processors.clone(),
+                self.reporter.clone(),
             )
             .await;
 

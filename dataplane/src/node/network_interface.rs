@@ -38,7 +38,7 @@ impl ProtocolWriter {
 pub struct NetworkInterfaceHandle {
     local_id: NodeId,
     remote_node_id: NodeId,
-    reporter: Option<ControllerReporterHandle>,
+    reporter: ControllerReporterHandle,
     pub writer: ProtocolWriter,
 }
 
@@ -48,6 +48,7 @@ impl NetworkInterfaceHandle {
         config: LocalConfig,
         stream: NetworkStream,
         processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
     ) -> Self {
         // unlike a typical actor that uses a channel for sending messages to the network interface actor,
         // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
@@ -59,7 +60,7 @@ impl NetworkInterfaceHandle {
         Self {
             local_id: 0,
             remote_node_id: 0,
-            reporter: None,
+            reporter,
             writer,
         }
     }
@@ -85,7 +86,7 @@ impl NetworkInterfaceHandle {
         Self {
             local_id,
             remote_node_id,
-            reporter: Some(reporter),
+            reporter,
             writer,
         }
     }
@@ -107,9 +108,7 @@ impl NetworkInterfaceHandle {
 
         let _ = self.writer.write_packets(packets).await?;
 
-        if let Some(reporter) = self.reporter.clone() {
-            reporter.send(flow_metrics);
-        }
+        self.reporter.send(flow_metrics);
 
         Ok(())
     }

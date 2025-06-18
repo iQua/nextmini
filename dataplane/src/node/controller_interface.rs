@@ -26,7 +26,7 @@ pub struct ControllerInterfaceHandle {
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
-    pub async fn new(config: LocalConfig) -> Self {
+    pub async fn new(config: LocalConfig) -> (Self, ControllerReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
@@ -53,7 +53,7 @@ impl ControllerInterfaceHandle {
             config,
             receiver_stream,
             processors,
-            reporter,
+            reporter: reporter.clone(),
         };
 
         tokio::spawn(async move {
@@ -63,7 +63,7 @@ impl ControllerInterfaceHandle {
             controller_receiver.run().await;
         });
 
-        controller_interface
+        (controller_interface, reporter)
     }
 
     pub async fn connect(
