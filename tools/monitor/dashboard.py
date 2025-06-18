@@ -19,57 +19,70 @@ class Database:
         self.connection.autocommit = True  # Enable autocommit to avoid transaction issues
         self.t_node = None
         self.t_link = None
-        self.t_route= None
+        self.t_flow = None
 
     def update_t_node(self):
         cursor = self.connection.cursor()
+        # Get total sent per node (local_node_id represents the sender)
         query = '''
-            SELECT prev_hop_id, SUM(bps) AS total_bps
+            SELECT local_node_id, SUM(bps) AS total_bps
             FROM metrics
-            WHERE (prev_hop_id, time_read) IN (
-                SELECT prev_hop_id, MAX(time_read)
+            WHERE (local_node_id, time_read) IN (
+                SELECT local_node_id, MAX(time_read)
                 FROM metrics
-                GROUP BY prev_hop_id)
-            GROUP BY prev_hop_id
-            ORDER BY prev_hop_id ASC;
+                GROUP BY local_node_id)
+            GROUP BY local_node_id
+            ORDER BY local_node_id ASC;
         '''
         cursor.execute(query)
         sent = cursor.fetchall()
 
+        # Get total received per node (remote_node_id represents the receiver)
         query = '''
-            SELECT hop_id, SUM(bps) AS total_bps
+            SELECT remote_node_id, SUM(bps) AS total_bps
             FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
+            WHERE (remote_node_id, time_read) IN (
+                SELECT remote_node_id, MAX(time_read)
                 FROM metrics
-                GROUP BY hop_id)
-            GROUP BY hop_id
-            ORDER BY hop_id ASC;
+                GROUP BY remote_node_id)
+            GROUP BY remote_node_id
+            ORDER BY remote_node_id ASC;
         '''
         cursor.execute(query)
         recv = cursor.fetchall()
 
-        metrics = zip(sent, recv)
+        # Create a combined view of sent and received data
+        sent_dict = {node_id: bps for node_id, bps in sent}
+        recv_dict = {node_id: bps for node_id, bps in recv}
+        all_nodes = set(sent_dict.keys()) | set(recv_dict.keys())
 
         self.t_node = Table(title="Total BPS Per Node")
         self.t_node.add_column("Node ID", justify="center")
         self.t_node.add_column("Total Sent (MiBits)", justify="center")
         self.t_node.add_column("Total Recv (MiBits)", justify="center")
-        for (sent, recv) in metrics:
-            self.t_node.add_row(str(sent[0]), str(sent[1]/1000000), str(recv[1]/1000000))
+        
+        for node_id in sorted(all_nodes):
+            sent_bps = sent_dict.get(node_id, 0)
+            recv_bps = recv_dict.get(node_id, 0)
+            self.t_node.add_row(
+                str(node_id), 
+                str(sent_bps/1000000), 
+                str(recv_bps/1000000)
+            )
         cursor.close()
 
     def update_t_link(self):
         cursor = self.connection.cursor()
+        # Get total BPS per link (local_node_id -> remote_node_id)
         query = '''
-            SELECT prev_hop_id, hop_id, SUM(bps) AS total_bps
+            SELECT local_node_id, remote_node_id, SUM(bps) AS total_bps
             FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
+            WHERE (local_node_id, remote_node_id, time_read) IN (
+                SELECT local_node_id, remote_node_id, MAX(time_read)
                 FROM metrics
-                GROUP BY hop_id)
-            GROUP BY prev_hop_id, hop_id
-            ORDER BY prev_hop_id ASC;
+                GROUP BY local_node_id, remote_node_id)
+            GROUP BY local_node_id, remote_node_id
+            ORDER BY local_node_id ASC, remote_node_id ASC;
         '''
         cursor.execute(query)
         metrics = cursor.fetchall()
@@ -82,29 +95,37 @@ class Database:
             self.t_link.add_row(str(src), str(dst), str(bps/1000000))
         cursor.close()
 
-    def update_t_route(self):
+    def update_t_flow(self):
         cursor = self.connection.cursor()
+        # Get total BPS per flow (using flow_id)
         query = '''
-            SELECT src_id, dst_id, route_id, SUM(bps) AS total_bps
+            SELECT flow_id, local_node_id, remote_node_id, SUM(bps) AS total_bps
             FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
+            WHERE (flow_id, time_read) IN (
+                SELECT flow_id, MAX(time_read)
                 FROM metrics
-                GROUP BY hop_id)
-                AND hop_id=dst_id
-            GROUP BY src_id, dst_id, route_id
+                GROUP BY flow_id)
+            GROUP BY flow_id, local_node_id, remote_node_id
+            ORDER BY total_bps DESC;
         '''
         cursor.execute(query)
+        metrics = cursor.fetchall()
 
-        metrics = [(arr[0], arr[1],arr[2],arr[3]) for arr in cursor.fetchall()]
-
-        self.t_route = Table(title="Total BPS Per Route")
-        self.t_route.add_column("Source Node ID", justify="center")
-        self.t_route.add_column("Destination Node ID", justify="center")
-        self.t_route.add_column("Route ID", justify="center")
-        self.t_route.add_column("Total BPS (MiBits)", justify="center")
-        for (src, dst, route, bps) in metrics:
-            self.t_route.add_row(str(src), str(dst), str(route), str(bps/1000000))
+        self.t_flow = Table(title="Total BPS Per Flow")
+        self.t_flow.add_column("Flow ID (hex)", justify="center")
+        self.t_flow.add_column("Local Node ID", justify="center")
+        self.t_flow.add_column("Remote Node ID", justify="center")
+        self.t_flow.add_column("Total BPS (MiBits)", justify="center")
+        
+        for (flow_id, local_node, remote_node, bps) in metrics:
+            # Convert flow_id bytes to hex string for display
+            flow_hex = flow_id.hex()[:16] + "..." if len(flow_id.hex()) > 16 else flow_id.hex()
+            self.t_flow.add_row(
+                flow_hex,
+                str(local_node), 
+                str(remote_node), 
+                str(bps/1000000)
+            )
         cursor.close()
 
 
@@ -113,10 +134,10 @@ def show(console):
     try:
         db.update_t_node()
         db.update_t_link()
-        db.update_t_route()
+        db.update_t_flow()
 
         with console.capture() as capture:
-            console.print(db.t_node, db.t_link, db.t_route, sep="\n")
+            console.print(db.t_node, db.t_link, db.t_flow, sep="\n")
 
         os.system("clear")
         print(capture.get())
