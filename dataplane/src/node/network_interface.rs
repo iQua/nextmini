@@ -8,6 +8,7 @@ use nextmini_messages::Protocol;
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
+use crate::node::metrics::CollectorHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::quic::{QuicClient, QuicReader, QuicWriter};
@@ -44,13 +45,15 @@ impl NetworkInterfaceHandle {
         config: LocalConfig,
         stream: NetworkStream,
         processors: ProcessorHandle,
+        metrics_collector: Option<CollectorHandle>,
+        remote_node_id: NodeId,
     ) -> Self {
         // unlike a typical actor that uses a channel for sending messages to the network interface actor,
         // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
         // for the sake of improved performance and simplicity.
         let network_interface = NetworkInterface { config, processors };
 
-        let writer = network_interface.init(stream);
+        let writer = network_interface.init(stream, metrics_collector, remote_node_id);
 
         Self { writer }
     }
@@ -61,13 +64,14 @@ impl NetworkInterfaceHandle {
         remote_node_id: NodeId,
         remote_addr: String,
         processors: ProcessorHandle,
+        metrics_collector: Option<CollectorHandle>,
     ) -> Self {
         let network_interface = NetworkInterface { config, processors };
 
         // there is no need to call tokio::spawn here, as the reader task will be
         // spawned in init() itself
         let writer = network_interface
-            .init_as_client(remote_node_id, remote_addr)
+            .init_as_client(remote_node_id, remote_addr, metrics_collector)
             .await;
 
         Self { writer }
@@ -92,7 +96,9 @@ impl NetworkInterface {
         self,
         remote_node_id: NodeId,
         remote_addr: String,
+        metrics_collector: Option<CollectorHandle>,
     ) -> ProtocolWriter {
+        let local_node_id = self.config.node_id;
         // connects to the remote node
         match self.config.protocol {
             Protocol::Tcp => {
@@ -100,33 +106,64 @@ impl NetworkInterface {
                     config: self.config.clone(),
                 };
 
-                let stream = tcp_client
+                let tcp_stream = tcp_client
                     .connect(remote_node_id, remote_addr.as_str())
                     .await;
 
-                self.init(NetworkStream::Tcp(stream))
+                let (reader, writer) = tokio::io::split(tcp_stream);
+
+                let tcp_reader = TcpReader::new(reader, self.processors);
+                let tcp_writer =
+                    TcpWriter::new(writer, metrics_collector, local_node_id, remote_node_id);
+
+                tokio::spawn(async move {
+                    tcp_reader.run().await;
+                });
+
+                ProtocolWriter::Tcp(tcp_writer)
             }
             Protocol::Quic => {
                 let quic_client = QuicClient {
                     config: self.config.clone(),
                 };
 
-                let stream = quic_client
+                let quic_stream = quic_client
                     .connect(remote_node_id, remote_addr.as_str())
                     .await;
 
-                self.init(NetworkStream::Quic(stream))
+                let (receive_stream, send_stream) = quic_stream.split();
+
+                let mut quic_reader = QuicReader::new(receive_stream, self.processors);
+                let quic_writer = QuicWriter::new(
+                    send_stream,
+                    metrics_collector,
+                    local_node_id,
+                    remote_node_id,
+                );
+
+                tokio::spawn(async move {
+                    quic_reader.run().await;
+                });
+
+                ProtocolWriter::Quic(quic_writer)
             }
         }
     }
 
-    pub fn init(self, stream: NetworkStream) -> ProtocolWriter {
+    pub fn init(
+        self,
+        stream: NetworkStream,
+        metrics_collector: Option<CollectorHandle>,
+        remote_node_id: NodeId,
+    ) -> ProtocolWriter {
+        let local_node_id = self.config.node_id;
         match stream {
             NetworkStream::Tcp(stream) => {
                 let (reader, writer) = tokio::io::split(stream);
 
                 let tcp_reader = TcpReader::new(reader, self.processors);
-                let tcp_writer = TcpWriter::new(writer);
+                let tcp_writer =
+                    TcpWriter::new(writer, metrics_collector, local_node_id, remote_node_id);
 
                 tokio::spawn(async move {
                     tcp_reader.run().await;
@@ -138,7 +175,12 @@ impl NetworkInterface {
                 let (receive_stream, send_stream) = stream.split();
 
                 let mut quic_reader = QuicReader::new(receive_stream, self.processors);
-                let quic_writer = QuicWriter::new(send_stream);
+                let quic_writer = QuicWriter::new(
+                    send_stream,
+                    metrics_collector,
+                    local_node_id,
+                    remote_node_id,
+                );
 
                 tokio::spawn(async move {
                     quic_reader.run().await;

@@ -47,14 +47,14 @@ impl Collector {
         // Transmit metrics every 5 seconds
         let mut metrics_tick = interval(Duration::from_secs(5));
 
-        // HashMap: flow_id -> (node_id, total_bytes)
+        // HashMap: flow_id -> (node_id, total_bytes, remote_node_id)
         let mut data = AHashMap::default();
 
         loop {
             tokio::select! {
                 // receives new metrics data
                 Some(CollectorMessage::Metric(metric)) = self.receiver.recv() => {
-                    let flow_data = data.entry(metric.flow_id).or_insert_with(|| (metric.local_node_id, 0));
+                    let flow_data = data.entry(metric.flow_id).or_insert_with(|| (metric.local_node_id, 0, metric.remote_node_id));
                     flow_data.1 += metric.bps;
                 }
 
@@ -73,7 +73,7 @@ impl Collector {
                                 flow_id: *flow_id,
                                 bps,
                                 local_node_id: value.0,
-                                remote_node_id: value.1,
+                                remote_node_id: value.2,
                                 time_read: now,
                             });
                         }

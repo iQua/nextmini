@@ -12,6 +12,7 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
+use crate::node::metrics::CollectorHandle;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
@@ -110,7 +111,6 @@ impl ControllerInterfaceHandle {
             error!("No response has been received from controller.");
         }
 
-
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
 
@@ -205,6 +205,7 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
+                    None,
                 )
                 .await;
 
