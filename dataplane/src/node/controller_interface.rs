@@ -222,7 +222,6 @@ impl ControllerToDataplaneReceiver {
                     node_id, rate
                 );
                 self.processors.set_rate_limiter(node_id, rate as f64);
-                return;
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!(
