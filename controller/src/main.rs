@@ -228,16 +228,41 @@ async fn handle_connection(
                         }
 
                         // Send startup response
-                        let remote_addr = config
-                            .smoltcp_connections
-                            .iter()
-                            .find(|c| c.src_node_id == node_id)
-                            .and_then(|conn| create_new_virtual_addr(
-                                config.smoltcp_base_addr,
-                                config.smoltcp_net_mask,
-                                conn.dst_node_id,
-                            ))
-                            .unwrap_or([0, 0, 0, 0]);
+                        let base_port = config.smoltcp_port_range[0]
+                            + (node_id as u16
+                                % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
+
+                        let smoltcp_connections: Vec<nextmini_messages::SmoltcpConnectionConfig> =
+                            config
+                                .flows
+                                .iter()
+                                .filter(|flow| flow.src_node_id == node_id)
+                                .enumerate()
+                                .filter_map(|(i, flow)| {
+                                    create_new_virtual_addr(
+                                        config.smoltcp_base_addr,
+                                        config.smoltcp_net_mask,
+                                        flow.dst_node_id,
+                                    )
+                                    .map(|remote_addr| {
+                                        nextmini_messages::SmoltcpConnectionConfig {
+                                            remote_addr,
+                                            client_port: base_port + i as u16, // assign unique port per connection
+                                            data_size: flow.data_size,
+                                            flow_rate: flow.flow_rate,
+                                            size: flow.size,
+                                            duration: flow.duration,
+                                            start_time: flow.start_time,
+                                        }
+                                    })
+                                })
+                                .collect();
+
+                        info!(
+                            "Found {} flows for node {} from configuration",
+                            smoltcp_connections.len(),
+                            node_id
+                        );
 
                         let response = build_startup_response(
                             node_id,
@@ -247,11 +272,8 @@ async fn handle_connection(
                             config.smoltcp_net_mask,
                             smoltcp_port,
                             config.smoltcp_server_port,
-                            remote_addr,
+                            smoltcp_connections,
                             config.protocol.clone(),
-                            config.smoltcp_traffic.data_size,
-                            config.smoltcp_traffic.total_bytes,
-                            config.smoltcp_traffic.send_interval_ms,
                         );
 
                         match write_arc

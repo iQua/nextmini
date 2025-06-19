@@ -79,20 +79,26 @@ impl UserSpaceTcpSource {
         let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
         let server_handle = sockets.add(server_socket);
 
-        // create client socket
-        let client_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-        let client_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-        let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
-        let client_handle = sockets.add(client_socket);
+        // creates client sockets
+        let mut client_handles = Vec::new();
+        for _ in &self.config.smoltcp_connections {
+            let client_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+            let client_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+            let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
+            let client_handle = sockets.add(client_socket);
+            client_handles.push(client_handle);
+        }
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         let server_port = self.config.smoltcp_server_port; // fixed server port for smoltcp
-        let client_port = self.config.smoltcp_client_port; // port assigned by controller
-        let remote_addr = self.config.smoltcp_remote_addr; // the remote address
-        let data_size = self.config.smoltcp_data_size;
-        let mut bytes_left = self.config.smoltcp_total_bytes;
+        let connections = self.config.smoltcp_connections.clone();
         thread::spawn(move || {
-            let mut client_connected = false;
+            let mut client_connections_status = vec![false; connections.len()];
+            let mut bytes_left: Vec<u64> = connections
+                .iter()
+                .map(|c| c.size.unwrap_or(10_000_000))
+                .collect();
+            let mut bytes_sent: Vec<u64> = vec![0; connections.len()]; // for test
             let mut device = device;
 
             loop {
@@ -122,48 +128,99 @@ impl UserSpaceTcpSource {
                     }
                 }
 
-                // Client socket handling
-                {
+                // Client sockets handling
+                for i in 0..connections.len() {
+                    let client_handle = client_handles[i];
+                    let connection = &connections[i];
                     let client_socket = sockets.get_mut::<tcp::Socket>(client_handle);
 
-                    if !client_connected && !client_socket.is_open() {
-                        if remote_addr != (0, 0, 0, 0) {
+                    if !client_connections_status[i] && !client_socket.is_open() {
+                        if connection.remote_addr != [0, 0, 0, 0] {
                             let remote_addr = IpAddress::v4(
-                                remote_addr.0,
-                                remote_addr.1,
-                                remote_addr.2,
-                                remote_addr.3,
+                                connection.remote_addr[0],
+                                connection.remote_addr[1],
+                                connection.remote_addr[2],
+                                connection.remote_addr[3],
                             );
                             let remote_port = server_port;
 
                             client_socket
-                                .connect(iface.context(), (remote_addr, remote_port), client_port)
+                                .connect(
+                                    iface.context(),
+                                    (remote_addr, remote_port),
+                                    connection.client_port,
+                                )
                                 .unwrap();
                             info!(
-                                "Client connecting from port {} to {}:{}",
-                                client_port, remote_addr, remote_port
+                                "Client {} connecting from port {} to {}:{}",
+                                i, connection.client_port, remote_addr, remote_port
                             );
                         }
                     }
 
-                    if client_socket.is_active() && !client_connected {
-                        client_connected = true;
-                        info!("Client connected successfully");
+                    if client_socket.is_active() && !client_connections_status[i] {
+                        client_connections_status[i] = true;
+                        info!(
+                            "Client {} connected successfully to remote address {}",
+                            i,
+                            format!(
+                                "{}.{}.{}.{}",
+                                connection.remote_addr[0],
+                                connection.remote_addr[1],
+                                connection.remote_addr[2],
+                                connection.remote_addr[3]
+                            )
+                        );
                     }
 
-                    // sending packets
-                    if client_socket.is_active() && client_socket.can_send() && bytes_left > 0 {
-                        let data_block = vec![0xAA; data_size];
+                    // sending packets with per-connection traffic settings
+                    if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
+                        let data_block = vec![0xAA; connection.data_size];
                         match client_socket.send_slice(&data_block) {
                             Ok(sent) => {
-                                bytes_left -= sent as u64;
+                                bytes_left[i] -= sent as u64;
+                                bytes_sent[i] += sent as u64;
 
-                                if bytes_left == 0 {
-                                    info!("Total bytes sent");
+                                if bytes_sent[i] % 1_000_000 == 0 || bytes_left[i] == 0 {
+                                    let total_size = connection.size.unwrap_or(10_000_000);
+                                    let progress =
+                                        (bytes_sent[i] as f64 / total_size as f64 * 100.0) as u32;
+                                    info!(
+                                        "Client {} sent {} MB / {} MB ({}%) to {}",
+                                        i,
+                                        bytes_sent[i] / 1_000_000,
+                                        total_size / 1_000_000,
+                                        progress,
+                                        format!(
+                                            "{}.{}.{}.{}",
+                                            connection.remote_addr[0],
+                                            connection.remote_addr[1],
+                                            connection.remote_addr[2],
+                                            connection.remote_addr[3]
+                                        )
+                                    );
+                                }
+
+                                if bytes_left[i] == 0 {
+                                    info!(
+                                        "✓ Client {} completed sending {} MB to {}",
+                                        i,
+                                        bytes_sent[i] / 1_000_000,
+                                        format!(
+                                            "{}.{}.{}.{}",
+                                            connection.remote_addr[0],
+                                            connection.remote_addr[1],
+                                            connection.remote_addr[2],
+                                            connection.remote_addr[3]
+                                        )
+                                    );
                                 }
                             }
                             Err(_) => {
-                                error!("Failed to send data block, packets dropped");
+                                error!(
+                                    "Failed to send data block from client {}, packets dropped",
+                                    i
+                                );
                             }
                         }
                     }
@@ -171,7 +228,10 @@ impl UserSpaceTcpSource {
                     if client_socket.may_recv() {
                         let mut buffer = [0u8; 4096];
                         if let Ok(len) = client_socket.recv_slice(&mut buffer) {
-                            info!("Client received {} bytes: {:?}", len, &buffer[..len]);
+                            // filter out empty packets(to be removed), no need to receive from the server
+                            if len > 0 {
+                                info!("Client {} received {} bytes: {:?}", i, len, &buffer[..len]);
+                            }
                         }
                     }
                 }

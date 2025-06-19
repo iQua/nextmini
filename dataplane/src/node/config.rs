@@ -7,7 +7,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, Protocol};
+use nextmini_messages::{ControllerToDataplane, Protocol, SmoltcpConnectionConfig};
 
 use crate::node::NodeId;
 use crate::node::drop::DropStrategy;
@@ -204,21 +204,17 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub smoltcp_server_port: u16,
 
-    #[default((0, 0, 0, 0))]
+    #[default(vec![SmoltcpConnectionConfig {
+        remote_addr: [0, 0, 0, 0],
+        client_port: 49152,
+        data_size: 1024,
+        flow_rate: Some(1_000_000),
+        size: Some(10_000_000),
+        duration: None,
+        start_time: None,
+    }])]
     #[arg(skip)]
-    pub smoltcp_remote_addr: (u8, u8, u8, u8),
-
-    #[default(1024)]
-    #[arg(skip)]
-    pub smoltcp_data_size: usize,
-
-    #[default(10000000)]
-    #[arg(skip)]
-    pub smoltcp_total_bytes: u64,
-
-    #[default(10)]
-    #[arg(skip)]
-    pub smoltcp_send_interval_ms: u64,
+    pub smoltcp_connections: Vec<SmoltcpConnectionConfig>,
 }
 
 impl LocalConfig {
@@ -334,11 +330,8 @@ impl LocalConfig {
                         smoltcp_net_mask,
                         smoltcp_port,
                         smoltcp_server_port,
-                        smoltcp_remote_addr,
+                        smoltcp_connections,
                         protocol,
-                        smoltcp_data_size,
-                        smoltcp_total_bytes,
-                        smoltcp_send_interval_ms,
                     } => {
                         self.node_id = node_id;
                         self.local_address = (addr[0], addr[1], addr[2], addr[3]);
@@ -358,15 +351,7 @@ impl LocalConfig {
                         );
                         self.smoltcp_client_port = smoltcp_port;
                         self.smoltcp_server_port = smoltcp_server_port;
-                        self.smoltcp_remote_addr = (
-                            smoltcp_remote_addr[0],
-                            smoltcp_remote_addr[1],
-                            smoltcp_remote_addr[2],
-                            smoltcp_remote_addr[3],
-                        );
-                        self.smoltcp_data_size = smoltcp_data_size;
-                        self.smoltcp_total_bytes = smoltcp_total_bytes;
-                        self.smoltcp_send_interval_ms = smoltcp_send_interval_ms;
+                        self.smoltcp_connections = smoltcp_connections;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

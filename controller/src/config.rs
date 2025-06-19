@@ -13,19 +13,18 @@ pub struct Route {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SmoltcpConnection {
+pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
     #[serde(default = "default_smoltcp_server_port")]
     pub smoltcp_server_port: u16,
+    pub data_size: usize,
+    pub flow_rate: Option<u64>,  // flow rate
+    pub size: Option<u64>,       // flow size
+    pub duration: Option<u64>,   // flow duration
+    pub start_time: Option<u64>, // flow start time in seconds (from time 0)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SmoltcpTrafficConfig {
-    pub data_size: usize,
-    pub total_bytes: u64,
-    pub send_interval_ms: u64,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DBConfig {
@@ -107,9 +106,6 @@ pub struct Config {
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
 
-    /// Smoltcp traffic generation configuration
-    #[serde(default = "default_smoltcp_traffic")]
-    pub smoltcp_traffic: SmoltcpTrafficConfig,
 
     /// Topology configuration for automatic route generation.
     #[serde(default)]
@@ -117,9 +113,9 @@ pub struct Config {
 
     /// Should database be reset before starting the controller?
 
-    /// smoltcp connections configuration
+    /// flows configuration
     #[serde(default)]
-    pub smoltcp_connections: Vec<SmoltcpConnection>,
+    pub flows: Vec<Flow>,
 
     /// The database configuration.
     #[serde(default = "default_db_config")]
@@ -164,14 +160,6 @@ fn default_smoltcp_server_port() -> u16 {
     8888
 }
 
-/// The default smoltcp traffic configuration
-fn default_smoltcp_traffic() -> SmoltcpTrafficConfig {
-    SmoltcpTrafficConfig {
-        data_size: 1024,
-        total_bytes: 10_000_000,
-        send_interval_ms: 10,
-    }
-}
 
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
@@ -236,9 +224,8 @@ impl Default for Config {
             smoltcp_server_port: default_smoltcp_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
-            smoltcp_connections: Vec::new(),
+            flows: Vec::new(),
             link_rates: Vec::new(),
-            smoltcp_traffic: default_smoltcp_traffic(),
             topology: Topology::default(),
             db: default_db_config(),
         }
