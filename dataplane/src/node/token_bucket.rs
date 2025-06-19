@@ -76,9 +76,11 @@ impl TokenBucket {
 
             wait_time += Duration::from_secs_f64(seconds_required);
 
-            // only needs to sleep if more than 5 milliseconds, due to the time resolution of tokio
+            // only needs to sleep if more than 5 milliseconds, due to the highest time resolution of
+            // tokio::time::sleep()
             if wait_time > Duration::from_millis(5) {
                 tokio::time::sleep(wait_time).await;
+
                 wait_time = Duration::from_secs_f64(0.0);
             }
 
