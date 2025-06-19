@@ -31,7 +31,7 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    SetRateLimiter(NodeId, f64),
+    RateLimit(NodeId, usize),
 }
 
 #[derive(Clone)]
@@ -91,10 +91,10 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn set_rate_limiter(&self, node_id: NodeId, rate_bps: f64) {
+    pub fn limit_rate(&self, node_id: NodeId, rate: usize) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::SetRateLimiter(node_id, rate_bps))
+            .send(ProcessorMessage::RateLimit(node_id, rate))
         {
             error!(
                 "Error sending the SetRateLimiter message to the processors: {}",
@@ -133,7 +133,6 @@ impl SequentialProcHandle {
                 routing_table: RoutingTable::new(config.node_id),
                 local_interface: None,
                 schedulers: HashMap::new(),
-                pending_rate_limiters: HashMap::new(),
             };
 
             tokio::spawn(async move {
@@ -178,7 +177,6 @@ impl ConcurrentProcHandle {
                 routing_table: RoutingTable::new(config.node_id),
                 local_interface: None,
                 schedulers: HashMap::new(),
-                pending_rate_limiters: HashMap::new(),
             };
 
             tokio::spawn(async move {
@@ -265,9 +263,6 @@ struct Processor {
 
     // schedulers, one for each outbound network interface
     schedulers: HashMap<NodeId, SchedulerHandle>,
-
-    // pending rate limiters for nodes that haven't been added yet
-    pending_rate_limiters: HashMap<NodeId, f64>,
 }
 
 impl Processor {
@@ -302,21 +297,15 @@ impl Processor {
                 self.routing_table.install_routes(routes);
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
-                if let Some(rate) = self.pending_rate_limiters.remove(&node_id) {
-                    scheduler.set_rate_limiter(rate);
-                }
-
                 // updates the scheduler for a given node ID
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(local_interface);
             }
-            ProcessorMessage::SetRateLimiter(node_id, rate) => {
+            ProcessorMessage::RateLimit(node_id, rate) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
-                    scheduler.set_rate_limiter(rate);
-                } else {
-                    self.pending_rate_limiters.insert(node_id, rate);
+                    scheduler.limit_rate(rate);
                 }
             }
         }

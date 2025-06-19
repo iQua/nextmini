@@ -75,7 +75,7 @@ impl SchedulerHandle {
         }
     }
 
-    pub async fn limit_rate(&self, rate_limit: usize) {
+    pub fn limit_rate(&self, rate_limit: usize) {
         if let Err(e) = self
             .writer_sender
             .send(SchedulerWriterMessage::RateLimit(rate_limit))
@@ -125,6 +125,7 @@ impl Fifo {
             net_interface,
             queue_not_empty,
             receiver: writer_receiver,
+            rate_limiter: None,
         };
 
         tokio::task::spawn(async move {
