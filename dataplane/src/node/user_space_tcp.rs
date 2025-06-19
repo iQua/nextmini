@@ -91,14 +91,14 @@ impl UserSpaceTcpSource {
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         let server_port = self.config.smoltcp_server_port; // fixed server port for smoltcp
-        let connections = self.config.flow_configs.clone();
+        let flows = self.config.flow_configs.clone();
         thread::spawn(move || {
-            let mut client_connections_status = vec![false; connections.len()];
-            let mut bytes_left: Vec<u64> = connections
+            let mut client_connections_status = vec![false; flows.len()];
+            let mut bytes_left: Vec<u64> = flows
                 .iter()
-                .map(|c| c.flow_size.unwrap_or(10_000_000))
+                .map(|f| f.flow_size.unwrap_or(10_000_000))
                 .collect();
-            let mut bytes_sent: Vec<u64> = vec![0; connections.len()]; // for test
+            let mut bytes_sent: Vec<u64> = vec![0; flows.len()]; // for test
             let mut device = device;
 
             loop {
@@ -125,18 +125,18 @@ impl UserSpaceTcpSource {
                 }
 
                 // Client sockets handling
-                for i in 0..connections.len() {
+                for i in 0..flows.len() {
                     let client_handle = client_handles[i];
-                    let connection = &connections[i];
+                    let flow = &flows[i];
                     let client_socket = sockets.get_mut::<tcp::Socket>(client_handle);
 
                     if !client_connections_status[i] && !client_socket.is_open() {
-                        if connection.remote_addr != [0, 0, 0, 0] {
+                        if flow.remote_addr != [0, 0, 0, 0] {
                             let remote_addr = IpAddress::v4(
-                                connection.remote_addr[0],
-                                connection.remote_addr[1],
-                                connection.remote_addr[2],
-                                connection.remote_addr[3],
+                                flow.remote_addr[0],
+                                flow.remote_addr[1],
+                                flow.remote_addr[2],
+                                flow.remote_addr[3],
                             );
                             let remote_port = server_port;
 
@@ -144,12 +144,12 @@ impl UserSpaceTcpSource {
                                 .connect(
                                     iface.context(),
                                     (remote_addr, remote_port),
-                                    connection.client_port,
+                                    flow.client_port,
                                 )
                                 .unwrap();
                             info!(
                                 "Client {} connecting from port {} to {}:{}",
-                                i, connection.client_port, remote_addr, remote_port
+                                i, flow.client_port, remote_addr, remote_port
                             );
                         }
                     }
@@ -161,10 +161,10 @@ impl UserSpaceTcpSource {
                             i,
                             format!(
                                 "{}.{}.{}.{}",
-                                connection.remote_addr[0],
-                                connection.remote_addr[1],
-                                connection.remote_addr[2],
-                                connection.remote_addr[3]
+                                flow.remote_addr[0],
+                                flow.remote_addr[1],
+                                flow.remote_addr[2],
+                                flow.remote_addr[3]
                             )
                         );
                     }
@@ -173,7 +173,7 @@ impl UserSpaceTcpSource {
                     if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
                         match client_socket.send(|buf| {
                             let to_write = std::cmp::min(
-                                std::cmp::min(buf.len(), connection.data_size),
+                                std::cmp::min(buf.len(), flow.data_size),
                                 bytes_left[i] as usize,
                             );
                             buf[..to_write].fill(0xAA);
@@ -185,7 +185,7 @@ impl UserSpaceTcpSource {
                                 bytes_sent[i] += sent as u64;
 
                                 if bytes_sent[i] % 1_000_000 == 0 || bytes_left[i] == 0 {
-                                    let total_size = connection.flow_size.unwrap_or(10_000_000);
+                                    let total_size = flow.flow_size.unwrap_or(10_000_000);
                                     let progress =
                                         (bytes_sent[i] as f64 / total_size as f64 * 100.0) as u32;
                                     info!(
@@ -196,10 +196,10 @@ impl UserSpaceTcpSource {
                                         progress,
                                         format!(
                                             "{}.{}.{}.{}",
-                                            connection.remote_addr[0],
-                                            connection.remote_addr[1],
-                                            connection.remote_addr[2],
-                                            connection.remote_addr[3]
+                                            flow.remote_addr[0],
+                                            flow.remote_addr[1],
+                                            flow.remote_addr[2],
+                                            flow.remote_addr[3]
                                         )
                                     );
                                 }
@@ -211,10 +211,10 @@ impl UserSpaceTcpSource {
                                         bytes_sent[i] / 1_000_000,
                                         format!(
                                             "{}.{}.{}.{}",
-                                            connection.remote_addr[0],
-                                            connection.remote_addr[1],
-                                            connection.remote_addr[2],
-                                            connection.remote_addr[3]
+                                            flow.remote_addr[0],
+                                            flow.remote_addr[1],
+                                            flow.remote_addr[2],
+                                            flow.remote_addr[3]
                                         )
                                     );
                                 }
