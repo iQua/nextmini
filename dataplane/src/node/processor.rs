@@ -12,14 +12,13 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::RoutingTableEntry;
+use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::token_bucket::TokenBucketSpec;
 use crate::node::{FlowIdExt, NodeId};
 
 // Message types for the processor actor.

@@ -3,15 +3,10 @@ use tokio::time::Instant as AsyncInstant;
 
 use tracing::error;
 
+use nextmini_messages::TokenBucketSpec;
+
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
-
-/// The specification of a token bucket.
-#[derive(Clone)]
-pub struct TokenBucketSpec {
-    pub rate: usize,
-    pub bucket_size: usize,
-}
 
 /// A token bucket traffic shaping algorithm.
 pub struct TokenBucket {

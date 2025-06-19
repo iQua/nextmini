@@ -6,11 +6,13 @@ use serde::Deserialize;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
 
+use nextmini_messages::TokenBucketSpec;
+
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
-use crate::node::token_bucket::{TokenBucket, TokenBucketSpec};
+use crate::node::token_bucket::TokenBucket;
 
 /// The scheduling discipline.
 #[allow(unused)]
