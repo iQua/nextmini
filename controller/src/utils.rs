@@ -1,5 +1,5 @@
 /// Implements utility functions for the controller.
-use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry, SmoltcpConnectionConfig};
+use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry, FlowConfig};
 
 use crate::models::Route;
 use tracing::{debug, info};
@@ -42,7 +42,7 @@ pub fn build_startup_response(
     smoltcp_net_mask: [u8; 4],
     smoltcp_port: u16,
     smoltcp_server_port: u16,
-    smoltcp_connections: Vec<SmoltcpConnectionConfig>,
+    flow_configs: Vec<FlowConfig>,
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
@@ -53,7 +53,7 @@ pub fn build_startup_response(
         smoltcp_net_mask,
         smoltcp_port,
         smoltcp_server_port,
-        smoltcp_connections,
+        flow_configs,
         protocol,
     }
 }

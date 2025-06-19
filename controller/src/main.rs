@@ -13,7 +13,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, FlowConfig};
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
@@ -232,7 +232,7 @@ async fn handle_connection(
                             + (node_id as u16
                                 % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
 
-                        let smoltcp_connections: Vec<nextmini_messages::SmoltcpConnectionConfig> =
+                        let flow_configs: Vec<FlowConfig> =
                             config
                                 .flows
                                 .iter()
@@ -245,7 +245,7 @@ async fn handle_connection(
                                         flow.dst_node_id,
                                     )
                                     .map(|remote_addr| {
-                                        nextmini_messages::SmoltcpConnectionConfig {
+                                        FlowConfig {
                                             remote_addr,
                                             client_port: base_port + i as u16, // assign unique port per connection
                                             data_size: flow.data_size,
@@ -260,7 +260,7 @@ async fn handle_connection(
 
                         info!(
                             "Found {} flows for node {} from configuration",
-                            smoltcp_connections.len(),
+                            flow_configs.len(),
                             node_id
                         );
 
@@ -272,7 +272,7 @@ async fn handle_connection(
                             config.smoltcp_net_mask,
                             smoltcp_port,
                             config.smoltcp_server_port,
-                            smoltcp_connections,
+                            flow_configs,
                             config.protocol.clone(),
                         );
 

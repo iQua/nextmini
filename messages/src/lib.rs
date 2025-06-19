@@ -34,9 +34,9 @@ pub enum Protocol {
     Quic,
 }
 
-/// Configuration for a single smoltcp connection
+/// Configuration for a single flow
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct SmoltcpConnectionConfig {
+pub struct FlowConfig {
     pub remote_addr: [u8; 4],
     pub client_port: u16,
     pub data_size: usize,
@@ -57,7 +57,7 @@ pub enum ControllerToDataplane {
         smoltcp_net_mask: [u8; 4],
         smoltcp_port: u16,
         smoltcp_server_port: u16,
-        smoltcp_connections: Vec<SmoltcpConnectionConfig>,
+        flow_configs: Vec<FlowConfig>,
         protocol: Protocol,
     },
     AddNode {
