@@ -221,13 +221,13 @@ impl ControllerToDataplaneReceiver {
                     );
                 }
             }
-            ControllerToDataplane::SetLinkRate { node_id, rate } => {
+            ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
-                    "Setting the link rate for node {} to {} bytes/second.",
-                    node_id, rate
+                    "Setting the link rate for node {} to {} bytes/second with a bucket size of {} bytes.",
+                    node_id, spec.rate, spec.bucket_size,
                 );
 
-                self.processors.limit_rate(node_id, rate);
+                self.processors.limit_rate(node_id, spec);
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!(

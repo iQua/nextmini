@@ -34,6 +34,13 @@ pub enum Protocol {
     Quic,
 }
 
+/// The specification of a token bucket.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TokenBucketSpec {
+    pub rate: usize,
+    pub bucket_size: usize,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 #[serde(tag = "type")]
 pub enum ControllerToDataplane {
@@ -52,7 +59,7 @@ pub enum ControllerToDataplane {
     },
     SetLinkRate {
         node_id: usize,
-        rate: usize,
+        rate: TokenBucketSpec,
     },
 }
 

@@ -19,6 +19,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
+use crate::node::token_bucket::TokenBucketSpec;
 use crate::node::{FlowIdExt, NodeId};
 
 // Message types for the processor actor.
@@ -31,7 +32,7 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    RateLimit(NodeId, usize),
+    RateLimit(NodeId, TokenBucketSpec),
 }
 
 #[derive(Clone)]
@@ -91,10 +92,10 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn limit_rate(&self, node_id: NodeId, rate: usize) {
+    pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::RateLimit(node_id, rate))
+            .send(ProcessorMessage::RateLimit(node_id, spec))
         {
             error!(
                 "Error sending the SetRateLimiter message to the processors: {}",
@@ -303,9 +304,9 @@ impl Processor {
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(local_interface);
             }
-            ProcessorMessage::RateLimit(node_id, rate) => {
+            ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
-                    scheduler.limit_rate(rate);
+                    scheduler.limit_rate(spec);
                 }
             }
         }

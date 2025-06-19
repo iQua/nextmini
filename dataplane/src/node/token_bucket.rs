@@ -5,13 +5,14 @@ use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
 
 /// The specification of a token bucket.
-struct TokenBucketSpec {
+#[derive(Clone)]
+pub struct TokenBucketSpec {
     pub rate: usize,
     pub bucket_size: usize,
 }
 
 /// A token bucket traffic shaping algorithm.
-struct TokenBucket {
+pub struct TokenBucket {
     spec: TokenBucketSpec,
     tokens: usize,
     last_update: AsyncInstant,
@@ -35,7 +36,7 @@ impl TokenBucket {
         }
 
         // sends the packets according to the current status of the token bucket
-        // to be implemented
+        //
 
         self.last_update = AsyncInstant::now();
     }

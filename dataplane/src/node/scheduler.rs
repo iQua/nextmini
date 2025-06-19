@@ -29,7 +29,7 @@ pub enum SchedulerReaderMessage {
 
 /// The rate limit is to be sent by the processor, and in the unit of bytes per second.
 pub enum SchedulerWriterMessage {
-    RateLimit(usize),
+    RateLimit(TokenBucketSpec),
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
@@ -78,10 +78,10 @@ impl SchedulerHandle {
     }
 
     /// Limits the rate of sending packets the outbound network connection, in bytes/second.
-    pub fn limit_rate(&self, rate_limit: usize) {
+    pub fn limit_rate(&self, spec: TokenBucketSpec) {
         if let Err(e) = self
             .writer_sender
-            .send(SchedulerWriterMessage::RateLimit(rate_limit))
+            .send(SchedulerWriterMessage::RateLimit(spec))
         {
             error!(
                 "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
@@ -128,7 +128,7 @@ impl Fifo {
             net_interface,
             queue_not_empty,
             receiver: writer_receiver,
-            rate_limiter: None,
+            token_bucket: None,
         };
 
         tokio::task::spawn(async move {
@@ -253,8 +253,8 @@ impl FifoWriter {
             // receives and imposes rate limits from the controller interface, if available
             while let Ok(message) = self.receiver.try_recv() {
                 match message {
-                    SchedulerWriterMessage::RateLimit(token_bucket_spec) => {
-                        self.token_bucket = Some(TokenBucket::new(token_bucket_spec));
+                    SchedulerWriterMessage::RateLimit(spec) => {
+                        self.token_bucket = Some(TokenBucket::new(spec));
                     }
                 }
             }
