@@ -30,5 +30,5 @@ pub struct Metrics {
     pub hop_id: Option<i32>,
     pub flow_id: Vec<u8>,
     pub time_read: chrono::DateTime<chrono::Utc>,
-    pub bps: i32,
+    pub bytes: i32,
 }
