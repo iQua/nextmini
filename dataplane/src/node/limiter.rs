@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use tokio::sync::RwLock;
 use tokio::time::Duration;
 use tokio::time::Instant as AsyncInstant;
 
@@ -72,21 +69,19 @@ impl LeakyBucket {
     }
 }
 
-#[derive(Clone)]
 pub struct RateLimiter {
-    bucket: Arc<RwLock<LeakyBucket>>,
+    bucket: LeakyBucket,
 }
 
 impl RateLimiter {
-    pub fn new(rate: f64) -> Self {
-        let bucket = Arc::new(RwLock::new(LeakyBucket::new(rate)));
+    pub fn new(rate: usize) -> Self {
+        let bucket = LeakyBucket::new(rate as f64);
         RateLimiter { bucket }
     }
 
-    pub async fn consume(&self, tokens: f64) {
-        let mut bucket = self.bucket.write().await;
-        while !bucket.consume(tokens) {
-            tokio::time::sleep(bucket.time_to_wait()).await;
+    pub async fn consume(&mut self, tokens: usize) {
+        while !self.bucket.consume(tokens as f64) {
+            tokio::time::sleep(self.bucket.time_to_wait()).await;
         }
     }
 }
@@ -113,13 +108,13 @@ async fn test_bucket() {
 #[tokio::test]
 async fn test_rate_limiter() {
     //create a rate limiter with 10 tokens per second
-    let rate_limiter = RateLimiter::new(10.0);
+    let mut rate_limiter = RateLimiter::new(10);
 
     //record the current time
     let start = AsyncInstant::now();
 
     // consume 3 tokens
-    rate_limiter.consume(3.0).await;
+    rate_limiter.consume(3).await;
 
     //record the current time
     let end = AsyncInstant::now();
@@ -130,7 +125,7 @@ async fn test_rate_limiter() {
     // The bucket is now in deficit. Consume 1 token, it should take ~ 400 ms
     let start = AsyncInstant::now();
 
-    rate_limiter.consume(1.0).await;
+    rate_limiter.consume(1).await;
 
     let end = AsyncInstant::now();
     assert!(end - start > Duration::from_millis(300));
