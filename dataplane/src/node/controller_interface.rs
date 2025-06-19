@@ -214,7 +214,6 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                // The processor now handles rate limiter management
                 if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
                     error!(
                         "Failed to add node {} with address {}: {}.",
@@ -228,7 +227,6 @@ impl ControllerToDataplaneReceiver {
                     node_id, rate
                 );
 
-                // Delegate rate limiter setting to the processor
                 self.processors.set_rate_limiter(node_id, rate as f64);
             }
             ControllerToDataplane::InstallRoutes { routes } => {

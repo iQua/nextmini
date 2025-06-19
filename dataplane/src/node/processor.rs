@@ -302,14 +302,10 @@ impl Processor {
                 self.routing_table.install_routes(routes);
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
-                // Check if there's a pending rate limiter for this node
                 if let Some(rate) = self.pending_rate_limiters.remove(&node_id) {
                     scheduler.set_rate_limiter(rate);
-                    info!(
-                        "Set rate limiter for node {} to {} bps during add_node.",
-                        node_id, rate
-                    );
                 }
+
                 // updates the scheduler for a given node ID
                 self.schedulers.insert(node_id, scheduler);
             }
@@ -317,17 +313,10 @@ impl Processor {
                 self.local_interface = Some(local_interface);
             }
             ProcessorMessage::SetRateLimiter(node_id, rate) => {
-                info!(
-                    "Setting the link rate for node {} to {} bps.",
-                    node_id, rate
-                );
-
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
                     scheduler.set_rate_limiter(rate);
-                    info!("Set rate limiter for node {} to {} bps.", node_id, rate);
                 } else {
                     self.pending_rate_limiters.insert(node_id, rate);
-                    info!("Added pending rate limiter for node {}.", node_id);
                 }
             }
         }

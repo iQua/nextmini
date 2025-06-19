@@ -41,7 +41,6 @@ impl SchedulerHandle {
         // creates the mpsc channel for sending packets to the scheduler
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
 
-        // shared rate limiter between SchedulerHandle and FifoWriter
         let rate_limiter = Arc::new(RwLock::new(None));
         let has_rate_limiter = Arc::new(AtomicBool::new(false));
 
@@ -272,7 +271,6 @@ impl FifoWriter {
         // Calculate total bytes in the batch
         let total_bytes: usize = packets.iter().map(|p| p.packet_size).sum();
 
-        // Send the batch
         if let Err(e) = self.net_interface.send(packets).await {
             error!(
                 "FifoWriter: Error sending batch of {} packets: {}",
@@ -282,7 +280,7 @@ impl FifoWriter {
             return;
         }
 
-        // Apply rate limiting if configured
+        // Apply rate limiting
         if self.has_rate_limiter.load(Ordering::Relaxed) {
             let limiter = {
                 self.rate_limiter
