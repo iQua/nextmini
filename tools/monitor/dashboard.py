@@ -25,12 +25,9 @@ class Database:
         cursor = self.connection.cursor()
         # Get total sent per node (local_node_id represents the sender)
         query = '''
-            SELECT local_node_id, SUM(bps) AS total_bps
+            SELECT local_node_id, SUM(bytes * 8.0 / 5.0) AS total_rate_bps
             FROM metrics
-            WHERE (local_node_id, time_read) IN (
-                SELECT local_node_id, MAX(time_read)
-                FROM metrics
-                GROUP BY local_node_id)
+            WHERE time_read >= NOW() - INTERVAL '5 seconds'
             GROUP BY local_node_id
             ORDER BY local_node_id ASC;
         '''
@@ -39,92 +36,88 @@ class Database:
 
         # Get total received per node (remote_node_id represents the receiver)
         query = '''
-            SELECT remote_node_id, SUM(bps) AS total_bps
+            SELECT remote_node_id, SUM(bytes * 8.0 / 5.0) AS total_rate_bps
             FROM metrics
-            WHERE (remote_node_id, time_read) IN (
-                SELECT remote_node_id, MAX(time_read)
-                FROM metrics
-                GROUP BY remote_node_id)
+            WHERE time_read >= NOW() - INTERVAL '5 seconds'
             GROUP BY remote_node_id
             ORDER BY remote_node_id ASC;
         '''
         cursor.execute(query)
         recv = cursor.fetchall()
 
-        # Create a combined view of sent and received data
-        sent_dict = {node_id: bps for node_id, bps in sent}
-        recv_dict = {node_id: bps for node_id, bps in recv}
+        sent_dict = {node_id: rate_bps or 0 for node_id, rate_bps in sent}
+        recv_dict = {node_id: rate_bps or 0 for node_id, rate_bps in recv}
         all_nodes = set(sent_dict.keys()) | set(recv_dict.keys())
 
-        self.t_node = Table(title="Total BPS Per Node")
+        self.t_node = Table(title="Data Rate Per Node")
         self.t_node.add_column("Node ID", justify="center")
-        self.t_node.add_column("Total Sent (MiBits)", justify="center")
-        self.t_node.add_column("Total Recv (MiBits)", justify="center")
-        
+        self.t_node.add_column("Sent Rate (Mbps)", justify="center")
+        self.t_node.add_column("Recv Rate (Mbps)", justify="center")
+
         for node_id in sorted(all_nodes):
-            sent_bps = sent_dict.get(node_id, 0)
-            recv_bps = recv_dict.get(node_id, 0)
+            sent_rate = sent_dict.get(node_id, 0)
+            recv_rate = recv_dict.get(node_id, 0)
             self.t_node.add_row(
-                str(node_id), 
-                str(sent_bps/1000000), 
-                str(recv_bps/1000000)
+                str(node_id),
+                str(float(sent_rate) / 1000000.0),
+                str(float(recv_rate) / 1000000.0)
             )
         cursor.close()
 
     def update_t_link(self):
         cursor = self.connection.cursor()
-        # Get total BPS per link (local_node_id -> remote_node_id)
+
         query = '''
-            SELECT local_node_id, remote_node_id, SUM(bps) AS total_bps
+            SELECT local_node_id, remote_node_id,
+                   SUM(bytes * 8.0 / 5.0) AS total_rate_bps
             FROM metrics
-            WHERE (local_node_id, remote_node_id, time_read) IN (
-                SELECT local_node_id, remote_node_id, MAX(time_read)
-                FROM metrics
-                GROUP BY local_node_id, remote_node_id)
+            WHERE time_read >= NOW() - INTERVAL '5 seconds'
             GROUP BY local_node_id, remote_node_id
-            ORDER BY local_node_id ASC, remote_node_id ASC;
+            HAVING COUNT(*) > 0
+            ORDER BY total_rate_bps DESC;
         '''
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_link = Table(title="Total BPS Per Link")
+        self.t_link = Table(title="Data Rate Per Link")
         self.t_link.add_column("Source Node ID", justify="center")
         self.t_link.add_column("Destination Node ID", justify="center")
-        self.t_link.add_column("Total BPS (MiBits)", justify="center")
-        for (src, dst, bps) in metrics:
-            self.t_link.add_row(str(src), str(dst), str(bps/1000000))
+        self.t_link.add_column("Rate (Mbps)", justify="center")
+
+        for (src, dst, rate_bps) in metrics:
+            rate_mbps = float(rate_bps or 0) / 1000000.0
+            self.t_link.add_row(str(src), str(dst), str(rate_mbps))
         cursor.close()
 
     def update_t_flow(self):
         cursor = self.connection.cursor()
-        # Get total BPS per flow (using flow_id)
+
         query = '''
-            SELECT flow_id, local_node_id, remote_node_id, SUM(bps) AS total_bps
+            SELECT flow_id, local_node_id, remote_node_id,
+                   SUM(bytes * 8.0 / 5.0) AS total_rate_bps
             FROM metrics
-            WHERE (flow_id, time_read) IN (
-                SELECT flow_id, MAX(time_read)
-                FROM metrics
-                GROUP BY flow_id)
+            WHERE time_read >= NOW() - INTERVAL '5 seconds'
             GROUP BY flow_id, local_node_id, remote_node_id
-            ORDER BY total_bps DESC;
+            HAVING COUNT(*) > 0
+            ORDER BY total_rate_bps DESC;
         '''
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_flow = Table(title="Total BPS Per Flow")
+        self.t_flow = Table(title="Data Rate Per Flow")
         self.t_flow.add_column("Flow ID (hex)", justify="center")
         self.t_flow.add_column("Local Node ID", justify="center")
         self.t_flow.add_column("Remote Node ID", justify="center")
-        self.t_flow.add_column("Total BPS (MiBits)", justify="center")
-        
-        for (flow_id, local_node, remote_node, bps) in metrics:
-            # Convert flow_id bytes to hex string for display
+        self.t_flow.add_column("Rate (Mbps)", justify="center")
+
+        for (flow_id, local_node, remote_node, total_rate_bps) in metrics:
             flow_hex = flow_id.hex()[:16] + "..." if len(flow_id.hex()) > 16 else flow_id.hex()
+            rate_mbps = float(total_rate_bps or 0) / 1000000.0
             self.t_flow.add_row(
                 flow_hex,
-                str(local_node), 
-                str(remote_node), 
-                str(bps/1000000)
+                str(local_node),
+                str(remote_node),
+                str(rate_mbps)
             )
         cursor.close()
 
