@@ -65,6 +65,8 @@ impl TokenBucket {
         let mut wait_time = Duration::from_secs_f64(0.0);
 
         for packet in packets_delayed {
+            self.last_update = AsyncInstant::now();
+
             // calculates the wait time for this packet
             let seconds_required = if self.tokens < packet.packet_size {
                 (packet.packet_size - self.tokens) as f64 / self.spec.rate as f64
@@ -94,8 +96,6 @@ impl TokenBucket {
             if let Err(e) = net_interface.send(vec![packet]).await {
                 error!("TokenBucket: Error sending a packet: {}", e);
             }
-
-            self.last_update = AsyncInstant::now();
         }
 
         self.last_update = AsyncInstant::now();

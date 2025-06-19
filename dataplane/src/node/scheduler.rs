@@ -281,7 +281,7 @@ impl FifoWriter {
 
         // if needed, calculates total bytes before sending the packets out
         if let Some(ref mut token_bucket) = self.token_bucket {
-            token_bucket.send(&self.net_interface, packets).await;
+            token_bucket.send(&mut self.net_interface, packets).await;
         } else {
             if let Err(e) = self.net_interface.send(packets).await {
                 error!(
