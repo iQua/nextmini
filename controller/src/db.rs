@@ -61,11 +61,11 @@ async fn create_db(pool: &Pool<Postgres>) {
         r#"
         CREATE TABLE IF NOT EXISTS metrics (
             id SERIAL PRIMARY KEY,
-            prev_hop_id INTEGER,
-            hop_id INTEGER,
-            flow_id BYTEA,
-            time_read TIMESTAMP,
-            bps INTEGER
+            flow_id BYTEA NOT NULL,
+            local_node_id INTEGER NOT NULL,
+            remote_node_id INTEGER NOT NULL,
+            bytes INTEGER NOT NULL,
+            time_read TIMESTAMP NOT NULL
         )
         "#,
     )
@@ -127,11 +127,11 @@ async fn reset_db(pool: &Pool<Postgres>) {
         r#"
         CREATE TABLE metrics (
             id SERIAL PRIMARY KEY,
-            prev_hop_id INTEGER,
-            hop_id INTEGER,
-            flow_id BYTEA,
-            time_read TIMESTAMP,
-            bps INTEGER
+            flow_id BYTEA NOT NULL,
+            local_node_id INTEGER NOT NULL,
+            remote_node_id INTEGER NOT NULL,
+            bytes INTEGER NOT NULL,
+            time_read TIMESTAMP NOT NULL
         )
         "#,
     )

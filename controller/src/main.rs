@@ -336,27 +336,24 @@ async fn handle_connection(
                         }
                     }
                     DataplaneToController::Metrics { metrics } => {
-                        if let Some(hop_id) = current_node_id {
+                        if let Some(_) = current_node_id {
                             for metric in metrics {
-                                if metric.bps == 0 {
+                                if metric.bytes == 0 {
                                     continue;
                                 }
 
-                                // Simplified metrics handling - no need to parse flow_id
-                                let prev_hop_id = metric.src_node_id.map(|x| x as i32);
-                                let flow_id = metric.flow_id;
-
+                                // Direct mapping to database schema that matches Metric struct
                                 match sqlx::query(
                                     r#"
-                                    INSERT INTO metrics (prev_hop_id, hop_id, flow_id, time_read, bps)
+                                    INSERT INTO metrics (flow_id, local_node_id, remote_node_id, bytes, time_read)
                                     VALUES ($1, $2, $3, $4, $5)
                                     "#
                                 )
-                                .bind(prev_hop_id)
-                                .bind(hop_id as i32)
-                                .bind(flow_id.as_ref())
+                                .bind(metric.flow_id.as_ref())
+                                .bind(metric.local_node_id as i32)
+                                .bind(metric.remote_node_id as i32)
+                                .bind(metric.bytes as i32)
                                 .bind(metric.time_read)
-                                .bind(metric.bps as i32)
                                 .execute(&*db_pool)
                                 .await {
                                     Ok(_) => {},
