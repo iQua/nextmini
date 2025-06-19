@@ -223,7 +223,7 @@ impl ControllerToDataplaneReceiver {
             }
             ControllerToDataplane::SetLinkRate { node_id, rate } => {
                 info!(
-                    "Setting the link rate for node {} to {} Bps.",
+                    "Setting the link rate for node {} to {} bytes/second.",
                     node_id, rate
                 );
 
