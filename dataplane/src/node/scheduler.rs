@@ -281,11 +281,11 @@ impl FifoWriter {
         let packet_count = packets.len();
 
         // if needed, calculates total bytes before sending the packets out
-        let total_bytes: usize = if self.rate_limiter.is_some() {
-            packets.iter().map(|p| p.packet_size).sum()
-        } else {
-            0
-        };
+        if let Some(ref mut rate_limiter) = self.rate_limiter {
+            let total_bytes: usize = packets.iter().map(|p| p.packet_size).sum();
+
+            rate_limiter.consume(total_bytes).await;
+        }
 
         if let Err(e) = self.net_interface.send(packets).await {
             error!(
@@ -293,11 +293,6 @@ impl FifoWriter {
                 packet_count, e
             );
             return;
-        }
-
-        // if needed, applies the rate limit
-        if let Some(ref mut rate_limiter) = self.rate_limiter {
-            rate_limiter.consume(total_bytes).await;
         }
     }
 }
