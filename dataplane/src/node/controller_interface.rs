@@ -7,17 +7,16 @@ use tokio_tungstenite::{
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use std::collections::HashMap;
 use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
-use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
+
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
@@ -54,9 +53,6 @@ impl ControllerInterfaceHandle {
             config,
             receiver_stream,
             processors,
-            controller_interface: controller_interface.clone(),
-            schedulers: HashMap::new(),
-            pending_rate_limiters: HashMap::new(),
             reporter: reporter.clone(),
         };
 
@@ -168,9 +164,6 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
-    controller_interface: ControllerInterfaceHandle,
-    schedulers: HashMap<NodeId, SchedulerHandle>,
-    pending_rate_limiters: HashMap<NodeId, f64>,
     reporter: ControllerReporterHandle,
 }
 
@@ -221,15 +214,7 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                if let Some(rate) = self.pending_rate_limiters.remove(&remote_node_id) {
-                    scheduler.set_rate_limiter(rate);
-                    info!(
-                        "Set rate limiter for node {} to {} bps.",
-                        remote_node_id, rate
-                    );
-                }
-                self.schedulers.insert(remote_node_id, scheduler.clone());
-
+                // The processor now handles rate limiter management
                 if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
                     error!(
                         "Failed to add node {} with address {}: {}.",
@@ -243,13 +228,8 @@ impl ControllerToDataplaneReceiver {
                     node_id, rate
                 );
 
-                if let Some(scheduler) = self.schedulers.get_mut(&node_id) {
-                    scheduler.set_rate_limiter(rate as f64);
-                    info!("Set rate limiter for node {} to {} bps.", node_id, rate);
-                } else {
-                    self.pending_rate_limiters.insert(node_id, rate as f64);
-                    info!("Added pending rate limiter for node {}.", node_id);
-                }
+                // Delegate rate limiter setting to the processor
+                self.processors.set_rate_limiter(node_id, rate as f64);
             }
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!(
