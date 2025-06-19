@@ -9,9 +9,9 @@ use tracing::{debug, error, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
-use crate::node::link_rate_limiter::RateLimiter;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
+use crate::node::rate_limiters::RateLimiter;
 
 /// The scheduling discipline.
 #[allow(unused)]
