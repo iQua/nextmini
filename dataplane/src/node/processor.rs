@@ -10,7 +10,7 @@ use tokio;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use nextmini_messages::RoutingTableEntry;
 
