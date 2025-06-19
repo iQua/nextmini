@@ -43,6 +43,8 @@ impl SchedulerHandle {
     pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
         // creates the mpsc channel for sending packets to the scheduler
         let (reader_sender, reader_receiver) = mpsc::channel(config.channel_capacity);
+
+        // creates the unbounded mpsc channel for sending a rate limit, in bytes (per second), to the scheduler
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
 
         let scheduler = match config.scheduler_type {
@@ -62,7 +64,7 @@ impl SchedulerHandle {
         }
     }
 
-    // Sends a packet to the scheduler.
+    /// Sends a packet to the scheduler.
     pub fn send(&self, packet: Packet) {
         if let Err(e) = self
             .reader_sender
@@ -75,6 +77,7 @@ impl SchedulerHandle {
         }
     }
 
+    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
     pub fn limit_rate(&self, rate_limit: usize) {
         if let Err(e) = self
             .writer_sender
@@ -277,7 +280,7 @@ impl FifoWriter {
         let packets = std::mem::take(batch);
         let packet_count = packets.len();
 
-        // if needed, calculate total bytes before sending the packets out
+        // if needed, calculates total bytes before sending the packets out
         let total_bytes: usize = if self.rate_limiter.is_some() {
             packets.iter().map(|p| p.packet_size).sum()
         } else {

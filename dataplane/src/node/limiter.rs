@@ -3,7 +3,7 @@ use tokio::time::Instant as AsyncInstant;
 
 /// This struct represents a leaky bucket used in leaky bucket rate limiter algorithms.
 struct LeakyBucket {
-    rate: f64,
+    rate: usize,
     tokens: f64,
     time_to_wait: Duration,
     last_update: AsyncInstant,
@@ -11,7 +11,7 @@ struct LeakyBucket {
 }
 
 impl LeakyBucket {
-    fn new(rate: f64) -> Self {
+    fn new(rate: usize) -> Self {
         LeakyBucket {
             rate,
             tokens: 0.0,
@@ -26,11 +26,11 @@ impl LeakyBucket {
             self.last_update = AsyncInstant::now();
             self.init = false;
         }
-        self.tokens += (AsyncInstant::now() - self.last_update).as_secs_f64() * self.rate;
+        self.tokens += (AsyncInstant::now() - self.last_update).as_secs_f64() * self.rate as f64;
         self.last_update = AsyncInstant::now();
 
         // If the sender has been idle for more than 1 second, we reset the bucket
-        if self.tokens > self.rate {
+        if self.tokens > self.rate as f64 {
             self.tokens = 0.0;
         }
 
@@ -44,13 +44,13 @@ impl LeakyBucket {
     }
 
     fn time_to_wait(&mut self) -> Duration {
-        self.tokens += (AsyncInstant::now() - self.last_update).as_secs_f64() * self.rate;
+        self.tokens += (AsyncInstant::now() - self.last_update).as_secs_f64() * self.rate as f64;
         self.last_update = AsyncInstant::now();
 
         let time_to_wait = if self.tokens >= 0.0 {
             Duration::from_secs(0)
         } else {
-            let seconds_required = -self.tokens / self.rate;
+            let seconds_required = -self.tokens / self.rate as f64;
             Duration::from_secs_f64(seconds_required)
         };
 
@@ -75,7 +75,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     pub fn new(rate: usize) -> Self {
-        let bucket = LeakyBucket::new(rate as f64);
+        let bucket = LeakyBucket::new(rate);
         RateLimiter { bucket }
     }
 
@@ -88,7 +88,7 @@ impl RateLimiter {
 
 #[tokio::test]
 async fn test_bucket() {
-    let mut bucket = LeakyBucket::new(10.0);
+    let mut bucket = LeakyBucket::new(10);
     // consume 1 tokens
     assert_eq!(bucket.consume(1.0), true);
 
