@@ -59,7 +59,7 @@ pub enum ControllerToDataplane {
     },
     SetLinkRate {
         node_id: usize,
-        rate: TokenBucketSpec,
+        spec: TokenBucketSpec,
     },
 }
 
