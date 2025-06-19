@@ -16,6 +16,7 @@ use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
+use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -26,7 +27,7 @@ pub struct ControllerInterfaceHandle {
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
-    pub async fn new(config: LocalConfig) -> Self {
+    pub async fn new(config: LocalConfig) -> (Self, ControllerReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
@@ -47,6 +48,8 @@ impl ControllerInterfaceHandle {
             northbridge_sender,
         };
 
+        let reporter = ControllerReporterHandle::new(controller_interface.clone());
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config,
             receiver_stream,
@@ -54,6 +57,7 @@ impl ControllerInterfaceHandle {
             controller_interface: controller_interface.clone(),
             schedulers: HashMap::new(),
             pending_rate_limiters: HashMap::new(),
+            reporter: reporter.clone(),
         };
 
         tokio::spawn(async move {
@@ -63,7 +67,7 @@ impl ControllerInterfaceHandle {
             controller_receiver.run().await;
         });
 
-        controller_interface
+        (controller_interface, reporter)
     }
 
     pub async fn connect(
@@ -119,10 +123,11 @@ impl ControllerInterfaceHandle {
         (config, processors, ws_stream)
     }
 
-    pub async fn send_metrics(&self, msg: DataplaneToController) {
+    /// Sends a message to the controller.
+    pub async fn send(&self, msg: DataplaneToController) {
         if let Err(e) = self.northbridge_sender.send(msg) {
             error!(
-                "Error sending metrics to the controller interface actor: {}",
+                "Error sending messages to the controller interface actor: {}",
                 e
             );
         };
@@ -166,6 +171,7 @@ pub struct ControllerToDataplaneReceiver {
     controller_interface: ControllerInterfaceHandle,
     schedulers: HashMap<NodeId, SchedulerHandle>,
     pending_rate_limiters: HashMap<NodeId, f64>,
+    reporter: ControllerReporterHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -209,6 +215,7 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
+                    self.reporter.clone(),
                 )
                 .await;
 

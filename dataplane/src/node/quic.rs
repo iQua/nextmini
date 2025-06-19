@@ -21,14 +21,25 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::SchedulerHandle;
 
+use super::reporter::ControllerReporterHandle;
+
 pub struct QuicServer {
     config: LocalConfig,
     processors: ProcessorHandle,
+    reporter: ControllerReporterHandle,
 }
 
 impl QuicServer {
-    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self { config, processors }
+    pub fn new(
+        config: LocalConfig,
+        processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
+    ) -> Self {
+        Self {
+            config,
+            processors,
+            reporter,
+        }
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
@@ -79,6 +90,8 @@ impl QuicServer {
                     config.clone(),
                     NetworkStream::Quic(stream),
                     processors.clone(),
+                    self.reporter.clone(),
+                    remote_node_id,
                 )
                 .await;
 
