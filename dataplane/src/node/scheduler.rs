@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use clap::ValueEnum;
@@ -32,6 +33,7 @@ pub enum SchedulerMessage {
 pub struct SchedulerHandle {
     sender: mpsc::Sender<SchedulerMessage>,
     rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+    has_rate_limiter: Arc<AtomicBool>,
 }
 
 impl SchedulerHandle {
@@ -41,11 +43,16 @@ impl SchedulerHandle {
 
         // shared rate limiter between SchedulerHandle and FifoWriter
         let rate_limiter = Arc::new(RwLock::new(None));
+        let has_rate_limiter = Arc::new(AtomicBool::new(false));
 
         let scheduler = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => {
-                Fifo::new(config, net_interface, receiver, rate_limiter.clone())
-            }
+            SchedulingDiscipline::Fifo => Fifo::new(
+                config,
+                net_interface,
+                receiver,
+                rate_limiter.clone(),
+                has_rate_limiter.clone(),
+            ),
             _ => {
                 panic!("This scheduling discipline has not yet been implemented.");
             }
@@ -56,6 +63,7 @@ impl SchedulerHandle {
         Self {
             sender,
             rate_limiter,
+            has_rate_limiter,
         }
     }
 
@@ -76,6 +84,7 @@ impl SchedulerHandle {
     pub fn set_rate_limiter(&self, rate_bps: f64) {
         if let Ok(mut limiter) = self.rate_limiter.write() {
             *limiter = Some(RateLimiter::new(rate_bps));
+            self.has_rate_limiter.store(true, Ordering::Relaxed);
         }
     }
 }
@@ -91,6 +100,7 @@ impl Fifo {
         net_interface: NetworkInterfaceHandle,
         receiver: mpsc::Receiver<SchedulerMessage>,
         rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+        has_rate_limiter: Arc<AtomicBool>,
     ) -> Self {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
@@ -117,6 +127,7 @@ impl Fifo {
             net_interface,
             queue_not_empty,
             rate_limiter,
+            has_rate_limiter,
         };
 
         tokio::task::spawn(async move {
@@ -228,6 +239,8 @@ struct FifoWriter {
     pub queue_not_empty: Arc<Notify>,
     /// shared rate limiter
     pub rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
+    /// boolean flag to check if rate limiter is set to avoid RwLock reads
+    pub has_rate_limiter: Arc<AtomicBool>,
 }
 
 // Consumer task: pops packets from the queue and sends them out
@@ -270,15 +283,17 @@ impl FifoWriter {
         }
 
         // Apply rate limiting if configured
-        let limiter = {
-            self.rate_limiter
-                .read()
-                .ok()
-                .and_then(|guard| guard.clone())
-        };
+        if self.has_rate_limiter.load(Ordering::Relaxed) {
+            let limiter = {
+                self.rate_limiter
+                    .read()
+                    .ok()
+                    .and_then(|guard| guard.clone())
+            };
 
-        if let Some(limiter) = limiter {
-            limiter.consume((total_bytes as f64) * 8.0).await;
+            if let Some(limiter) = limiter {
+                limiter.consume((total_bytes as f64) * 8.0).await;
+            }
         }
     }
 }
