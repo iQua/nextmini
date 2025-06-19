@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
@@ -25,13 +25,13 @@ pub enum SchedulingDiscipline {
 /// The types of messages sent to the scheduler.
 pub enum SchedulerMessage {
     InboundPacket(Packet),
-    SetRateLimiter(f64), // rate in bits per second
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
 #[derive(Clone)]
 pub struct SchedulerHandle {
     sender: mpsc::Sender<SchedulerMessage>,
+    rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
 }
 
 impl SchedulerHandle {
@@ -39,8 +39,13 @@ impl SchedulerHandle {
         // creates the mpsc channel for sending packets to the scheduler
         let (sender, receiver) = mpsc::channel(config.channel_capacity);
 
+        // shared rate limiter between SchedulerHandle and FifoWriter
+        let rate_limiter = Arc::new(RwLock::new(None));
+
         let scheduler = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => Fifo::new(config, net_interface, receiver),
+            SchedulingDiscipline::Fifo => {
+                Fifo::new(config, net_interface, receiver, rate_limiter.clone())
+            }
             _ => {
                 panic!("This scheduling discipline has not yet been implemented.");
             }
@@ -48,7 +53,10 @@ impl SchedulerHandle {
 
         scheduler.run();
 
-        Self { sender }
+        Self {
+            sender,
+            rate_limiter,
+        }
     }
 
     // Sends a packet to the scheduler.
@@ -66,11 +74,8 @@ impl SchedulerHandle {
 
     // Sets the rate limiter for the scheduler.
     pub fn set_rate_limiter(&self, rate_bps: f64) {
-        if let Err(e) = self
-            .sender
-            .try_send(SchedulerMessage::SetRateLimiter(rate_bps))
-        {
-            error!("SchedulerHandle: Error setting rate limiter: {}.", e);
+        if let Ok(mut limiter) = self.rate_limiter.write() {
+            *limiter = Some(RateLimiter::new(rate_bps));
         }
     }
 }
@@ -85,6 +90,7 @@ impl Fifo {
         config: LocalConfig,
         net_interface: NetworkInterfaceHandle,
         receiver: mpsc::Receiver<SchedulerMessage>,
+        rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
     ) -> Self {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
@@ -97,9 +103,6 @@ impl Fifo {
         let scheduler_queue = Arc::new(ArrayQueue::new(capacity));
         let queue_not_empty = Arc::new(Notify::new());
 
-        // mpsc channel for reader to send rate limiter config to writer (multiple times)
-        let (rate_limiter_sender, rate_limiter_receiver) = mpsc::channel(32);
-
         let mut reader = FifoReader {
             queue: scheduler_queue.clone(),
             packets_dropped: 0,
@@ -107,15 +110,13 @@ impl Fifo {
             receiver,
             queue_not_empty: queue_not_empty.clone(),
             capacity,
-            rate_limiter_sender,
         };
 
         let mut writer = FifoWriter {
             queue: scheduler_queue,
             net_interface,
             queue_not_empty,
-            rate_limiter: None,
-            rate_limiter_receiver,
+            rate_limiter,
         };
 
         tokio::task::spawn(async move {
@@ -151,8 +152,6 @@ struct FifoReader {
     pub queue_not_empty: Arc<Notify>,
     /// maximum queue capacity
     pub capacity: usize,
-    /// mpsc channel for reader to send rate limiter config to writer (multiple times)
-    pub rate_limiter_sender: mpsc::Sender<f64>,
 }
 
 impl FifoReader {
@@ -164,18 +163,12 @@ impl FifoReader {
                     SchedulerMessage::InboundPacket(packet) => {
                         self.enqueue(packet);
                     }
-                    SchedulerMessage::SetRateLimiter(rate_bps) => {
-                        let _ = self.rate_limiter_sender.try_send(rate_bps);
-                    }
                 }
 
                 while let Ok(message) = self.receiver.try_recv() {
                     match message {
                         SchedulerMessage::InboundPacket(packet) => {
                             self.enqueue(packet);
-                        }
-                        SchedulerMessage::SetRateLimiter(rate_bps) => {
-                            let _ = self.rate_limiter_sender.try_send(rate_bps);
                         }
                     }
                 }
@@ -233,10 +226,8 @@ struct FifoWriter {
     pub net_interface: NetworkInterfaceHandle,
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
-    /// rate limiter for the writer
-    pub rate_limiter: Option<RateLimiter>,
-    /// mpsc channel for reader to set rate limiter
-    pub rate_limiter_receiver: mpsc::Receiver<f64>,
+    /// shared rate limiter
+    pub rate_limiter: Arc<RwLock<Option<RateLimiter>>>,
 }
 
 // Consumer task: pops packets from the queue and sends them out
@@ -245,10 +236,6 @@ impl FifoWriter {
         let mut batch = Vec::new();
 
         loop {
-            if let Ok(rate_bps) = self.rate_limiter_receiver.try_recv() {
-                self.rate_limiter = Some(RateLimiter::new(rate_bps));
-            }
-
             // Wait for notification if queue is empty
             if self.queue.is_empty() {
                 self.queue_not_empty.notified().await;
@@ -270,10 +257,7 @@ impl FifoWriter {
         let packets = std::mem::take(batch);
 
         // Calculate total bytes in the batch
-        let mut total_bytes = 0;
-        for packet in &packets {
-            total_bytes += packet.packet_size;
-        }
+        let total_bytes: usize = packets.iter().map(|p| p.packet_size).sum();
 
         // Send the batch
         if let Err(e) = self.net_interface.send(packets).await {
@@ -285,8 +269,15 @@ impl FifoWriter {
             return;
         }
 
-        // Apply rate limiting after successful send
-        if let Some(limiter) = self.rate_limiter.as_ref() {
+        // Apply rate limiting if configured
+        let limiter = {
+            self.rate_limiter
+                .read()
+                .ok()
+                .and_then(|guard| guard.clone())
+        };
+
+        if let Some(limiter) = limiter {
             limiter.consume((total_bytes as f64) * 8.0).await;
         }
     }
