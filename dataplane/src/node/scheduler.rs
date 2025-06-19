@@ -1,12 +1,9 @@
 use std::sync::Arc;
 
-use tokio::sync::Notify;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
 
 use crate::node::config::LocalConfig;
@@ -100,8 +97,8 @@ impl Fifo {
         let scheduler_queue = Arc::new(ArrayQueue::new(capacity));
         let queue_not_empty = Arc::new(Notify::new());
 
-        // Setting rate limiter only once for the writer
-        let (rate_limiter_sender, rate_limiter_receiver) = oneshot::channel();
+        // mpsc channel for reader to send rate limiter config to writer (multiple times)
+        let (rate_limiter_sender, rate_limiter_receiver) = mpsc::channel(32);
 
         let mut reader = FifoReader {
             queue: scheduler_queue.clone(),
@@ -110,7 +107,7 @@ impl Fifo {
             receiver,
             queue_not_empty: queue_not_empty.clone(),
             capacity,
-            rate_limiter_sender: Some(rate_limiter_sender),
+            rate_limiter_sender,
         };
 
         let mut writer = FifoWriter {
@@ -118,7 +115,7 @@ impl Fifo {
             net_interface,
             queue_not_empty,
             rate_limiter: None,
-            rate_limiter_receiver: Some(rate_limiter_receiver),
+            rate_limiter_receiver,
         };
 
         tokio::task::spawn(async move {
@@ -154,8 +151,8 @@ struct FifoReader {
     pub queue_not_empty: Arc<Notify>,
     /// maximum queue capacity
     pub capacity: usize,
-    /// sending rate limiter to writer side only once
-    pub rate_limiter_sender: Option<oneshot::Sender<f64>>,
+    /// mpsc channel for reader to send rate limiter config to writer (multiple times)
+    pub rate_limiter_sender: mpsc::Sender<f64>,
 }
 
 impl FifoReader {
@@ -168,9 +165,7 @@ impl FifoReader {
                         self.enqueue(packet);
                     }
                     SchedulerMessage::SetRateLimiter(rate_bps) => {
-                        if let Some(sender) = self.rate_limiter_sender.take() {
-                            let _ = sender.send(rate_bps);
-                        }
+                        let _ = self.rate_limiter_sender.try_send(rate_bps);
                     }
                 }
 
@@ -180,9 +175,7 @@ impl FifoReader {
                             self.enqueue(packet);
                         }
                         SchedulerMessage::SetRateLimiter(rate_bps) => {
-                            if let Some(sender) = self.rate_limiter_sender.take() {
-                                let _ = sender.send(rate_bps);
-                            }
+                            let _ = self.rate_limiter_sender.try_send(rate_bps);
                         }
                     }
                 }
@@ -242,8 +235,8 @@ struct FifoWriter {
     pub queue_not_empty: Arc<Notify>,
     /// rate limiter for the writer
     pub rate_limiter: Option<RateLimiter>,
-    /// receiving rate limiter from reader side only once
-    pub rate_limiter_receiver: Option<oneshot::Receiver<f64>>,
+    /// mpsc channel for reader to set rate limiter
+    pub rate_limiter_receiver: mpsc::Receiver<f64>,
 }
 
 // Consumer task: pops packets from the queue and sends them out
@@ -252,11 +245,8 @@ impl FifoWriter {
         let mut batch = Vec::new();
 
         loop {
-            if let Some(receiver) = self.rate_limiter_receiver.as_mut() {
-                if let Ok(rate_bps) = receiver.try_recv() {
-                    self.rate_limiter = Some(RateLimiter::new(rate_bps));
-                    self.rate_limiter_receiver = None;
-                }
+            if let Ok(rate_bps) = self.rate_limiter_receiver.try_recv() {
+                self.rate_limiter = Some(RateLimiter::new(rate_bps));
             }
 
             // Wait for notification if queue is empty
