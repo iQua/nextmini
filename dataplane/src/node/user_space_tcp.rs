@@ -119,10 +119,6 @@ impl UserSpaceTcpSource {
                             let mut buffer = [0u8; 4096];
                             if let Ok(len) = server_socket.recv_slice(&mut buffer) {
                                 info!("Server received {} bytes", len);
-                                // echo the data back
-                                // if server_socket.can_send() {
-                                //     server_socket.send_slice(&buffer[..len]).unwrap();
-                                // }
                             }
                         }
                     }
@@ -225,15 +221,6 @@ impl UserSpaceTcpSource {
                         }
                     }
 
-                    if client_socket.may_recv() {
-                        let mut buffer = [0u8; 4096];
-                        if let Ok(len) = client_socket.recv_slice(&mut buffer) {
-                            // filter out empty packets(to be removed), no need to receive from the server
-                            if len > 0 {
-                                info!("Client {} received {} bytes: {:?}", i, len, &buffer[..len]);
-                            }
-                        }
-                    }
                 }
 
                 thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
