@@ -171,8 +171,15 @@ impl UserSpaceTcpSource {
 
                     // sending packets with per-connection traffic settings
                     if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
-                        let data_block = vec![0xAA; connection.data_size];
-                        match client_socket.send_slice(&data_block) {
+                        match client_socket.send(|buf| {
+                            let to_write = std::cmp::min(
+                                std::cmp::min(buf.len(), connection.data_size),
+                                bytes_left[i] as usize,
+                            );
+                            buf[..to_write].fill(0xAA);
+
+                            (to_write, to_write) // (bytes_to_enqueue, return_value)
+                        }) {
                             Ok(sent) => {
                                 bytes_left[i] -= sent as u64;
                                 bytes_sent[i] += sent as u64;
@@ -220,7 +227,6 @@ impl UserSpaceTcpSource {
                             }
                         }
                     }
-
                 }
 
                 thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
