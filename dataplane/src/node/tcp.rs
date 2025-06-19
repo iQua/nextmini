@@ -82,6 +82,7 @@ impl TcpServer {
                 NetworkStream::Tcp(stream),
                 self.processors.clone(),
                 self.reporter.clone(),
+                remote_node_id,
             )
             .await;
 

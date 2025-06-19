@@ -91,6 +91,7 @@ impl QuicServer {
                     NetworkStream::Quic(stream),
                     processors.clone(),
                     self.reporter.clone(),
+                    remote_node_id,
                 )
                 .await;
 
