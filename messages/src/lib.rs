@@ -19,8 +19,9 @@ pub enum DataplaneToController {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Metric {
     pub flow_id: [u8; 16],
-    pub bps: usize,
-    pub src_node_id: Option<usize>,
+    pub local_node_id: usize,
+    pub remote_node_id: usize,
+    pub bytes: usize,
     pub time_read: chrono::DateTime<chrono::Utc>,
 }
 

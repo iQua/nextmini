@@ -14,6 +14,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
+use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
@@ -25,7 +26,7 @@ pub struct ControllerInterfaceHandle {
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
-    pub async fn new(config: LocalConfig) -> Self {
+    pub async fn new(config: LocalConfig) -> (Self, ControllerReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
@@ -46,11 +47,13 @@ impl ControllerInterfaceHandle {
             northbridge_sender,
         };
 
+        let reporter = ControllerReporterHandle::new(controller_interface.clone());
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config,
             receiver_stream,
             processors,
-            controller_interface: controller_interface.clone(),
+            reporter: reporter.clone(),
         };
 
         tokio::spawn(async move {
@@ -60,7 +63,7 @@ impl ControllerInterfaceHandle {
             controller_receiver.run().await;
         });
 
-        controller_interface
+        (controller_interface, reporter)
     }
 
     pub async fn connect(
@@ -110,17 +113,17 @@ impl ControllerInterfaceHandle {
             error!("No response has been received from controller.");
         }
 
-
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
 
         (config, processors, ws_stream)
     }
 
-    pub async fn send_metrics(&self, msg: DataplaneToController) {
+    /// Sends a message to the controller.
+    pub async fn send(&self, msg: DataplaneToController) {
         if let Err(e) = self.northbridge_sender.send(msg) {
             error!(
-                "Error sending metrics to the controller interface actor: {}",
+                "Error sending messages to the controller interface actor: {}",
                 e
             );
         };
@@ -161,7 +164,7 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
-    controller_interface: ControllerInterfaceHandle,
+    reporter: ControllerReporterHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -205,6 +208,7 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
+                    self.reporter.clone(),
                 )
                 .await;
 
