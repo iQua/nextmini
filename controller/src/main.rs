@@ -250,7 +250,7 @@ async fn handle_connection(
                                             client_port: base_port + i as u16, // assign unique port per connection
                                             data_size: flow.data_size,
                                             flow_rate: flow.flow_rate,
-                                            size: flow.size,
+                                            flow_size: flow.flow_size,
                                             duration: flow.duration,
                                             start_time: flow.start_time,
                                         }

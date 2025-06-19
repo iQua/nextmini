@@ -96,7 +96,7 @@ impl UserSpaceTcpSource {
             let mut client_connections_status = vec![false; connections.len()];
             let mut bytes_left: Vec<u64> = connections
                 .iter()
-                .map(|c| c.size.unwrap_or(10_000_000))
+                .map(|c| c.flow_size.unwrap_or(10_000_000))
                 .collect();
             let mut bytes_sent: Vec<u64> = vec![0; connections.len()]; // for test
             let mut device = device;
@@ -178,7 +178,7 @@ impl UserSpaceTcpSource {
                                 bytes_sent[i] += sent as u64;
 
                                 if bytes_sent[i] % 1_000_000 == 0 || bytes_left[i] == 0 {
-                                    let total_size = connection.size.unwrap_or(10_000_000);
+                                    let total_size = connection.flow_size.unwrap_or(10_000_000);
                                     let progress =
                                         (bytes_sent[i] as f64 / total_size as f64 * 100.0) as u32;
                                     info!(

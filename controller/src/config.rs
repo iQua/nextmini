@@ -20,7 +20,7 @@ pub struct Flow {
     pub smoltcp_server_port: u16,
     pub data_size: usize,
     pub flow_rate: Option<u64>,  // flow rate
-    pub size: Option<u64>,       // flow size
+    pub flow_size: Option<u64>,  // flow size
     pub duration: Option<u64>,   // flow duration
     pub start_time: Option<u64>, // flow start time in seconds (from time 0)
 }
