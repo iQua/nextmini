@@ -81,7 +81,7 @@ impl UserSpaceTcpSource {
 
         // creates client sockets
         let mut client_handles = Vec::new();
-        for _ in &self.config.smoltcp_connections {
+        for _ in &self.config.flow_configs {
             let client_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
             let client_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
             let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
@@ -91,7 +91,7 @@ impl UserSpaceTcpSource {
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         let server_port = self.config.smoltcp_server_port; // fixed server port for smoltcp
-        let connections = self.config.smoltcp_connections.clone();
+        let connections = self.config.flow_configs.clone();
         thread::spawn(move || {
             let mut client_connections_status = vec![false; connections.len()];
             let mut bytes_left: Vec<u64> = connections

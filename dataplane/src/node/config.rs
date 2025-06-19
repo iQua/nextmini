@@ -7,7 +7,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, Protocol, SmoltcpConnectionConfig};
+use nextmini_messages::{ControllerToDataplane, Protocol, FlowConfig};
 
 use crate::node::NodeId;
 use crate::node::drop::DropStrategy;
@@ -204,7 +204,7 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub smoltcp_server_port: u16,
 
-    #[default(vec![SmoltcpConnectionConfig {
+    #[default(vec![FlowConfig {
         remote_addr: [0, 0, 0, 0],
         client_port: 49152,
         data_size: 1024,
@@ -214,7 +214,7 @@ pub struct LocalConfig {
         start_time: None,
     }])]
     #[arg(skip)]
-    pub smoltcp_connections: Vec<SmoltcpConnectionConfig>,
+    pub flow_configs: Vec<FlowConfig>,
 }
 
 impl LocalConfig {
@@ -330,7 +330,7 @@ impl LocalConfig {
                         smoltcp_net_mask,
                         smoltcp_port,
                         smoltcp_server_port,
-                        smoltcp_connections,
+                        flow_configs,
                         protocol,
                     } => {
                         self.node_id = node_id;
@@ -351,7 +351,7 @@ impl LocalConfig {
                         );
                         self.smoltcp_client_port = smoltcp_port;
                         self.smoltcp_server_port = smoltcp_server_port;
-                        self.smoltcp_connections = smoltcp_connections;
+                        self.flow_configs = flow_configs;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }
