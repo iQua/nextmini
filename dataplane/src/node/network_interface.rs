@@ -54,12 +54,13 @@ impl NetworkInterfaceHandle {
         // unlike a typical actor that uses a channel for sending messages to the network interface actor,
         // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
         // for the sake of improved performance and simplicity.
-        let network_interface = NetworkInterface::new(config.clone(), processors);
+        let local_id = config.node_id;
+        let network_interface = NetworkInterface::new(config, processors);
 
         let writer = network_interface.init(stream);
 
         Self {
-            local_id: config.node_id,
+            local_id,
             remote_node_id,
             reporter,
             writer,
