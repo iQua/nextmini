@@ -2,7 +2,6 @@ pub mod conductor;
 pub mod config;
 pub mod controller_interface;
 pub mod drop;
-pub mod limiter;
 pub mod local_interface;
 pub mod network_interface;
 pub mod packet;
@@ -12,6 +11,7 @@ pub mod reporter;
 pub mod route;
 pub mod scheduler;
 pub mod tcp;
+pub mod token_bucket;
 
 #[cfg(target_os = "linux")]
 pub mod local_reader_tso;

@@ -8,9 +8,9 @@ use tracing::{debug, error, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
-use crate::node::limiter::RateLimiter;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
+use crate::node::token_bucket::{TokenBucket, TokenBucketSpec};
 
 /// The scheduling discipline.
 #[allow(unused)]
@@ -27,7 +27,7 @@ pub enum SchedulerReaderMessage {
     InboundPacket(Packet),
 }
 
-/// The rate limit is to be sent by the controller interface, and in the unit of bytes per second.
+/// The rate limit is to be sent by the processor, and in the unit of bytes per second.
 pub enum SchedulerWriterMessage {
     RateLimit(usize),
 }
@@ -240,8 +240,8 @@ struct FifoWriter {
     pub queue_not_empty: Arc<Notify>,
     /// the receiver for an unbounded mpsc channel, for other actors to send packets to this writer
     pub receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
-    /// the local rate limiter
-    rate_limiter: Option<RateLimiter>,
+    /// the token bucket traffic shaper
+    token_bucket: Option<TokenBucket>,
 }
 
 // Consumer task: pops packets from the queue and sends them out
@@ -253,8 +253,8 @@ impl FifoWriter {
             // receives and imposes rate limits from the controller interface, if available
             while let Ok(message) = self.receiver.try_recv() {
                 match message {
-                    SchedulerWriterMessage::RateLimit(rate) => {
-                        self.rate_limiter = Some(RateLimiter::new(rate));
+                    SchedulerWriterMessage::RateLimit(token_bucket_spec) => {
+                        self.token_bucket = Some(TokenBucket::new(token_bucket_spec));
                     }
                 }
             }
@@ -281,18 +281,16 @@ impl FifoWriter {
         let packet_count = packets.len();
 
         // if needed, calculates total bytes before sending the packets out
-        if let Some(ref mut rate_limiter) = self.rate_limiter {
-            let total_bytes: usize = packets.iter().map(|p| p.packet_size).sum();
-
-            rate_limiter.consume(total_bytes).await;
-        }
-
-        if let Err(e) = self.net_interface.send(packets).await {
-            error!(
-                "FifoWriter: Error sending batch of {} packets: {}",
-                packet_count, e
-            );
-            return;
+        if let Some(ref mut token_bucket) = self.token_bucket {
+            token_bucket.send(self.net_interface, packets).await;
+        } else {
+            if let Err(e) = self.net_interface.send(packets).await {
+                error!(
+                    "FifoWriter: Error sending batch of {} packets: {}",
+                    packet_count, e
+                );
+                return;
+            }
         }
     }
 }
