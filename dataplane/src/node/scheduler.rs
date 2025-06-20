@@ -36,51 +36,12 @@ pub enum SchedulerWriterMessage {
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
 #[derive(Clone)]
-pub enum SchedulerHandle {
-    Fifo(FifoSchedulerHandle),
-    Wrr(WrrSchedulerHandle),
-}
-
-impl SchedulerHandle {
-    pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
-        match config.scheduler_type {
-            SchedulingDiscipline::Fifo => {
-                SchedulerHandle::Fifo(FifoSchedulerHandle::new(config, net_interface))
-            }
-            SchedulingDiscipline::Wrr => {
-                SchedulerHandle::Wrr(WrrSchedulerHandle::new(config, net_interface))
-            }
-        }
-    }
-    pub fn send(&self, packet: Packet) {
-        match self {
-            SchedulerHandle::Fifo(scheduler) => scheduler.send(packet),
-            SchedulerHandle::Wrr(scheduler) => scheduler.send(packet),
-        }
-    }
-    pub fn limit_rate(&self, spec: TokenBucketSpec) {
-        match self {
-            SchedulerHandle::Fifo(scheduler) => scheduler.limit_rate(spec),
-            SchedulerHandle::Wrr(scheduler) => scheduler.limit_rate(spec),
-        }
-    }
-    pub fn set_flow_weights(&self, weights: Vec<usize>) {
-        match self {
-            SchedulerHandle::Wrr(scheduler) => scheduler.set_flow_weights(weights),
-            _ => {
-                debug!("Flow weights are only supported for WRR scheduler.");
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct FifoSchedulerHandle {
+pub struct SchedulerHandle {
     reader_sender: mpsc::Sender<SchedulerReaderMessage>,
     writer_sender: mpsc::UnboundedSender<SchedulerWriterMessage>,
 }
 
-impl FifoSchedulerHandle {
+impl SchedulerHandle {
     pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
         // creates the mpsc channel for sending packets to the scheduler
         let (reader_sender, reader_receiver) = mpsc::channel(config.channel_capacity);
@@ -88,7 +49,14 @@ impl FifoSchedulerHandle {
         // creates the unbounded mpsc channel for sending a rate limit, in bytes (per second), to the scheduler
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
 
-        let scheduler = Fifo::new(config, net_interface, reader_receiver, writer_receiver);
+        let scheduler = match config.scheduler_type {
+            SchedulingDiscipline::Fifo => {
+                Fifo::new(config, net_interface, reader_receiver, writer_receiver)
+            }
+            _ => {
+                panic!("This scheduling discipline has not yet been implemented.");
+            }
+        };
 
         scheduler.run();
 
@@ -326,23 +294,5 @@ impl FifoWriter {
                 return;
             }
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct WrrSchedulerHandle {}
-impl WrrSchedulerHandle {
-    pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
-        // To be implemented
-        Self {}
-    }
-    pub fn send(&self, packet: Packet) {
-        // To be implemented
-    }
-    pub fn limit_rate(&self, spec: TokenBucketSpec) {
-        // To be implemented
-    }
-    pub fn set_flow_weights(&self, weights: Vec<usize>) {
-        // To be implemented
     }
 }
