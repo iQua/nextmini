@@ -12,7 +12,7 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::RoutingTableEntry;
+use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::local_interface::LocalInterfaceHandle;
@@ -31,6 +31,7 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
+    RateLimit(NodeId, TokenBucketSpec),
 }
 
 #[derive(Clone)]
@@ -85,6 +86,18 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::RateLimit(node_id, spec))
+        {
+            error!(
+                "Error sending the SetRateLimiter message to the processors: {}",
                 e
             );
         };
@@ -289,6 +302,11 @@ impl Processor {
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(local_interface);
+            }
+            ProcessorMessage::RateLimit(node_id, spec) => {
+                if let Some(scheduler) = self.schedulers.get(&node_id) {
+                    scheduler.limit_rate(spec);
+                }
             }
         }
     }
