@@ -162,7 +162,7 @@ async fn handle_connection(
                             }
                         };
 
-                        let smoltcp_port = config.smoltcp_port_range[0]
+                        let smoltcp_client_port_base = config.smoltcp_port_range[0]
                             + (node_id as u16
                                 % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
 
@@ -186,7 +186,7 @@ async fn handle_connection(
                             public_network_addr,
                             &virtual_network_addr,
                             &smoltcp_virtual_addr,
-                            smoltcp_port,
+                            smoltcp_client_port_base,
                         );
 
                         let new_node = Node {
@@ -196,7 +196,7 @@ async fn handle_connection(
                             public_network_addr,
                             virtual_network_addr,
                             smoltcp_virtual_addr,
-                            smoltcp_port: smoltcp_port as i32,
+                            smoltcp_port: smoltcp_client_port_base as i32,
                         };
 
                         // Insert node into database
@@ -252,7 +252,7 @@ async fn handle_connection(
                                 .map(|remote_addr| {
                                     FlowConfig {
                                         remote_addr,
-                                        client_port: smoltcp_port + i as u16, // assign unique port per connection
+                                        client_port: smoltcp_client_port_base + i as u16, // assign unique port per connection
                                         data_size: flow.data_size,
                                         flow_rate: flow.flow_rate,
                                         flow_size: flow.flow_size,
@@ -275,7 +275,7 @@ async fn handle_connection(
                             config.net_mask,
                             smoltcp_addr,
                             config.smoltcp_net_mask,
-                            smoltcp_port,
+                            smoltcp_client_port_base,
                             config.smoltcp_server_port,
                             flow_configs,
                             incoming_flows_count,

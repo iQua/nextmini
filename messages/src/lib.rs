@@ -61,7 +61,7 @@ pub enum ControllerToDataplane {
         net_mask: [u8; 4],
         smoltcp_addr: [u8; 4],
         smoltcp_net_mask: [u8; 4],
-        smoltcp_port: u16,
+        smoltcp_client_port_base: u16,
         smoltcp_server_port: u16,
         flow_configs: Vec<FlowConfig>,
         incoming_flows_count: usize,

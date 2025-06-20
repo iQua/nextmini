@@ -194,10 +194,10 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub user_space_smoltcp_netmask: (u8, u8, u8, u8),
 
-    // The user-space smoltcp port from controller (used as client port)
+    // The user-space smoltcp client port base from controller
     #[default(49152)]
     #[arg(skip)]
-    pub smoltcp_client_port: u16,
+    pub smoltcp_client_port_base: u16,
 
     // Fixed server port for smoltcp server (from controller)
     #[default(8888)]
@@ -333,7 +333,7 @@ impl LocalConfig {
                         net_mask,
                         smoltcp_addr,
                         smoltcp_net_mask,
-                        smoltcp_port,
+                        smoltcp_client_port_base,
                         smoltcp_server_port,
                         flow_configs,
                         incoming_flows_count,
@@ -355,7 +355,7 @@ impl LocalConfig {
                             smoltcp_net_mask[2],
                             smoltcp_net_mask[3],
                         );
-                        self.smoltcp_client_port = smoltcp_port;
+                        self.smoltcp_client_port_base = smoltcp_client_port_base;
                         self.smoltcp_server_port = smoltcp_server_port;
                         self.flow_configs = flow_configs;
                         self.incoming_flows_count = incoming_flows_count;
