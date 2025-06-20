@@ -207,7 +207,6 @@ pub struct LocalConfig {
     #[default(vec![FlowConfig {
         remote_addr: [0, 0, 0, 0],
         client_port: 49152,
-        data_size: 1024,
         flow_rate: Some(1_000_000),
         flow_size: Some(10_000_000),
         duration: None,

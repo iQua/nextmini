@@ -39,7 +39,6 @@ pub enum Protocol {
 pub struct FlowConfig {
     pub remote_addr: [u8; 4],
     pub client_port: u16,
-    pub data_size: usize,
     pub flow_rate: Option<u64>,
     pub flow_size: Option<u64>,
     pub duration: Option<u64>,

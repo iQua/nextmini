@@ -16,7 +16,6 @@ pub struct Route {
 pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub data_size: usize,
     pub flow_rate: Option<u64>,  // flow rate
     pub flow_size: Option<u64>,  // flow size
     pub duration: Option<u64>,   // flow duration

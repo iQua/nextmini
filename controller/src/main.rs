@@ -253,7 +253,6 @@ async fn handle_connection(
                                     FlowConfig {
                                         remote_addr,
                                         client_port: smoltcp_client_port_base + i as u16, // assign unique port per connection
-                                        data_size: flow.data_size,
                                         flow_rate: flow.flow_rate,
                                         flow_size: flow.flow_size,
                                         duration: flow.duration,

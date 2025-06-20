@@ -7,7 +7,6 @@ n_nodes = 2
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-data_size = 1024
 flow_rate = 100000
 flow_size = 10000
 duration = 5
@@ -16,7 +15,6 @@ start_time = 0
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-data_size = 512
 flow_rate = 200000
 flow_size = 8000
 duration = 3
@@ -25,7 +23,6 @@ start_time = 0
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-data_size = 2048
 flow_rate = 50000
 flow_size = 12000
 duration = 4
@@ -34,7 +31,6 @@ start_time = 0
 [[flows]]
 src_node_id = 2
 dst_node_id = 1
-data_size = 1024
 flow_rate = 80000
 flow_size = 8000
 duration = 3
