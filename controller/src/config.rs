@@ -42,9 +42,7 @@ pub struct Topology {
 pub struct LinkRate {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    #[serde(default = "default_rate")]
     pub rate: usize,
-    #[serde(default = "default_bucket_size")]
     pub bucket_size: usize,
 }
 
@@ -110,16 +108,6 @@ fn default_net_mask() -> [u8; 4] {
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
-}
-
-/// The default rate for link rate control (bytes per second)
-fn default_rate() -> usize {
-    1000000
-}
-
-/// The default bucket size for token bucket (bytes)
-fn default_bucket_size() -> usize {
-    3000
 }
 
 /// The default configuration for the database
