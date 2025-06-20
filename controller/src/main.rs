@@ -13,7 +13,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, FlowConfig};
+use nextmini_messages::{
+    ControllerToDataplane, DataplaneToController, FlowConfig, TokenBucketSpec,
+};
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
@@ -232,31 +234,30 @@ async fn handle_connection(
                             + (node_id as u16
                                 % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
 
-                        let flow_configs: Vec<FlowConfig> =
-                            config
-                                .flows
-                                .iter()
-                                .filter(|flow| flow.src_node_id == node_id)
-                                .enumerate()
-                                .filter_map(|(i, flow)| {
-                                    create_new_virtual_addr(
-                                        config.smoltcp_base_addr,
-                                        config.smoltcp_net_mask,
-                                        flow.dst_node_id,
-                                    )
-                                    .map(|remote_addr| {
-                                        FlowConfig {
-                                            remote_addr,
-                                            client_port: base_port + i as u16, // assign unique port per connection
-                                            data_size: flow.data_size,
-                                            flow_rate: flow.flow_rate,
-                                            flow_size: flow.flow_size,
-                                            duration: flow.duration,
-                                            start_time: flow.start_time,
-                                        }
-                                    })
+                        let flow_configs: Vec<FlowConfig> = config
+                            .flows
+                            .iter()
+                            .filter(|flow| flow.src_node_id == node_id)
+                            .enumerate()
+                            .filter_map(|(i, flow)| {
+                                create_new_virtual_addr(
+                                    config.smoltcp_base_addr,
+                                    config.smoltcp_net_mask,
+                                    flow.dst_node_id,
+                                )
+                                .map(|remote_addr| {
+                                    FlowConfig {
+                                        remote_addr,
+                                        client_port: base_port + i as u16, // assign unique port per connection
+                                        data_size: flow.data_size,
+                                        flow_rate: flow.flow_rate,
+                                        flow_size: flow.flow_size,
+                                        duration: flow.duration,
+                                        start_time: flow.start_time,
+                                    }
                                 })
-                                .collect();
+                            })
+                            .collect();
 
                         info!(
                             "Found {} flows for node {} from configuration",
@@ -391,9 +392,13 @@ async fn handle_connection(
 
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
+                                let spec = TokenBucketSpec {
+                                    rate: link_rate.rate,
+                                    bucket_size: link_rate.bucket_size,
+                                };
                                 let msg = ControllerToDataplane::SetLinkRate {
                                     node_id: link_rate.dst_node_id,
-                                    rate: link_rate.bandwidth,
+                                    spec,
                                 };
 
                                 match write_arc
@@ -403,8 +408,11 @@ async fn handle_connection(
                                     .await
                                 {
                                     Ok(_) => info!(
-                                        "Set link rate for node {} to node {} at {} bps.",
-                                        node_id, link_rate.dst_node_id, link_rate.bandwidth
+                                        "Set link rate for node {} to node {} at {} bytes/second with bucket size {} bytes.",
+                                        node_id,
+                                        link_rate.dst_node_id,
+                                        link_rate.rate,
+                                        link_rate.bucket_size
                                     ),
                                     Err(e) => error!(
                                         "Failed to send the SetLinkRate message to node {}: {}.",
