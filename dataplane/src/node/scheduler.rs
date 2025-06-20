@@ -8,6 +8,7 @@ use tracing::{debug, error, warn};
 
 use nextmini_messages::TokenBucketSpec;
 
+use crate::node::FlowId;
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
@@ -270,6 +271,224 @@ impl FifoWriter {
             while let Some(packet) = self.queue.pop() {
                 batch.push(packet);
             }
+
+            // sends the batch if we have packets
+            if !batch.is_empty() {
+                self.send_packets(&mut batch).await;
+            }
+        }
+    }
+    async fn send_packets(&mut self, batch: &mut Vec<Packet>) {
+        let packets = std::mem::take(batch);
+        let packet_count = packets.len();
+
+        // if needed, calculates total bytes before sending the packets out
+        if let Some(ref mut token_bucket) = self.token_bucket {
+            token_bucket.send(&mut self.net_interface, packets).await;
+        } else {
+            if let Err(e) = self.net_interface.send(packets).await {
+                error!(
+                    "FifoWriter: Error sending batch of {} packets: {}",
+                    packet_count, e
+                );
+
+                return;
+            }
+        }
+    }
+}
+
+pub struct Wrr {
+    config: LocalConfig,
+}
+
+impl Wrr {
+    pub fn new(
+        config: LocalConfig,
+        net_interface: NetworkInterfaceHandle,
+        reader_receiver: mpsc::Receiver<SchedulerReaderMessage>,
+        writer_receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
+    ) -> Self {
+        let capacity = config.queue_capacity;
+        let capacity_unit = CapacityUnit::Packets;
+
+        let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
+            DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
+            DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
+        };
+
+        let scheduler_queues = Arc::new(Vec::new());
+        let flow_weights = Arc::new(Vec::new());
+
+        // To be implemented:
+        // Map the flow id to a class id
+
+        let flow_to_class = Arc::new(|flow_id| flow_id);
+        let queue_not_empty = Arc::new(Notify::new());
+
+        let mut reader = WrrReader {
+            queues: scheduler_queues.clone(),
+            flow_weights: flow_weights.clone(),
+            flow_to_class: flow_to_class.clone(),
+            packets_dropped: 0,
+            drop_strategy: packet_drop,
+            queue_not_empty: queue_not_empty.clone(),
+            capacity,
+            receiver: reader_receiver,
+        };
+
+        let mut writer = WrrWriter {
+            queues: scheduler_queues.clone(),
+            flow_weights: flow_weights.clone(),
+            net_interface,
+            queue_not_empty: queue_not_empty.clone(),
+            receiver: writer_receiver,
+            token_bucket: None,
+        };
+
+        tokio::task::spawn(async move {
+            let _ = reader.run().await;
+        });
+
+        tokio::task::spawn(async move {
+            let _ = writer.run().await;
+        });
+
+        Self { config }
+    }
+
+    pub fn run(&self) {
+        // This method is intentionally left empty as the actual run logic is handled in the
+        // WrrReader and WrrWriter tasks spawned above.
+        debug!(
+            "A {:?} scheduler has just been started.",
+            self.config.scheduler_type
+        );
+    }
+}
+
+pub struct WrrReader {
+    /// the queues for each flow
+    pub queues: Arc<Vec<ArrayQueue<Packet>>>,
+    /// the flow weights
+    pub flow_weights: Arc<Vec<usize>>,
+    /// the function to map a flow id to a class id
+    pub flow_to_class: Arc<dyn Fn(FlowId) -> usize + Send + Sync>,
+    /// the number of packets dropped so far
+    pub packets_dropped: usize,
+    /// a closure that determines whether an inbound packet should be dropped or not
+    pub drop_strategy: Box<dyn PacketDrop + Send + Sync>,
+    /// the queue not empty signal for each flow
+    pub queue_not_empty: Arc<Notify>,
+    /// the capacity of the queue
+    pub capacity: usize,
+    /// the receiver for an mpsc channel, for other actors to send packets to this reader
+    pub receiver: mpsc::Receiver<SchedulerReaderMessage>,
+}
+
+impl WrrReader {
+    async fn run(&mut self) {
+        // producer task: receives packets and enqueues them
+        loop {
+            if let Some(message) = self.receiver.recv().await {
+                match message {
+                    SchedulerReaderMessage::InboundPacket(packet) => {
+                        self.enqueue(packet);
+                    }
+                }
+
+                while let Ok(message) = self.receiver.try_recv() {
+                    match message {
+                        SchedulerReaderMessage::InboundPacket(packet) => {
+                            self.enqueue(packet);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fn enqueue(&mut self, packet: Packet) {
+        // To be implemented
+        // Create new queue for new flow
+
+        let class_id = (self.flow_to_class)(packet.flow_id);
+        let queue_len = self.queues[class_id].len();
+
+        // drops the packet based on the drop strategy
+        let should_drop_packet =
+            self.drop_strategy
+                .should_drop(packet.packet_size, queue_len, self.capacity);
+
+        // the case that this packet will be dropped
+        if should_drop_packet {
+            self.packets_dropped += 1;
+
+            warn!(
+                "WRR: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
+                packet.flow_id, packet.packet_size, queue_len, self.capacity, self.packets_dropped
+            );
+
+            return;
+        }
+
+        let is_tcp_data = packet.is_tcp_data();
+
+        if self.queues[class_id].push(packet).is_err() {
+            self.packets_dropped += 1;
+
+            warn!("FIFO: Scheduler dropped a packet as the queue is full.");
+        } else {
+            // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
+            // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
+            if is_tcp_data {
+                if queue_len > 2 {
+                    // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
+                    // and the queue becomes 'non-empty' now
+                    self.queue_not_empty.notify_one();
+                }
+            } else {
+                self.queue_not_empty.notify_one();
+            }
+        }
+    }
+}
+
+pub struct WrrWriter {
+    /// the queues for each flow
+    pub queues: Arc<Vec<ArrayQueue<Packet>>>,
+    /// the flow weights
+    pub flow_weights: Arc<Vec<usize>>,
+    /// the network interface handle
+    pub net_interface: NetworkInterfaceHandle,
+    /// signals when the queue has packets to be consumed
+    pub queue_not_empty: Arc<Notify>,
+    /// the receiver for an unbounded mpsc channel, for other actors to send packets to this writer
+    pub receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
+    /// the token bucket traffic shaper
+    token_bucket: Option<TokenBucket>,
+}
+
+impl WrrWriter {
+    async fn run(&mut self) {
+        let mut batch = Vec::new();
+
+        loop {
+            // receives and imposes rate limits from the controller interface, if available
+            while let Ok(message) = self.receiver.try_recv() {
+                match message {
+                    SchedulerWriterMessage::RateLimit(spec) => {
+                        self.token_bucket = Some(TokenBucket::new(spec));
+                    }
+                }
+            }
+
+            // waits for notification if the queue is empty
+            if self.queues.iter().all(|queue| queue.is_empty()) {
+                self.queue_not_empty.notified().await;
+            }
+
+            // To be implemented
+            // Drains the packets from the queues according to the WRR algorithm
 
             // sends the batch if we have packets
             if !batch.is_empty() {
