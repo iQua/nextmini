@@ -110,13 +110,14 @@ impl UserSpaceTcpSource {
                 iface.poll(now, &mut device, &mut sockets);
 
                 // multiple server sockets handling
-                for (server_index, &server_handle) in server_handles.iter().enumerate() {
+                for i in 0..server_handles.len() {
+                    let server_handle = server_handles[i];
                     let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
-                    let server_port = base_server_port + server_index as u16;
+                    let server_port = base_server_port + i as u16;
 
                     if !server_socket.is_active() && !server_socket.is_listening() {
                         if let Ok(_) = server_socket.listen(server_port) {
-                            info!("Server {} listening on port {}", server_index, server_port);
+                            info!("Server {} listening on port {}", i, server_port);
                         }
                     }
 
@@ -124,7 +125,7 @@ impl UserSpaceTcpSource {
                         if server_socket.can_recv() {
                             let mut buffer = [0u8; 4096];
                             if let Ok(len) = server_socket.recv_slice(&mut buffer) {
-                                info!("Server {} received {} bytes", server_index, len);
+                                info!("Server {} received {} bytes", i, len);
                             }
                         }
                     }
