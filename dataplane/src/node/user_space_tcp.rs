@@ -114,7 +114,7 @@ impl UserSpaceTcpSource {
                 for i in 0..server_handles.len() {
                     let server_handle = server_handles[i];
                     let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
-                    let server_port = base_server_port + i as u16;
+                    let server_port = base_server_port;
 
                     if !server_socket.is_active() && !server_socket.is_listening() {
                         if let Ok(_) = server_socket.listen(server_port) {
@@ -155,7 +155,7 @@ impl UserSpaceTcpSource {
                                 flow.remote_addr[2],
                                 flow.remote_addr[3],
                             );
-                            let remote_port = base_server_port + i as u16;
+                            let remote_port = base_server_port as u16;
 
                             client_socket
                                 .connect(
