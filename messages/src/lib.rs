@@ -61,6 +61,13 @@ pub enum ControllerToDataplane {
         node_id: usize,
         spec: TokenBucketSpec,
     },
+    SetFlowWeight {
+        src_node_id: usize,
+        dst_node_id: usize,
+        src_port: usize,
+        dst_port: usize,
+        weight: usize,
+    },
 }
 
 /// Routing table entry: route_id → next_hop, with source and destination node IDs

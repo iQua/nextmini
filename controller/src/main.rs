@@ -341,6 +341,37 @@ async fn handle_connection(
                                 }
                             }
                         }
+
+                        // sets the flow weights
+                        info!("Setting flow weights for node {}", node_id);
+
+                        for flow_weight in &config.flow_weights {
+                            let msg = ControllerToDataplane::SetFlowWeight {
+                                src_node_id: flow_weight.src_node_id,
+                                dst_node_id: flow_weight.dst_node_id,
+                                src_port: flow_weight.src_port,
+                                dst_port: flow_weight.dst_port,
+                                weight: flow_weight.weight,
+                            };
+
+                            match write_arc
+                                .lock()
+                                .await
+                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .await
+                            {
+                                Ok(_) => info!(
+                                    "Set flow weight for node {} to node {} at {}.",
+                                    flow_weight.src_node_id,
+                                    flow_weight.dst_node_id,
+                                    flow_weight.weight
+                                ),
+                                Err(e) => error!(
+                                    "Failed to send the SetFlowWeight message to node {}: {}.",
+                                    flow_weight.src_node_id, e
+                                ),
+                            }
+                        }
                     }
                     DataplaneToController::Metrics { metrics } => {
                         if let Some(_) = current_node_id {
