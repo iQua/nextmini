@@ -122,21 +122,23 @@ impl UserSpaceTcpSource {
                         }
                     }
 
-                    if server_socket.is_active() {
-                        if server_socket.can_recv() {
-                            let mut buffer = [0u8; 4096];
-                            if let Ok(len) = server_socket.recv_slice(&mut buffer) {
-                                bytes_received[i] += len as u64;
+                    if server_socket.is_active() && server_socket.can_recv() {
+                        match server_socket.recv(|buffer| {
+                            let length = buffer.len();
+                            bytes_received[i] += length as u64;
 
-                                if bytes_received[i] % 1_000 == 0 || len > 0 {
-                                    info!(
-                                        "Server {} received {} KB total ({} bytes this time)",
-                                        i,
-                                        bytes_received[i] / 1_000,
-                                        len
-                                    );
-                                }
+                            if bytes_received[i] % 1_000 == 0 || length > 0 {
+                                info!(
+                                    "Server {} received {} KB total ({} bytes this time)",
+                                    i,
+                                    bytes_received[i] / 1_000,
+                                    length
+                                );
                             }
+                            (length, length)
+                        }) {
+                            Ok(_) => {}
+                            Err(_) => {}
                         }
                     }
                 }
@@ -190,7 +192,7 @@ impl UserSpaceTcpSource {
                     if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
                         match client_socket.send(|buf| {
                             let to_write = std::cmp::min(
-                                std::cmp::min(buf.len(), flow.data_size),
+                                buf.len(),
                                 bytes_left[i] as usize,
                             );
                             buf[..to_write].fill(0xAA);
