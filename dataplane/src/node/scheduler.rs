@@ -390,32 +390,7 @@ pub struct WrrReader {
 }
 
 impl WrrReader {
-    async fn run(&mut self) {
-        // producer task: receives packets and enqueues them
-        loop {
-            if let Some(message) = self.receiver.recv().await {
-                match message {
-                    SchedulerReaderMessage::InboundPacket(packet) => {
-                        self.enqueue(packet);
-                    }
-                    SchedulerReaderMessage::SetFlowWeight(flow_id, weight) => {
-                        self.set_flow_weight(flow_id, weight);
-                    }
-                }
-
-                while let Ok(message) = self.receiver.try_recv() {
-                    match message {
-                        SchedulerReaderMessage::InboundPacket(packet) => {
-                            self.enqueue(packet);
-                        }
-                        SchedulerReaderMessage::SetFlowWeight(flow_id, weight) => {
-                            self.set_flow_weight(flow_id, weight);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    async fn run(&mut self) {}
     /// Push a packet into the correct queue based on the flow id
     fn enqueue(&mut self, packet: Packet) {
         // To be implemented
