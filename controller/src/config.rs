@@ -56,7 +56,8 @@ pub struct Topology {
 pub struct LinkRate {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub bandwidth: usize,
+    pub rate: usize,
+    pub bucket_size: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

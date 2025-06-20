@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
-use tokio::sync::Notify;
-use tokio::sync::mpsc;
-
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
+
+use nextmini_messages::TokenBucketSpec;
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
+use crate::node::token_bucket::TokenBucket;
 
 /// The scheduling discipline.
 #[allow(unused)]
@@ -24,23 +25,34 @@ pub enum SchedulingDiscipline {
 }
 
 /// The types of messages sent to the scheduler.
-pub enum SchedulerMessage {
+pub enum SchedulerReaderMessage {
     InboundPacket(Packet),
+}
+
+/// The rate limit is to be sent by the processor, and in the unit of bytes per second.
+pub enum SchedulerWriterMessage {
+    RateLimit(TokenBucketSpec),
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
 #[derive(Clone, Debug)]
 pub struct SchedulerHandle {
-    sender: mpsc::Sender<SchedulerMessage>,
+    reader_sender: mpsc::Sender<SchedulerReaderMessage>,
+    writer_sender: mpsc::UnboundedSender<SchedulerWriterMessage>,
 }
 
 impl SchedulerHandle {
     pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
         // creates the mpsc channel for sending packets to the scheduler
-        let (sender, receiver) = mpsc::channel(config.channel_capacity);
+        let (reader_sender, reader_receiver) = mpsc::channel(config.channel_capacity);
+
+        // creates the unbounded mpsc channel for sending a rate limit, in bytes (per second), to the scheduler
+        let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
 
         let scheduler = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => Fifo::new(config, net_interface, receiver),
+            SchedulingDiscipline::Fifo => {
+                Fifo::new(config, net_interface, reader_receiver, writer_receiver)
+            }
             _ => {
                 panic!("This scheduling discipline has not yet been implemented.");
             }
@@ -48,17 +60,33 @@ impl SchedulerHandle {
 
         scheduler.run();
 
-        Self { sender }
+        Self {
+            reader_sender,
+            writer_sender,
+        }
     }
 
-    // Sends a packet to the scheduler.
+    /// Sends a packet to the scheduler.
     pub fn send(&self, packet: Packet) {
         if let Err(e) = self
-            .sender
-            .try_send(SchedulerMessage::InboundPacket(packet))
+            .reader_sender
+            .try_send(SchedulerReaderMessage::InboundPacket(packet))
         {
             error!(
                 "SchedulerHandle: Error sending a packet to the scheduler: {}.",
+                e
+            );
+        }
+    }
+
+    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
+    pub fn limit_rate(&self, spec: TokenBucketSpec) {
+        if let Err(e) = self
+            .writer_sender
+            .send(SchedulerWriterMessage::RateLimit(spec))
+        {
+            error!(
+                "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
                 e
             );
         }
@@ -74,7 +102,8 @@ impl Fifo {
     pub fn new(
         config: LocalConfig,
         net_interface: NetworkInterfaceHandle,
-        receiver: mpsc::Receiver<SchedulerMessage>,
+        reader_receiver: mpsc::Receiver<SchedulerReaderMessage>,
+        writer_receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
     ) -> Self {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
@@ -91,15 +120,17 @@ impl Fifo {
             queue: scheduler_queue.clone(),
             packets_dropped: 0,
             drop_strategy: packet_drop,
-            receiver,
             queue_not_empty: queue_not_empty.clone(),
             capacity,
+            receiver: reader_receiver,
         };
 
         let mut writer = FifoWriter {
             queue: scheduler_queue,
             net_interface,
             queue_not_empty,
+            receiver: writer_receiver,
+            token_bucket: None,
         };
 
         tokio::task::spawn(async move {
@@ -129,12 +160,12 @@ struct FifoReader {
     pub packets_dropped: usize,
     /// a closure that determines whether an inbound packet should be dropped or not
     pub drop_strategy: Box<dyn PacketDrop + Send + Sync>,
-    /// the receiver for an mpsc channel, for other actors to send packets to this reader
-    pub receiver: mpsc::Receiver<SchedulerMessage>,
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
     /// maximum queue capacity
     pub capacity: usize,
+    /// the receiver for an mpsc channel, for other actors to send packets to this reader
+    pub receiver: mpsc::Receiver<SchedulerReaderMessage>,
 }
 
 impl FifoReader {
@@ -143,14 +174,14 @@ impl FifoReader {
         loop {
             if let Some(message) = self.receiver.recv().await {
                 match message {
-                    SchedulerMessage::InboundPacket(packet) => {
+                    SchedulerReaderMessage::InboundPacket(packet) => {
                         self.enqueue(packet);
                     }
                 }
 
                 while let Ok(message) = self.receiver.try_recv() {
                     match message {
-                        SchedulerMessage::InboundPacket(packet) => {
+                        SchedulerReaderMessage::InboundPacket(packet) => {
                             self.enqueue(packet);
                         }
                     }
@@ -209,6 +240,10 @@ struct FifoWriter {
     pub net_interface: NetworkInterfaceHandle,
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
+    /// the receiver for an unbounded mpsc channel, for other actors to send packets to this writer
+    pub receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
+    /// the token bucket traffic shaper
+    token_bucket: Option<TokenBucket>,
 }
 
 // Consumer task: pops packets from the queue and sends them out
@@ -217,32 +252,47 @@ impl FifoWriter {
         let mut batch = Vec::new();
 
         loop {
-            // Wait for notification if queue is empty
+            // receives and imposes rate limits from the controller interface, if available
+            while let Ok(message) = self.receiver.try_recv() {
+                match message {
+                    SchedulerWriterMessage::RateLimit(spec) => {
+                        self.token_bucket = Some(TokenBucket::new(spec));
+                    }
+                }
+            }
+
+            // waits for notification if the queue is empty
             if self.queue.is_empty() {
                 self.queue_not_empty.notified().await;
             }
 
-            // Drain packets from queue efficiently
+            // drains packets from the queue efficiently
             while let Some(packet) = self.queue.pop() {
                 batch.push(packet);
             }
 
-            // Send batch if we have packets
+            // sends the batch if we have packets
             if !batch.is_empty() {
                 self.send_packets(&mut batch).await;
             }
         }
     }
-
     async fn send_packets(&mut self, batch: &mut Vec<Packet>) {
         let packets = std::mem::take(batch);
+        let packet_count = packets.len();
 
-        if let Err(e) = self.net_interface.send(packets).await {
-            error!(
-                "FifoWriter: Error sending batch of {} packets: {}",
-                batch.capacity(),
-                e
-            );
+        // if needed, calculates total bytes before sending the packets out
+        if let Some(ref mut token_bucket) = self.token_bucket {
+            token_bucket.send(&mut self.net_interface, packets).await;
+        } else {
+            if let Err(e) = self.net_interface.send(packets).await {
+                error!(
+                    "FifoWriter: Error sending batch of {} packets: {}",
+                    packet_count, e
+                );
+
+                return;
+            }
         }
     }
 }

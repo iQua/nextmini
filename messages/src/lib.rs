@@ -1,5 +1,5 @@
-use clap::ValueEnum;
 /// Defines message enums for controller-dataplane communication.
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -25,7 +25,7 @@ pub struct Metric {
     pub time_read: chrono::DateTime<chrono::Utc>,
 }
 
-/// The transport protocol used to transfer data between nodes
+/// The transport protocol used to transfer data between nodes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Protocol {
@@ -44,6 +44,12 @@ pub struct FlowConfig {
     pub flow_size: Option<u64>,
     pub duration: Option<u64>,
     pub start_time: Option<u64>,
+}
+/// The specification of a token bucket traffic shaper.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TokenBucketSpec {
+    pub rate: usize,
+    pub bucket_size: usize,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -69,7 +75,7 @@ pub enum ControllerToDataplane {
     },
     SetLinkRate {
         node_id: usize,
-        rate: usize,
+        spec: TokenBucketSpec,
     },
 }
 
