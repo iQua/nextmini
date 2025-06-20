@@ -215,6 +215,11 @@ pub struct LocalConfig {
     }])]
     #[arg(skip)]
     pub flow_configs: Vec<FlowConfig>,
+
+    // The number of incoming flows that this node will receive
+    #[default(1)]
+    #[arg(skip)]
+    pub incoming_flows_count: usize,
 }
 
 impl LocalConfig {
@@ -331,6 +336,7 @@ impl LocalConfig {
                         smoltcp_port,
                         smoltcp_server_port,
                         flow_configs,
+                        incoming_flows_count,
                         protocol,
                     } => {
                         self.node_id = node_id;
@@ -352,6 +358,7 @@ impl LocalConfig {
                         self.smoltcp_client_port = smoltcp_port;
                         self.smoltcp_server_port = smoltcp_server_port;
                         self.flow_configs = flow_configs;
+                        self.incoming_flows_count = incoming_flows_count;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

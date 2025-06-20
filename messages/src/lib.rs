@@ -64,6 +64,7 @@ pub enum ControllerToDataplane {
         smoltcp_port: u16,
         smoltcp_server_port: u16,
         flow_configs: Vec<FlowConfig>,
+        incoming_flows_count: usize,
         protocol: Protocol,
     },
     AddNode {

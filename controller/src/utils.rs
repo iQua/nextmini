@@ -43,6 +43,7 @@ pub fn build_startup_response(
     smoltcp_port: u16,
     smoltcp_server_port: u16,
     flow_configs: Vec<FlowConfig>,
+    incoming_flows_count: usize,
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
@@ -54,6 +55,7 @@ pub fn build_startup_response(
         smoltcp_port,
         smoltcp_server_port,
         flow_configs,
+        incoming_flows_count,
         protocol,
     }
 }

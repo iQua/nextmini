@@ -231,6 +231,13 @@ async fn handle_connection(
 
                         // Send startup response
 
+                        // calculates incoming flows count for this node
+                        let incoming_flows_count = config
+                            .flows
+                            .iter()
+                            .filter(|flow| flow.dst_node_id == node_id)
+                            .count();
+
                         let flow_configs: Vec<FlowConfig> = config
                             .flows
                             .iter()
@@ -271,6 +278,7 @@ async fn handle_connection(
                             smoltcp_port,
                             config.smoltcp_server_port,
                             flow_configs,
+                            incoming_flows_count,
                             config.protocol.clone(),
                         );
 

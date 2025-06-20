@@ -73,9 +73,9 @@ impl UserSpaceTcpSource {
         // current user-space TCP source is a client-only implementation, as it does not implement
         // bind(), listen(), and accept().
 
-        // creates multiple server sockets
+        // creates server sockets based on incoming flows count
         let mut server_handles = Vec::new();
-        for _i in 0..self.config.flow_configs.len() {
+        for _i in 0..self.config.incoming_flows_count {
             let server_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
             let server_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
             let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
