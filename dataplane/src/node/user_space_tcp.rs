@@ -191,10 +191,7 @@ impl UserSpaceTcpSource {
                     // sending packets with per-connection traffic settings
                     if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
                         match client_socket.send(|buf| {
-                            let to_write = std::cmp::min(
-                                buf.len(),
-                                bytes_left[i] as usize,
-                            );
+                            let to_write = std::cmp::min(buf.len(), bytes_left[i] as usize);
                             buf[..to_write].fill(0xAA);
 
                             (to_write, to_write) // (bytes_to_enqueue, return_value)
@@ -248,7 +245,19 @@ impl UserSpaceTcpSource {
                     }
                 }
 
-                thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
+                // using smoltcp's poll_at
+                match iface.poll_at(now, &sockets) {
+                    Some(poll_at) if now < poll_at => {
+                        let wait_time = poll_at - now;
+                        thread::sleep(wait_time.into());
+                    }
+                    Some(_) => {
+                        continue;
+                    }
+                    None => {
+                        thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
+                    }
+                }
             }
         });
     }
