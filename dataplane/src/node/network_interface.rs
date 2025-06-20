@@ -35,6 +35,7 @@ impl ProtocolWriter {
 }
 
 /// The network interface handle, used for sending and receiving packets over the network.
+
 pub struct NetworkInterfaceHandle {
     local_id: NodeId,
     remote_node_id: NodeId,

@@ -11,6 +11,7 @@ pub mod reporter;
 pub mod route;
 pub mod scheduler;
 pub mod tcp;
+pub mod token_bucket;
 pub mod user_space_tcp;
 
 #[cfg(target_os = "linux")]
