@@ -73,11 +73,15 @@ impl UserSpaceTcpSource {
         // current user-space TCP source is a client-only implementation, as it does not implement
         // bind(), listen(), and accept().
 
-        // create server socket
-        let server_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-        let server_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-        let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
-        let server_handle = sockets.add(server_socket);
+        // creates multiple server sockets
+        let mut server_handles = Vec::new();
+        for _i in 0..self.config.flow_configs.len() {
+            let server_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+            let server_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+            let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
+            let server_handle = sockets.add(server_socket);
+            server_handles.push(server_handle);
+        }
 
         // creates client sockets
         let mut client_handles = Vec::new();
@@ -90,7 +94,7 @@ impl UserSpaceTcpSource {
         }
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
-        let server_port = self.config.smoltcp_server_port; // fixed server port for smoltcp
+        let base_server_port = self.config.smoltcp_server_port; // base server port for smoltcp
         let flows = self.config.flow_configs.clone();
         thread::spawn(move || {
             let mut client_connections_status = vec![false; flows.len()];
@@ -105,20 +109,22 @@ impl UserSpaceTcpSource {
                 let now = Instant::now();
                 iface.poll(now, &mut device, &mut sockets);
 
-                // Server socket handling
-                {
+                // multiple server sockets handling
+                for (server_index, &server_handle) in server_handles.iter().enumerate() {
                     let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
+                    let server_port = base_server_port + server_index as u16;
 
                     if !server_socket.is_active() && !server_socket.is_listening() {
-                        server_socket.listen(server_port).unwrap();
-                        info!("Server listening on port {}", server_port);
+                        if let Ok(_) = server_socket.listen(server_port) {
+                            info!("Server {} listening on port {}", server_index, server_port);
+                        }
                     }
 
                     if server_socket.is_active() {
                         if server_socket.can_recv() {
                             let mut buffer = [0u8; 4096];
                             if let Ok(len) = server_socket.recv_slice(&mut buffer) {
-                                info!("Server received {} bytes", len);
+                                info!("Server {} received {} bytes", server_index, len);
                             }
                         }
                     }
@@ -138,7 +144,8 @@ impl UserSpaceTcpSource {
                                 flow.remote_addr[2],
                                 flow.remote_addr[3],
                             );
-                            let remote_port = server_port;
+                            // TODO: CONFIG --> different server port for each flow to avoid conflicts
+                            let remote_port = base_server_port + (i % server_handles.len()) as u16;
 
                             client_socket
                                 .connect(
