@@ -230,9 +230,6 @@ async fn handle_connection(
                         }
 
                         // Send startup response
-                        let base_port = config.smoltcp_port_range[0]
-                            + (node_id as u16
-                                % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
 
                         let flow_configs: Vec<FlowConfig> = config
                             .flows
@@ -248,7 +245,7 @@ async fn handle_connection(
                                 .map(|remote_addr| {
                                     FlowConfig {
                                         remote_addr,
-                                        client_port: base_port + i as u16, // assign unique port per connection
+                                        client_port: smoltcp_port + i as u16, // assign unique port per connection
                                         data_size: flow.data_size,
                                         flow_rate: flow.flow_rate,
                                         flow_size: flow.flow_size,

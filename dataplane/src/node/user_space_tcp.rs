@@ -102,7 +102,8 @@ impl UserSpaceTcpSource {
                 .iter()
                 .map(|f| f.flow_size.unwrap_or(10_000_000))
                 .collect();
-            let mut bytes_sent: Vec<u64> = vec![0; flows.len()]; // for test
+            let mut bytes_sent: Vec<u64> = vec![0; flows.len()]; // for client test
+            let mut bytes_received: Vec<u64> = vec![0; server_handles.len()]; // for server test
             let mut device = device;
 
             loop {
@@ -125,7 +126,16 @@ impl UserSpaceTcpSource {
                         if server_socket.can_recv() {
                             let mut buffer = [0u8; 4096];
                             if let Ok(len) = server_socket.recv_slice(&mut buffer) {
-                                info!("Server {} received {} bytes", i, len);
+                                bytes_received[i] += len as u64;
+
+                                if bytes_received[i] % 1_000 == 0 || len > 0 {
+                                    info!(
+                                        "Server {} received {} KB total ({} bytes this time)",
+                                        i,
+                                        bytes_received[i] / 1_000,
+                                        len
+                                    );
+                                }
                             }
                         }
                     }
@@ -145,8 +155,7 @@ impl UserSpaceTcpSource {
                                 flow.remote_addr[2],
                                 flow.remote_addr[3],
                             );
-                            // TODO: CONFIG --> different server port for each flow to avoid conflicts
-                            let remote_port = base_server_port + (i % server_handles.len()) as u16;
+                            let remote_port = base_server_port + i as u16;
 
                             client_socket
                                 .connect(
@@ -192,15 +201,15 @@ impl UserSpaceTcpSource {
                                 bytes_left[i] -= sent as u64;
                                 bytes_sent[i] += sent as u64;
 
-                                if bytes_sent[i] % 1_000_000 == 0 || bytes_left[i] == 0 {
+                                if bytes_sent[i] % 1_000 == 0 || bytes_left[i] == 0 {
                                     let total_size = flow.flow_size.unwrap_or(10_000_000);
                                     let progress =
                                         (bytes_sent[i] as f64 / total_size as f64 * 100.0) as u32;
                                     info!(
-                                        "Client {} sent {} MB / {} MB ({}%) to {}",
+                                        "Client {} sent {} KB / {} KB ({}%) to {}",
                                         i,
-                                        bytes_sent[i] / 1_000_000,
-                                        total_size / 1_000_000,
+                                        bytes_sent[i] / 1_000,
+                                        total_size / 1_000,
                                         progress,
                                         format!(
                                             "{}.{}.{}.{}",
@@ -214,9 +223,9 @@ impl UserSpaceTcpSource {
 
                                 if bytes_left[i] == 0 {
                                     info!(
-                                        "✓ Client {} completed sending {} MB to {}",
+                                        "Client {} completed sending {} KB to {}",
                                         i,
-                                        bytes_sent[i] / 1_000_000,
+                                        bytes_sent[i] / 1_000,
                                         format!(
                                             "{}.{}.{}.{}",
                                             flow.remote_addr[0],

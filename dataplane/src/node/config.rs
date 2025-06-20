@@ -7,7 +7,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, Protocol, FlowConfig};
+use nextmini_messages::{ControllerToDataplane, FlowConfig, Protocol};
 
 use crate::node::NodeId;
 use crate::node::drop::DropStrategy;
