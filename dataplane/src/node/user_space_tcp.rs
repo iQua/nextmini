@@ -127,7 +127,7 @@ impl UserSpaceTcpSource {
                             let length = buffer.len();
                             bytes_received[i] += length as u64;
 
-                            if bytes_received[i] % 1_000 == 0 || length > 0 {
+                            if bytes_received[i] % 1_000 == 0 {
                                 info!(
                                     "Server {} received {} KB total ({} bytes this time)",
                                     i,
