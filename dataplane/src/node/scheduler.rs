@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-
+use std::time::Instant;
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
@@ -21,8 +21,8 @@ use crate::node::token_bucket::TokenBucket;
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SchedulingDiscipline {
-    #[default]
     Fifo,
+    #[default]
     Wrr,
 }
 
@@ -401,6 +401,18 @@ pub struct Wrr {
 
     /// the token bucket traffic shaper
     token_bucket: Option<TokenBucket>,
+
+    /// the next enqueue time in seconds
+    next_enqueue_time: f32,
+
+    /// the start time
+    start_time: Instant,
+
+    /// the current time in seconds
+    current_time: f32,
+
+    /// the sending rate
+    sending_rate: f32,
 }
 
 impl Wrr {
@@ -457,6 +469,10 @@ impl Wrr {
             capacity,
             queues,
             token_bucket: None,
+            next_enqueue_time: 0.0,
+            start_time: Instant::now(),
+            current_time: 0.0,
+            sending_rate: config.scheduler_sending_rate,
         }
     }
 
@@ -465,6 +481,7 @@ impl Wrr {
             if let Ok(message) = self.message_receiver.try_recv() {
                 match message {
                     SchedulerMessage::RateLimit(spec) => {
+                        self.sending_rate = spec.rate as f32;
                         self.token_bucket = Some(TokenBucket::new(spec));
                     }
                     SchedulerMessage::SetFlowWeight(flow_id, weight) => {
@@ -497,6 +514,7 @@ impl Wrr {
     }
 
     async fn enqueue(&mut self, packet: Packet) {
+        self.current_time = self.start_time.elapsed().as_secs_f32();
         let total_queue_length: usize = self.queues.iter().map(|q| q.len()).sum();
 
         // drops the packet based on the drop strategy
@@ -542,17 +560,16 @@ impl Wrr {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.queues[class_id].len() > 2 {
-                    // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
-                    // and the queue becomes 'non-empty' now
-                    self.schedule_packets().await;
+                if self.next_enqueue_time < self.current_time {
+                    // if sending side idle, schedule packets immediately
                     self.total_bytes += packet_size;
                     self.packets_waiting += 1;
+                    self.schedule_packets().await;
                 }
             } else {
-                self.schedule_packets().await;
                 self.total_bytes += packet_size;
                 self.packets_waiting += 1;
+                self.schedule_packets().await;
             }
         }
     }
@@ -565,21 +582,38 @@ impl Wrr {
             }
 
             let mut batch = Vec::new();
+            let mut bytes_sent = 0;
 
             // Get packets from the current queue according to the weight
             loop {
                 if self.queues[current_queue].is_empty()
-                    || batch.len() >= self.weights[current_queue]
+                    || batch.len() >= self.weights[current_queue] 
                 {
                     break;
                 }
 
-                batch.push(self.queues[current_queue].pop().unwrap());
+                let packet = self.queues[current_queue].pop().unwrap();
+                bytes_sent += packet.packet_size;
+                batch.push(packet);
+            }
+
+            // Drain all packets from the current queue if not empty
+            // Halt for a while
+            while let Some(packet) = self.queues[current_queue].pop() {
+                bytes_sent += packet.packet_size;
+                batch.push(packet);
+                self.send_packets(&mut batch).await;
+                self.packets_waiting -= batch.len();
+                self.total_bytes -= bytes_sent;   
+                self.current_time = self.start_time.elapsed().as_secs_f32();
+                self.next_enqueue_time = self.current_time + bytes_sent as f32 / self.sending_rate;
+                return;
             }
 
             // Send the batch and move to next queue
-            self.packets_waiting -= batch.len();
             self.send_packets(&mut batch).await;
+            self.packets_waiting -= batch.len();
+            self.total_bytes -= bytes_sent;
             current_queue = (current_queue + 1) % self.queues.len();
         }
     }
