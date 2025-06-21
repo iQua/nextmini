@@ -68,9 +68,7 @@ impl SchedulerHandle {
     pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
         match self {
             SchedulerHandle::Wrr(scheduler) => scheduler.set_flow_weight(flow_id, weight),
-            _ => {
-                debug!("Flow weights are only supported for WRR scheduler.");
-            }
+            SchedulerHandle::Fifo(scheduler) => scheduler.set_flow_weight(flow_id, weight),
         }
     }
 }
@@ -89,61 +87,6 @@ impl FifoSchedulerHandle {
         // creates the unbounded mpsc channel for sending a rate limit, in bytes (per second), to the scheduler
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
 
-        let scheduler = Fifo::new(config, net_interface, reader_receiver, writer_receiver);
-
-        scheduler.run();
-
-        Self {
-            reader_sender,
-            writer_sender,
-        }
-    }
-
-    /// Sends a packet to the scheduler.
-    pub fn send(&self, packet: Packet) {
-        if let Err(e) = self
-            .reader_sender
-            .try_send(SchedulerPacket::InboundPacket(packet))
-        {
-            error!(
-                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
-                e
-            );
-        }
-    }
-
-    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
-    pub fn limit_rate(&self, spec: TokenBucketSpec) {
-        if let Err(e) = self.writer_sender.send(SchedulerMessage::RateLimit(spec)) {
-            error!(
-                "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
-                e
-            );
-        }
-    }
-
-    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        // Intentionally left empty
-        // FIFO scheduler does not support flow weights
-        debug!(
-            "FIFO scheduler does not support setting flow weights {} to {}.",
-            flow_id, weight
-        );
-    }
-}
-
-/// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
-pub struct Fifo {
-    config: LocalConfig,
-}
-
-impl Fifo {
-    pub fn new(
-        config: LocalConfig,
-        net_interface: NetworkInterfaceHandle,
-        reader_receiver: mpsc::Receiver<SchedulerPacket>,
-        writer_receiver: mpsc::UnboundedReceiver<SchedulerMessage>,
-    ) -> Self {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
 
@@ -180,15 +123,41 @@ impl Fifo {
             let _ = writer.run().await;
         });
 
-        Self { config }
+        Self {
+            reader_sender,
+            writer_sender,
+        }
     }
 
-    pub fn run(&self) {
-        // This method is intentionally left empty as the actual run logic is handled in the
-        // FifoReader and FifoWriter tasks spawned above.
+    /// Sends a packet to the scheduler.
+    pub fn send(&self, packet: Packet) {
+        if let Err(e) = self
+            .reader_sender
+            .try_send(SchedulerPacket::InboundPacket(packet))
+        {
+            error!(
+                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
+                e
+            );
+        }
+    }
+
+    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
+    pub fn limit_rate(&self, spec: TokenBucketSpec) {
+        if let Err(e) = self.writer_sender.send(SchedulerMessage::RateLimit(spec)) {
+            error!(
+                "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
+                e
+            );
+        }
+    }
+
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        // Intentionally left empty
+        // FIFO scheduler does not support flow weights
         debug!(
-            "A {:?} scheduler has just been started.",
-            self.config.scheduler_type
+            "FIFO scheduler does not support setting flow weights {} to {}.",
+            flow_id, weight
         );
     }
 }
