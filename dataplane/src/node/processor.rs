@@ -19,7 +19,7 @@ use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowIdExt, NodeId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -32,6 +32,7 @@ pub enum ProcessorMessage {
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
     RateLimit(NodeId, TokenBucketSpec),
+    SetFlowWeight(FlowId, usize),
 }
 
 #[derive(Clone)]
@@ -108,6 +109,18 @@ impl ProcessorHandle {
             ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
             ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
         }
+    }
+
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SetFlowWeight(flow_id, weight))
+        {
+            error!(
+                "Error sending the SetFlowWeight message to the processors: {}",
+                e
+            );
+        };
     }
 }
 
@@ -306,6 +319,12 @@ impl Processor {
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
                     scheduler.limit_rate(spec);
+                }
+            }
+            ProcessorMessage::SetFlowWeight(flow_id, weight) => {
+                // updates the flow weight for all schedulers
+                for (_, scheduler) in self.schedulers.iter_mut() {
+                    scheduler.set_flow_weight(flow_id, weight);
                 }
             }
         }
