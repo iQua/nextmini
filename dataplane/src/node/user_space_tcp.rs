@@ -104,6 +104,8 @@ impl UserSpaceTcpSource {
                 .collect();
             let mut bytes_sent: Vec<u64> = vec![0; flows.len()]; // for client test
             let mut bytes_received: Vec<u64> = vec![0; server_handles.len()]; // for server test
+            let mut client_start_times: Vec<Option<Instant>> = vec![None; flows.len()];
+            let mut server_start_times: Vec<Option<Instant>> = vec![None; server_handles.len()];
             let mut device = device;
 
             loop {
@@ -125,13 +127,21 @@ impl UserSpaceTcpSource {
                     if server_socket.is_active() && server_socket.can_recv() {
                         match server_socket.recv(|buffer| {
                             let length = buffer.len();
+                            if server_start_times[i].is_none() {
+                                server_start_times[i] = Some(now);
+                            }
+
                             bytes_received[i] += length as u64;
 
                             if bytes_received[i] % 1_000 == 0 {
+                                let elapsed_millis = (now - server_start_times[i].unwrap()).total_millis() as f64;
+                                let elapsed_secs = elapsed_millis / 1000.0;
+                                let throughput_mbps = (bytes_received[i] as f64 * 8.0) / (elapsed_secs * 1_000_000.0);
                                 info!(
-                                    "Server {} received {} KB total ({} bytes this time)",
+                                    "Server {} received {} KB total, throughput: {:.2} Mbps ({} bytes this recv)",
                                     i,
                                     bytes_received[i] / 1_000,
+                                    throughput_mbps,
                                     length
                                 );
                             }
@@ -200,6 +210,11 @@ impl UserSpaceTcpSource {
                                 bytes_left[i] -= sent as u64;
                                 bytes_sent[i] += sent as u64;
 
+                                // record first send time
+                                if client_start_times[i].is_none() {
+                                    client_start_times[i] = Some(now);
+                                }
+
                                 if bytes_sent[i] % 1_000 == 0 || bytes_left[i] == 0 {
                                     let total_size = flow.flow_size.unwrap_or(10_000_000);
                                     let progress =
@@ -221,10 +236,18 @@ impl UserSpaceTcpSource {
                                 }
 
                                 if bytes_left[i] == 0 {
+                                    let elapsed_millis = (now - client_start_times[i].unwrap())
+                                        .total_millis()
+                                        as f64;
+                                    let elapsed_secs = elapsed_millis / 1000.0;
+                                    let throughput_mbps =
+                                        (bytes_sent[i] as f64 * 8.0) / (elapsed_secs * 1_000_000.0);
                                     info!(
-                                        "Client {} completed sending {} KB to {}",
+                                        "Client {} completed: {} KB in {:.2}s, throughput: {:.2} Mbps to {}",
                                         i,
                                         bytes_sent[i] / 1_000,
+                                        elapsed_secs,
+                                        throughput_mbps,
                                         format!(
                                             "{}.{}.{}.{}",
                                             flow.remote_addr[0],
