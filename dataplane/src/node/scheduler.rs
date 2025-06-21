@@ -373,7 +373,7 @@ pub struct Wrr {
     weights: Vec<usize>,
 
     /// a closure that maps a flow_id to a class_id
-    flow_classes: Arc<dyn Fn(usize) -> usize + Send + Sync>,
+    flow_to_class: Arc<dyn Fn(usize) -> usize + Send + Sync>,
 
     /// the receiver for an mpsc channel, for other actors to send packets to this reader
     packet_receiver: mpsc::Receiver<SchedulerPacket>,
@@ -458,7 +458,7 @@ impl Wrr {
             net_interface,
             packet_receiver,
             message_receiver,
-            flow_classes: flow_classes.clone(),
+            flow_to_class: flow_classes.clone(),
             drop_strategy: packet_drop,
             weights,
             packets_dropped: 0,
@@ -484,7 +484,7 @@ impl Wrr {
                     }
                     SchedulerMessage::SetFlowWeight(flow_id, weight) => {
                         // Register the flow_id to a class_id
-                        (self.flow_classes)(flow_id as usize);
+                        (self.flow_to_class)(flow_id as usize);
 
                         // Add a new class_queue to the scheduler
                         self.weights.push(weight);
@@ -539,7 +539,7 @@ impl Wrr {
         }
 
         // The case that this packet will not be dropped
-        let class_id = (self.flow_classes)(packet.flow_id as usize);
+        let class_id = (self.flow_to_class)(packet.flow_id as usize);
 
         // If the class_id is out of bounds, add a new class_queue with weight 1
         if class_id >= self.queues.len() {
