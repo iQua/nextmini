@@ -62,10 +62,10 @@ pub enum ControllerToDataplane {
         spec: TokenBucketSpec,
     },
     SetFlowWeight {
-        src_node_id: usize,
-        dst_node_id: usize,
-        src_port: usize,
-        dst_port: usize,
+        src_node_id: u32,
+        dst_node_id: u32,
+        src_port: u16,
+        dst_port: u16,
         weight: usize,
     },
 }

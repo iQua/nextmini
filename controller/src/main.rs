@@ -347,10 +347,10 @@ async fn handle_connection(
 
                         for flow_weight in &config.flow_weights {
                             let msg = ControllerToDataplane::SetFlowWeight {
-                                src_node_id: flow_weight.src_node_id,
-                                dst_node_id: flow_weight.dst_node_id,
-                                src_port: flow_weight.src_port,
-                                dst_port: flow_weight.dst_port,
+                                src_node_id: flow_weight.src_node_id as u32,
+                                dst_node_id: flow_weight.dst_node_id as u32,
+                                src_port: flow_weight.src_port as u16,
+                                dst_port: flow_weight.dst_port as u16,
                                 weight: flow_weight.weight,
                             };
 
@@ -360,15 +360,15 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => info!(
-                                    "Set flow weight for node {} to node {} at {}.",
-                                    flow_weight.src_node_id,
-                                    flow_weight.dst_node_id,
-                                    flow_weight.weight
-                                ),
+                                Ok(_) => info!("Set flow weight at {}.", node_id),
                                 Err(e) => error!(
-                                    "Failed to send the SetFlowWeight message to node {}: {}.",
-                                    flow_weight.src_node_id, e
+                                    "Failed to send the SetFlowWeight message to for {}:{} to {}:{} at {}, {}.",
+                                    flow_weight.src_node_id,
+                                    flow_weight.src_port,
+                                    flow_weight.dst_node_id,
+                                    flow_weight.dst_port,
+                                    node_id,
+                                    e
                                 ),
                             }
                         }

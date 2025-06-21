@@ -238,6 +238,17 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.update_routing_table(routes);
             }
+            ControllerToDataplane::SetFlowWeight {
+                src_node_id,
+                dst_node_id,
+                src_port,
+                dst_port,
+                weight,
+            } => {
+                // TO be implemented
+                // 1. Convert data into a flow ID
+                // 2. Add a broadcast message to the processor
+            }
             _ => error!("Received a message with an unknown type from the controller."),
         }
     }
