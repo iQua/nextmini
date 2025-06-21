@@ -66,9 +66,9 @@ impl SchedulerHandle {
             SchedulerHandle::Wrr(scheduler) => scheduler.limit_rate(spec),
         }
     }
-    pub fn set_flow_weights(&self, weights: Vec<usize>) {
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
         match self {
-            SchedulerHandle::Wrr(scheduler) => scheduler.set_flow_weights(weights),
+            SchedulerHandle::Wrr(scheduler) => scheduler.set_flow_weight(flow_id, weight),
             _ => {
                 debug!("Flow weights are only supported for WRR scheduler.");
             }
@@ -339,7 +339,7 @@ pub struct WrrSchedulerHandle {
 pub enum WrrMessage {
     InboundPacket(Packet),
     RateLimit(TokenBucketSpec),
-    SetFlowWeights(Vec<usize>),
+    SetFlowWeight(FlowId, usize),
 }
 
 impl WrrSchedulerHandle {
@@ -376,8 +376,11 @@ impl WrrSchedulerHandle {
     }
 
     /// Sets the flow weights for WRR scheduling.
-    pub fn set_flow_weights(&self, weights: Vec<usize>) {
-        if let Err(e) = self.sender.try_send(WrrMessage::SetFlowWeights(weights)) {
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        if let Err(e) = self
+            .sender
+            .try_send(WrrMessage::SetFlowWeight(flow_id, weight))
+        {
             error!(
                 "WrrSchedulerHandle: Error sending flow weights to the scheduler: {}.",
                 e
@@ -424,7 +427,6 @@ impl Wrr {
         net_interface: NetworkInterfaceHandle,
         receiver: mpsc::Receiver<WrrMessage>,
     ) -> Self {
-        let num_classes = 10;
         let capacity_unit = CapacityUnit::Packets;
         let capacity = config.queue_capacity;
 
@@ -434,13 +436,9 @@ impl Wrr {
         };
 
         // Create a closure that maps a flow_id to a class_id
-        let flow_to_class_map: Arc<Mutex<HashMap<usize, usize>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let next_class_id: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
-
         let flow_classes = {
-            let map = flow_to_class_map.clone();
-            let next_id = next_class_id.clone();
+            let map: Arc<Mutex<HashMap<usize, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+            let next_id: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
             Arc::new(move |flow_id: usize| -> usize {
                 let mut map_guard = map.lock().unwrap();
@@ -452,12 +450,11 @@ impl Wrr {
 
                 // If it's a new flow_id, assign it the next consecutive class_id
                 let mut next_id_guard = next_id.lock().unwrap();
-                let assigned_class_id = *next_id_guard % num_classes; // Wrap around if needed
                 *next_id_guard += 1;
 
-                map_guard.insert(flow_id, assigned_class_id);
+                map_guard.insert(flow_id, *next_id_guard);
 
-                assigned_class_id
+                *next_id_guard
             })
         };
 
@@ -492,15 +489,16 @@ impl Wrr {
                     WrrMessage::RateLimit(spec) => {
                         self.token_bucket = Some(TokenBucket::new(spec));
                     }
-                    WrrMessage::SetFlowWeights(weights) => {
-                        if weights.len() == self.weights.len() {
-                            self.weights = weights;
+                    WrrMessage::SetFlowWeight(flow_id, weight) => {
+                        let class_id = (self.flow_classes)(flow_id as usize);
+                        if class_id < self.weights.len() {
+                            self.weights[class_id] = weight;
                             debug!("WRR: Updated flow weights: {:?}", self.weights);
                         } else {
                             warn!(
                                 "WRR: Received invalid number of weights: expected {}, got {}",
                                 self.weights.len(),
-                                weights.len()
+                                class_id
                             );
                         }
                     }
@@ -518,15 +516,16 @@ impl Wrr {
                         WrrMessage::RateLimit(spec) => {
                             self.token_bucket = Some(TokenBucket::new(spec));
                         }
-                        WrrMessage::SetFlowWeights(weights) => {
-                            if weights.len() == self.weights.len() {
-                                self.weights = weights;
+                        WrrMessage::SetFlowWeight(flow_id, weight) => {
+                            let class_id = (self.flow_classes)(flow_id as usize);
+                            if class_id < self.weights.len() {
+                                self.weights[class_id] = weight;
                                 debug!("WRR: Updated flow weights: {:?}", self.weights);
                             } else {
                                 warn!(
                                     "WRR: Received invalid number of weights: expected {}, got {}",
                                     self.weights.len(),
-                                    weights.len()
+                                    class_id
                                 );
                             }
                         }
@@ -572,7 +571,6 @@ impl Wrr {
         }
 
         // The case that this packet will not be dropped
-
         let class_id = (self.flow_classes)(packet.flow_id as usize);
         let packet_size = packet.packet_size;
         let is_tcp_data = packet.is_tcp_data();
