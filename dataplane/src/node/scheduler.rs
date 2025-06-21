@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
 
@@ -438,12 +438,10 @@ impl Wrr {
             Arc::new(move |flow_id: usize| -> usize {
                 let mut map_guard = map.lock().unwrap();
 
-                // If we've seen this flow_id before, return its assigned class_id
                 if let Some(&class_id) = map_guard.get(&flow_id) {
                     return class_id;
                 }
 
-                // If it's a new flow_id, assign it the next consecutive class_id
                 let mut next_id_guard = next_id.lock().unwrap();
                 *next_id_guard += 1;
 
@@ -555,7 +553,7 @@ impl Wrr {
         if self.queues[class_id].push(packet).is_err() {
             self.packets_dropped += 1;
 
-            warn!("FIFO: Scheduler dropped a packet as the queue is full.");
+            warn!("WRR: Scheduler dropped a packet as the queue is full.");
         } else {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
@@ -587,7 +585,7 @@ impl Wrr {
             // Get packets from the current queue according to the weight
             loop {
                 if self.queues[current_queue].is_empty()
-                    || batch.len() >= self.weights[current_queue] 
+                    || batch.len() >= self.weights[current_queue]
                 {
                     break;
                 }
@@ -604,7 +602,7 @@ impl Wrr {
                 batch.push(packet);
                 self.send_packets(&mut batch).await;
                 self.packets_waiting -= batch.len();
-                self.total_bytes -= bytes_sent;   
+                self.total_bytes -= bytes_sent;
                 self.current_time = self.start_time.elapsed().as_secs_f32();
                 self.next_enqueue_time = self.current_time + bytes_sent as f32 / self.sending_rate;
                 return;
