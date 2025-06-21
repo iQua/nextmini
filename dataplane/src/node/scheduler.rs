@@ -366,18 +366,26 @@ impl WrrSchedulerHandle {
 }
 
 pub struct Wrr {
-    net_interface: NetworkInterfaceHandle,
-    packet_receiver: mpsc::Receiver<SchedulerPacket>,
-    message_receiver: mpsc::UnboundedReceiver<SchedulerMessage>,
+    /// FIFO queues of classes, which are consecutive and start from 0
+    queues: Vec<ArrayQueue<Packet>>,
+
+    /// weights of classes, which are consecutive and start from 0
+    weights: Vec<usize>,
 
     /// a closure that maps a flow_id to a class_id
     flow_classes: Arc<dyn Fn(usize) -> usize + Send + Sync>,
 
+    /// the receiver for an mpsc channel, for other actors to send packets to this reader
+    packet_receiver: mpsc::Receiver<SchedulerPacket>,
+
+    /// the receiver for an unbounded mpsc channel, for other actors to send messages to this writer
+    message_receiver: mpsc::UnboundedReceiver<SchedulerMessage>,
+
+    /// the network interface handle
+    net_interface: NetworkInterfaceHandle,
+
     /// a closure that determines whether an inbound packet should be dropped or not
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
-
-    /// weights of classes, which are consecutive and start from 0
-    weights: Vec<usize>,
 
     /// the number of packets dropped
     packets_dropped: usize,
@@ -390,9 +398,6 @@ pub struct Wrr {
 
     /// maximum queue capacity
     capacity: usize,
-
-    /// FIFO queues of classes, which are consecutive and start from 0
-    queues: Vec<ArrayQueue<Packet>>,
 
     /// the token bucket traffic shaper
     token_bucket: Option<TokenBucket>,
@@ -455,7 +460,41 @@ impl Wrr {
         }
     }
 
-    pub async fn run(&mut self) {}
+    pub async fn run(&mut self) {
+        loop {
+            if let Ok(message) = self.message_receiver.try_recv() {
+                match message {
+                    SchedulerMessage::RateLimit(spec) => {
+                        self.token_bucket = Some(TokenBucket::new(spec));
+                    }
+                    SchedulerMessage::SetFlowWeight(flow_id, weight) => {
+                        // Register the flow_id to a class_id
+                        (self.flow_classes)(flow_id as usize);
+
+                        // Add a new class_queue to the scheduler
+                        self.weights.push(weight);
+                        self.queues.push(ArrayQueue::new(self.capacity));
+                    }
+                }
+            }
+
+            if let Some(packet) = self.packet_receiver.recv().await {
+                match packet {
+                    SchedulerPacket::InboundPacket(packet) => {
+                        self.enqueue(packet).await;
+                    }
+                }
+
+                while let Ok(packet) = self.packet_receiver.try_recv() {
+                    match packet {
+                        SchedulerPacket::InboundPacket(packet) => {
+                            self.enqueue(packet).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     async fn enqueue(&mut self, packet: Packet) {
         let total_queue_length: usize = self.queues.iter().map(|q| q.len()).sum();
@@ -485,6 +524,13 @@ impl Wrr {
 
         // The case that this packet will not be dropped
         let class_id = (self.flow_classes)(packet.flow_id as usize);
+
+        // If the class_id is out of bounds, add a new class_queue with weight 1
+        if class_id >= self.queues.len() {
+            self.queues.push(ArrayQueue::new(self.capacity));
+            self.weights.push(1);
+        }
+
         let packet_size = packet.packet_size;
         let is_tcp_data = packet.is_tcp_data();
 
