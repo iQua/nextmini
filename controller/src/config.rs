@@ -48,10 +48,10 @@ pub struct LinkRate {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FlowWeight {
-    pub src_node_id: usize,
-    pub dst_node_id: usize,
-    pub src_port: usize,
-    pub dst_port: usize,
+    pub src_ip: [u8; 4],
+    pub dst_ip: [u8; 4],
+    pub src_port: u16,
+    pub dst_port: u16,
     pub weight: usize,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]

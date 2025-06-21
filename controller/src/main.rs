@@ -343,18 +343,25 @@ async fn handle_connection(
                         }
 
                         // sets the flow weights
-                        info!("Setting flow weights for node {}", node_id);
+                        info!("Setting flow weights for node {}.", node_id);
 
                         for flow_weight in &config.flow_weights {
-                            // Convert to flow_id
-                            let mut flow_id = 0;
-                            flow_id |= (flow_weight.src_node_id as u128) << 96;
-                            flow_id |= (flow_weight.dst_node_id as u128) << 64;
-                            flow_id |= (flow_weight.src_port as u128) << 48;
-                            flow_id |= (flow_weight.dst_port as u128) << 32;
+                            // Convert IP addresses from [u8; 4] to u32
+                            let src_ip = ((flow_weight.src_ip[0] as u32) << 24)
+                                | ((flow_weight.src_ip[1] as u32) << 16)
+                                | ((flow_weight.src_ip[2] as u32) << 8)
+                                | (flow_weight.src_ip[3] as u32);
+                            
+                            let dst_ip = ((flow_weight.dst_ip[0] as u32) << 24)
+                                | ((flow_weight.dst_ip[1] as u32) << 16)
+                                | ((flow_weight.dst_ip[2] as u32) << 8)
+                                | (flow_weight.dst_ip[3] as u32);
 
                             let msg = ControllerToDataplane::SetFlowWeight {
-                                flow_id,
+                                src_ip,
+                                dst_ip,
+                                src_port: flow_weight.src_port,
+                                dst_port: flow_weight.dst_port,
                                 weight: flow_weight.weight,
                             };
 
@@ -366,10 +373,10 @@ async fn handle_connection(
                             {
                                 Ok(_) => info!("Set flow weight at {}.", node_id),
                                 Err(e) => error!(
-                                    "Failed to send the SetFlowWeight message to for {}:{} to {}:{} at {}, {}.",
-                                    flow_weight.src_node_id,
+                                    "Failed to send the SetFlowWeight message to for {:?}:{} to {:?}:{} at {}, {}.",
+                                    flow_weight.src_ip,
                                     flow_weight.src_port,
-                                    flow_weight.dst_node_id,
+                                    flow_weight.dst_ip,
                                     flow_weight.dst_port,
                                     node_id,
                                     e

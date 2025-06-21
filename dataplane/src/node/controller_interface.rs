@@ -238,11 +238,18 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.update_routing_table(routes);
             }
-            ControllerToDataplane::SetFlowWeight { flow_id, weight } => {
+            ControllerToDataplane::SetFlowWeight { src_ip, dst_ip, src_port, dst_port, weight } => {
                 info!(
-                    "Setting the flow weight for flow {} to {}.",
-                    flow_id, weight
+                    "Setting the flow weight {} at node {}.",
+                    weight, self.config.node_id
                 );
+
+                // Convert the 4-tuple to a flow_id
+                let flow_id = 
+                    ((src_ip as u128) << 96) | 
+                    ((dst_ip as u128) << 64) | 
+                    ((src_port as u128) << 48) | 
+                    ((dst_port as u128) << 32);
 
                 self.processors.set_flow_weight(flow_id, weight);
             }
