@@ -371,7 +371,7 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => info!("Set flow weight at {}.", node_id),
+                                Ok(_) => (),
                                 Err(e) => error!(
                                     "Failed to send the SetFlowWeight message to for {:?}:{} to {:?}:{} at {}, {}.",
                                     flow_weight.src_ip,
