@@ -1,15 +1,15 @@
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
 
+use crate::node::FlowId;
 use nextmini_messages::TokenBucketSpec;
 
-use crate::node::FlowId;
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network_interface::NetworkInterfaceHandle;
@@ -26,60 +26,25 @@ pub enum SchedulingDiscipline {
     Wrr,
 }
 
-pub enum SchedulerMessage {
+/// The types of messages sent to the scheduler.
+pub enum SchedulerReaderMessage {
+    InboundPacket(Packet),
+}
+
+/// The rate limit is to be sent by the processor, and in the unit of bytes per second.
+pub enum SchedulerWriterMessage {
     RateLimit(TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
 
-pub enum SchedulerPacket {
-    InboundPacket(Packet),
-}
-
 /// The handle for the scheduler actor, which is between the processors and the network interface.
 #[derive(Clone)]
-pub enum SchedulerHandle {
-    Fifo(FifoSchedulerHandle),
-    Wrr(WrrSchedulerHandle),
+pub struct SchedulerHandle {
+    reader_sender: mpsc::Sender<SchedulerReaderMessage>,
+    writer_sender: mpsc::UnboundedSender<SchedulerWriterMessage>,
 }
 
 impl SchedulerHandle {
-    pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
-        match config.scheduler_type {
-            SchedulingDiscipline::Fifo => {
-                SchedulerHandle::Fifo(FifoSchedulerHandle::new(config, net_interface))
-            }
-            SchedulingDiscipline::Wrr => {
-                SchedulerHandle::Wrr(WrrSchedulerHandle::new(config, net_interface))
-            }
-        }
-    }
-    pub fn send(&self, packet: Packet) {
-        match self {
-            SchedulerHandle::Fifo(scheduler) => scheduler.send(packet),
-            SchedulerHandle::Wrr(scheduler) => scheduler.send(packet),
-        }
-    }
-    pub fn limit_rate(&self, spec: TokenBucketSpec) {
-        match self {
-            SchedulerHandle::Fifo(scheduler) => scheduler.limit_rate(spec),
-            SchedulerHandle::Wrr(scheduler) => scheduler.limit_rate(spec),
-        }
-    }
-    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        match self {
-            SchedulerHandle::Wrr(scheduler) => scheduler.set_flow_weight(flow_id, weight),
-            SchedulerHandle::Fifo(scheduler) => scheduler.set_flow_weight(flow_id, weight),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct FifoSchedulerHandle {
-    reader_sender: mpsc::Sender<SchedulerPacket>,
-    writer_sender: mpsc::UnboundedSender<SchedulerMessage>,
-}
-
-impl FifoSchedulerHandle {
     pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
         // creates the mpsc channel for sending packets to the scheduler
         let (reader_sender, reader_receiver) = mpsc::channel(config.channel_capacity);
@@ -87,6 +52,73 @@ impl FifoSchedulerHandle {
         // creates the unbounded mpsc channel for sending a rate limit, in bytes (per second), to the scheduler
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
 
+        match config.scheduler_type {
+            SchedulingDiscipline::Fifo => {
+                let scheduler = Fifo::new(config, net_interface, reader_receiver, writer_receiver);
+                scheduler.run();
+            }
+            SchedulingDiscipline::Wrr => {
+                let scheduler = Wrr::new(config, net_interface, reader_receiver, writer_receiver);
+                scheduler.run();
+            }
+        };
+
+        Self {
+            reader_sender,
+            writer_sender,
+        }
+    }
+
+    /// Sends a packet to the scheduler.
+    pub fn send(&self, packet: Packet) {
+        if let Err(e) = self
+            .reader_sender
+            .try_send(SchedulerReaderMessage::InboundPacket(packet))
+        {
+            error!(
+                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
+                e
+            );
+        }
+    }
+
+    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
+    pub fn limit_rate(&self, spec: TokenBucketSpec) {
+        if let Err(e) = self
+            .writer_sender
+            .send(SchedulerWriterMessage::RateLimit(spec))
+        {
+            error!(
+                "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
+                e
+            );
+        }
+    }
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        if let Err(e) = self
+            .writer_sender
+            .send(SchedulerWriterMessage::SetFlowWeight(flow_id, weight))
+        {
+            error!(
+                "SchedulerHandle: Error sending a flow weight to the scheduler: {}.",
+                e
+            );
+        }
+    }
+}
+
+/// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
+pub struct Fifo {
+    config: LocalConfig,
+}
+
+impl Fifo {
+    pub fn new(
+        config: LocalConfig,
+        net_interface: NetworkInterfaceHandle,
+        reader_receiver: mpsc::Receiver<SchedulerReaderMessage>,
+        writer_receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
+    ) -> Self {
         let capacity = config.queue_capacity;
         let capacity_unit = CapacityUnit::Packets;
 
@@ -123,41 +155,15 @@ impl FifoSchedulerHandle {
             let _ = writer.run().await;
         });
 
-        Self {
-            reader_sender,
-            writer_sender,
-        }
+        Self { config }
     }
 
-    /// Sends a packet to the scheduler.
-    pub fn send(&self, packet: Packet) {
-        if let Err(e) = self
-            .reader_sender
-            .try_send(SchedulerPacket::InboundPacket(packet))
-        {
-            error!(
-                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
-                e
-            );
-        }
-    }
-
-    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
-    pub fn limit_rate(&self, spec: TokenBucketSpec) {
-        if let Err(e) = self.writer_sender.send(SchedulerMessage::RateLimit(spec)) {
-            error!(
-                "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
-                e
-            );
-        }
-    }
-
-    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        // Intentionally left empty
-        // FIFO scheduler does not support flow weights
+    pub fn run(&self) {
+        // This method is intentionally left empty as the actual run logic is handled in the
+        // FifoReader and FifoWriter tasks spawned above.
         debug!(
-            "FIFO scheduler does not support setting flow weights {} to {}.",
-            flow_id, weight
+            "A {:?} scheduler has just been started.",
+            self.config.scheduler_type
         );
     }
 }
@@ -173,7 +179,7 @@ struct FifoReader {
     /// maximum queue capacity
     pub capacity: usize,
     /// the receiver for an mpsc channel, for other actors to send packets to this reader
-    pub receiver: mpsc::Receiver<SchedulerPacket>,
+    pub receiver: mpsc::Receiver<SchedulerReaderMessage>,
 }
 
 impl FifoReader {
@@ -182,14 +188,14 @@ impl FifoReader {
         loop {
             if let Some(message) = self.receiver.recv().await {
                 match message {
-                    SchedulerPacket::InboundPacket(packet) => {
+                    SchedulerReaderMessage::InboundPacket(packet) => {
                         self.enqueue(packet);
                     }
                 }
 
                 while let Ok(message) = self.receiver.try_recv() {
                     match message {
-                        SchedulerPacket::InboundPacket(packet) => {
+                        SchedulerReaderMessage::InboundPacket(packet) => {
                             self.enqueue(packet);
                         }
                     }
@@ -249,7 +255,7 @@ struct FifoWriter {
     /// signals when the queue has packets to be consumed
     pub queue_not_empty: Arc<Notify>,
     /// the receiver for an unbounded mpsc channel, for other actors to send packets to this writer
-    pub receiver: mpsc::UnboundedReceiver<SchedulerMessage>,
+    pub receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
     /// the token bucket traffic shaper
     token_bucket: Option<TokenBucket>,
 }
@@ -263,12 +269,13 @@ impl FifoWriter {
             // receives and imposes rate limits from the controller interface, if available
             while let Ok(message) = self.receiver.try_recv() {
                 match message {
-                    SchedulerMessage::RateLimit(spec) => {
+                    SchedulerWriterMessage::RateLimit(spec) => {
                         self.token_bucket = Some(TokenBucket::new(spec));
                     }
                     _ => {}
                 }
             }
+
             // waits for notification if the queue is empty
             if self.queue.is_empty() {
                 self.queue_not_empty.notified().await;
@@ -305,205 +312,98 @@ impl FifoWriter {
     }
 }
 
-#[derive(Clone)]
-pub struct WrrSchedulerHandle {
-    packet_sender: mpsc::Sender<SchedulerPacket>,
-    message_sender: mpsc::UnboundedSender<SchedulerMessage>,
-}
-
-impl WrrSchedulerHandle {
-    pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
-        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
-        let (message_sender, message_receiver) = mpsc::unbounded_channel();
-
-        let mut scheduler = Wrr::new(config, net_interface, packet_receiver, message_receiver);
-
-        tokio::task::spawn(async move {
-            scheduler.run().await;
-        });
-
-        Self {
-            packet_sender,
-            message_sender,
-        }
-    }
-
-    /// Sends a packet to the scheduler.
-    pub fn send(&self, packet: Packet) {
-        if let Err(e) = self
-            .packet_sender
-            .try_send(SchedulerPacket::InboundPacket(packet))
-        {
-            error!(
-                "WrrSchedulerHandle: Error sending a packet to the scheduler: {}.",
-                e
-            );
-        }
-    }
-
-    /// Limits the rate of sending packets the outbound network connection, in bytes/second.
-    pub fn limit_rate(&self, spec: TokenBucketSpec) {
-        if let Err(e) = self.message_sender.send(SchedulerMessage::RateLimit(spec)) {
-            error!(
-                "WrrSchedulerHandle: Error sending a rate limit to the scheduler: {}.",
-                e
-            );
-        }
-    }
-
-    /// Sets the flow weights for WRR scheduling.
-    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        if let Err(e) = self
-            .message_sender
-            .send(SchedulerMessage::SetFlowWeight(flow_id, weight))
-        {
-            error!(
-                "WrrSchedulerHandle: Error sending flow weights to the scheduler: {}.",
-                e
-            );
-        }
-    }
-}
-
+/// WRR is a scheduling discipline that schedules packets in a weighted round-robin manner.
 pub struct Wrr {
-    /// FIFO queues of classes, which are consecutive and start from 0
-    queues: Vec<ArrayQueue<Packet>>,
-
-    /// weights of classes, which are consecutive and start from 0
-    weights: Vec<usize>,
-
-    /// a closure that maps a flow_id to a class_id
-    flow_to_class: Arc<dyn Fn(usize) -> usize + Send + Sync>,
-
-    /// the receiver for an mpsc channel, for other actors to send packets to this reader
-    packet_receiver: mpsc::Receiver<SchedulerPacket>,
-
-    /// the receiver for an unbounded mpsc channel, for other actors to send messages to this writer
-    message_receiver: mpsc::UnboundedReceiver<SchedulerMessage>,
-
-    /// the network interface handle
-    net_interface: NetworkInterfaceHandle,
-
-    /// a closure that determines whether an inbound packet should be dropped or not
-    drop_strategy: Box<dyn PacketDrop + Send + Sync>,
-
-    /// the number of packets dropped
-    packets_dropped: usize,
-
-    /// the number of packets waiting to be sent
-    packets_waiting: usize,
-
-    /// the number of bytes in each class queue
-    total_bytes: usize,
-
-    /// maximum queue capacity
-    capacity: usize,
-
-    /// the token bucket traffic shaper
-    token_bucket: Option<TokenBucket>,
-
-    /// the next enqueue time in seconds
-    next_enqueue_time: f32,
-
-    /// the start time
-    start_time: Instant,
-
-    /// the current time in seconds
-    current_time: f32,
-
-    /// the sending rate
-    sending_rate: f32,
+    config: LocalConfig,
 }
 
 impl Wrr {
     pub fn new(
         config: LocalConfig,
         net_interface: NetworkInterfaceHandle,
-        packet_receiver: mpsc::Receiver<SchedulerPacket>,
-        message_receiver: mpsc::UnboundedReceiver<SchedulerMessage>,
+        reader_receiver: mpsc::Receiver<SchedulerReaderMessage>,
+        writer_receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
     ) -> Self {
-        let capacity_unit = CapacityUnit::Packets;
         let capacity = config.queue_capacity;
+        let capacity_unit = CapacityUnit::Packets;
 
         let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
             DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
             DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
         };
 
-        // Create a closure that maps a flow_id to a class_id
-        let flow_classes = {
-            let map: Arc<Mutex<HashMap<usize, usize>>> = Arc::new(Mutex::new(HashMap::new()));
-            let next_id: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let flow_queues = Arc::new(RwLock::new(HashMap::<FlowId, ArrayQueue<Packet>>::new()));
+        let queues_not_empty = Arc::new(Notify::new());
 
-            Arc::new(move |flow_id: usize| -> usize {
-                let mut map_guard = map.lock().unwrap();
-
-                if let Some(&class_id) = map_guard.get(&flow_id) {
-                    return class_id;
-                }
-
-                let mut next_id_guard = next_id.lock().unwrap();
-                *next_id_guard += 1;
-
-                map_guard.insert(flow_id, *next_id_guard);
-
-                *next_id_guard
-            })
+        let mut reader = WrrReader {
+            flow_queues: flow_queues.clone(),
+            packets_dropped: 0,
+            drop_strategy: packet_drop,
+            queues_not_empty: queues_not_empty.clone(),
+            capacity,
+            receiver: reader_receiver,
         };
 
-        let queues = Vec::new();
-        let weights = Vec::new();
-
-        Self {
+        let mut writer = WrrWriter {
+            flow_queues,
             net_interface,
-            packet_receiver,
-            message_receiver,
-            flow_to_class: flow_classes.clone(),
-            drop_strategy: packet_drop,
-            weights,
-            packets_dropped: 0,
-            packets_waiting: 0,
-            total_bytes: 0,
-            capacity,
-            queues,
+            queues_not_empty,
+            receiver: writer_receiver,
             token_bucket: None,
-            next_enqueue_time: 0.0,
-            start_time: Instant::now(),
-            current_time: 0.0,
-            sending_rate: config.scheduler_sending_rate,
-        }
+            flow_weights: HashMap::new(),
+        };
+
+        tokio::task::spawn(async move {
+            let _ = reader.run().await;
+        });
+
+        tokio::task::spawn(async move {
+            let _ = writer.run().await;
+        });
+
+        Self { config }
     }
 
-    pub async fn run(&mut self) {
+    pub fn run(&self) {
+        // This method is intentionally left empty as the actual run logic is handled in the
+        // WrrReader and WrrWriter tasks spawned above.
+        debug!(
+            "A {:?} scheduler has just been started.",
+            self.config.scheduler_type
+        );
+    }
+}
+
+pub struct WrrReader {
+    /// Map of flow_id to per-flow queues
+    pub flow_queues: Arc<RwLock<HashMap<FlowId, ArrayQueue<Packet>>>>,
+    /// the number of packets dropped so far
+    pub packets_dropped: usize,
+    /// a closure that determines whether an inbound packet should be dropped or not
+    pub drop_strategy: Box<dyn PacketDrop + Send + Sync>,
+    /// signals when the queue has packets to be consumed
+    pub queues_not_empty: Arc<Notify>,
+    /// maximum queue capacity per flow
+    pub capacity: usize,
+    /// the receiver for an mpsc channel, for other actors to send packets to this reader
+    pub receiver: mpsc::Receiver<SchedulerReaderMessage>,
+}
+
+impl WrrReader {
+    async fn run(&mut self) {
+        // producer task: receives packets and enqueues them
         loop {
-            if let Ok(message) = self.message_receiver.try_recv() {
+            if let Some(message) = self.receiver.recv().await {
                 match message {
-                    SchedulerMessage::RateLimit(spec) => {
-                        self.sending_rate = spec.rate as f32;
-                        self.token_bucket = Some(TokenBucket::new(spec));
-                    }
-                    SchedulerMessage::SetFlowWeight(flow_id, weight) => {
-                        // Register the flow_id to a class_id
-                        (self.flow_to_class)(flow_id as usize);
-
-                        // Add a new class_queue to the scheduler
-                        self.weights.push(weight);
-                        self.queues.push(ArrayQueue::new(self.capacity));
-                    }
-                }
-            }
-
-            if let Some(packet) = self.packet_receiver.recv().await {
-                match packet {
-                    SchedulerPacket::InboundPacket(packet) => {
-                        self.enqueue(packet).await;
+                    SchedulerReaderMessage::InboundPacket(packet) => {
+                        self.enqueue(packet);
                     }
                 }
 
-                while let Ok(packet) = self.packet_receiver.try_recv() {
-                    match packet {
-                        SchedulerPacket::InboundPacket(packet) => {
-                            self.enqueue(packet).await;
+                while let Ok(message) = self.receiver.try_recv() {
+                    match message {
+                        SchedulerReaderMessage::InboundPacket(packet) => {
+                            self.enqueue(packet);
                         }
                     }
                 }
@@ -511,15 +411,21 @@ impl Wrr {
         }
     }
 
-    async fn enqueue(&mut self, packet: Packet) {
-        self.current_time = self.start_time.elapsed().as_secs_f32();
-        let total_queue_length: usize = self.queues.iter().map(|q| q.len()).sum();
+    fn enqueue(&mut self, packet: Packet) {
+        let flow_id = packet.flow_id;
 
-        // drops the packet based on the drop strategy
+        // Get or create the queue for this flow
+        let mut flow_queues = self.flow_queues.write().unwrap();
+        let flow_queue = flow_queues
+            .entry(flow_id)
+            .or_insert_with(|| ArrayQueue::new(self.capacity));
+
+        let current_queue_len = flow_queue.len();
+
         let should_drop_packet = self.drop_strategy.should_drop(
             packet.packet_size,
-            self.total_bytes,
-            total_queue_length,
+            current_queue_len,
+            current_queue_len,
         );
 
         // the case that this packet will be dropped
@@ -527,10 +433,10 @@ impl Wrr {
             self.packets_dropped += 1;
 
             warn!(
-                "WRR: Scheduler dropped a packet for flow {} (size: {}). Total queue length: {}/{}, packets dropped: {}",
+                "WRR: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
                 packet.flow_id,
                 packet.packet_size,
-                total_queue_length,
+                current_queue_len,
                 self.capacity,
                 self.packets_dropped
             );
@@ -538,81 +444,101 @@ impl Wrr {
             return;
         }
 
-        // The case that this packet will not be dropped
-        let class_id = (self.flow_to_class)(packet.flow_id as usize);
-
-        // If the class_id is out of bounds, add a new class_queue with weight 1
-        if class_id >= self.queues.len() {
-            self.queues.push(ArrayQueue::new(self.capacity));
-            self.weights.push(1);
-        }
-
-        let packet_size = packet.packet_size;
         let is_tcp_data = packet.is_tcp_data();
 
-        if self.queues[class_id].push(packet).is_err() {
+        if flow_queue.push(packet).is_err() {
             self.packets_dropped += 1;
 
-            warn!("WRR: Scheduler dropped a packet as the queue is full.");
+            warn!("WRR: Scheduler dropped a packet as the flow queue is full.");
         } else {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.next_enqueue_time < self.current_time {
-                    // if sending side idle, schedule packets immediately
-                    self.total_bytes += packet_size;
-                    self.packets_waiting += 1;
-                    self.schedule_packets().await;
+                if current_queue_len > 2 {
+                    // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
+                    // and the queue becomes 'non-empty' now
+                    self.queues_not_empty.notify_one();
                 }
             } else {
-                self.total_bytes += packet_size;
-                self.packets_waiting += 1;
-                self.schedule_packets().await;
+                self.queues_not_empty.notify_one();
+            }
+        }
+    }
+}
+
+struct WrrWriter {
+    /// Map of flow_id to per-flow queues
+    pub flow_queues: Arc<RwLock<HashMap<FlowId, ArrayQueue<Packet>>>>,
+    /// weights for each flow
+    flow_weights: HashMap<FlowId, usize>,
+    /// signals when the queue has packets to be consumed
+    pub queues_not_empty: Arc<Notify>,
+    /// the network interface handle
+    pub net_interface: NetworkInterfaceHandle,
+    /// the receiver for an unbounded mpsc channel, for other actors to send packets to this writer
+    pub receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
+    /// the token bucket traffic shaper
+    token_bucket: Option<TokenBucket>,
+}
+
+// Consumer task: pops packets from the queue and sends them out using weighted round robin
+impl WrrWriter {
+    async fn run(&mut self) {
+        loop {
+            // receives and imposes rate limits from the controller interface, if available
+            while let Ok(message) = self.receiver.try_recv() {
+                match message {
+                    SchedulerWriterMessage::RateLimit(spec) => {
+                        self.token_bucket = Some(TokenBucket::new(spec));
+                    }
+                    SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
+                        self.flow_weights.insert(flow_id, weight);
+                    }
+                }
+            }
+
+            // waits for notification if all queues are empty
+            if self.all_queues_empty() {
+                self.queues_not_empty.notified().await;
+            }
+
+            // collect all packets according to weights in one large batch
+            let mut batch = Vec::new();
+            self.collect_packets(&mut batch);
+
+            // sends the batch if we have packets
+            if !batch.is_empty() {
+                self.send_packets(&mut batch).await;
             }
         }
     }
 
-    async fn schedule_packets(&mut self) {
-        let mut current_queue = 0;
-        loop {
-            if self.packets_waiting == 0 {
-                return;
-            }
+    fn all_queues_empty(&self) -> bool {
+        let flow_queues = self.flow_queues.read().unwrap();
+        flow_queues.values().all(|queue| queue.is_empty())
+    }
 
-            let mut batch = Vec::new();
-            let mut bytes_sent = 0;
+    fn collect_packets(&mut self, batch: &mut Vec<Packet>) {
+        while !self.all_queues_empty() {
+            let flow_queues = self.flow_queues.read().unwrap();
+            let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
+            drop(flow_queues);
 
-            // Get packets from the current queue according to the weight
-            loop {
-                if self.queues[current_queue].is_empty()
-                    || batch.len() >= self.weights[current_queue]
-                {
-                    break;
+            for flow_id in &flow_ids {
+                // Get the weight for this flow or default to 1
+                let weight = self.flow_weights.get(flow_id).unwrap_or(&1);
+
+                for _ in 0..*weight {
+                    let flow_queues = self.flow_queues.read().unwrap();
+                    if let Some(flow_queue) = flow_queues.get(flow_id) {
+                        if let Some(packet) = flow_queue.pop() {
+                            batch.push(packet);
+                        } else {
+                            break;
+                        }
+                    }
                 }
-
-                let packet = self.queues[current_queue].pop().unwrap();
-                bytes_sent += packet.packet_size;
-                batch.push(packet);
             }
-
-            // Drain all packets from the current queue if not empty
-            // Halt for a while
-            while let Some(packet) = self.queues[current_queue].pop() {
-                bytes_sent += packet.packet_size;
-                batch.push(packet);
-                self.send_packets(&mut batch).await;
-                self.packets_waiting -= batch.len();
-                self.total_bytes -= bytes_sent;
-                self.current_time = self.start_time.elapsed().as_secs_f32();
-                self.next_enqueue_time = self.current_time + bytes_sent as f32 / self.sending_rate;
-                return;
-            }
-
-            // Send the batch and move to next queue
-            self.send_packets(&mut batch).await;
-            self.packets_waiting -= batch.len();
-            self.total_bytes -= bytes_sent;
-            current_queue = (current_queue + 1) % self.queues.len();
         }
     }
 
@@ -626,7 +552,7 @@ impl Wrr {
         } else {
             if let Err(e) = self.net_interface.send(packets).await {
                 error!(
-                    "WrrScheduler: Error sending batch of {} packets: {}",
+                    "WrrWriter: Error sending batch of {} packets: {}",
                     packet_count, e
                 );
 
