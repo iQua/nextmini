@@ -81,29 +81,16 @@ impl FlowIdExt for FlowId {
     }
 }
 
-pub trait FlowCvt {
-    fn from_ip_port_to_flow_id(
-        &self,
-        src_ip: u32,
-        dst_ip: u32,
-        src_port: u16,
-        dst_port: u16,
-    ) -> FlowId;
-}
-
-impl FlowCvt for FlowId {
-    fn from_ip_port_to_flow_id(
-        &self,
-        src_ip: u32,
-        dst_ip: u32,
-        src_port: u16,
-        dst_port: u16,
-    ) -> FlowId {
-        let mut flow_id = 0;
-        flow_id |= (src_ip as u128) << 96;
-        flow_id |= (dst_ip as u128) << 64;
-        flow_id |= (src_port as u128) << 48;
-        flow_id |= (dst_port as u128) << 32;
-        flow_id
-    }
+pub fn from_ip_port_to_flow_id(
+    src_node_id: u32,
+    dst_node_id: u32,
+    src_port: u16,
+    dst_port: u16,
+) -> FlowId {
+    let mut flow_id = 0;
+    flow_id |= (src_node_id as u128) << 96;
+    flow_id |= (dst_node_id as u128) << 64;
+    flow_id |= (src_port as u128) << 48;
+    flow_id |= (dst_port as u128) << 32;
+    flow_id
 }
