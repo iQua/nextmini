@@ -441,8 +441,8 @@ impl Wrr {
             })
         };
 
-        let mut queues = Vec::new();
-        let mut weights = Vec::new();
+        let queues = Vec::new();
+        let weights = Vec::new();
 
         Self {
             net_interface,
