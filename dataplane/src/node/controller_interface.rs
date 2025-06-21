@@ -12,7 +12,6 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
-use crate::node::from_ip_port_to_flow_id;
 use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::reporter::ControllerReporterHandle;
@@ -239,14 +238,12 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.update_routing_table(routes);
             }
-            ControllerToDataplane::SetFlowWeight {
-                src_node_id,
-                dst_node_id,
-                src_port,
-                dst_port,
-                weight,
-            } => {
-                let flow_id = from_ip_port_to_flow_id(src_node_id, dst_node_id, src_port, dst_port);
+            ControllerToDataplane::SetFlowWeight { flow_id, weight } => {
+                info!(
+                    "Setting the flow weight for flow {} to {}.",
+                    flow_id, weight
+                );
+
                 self.processors.set_flow_weight(flow_id, weight);
             }
             _ => error!("Received a message with an unknown type from the controller."),

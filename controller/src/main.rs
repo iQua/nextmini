@@ -346,11 +346,15 @@ async fn handle_connection(
                         info!("Setting flow weights for node {}", node_id);
 
                         for flow_weight in &config.flow_weights {
+                            // Convert to flow_id
+                            let mut flow_id = 0;
+                            flow_id |= (flow_weight.src_node_id as u128) << 96;
+                            flow_id |= (flow_weight.dst_node_id as u128) << 64;
+                            flow_id |= (flow_weight.src_port as u128) << 48;
+                            flow_id |= (flow_weight.dst_port as u128) << 32;
+
                             let msg = ControllerToDataplane::SetFlowWeight {
-                                src_node_id: flow_weight.src_node_id as u32,
-                                dst_node_id: flow_weight.dst_node_id as u32,
-                                src_port: flow_weight.src_port as u16,
-                                dst_port: flow_weight.dst_port as u16,
+                                flow_id,
                                 weight: flow_weight.weight,
                             };
 
