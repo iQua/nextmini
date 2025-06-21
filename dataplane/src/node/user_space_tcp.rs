@@ -1,5 +1,7 @@
+use std::cmp;
 use std::net::Ipv4Addr;
 use std::thread;
+use std::time::Instant as StdInstant;
 
 use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
@@ -104,8 +106,10 @@ impl UserSpaceTcpSource {
                 .collect();
             let mut bytes_sent: Vec<u64> = vec![0; flows.len()]; // for client test
             let mut bytes_received: Vec<u64> = vec![0; server_handles.len()]; // for server test
-            let mut client_start_times: Vec<Option<Instant>> = vec![None; flows.len()];
-            let mut server_start_times: Vec<Option<Instant>> = vec![None; server_handles.len()];
+            let mut client_start_times: Vec<Option<StdInstant>> = vec![None; flows.len()];
+            let mut server_start_times: Vec<Option<StdInstant>> = vec![None; server_handles.len()];
+            let mut client_transmission_started = vec![false; flows.len()];
+            let mut server_transmission_started = vec![false; server_handles.len()];
             let mut device = device;
 
             loop {
@@ -125,29 +129,37 @@ impl UserSpaceTcpSource {
                     }
 
                     if server_socket.is_active() && server_socket.can_recv() {
+                        if !server_transmission_started[i] {
+                            server_start_times[i] = Some(StdInstant::now());
+                            server_transmission_started[i] = true;
+                            info!("Server {} started receiving data", i);
+                        }
+
                         match server_socket.recv(|buffer| {
                             let length = buffer.len();
-                            if server_start_times[i].is_none() {
-                                server_start_times[i] = Some(now);
-                            }
-
-                            bytes_received[i] += length as u64;
-
-                            if bytes_received[i] % 1_000 == 0 {
-                                let elapsed_millis = (now - server_start_times[i].unwrap()).total_millis() as f64;
-                                let elapsed_secs = elapsed_millis / 1000.0;
-                                let throughput_mbps = (bytes_received[i] as f64 * 8.0) / (elapsed_secs * 1_000_000.0);
-                                info!(
-                                    "Server {} received {} KB total, throughput: {:.2} Mbps ({} bytes this recv)",
-                                    i,
-                                    bytes_received[i] / 1_000,
-                                    throughput_mbps,
-                                    length
-                                );
-                            }
-                            (length, length)
+                            (length, length) // Process all available data like benchmark
                         }) {
-                            Ok(_) => {}
+                            Ok(received) => {
+                                bytes_received[i] += received as u64;
+
+                                if bytes_received[i] % 100_000 == 0 {
+                                    info!("Server {} received {} KB", i, bytes_received[i] / 1_000);
+                                }
+
+                                if !server_socket.is_active() {
+                                    if let Some(start_time) = server_start_times[i] {
+                                        let end_time = StdInstant::now();
+                                        let elapsed =
+                                            end_time.duration_since(start_time).as_secs_f64();
+                                        let throughput_gbps = (bytes_received[i] as f64 * 8.0)
+                                            / (elapsed * 1_000_000_000.0);
+                                        info!(
+                                            "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                            i, throughput_gbps, bytes_received[i], elapsed
+                                        );
+                                    }
+                                }
+                            }
                             Err(_) => {}
                         }
                     }
@@ -200,61 +212,35 @@ impl UserSpaceTcpSource {
 
                     // sending packets with per-connection traffic settings
                     if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
-                        match client_socket.send(|buf| {
-                            let to_write = std::cmp::min(buf.len(), bytes_left[i] as usize);
-                            buf[..to_write].fill(0xAA);
+                        if !client_transmission_started[i] {
+                            client_start_times[i] = Some(StdInstant::now());
+                            client_transmission_started[i] = true;
+                            info!("Client {} started transmission", i);
+                        }
 
-                            (to_write, to_write) // (bytes_to_enqueue, return_value)
+                        match client_socket.send(|buf| {
+                            let to_write = cmp::min(buf.len(), bytes_left[i] as usize);
+                            buf[..to_write].fill(0xAA);
+                            (to_write, to_write)
                         }) {
                             Ok(sent) => {
                                 bytes_left[i] -= sent as u64;
                                 bytes_sent[i] += sent as u64;
 
-                                // record first send time
-                                if client_start_times[i].is_none() {
-                                    client_start_times[i] = Some(now);
-                                }
-
-                                if bytes_sent[i] % 1_000 == 0 || bytes_left[i] == 0 {
-                                    let total_size = flow.flow_size.unwrap_or(10_000_000);
-                                    let progress =
-                                        (bytes_sent[i] as f64 / total_size as f64 * 100.0) as u32;
-                                    info!(
-                                        "Client {} sent {} KB / {} KB ({}%) to {}",
-                                        i,
-                                        bytes_sent[i] / 1_000,
-                                        total_size / 1_000,
-                                        progress,
-                                        format!(
-                                            "{}.{}.{}.{}",
-                                            flow.remote_addr[0],
-                                            flow.remote_addr[1],
-                                            flow.remote_addr[2],
-                                            flow.remote_addr[3]
-                                        )
-                                    );
+                                if bytes_sent[i] % 100_000 == 0 {
+                                    info!("Client {} sent {} KB", i, bytes_sent[i] / 1_000);
                                 }
 
                                 if bytes_left[i] == 0 {
-                                    let elapsed_millis = (now - client_start_times[i].unwrap())
-                                        .total_millis()
-                                        as f64;
-                                    let elapsed_secs = elapsed_millis / 1000.0;
-                                    let throughput_mbps =
-                                        (bytes_sent[i] as f64 * 8.0) / (elapsed_secs * 1_000_000.0);
+                                    let end_time = StdInstant::now();
+                                    let elapsed = end_time
+                                        .duration_since(client_start_times[i].unwrap())
+                                        .as_secs_f64();
+                                    let throughput_gbps =
+                                        (bytes_sent[i] as f64 * 8.0) / (elapsed * 1_000_000_000.0);
                                     info!(
-                                        "Client {} completed: {} KB in {:.2}s, throughput: {:.2} Mbps to {}",
-                                        i,
-                                        bytes_sent[i] / 1_000,
-                                        elapsed_secs,
-                                        throughput_mbps,
-                                        format!(
-                                            "{}.{}.{}.{}",
-                                            flow.remote_addr[0],
-                                            flow.remote_addr[1],
-                                            flow.remote_addr[2],
-                                            flow.remote_addr[3]
-                                        )
+                                        "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                        i, throughput_gbps, bytes_sent[i], elapsed
                                     );
                                 }
                             }
