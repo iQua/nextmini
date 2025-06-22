@@ -1,16 +1,11 @@
 use std::cmp;
-use std::io::{Read, Write};
 use std::net::Ipv4Addr;
-use std::os::unix::io::AsRawFd;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant as StdInstant;
 
 use flume;
-use nix::fcntl::{self, FcntlArg, OFlag};
-use os_pipe::{PipeReader, PipeWriter, pipe};
 use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium, wait as phy_wait};
+use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr};
@@ -28,7 +23,6 @@ pub struct UserSpaceTcpSource {
     processor_handle: ProcessorHandle,
     packet_sender: flume::Sender<Packet>,
     packet_receiver: flume::Receiver<Packet>,
-    signal_writer: Arc<Mutex<Option<PipeWriter>>>,
 }
 
 impl UserSpaceTcpSource {
@@ -41,7 +35,6 @@ impl UserSpaceTcpSource {
             processor_handle,
             packet_sender: packet_sender.clone(),
             packet_receiver,
-            signal_writer: Arc::new(Mutex::new(None)),
         };
 
         tcp_source
@@ -49,16 +42,10 @@ impl UserSpaceTcpSource {
 
     /// Starts the user-space TCP source as a virtual device.
     pub fn start(&self) {
-        let (signal_reader, signal_writer) = pipe().expect("Failed to create pipe.");
-        fcntl::fcntl(&signal_reader, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
-            .expect("Failed to set pipe to non-blocking");
-        *self.signal_writer.lock().unwrap() = Some(signal_writer);
-
         let device = VirtualDevice {
             config: self.config.clone(),
             receiver: self.packet_receiver.clone(),
             sender: self.processor_handle.clone(),
-            signal_reader: Arc::new(signal_reader),
         };
 
         // sets up for IP layer without needing hardware address
@@ -123,12 +110,11 @@ impl UserSpaceTcpSource {
             let mut server_start_times: Vec<Option<StdInstant>> = vec![None; server_handles.len()];
             let mut client_transmission_started = vec![false; flows.len()];
             let mut server_transmission_started = vec![false; server_handles.len()];
-            let mut client_closing_initiated = vec![false; flows.len()];
             let mut device = device;
 
             loop {
-                let timestamp = Instant::now();
-                iface.poll(timestamp, &mut device, &mut sockets);
+                let now = Instant::now();
+                iface.poll(now, &mut device, &mut sockets);
 
                 // multiple server sockets handling
                 for i in 0..server_handles.len() {
@@ -149,45 +135,32 @@ impl UserSpaceTcpSource {
                             info!("Server {} started receiving data", i);
                         }
 
-                        while server_socket.can_recv() {
-                            match server_socket.recv(|buffer| {
-                                let received_len = buffer.len();
-                                (received_len, received_len)
-                            }) {
-                                Ok(received) => {
-                                    if received > 0 {
-                                        bytes_received[i] += received as u64;
+                        match server_socket.recv(|buffer| {
+                            let length = buffer.len();
+                            (length, length) // Process all available data like benchmark
+                        }) {
+                            Ok(received) => {
+                                bytes_received[i] += received as u64;
 
-                                        if bytes_received[i] % 1_000_000 == 0 {
-                                            info!(
-                                                "Server {} received {} KB",
-                                                i,
-                                                bytes_received[i] / 1_000
-                                            );
-                                        }
+                                if bytes_received[i] % 100_000 == 0 {
+                                    info!("Server {} received {} KB", i, bytes_received[i] / 1_000);
+                                }
+
+                                if !server_socket.is_active() {
+                                    if let Some(start_time) = server_start_times[i] {
+                                        let end_time = StdInstant::now();
+                                        let elapsed =
+                                            end_time.duration_since(start_time).as_secs_f64();
+                                        let throughput_gbps = (bytes_received[i] as f64 * 8.0)
+                                            / (elapsed * 1_000_000_000.0);
+                                        info!(
+                                            "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                            i, throughput_gbps, bytes_received[i], elapsed
+                                        );
                                     }
                                 }
-                                Err(_) => {
-                                    break;
-                                }
                             }
-                        }
-                    }
-
-                    // when the connection is closed
-                    if !server_socket.is_active() && server_transmission_started[i] {
-                        if let Some(start_time) = server_start_times[i] {
-                            let end_time = StdInstant::now();
-                            let elapsed = end_time.duration_since(start_time).as_secs_f64();
-                            if elapsed > 0.0 {
-                                let throughput_gbps =
-                                    (bytes_received[i] as f64 * 8.0) / (elapsed * 1_000_000_000.0);
-                                info!(
-                                    "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                    i, throughput_gbps, bytes_received[i], elapsed
-                                );
-                            }
-                            server_transmission_started[i] = false;
+                            Err(_) => {}
                         }
                     }
                 }
@@ -238,76 +211,60 @@ impl UserSpaceTcpSource {
                     }
 
                     // sending packets with per-connection traffic settings
-                    if client_socket.is_active() {
-                        if bytes_left[i] > 0 {
-                            if !client_transmission_started[i] && client_socket.can_send() {
-                                client_start_times[i] = Some(StdInstant::now());
-                                client_transmission_started[i] = true;
-                                info!("Client {} started transmission", i);
-                            }
-
-                            while client_socket.can_send() && bytes_left[i] > 0 {
-                                match client_socket.send(|buf| {
-                                    let to_write = cmp::min(buf.len(), bytes_left[i] as usize);
-                                    // buf[..to_write].fill(0xAA); // removed
-                                    (to_write, to_write)
-                                }) {
-                                    Ok(sent) => {
-                                        if sent > 0 {
-                                            bytes_left[i] -= sent as u64;
-                                            bytes_sent[i] += sent as u64;
-
-                                            if bytes_sent[i] % 1_000_000 == 0 {
-                                                info!(
-                                                    "Client {} sent {} KB",
-                                                    i,
-                                                    bytes_sent[i] / 1_000
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(_) => {
-                                        error!(
-                                            "Failed to send data block from client {}, packets dropped",
-                                            i
-                                        );
-                                        break;
-                                    }
-                                }
-                            }
+                    if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
+                        if !client_transmission_started[i] {
+                            client_start_times[i] = Some(StdInstant::now());
+                            client_transmission_started[i] = true;
+                            info!("Client {} started transmission", i);
                         }
 
-                        if bytes_left[i] == 0 && !client_closing_initiated[i] {
-                            let end_time = StdInstant::now();
-                            if let Some(start_time) = client_start_times[i] {
-                                let elapsed = end_time.duration_since(start_time).as_secs_f64();
-                                let throughput_gbps =
-                                    (bytes_sent[i] as f64 * 8.0) / (elapsed * 1_000_000_000.0);
-                                info!(
-                                    "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                    i, throughput_gbps, bytes_sent[i], elapsed
+                        match client_socket.send(|buf| {
+                            let to_write = cmp::min(buf.len(), bytes_left[i] as usize);
+                            buf[..to_write].fill(0xAA);
+                            (to_write, to_write)
+                        }) {
+                            Ok(sent) => {
+                                bytes_left[i] -= sent as u64;
+                                bytes_sent[i] += sent as u64;
+
+                                if bytes_sent[i] % 100_000 == 0 {
+                                    info!("Client {} sent {} KB", i, bytes_sent[i] / 1_000);
+                                }
+
+                                if bytes_left[i] == 0 {
+                                    let end_time = StdInstant::now();
+                                    let elapsed = end_time
+                                        .duration_since(client_start_times[i].unwrap())
+                                        .as_secs_f64();
+                                    let throughput_gbps =
+                                        (bytes_sent[i] as f64 * 8.0) / (elapsed * 1_000_000_000.0);
+                                    info!(
+                                        "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                        i, throughput_gbps, bytes_sent[i], elapsed
+                                    );
+                                }
+                            }
+                            Err(_) => {
+                                error!(
+                                    "Failed to send data block from client {}, packets dropped",
+                                    i
                                 );
                             }
-                            client_socket.close();
-                            client_closing_initiated[i] = true;
                         }
                     }
                 }
 
-                iface.poll(timestamp, &mut device, &mut sockets);
-
-                match iface.poll_at(timestamp, &sockets) {
-                    Some(poll_at) if timestamp < poll_at => {
-                        phy_wait(device.signal_reader.as_raw_fd(), Some(poll_at - timestamp))
-                            .expect("wait error");
+                // using smoltcp's poll_at
+                match iface.poll_at(now, &sockets) {
+                    Some(poll_at) if now < poll_at => {
+                        let wait_time = poll_at - now;
+                        thread::sleep(wait_time.into());
                     }
-                    Some(_) => (),
+                    Some(_) => {
+                        continue;
+                    }
                     None => {
-                        phy_wait(
-                            device.signal_reader.as_raw_fd(),
-                            Some(smoltcp::time::Duration::from_millis(100)),
-                        )
-                        .expect("wait error");
+                        thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
                     }
                 }
             }
@@ -320,10 +277,6 @@ impl LocalDestination for UserSpaceTcpSource {
         if let Err(e) = self.packet_sender.try_send(packet) {
             error!("Failed to send packet to user-space TCP source: {:?}", e);
         }
-        // write bytes to send signal
-        if let Some(writer) = &mut *self.signal_writer.lock().unwrap() {
-            if writer.write(&[1]).is_err() {}
-        }
     }
 }
 
@@ -332,7 +285,6 @@ struct VirtualDevice {
     config: LocalConfig,
     receiver: flume::Receiver<Packet>,
     sender: ProcessorHandle,
-    signal_reader: Arc<PipeReader>,
 }
 
 impl Device for VirtualDevice {
@@ -340,9 +292,6 @@ impl Device for VirtualDevice {
     type TxToken<'a> = PacketTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let mut buf = [0u8; 64];
-        while self.signal_reader.as_ref().read(&mut buf).is_ok() {}
-
         self.receiver
             .try_recv()
             .ok()
