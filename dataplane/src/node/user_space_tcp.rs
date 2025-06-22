@@ -7,7 +7,7 @@ use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::tcp;
-use smoltcp::time::Instant;
+use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{IpAddress, IpCidr};
 use tracing::{error, info};
 
@@ -253,39 +253,23 @@ impl UserSpaceTcpSource {
                 }
 
                 // event-driven waiting without fixed timeouts
-                match iface.poll_at(now, &sockets) {
-                    Some(poll_at) if now < poll_at => {
-                        let wait_time = poll_at - now;
-                        let timeout = std::time::Duration::from(wait_time);
-
-                        // waits for incoming packet or until smoltcp needs to wake up
-                        let _ = device.receiver.recv_timeout(timeout);
-                    }
-                    Some(_) => {
-                        // smoltcp wants to be polled immediately
+                // Use poll_delay pattern from smoltcp loopback example
+                match iface.poll_delay(now, &sockets) {
+                    Some(Duration::ZERO) => {
+                        // smoltcp wants immediate polling
                         continue;
                     }
+                    Some(delay) => {
+                        // Wait for the specified delay or incoming packet, whichever comes first
+                        let timeout = std::time::Duration::from(delay);
+                        let _ = device.receiver.recv_timeout(timeout);
+                    }
                     None => {
-                        // no specific deadline imposed from smoltcp
-                        // checks if there's any active transmission that might need attention
-                        let has_active_sockets = server_handles.iter().any(|&handle| {
-                            let socket = sockets.get::<tcp::Socket>(handle);
-                            socket.is_active() && (socket.can_recv() || socket.can_send())
-                        }) || client_handles.iter().any(|&handle| {
-                            let socket = sockets.get::<tcp::Socket>(handle);
-                            socket.is_active() && (socket.can_recv() || socket.can_send())
-                        });
-
-                        if has_active_sockets {
-                            // active sockets exist, checks for packets without blocking
-                            if device.receiver.try_recv().is_err() {
-                                // no packet available, yield and continue immediately
-                                thread::yield_now();
-                            }
-                        } else {
-                            // no active sockets, waits for incoming packet
-                            let _ = device.receiver.recv();
-                        }
+                        // No specific timing requirements from smoltcp
+                        // Wait for incoming packet with minimal timeout to stay responsive
+                        let _ = device
+                            .receiver
+                            .recv_timeout(std::time::Duration::from_millis(1));
                     }
                 }
             }
