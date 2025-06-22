@@ -70,12 +70,9 @@ impl UserSpaceTcpSource {
         // creates the TCP socket
         let mut sockets = SocketSet::new(vec![]);
 
-        // Connects to a remote endpoint: needs to be revised to obtain the destination IP and
-        // port number from the local (or controller's) configuration file. In addition, the
-        // current user-space TCP source is a client-only implementation, as it does not implement
-        // bind(), listen(), and accept().
+        // connects to a remote endpoint
 
-        // creates server sockets based on incoming flows count
+        // first, creates server sockets based on the number of inbound flows
         let mut server_handles = Vec::new();
         for _i in 0..self.config.incoming_flows_count {
             let server_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
@@ -98,6 +95,7 @@ impl UserSpaceTcpSource {
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         let base_server_port = self.config.smoltcp_server_port; // base server port for smoltcp
         let flows = self.config.flow_configs.clone();
+
         thread::spawn(move || {
             let mut client_connections_status = vec![false; flows.len()];
             let mut bytes_left: Vec<u64> = flows
@@ -254,17 +252,40 @@ impl UserSpaceTcpSource {
                     }
                 }
 
-                // using smoltcp's poll_at
+                // event-driven waiting without fixed timeouts
                 match iface.poll_at(now, &sockets) {
                     Some(poll_at) if now < poll_at => {
                         let wait_time = poll_at - now;
-                        thread::sleep(wait_time.into());
+                        let timeout = std::time::Duration::from(wait_time);
+
+                        // waits for incoming packet or until smoltcp needs to wake up
+                        let _ = device.receiver.recv_timeout(timeout);
                     }
                     Some(_) => {
+                        // smoltcp wants to be polled immediately
                         continue;
                     }
                     None => {
-                        thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
+                        // no specific deadline imposed from smoltcp
+                        // checks if there's any active transmission that might need attention
+                        let has_active_sockets = server_handles.iter().any(|&handle| {
+                            let socket = sockets.get::<tcp::Socket>(handle);
+                            socket.is_active() && (socket.can_recv() || socket.can_send())
+                        }) || client_handles.iter().any(|&handle| {
+                            let socket = sockets.get::<tcp::Socket>(handle);
+                            socket.is_active() && (socket.can_recv() || socket.can_send())
+                        });
+
+                        if has_active_sockets {
+                            // active sockets exist, checks for packets without blocking
+                            if device.receiver.try_recv().is_err() {
+                                // no packet available, yield and continue immediately
+                                thread::yield_now();
+                            }
+                        } else {
+                            // no active sockets, waits for incoming packet
+                            let _ = device.receiver.recv();
+                        }
                     }
                 }
             }
