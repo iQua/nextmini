@@ -1,11 +1,16 @@
 use std::cmp;
+use std::io::{Read, Write};
 use std::net::Ipv4Addr;
+use std::os::unix::io::AsRawFd;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant as StdInstant;
 
 use flume;
+use nix::fcntl::{self, FcntlArg, OFlag};
+use os_pipe::{PipeReader, PipeWriter, pipe};
 use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::phy::{Device, DeviceCapabilities, Medium};
+use smoltcp::phy::{Device, DeviceCapabilities, Medium, wait as phy_wait};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr};
@@ -23,6 +28,7 @@ pub struct UserSpaceTcpSource {
     processor_handle: ProcessorHandle,
     packet_sender: flume::Sender<Packet>,
     packet_receiver: flume::Receiver<Packet>,
+    signal_writer: Arc<Mutex<Option<PipeWriter>>>,
 }
 
 impl UserSpaceTcpSource {
@@ -35,6 +41,7 @@ impl UserSpaceTcpSource {
             processor_handle,
             packet_sender: packet_sender.clone(),
             packet_receiver,
+            signal_writer: Arc::new(Mutex::new(None)),
         };
 
         tcp_source
@@ -42,10 +49,17 @@ impl UserSpaceTcpSource {
 
     /// Starts the user-space TCP source as a virtual device.
     pub fn start(&self) {
+        let (signal_reader, signal_writer) = pipe().expect("Failed to create pipe.");
+        let fd = signal_reader.as_raw_fd();
+        fcntl::fcntl(fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK))
+            .expect("Failed to set pipe to non-blocking");
+        *self.signal_writer.lock().unwrap() = Some(signal_writer);
+
         let device = VirtualDevice {
             config: self.config.clone(),
             receiver: self.packet_receiver.clone(),
             sender: self.processor_handle.clone(),
+            signal_reader: Arc::new(signal_reader),
         };
 
         // sets up for IP layer without needing hardware address
@@ -110,11 +124,13 @@ impl UserSpaceTcpSource {
             let mut server_start_times: Vec<Option<StdInstant>> = vec![None; server_handles.len()];
             let mut client_transmission_started = vec![false; flows.len()];
             let mut server_transmission_started = vec![false; server_handles.len()];
+            let mut client_closing_initiated = vec![false; flows.len()];
             let mut device = device;
+            let fd = device.signal_reader.as_raw_fd();
 
             loop {
-                let now = Instant::now();
-                iface.poll(now, &mut device, &mut sockets);
+                let timestamp = Instant::now();
+                iface.poll(timestamp, &mut device, &mut sockets);
 
                 // multiple server sockets handling
                 for i in 0..server_handles.len() {
@@ -159,8 +175,23 @@ impl UserSpaceTcpSource {
                                         );
                                     }
                                 }
+                                Err(_) => {
+                                    break;
+                                }
                             }
-                            Err(_) => {}
+                        }
+
+                        if !server_socket.is_active() {
+                            if let Some(start_time) = server_start_times[i] {
+                                let end_time = StdInstant::now();
+                                let elapsed = end_time.duration_since(start_time).as_secs_f64();
+                                let throughput_gbps =
+                                    (bytes_received[i] as f64 * 8.0) / (elapsed * 1_000_000_000.0);
+                                info!(
+                                    "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                    i, throughput_gbps, bytes_received[i], elapsed
+                                );
+                            }
                         }
                     }
                 }
@@ -250,21 +281,22 @@ impl UserSpaceTcpSource {
                                     i
                                 );
                             }
+                            client_socket.close();
+                            client_closing_initiated[i] = true;
                         }
                     }
                 }
 
-                // using smoltcp's poll_at
-                match iface.poll_at(now, &sockets) {
-                    Some(poll_at) if now < poll_at => {
-                        let wait_time = poll_at - now;
-                        thread::sleep(wait_time.into());
+                iface.poll(timestamp, &mut device, &mut sockets);
+
+                match iface.poll_at(timestamp, &sockets) {
+                    Some(poll_at) if timestamp < poll_at => {
+                        phy_wait(fd, Some(poll_at - timestamp)).expect("wait error");
                     }
-                    Some(_) => {
-                        continue;
-                    }
+                    Some(_) => (),
                     None => {
-                        thread::sleep(std::time::Duration::from_millis(10)); // Control polling rate
+                        phy_wait(fd, Some(smoltcp::time::Duration::from_millis(100)))
+                            .expect("wait error");
                     }
                 }
             }
@@ -285,6 +317,7 @@ struct VirtualDevice {
     config: LocalConfig,
     receiver: flume::Receiver<Packet>,
     sender: ProcessorHandle,
+    signal_reader: Arc<PipeReader>,
 }
 
 impl Device for VirtualDevice {
@@ -292,6 +325,9 @@ impl Device for VirtualDevice {
     type TxToken<'a> = PacketTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        let mut buf = [0u8; 64];
+        while self.signal_reader.as_ref().read(&mut buf).is_ok() {}
+
         self.receiver
             .try_recv()
             .ok()
