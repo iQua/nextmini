@@ -104,12 +104,15 @@ impl RoutingTable {
         let ip_addr = u32::from(ip);
         let octets = ip.octets();
 
-        // Checks if matches TUN prefix (10.0.0.x).
-        if octets[0] == 10 && octets[1] == 0 && octets[2] == 0 {
+        // Checks if matches TUN prefix.
+        if octets[0] == self.base_ipv4_addr[0]
+            && octets[1] == self.base_ipv4_addr[1]
+            && octets[2] == self.base_ipv4_addr[2]
+        {
             let base = u32::from_be_bytes(self.base_ipv4_addr);
             (ip_addr - base) as NodeId
         } else {
-            // Checks if matches user space prefix (192.168.0.x).
+            // Checks if matches user space prefix.
             let base = u32::from_be_bytes(self.user_space_base_addr);
             (ip_addr - base) as NodeId
         }
