@@ -140,7 +140,6 @@ impl Scheduler {
             queues_not_empty,
             receiver: writer_receiver,
             token_bucket: None,
-            flow_weights: HashMap::new(),
         };
 
         tokio::task::spawn(async move {
@@ -249,7 +248,6 @@ impl SchedulerReader {
 /// Consumer side of scheduler
 struct SchedulerWriter {
     queue: Arc<dyn SchedulerQueue + Send + Sync>,
-    flow_weights: HashMap<FlowId, usize>,
     queues_not_empty: Arc<Notify>,
     net_interface: NetworkInterfaceHandle,
     receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
@@ -266,7 +264,7 @@ impl SchedulerWriter {
                     }
                     // TO BE IMPLEMENTED : Change to flow specs
                     SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
-                        self.flow_weights.insert(flow_id, weight);
+                        self.queue.set_flow_weight(flow_id, weight);
                     }
                 }
             }
@@ -278,7 +276,7 @@ impl SchedulerWriter {
 
             // Collect packets from queues
             let mut batch = Vec::new();
-            self.queue.collect_packets(&mut batch, &self.flow_weights);
+            self.queue.collect_packets(&mut batch);
 
             // Send packets if we have any
             if !batch.is_empty() {
@@ -307,9 +305,10 @@ impl SchedulerWriter {
 
 trait SchedulerQueue: Send + Sync {
     fn enqueue(&self, packet: Packet) -> Result<(), Packet>;
-    fn collect_packets(&self, batch: &mut Vec<Packet>, flow_weights: &HashMap<FlowId, usize>);
+    fn collect_packets(&self, batch: &mut Vec<Packet>);
     fn is_empty(&self) -> bool;
     fn queue_len(&self, flow_id: FlowId) -> usize;
+    fn set_flow_weight(&self, flow_id: FlowId, weight: usize);
 }
 
 /// FIFO queue strategy - no inner Arc needed since Arc<QueueStrategy> provides sharing
@@ -330,7 +329,7 @@ impl SchedulerQueue for FifoQueue {
         self.queue.push(packet)
     }
 
-    fn collect_packets(&self, batch: &mut Vec<Packet>, _flow_weights: &HashMap<FlowId, usize>) {
+    fn collect_packets(&self, batch: &mut Vec<Packet>) {
         while let Some(packet) = self.queue.pop() {
             batch.push(packet);
         }
@@ -343,10 +342,14 @@ impl SchedulerQueue for FifoQueue {
     fn queue_len(&self, _flow_id: FlowId) -> usize {
         self.queue.len()
     }
+    fn set_flow_weight(&self, _flow_id: FlowId, _weight: usize) {
+        // Do nothing for FIFO queue
+    }
 }
 
 struct WrrQueue {
     flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>,
+    flow_weights: RwLock<HashMap<FlowId, usize>>,
     capacity: usize,
 }
 
@@ -354,6 +357,7 @@ impl WrrQueue {
     fn new(capacity: usize) -> Self {
         Self {
             flow_queues: RwLock::new(HashMap::new()),
+            flow_weights: RwLock::new(HashMap::new()),
             capacity,
         }
     }
@@ -370,13 +374,14 @@ impl SchedulerQueue for WrrQueue {
         flow_queue.push(packet)
     }
 
-    fn collect_packets(&self, batch: &mut Vec<Packet>, flow_weights: &HashMap<FlowId, usize>) {
+    fn collect_packets(&self, batch: &mut Vec<Packet>) {
         while !self.is_empty() {
             let flow_queues = self.flow_queues.read().unwrap();
             let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
             drop(flow_queues);
 
             for flow_id in &flow_ids {
+                let flow_weights = self.flow_weights.read().unwrap();
                 let weight = flow_weights.get(flow_id).unwrap_or(&1);
 
                 for _ in 0..*weight {
@@ -399,5 +404,10 @@ impl SchedulerQueue for WrrQueue {
     fn queue_len(&self, flow_id: FlowId) -> usize {
         let flow_queues = self.flow_queues.read().unwrap();
         flow_queues.get(&flow_id).map_or(0, |queue| queue.len())
+    }
+
+    fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        let mut flow_weights = self.flow_weights.write().unwrap();
+        flow_weights.insert(flow_id, weight);
     }
 }
