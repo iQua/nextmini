@@ -145,9 +145,9 @@ async fn handle_connection(
                         };
 
                         // assigns a virtual address to this node for smoltcp interface
-                        let smoltcp_addr = match create_new_virtual_addr(
-                            config.smoltcp_base_addr,
-                            config.smoltcp_net_mask,
+                        let user_space_addr = match create_new_virtual_addr(
+                            config.user_space_base_addr,
+                            config.user_space_net_mask,
                             node_id,
                         ) {
                             Some(addr) => addr,
@@ -168,7 +168,7 @@ async fn handle_connection(
                             .join(".");
 
                         // adds smoltcp network
-                        let smoltcp_virtual_addr = smoltcp_addr
+                        let user_space_virtual_addr = user_space_addr
                             .iter()
                             .map(|x| x.to_string())
                             .collect::<Vec<_>>()
@@ -180,7 +180,7 @@ async fn handle_connection(
                             private_network_addr,
                             public_network_addr,
                             &virtual_network_addr,
-                            &smoltcp_virtual_addr,
+                            &user_space_virtual_addr,
                         );
 
                         let new_node = Node {
@@ -189,20 +189,20 @@ async fn handle_connection(
                             private_network_addr,
                             public_network_addr,
                             virtual_network_addr,
-                            smoltcp_virtual_addr,
+                            user_space_virtual_addr,
                         };
 
                         // Insert node into database
                         match sqlx::query(
                             r#"
-                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr, smoltcp_virtual_addr, smoltcp_port)
+                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr, user_space_virtual_addr, user_space_port)
                             VALUES ($1, $2, $3, $4, $5, $6, $7)
                             ON CONFLICT (id) DO UPDATE SET
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
                                 public_network_addr = EXCLUDED.public_network_addr,
                                 virtual_network_addr = EXCLUDED.virtual_network_addr,
-                                smoltcp_virtual_addr = EXCLUDED.smoltcp_virtual_addr,
+                                user_space_virtual_addr = EXCLUDED.user_space_virtual_addr,
                             "#
                         )
                         .bind(new_node.id)
@@ -210,7 +210,7 @@ async fn handle_connection(
                         .bind(&new_node.private_network_addr)
                         .bind(&new_node.public_network_addr)
                         .bind(&new_node.virtual_network_addr)
-                        .bind(&new_node.smoltcp_virtual_addr)
+                        .bind(&new_node.user_space_virtual_addr)
                         .execute(&*db_pool)
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
@@ -231,8 +231,8 @@ async fn handle_connection(
                             .enumerate()
                             .filter_map(|(i, flow)| {
                                 create_new_virtual_addr(
-                                    config.smoltcp_base_addr,
-                                    config.smoltcp_net_mask,
+                                    config.user_space_base_addr,
+                                    config.user_space_net_mask,
                                     flow.dst_node_id,
                                 )
                                 .map(|remote_addr| Flow {
@@ -253,8 +253,8 @@ async fn handle_connection(
                             node_id,
                             virtual_addr,
                             config.net_mask,
-                            smoltcp_addr,
-                            config.smoltcp_net_mask,
+                            user_space_addr,
+                            config.user_space_net_mask,
                             config.protocol.clone(),
                         );
 

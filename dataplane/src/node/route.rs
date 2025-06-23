@@ -17,7 +17,7 @@ pub struct RoutingTable {
     base_ipv4_addr: [u8; 4],
 
     /// Base IPv4 address for Smoltcp network (e.g., [192, 168, 0, 0])
-    smoltcp_base_addr: [u8; 4],
+    user_space_base_addr: [u8; 4],
 
     /// Source-destination pair -> available route IDs
     available_routes: AHashMap<(Ipv4Addr, Ipv4Addr), Vec<usize>>,
@@ -39,7 +39,7 @@ impl RoutingTable {
             available_routes: AHashMap::default(),
             local_id,
             base_ipv4_addr: [10, 0, 0, 0],
-            smoltcp_base_addr: [192, 168, 0, 0],
+            user_space_base_addr: [192, 168, 0, 0],
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
@@ -71,12 +71,12 @@ impl RoutingTable {
                 .push(route.route_id);
 
             // install smoltcp network routes (192.168.0.x)
-            let smoltcp_src_ip = self.node_id_to_smoltcp_ip(route.src_node_id);
-            let smoltcp_dst_ip = self.node_id_to_smoltcp_ip(route.dst_node_id);
-            let smoltcp_src_dst_pair = (smoltcp_src_ip, smoltcp_dst_ip);
+            let user_space_src_ip = self.node_id_to_user_space_ip(route.src_node_id);
+            let user_space_dst_ip = self.node_id_to_user_space_ip(route.dst_node_id);
+            let user_space_src_dst_pair = (user_space_src_ip, user_space_dst_ip);
 
             self.available_routes
-                .entry(smoltcp_src_dst_pair)
+                .entry(user_space_src_dst_pair)
                 .or_default()
                 .push(route.route_id);
 
@@ -87,8 +87,8 @@ impl RoutingTable {
                 route.dst_node_id,
                 tun_src_ip,
                 tun_dst_ip,
-                smoltcp_src_ip,
-                smoltcp_dst_ip,
+                user_space_src_ip,
+                user_space_dst_ip,
                 route.next_hop
             );
         }
@@ -111,8 +111,8 @@ impl RoutingTable {
     }
 
     /// Converts node ID to SmolTCP IP address based on the smoltcp base address.
-    pub fn node_id_to_smoltcp_ip(&self, node_id: usize) -> Ipv4Addr {
-        let base_ip = u32::from_be_bytes(self.smoltcp_base_addr);
+    pub fn node_id_to_user_space_ip(&self, node_id: usize) -> Ipv4Addr {
+        let base_ip = u32::from_be_bytes(self.user_space_base_addr);
         let ip_addr = base_ip + node_id as u32;
         Ipv4Addr::from(ip_addr)
     }

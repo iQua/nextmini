@@ -115,7 +115,7 @@ impl UserSpaceTcpSource {
             finished: bool,
         }
 
-        let base_server_port = self.config.smoltcp_server_port;
+        let base_server_port = self.config.user_space_server_port;
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         thread::spawn(move || {

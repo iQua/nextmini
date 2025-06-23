@@ -1,7 +1,7 @@
 /// Implements utility functions for the controller.
 use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry};
 
-use crate::models::Route;
+use crate::{config::Flow, models::Route};
 use tracing::{debug, info};
 
 /// Creates a new virtual address by adding the node ID to the base address.
@@ -38,16 +38,16 @@ pub fn build_startup_response(
     node_id: usize,
     virtual_addr: [u8; 4],
     net_mask: [u8; 4],
-    smoltcp_addr: [u8; 4],
-    smoltcp_net_mask: [u8; 4],
+    user_space_addr: [u8; 4],
+    user_space_net_mask: [u8; 4],
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
         addr: virtual_addr,
         net_mask,
-        smoltcp_addr,
-        smoltcp_net_mask,
+        user_space_addr,
+        user_space_net_mask,
         protocol,
     }
 }
@@ -130,4 +130,8 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             routes: route_entries,
         })
     }
+}
+
+pub fn build_addflows_response(flows: Vec<Flow>, node_id: i32) -> ControllerToDataplane {
+    ControllerToDataplane::AddFlows { flow }
 }

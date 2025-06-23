@@ -101,7 +101,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
             private_network_addr TEXT NOT NULL,
             public_network_addr TEXT NOT NULL,
             virtual_network_addr TEXT NOT NULL,
-            smoltcp_virtual_addr TEXT NOT NULL,
+            user_space_virtual_addr TEXT NOT NULL,
         )
         "#,
     )

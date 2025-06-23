@@ -53,12 +53,12 @@ impl Conductor {
             LocalInterfaceHandle::new(config.clone(), processors.clone());
         processors.connect_local_interface(local_interface.clone());
 
-        let user_space_tcp = if config.user_space_smoltcp_ip != (0, 0, 0, 0) {
+        let user_space_tcp = if config.user_space_user_space_ip != (0, 0, 0, 0) {
             let ip_addr = Ipv4Addr::new(
-                config.user_space_smoltcp_ip.0,
-                config.user_space_smoltcp_ip.1,
-                config.user_space_smoltcp_ip.2,
-                config.user_space_smoltcp_ip.3,
+                config.user_space_user_space_ip.0,
+                config.user_space_user_space_ip.1,
+                config.user_space_user_space_ip.2,
+                config.user_space_user_space_ip.3,
             );
 
             let tcp_source = UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
