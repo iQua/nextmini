@@ -198,7 +198,7 @@ impl SchedulerReader {
 
     fn enqueue(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
-        let queue_len = self.queue_strategy.get_queue_length(flow_id);
+        let queue_len = self.queue_strategy.queue_len(flow_id);
 
         // drops the packet based on the drop strategy
         let should_drop_packet =
@@ -310,7 +310,7 @@ trait SchedulerQueue: Send + Sync {
     fn enqueue(&self, packet: Packet) -> Result<(), Packet>;
     fn collect_packets(&self, batch: &mut Vec<Packet>, flow_weights: &HashMap<FlowId, usize>);
     fn is_empty(&self) -> bool;
-    fn get_queue_length(&self, flow_id: FlowId) -> usize;
+    fn queue_len(&self, flow_id: FlowId) -> usize;
 }
 
 /// FIFO queue strategy - no inner Arc needed since Arc<QueueStrategy> provides sharing
@@ -341,7 +341,7 @@ impl SchedulerQueue for FifoQueue {
         self.queue.is_empty()
     }
 
-    fn get_queue_length(&self, _flow_id: FlowId) -> usize {
+    fn queue_len(&self, _flow_id: FlowId) -> usize {
         self.queue.len()
     }
 }
@@ -400,7 +400,7 @@ impl SchedulerQueue for WrrQueue {
         flow_queues.values().all(|queue| queue.is_empty())
     }
 
-    fn get_queue_length(&self, flow_id: FlowId) -> usize {
+    fn queue_len(&self, flow_id: FlowId) -> usize {
         let flow_queues = self.flow_queues.read().unwrap();
         flow_queues.get(&flow_id).map_or(0, |queue| queue.len())
     }
