@@ -379,8 +379,8 @@ impl SchedulerQueue for WrrQueue {
         let flow_weights = self.flow_weights.read().unwrap();
         let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
 
-        // The maximum number of rounds to empty one of the queues by WRR
-        let max_rounds = flow_queues
+        // The minimum number of rounds to empty one of the queues by WRR
+        let min_rounds = flow_queues
             .iter()
             .filter_map(|(flow_id, queue)| {
                 let weight = *flow_weights.get(flow_id).unwrap_or(&1);
@@ -398,7 +398,7 @@ impl SchedulerQueue for WrrQueue {
 
             // Push all packets for one flow
             if let Some(flow_queue) = flow_queues.get(flow_id) {
-                for _ in 0..*weight * max_rounds {
+                for _ in 0..*weight * min_rounds {
                     if let Some(packet) = flow_queue.pop() {
                         batch.push(packet);
                     }
