@@ -1,7 +1,7 @@
 /// Implements utility functions for the controller.
-use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry};
+use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RoutingTableEntry};
 
-use crate::{config::Flow, models::Route};
+use crate::models::Route;
 use tracing::{debug, info};
 
 /// Creates a new virtual address by adding the node ID to the base address.
@@ -131,6 +131,6 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
     }
 }
 
-pub fn build_addflows_response(flows: Vec<Flow>, node_id: i32) -> ControllerToDataplane {
-    ControllerToDataplane::AddFlows { flow }
+pub fn build_addflows_response(flows: Vec<Flow>) -> ControllerToDataplane {
+    ControllerToDataplane::AddFlows { flow: flows }
 }

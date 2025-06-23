@@ -5,7 +5,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::{FlowSize, Protocol};
+use nextmini_messages::{Flow, Protocol};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
@@ -46,12 +46,6 @@ pub struct LinkRate {
     pub bucket_size: usize,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Flow {
-    pub src_node_id: usize,
-    pub dst_node_id: usize,
-    pub flow_size: FlowSize, // flow size
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {

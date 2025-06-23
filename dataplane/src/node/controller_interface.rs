@@ -9,7 +9,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, Flow};
 
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
@@ -237,6 +237,14 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.processors.update_routing_table(routes);
+            }
+            ControllerToDataplane::AddFlows { flow } => {
+                info!(
+                    "Adding {} flows for node {}.",
+                    flow.len(),
+                    self.config.node_id
+                );
+                // TODO: Process flows
             }
             _ => error!("Received a message with an unknown type from the controller."),
         }
