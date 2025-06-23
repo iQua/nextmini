@@ -77,7 +77,7 @@ pub enum ControllerToDataplane {
         spec: TokenBucketSpec,
     },
     AddFlows {
-        flow: Vec<Flow>,
+        flows: Vec<Flow>,
     },
 }
 
