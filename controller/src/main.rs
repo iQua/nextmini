@@ -18,7 +18,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, Flow, Toke
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
 use crate::models::{Node, Route};
-use crate::utils::{build_routes_for_node, build_startup_response, create_new_virtual_addr};
+use crate::utils::{build_routes_for_node, build_startup_response};
 
 mod config;
 mod db;
@@ -128,59 +128,9 @@ async fn handle_connection(
                             continue;
                         }
 
-                        // assigns a virtual address to this node for tun interface
-                        let virtual_addr = match create_new_virtual_addr(
-                            config.base_addr,
-                            config.net_mask,
-                            node_id,
-                        ) {
-                            Some(addr) => addr,
-                            None => {
-                                error!(
-                                    "Failed to create a tun virtual address for node {}.",
-                                    node_id
-                                );
-                                continue;
-                            }
-                        };
-
-                        // assigns a virtual address to this node for smoltcp interface
-                        let user_space_addr = match create_new_virtual_addr(
-                            config.user_space_base_addr,
-                            config.net_mask,
-                            node_id,
-                        ) {
-                            Some(addr) => addr,
-                            None => {
-                                error!(
-                                    "Failed to create a smoltcp virtual address for node {}.",
-                                    node_id
-                                );
-                                continue;
-                            }
-                        };
-
-                        // adds TUN network
-                        let virtual_network_addr = virtual_addr
-                            .iter()
-                            .map(|x| x.to_string())
-                            .collect::<Vec<_>>()
-                            .join(".");
-
-                        // adds smoltcp network
-                        let user_space_virtual_addr = user_space_addr
-                            .iter()
-                            .map(|x| x.to_string())
-                            .collect::<Vec<_>>()
-                            .join(".");
-
                         info!(
-                            "Created new node {} with private address {}, public address {}, tun virtual address {}, and smoltcp vitrual address {}.",
-                            node_id,
-                            private_network_addr,
-                            public_network_addr,
-                            &virtual_network_addr,
-                            &user_space_virtual_addr,
+                            "Registered new node {} with private address {} and public address {}.",
+                            node_id, private_network_addr, public_network_addr,
                         );
 
                         let new_node = Node {
@@ -215,34 +165,6 @@ async fn handle_connection(
                         }
 
                         // Send startup response
-
-                        let flow_configs: Vec<Flow> = config
-                            .flows
-                            .iter()
-                            .filter(|flow| {
-                                flow.src_node_id == node_id || flow.dst_node_id == node_id
-                            })
-                            .enumerate()
-                            .filter_map(|(i, flow)| {
-                                create_new_virtual_addr(
-                                    config.user_space_base_addr,
-                                    config.net_mask,
-                                    flow.dst_node_id,
-                                )
-                                .map(|remote_addr| Flow {
-                                    src_node_id: flow.src_node_id,
-                                    dst_node_id: flow.dst_node_id,
-                                    flow_size: flow.flow_size,
-                                })
-                            })
-                            .collect();
-
-                        info!(
-                            "Found {} flows for node {} from configuration",
-                            flow_configs.len(),
-                            node_id
-                        );
-
                         let response = build_startup_response(
                             node_id,
                             config.net_mask,

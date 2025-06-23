@@ -321,10 +321,12 @@ impl LocalConfig {
                         protocol,
                     } => {
                         self.node_id = node_id;
+                        let net_mask_arr = [net_mask[0], net_mask[1], net_mask[2], net_mask[3]];
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
 
                         // TUN network configuration
-                        let virtual_addr = get_virtual_addr(virtual_base_addr, node_id);
+                        let virtual_addr =
+                            get_virtual_addr(virtual_base_addr, net_mask_arr, node_id).unwrap();
                         self.local_address = (
                             virtual_addr[0],
                             virtual_addr[1],
@@ -333,7 +335,8 @@ impl LocalConfig {
                         );
 
                         // user space network configuration
-                        let user_space_addr = get_virtual_addr(user_space_base_addr, node_id);
+                        let user_space_addr =
+                            get_virtual_addr(user_space_base_addr, net_mask_arr, node_id).unwrap();
                         self.user_space_address = (
                             user_space_addr[0],
                             user_space_addr[1],
@@ -367,8 +370,26 @@ impl LocalConfig {
 }
 
 /// Computes a new virtual IP address by adding the node ID to the base address in dataplane.
-pub fn get_virtual_addr(base_addr: [u8; 4], node_id: usize) -> [u8; 4] {
-    let base_addr = u32::from_be_bytes(base_addr);
-    let virtual_addr = base_addr.wrapping_add(node_id as u32);
-    virtual_addr.to_be_bytes()
+fn get_virtual_addr(base_addr: [u8; 4], net_mask: [u8; 4], node_id: usize) -> Option<[u8; 4]> {
+    // makes a copy of the base address
+    let base_ip = u32::from_be_bytes(base_addr);
+
+    // adds the node ID as an offset to the base address
+    let new_ip = base_ip.wrapping_add(node_id as u32);
+
+    // creates a new virtual address
+    let new_virtual_addr = new_ip.to_be_bytes();
+
+    // applies the netmask to protect against overflow
+    let net_mask = u32::from_be_bytes(net_mask);
+    let network = base_ip & net_mask;
+    let new_network = new_ip & net_mask;
+
+    // checks if the new virtual address is outside the subnet
+    if network != new_network {
+        info!("No more nodes can be added to this subnet.");
+        None
+    } else {
+        Some(new_virtual_addr)
+    }
 }
