@@ -209,7 +209,6 @@ pub struct LocalConfig {
         dst_node_id: 0,
         remote_addr: [127, 0, 0, 1],
         client_port: 65000,
-        flow_rate: Some(1000000),
         flow_size: Some(10000),
         duration: Some(10),
         start_time: Some(0),

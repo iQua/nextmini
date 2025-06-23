@@ -41,11 +41,11 @@ pub struct FlowConfig {
     pub dst_node_id: usize,
     pub remote_addr: [u8; 4],
     pub client_port: u16,
-    pub flow_rate: Option<u64>,
     pub flow_size: Option<u64>,
     pub duration: Option<u64>,
     pub start_time: Option<u64>,
 }
+
 /// The specification of a token bucket traffic shaper.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TokenBucketSpec {
@@ -68,6 +68,7 @@ pub enum ControllerToDataplane {
         incoming_flows_count: usize,
         protocol: Protocol,
     },
+
     AddNode {
         remote_node_id: usize,
         remote_addr: String,

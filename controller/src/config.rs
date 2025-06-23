@@ -16,12 +16,10 @@ pub struct Route {
 pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub flow_rate: Option<u64>,  // flow rate
     pub flow_size: Option<u64>,  // flow size
     pub duration: Option<u64>,   // flow duration
     pub start_time: Option<u64>, // flow start time in seconds (from time 0)
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DBConfig {
@@ -104,7 +102,6 @@ pub struct Config {
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
 
-
     /// Topology configuration for automatic route generation.
     #[serde(default)]
     pub topology: Topology,
@@ -157,7 +154,6 @@ fn default_smoltcp_port_range() -> [u16; 2] {
 fn default_smoltcp_server_port() -> u16 {
     8888
 }
-
 
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
