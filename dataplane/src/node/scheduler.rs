@@ -384,10 +384,15 @@ impl SchedulerQueue for WrrQueue {
             .iter()
             .filter_map(|(flow_id, queue)| {
                 let weight = *flow_weights.get(flow_id).unwrap_or(&1);
-                Some(queue.len() / weight)
+                let rounds = queue.len() / weight;
+                if rounds > 0 { Some(rounds) } else { None }
             })
             .min()
-            .unwrap_or(1);
+            .unwrap_or(0);
+
+        if min_rounds == 0 {
+            return;
+        }
 
         drop(flow_queues);
 
