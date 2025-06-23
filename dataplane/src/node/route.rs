@@ -19,6 +19,9 @@ pub struct RoutingTable {
     /// Base IPv4 address for user space network (e.g., [192, 168, 0, 0])
     user_space_base_addr: [u8; 4],
 
+    /// Network mask for subnet calculations
+    net_mask: [u8; 4],
+
     /// Source-destination node ID pair -> available route IDs
     available_routes: AHashMap<(NodeId, NodeId), Vec<usize>>,
 
@@ -40,6 +43,7 @@ impl RoutingTable {
             local_id,
             base_ipv4_addr: [10, 0, 0, 0],
             user_space_base_addr: [192, 168, 0, 0],
+            net_mask: [255, 255, 255, 0],
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
@@ -102,19 +106,19 @@ impl RoutingTable {
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);
-        let octets = ip.octets();
+        let netmask = u32::from_be_bytes(self.net_mask);
 
-        // Checks if matches TUN prefix.
-        if octets[0] == self.base_ipv4_addr[0]
-            && octets[1] == self.base_ipv4_addr[1]
-            && octets[2] == self.base_ipv4_addr[2]
-        {
-            let base = u32::from_be_bytes(self.base_ipv4_addr);
-            (ip_addr - base) as NodeId
-        } else {
-            // Checks if matches user space prefix.
-            let base = u32::from_be_bytes(self.user_space_base_addr);
-            (ip_addr - base) as NodeId
+        let tun_base = u32::from_be_bytes(self.base_ipv4_addr);
+        let user_space_base = u32::from_be_bytes(self.user_space_base_addr);
+
+        match ip_addr & netmask {
+            subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
+            subnet if subnet == (user_space_base & netmask) => {
+                (ip_addr - user_space_base) as NodeId
+            }
+            _ => {
+                panic!("Detected unknown IP {}.", ip);
+            }
         }
     }
 
