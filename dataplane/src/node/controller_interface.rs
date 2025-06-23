@@ -238,10 +238,10 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.update_routing_table(routes);
             }
-            ControllerToDataplane::AddFlows { flow } => {
+            ControllerToDataplane::AddFlows { flows } => {
                 info!(
                     "Adding {} flows for node {}.",
-                    flow.len(),
+                    flows.len(),
                     self.config.node_id
                 );
                 // TODO: Process flows

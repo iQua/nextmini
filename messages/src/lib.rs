@@ -40,7 +40,7 @@ pub enum FlowSize {
     Duration(f64),
 }
 
-/// Configuration for a single flow
+/// The traffic specification for a single user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
     pub src_node_id: usize,
@@ -81,7 +81,7 @@ pub enum ControllerToDataplane {
     },
 }
 
-/// Routing table entry: route_id → next_hop, with source and destination node IDs
+/// Routing table entry: route_id → next_hop, with source and destination node IDs.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RoutingTableEntry {
     pub route_id: usize,

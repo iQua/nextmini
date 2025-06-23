@@ -132,5 +132,5 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
 }
 
 pub fn build_addflows_response(flows: Vec<Flow>) -> ControllerToDataplane {
-    ControllerToDataplane::AddFlows { flow: flows }
+    ControllerToDataplane::AddFlows { flows }
 }
