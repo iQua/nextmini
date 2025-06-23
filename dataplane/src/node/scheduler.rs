@@ -342,6 +342,7 @@ impl SchedulerQueue for FifoQueue {
     fn queue_len(&self, _flow_id: FlowId) -> usize {
         self.queue.len()
     }
+
     fn set_flow_weight(&self, _flow_id: FlowId, _weight: usize) {
         // Do nothing for FIFO queue
     }
