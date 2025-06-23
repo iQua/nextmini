@@ -102,7 +102,6 @@ async fn reset_db(pool: &Pool<Postgres>) {
             public_network_addr TEXT NOT NULL,
             virtual_network_addr TEXT NOT NULL,
             smoltcp_virtual_addr TEXT NOT NULL,
-            smoltcp_port INTEGER NOT NULL
         )
         "#,
     )

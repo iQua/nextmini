@@ -203,7 +203,6 @@ async fn handle_connection(
                                 public_network_addr = EXCLUDED.public_network_addr,
                                 virtual_network_addr = EXCLUDED.virtual_network_addr,
                                 smoltcp_virtual_addr = EXCLUDED.smoltcp_virtual_addr,
-                                smoltcp_port = EXCLUDED.smoltcp_port
                             "#
                         )
                         .bind(new_node.id)
