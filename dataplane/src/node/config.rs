@@ -369,6 +369,6 @@ impl LocalConfig {
 /// Computes a new virtual IP address by adding the node ID to the base address in dataplane.
 pub fn get_virtual_addr(base_addr: [u8; 4], node_id: usize) -> [u8; 4] {
     let base_addr = u32::from_be_bytes(base_addr);
-    let virtual_addr = base_addr + node_id as u32;
+    let virtual_addr = base_addr.wrapping_add(node_id as u32);
     virtual_addr.to_be_bytes()
 }
