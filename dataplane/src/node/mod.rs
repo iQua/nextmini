@@ -31,6 +31,37 @@ use crate::node::packet::Packet;
 /// The node ID.
 pub type NodeId = usize;
 
+/// Converts a NodeId to a virtual IP address.
+pub trait NodeIdExt {
+    /// Computes a new virtual IP address by adding the node ID to the base address.
+    fn ip_addr(&self, base_addr: [u8; 4], net_mask: [u8; 4]) -> Option<[u8; 4]>;
+}
+
+impl NodeIdExt for NodeId {
+    fn ip_addr(&self, base_addr: [u8; 4], net_mask: [u8; 4]) -> Option<[u8; 4]> {
+        // makes a copy of the base address
+        let base_ip = u32::from_be_bytes(base_addr);
+
+        // adds the node ID as an offset to the base address
+        let new_ip = base_ip.wrapping_add(*self as u32);
+
+        // creates a new virtual address
+        let new_virtual_addr = new_ip.to_be_bytes();
+
+        // applies the netmask to protect against overflow
+        let net_mask = u32::from_be_bytes(net_mask);
+        let network = base_ip & net_mask;
+        let new_network = new_ip & net_mask;
+
+        // checks if the new virtual address is outside the subnet
+        if network != new_network {
+            None
+        } else {
+            Some(new_virtual_addr)
+        }
+    }
+}
+
 /// The maximum Maximum Transmission Unit (MTU).
 const MAX_MTU: usize = 6400;
 

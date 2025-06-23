@@ -11,6 +11,7 @@ use tracing::{error, info, warn};
 use nextmini_messages::{ControllerToDataplane, Flow, Protocol};
 
 use crate::node::NodeId;
+use crate::node::NodeIdExt;
 use crate::node::drop::DropStrategy;
 use crate::node::scheduler::SchedulingDiscipline;
 
@@ -199,12 +200,14 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub flow: Vec<Flow>,
 
-    // The smoltcp client port automatically assigned by dataplane.
+    // The user space client port automatically assigned by dataplane.
     #[default(45535)]
+    #[arg(long)]
     pub user_space_client_port: u16,
 
-    // The smoltcp server port automatically assigned by dataplane.
-    #[default(45535)]
+    // The user space server port automatically assigned by dataplane.
+    #[default(8888)]
+    #[arg(long)]
     pub user_space_server_port: u16,
 }
 
@@ -321,33 +324,18 @@ impl LocalConfig {
                         protocol,
                     } => {
                         self.node_id = node_id;
-                        let net_mask_arr = [net_mask[0], net_mask[1], net_mask[2], net_mask[3]];
-                        self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
-
-                        // TUN network configuration
-                        let virtual_addr =
-                            get_virtual_addr(virtual_base_addr, net_mask_arr, node_id).unwrap();
-                        self.local_address = (
-                            virtual_addr[0],
-                            virtual_addr[1],
-                            virtual_addr[2],
-                            virtual_addr[3],
-                        );
-
-                        // user space network configuration
-                        let user_space_addr =
-                            get_virtual_addr(user_space_base_addr, net_mask_arr, node_id).unwrap();
-                        self.user_space_address = (
-                            user_space_addr[0],
-                            user_space_addr[1],
-                            user_space_addr[2],
-                            user_space_addr[3],
-                        );
-
                         self.protocol = protocol;
+
+                        self.local_address =
+                            node_id.ip_addr(virtual_base_addr, net_mask).unwrap().into();
+                        self.user_space_address = node_id
+                            .ip_addr(user_space_base_addr, net_mask)
+                            .unwrap()
+                            .into();
+
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }
-
+                    // Adding flows message.
                     ControllerToDataplane::AddFlows { flows } => {
                         self.flow = flows;
                     }
@@ -366,30 +354,5 @@ impl LocalConfig {
                 error!("Error receiving the message: {}", e);
             }
         }
-    }
-}
-
-/// Computes a new virtual IP address by adding the node ID to the base address in dataplane.
-fn get_virtual_addr(base_addr: [u8; 4], net_mask: [u8; 4], node_id: usize) -> Option<[u8; 4]> {
-    // makes a copy of the base address
-    let base_ip = u32::from_be_bytes(base_addr);
-
-    // adds the node ID as an offset to the base address
-    let new_ip = base_ip.wrapping_add(node_id as u32);
-
-    // creates a new virtual address
-    let new_virtual_addr = new_ip.to_be_bytes();
-
-    // applies the netmask to protect against overflow
-    let net_mask = u32::from_be_bytes(net_mask);
-    let network = base_ip & net_mask;
-    let new_network = new_ip & net_mask;
-
-    // checks if the new virtual address is outside the subnet
-    if network != new_network {
-        info!("No more nodes can be added to this subnet.");
-        None
-    } else {
-        Some(new_virtual_addr)
     }
 }

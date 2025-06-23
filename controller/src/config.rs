@@ -46,7 +46,6 @@ pub struct LinkRate {
     pub bucket_size: usize,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     /// The port to listen on
