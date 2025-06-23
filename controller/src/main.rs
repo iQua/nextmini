@@ -122,7 +122,7 @@ async fn handle_connection(
                             maybe_node_id.unwrap()
                         };
 
-                        // checks if the node_id is already used
+                        // checks if the node ID is already used
                         if node_ws.read().await.contains_key(&node_id) {
                             warn!("Node ID {} is already used.", node_id);
                             continue;
@@ -140,7 +140,7 @@ async fn handle_connection(
                             public_network_addr,
                         };
 
-                        // Insert node into database
+                        // inserts the new node into the database
                         match sqlx::query(
                             r#"
                             INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr)
@@ -164,7 +164,7 @@ async fn handle_connection(
                             }
                         }
 
-                        // Send startup response
+                        // sends the startup response
                         let response = build_startup_response(
                             node_id,
                             config.net_mask,
