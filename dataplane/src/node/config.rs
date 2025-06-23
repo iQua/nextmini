@@ -205,12 +205,14 @@ pub struct LocalConfig {
     pub smoltcp_server_port: u16,
 
     #[default(vec![FlowConfig {
-        remote_addr: [0, 0, 0, 0],
-        client_port: 49152,
-        flow_rate: Some(1_000_000),
-        flow_size: Some(10_000_000),
-        duration: None,
-        start_time: None,
+        src_node_id: 0,
+        dst_node_id: 0,
+        remote_addr: [127, 0, 0, 1],
+        client_port: 65000,
+        flow_rate: Some(1000000),
+        flow_size: Some(10000),
+        duration: Some(10),
+        start_time: Some(0),
     }])]
     #[arg(skip)]
     pub flow_configs: Vec<FlowConfig>,

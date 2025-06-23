@@ -1,20 +1,30 @@
 use std::cmp;
 use std::net::Ipv4Addr;
 use std::thread;
-use std::time::Instant as StdInstant;
+use std::time::{Duration as StdDuration, Instant as StdInstant};
 
 use flume;
-use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::iface::{Config, Interface, SocketSet, SocketHandle};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::tcp;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{IpAddress, IpCidr};
 use tracing::{error, info};
 
-use crate::node::LocalDestination;
 use crate::node::config::LocalConfig;
+use crate::node::LocalDestination;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use nextmini_messages::FlowConfig;
+
+#[derive(Debug, Clone)]
+struct ConnectionState {
+    connected: bool,
+    start_time: Option<StdInstant>,
+    bytes_transferred: u64,
+    target_bytes: u64,
+    finished: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct UserSpaceTcpSource {
@@ -47,6 +57,7 @@ impl UserSpaceTcpSource {
             receiver: self.packet_receiver.clone(),
             sender: self.processor_handle.clone(),
         };
+        let config_clone = self.config.clone();
 
         // sets up for IP layer without needing hardware address
         let config = Config::new(smoltcp::wire::HardwareAddress::Ip);
@@ -67,194 +78,115 @@ impl UserSpaceTcpSource {
                 .unwrap();
         });
 
-        // creates the TCP socket
-        let mut sockets = SocketSet::new(vec![]);
+        // socket buffer
+        const SOCKET_BUFFER_SIZE: usize = 65535;
 
         // connects to a remote endpoint
+        // Creates the TCP socket set
+        let mut sockets = SocketSet::new(vec![]);
 
         // first, creates server sockets based on the number of inbound flows
         let mut server_handles = Vec::new();
-        for _i in 0..self.config.incoming_flows_count {
-            let server_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-            let server_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+        for i in 0..self.config.incoming_flows_count {
+            let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+            let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
             let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
             let server_handle = sockets.add(server_socket);
             server_handles.push(server_handle);
+            info!("Created server socket {}", i);
         }
 
-        // creates client sockets
+        let node_id = self.config.node_id;
+
+        let client_flow_configs: Vec<_> = self
+            .config
+            .flow_configs
+            .iter()
+            .filter(|f| f.src_node_id == node_id)
+            .cloned()
+            .collect();
+
         let mut client_handles = Vec::new();
-        for _ in &self.config.flow_configs {
-            let client_rx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
-            let client_tx_buffer = tcp::SocketBuffer::new(vec![0; 65535]);
+        for (i, _flow) in client_flow_configs.iter().enumerate() {
+            let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+            let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
             let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
             let client_handle = sockets.add(client_socket);
             client_handles.push(client_handle);
+            info!("Created client socket {} for an outgoing flow.", i);
         }
 
-        // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
-        let base_server_port = self.config.smoltcp_server_port; // base server port for smoltcp
-        let flows = self.config.flow_configs.clone();
+        let base_server_port = self.config.smoltcp_server_port;
 
+        // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         thread::spawn(move || {
-            let mut client_connections_status = vec![false; flows.len()];
-            let mut bytes_left: Vec<u64> = flows
-                .iter()
-                .map(|f| f.flow_size.unwrap_or(10_000_000))
-                .collect();
-            let mut bytes_sent: Vec<u64> = vec![0; flows.len()]; // for client test
-            let mut bytes_received: Vec<u64> = vec![0; server_handles.len()]; // for server test
-            let mut client_start_times: Vec<Option<StdInstant>> = vec![None; flows.len()];
-            let mut server_start_times: Vec<Option<StdInstant>> = vec![None; server_handles.len()];
-            let mut client_transmission_started = vec![false; flows.len()];
-            let mut server_transmission_started = vec![false; server_handles.len()];
             let mut device = device;
 
+            let incoming_flows: Vec<_> = config_clone
+                .flow_configs
+                .iter()
+                .filter(|f| f.dst_node_id == node_id)
+                .collect();
+            let outgoing_flows: Vec<_> = config_clone
+                .flow_configs
+                .iter()
+                .filter(|f| f.src_node_id == node_id)
+                .collect();
+
+            let mut server_states: Vec<ConnectionState> = (0..server_handles.len())
+                .map(|i| {
+                    let expected_bytes = incoming_flows.get(i)
+                        .and_then(|f| f.flow_size)
+                        .expect(&format!("Server socket {} was created, but no corresponding incoming flow config was found at index {}", i, i));
+
+                    ConnectionState {
+                        connected: false,
+                        start_time: None,
+                        bytes_transferred: 0,
+                        target_bytes: expected_bytes,
+                        finished: false,
+                    }
+                })
+                .collect();
+
+            let mut client_states: Vec<ConnectionState> = outgoing_flows
+                .iter()
+                .map(|f| ConnectionState {
+                    connected: false,
+                    start_time: None,
+                    bytes_transferred: 0,
+                    target_bytes: f.flow_size.unwrap_or(u64::MAX), // Send indefinitely if not specified
+                    finished: false,
+                })
+                .collect();
+
+            let mut server_listening = vec![false; server_handles.len()];
+            let mut client_connecting = vec![false; client_handles.len()];
+
             loop {
-                let now = Instant::now();
-                iface.poll(now, &mut device, &mut sockets);
+                let timestamp = Instant::now();
+                iface.poll(timestamp, &mut device, &mut sockets);
 
-                // multiple server sockets handling
-                for i in 0..server_handles.len() {
-                    let server_handle = server_handles[i];
-                    let server_socket = sockets.get_mut::<tcp::Socket>(server_handle);
-                    let server_port = base_server_port;
+                process_server_sockets(
+                    &mut sockets,
+                    &server_handles,
+                    &mut server_states,
+                    &mut server_listening,
+                    base_server_port,
+                );
 
-                    if !server_socket.is_active() && !server_socket.is_listening() {
-                        if let Ok(_) = server_socket.listen(server_port) {
-                            info!("Server {} listening on port {}", i, server_port);
-                        }
-                    }
+                process_client_sockets(
+                    &mut iface,
+                    &mut sockets,
+                    &client_handles,
+                    &mut client_states,
+                    &mut client_connecting,
+                    &outgoing_flows,
+                    base_server_port,
+                );
 
-                    if server_socket.is_active() && server_socket.can_recv() {
-                        if !server_transmission_started[i] {
-                            server_start_times[i] = Some(StdInstant::now());
-                            server_transmission_started[i] = true;
-                            info!("Server {} started receiving data", i);
-                        }
-
-                        match server_socket.recv(|buffer| {
-                            let length = buffer.len();
-                            (length, length) // Process all available data like benchmark
-                        }) {
-                            Ok(received) => {
-                                bytes_received[i] += received as u64;
-
-                                if bytes_received[i] % 100_000 == 0 {
-                                    info!("Server {} received {} KB", i, bytes_received[i] / 1_000);
-                                }
-
-                                if !server_socket.is_active() {
-                                    if let Some(start_time) = server_start_times[i] {
-                                        let end_time = StdInstant::now();
-                                        let elapsed =
-                                            end_time.duration_since(start_time).as_secs_f64();
-                                        let throughput_gbps = (bytes_received[i] as f64 * 8.0)
-                                            / (elapsed * 1_000_000_000.0);
-                                        info!(
-                                            "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                            i, throughput_gbps, bytes_received[i], elapsed
-                                        );
-                                    }
-                                }
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                }
-
-                // Client sockets handling
-                for i in 0..flows.len() {
-                    let client_handle = client_handles[i];
-                    let flow = &flows[i];
-                    let client_socket = sockets.get_mut::<tcp::Socket>(client_handle);
-
-                    if !client_connections_status[i] && !client_socket.is_open() {
-                        if flow.remote_addr != [0, 0, 0, 0] {
-                            let remote_addr = IpAddress::v4(
-                                flow.remote_addr[0],
-                                flow.remote_addr[1],
-                                flow.remote_addr[2],
-                                flow.remote_addr[3],
-                            );
-                            let remote_port = base_server_port as u16;
-
-                            client_socket
-                                .connect(
-                                    iface.context(),
-                                    (remote_addr, remote_port),
-                                    flow.client_port,
-                                )
-                                .unwrap();
-                            info!(
-                                "Client {} connecting from port {} to {}:{}",
-                                i, flow.client_port, remote_addr, remote_port
-                            );
-                        }
-                    }
-
-                    if client_socket.is_active() && !client_connections_status[i] {
-                        client_connections_status[i] = true;
-                        info!(
-                            "Client {} connected successfully to remote address {}",
-                            i,
-                            format!(
-                                "{}.{}.{}.{}",
-                                flow.remote_addr[0],
-                                flow.remote_addr[1],
-                                flow.remote_addr[2],
-                                flow.remote_addr[3]
-                            )
-                        );
-                    }
-
-                    // sending packets with per-connection traffic settings
-                    if client_socket.is_active() && client_socket.can_send() && bytes_left[i] > 0 {
-                        if !client_transmission_started[i] {
-                            client_start_times[i] = Some(StdInstant::now());
-                            client_transmission_started[i] = true;
-                            info!("Client {} started transmission", i);
-                        }
-
-                        match client_socket.send(|buf| {
-                            let to_write = cmp::min(buf.len(), bytes_left[i] as usize);
-                            buf[..to_write].fill(0xAA);
-                            (to_write, to_write)
-                        }) {
-                            Ok(sent) => {
-                                bytes_left[i] -= sent as u64;
-                                bytes_sent[i] += sent as u64;
-
-                                if bytes_sent[i] % 100_000 == 0 {
-                                    info!("Client {} sent {} KB", i, bytes_sent[i] / 1_000);
-                                }
-
-                                if bytes_left[i] == 0 {
-                                    let end_time = StdInstant::now();
-                                    let elapsed = end_time
-                                        .duration_since(client_start_times[i].unwrap())
-                                        .as_secs_f64();
-                                    let throughput_gbps =
-                                        (bytes_sent[i] as f64 * 8.0) / (elapsed * 1_000_000_000.0);
-                                    info!(
-                                        "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                        i, throughput_gbps, bytes_sent[i], elapsed
-                                    );
-                                }
-                            }
-                            Err(_) => {
-                                error!(
-                                    "Failed to send data block from client {}, packets dropped",
-                                    i
-                                );
-                            }
-                        }
-                    }
-                }
-
-                // event-driven waiting without fixed timeouts
                 // Use poll_delay pattern from smoltcp loopback example
-                match iface.poll_delay(now, &sockets) {
+                match iface.poll_delay(timestamp, &sockets) {
                     Some(Duration::ZERO) => {
                         // smoltcp wants immediate polling
                         continue;
@@ -274,6 +206,209 @@ impl UserSpaceTcpSource {
                 }
             }
         });
+    }
+}
+
+fn process_server_sockets(
+    sockets: &mut SocketSet,
+    server_handles: &[SocketHandle],
+    server_states: &mut [ConnectionState],
+    server_listening: &mut [bool],
+    base_server_port: u16,
+) {
+    for i in 0..server_handles.len() {
+        let server_handle = server_handles[i];
+        let socket = sockets.get_mut::<tcp::Socket>(server_handle);
+
+        if !socket.is_active() && !socket.is_listening() && !server_listening[i] {
+            match socket.listen(base_server_port) {
+                Ok(_) => {
+                    info!("Server {} listening on port {}", i, base_server_port);
+                    server_listening[i] = true;
+                }
+                Err(e) => {
+                    error!("Server {} failed to listen: {:?}", i, e);
+                }
+            }
+        }
+
+        if socket.is_active() {
+            if !server_states[i].connected {
+                server_states[i].connected = true;
+                info!("Server {} accepted connection", i);
+            }
+
+            if socket.can_recv() {
+                match socket.recv(|buffer| {
+                    let len = buffer.len();
+                    (len, len)
+                }) {
+                    Ok(received) if received > 0 => {
+                        if server_states[i].start_time.is_none() {
+                            server_states[i].start_time = Some(StdInstant::now());
+                            info!("Server {} started receiving data", i);
+                        }
+
+                        server_states[i].bytes_transferred += received as u64;
+
+                        if server_states[i].bytes_transferred % 1_000 == 0 {
+                            info!(
+                                "Server {} received {} kB",
+                                i,
+                                server_states[i].bytes_transferred / 1_000
+                            );
+                        }
+
+                        if server_states[i].bytes_transferred >= server_states[i].target_bytes
+                            && !server_states[i].finished
+                        {
+                            info!(
+                                "Server {} received all expected data ({} bytes), closing connection.",
+                                i, server_states[i].bytes_transferred
+                            );
+
+                            if let Some(start_time) = server_states[i].start_time {
+                                let end_time = StdInstant::now();
+                                let elapsed = end_time.duration_since(start_time);
+                                let elapsed_secs = elapsed.as_secs_f64();
+
+                                if server_states[i].bytes_transferred > 0 && elapsed_secs > 0.0 {
+                                    let throughput_gbps = (server_states[i].bytes_transferred
+                                        as f64
+                                        * 8.0)
+                                        / (elapsed_secs * 1_000_000_000.0);
+                                    info!(
+                                        "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                        i,
+                                        throughput_gbps,
+                                        server_states[i].bytes_transferred,
+                                        elapsed_secs
+                                    );
+                                } else {
+                                    info!(
+                                        "Server {} received all data, cannot calculate throughput accurately.",
+                                        i
+                                    );
+                                }
+                            }
+                            socket.close();
+                            server_states[i].finished = true;
+                        }
+                    }
+                    Err(e) => {
+                        info!("Server {} recv error: {:?}", i, e);
+                    }
+                    Ok(_) => {}
+                }
+            }
+        }
+    }
+}
+
+fn process_client_sockets(
+    iface: &mut Interface,
+    sockets: &mut SocketSet,
+    client_handles: &[SocketHandle],
+    client_states: &mut [ConnectionState],
+    client_connecting: &mut [bool],
+    outgoing_flows: &[&FlowConfig],
+    base_server_port: u16,
+) {
+    for (i, &client_handle) in client_handles.iter().enumerate() {
+        let flow = &outgoing_flows[i];
+        let socket = sockets.get_mut::<tcp::Socket>(client_handle);
+        let cx = iface.context();
+
+        if !socket.is_open() && !client_connecting[i] && !client_states[i].finished {
+            if flow.remote_addr != [0, 0, 0, 0] {
+                let remote_addr = IpAddress::v4(
+                    flow.remote_addr[0],
+                    flow.remote_addr[1],
+                    flow.remote_addr[2],
+                    flow.remote_addr[3],
+                );
+                let remote_endpoint = (remote_addr, base_server_port as u16);
+
+                match socket.connect(cx, remote_endpoint, flow.client_port) {
+                    Ok(_) => {
+                        info!(
+                            "Client {} connecting from port {} to {}:{}",
+                            i, flow.client_port, remote_addr, base_server_port
+                        );
+                        client_connecting[i] = true;
+                    }
+                    Err(e) => {
+                        error!("Client {} connect error: {:?}", i, e);
+                    }
+                }
+            }
+        }
+
+        if socket.is_active() {
+            if !client_states[i].connected {
+                client_states[i].connected = true;
+                info!("Client {} connected successfully", i);
+            }
+
+            // sends data
+            if socket.can_send() && client_states[i].bytes_transferred < client_states[i].target_bytes
+            {
+                let remaining =
+                    client_states[i].target_bytes - client_states[i].bytes_transferred;
+
+                match socket.send(|buf| {
+                    let to_send = cmp::min(buf.len(), remaining as usize);
+                    buf[..to_send].fill(0xAA);
+                    (to_send, to_send)
+                }) {
+                    Ok(sent) if sent > 0 => {
+                        if client_states[i].start_time.is_none() {
+                            client_states[i].start_time = Some(StdInstant::now());
+                            info!("Client {} started transmission", i);
+                        }
+
+                        client_states[i].bytes_transferred += sent as u64;
+
+                        if client_states[i].bytes_transferred % 1_000 == 0 {
+                            info!(
+                                "Client {} sent {} kB",
+                                i,
+                                client_states[i].bytes_transferred / 1_000
+                            );
+                        }
+
+                        if client_states[i].bytes_transferred >= client_states[i].target_bytes {
+                            if let Some(start_time) = client_states[i].start_time {
+                                let end_time = StdInstant::now();
+                                let elapsed = end_time.duration_since(start_time);
+                                let elapsed_secs = elapsed.as_secs_f64();
+
+                                if client_states[i].bytes_transferred > 0 && elapsed_secs > 0.0 {
+                                    let throughput_gbps = (client_states[i]
+                                        .bytes_transferred
+                                        as f64
+                                        * 8.0)
+                                        / (elapsed_secs * 1_000_000_000.0);
+                                    info!(
+                                        "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
+                                        i,
+                                        throughput_gbps,
+                                        client_states[i].bytes_transferred,
+                                        elapsed_secs
+                                    );
+                                }
+                            }
+                            socket.close();
+                            client_states[i].finished = true;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Client {} send error: {:?}", i, e);
+                    }
+                    Ok(_) => {}
+                }
+            }
+        }
     }
 }
 

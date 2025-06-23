@@ -37,6 +37,8 @@ pub enum Protocol {
 /// Configuration for a single flow
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct FlowConfig {
+    pub src_node_id: usize,
+    pub dst_node_id: usize,
     pub remote_addr: [u8; 4],
     pub client_port: u16,
     pub flow_rate: Option<u64>,

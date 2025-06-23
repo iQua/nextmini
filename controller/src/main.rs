@@ -241,7 +241,7 @@ async fn handle_connection(
                         let flow_configs: Vec<FlowConfig> = config
                             .flows
                             .iter()
-                            .filter(|flow| flow.src_node_id == node_id)
+                            .filter(|flow| flow.src_node_id == node_id || flow.dst_node_id == node_id)
                             .enumerate()
                             .filter_map(|(i, flow)| {
                                 create_new_virtual_addr(
@@ -251,6 +251,8 @@ async fn handle_connection(
                                 )
                                 .map(|remote_addr| {
                                     FlowConfig {
+                                        src_node_id: flow.src_node_id,
+                                        dst_node_id: flow.dst_node_id,
                                         remote_addr,
                                         client_port: smoltcp_client_port_base + i as u16, // assign unique port per connection
                                         flow_rate: flow.flow_rate,
