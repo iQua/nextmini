@@ -5,20 +5,11 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::Protocol;
+use nextmini_messages::{FlowSize, Protocol};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
     pub route: Vec<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Flow {
-    pub src_node_id: usize,
-    pub dst_node_id: usize,
-    pub flow_size: Option<u64>,  // flow size
-    pub duration: Option<u64>,   // flow duration
-    pub start_time: Option<u64>, // flow start time in seconds (from time 0)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -56,6 +47,13 @@ pub struct LinkRate {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Flow {
+    pub src_node_id: usize,
+    pub dst_node_id: usize,
+    pub flow_size: FlowSize, // flow size
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     /// The port to listen on
     #[serde(default = "default_port")]
@@ -77,14 +75,6 @@ pub struct Config {
     /// The net mask for user-space smoltcp network
     #[serde(default = "default_smoltcp_net_mask")]
     pub smoltcp_net_mask: [u8; 4],
-
-    /// The port range for user-space smoltcp tcp connections (client ports)
-    #[serde(default = "default_smoltcp_port_range")]
-    pub smoltcp_port_range: [u16; 2],
-
-    /// The fixed server port for smoltcp server
-    #[serde(default = "default_smoltcp_server_port")]
-    pub smoltcp_server_port: u16,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -110,7 +100,7 @@ pub struct Config {
 
     /// flows configuration
     #[serde(default)]
-    pub flows: Vec<Flow>,
+    pub flows: Vec<Flow>, // A list of flows.
 
     /// The database configuration.
     #[serde(default = "default_db_config")]
@@ -143,16 +133,6 @@ fn default_smoltcp_base_addr() -> [u8; 4] {
 /// The default net mask for user-space smoltcp network
 fn default_smoltcp_net_mask() -> [u8; 4] {
     [255, 255, 255, 0]
-}
-
-/// The default port range for user-space smoltcp connections
-fn default_smoltcp_port_range() -> [u16; 2] {
-    [49152, 65535]
-}
-
-/// The default server port for smoltcp
-fn default_smoltcp_server_port() -> u16 {
-    8888
 }
 
 /// The default transport protocol: QUIC
@@ -214,8 +194,6 @@ impl Default for Config {
             net_mask: default_net_mask(),
             smoltcp_base_addr: default_smoltcp_base_addr(),
             smoltcp_net_mask: default_smoltcp_net_mask(),
-            smoltcp_port_range: default_smoltcp_port_range(),
-            smoltcp_server_port: default_smoltcp_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
             flows: Vec::new(),

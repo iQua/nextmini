@@ -1,3 +1,4 @@
+use nextmini_messages::FlowSize;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
@@ -7,7 +8,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, FlowConfig, Protocol};
+use nextmini_messages::{ControllerToDataplane, Flow, Protocol};
 
 use crate::node::NodeId;
 use crate::node::drop::DropStrategy;
@@ -184,42 +185,32 @@ pub struct LocalConfig {
     #[arg(long)]
     pub reorder_tolerance: usize,
 
-    // The user-space smoltcp ip address from controller
+    // The user-space smoltcp ip address from Controller
     #[default(192, 168, 0, 1)]
     #[arg(skip)]
     pub user_space_smoltcp_ip: (u8, u8, u8, u8),
 
-    // The user-space smoltcp network mask from controller
+    // The user-space smoltcp network mask from Controller
     #[default(255, 255, 255, 0)]
     #[arg(skip)]
     pub user_space_smoltcp_netmask: (u8, u8, u8, u8),
 
-    // The user-space smoltcp client port base from controller
-    #[default(49152)]
-    #[arg(skip)]
-    pub smoltcp_client_port_base: u16,
-
-    // Fixed server port for smoltcp server (from controller)
-    #[default(8888)]
-    #[arg(skip)]
-    pub smoltcp_server_port: u16,
-
-    #[default(vec![FlowConfig {
+    // The flow config assigned by Controller
+    #[default(vec![Flow {
         src_node_id: 0,
         dst_node_id: 0,
-        remote_addr: [127, 0, 0, 1],
-        client_port: 65000,
-        flow_size: Some(10000),
-        duration: Some(10),
-        start_time: Some(0),
+        flow_size: FlowSize::Bytes(1_000_000_000),
     }])]
     #[arg(skip)]
-    pub flow_configs: Vec<FlowConfig>,
+    pub flow: Vec<Flow>,
 
-    // The number of incoming flows that this node will receive
-    #[default(1)]
-    #[arg(skip)]
-    pub incoming_flows_count: usize,
+    // The smoltcp client port automatically assigned by dataplane.
+    #[default(45535)]
+    pub smoltcp_client_port: u16,
+
+    // The smoltcp server port automatically assigned by dataplane.
+    #[default(45535)]
+    pub smoltcp_server_port: u16,
 }
 
 impl LocalConfig {
@@ -333,16 +324,13 @@ impl LocalConfig {
                         net_mask,
                         smoltcp_addr,
                         smoltcp_net_mask,
-                        smoltcp_client_port_base,
-                        smoltcp_server_port,
-                        flow_configs,
-                        incoming_flows_count,
                         protocol,
                     } => {
                         self.node_id = node_id;
+                        // TUN network configuration
                         self.local_address = (addr[0], addr[1], addr[2], addr[3]);
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
-                        // update smoltcp ip and netmask
+                        // smoltcp network configuration
                         self.user_space_smoltcp_ip = (
                             smoltcp_addr[0],
                             smoltcp_addr[1],
@@ -355,13 +343,14 @@ impl LocalConfig {
                             smoltcp_net_mask[2],
                             smoltcp_net_mask[3],
                         );
-                        self.smoltcp_client_port_base = smoltcp_client_port_base;
-                        self.smoltcp_server_port = smoltcp_server_port;
-                        self.flow_configs = flow_configs;
-                        self.incoming_flows_count = incoming_flows_count;
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }
+
+                    ControllerToDataplane::AddFlows { flow } => {
+                        self.flow = flow;
+                    }
+
                     _ => {
                         error!(
                             "A message with an unexpected type has been received from the controller."

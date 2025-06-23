@@ -13,9 +13,7 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
-use nextmini_messages::{
-    ControllerToDataplane, DataplaneToController, FlowConfig, TokenBucketSpec,
-};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, Flow, TokenBucketSpec};
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
@@ -162,17 +160,14 @@ async fn handle_connection(
                             }
                         };
 
-                        let smoltcp_client_port_base = config.smoltcp_port_range[0]
-                            + (node_id as u16
-                                % (config.smoltcp_port_range[1] - config.smoltcp_port_range[0]));
-
+                        // adds TUN network
                         let virtual_network_addr = virtual_addr
                             .iter()
                             .map(|x| x.to_string())
                             .collect::<Vec<_>>()
                             .join(".");
 
-                        // add smoltcp logic
+                        // adds smoltcp network
                         let smoltcp_virtual_addr = smoltcp_addr
                             .iter()
                             .map(|x| x.to_string())
@@ -180,13 +175,12 @@ async fn handle_connection(
                             .join(".");
 
                         info!(
-                            "Created new node {} with private address {}, public address {}, tun virtual address {}, and smoltcp vitrual address {}:{}.",
+                            "Created new node {} with private address {}, public address {}, tun virtual address {}, and smoltcp vitrual address {}.",
                             node_id,
                             private_network_addr,
                             public_network_addr,
                             &virtual_network_addr,
                             &smoltcp_virtual_addr,
-                            smoltcp_client_port_base,
                         );
 
                         let new_node = Node {
@@ -196,7 +190,6 @@ async fn handle_connection(
                             public_network_addr,
                             virtual_network_addr,
                             smoltcp_virtual_addr,
-                            smoltcp_port: smoltcp_client_port_base as i32,
                         };
 
                         // Insert node into database
@@ -219,7 +212,6 @@ async fn handle_connection(
                         .bind(&new_node.public_network_addr)
                         .bind(&new_node.virtual_network_addr)
                         .bind(&new_node.smoltcp_virtual_addr)
-                        .bind(new_node.smoltcp_port)
                         .execute(&*db_pool)
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
@@ -231,14 +223,7 @@ async fn handle_connection(
 
                         // Send startup response
 
-                        // calculates incoming flows count for this node
-                        let incoming_flows_count = config
-                            .flows
-                            .iter()
-                            .filter(|flow| flow.dst_node_id == node_id)
-                            .count();
-
-                        let flow_configs: Vec<FlowConfig> = config
+                        let flow_configs: Vec<Flow> = config
                             .flows
                             .iter()
                             .filter(|flow| {
@@ -251,16 +236,10 @@ async fn handle_connection(
                                     config.smoltcp_net_mask,
                                     flow.dst_node_id,
                                 )
-                                .map(|remote_addr| {
-                                    FlowConfig {
-                                        src_node_id: flow.src_node_id,
-                                        dst_node_id: flow.dst_node_id,
-                                        remote_addr,
-                                        client_port: smoltcp_client_port_base + i as u16, // assign unique port per connection
-                                        flow_size: flow.flow_size,
-                                        duration: flow.duration,
-                                        start_time: flow.start_time,
-                                    }
+                                .map(|remote_addr| Flow {
+                                    src_node_id: flow.src_node_id,
+                                    dst_node_id: flow.dst_node_id,
+                                    flow_size: flow.flow_size,
                                 })
                             })
                             .collect();
@@ -277,10 +256,6 @@ async fn handle_connection(
                             config.net_mask,
                             smoltcp_addr,
                             config.smoltcp_net_mask,
-                            smoltcp_client_port_base,
-                            config.smoltcp_server_port,
-                            flow_configs,
-                            incoming_flows_count,
                             config.protocol.clone(),
                         );
 

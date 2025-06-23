@@ -90,7 +90,7 @@ impl UserSpaceTcpSource {
 
         let client_flow_configs: Vec<_> = self
             .config
-            .flow_configs
+            .flow
             .iter()
             .filter(|f| f.src_node_id == node_id)
             .cloned()
@@ -122,12 +122,12 @@ impl UserSpaceTcpSource {
             let mut device = device;
 
             let incoming_flows: Vec<_> = config_clone
-                .flow_configs
+                .flow
                 .iter()
                 .filter(|f| f.dst_node_id == node_id)
                 .collect();
             let outgoing_flows: Vec<_> = config_clone
-                .flow_configs
+                .flow
                 .iter()
                 .filter(|f| f.src_node_id == node_id)
                 .collect();

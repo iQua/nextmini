@@ -34,16 +34,18 @@ pub enum Protocol {
     Quic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum FlowSize {
+    Bytes(usize),
+    Duration(f64),
+}
+
 /// Configuration for a single flow
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
-pub struct FlowConfig {
+pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub remote_addr: [u8; 4],
-    pub client_port: u16,
-    pub flow_size: Option<u64>,
-    pub duration: Option<u64>,
-    pub start_time: Option<u64>,
+    pub flow_size: FlowSize,
 }
 
 /// The specification of a token bucket traffic shaper.
@@ -62,13 +64,8 @@ pub enum ControllerToDataplane {
         net_mask: [u8; 4],
         smoltcp_addr: [u8; 4],
         smoltcp_net_mask: [u8; 4],
-        smoltcp_client_port_base: u16,
-        smoltcp_server_port: u16,
-        flow_configs: Vec<FlowConfig>,
-        incoming_flows_count: usize,
         protocol: Protocol,
     },
-
     AddNode {
         remote_node_id: usize,
         remote_addr: String,
@@ -79,6 +76,9 @@ pub enum ControllerToDataplane {
     SetLinkRate {
         node_id: usize,
         spec: TokenBucketSpec,
+    },
+    AddFlows {
+        flow: Vec<Flow>,
     },
 }
 
