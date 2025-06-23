@@ -34,6 +34,7 @@ pub enum Protocol {
     Quic,
 }
 
+/// The size of a flow, which can be specified either by the number of bytes or by the duration of the flow.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum FlowSize {
     Bytes(usize),
