@@ -150,6 +150,11 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub local_address: (u8, u8, u8, u8),
 
+    // The user-space network address.
+    #[default(192, 168, 0, 1)]
+    #[arg(skip)]
+    pub user_space_address: (u8, u8, u8, u8),
+
     // The local network mask
     #[default(255, 255, 255, 0)]
     #[arg(skip)]
@@ -185,17 +190,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub reorder_tolerance: usize,
 
-    // The user-space smoltcp ip address from Controller
-    #[default(192, 168, 0, 1)]
-    #[arg(skip)]
-    pub user_space_addr: (u8, u8, u8, u8),
-
-    // The user-space smoltcp network mask from Controller
-    #[default(255, 255, 255, 0)]
-    #[arg(skip)]
-    pub user_space_user_space_netmask: (u8, u8, u8, u8),
-
-    // The flow config assigned by Controller
+    // The flow config received from controller
     #[default(vec![Flow {
         src_node_id: 0,
         dst_node_id: 0,
@@ -320,19 +315,26 @@ impl LocalConfig {
                 match controller_response {
                     ControllerToDataplane::StartUp {
                         node_id,
-                        addr,
                         net_mask,
-                        user_space_addr,
+                        virtual_base_addr,
+                        user_space_base_addr,
                         protocol,
                     } => {
                         self.node_id = node_id;
-
-                        // TUN network configuration
-                        self.local_address = (addr[0], addr[1], addr[2], addr[3]);
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
 
-                        // smoltcp network configuration
-                        self.user_space_addr = (
+                        // TUN network configuration
+                        let virtual_addr = get_virtual_addr(virtual_base_addr, node_id);
+                        self.local_address = (
+                            virtual_addr[0],
+                            virtual_addr[1],
+                            virtual_addr[2],
+                            virtual_addr[3],
+                        );
+
+                        // user space network configuration
+                        let user_space_addr = get_virtual_addr(user_space_base_addr, node_id);
+                        self.user_space_address = (
                             user_space_addr[0],
                             user_space_addr[1],
                             user_space_addr[2],
@@ -362,4 +364,11 @@ impl LocalConfig {
             }
         }
     }
+}
+
+/// Computes a new virtual IP address by adding the node ID to the base address in dataplane.
+pub fn get_virtual_addr(base_addr: [u8; 4], node_id: usize) -> [u8; 4] {
+    let base_addr = u32::from_be_bytes(base_addr);
+    let virtual_addr = base_addr + node_id as u32;
+    virtual_addr.to_be_bytes()
 }

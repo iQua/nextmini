@@ -29,8 +29,7 @@ async fn create_db(pool: &Pool<Postgres>) {
             id SERIAL PRIMARY KEY,
             private_network_name TEXT,
             private_network_addr TEXT NOT NULL,
-            public_network_addr TEXT NOT NULL,
-            virtual_network_addr TEXT NOT NULL
+            public_network_addr TEXT NOT NULL
         )
         "#,
     )
@@ -99,9 +98,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
             id SERIAL PRIMARY KEY,
             private_network_name TEXT,
             private_network_addr TEXT NOT NULL,
-            public_network_addr TEXT NOT NULL,
-            virtual_network_addr TEXT NOT NULL,
-            user_space_virtual_addr TEXT NOT NULL,
+            public_network_addr TEXT NOT NULL
         )
         "#,
     )

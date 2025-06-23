@@ -7,8 +7,6 @@ pub struct Node {
     pub private_network_name: Option<String>,
     pub private_network_addr: String,
     pub public_network_addr: String,
-    pub virtual_network_addr: String, // TUN virtual ip addr(10.0.0.1)
-    pub user_space_virtual_addr: String, // smoltcp virtual ip addr(192.168.0.1)
 }
 
 #[derive(Clone, FromRow, Debug)]

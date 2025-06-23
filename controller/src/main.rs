@@ -188,29 +188,23 @@ async fn handle_connection(
                             private_network_name: Some(private_network_name.clone()),
                             private_network_addr,
                             public_network_addr,
-                            virtual_network_addr,
-                            user_space_virtual_addr,
                         };
 
                         // Insert node into database
                         match sqlx::query(
                             r#"
-                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr, user_space_virtual_addr, user_space_port)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7)
+                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr)
+                            VALUES ($1, $2, $3, $4)
                             ON CONFLICT (id) DO UPDATE SET
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
-                                public_network_addr = EXCLUDED.public_network_addr,
-                                virtual_network_addr = EXCLUDED.virtual_network_addr,
-                                user_space_virtual_addr = EXCLUDED.user_space_virtual_addr,
-                            "#
+                                public_network_addr = EXCLUDED.public_network_addr
+                            "#,
                         )
                         .bind(new_node.id)
                         .bind(&new_node.private_network_name)
                         .bind(&new_node.private_network_addr)
                         .bind(&new_node.public_network_addr)
-                        .bind(&new_node.virtual_network_addr)
-                        .bind(&new_node.user_space_virtual_addr)
                         .execute(&*db_pool)
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
@@ -251,9 +245,9 @@ async fn handle_connection(
 
                         let response = build_startup_response(
                             node_id,
-                            virtual_addr,
                             config.net_mask,
-                            user_space_addr,
+                            config.base_addr,
+                            config.user_space_base_addr,
                             config.protocol.clone(),
                         );
 

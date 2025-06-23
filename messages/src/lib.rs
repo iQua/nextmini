@@ -60,9 +60,9 @@ pub struct TokenBucketSpec {
 pub enum ControllerToDataplane {
     StartUp {
         node_id: usize,
-        addr: [u8; 4],
         net_mask: [u8; 4],
-        user_space_addr: [u8; 4],
+        virtual_base_addr: [u8; 4],
+        user_space_base_addr: [u8; 4],
         protocol: Protocol,
     },
     AddNode {
