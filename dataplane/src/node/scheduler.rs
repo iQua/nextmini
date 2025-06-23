@@ -386,8 +386,6 @@ impl SchedulerQueue for WrrQueue {
                     if let Some(flow_queue) = flow_queues.get(flow_id) {
                         if let Some(packet) = flow_queue.pop() {
                             batch.push(packet);
-                        } else {
-                            break;
                         }
                     }
                 }
