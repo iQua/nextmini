@@ -39,7 +39,7 @@ impl RoutingTable {
             available_routes: AHashMap::default(),
             local_id,
             base_ipv4_addr: [10, 0, 0, 0],
-            smoltcp_base_addr: [192, 168, 0, 0], // keep the hardcoded base address for smoltcp as tun does
+            smoltcp_base_addr: [192, 168, 0, 0],
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
