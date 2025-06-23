@@ -375,27 +375,37 @@ impl SchedulerQueue for WrrQueue {
     }
 
     fn collect_packets(&self, batch: &mut Vec<Packet>) {
-        while !self.is_empty() {
+        let flow_queues = self.flow_queues.read().unwrap();
+        let flow_weights = self.flow_weights.read().unwrap();
+        let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
+
+        // The maximum number of rounds to empty one of the queues by WRR
+        let max_rounds = flow_queues
+            .iter()
+            .filter_map(|(flow_id, queue)| {
+                let weight = *flow_weights.get(flow_id).unwrap_or(&1);
+                Some(queue.len() / weight)
+            })
+            .min()
+            .unwrap_or(1);
+
+        drop(flow_queues);
+
+        for flow_id in &flow_ids {
+            let flow_weights = self.flow_weights.read().unwrap();
             let flow_queues = self.flow_queues.read().unwrap();
-            let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
-            drop(flow_queues);
+            let weight = flow_weights.get(flow_id).unwrap_or(&1);
 
-            for flow_id in &flow_ids {
-                let flow_weights = self.flow_weights.read().unwrap();
-                let weight = flow_weights.get(flow_id).unwrap_or(&1);
-
-                for _ in 0..*weight {
-                    let flow_queues = self.flow_queues.read().unwrap();
-                    if let Some(flow_queue) = flow_queues.get(flow_id) {
-                        if let Some(packet) = flow_queue.pop() {
-                            batch.push(packet);
-                        }
+            // Push all packets for one flow
+            if let Some(flow_queue) = flow_queues.get(flow_id) {
+                for _ in 0..*weight * max_rounds {
+                    if let Some(packet) = flow_queue.pop() {
+                        batch.push(packet);
                     }
                 }
             }
         }
     }
-
     fn is_empty(&self) -> bool {
         let flow_queues = self.flow_queues.read().unwrap();
         flow_queues.values().all(|queue| queue.is_empty())
