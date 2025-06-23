@@ -125,7 +125,7 @@ impl Scheduler {
         let queues_not_empty = Arc::new(Notify::new());
 
         let mut reader = SchedulerReader {
-            queue_strategy: queue_strategy.clone(),
+            queue: queue_strategy.clone(),
             packets_dropped: 0,
             drop_strategy: packet_drop,
             queues_not_empty: queues_not_empty.clone(),
@@ -135,7 +135,7 @@ impl Scheduler {
         };
 
         let mut writer = SchedulerWriter {
-            queue_strategy,
+            queue: queue_strategy,
             net_interface,
             queues_not_empty,
             receiver: writer_receiver,
@@ -166,7 +166,7 @@ impl Scheduler {
 
 /// Producer side of scheduler
 struct SchedulerReader {
-    queue_strategy: Arc<dyn SchedulerQueue + Send + Sync>,
+    queue: Arc<dyn SchedulerQueue + Send + Sync>,
     packets_dropped: usize,
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     queues_not_empty: Arc<Notify>,
@@ -198,7 +198,7 @@ impl SchedulerReader {
 
     fn enqueue(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
-        let queue_len = self.queue_strategy.queue_len(flow_id);
+        let queue_len = self.queue.queue_len(flow_id);
 
         // drops the packet based on the drop strategy
         let should_drop_packet =
@@ -223,7 +223,7 @@ impl SchedulerReader {
 
         let is_tcp_data = packet.is_tcp_data();
 
-        if self.queue_strategy.enqueue(packet).is_err() {
+        if self.queue.enqueue(packet).is_err() {
             self.packets_dropped += 1;
 
             warn!(
@@ -248,7 +248,7 @@ impl SchedulerReader {
 
 /// Consumer side of scheduler
 struct SchedulerWriter {
-    queue_strategy: Arc<dyn SchedulerQueue + Send + Sync>, // Shared strategy instance
+    queue: Arc<dyn SchedulerQueue + Send + Sync>,
     flow_weights: HashMap<FlowId, usize>,
     queues_not_empty: Arc<Notify>,
     net_interface: NetworkInterfaceHandle,
@@ -272,14 +272,13 @@ impl SchedulerWriter {
             }
 
             // Wait for notification if queues are empty
-            if self.queue_strategy.is_empty() {
+            if self.queue.is_empty() {
                 self.queues_not_empty.notified().await;
             }
 
             // Collect packets from queues
             let mut batch = Vec::new();
-            self.queue_strategy
-                .collect_packets(&mut batch, &self.flow_weights);
+            self.queue.collect_packets(&mut batch, &self.flow_weights);
 
             // Send packets if we have any
             if !batch.is_empty() {
@@ -315,7 +314,7 @@ trait SchedulerQueue: Send + Sync {
 
 /// FIFO queue strategy - no inner Arc needed since Arc<QueueStrategy> provides sharing
 struct FifoQueue {
-    queue: ArrayQueue<Packet>, // Direct ownership, shared via Arc<FifoStrategy>
+    queue: ArrayQueue<Packet>,
 }
 
 impl FifoQueue {
@@ -346,9 +345,8 @@ impl SchedulerQueue for FifoQueue {
     }
 }
 
-/// WRR queue strategy - no inner Arc needed since Arc<QueueStrategy> provides sharing
 struct WrrQueue {
-    flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>, // Direct ownership, shared via Arc<WrrStrategy>
+    flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>,
     capacity: usize,
 }
 
