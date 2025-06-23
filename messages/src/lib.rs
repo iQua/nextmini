@@ -34,19 +34,19 @@ pub enum Protocol {
     Quic,
 }
 
-/// The size of a flow, which can be specified either by the number of bytes or by the duration of the flow.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum FlowSize {
-    Bytes(usize),
-    Duration(f64),
-}
-
-/// The traffic specification for a single user-space TCP flow.
+/// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
     pub flow_size: FlowSize,
+}
+
+/// The size of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum FlowSize {
+    Bytes(usize),
+    Duration(f64),
 }
 
 /// The specification of a token bucket traffic shaper.
