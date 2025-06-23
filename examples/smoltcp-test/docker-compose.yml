@@ -86,7 +86,7 @@ services:
     # environment:
     #   - RUST_LOG=debug
     volumes:
-      - ./config-node2.toml:/var/nextmini/config.toml
+      - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
