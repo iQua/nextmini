@@ -379,7 +379,7 @@ impl SchedulerQueue for WrrQueue {
         let flow_queues = self.flow_queues.read().unwrap();
 
         // Get the flow ids of the non-empty queues
-        let flow_ids: Vec<FlowId> = flow_queues
+        let mut flow_ids: Vec<FlowId> = flow_queues
             .iter()
             .filter(|(_, queue)| !queue.is_empty())
             .map(|(id, _)| id)
@@ -389,7 +389,7 @@ impl SchedulerQueue for WrrQueue {
         drop(flow_queues);
 
         loop {
-            let mut min_rounds_reached = false;
+            let mut emptied_queues = 0;
 
             for flow_id in &flow_ids {
                 let flow_weights = self.flow_weights.read().unwrap();
@@ -405,13 +405,24 @@ impl SchedulerQueue for WrrQueue {
 
                     // Current queue is emptied, this should be the last round
                     if flow_queue.is_empty() {
-                        min_rounds_reached = true;
+                        emptied_queues += 1;
                     }
                 }
             }
 
-            if min_rounds_reached {
-                break;
+            if emptied_queues > 0 {
+                if emptied_queues > 1 || self.is_empty() {
+                    break;
+                }
+
+                // Only one queue is not empty, we continue the loop
+                let flow_queues = self.flow_queues.read().unwrap();
+                flow_ids = flow_queues
+                    .iter()
+                    .filter(|(_, queue)| !queue.is_empty())
+                    .map(|(id, _)| id)
+                    .cloned()
+                    .collect();
             }
         }
     }
