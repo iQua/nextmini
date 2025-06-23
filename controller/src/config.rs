@@ -72,10 +72,6 @@ pub struct Config {
     #[serde(default = "default_user_space_base_addr")]
     pub user_space_base_addr: [u8; 4],
 
-    /// The net mask for user-space smoltcp network
-    #[serde(default = "default_user_space_net_mask")]
-    pub user_space_net_mask: [u8; 4],
-
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
     pub protocol: Protocol,
@@ -128,11 +124,6 @@ fn default_net_mask() -> [u8; 4] {
 /// The default base ipv4 address for user-space smoltcp network
 fn default_user_space_base_addr() -> [u8; 4] {
     [192, 168, 0, 0]
-}
-
-/// The default net mask for user-space smoltcp network
-fn default_user_space_net_mask() -> [u8; 4] {
-    [255, 255, 255, 0]
 }
 
 /// The default transport protocol: QUIC
@@ -193,7 +184,6 @@ impl Default for Config {
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
             user_space_base_addr: default_user_space_base_addr(),
-            user_space_net_mask: default_user_space_net_mask(),
             protocol: default_protocol(),
             routes: Vec::new(),
             flows: Vec::new(),

@@ -147,7 +147,7 @@ async fn handle_connection(
                         // assigns a virtual address to this node for smoltcp interface
                         let user_space_addr = match create_new_virtual_addr(
                             config.user_space_base_addr,
-                            config.user_space_net_mask,
+                            config.net_mask,
                             node_id,
                         ) {
                             Some(addr) => addr,
@@ -232,7 +232,7 @@ async fn handle_connection(
                             .filter_map(|(i, flow)| {
                                 create_new_virtual_addr(
                                     config.user_space_base_addr,
-                                    config.user_space_net_mask,
+                                    config.net_mask,
                                     flow.dst_node_id,
                                 )
                                 .map(|remote_addr| Flow {
@@ -254,7 +254,6 @@ async fn handle_connection(
                             virtual_addr,
                             config.net_mask,
                             user_space_addr,
-                            config.user_space_net_mask,
                             config.protocol.clone(),
                         );
 

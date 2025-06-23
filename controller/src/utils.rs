@@ -39,7 +39,7 @@ pub fn build_startup_response(
     virtual_addr: [u8; 4],
     net_mask: [u8; 4],
     user_space_addr: [u8; 4],
-    user_space_net_mask: [u8; 4],
+
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
@@ -47,7 +47,6 @@ pub fn build_startup_response(
         addr: virtual_addr,
         net_mask,
         user_space_addr,
-        user_space_net_mask,
         protocol,
     }
 }

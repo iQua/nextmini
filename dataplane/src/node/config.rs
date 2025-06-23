@@ -188,7 +188,7 @@ pub struct LocalConfig {
     // The user-space smoltcp ip address from Controller
     #[default(192, 168, 0, 1)]
     #[arg(skip)]
-    pub user_space_user_space_ip: (u8, u8, u8, u8),
+    pub user_space_addr: (u8, u8, u8, u8),
 
     // The user-space smoltcp network mask from Controller
     #[default(255, 255, 255, 0)]
@@ -323,26 +323,22 @@ impl LocalConfig {
                         addr,
                         net_mask,
                         user_space_addr,
-                        user_space_net_mask,
                         protocol,
                     } => {
                         self.node_id = node_id;
+
                         // TUN network configuration
                         self.local_address = (addr[0], addr[1], addr[2], addr[3]);
                         self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
+
                         // smoltcp network configuration
-                        self.user_space_user_space_ip = (
+                        self.user_space_addr = (
                             user_space_addr[0],
                             user_space_addr[1],
                             user_space_addr[2],
                             user_space_addr[3],
                         );
-                        self.user_space_user_space_netmask = (
-                            user_space_net_mask[0],
-                            user_space_net_mask[1],
-                            user_space_net_mask[2],
-                            user_space_net_mask[3],
-                        );
+
                         self.protocol = protocol;
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }
