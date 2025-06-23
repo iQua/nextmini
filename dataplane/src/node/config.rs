@@ -343,8 +343,8 @@ impl LocalConfig {
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }
 
-                    ControllerToDataplane::AddFlows { flow } => {
-                        self.flow = flow;
+                    ControllerToDataplane::AddFlows { flows } => {
+                        self.flow = flows;
                     }
 
                     _ => {

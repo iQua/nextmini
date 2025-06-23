@@ -9,7 +9,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, Flow};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
