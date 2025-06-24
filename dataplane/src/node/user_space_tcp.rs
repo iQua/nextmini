@@ -27,6 +27,13 @@ pub struct UserSpaceTcpSource {
     packet_receiver: flume::Receiver<Packet>,
 }
 
+#[derive(Debug, Clone)]
+struct ConnectionState {
+    connected: bool,
+    start_time: Option<StdInstant>,
+    bytes_transferred: u64,
+}
+
 impl UserSpaceTcpSource {
     pub fn new(config: LocalConfig, ip_addr: Ipv4Addr, processor_handle: ProcessorHandle) -> Self {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
@@ -109,13 +116,6 @@ impl UserSpaceTcpSource {
             let client_handle = sockets.add(client_socket);
             client_handles.push(client_handle);
             info!("Created client socket {} for an outgoing flow.", i);
-        }
-
-        #[derive(Debug, Clone)]
-        struct ConnectionState {
-            connected: bool,
-            start_time: Option<StdInstant>,
-            bytes_transferred: u64,
         }
 
         let base_server_port = self.config.user_space_server_port;
