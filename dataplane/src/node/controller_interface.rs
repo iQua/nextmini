@@ -9,6 +9,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
+use crate::node::user_space_tcp::UserSpaceTcpSource;
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
@@ -240,11 +241,13 @@ impl ControllerToDataplaneReceiver {
             }
             ControllerToDataplane::AddFlows { flows } => {
                 info!(
-                    "Adding {} flows for node {}.",
+                    "Add {} flows for node {}.",
                     flows.len(),
                     self.config.node_id
                 );
-                // TODO: Process flows
+                if let Some(tcp_source) = &self.user_space_tcp {
+                    tcp_source.start(flows);
+                }
             }
             _ => error!("Received a message with an unknown type from the controller."),
         }
