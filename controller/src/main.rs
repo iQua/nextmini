@@ -317,7 +317,30 @@ async fn handle_connection(
                                 }
                             }
                         }
+
+                        // adds the flows
+                        info!("Adding flows for node {}", node_id);
+
+                        let msg = ControllerToDataplane::AddFlows {
+                            flows: config.flows.clone(),
+                        };
+                        match write_arc
+                            .lock()
+                            .await
+                            .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                            .await
+                        {
+                            Ok(_) => info!(
+                                "Sent AddFlows message with {} flows to node {}",
+                                &config.flows.len(),
+                                node_id,
+                            ),
+                            Err(e) => {
+                                error!("Failed to send AddFlows message to node {}: {}", node_id, e)
+                            }
+                        }
                     }
+
                     DataplaneToController::Metrics { metrics } => {
                         if let Some(_) = current_node_id {
                             for metric in metrics {
