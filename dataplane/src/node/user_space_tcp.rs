@@ -196,7 +196,7 @@ impl UserSpaceTcpSource {
                                         server_states[i].start_time,
                                     ) {
                                         info!(
-                                            "Server {} received all expected data ({} time_last_updated), closing connection.",
+                                            "Server {} received all expected data ({}), closing connection.",
                                             i, server_states[i].bytes_last_updated
                                         );
 
@@ -356,21 +356,16 @@ impl UserSpaceTcpSource {
                             }) {
                                 Ok(sent) if sent > 0 => {
                                     client_states[i].bytes_last_updated += sent as u64;
-                                    client_states[i].start_time = StdInstant::now();
-                                    println!("Client {} started transmission", i);
-
-                                    client_states[i].bytes_last_updated += sent as u64;
-
                                     let now = StdInstant::now();
 
                                     let elapsed_time = now
                                         .duration_since(client_states[i].time_last_updated)
                                         .as_secs_f64();
-                                    let throughput = (client_states[i].bytes_last_updated as f64
-                                        * 8.0)
-                                        / (elapsed_time * 1_000_000_000.0);
-
                                     if elapsed_time > 1.0 {
+                                        let throughput =
+                                            (client_states[i].bytes_last_updated as f64 * 8.0)
+                                                / (elapsed_time * 1_000_000_000.0);
+
                                         println!(
                                             "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
                                             i,
