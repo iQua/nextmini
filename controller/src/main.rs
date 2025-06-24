@@ -283,9 +283,6 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
-                        // sets the link rates
-                        info!("Setting link rates for node {}", node_id);
-
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
                                 let spec = TokenBucketSpec {
@@ -339,9 +336,6 @@ async fn handle_connection(
                                 error!("Failed to send AddFlows message to node {}: {}", node_id, e)
                             }
                         }
-
-                        // sets the flow weights
-                        info!("Setting flow weights for node {}.", node_id);
 
                         for flow_weight in &config.flow_weights {
                             // Convert IP addresses from [u8; 4] to u32
