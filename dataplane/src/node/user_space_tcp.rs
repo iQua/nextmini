@@ -12,14 +12,16 @@ use smoltcp::wire::{IpAddress, IpCidr};
 use tracing::{error, info};
 
 use crate::node::LocalDestination;
+use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use nextmini_messages::{Flow, FlowSize};
 
 #[derive(Clone, Debug)]
 pub struct UserSpaceTcpSource {
     config: LocalConfig,
-    ip_addr: Ipv4Addr,
+    pub ip_addr: Ipv4Addr,
     processor_handle: ProcessorHandle,
     packet_sender: flume::Sender<Packet>,
     packet_receiver: flume::Receiver<Packet>,
@@ -41,7 +43,7 @@ impl UserSpaceTcpSource {
     }
 
     /// Starts the user-space TCP source as a virtual device.
-    pub fn start(&self) {
+    pub fn start(&self, flows: Vec<Flow>) {
         let device = VirtualDevice {
             config: self.config.clone(),
             receiver: self.packet_receiver.clone(),
@@ -77,7 +79,12 @@ impl UserSpaceTcpSource {
 
         // first, creates server sockets based on the number of inbound flows
         let mut server_handles = Vec::new();
-        for i in 0..self.config.incoming_flows_count {
+        let incoming_flows: Vec<_> = flows
+            .iter()
+            .filter(|f| f.dst_node_id == self.config.node_id)
+            .collect();
+
+        for i in 0..incoming_flows.len() {
             let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
             let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
             let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
@@ -88,9 +95,7 @@ impl UserSpaceTcpSource {
 
         let node_id = self.config.node_id;
 
-        let client_flow_configs: Vec<_> = self
-            .config
-            .flow
+        let client_flow_configs: Vec<_> = flows
             .iter()
             .filter(|f| f.src_node_id == node_id)
             .cloned()
@@ -111,8 +116,6 @@ impl UserSpaceTcpSource {
             connected: bool,
             start_time: Option<StdInstant>,
             bytes_transferred: u64,
-            target_bytes: u64,
-            finished: bool,
         }
 
         let base_server_port = self.config.user_space_server_port;
@@ -121,41 +124,25 @@ impl UserSpaceTcpSource {
         thread::spawn(move || {
             let mut device = device;
 
-            let incoming_flows: Vec<_> = config_clone
-                .flow
-                .iter()
-                .filter(|f| f.dst_node_id == node_id)
-                .collect();
-            let outgoing_flows: Vec<_> = config_clone
-                .flow
-                .iter()
-                .filter(|f| f.src_node_id == node_id)
-                .collect();
+            let incoming_flows: Vec<_> =
+                flows.iter().filter(|f| f.dst_node_id == node_id).collect();
+            let outgoing_flows: Vec<_> =
+                flows.iter().filter(|f| f.src_node_id == node_id).collect();
 
             let mut server_states: Vec<ConnectionState> = (0..server_handles.len())
-                .map(|i| {
-                    let expected_bytes = incoming_flows.get(i)
-                        .and_then(|f| f.flow_size)
-                        .expect(&format!("Server socket {} was created, but no corresponding incoming flow config was found at index {}", i, i));
-
-                    ConnectionState {
-                        connected: false,
-                        start_time: None,
-                        bytes_transferred: 0,
-                        target_bytes: expected_bytes,
-                        finished: false,
-                    }
+                .map(|_i| ConnectionState {
+                    connected: false,
+                    start_time: None,
+                    bytes_transferred: 0,
                 })
                 .collect();
 
             let mut client_states: Vec<ConnectionState> = outgoing_flows
                 .iter()
-                .map(|f| ConnectionState {
+                .map(|_f| ConnectionState {
                     connected: false,
                     start_time: None,
                     bytes_transferred: 0,
-                    target_bytes: f.flow_size.unwrap_or(u64::MAX), // Send indefinitely if not specified
-                    finished: false,
                 })
                 .collect();
 
@@ -200,18 +187,18 @@ impl UserSpaceTcpSource {
 
                                     server_states[i].bytes_transferred += received as u64;
 
-                                    if server_states[i].bytes_transferred % 1_000 == 0 {
+                                    if server_states[i].bytes_transferred % 100_000_000 == 0 {
                                         info!(
-                                            "Server {} received {} kB",
+                                            "Server {} received {} MB",
                                             i,
-                                            server_states[i].bytes_transferred / 1_000
+                                            server_states[i].bytes_transferred / 1_000_000
                                         );
                                     }
 
-                                    if server_states[i].bytes_transferred
-                                        >= server_states[i].target_bytes
-                                        && !server_states[i].finished
-                                    {
+                                    if incoming_flows[i].flow_size.exceeded(
+                                        server_states[i].bytes_transferred,
+                                        server_states[i].start_time,
+                                    ) {
                                         info!(
                                             "Server {} received all expected data ({} bytes), closing connection.",
                                             i, server_states[i].bytes_transferred
@@ -257,7 +244,6 @@ impl UserSpaceTcpSource {
                                             }
                                         }
                                         socket.close();
-                                        server_states[i].finished = true;
                                     }
                                 }
                                 Err(e) => {
@@ -274,27 +260,24 @@ impl UserSpaceTcpSource {
                     let socket = sockets.get_mut::<tcp::Socket>(client_handle);
                     let cx = iface.context();
 
-                    if !socket.is_open() && !client_connecting[i] && !client_states[i].finished {
-                        if flow.remote_addr != [0, 0, 0, 0] {
-                            let remote_addr = IpAddress::v4(
-                                flow.remote_addr[0],
-                                flow.remote_addr[1],
-                                flow.remote_addr[2],
-                                flow.remote_addr[3],
-                            );
-                            let remote_endpoint = (remote_addr, base_server_port as u16);
+                    if !socket.is_open() && !client_connecting[i] {
+                        let remote_addr = IpAddress::from(flow.dst_node_id.ip_addr(
+                            config_clone.user_space_base_addr,
+                            config_clone.local_netmask,
+                        ));
+                        let remote_endpoint = (remote_addr, base_server_port as u16);
+                        let client_port = config_clone.user_space_client_port + i as u16;
 
-                            match socket.connect(cx, remote_endpoint, flow.client_port) {
-                                Ok(_) => {
-                                    info!(
-                                        "Client {} connecting from port {} to {}:{}",
-                                        i, flow.client_port, remote_addr, base_server_port
-                                    );
-                                    client_connecting[i] = true;
-                                }
-                                Err(e) => {
-                                    error!("Client {} connect error: {:?}", i, e);
-                                }
+                        match socket.connect(cx, remote_endpoint, client_port) {
+                            Ok(_) => {
+                                info!(
+                                    "Client {} connecting from port {} to {}:{}",
+                                    i, client_port, remote_addr, base_server_port
+                                );
+                                client_connecting[i] = true;
+                            }
+                            Err(e) => {
+                                error!("Client {} connect error: {:?}", i, e);
                             }
                         }
                     }
@@ -307,10 +290,19 @@ impl UserSpaceTcpSource {
 
                         // sends data
                         if socket.can_send()
-                            && client_states[i].bytes_transferred < client_states[i].target_bytes
+                            && !outgoing_flows[i].flow_size.exceeded(
+                                client_states[i].bytes_transferred,
+                                client_states[i].start_time,
+                            )
                         {
                             let remaining =
-                                client_states[i].target_bytes - client_states[i].bytes_transferred;
+                                if let FlowSize::Bytes(size) = outgoing_flows[i].flow_size {
+                                    size as u64 - client_states[i].bytes_transferred
+                                } else {
+                                    // For duration-based flows, we can send as much as the buffer allows.
+                                    // The check for finishing is handled by `exceeded`.
+                                    SOCKET_BUFFER_SIZE as u64
+                                };
 
                             match socket.send(|buf| {
                                 let to_send = cmp::min(buf.len(), remaining as usize);
@@ -325,17 +317,18 @@ impl UserSpaceTcpSource {
 
                                     client_states[i].bytes_transferred += sent as u64;
 
-                                    if client_states[i].bytes_transferred % 1_000 == 0 {
+                                    if client_states[i].bytes_transferred % 100_000_000 == 0 {
                                         info!(
-                                            "Client {} sent {} kB",
+                                            "Client {} sent {} MB",
                                             i,
-                                            client_states[i].bytes_transferred / 1_000
+                                            client_states[i].bytes_transferred / 1_000_000
                                         );
                                     }
 
-                                    if client_states[i].bytes_transferred
-                                        >= client_states[i].target_bytes
-                                    {
+                                    if outgoing_flows[i].flow_size.exceeded(
+                                        client_states[i].bytes_transferred,
+                                        client_states[i].start_time,
+                                    ) {
                                         if let Some(start_time) = client_states[i].start_time {
                                             let end_time = StdInstant::now();
                                             let elapsed = end_time.duration_since(start_time);
@@ -369,7 +362,6 @@ impl UserSpaceTcpSource {
                                             }
                                         }
                                         socket.close();
-                                        client_states[i].finished = true;
                                     }
                                 }
                                 Err(e) => {
@@ -455,10 +447,26 @@ impl smoltcp::phy::TxToken for PacketTxToken {
     {
         let mut buf = vec![0; len];
         let result = f(&mut buf);
-        let packet = Packet::new(len, buf);
+        let start_total = StdInstant::now();
 
+        let start_packet_new = StdInstant::now();
+        let packet = Packet::new(len, buf);
+        info!("Packet::new took: {:?}", start_packet_new.elapsed());
+
+        let size = packet.packet_size as f32;
         // uses non-blocking send() to send the outbound packet
+        let start_process_packet = StdInstant::now();
         self.0.process_packet(packet);
+        info!("process_packet took: {:?}", start_process_packet.elapsed());
+
+        let duration = start_total.elapsed().as_secs_f32();
+        let rate_mbps = if duration > 0.0 {
+            size * 8.0 / (1024.0 * 1024.0) / duration
+        } else {
+            f32::INFINITY
+        };
+
+        info!("Tx rate: {:.2} Mbps", rate_mbps);
 
         result
     }
