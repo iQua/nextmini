@@ -9,6 +9,7 @@ use tracing::info;
 
 use nextmini_messages::Protocol;
 
+use super::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
@@ -16,18 +17,12 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::processor::ProcessorMessage;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
-use crate::node::user_space_tcp::UserSpaceTcpSource;
-
-use super::reporter::ControllerReporterHandle;
 
 pub struct Conductor {
     config: LocalConfig,
 
     /// the local interface readers and writers
     local_interface: LocalInterfaceHandle,
-
-    /// the user-space TCP source
-    user_space_tcp: Option<UserSpaceTcpSource>,
 
     /// the processors
     processors: ProcessorHandle,
@@ -53,31 +48,20 @@ impl Conductor {
             LocalInterfaceHandle::new(config.clone(), processors.clone());
         processors.connect_local_interface(local_interface.clone());
 
-        // Returns true for the special ‘unspecified’ address (0.0.0.0).
-        let user_space_tcp = if !config.user_space_address.is_unspecified() {
-            let tcp_source = UserSpaceTcpSource::new(
-                config.clone(),
-                config.user_space_address,
-                processors.clone(),
-            );
-
+        let user_space_tcp = controller_interface.user_space_tcp.clone();
+        if let Some(tcp_source) = user_space_tcp {
             processors
                 .broadcast_sender()
                 .send(ProcessorMessage::ConnectLocalDestination(
-                    config.user_space_address,
-                    Arc::new(tcp_source.clone()),
+                    tcp_source.ip_addr,
+                    tcp_source.clone(),
                 ))
                 .expect("Failed to connect to the user-space TCP source.");
-
-            Some(tcp_source)
-        } else {
-            None
-        };
+        }
 
         Conductor {
             config,
             local_interface,
-            user_space_tcp,
             processors,
             reporter,
             main_shutdown_recv: Some(main_shutdown_recv),
@@ -104,11 +88,6 @@ impl Conductor {
             "Starting Nextmini node {} on {}:{}...",
             self.config.node_id, self.config.private_network_addr, self.config.private_network_port
         );
-
-        // if configured, starts the user-space TCP source
-        if let Some(tcp_source) = &self.user_space_tcp {
-            tcp_source.start();
-        }
 
         // starts listening with either TCP or QUIC on published ports (private and/or public)
         let public_port = self.config.public_network_port.clone();

@@ -1,3 +1,5 @@
+use std::net::Ipv4Addr;
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
@@ -9,7 +11,6 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
-use crate::node::user_space_tcp::UserSpaceTcpSource;
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
@@ -17,12 +18,14 @@ use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
+use crate::node::user_space_tcp::UserSpaceTcpSource;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    pub user_space_tcp: Option<Arc<UserSpaceTcpSource>>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
@@ -32,7 +35,8 @@ impl ControllerInterfaceHandle {
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
         // connects to the controller over WebSockets
-        let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
+        let (config, processors, ws_stream, user_space_tcp) =
+            ControllerInterfaceHandle::connect(config).await;
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
@@ -46,6 +50,7 @@ impl ControllerInterfaceHandle {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            user_space_tcp: user_space_tcp.clone(),
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
@@ -55,6 +60,7 @@ impl ControllerInterfaceHandle {
             receiver_stream,
             processors,
             reporter: reporter.clone(),
+            user_space_tcp,
         };
 
         tokio::spawn(async move {
@@ -73,6 +79,7 @@ impl ControllerInterfaceHandle {
         LocalConfig,
         ProcessorHandle,
         WebSocketStream<MaybeTlsStream<TcpStream>>,
+        Option<Arc<UserSpaceTcpSource>>,
     ) {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -117,7 +124,22 @@ impl ControllerInterfaceHandle {
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
 
-        (config, processors, ws_stream)
+        let user_space_tcp = if !config.user_space_address.is_unspecified() {
+            let ip_addr = Ipv4Addr::new(
+                config.user_space_address.octets()[0],
+                config.user_space_address.octets()[1],
+                config.user_space_address.octets()[2],
+                config.user_space_address.octets()[3],
+            );
+
+            let tcp_source = UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
+
+            Some(Arc::new(tcp_source))
+        } else {
+            None
+        };
+
+        (config, processors, ws_stream, user_space_tcp)
     }
 
     /// Sends a message to the controller.
@@ -166,6 +188,7 @@ pub struct ControllerToDataplaneReceiver {
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
     reporter: ControllerReporterHandle,
+    user_space_tcp: Option<Arc<UserSpaceTcpSource>>,
 }
 
 impl ControllerToDataplaneReceiver {
