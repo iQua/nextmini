@@ -15,6 +15,8 @@ use crate::node::NodeIdExt;
 use crate::node::drop::DropStrategy;
 use crate::node::scheduler::SchedulingDiscipline;
 
+use std::net::Ipv4Addr;
+
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -147,19 +149,24 @@ pub struct LocalConfig {
     pub quic_congestion_control: CongestionControl,
 
     // The local network address
-    #[default(10, 0, 0, 1)]
+    #[default(default_local_address())]
     #[arg(skip)]
-    pub local_address: (u8, u8, u8, u8),
+    pub local_address: Ipv4Addr,
 
     // The user-space network address.
-    #[default(192, 168, 0, 1)]
+    #[default(default_user_space_address())]
     #[arg(skip)]
-    pub user_space_address: (u8, u8, u8, u8),
+    pub user_space_address: Ipv4Addr,
+
+    // The user-space base network address.
+    #[default(default_user_space_base_addr())]
+    #[arg(skip)]
+    pub user_space_base_addr: Ipv4Addr,
 
     // The local network mask
-    #[default(255, 255, 255, 0)]
+    #[default(default_netmask())]
     #[arg(skip)]
-    pub local_netmask: (u8, u8, u8, u8),
+    pub local_netmask: Ipv4Addr,
 
     // The transport protocol: TCP or QUIC
     #[default(Protocol::Tcp)]
@@ -209,6 +216,22 @@ pub struct LocalConfig {
     #[default(8888)]
     #[arg(long)]
     pub user_space_server_port: u16,
+}
+
+fn default_local_address() -> Ipv4Addr {
+    Ipv4Addr::new(10, 0, 0, 1)
+}
+
+fn default_user_space_address() -> Ipv4Addr {
+    Ipv4Addr::new(192, 168, 0, 1)
+}
+
+fn default_user_space_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(192, 168, 0, 0)
+}
+
+fn default_netmask() -> Ipv4Addr {
+    Ipv4Addr::new(255, 255, 255, 0)
 }
 
 impl LocalConfig {
@@ -325,13 +348,11 @@ impl LocalConfig {
                     } => {
                         self.node_id = node_id;
                         self.protocol = protocol;
+                        self.local_netmask = net_mask;
+                        self.user_space_base_addr = user_space_base_addr;
 
-                        self.local_address =
-                            node_id.ip_addr(virtual_base_addr, net_mask).unwrap().into();
-                        self.user_space_address = node_id
-                            .ip_addr(user_space_base_addr, net_mask)
-                            .unwrap()
-                            .into();
+                        self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
+                        self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
 
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }

@@ -53,20 +53,18 @@ impl Conductor {
             LocalInterfaceHandle::new(config.clone(), processors.clone());
         processors.connect_local_interface(local_interface.clone());
 
-        let user_space_tcp = if config.user_space_address != (0, 0, 0, 0) {
-            let ip_addr = Ipv4Addr::new(
-                config.user_space_address.0,
-                config.user_space_address.1,
-                config.user_space_address.2,
-                config.user_space_address.3,
+        // Returns true for the special ‘unspecified’ address (0.0.0.0).
+        let user_space_tcp = if !config.user_space_address.is_unspecified() {
+            let tcp_source = UserSpaceTcpSource::new(
+                config.clone(),
+                config.user_space_address,
+                processors.clone(),
             );
-
-            let tcp_source = UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
 
             processors
                 .broadcast_sender()
                 .send(ProcessorMessage::ConnectLocalDestination(
-                    ip_addr,
+                    config.user_space_address,
                     Arc::new(tcp_source.clone()),
                 ))
                 .expect("Failed to connect to the user-space TCP source.");

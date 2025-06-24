@@ -2,14 +2,14 @@
 use nextmini_messages::{ControllerToDataplane, Flow, Protocol, RoutingTableEntry};
 
 use crate::models::Route;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
     node_id: usize,
-    net_mask: [u8; 4],
-    virtual_base_addr: [u8; 4],
-    user_space_base_addr: [u8; 4],
+    net_mask: std::net::Ipv4Addr,
+    virtual_base_addr: std::net::Ipv4Addr,
+    user_space_base_addr: std::net::Ipv4Addr,
     protocol: Protocol,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {

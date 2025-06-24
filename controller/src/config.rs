@@ -1,5 +1,6 @@
 /// Defines configuration structs and loading logic.
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -12,7 +13,7 @@ pub struct Route {
     pub route: Vec<usize>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
     pub user: String,
     pub password: String,
@@ -54,16 +55,16 @@ pub struct Config {
 
     /// The base ipv4 address for the network
     #[serde(default = "default_base_addr")]
-    pub base_addr: [u8; 4],
+    pub base_addr: Ipv4Addr,
 
     /// The net mask for the network.
     /// This is used to calculate the ipv4 address for each node. Change this only if you understand what you are doing.
     #[serde(default = "default_net_mask")]
-    pub net_mask: [u8; 4],
+    pub net_mask: Ipv4Addr,
 
     /// The base ipv4 address for user-space smoltcp network
     #[serde(default = "default_user_space_base_addr")]
-    pub user_space_base_addr: [u8; 4],
+    pub user_space_base_addr: Ipv4Addr,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -104,19 +105,19 @@ fn default_port() -> u16 {
 }
 
 /// The default base ipv4 address for the network
-fn default_base_addr() -> [u8; 4] {
-    [10, 0, 0, 0]
+fn default_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(10, 0, 0, 0)
 }
 
 /// The default net mask for the network.
-fn default_net_mask() -> [u8; 4] {
+fn default_net_mask() -> Ipv4Addr {
     // accommodates up to 255 * 255 nodes in the private network
-    [255, 255, 0, 0]
+    Ipv4Addr::new(255, 255, 0, 0)
 }
 
 /// The default base ipv4 address for user-space smoltcp network
-fn default_user_space_base_addr() -> [u8; 4] {
-    [192, 168, 0, 0]
+fn default_user_space_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(192, 168, 0, 0)
 }
 
 /// The default transport protocol: QUIC
@@ -242,8 +243,8 @@ mod tests {
 
         // Verify basic configuration
         assert_eq!(config.protocol, Protocol::Quic);
-        assert_eq!(config.base_addr, [10, 0, 0, 0]);
-        assert_eq!(config.net_mask, [255, 255, 255, 0]);
+        assert_eq!(config.base_addr, Ipv4Addr::new(10, 0, 0, 0));
+        assert_eq!(config.net_mask, Ipv4Addr::new(255, 255, 255, 0));
 
         // Verify routes were processed correctly
         assert_eq!(config.routes.len(), 3);

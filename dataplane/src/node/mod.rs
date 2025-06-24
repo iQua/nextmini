@@ -25,6 +25,7 @@ pub mod local_reader;
 pub mod local_writer;
 
 use jumphash::JumpHasher;
+use std::net::Ipv4Addr;
 
 use crate::node::packet::Packet;
 
@@ -34,13 +35,13 @@ pub type NodeId = usize;
 /// Converts a NodeId to a virtual IP address.
 pub trait NodeIdExt {
     /// Computes a new virtual IP address by adding the node ID to the base address.
-    fn ip_addr(&self, base_addr: [u8; 4], net_mask: [u8; 4]) -> Option<[u8; 4]>;
+    fn ip_addr(&self, base_addr: Ipv4Addr, net_mask: Ipv4Addr) -> Ipv4Addr;
 }
 
 impl NodeIdExt for NodeId {
-    fn ip_addr(&self, base_addr: [u8; 4], net_mask: [u8; 4]) -> Option<[u8; 4]> {
+    fn ip_addr(&self, base_addr: Ipv4Addr, net_mask: Ipv4Addr) -> Ipv4Addr {
         // makes a copy of the base address
-        let base_ip = u32::from_be_bytes(base_addr);
+        let base_ip = u32::from_be_bytes(base_addr.octets());
 
         // adds the node ID as an offset to the base address
         let new_ip = base_ip.wrapping_add(*self as u32);
@@ -49,15 +50,15 @@ impl NodeIdExt for NodeId {
         let new_virtual_addr = new_ip.to_be_bytes();
 
         // applies the netmask to protect against overflow
-        let net_mask = u32::from_be_bytes(net_mask);
+        let net_mask = u32::from_be_bytes(net_mask.octets());
         let network = base_ip & net_mask;
         let new_network = new_ip & net_mask;
 
         // checks if the new virtual address is outside the subnet
         if network != new_network {
-            None
+            panic!("Could not generate IP for node {}, the node ID might be too large for the network mask.", self);
         } else {
-            Some(new_virtual_addr)
+            new_virtual_addr.into()
         }
     }
 }
