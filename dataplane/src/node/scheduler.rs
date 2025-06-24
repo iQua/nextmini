@@ -377,48 +377,43 @@ impl SchedulerQueue for WrrQueue {
 
     fn collect_packets(&self, batch: &mut Vec<Packet>) {
         let flow_queues = self.flow_queues.read().unwrap();
+        let flow_weights = self.flow_weights.read().unwrap();
+        let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
 
-        // Get the flow ids of the non-empty queues
-        let mut flow_ids: Vec<FlowId> = flow_queues
+        // The minimum number of rounds to empty one of the queues by WRR
+        let min_rounds = flow_queues
             .iter()
-            .filter(|(_, queue)| !queue.is_empty())
-            .map(|(id, _)| id)
-            .cloned()
-            .collect();
+            .filter_map(|(flow_id, queue)| {
+                let weight = *flow_weights.get(flow_id).unwrap_or(&1);
+                let rounds = queue.len() / weight;
+                if rounds > 0 { Some(rounds) } else { None }
+            })
+            .min()
+            .unwrap_or(0);
+
+        if min_rounds == 0 {
+            return;
+        }
 
         drop(flow_queues);
 
-        loop {
-            let mut should_break = false;
-
+        for _ in 0..min_rounds {
             for flow_id in &flow_ids {
                 let flow_weights = self.flow_weights.read().unwrap();
                 let flow_queues = self.flow_queues.read().unwrap();
                 let weight = flow_weights.get(flow_id).unwrap_or(&1);
 
                 if let Some(flow_queue) = flow_queues.get(flow_id) {
-                    if flow_queue.len() < *weight {
-                        should_break = true;
-                        continue;
-                    }
-
                     for _ in 0..*weight {
                         if let Some(packet) = flow_queue.pop() {
                             batch.push(packet);
                         }
                     }
-
-                    // Current queue is emptied, this should be the last round
-                    if flow_queue.is_empty() {
-                        should_break = true;
-                    }
                 }
             }
-
-            if should_break {
-                break;
-            }
         }
+
+        // Make judgement here
     }
     fn is_empty(&self) -> bool {
         let flow_queues = self.flow_queues.read().unwrap();
