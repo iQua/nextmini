@@ -56,7 +56,10 @@ impl NodeIdExt for NodeId {
 
         // checks if the new virtual address is outside the subnet
         if network != new_network {
-            panic!("Could not generate IP for node {}, the node ID might be too large for the network mask.", self);
+            panic!(
+                "Could not generate IP for node {}, the node ID might be too large for the network mask.",
+                self
+            );
         } else {
             new_virtual_addr.into()
         }

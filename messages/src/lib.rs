@@ -3,6 +3,8 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 
+mod ip_ser;
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum DataplaneToController {
@@ -77,8 +79,11 @@ pub struct TokenBucketSpec {
 pub enum ControllerToDataplane {
     StartUp {
         node_id: usize,
+        #[serde(with = "ip_ser")]
         net_mask: Ipv4Addr,
+        #[serde(with = "ip_ser")]
         virtual_base_addr: Ipv4Addr,
+        #[serde(with = "ip_ser")]
         user_space_base_addr: Ipv4Addr,
         protocol: Protocol,
     },
