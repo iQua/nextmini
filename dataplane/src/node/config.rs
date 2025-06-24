@@ -118,14 +118,14 @@ pub struct LocalConfig {
     pub channel_capacity: usize,
 
     /// The address of the local network interface to use for communicating between nodes on the same subnet.
-    #[default("".to_string())]
+    #[default(default_network_addr())]
     #[arg(long)]
-    pub private_network_addr: String,
+    pub private_network_addr: Ipv4Addr,
 
     /// The address of the network interface to use for communciating with nodes over the public Internet.
-    #[default("".to_string())]
+    #[default(default_network_addr())]
     #[arg(long)]
-    pub public_network_addr: String,
+    pub public_network_addr: Ipv4Addr,
 
     /// The name of the local TUN interface
     #[default("utun".to_string())]
@@ -218,6 +218,10 @@ pub struct LocalConfig {
     pub user_space_server_port: u16,
 }
 
+fn default_network_addr() -> Ipv4Addr {
+    Ipv4Addr::new(0, 0, 0, 0)
+}
+
 fn default_local_address() -> Ipv4Addr {
     Ipv4Addr::new(10, 0, 0, 1)
 }
@@ -263,7 +267,7 @@ impl LocalConfig {
         // 10.0.0.0 - 10.255.255.255 (10.0.0.0/8)
         // 172.16.0.0 - 172.31.255.255 (172.16.0.0/12)
         // 192.168.0.0 - 192.168.255.255 (192.168.0.0/16)
-        if cfgs.private_network_addr.is_empty() {
+        if cfgs.private_network_addr.is_unspecified() {
             let itf_name = cfgs.private_network_interface.clone();
 
             // retrieves a list of all private network interfaces available on the system
@@ -271,7 +275,7 @@ impl LocalConfig {
                 "Failed to get the network interfaces. This is like due to the lack of privileges.",
             );
 
-            let mut ipv4addr = String::new();
+            let mut ipv4addr = Ipv4Addr::new(0, 0, 0, 0);
 
             // iterates over the list of network interfaces to find the one matching the specified name,
             // such as 'eth0'
@@ -281,7 +285,7 @@ impl LocalConfig {
                     // ipv4 address
                     for addr in itf.addr.iter() {
                         if let Addr::V4(ipv4) = addr {
-                            ipv4addr = ipv4.ip.to_string();
+                            ipv4addr = ipv4.ip;
                         }
                     }
                 }
@@ -291,7 +295,7 @@ impl LocalConfig {
         }
 
         // sets the ipv4 address of the network interface for the public network
-        if cfgs.public_network_addr.is_empty() {
+        if cfgs.public_network_addr.is_unspecified() {
             let itf_name = cfgs.public_network_interface.clone();
 
             // retrieves a list of all public network interfaces available on the system
@@ -299,7 +303,7 @@ impl LocalConfig {
                 "Failed to get the network interfaces. This is like due to the lack of privileges.",
             );
 
-            let mut ipv4addr = String::new();
+            let mut ipv4addr = Ipv4Addr::new(0, 0, 0, 0);
 
             // iterates over the list of network interfaces to find the one matching the specified name,
             // such as 'eth0'
@@ -309,7 +313,7 @@ impl LocalConfig {
                     // ipv4 address
                     for addr in itf.addr.iter() {
                         if let Addr::V4(ipv4) = addr {
-                            ipv4addr = ipv4.ip.to_string();
+                            ipv4addr = ipv4.ip;
                         }
                     }
                 }
