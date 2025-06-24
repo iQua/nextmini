@@ -351,6 +351,7 @@ impl SchedulerQueue for FifoQueue {
 struct WrrQueue {
     flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>,
     flow_weights: RwLock<HashMap<FlowId, usize>>,
+    waiting_flow_ids: RwLock<Vec<FlowId>>,
     capacity: usize,
 }
 
@@ -359,6 +360,7 @@ impl WrrQueue {
         Self {
             flow_queues: RwLock::new(HashMap::new()),
             flow_weights: RwLock::new(HashMap::new()),
+            waiting_flow_ids: RwLock::new(Vec::new()),
             capacity,
         }
     }
@@ -378,26 +380,35 @@ impl SchedulerQueue for WrrQueue {
     fn collect_packets(&self, batch: &mut Vec<Packet>) {
         let flow_queues = self.flow_queues.read().unwrap();
         let flow_weights = self.flow_weights.read().unwrap();
-        let flow_ids: Vec<FlowId> = flow_queues.keys().cloned().collect();
+        let waiting_flow_ids = self.waiting_flow_ids.read().unwrap();
 
-        // The minimum number of rounds to empty one of the queues by WRR
-        let min_rounds = flow_queues
-            .iter()
-            .filter_map(|(flow_id, queue)| {
+        let mut min_rounds: Option<usize> = None;
+        let mut flow_ids: Vec<FlowId> = Vec::new();
+        for (flow_id, flow_queue) in flow_queues.iter() {
+            if !waiting_flow_ids.contains(flow_id) && !flow_queue.is_empty() {
+                // Add non-empty and non-waiting flow_ids for current call
+                flow_ids.push(*flow_id);
+
+                // Calculate the minimum number of rounds to empty one of the queues by WRR
                 let weight = *flow_weights.get(flow_id).unwrap_or(&1);
-                let rounds = queue.len() / weight;
-                if rounds > 0 { Some(rounds) } else { None }
-            })
-            .min()
-            .unwrap_or(0);
+                let rounds = flow_queue.len() / weight;
+                min_rounds = match min_rounds {
+                    Some(current_min_rounds) => Some(current_min_rounds.min(rounds)),
+                    None => Some(rounds),
+                };
+            }
+        }
 
-        if min_rounds == 0 {
+        if let None = min_rounds {
             return;
         }
 
         drop(flow_queues);
+        drop(flow_weights);
+        drop(waiting_flow_ids);
 
-        for _ in 0..min_rounds {
+        // Main WRR logic
+        for _ in 0..min_rounds.unwrap() {
             for flow_id in &flow_ids {
                 let flow_weights = self.flow_weights.read().unwrap();
                 let flow_queues = self.flow_queues.read().unwrap();
@@ -413,18 +424,13 @@ impl SchedulerQueue for WrrQueue {
             }
         }
 
-        // If remaining packets accumulated in the queues are more than what this round can handle, backlogging occurs
-        // So, we need to send them all
+        // All emptied flows shall be backlogged next time
         let flow_queues = self.flow_queues.read().unwrap();
-        let flow_weights = self.flow_weights.read().unwrap();
+        let mut waiting_flow_ids = self.waiting_flow_ids.write().unwrap();
+        waiting_flow_ids.clear();
         for (flow_id, flow_queue) in flow_queues.iter() {
-            let weight = *flow_weights.get(flow_id).unwrap_or(&1);
-            if flow_queue.len() > min_rounds * weight {
-                for _ in 0..weight {
-                    if let Some(packet) = flow_queue.pop() {
-                        batch.push(packet);
-                    }
-                }
+            if flow_queue.is_empty() {
+                waiting_flow_ids.push(*flow_id);
             }
         }
     }
