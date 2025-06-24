@@ -72,7 +72,7 @@ impl UserSpaceTcpSource {
         });
 
         // socket buffer
-        const SOCKET_BUFFER_SIZE: usize = 65535;
+        const SOCKET_BUFFER_SIZE: usize = 655350;
 
         // connects to a remote endpoint
         // Creates the TCP socket set
@@ -179,7 +179,7 @@ impl UserSpaceTcpSource {
                             }) {
                                 Ok(received) if received > 0 => {
                                     server_states[i].start_time = StdInstant::now();
-                                    info!("Server {} started receiving data", i);
+                                    // info!("Server {} started receiving data", i);
 
                                     server_states[i].bytes_last_updated += received as u64;
 
@@ -417,10 +417,13 @@ impl UserSpaceTcpSource {
                         continue;
                     }
                     Some(delay) => {
-                        thread::sleep(delay.into());
+                        // println!("Delayed for {}", delay);
+                        // thread::sleep(delay.into());
+                        continue;
                     }
                     None => {
-                        thread::sleep(StdDuration::from_millis(1));
+                        continue;
+                        // thread::sleep(StdDuration::from_millis(1));
                     }
                 }
             }
