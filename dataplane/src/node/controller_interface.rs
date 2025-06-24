@@ -125,14 +125,11 @@ impl ControllerInterfaceHandle {
         let processors = ProcessorHandle::new(config.clone());
 
         let user_space_tcp = if !config.user_space_address.is_unspecified() {
-            let ip_addr = Ipv4Addr::new(
-                config.user_space_address.octets()[0],
-                config.user_space_address.octets()[1],
-                config.user_space_address.octets()[2],
-                config.user_space_address.octets()[3],
+            let tcp_source = UserSpaceTcpSource::new(
+                config.clone(),
+                config.user_space_address,
+                processors.clone(),
             );
-
-            let tcp_source = UserSpaceTcpSource::new(config.clone(), ip_addr, processors.clone());
 
             Some(Arc::new(tcp_source))
         } else {

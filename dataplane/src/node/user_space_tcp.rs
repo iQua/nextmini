@@ -65,15 +65,7 @@ impl UserSpaceTcpSource {
         let mut iface = Interface::new(config, &mut device.clone(), Instant::now());
         iface.update_ip_addrs(|addrs| {
             addrs
-                .push(IpCidr::new(
-                    IpAddress::v4(
-                        self.ip_addr.octets()[0],
-                        self.ip_addr.octets()[1],
-                        self.ip_addr.octets()[2],
-                        self.ip_addr.octets()[3],
-                    ),
-                    24,
-                ))
+                .push(IpCidr::new(IpAddress::from(self.ip_addr), 24))
                 .unwrap();
         });
 
