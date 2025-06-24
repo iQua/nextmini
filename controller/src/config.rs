@@ -48,6 +48,14 @@ pub struct LinkRate {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FlowWeight {
+    pub src_ip: [u8; 4],
+    pub dst_ip: [u8; 4],
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub weight: usize,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     /// The port to listen on
     #[serde(default = "default_port")]
@@ -81,6 +89,10 @@ pub struct Config {
     /// A vector of link rates.
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
+
+    /// A vector of flow weights.
+    #[serde(default)]
+    pub flow_weights: Vec<FlowWeight>,
 
     /// Topology configuration for automatic route generation.
     #[serde(default)]
@@ -182,6 +194,7 @@ impl Default for Config {
             routes: Vec::new(),
             flows: Vec::new(),
             link_rates: Vec::new(),
+            flow_weights: Vec::new(),
             topology: Topology::default(),
             db: default_db_config(),
         }

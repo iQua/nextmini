@@ -96,6 +96,13 @@ pub enum ControllerToDataplane {
     AddFlows {
         flows: Vec<Flow>,
     },
+    SetFlowWeight {
+        src_ip: u32,
+        dst_ip: u32,
+        src_port: u16,
+        dst_port: u16,
+        weight: usize,
+    },
 }
 
 /// Routing table entry: route_id → next_hop, with source and destination node IDs.

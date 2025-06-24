@@ -339,6 +339,48 @@ async fn handle_connection(
                                 error!("Failed to send AddFlows message to node {}: {}", node_id, e)
                             }
                         }
+
+                        // sets the flow weights
+                        info!("Setting flow weights for node {}.", node_id);
+
+                        for flow_weight in &config.flow_weights {
+                            // Convert IP addresses from [u8; 4] to u32
+                            let src_ip = ((flow_weight.src_ip[0] as u32) << 24)
+                                | ((flow_weight.src_ip[1] as u32) << 16)
+                                | ((flow_weight.src_ip[2] as u32) << 8)
+                                | (flow_weight.src_ip[3] as u32);
+
+                            let dst_ip = ((flow_weight.dst_ip[0] as u32) << 24)
+                                | ((flow_weight.dst_ip[1] as u32) << 16)
+                                | ((flow_weight.dst_ip[2] as u32) << 8)
+                                | (flow_weight.dst_ip[3] as u32);
+
+                            let msg = ControllerToDataplane::SetFlowWeight {
+                                src_ip,
+                                dst_ip,
+                                src_port: flow_weight.src_port,
+                                dst_port: flow_weight.dst_port,
+                                weight: flow_weight.weight,
+                            };
+
+                            match write_arc
+                                .lock()
+                                .await
+                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .await
+                            {
+                                Ok(_) => (),
+                                Err(e) => error!(
+                                    "Failed to send the SetFlowWeight message to for {:?}:{} to {:?}:{} at {}, {}.",
+                                    flow_weight.src_ip,
+                                    flow_weight.src_port,
+                                    flow_weight.dst_ip,
+                                    flow_weight.dst_port,
+                                    node_id,
+                                    e
+                                ),
+                            }
+                        }
                     }
 
                     DataplaneToController::Metrics { metrics } => {
