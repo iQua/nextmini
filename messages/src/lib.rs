@@ -10,10 +10,8 @@ mod ip_ser;
 pub enum DataplaneToController {
     StartUp {
         private_network_name: String,
-        #[serde(with = "ip_ser")]
-        private_network_addr: Ipv4Addr,
-        #[serde(with = "ip_ser")]
-        public_network_addr: Ipv4Addr,
+        private_network_addr: String,
+        public_network_addr: String,
         node_id: Option<usize>,
     },
     Metrics {

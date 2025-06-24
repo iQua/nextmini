@@ -1,13 +1,12 @@
 /// Defines database models.
 use sqlx::FromRow;
-use std::net::Ipv4Addr;
 
 #[derive(FromRow, Debug)]
 pub struct Node {
     pub id: i32,
     pub private_network_name: Option<String>,
-    pub private_network_addr: Ipv4Addr,
-    pub public_network_addr: Ipv4Addr,
+    pub private_network_addr: String,
+    pub public_network_addr: String,
 }
 
 #[derive(Clone, FromRow, Debug)]
