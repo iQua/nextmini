@@ -21,8 +21,8 @@ use crate::node::token_bucket::TokenBucket;
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SchedulingDiscipline {
-    Fifo,
     #[default]
+    Fifo,
     Wrr,
 }
 

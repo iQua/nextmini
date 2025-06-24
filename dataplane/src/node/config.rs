@@ -174,7 +174,7 @@ pub struct LocalConfig {
     pub protocol: Protocol,
 
     // The scheduling discipline
-    #[default(SchedulingDiscipline::Wrr)]
+    #[default(SchedulingDiscipline::Fifo)]
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 
@@ -216,12 +216,6 @@ pub struct LocalConfig {
     #[default(8888)]
     #[arg(long)]
     pub user_space_server_port: u16,
-
-    // The sending rate of the scheduler in bytes per second
-    // default set close to the limit of Nextmini
-    #[default(450_000_000.0)]
-    #[arg(long)]
-    pub scheduler_sending_rate: f32,
 }
 
 fn default_local_address() -> Ipv4Addr {
