@@ -283,6 +283,10 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
+                        if config.link_rates.len() > 0 {
+                            info!("Setting link rates for node {}", node_id);
+                        }
+
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
                                 let spec = TokenBucketSpec {
@@ -337,6 +341,10 @@ async fn handle_connection(
                             }
                         }
 
+                        if config.flow_weights.len() > 0 {
+                            info!("Setting flow weights for node {}", node_id);
+                        }
+
                         for flow_weight in &config.flow_weights {
                             // Convert IP addresses from [u8; 4] to u32
                             let src_ip = ((flow_weight.src_ip[0] as u32) << 24)
@@ -363,7 +371,14 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => (),
+                                Ok(_) => info!(
+                                    "Sent the SetFlowWeight message to {:?}:{} to {:?}:{} at {}.",
+                                    flow_weight.src_ip,
+                                    flow_weight.src_port,
+                                    flow_weight.dst_ip,
+                                    flow_weight.dst_port,
+                                    node_id
+                                ),
                                 Err(e) => error!(
                                     "Failed to send the SetFlowWeight message to for {:?}:{} to {:?}:{} at {}, {}.",
                                     flow_weight.src_ip,
