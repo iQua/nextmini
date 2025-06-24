@@ -262,26 +262,25 @@ impl SchedulerWriter {
                     SchedulerWriterMessage::RateLimit(spec) => {
                         self.token_bucket = Some(TokenBucket::new(spec));
                     }
-                    // TO BE IMPLEMENTED : Change to flow specs
+                    // This design should be revisited after user-space flows are ready
                     SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
                         self.queue.set_flow_weight(flow_id, weight);
                     }
                 }
             }
 
-            // Wait for notification if queues are empty
+            // waits for notification if queues are empty
             if self.queue.is_empty() {
                 self.queues_not_empty.notified().await;
             }
 
-            // Collect packets from queues
+            // Collect and send packets from scheduler queues
             let mut batch = Vec::new();
             self.queue.collect_packets(&mut batch);
+            self.send_packets(&mut batch).await;
 
-            // Send packets if we have any
-            if !batch.is_empty() {
-                self.send_packets(&mut batch).await;
-            }
+            // After each round of queue processing, yield to the producer task
+            tokio::task::yield_now().await;
         }
     }
 
@@ -311,7 +310,7 @@ trait SchedulerQueue: Send + Sync {
     fn set_flow_weight(&self, flow_id: FlowId, weight: usize);
 }
 
-/// FIFO queue strategy - no inner Arc needed since Arc<QueueStrategy> provides sharing
+/// FIFO queue strategy: no inner Arc<> is needed since Arc<QueueStrategy> allows sharing
 struct FifoQueue {
     queue: ArrayQueue<Packet>,
 }
@@ -351,7 +350,6 @@ impl SchedulerQueue for FifoQueue {
 struct WrrQueue {
     flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>,
     flow_weights: RwLock<HashMap<FlowId, usize>>,
-    waiting_flow_ids: RwLock<Vec<FlowId>>,
     capacity: usize,
 }
 
@@ -360,7 +358,6 @@ impl WrrQueue {
         Self {
             flow_queues: RwLock::new(HashMap::new()),
             flow_weights: RwLock::new(HashMap::new()),
-            waiting_flow_ids: RwLock::new(Vec::new()),
             capacity,
         }
     }
@@ -380,18 +377,21 @@ impl SchedulerQueue for WrrQueue {
     fn collect_packets(&self, batch: &mut Vec<Packet>) {
         let flow_queues = self.flow_queues.read().unwrap();
         let flow_weights = self.flow_weights.read().unwrap();
-        let waiting_flow_ids = self.waiting_flow_ids.read().unwrap();
 
         let mut min_rounds: Option<usize> = None;
         let mut flow_ids: Vec<FlowId> = Vec::new();
+
         for (flow_id, flow_queue) in flow_queues.iter() {
-            if !waiting_flow_ids.contains(flow_id) && !flow_queue.is_empty() {
-                // Add non-empty and non-waiting flow_ids for current call
+            if !flow_queue.is_empty() {
+                // remembers flow IDs with non-empty queues
                 flow_ids.push(*flow_id);
 
-                // Calculate the minimum number of rounds to empty one of the queues by WRR
+                // Calculates the minimum number of rounds allowed. For example, if flow 1 with weight 2
+                // has 5 packets in its queue, flow 2 with weight 1 has 3 packets, 4 packets should be
+                // scheduled for sending from flow 1, and 2 from flow 2.
                 let weight = *flow_weights.get(flow_id).unwrap_or(&1);
                 let rounds = flow_queue.len() / weight;
+
                 min_rounds = match min_rounds {
                     Some(current_min_rounds) => Some(current_min_rounds.min(rounds)),
                     None => Some(rounds),
@@ -399,15 +399,17 @@ impl SchedulerQueue for WrrQueue {
             }
         }
 
-        if let None = min_rounds {
-            return;
-        }
+        // all queues are currently empty (should not happen as this task only runs with non-empty queues)
+        assert!(
+            min_rounds.is_some(),
+            "Scheduler queues are empty when the consumer task runs."
+        );
 
         drop(flow_queues);
         drop(flow_weights);
-        drop(waiting_flow_ids);
 
-        // Main WRR logic
+        // The weighted round-robin scheduling discipline simply schedules W packets in each round of processing,
+        // where W is the integer weight of a flow.
         for _ in 0..min_rounds.unwrap() {
             for flow_id in &flow_ids {
                 let flow_weights = self.flow_weights.read().unwrap();
@@ -423,17 +425,8 @@ impl SchedulerQueue for WrrQueue {
                 }
             }
         }
-
-        // All emptied flows shall be backlogged next time
-        let flow_queues = self.flow_queues.read().unwrap();
-        let mut waiting_flow_ids = self.waiting_flow_ids.write().unwrap();
-        waiting_flow_ids.clear();
-        for (flow_id, flow_queue) in flow_queues.iter() {
-            if flow_queue.is_empty() {
-                waiting_flow_ids.push(*flow_id);
-            }
-        }
     }
+
     fn is_empty(&self) -> bool {
         let flow_queues = self.flow_queues.read().unwrap();
         flow_queues.values().all(|queue| queue.is_empty())
