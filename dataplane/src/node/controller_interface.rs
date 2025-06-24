@@ -268,6 +268,7 @@ impl ControllerToDataplaneReceiver {
                     flows.len(),
                     self.config.node_id
                 );
+
                 if let Some(tcp_source) = &self.user_space_tcp {
                     tcp_source.start(flows);
                 }
