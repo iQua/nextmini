@@ -351,8 +351,7 @@ impl LocalConfig {
                         self.local_netmask =
                             net_mask.parse().expect("Invalid net_mask from controller");
 
-                        // TODO:
-                        // Since now uses string message type for connection
+                        // Q: Since now uses string message type for connection
                         // between controller and dataplane, needs to parse() the addr.
                         // expect() fn could be removed. Haven't thought of a better design now.
 
