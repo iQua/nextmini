@@ -1,7 +1,6 @@
 /// Defines message enums for controller-dataplane communication.
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use std::net::Ipv4Addr;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -62,9 +61,9 @@ pub struct TokenBucketSpec {
 pub enum ControllerToDataplane {
     StartUp {
         node_id: usize,
-        net_mask: Ipv4Addr,
-        virtual_base_addr: Ipv4Addr,
-        user_space_base_addr: Ipv4Addr,
+        net_mask: String,
+        virtual_base_addr: String,
+        user_space_base_addr: String,
         protocol: Protocol,
     },
     AddNode {

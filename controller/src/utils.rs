@@ -14,9 +14,9 @@ pub fn build_startup_response(
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
-        net_mask,
-        virtual_base_addr,
-        user_space_base_addr,
+        net_mask: net_mask.to_string(), // converts Ipv4Addr to String.
+        virtual_base_addr: virtual_base_addr.to_string(),
+        user_space_base_addr: user_space_base_addr.to_string(),
         protocol,
     }
 }
@@ -99,8 +99,4 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             routes: route_entries,
         })
     }
-}
-
-pub fn build_addflows_response(flows: Vec<Flow>) -> ControllerToDataplane {
-    ControllerToDataplane::AddFlows { flows }
 }
