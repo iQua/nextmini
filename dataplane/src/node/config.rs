@@ -348,19 +348,10 @@ impl LocalConfig {
                     } => {
                         self.node_id = node_id;
                         self.protocol = protocol;
-                        self.local_netmask =
-                            net_mask.parse().expect("Invalid net_mask from controller");
-
-                        // Q: Since now uses string message type for connection
-                        // between controller and dataplane, needs to parse() the addr.
-                        // expect() fn could be removed. Haven't thought of a better design now.
-
-                        let virtual_base_addr: Ipv4Addr = virtual_base_addr
-                            .parse()
-                            .expect("Invalid virtual_base_addr from controller");
-                        self.user_space_base_addr = user_space_base_addr
-                            .parse()
-                            .expect("Invalid user_space_base_addr from controller");
+                        self.local_netmask = net_mask;
+                        self.user_space_base_addr = user_space_base_addr;
+                        self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
+                        self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
 
                         self.local_address = node_id.ip_addr(virtual_base_addr, self.local_netmask);
                         self.user_space_address =

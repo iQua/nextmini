@@ -14,9 +14,9 @@ pub fn build_startup_response(
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
-        net_mask: net_mask.to_string(), // converts Ipv4Addr to String.
-        virtual_base_addr: virtual_base_addr.to_string(),
-        user_space_base_addr: user_space_base_addr.to_string(),
+        net_mask,
+        virtual_base_addr,
+        user_space_base_addr,
         protocol,
     }
 }
