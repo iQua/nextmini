@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use clap::ValueEnum;
 use crossbeam_queue::ArrayQueue;
@@ -6,6 +7,7 @@ use serde::Deserialize;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
 
+use crate::node::FlowId;
 use nextmini_messages::TokenBucketSpec;
 
 use crate::node::config::LocalConfig;
@@ -19,8 +21,8 @@ use crate::node::token_bucket::TokenBucket;
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SchedulingDiscipline {
-    #[default]
     Fifo,
+    #[default]
     Wrr,
 }
 
@@ -32,10 +34,11 @@ pub enum SchedulerReaderMessage {
 /// The rate limit is to be sent by the processor, and in the unit of bytes per second.
 pub enum SchedulerWriterMessage {
     RateLimit(TokenBucketSpec),
+    SetFlowWeight(FlowId, usize),
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SchedulerHandle {
     reader_sender: mpsc::Sender<SchedulerReaderMessage>,
     writer_sender: mpsc::UnboundedSender<SchedulerWriterMessage>,
@@ -43,21 +46,10 @@ pub struct SchedulerHandle {
 
 impl SchedulerHandle {
     pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
-        // creates the mpsc channel for sending packets to the scheduler
         let (reader_sender, reader_receiver) = mpsc::channel(config.channel_capacity);
-
-        // creates the unbounded mpsc channel for sending a rate limit, in bytes (per second), to the scheduler
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
 
-        let scheduler = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => {
-                Fifo::new(config, net_interface, reader_receiver, writer_receiver)
-            }
-            _ => {
-                panic!("This scheduling discipline has not yet been implemented.");
-            }
-        };
-
+        let scheduler = Scheduler::new(config, net_interface, reader_receiver, writer_receiver);
         scheduler.run();
 
         Self {
@@ -91,14 +83,26 @@ impl SchedulerHandle {
             );
         }
     }
+
+    /// TO BE IMPLEMENTED : Pending changes according to flow spec
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        if let Err(e) = self
+            .writer_sender
+            .send(SchedulerWriterMessage::SetFlowWeight(flow_id, weight))
+        {
+            error!(
+                "SchedulerHandle: Error sending a flow weight to the scheduler: {}.",
+                e
+            );
+        }
+    }
 }
 
-/// FIFO is a scheduling discipline that schedules packets in a first-in-first-out manner.
-pub struct Fifo {
+pub struct Scheduler {
     config: LocalConfig,
 }
 
-impl Fifo {
+impl Scheduler {
     pub fn new(
         config: LocalConfig,
         net_interface: NetworkInterfaceHandle,
@@ -113,22 +117,27 @@ impl Fifo {
             DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
         };
 
-        let scheduler_queue = Arc::new(ArrayQueue::new(capacity));
-        let queue_not_empty = Arc::new(Notify::new());
-
-        let mut reader = FifoReader {
-            queue: scheduler_queue.clone(),
-            packets_dropped: 0,
-            drop_strategy: packet_drop,
-            queue_not_empty: queue_not_empty.clone(),
-            capacity,
-            receiver: reader_receiver,
+        let queue_strategy: Arc<dyn SchedulerQueue + Send + Sync> = match config.scheduler_type {
+            SchedulingDiscipline::Fifo => Arc::new(FifoQueue::new(capacity)),
+            SchedulingDiscipline::Wrr => Arc::new(WrrQueue::new(capacity)),
         };
 
-        let mut writer = FifoWriter {
-            queue: scheduler_queue,
+        let queues_not_empty = Arc::new(Notify::new());
+
+        let mut reader = SchedulerReader {
+            queue: queue_strategy.clone(),
+            packets_dropped: 0,
+            drop_strategy: packet_drop,
+            queues_not_empty: queues_not_empty.clone(),
+            capacity,
+            receiver: reader_receiver,
+            scheduler_type: config.scheduler_type,
+        };
+
+        let mut writer = SchedulerWriter {
+            queue: queue_strategy,
             net_interface,
-            queue_not_empty,
+            queues_not_empty,
             receiver: writer_receiver,
             token_bucket: None,
         };
@@ -154,23 +163,19 @@ impl Fifo {
     }
 }
 
-struct FifoReader {
-    pub queue: Arc<ArrayQueue<Packet>>,
-    /// the number of packets dropped so far
-    pub packets_dropped: usize,
-    /// a closure that determines whether an inbound packet should be dropped or not
-    pub drop_strategy: Box<dyn PacketDrop + Send + Sync>,
-    /// signals when the queue has packets to be consumed
-    pub queue_not_empty: Arc<Notify>,
-    /// maximum queue capacity
-    pub capacity: usize,
-    /// the receiver for an mpsc channel, for other actors to send packets to this reader
-    pub receiver: mpsc::Receiver<SchedulerReaderMessage>,
+/// Producer side of scheduler
+struct SchedulerReader {
+    queue: Arc<dyn SchedulerQueue + Send + Sync>,
+    packets_dropped: usize,
+    drop_strategy: Box<dyn PacketDrop + Send + Sync>,
+    queues_not_empty: Arc<Notify>,
+    capacity: usize,
+    receiver: mpsc::Receiver<SchedulerReaderMessage>,
+    scheduler_type: SchedulingDiscipline,
 }
 
-impl FifoReader {
+impl SchedulerReader {
     async fn run(&mut self) {
-        // producer task: receives packets and enqueues them
         loop {
             if let Some(message) = self.receiver.recv().await {
                 match message {
@@ -191,108 +196,249 @@ impl FifoReader {
     }
 
     fn enqueue(&mut self, packet: Packet) {
+        let flow_id = packet.flow_id;
+        let queue_len = self.queue.queue_len(flow_id);
+
         // drops the packet based on the drop strategy
         let should_drop_packet =
             self.drop_strategy
-                .should_drop(packet.packet_size, self.queue.len(), self.queue.len());
+                .should_drop(packet.packet_size, queue_len, queue_len);
 
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
 
             warn!(
-                "FIFO: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
+                "{:?}: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
+                self.scheduler_type,
                 packet.flow_id,
                 packet.packet_size,
-                self.queue.len(),
+                queue_len,
                 self.capacity,
                 self.packets_dropped
             );
-
             return;
         }
 
         let is_tcp_data = packet.is_tcp_data();
 
-        if self.queue.push(packet).is_err() {
+        if self.queue.enqueue(packet).is_err() {
             self.packets_dropped += 1;
 
-            warn!("FIFO: Scheduler dropped a packet as the queue is full.");
+            warn!(
+                "{:?}: Scheduler dropped a packet as the queue is full.",
+                self.scheduler_type
+            );
         } else {
             // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
             // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
             if is_tcp_data {
-                if self.queue.len() > 2 {
+                if queue_len > 2 {
                     // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
                     // and the queue becomes 'non-empty' now
-                    self.queue_not_empty.notify_one();
+                    self.queues_not_empty.notify_one();
                 }
             } else {
-                self.queue_not_empty.notify_one();
+                self.queues_not_empty.notify_one();
             }
         }
     }
 }
 
-struct FifoWriter {
-    pub queue: Arc<ArrayQueue<Packet>>,
-    /// the network interface handle
-    pub net_interface: NetworkInterfaceHandle,
-    /// signals when the queue has packets to be consumed
-    pub queue_not_empty: Arc<Notify>,
-    /// the receiver for an unbounded mpsc channel, for other actors to send packets to this writer
-    pub receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
-    /// the token bucket traffic shaper
+/// Consumer side of scheduler
+struct SchedulerWriter {
+    queue: Arc<dyn SchedulerQueue + Send + Sync>,
+    queues_not_empty: Arc<Notify>,
+    net_interface: NetworkInterfaceHandle,
+    receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
     token_bucket: Option<TokenBucket>,
 }
 
-// Consumer task: pops packets from the queue and sends them out
-impl FifoWriter {
+impl SchedulerWriter {
     async fn run(&mut self) {
-        let mut batch = Vec::new();
-
         loop {
-            // receives and imposes rate limits from the controller interface, if available
             while let Ok(message) = self.receiver.try_recv() {
                 match message {
                     SchedulerWriterMessage::RateLimit(spec) => {
                         self.token_bucket = Some(TokenBucket::new(spec));
                     }
+                    // This design should be revisited after user-space flows are ready
+                    SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
+                        self.queue.set_flow_weight(flow_id, weight);
+                    }
                 }
             }
 
-            // waits for notification if the queue is empty
+            // waits for notification if queues are empty
             if self.queue.is_empty() {
-                self.queue_not_empty.notified().await;
+                self.queues_not_empty.notified().await;
             }
 
-            // drains packets from the queue efficiently
-            while let Some(packet) = self.queue.pop() {
-                batch.push(packet);
-            }
+            // Collect and send packets from scheduler queues
+            let mut batch = Vec::new();
+            self.queue.collect_packets(&mut batch);
+            self.send_packets(&mut batch).await;
 
-            // sends the batch if we have packets
-            if !batch.is_empty() {
-                self.send_packets(&mut batch).await;
-            }
+            // After each round of queue processing, yield to the producer task
+            tokio::task::yield_now().await;
         }
     }
+
     async fn send_packets(&mut self, batch: &mut Vec<Packet>) {
         let packets = std::mem::take(batch);
         let packet_count = packets.len();
 
-        // if needed, calculates total bytes before sending the packets out
         if let Some(ref mut token_bucket) = self.token_bucket {
             token_bucket.send(&mut self.net_interface, packets).await;
         } else {
             if let Err(e) = self.net_interface.send(packets).await {
                 error!(
-                    "FifoWriter: Error sending batch of {} packets: {}",
+                    "SchedulerWriter: Error sending batch of {} packets: {}",
                     packet_count, e
                 );
-
                 return;
             }
         }
+    }
+}
+
+trait SchedulerQueue: Send + Sync {
+    fn enqueue(&self, packet: Packet) -> Result<(), Packet>;
+    fn collect_packets(&self, batch: &mut Vec<Packet>);
+    fn is_empty(&self) -> bool;
+    fn queue_len(&self, flow_id: FlowId) -> usize;
+    fn set_flow_weight(&self, flow_id: FlowId, weight: usize);
+}
+
+/// FIFO queue strategy: no inner Arc<> is needed since Arc<QueueStrategy> allows sharing
+struct FifoQueue {
+    queue: ArrayQueue<Packet>,
+}
+
+impl FifoQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            queue: ArrayQueue::new(capacity),
+        }
+    }
+}
+
+impl SchedulerQueue for FifoQueue {
+    fn enqueue(&self, packet: Packet) -> Result<(), Packet> {
+        self.queue.push(packet)
+    }
+
+    fn collect_packets(&self, batch: &mut Vec<Packet>) {
+        while let Some(packet) = self.queue.pop() {
+            batch.push(packet);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    fn queue_len(&self, _flow_id: FlowId) -> usize {
+        self.queue.len()
+    }
+
+    fn set_flow_weight(&self, _flow_id: FlowId, _weight: usize) {
+        // Do nothing for FIFO queue
+    }
+}
+
+struct WrrQueue {
+    flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>,
+    flow_weights: RwLock<HashMap<FlowId, usize>>,
+    capacity: usize,
+}
+
+impl WrrQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            flow_queues: RwLock::new(HashMap::new()),
+            flow_weights: RwLock::new(HashMap::new()),
+            capacity,
+        }
+    }
+}
+
+impl SchedulerQueue for WrrQueue {
+    fn enqueue(&self, packet: Packet) -> Result<(), Packet> {
+        let flow_id = packet.flow_id;
+        let mut flow_queues = self.flow_queues.write().unwrap();
+        let flow_queue = flow_queues
+            .entry(flow_id)
+            .or_insert_with(|| ArrayQueue::new(self.capacity));
+
+        flow_queue.push(packet)
+    }
+
+    fn collect_packets(&self, batch: &mut Vec<Packet>) {
+        let flow_queues = self.flow_queues.read().unwrap();
+        let flow_weights = self.flow_weights.read().unwrap();
+
+        let mut min_rounds: Option<usize> = None;
+        let mut flow_ids: Vec<FlowId> = Vec::new();
+
+        for (flow_id, flow_queue) in flow_queues.iter() {
+            if !flow_queue.is_empty() {
+                // remembers flow IDs with non-empty queues
+                flow_ids.push(*flow_id);
+
+                // Calculates the minimum number of rounds allowed. For example, if flow 1 with weight 2
+                // has 5 packets in its queue, flow 2 with weight 1 has 3 packets, 4 packets should be
+                // scheduled for sending from flow 1, and 2 from flow 2.
+                let weight = *flow_weights.get(flow_id).unwrap_or(&1);
+                let rounds = flow_queue.len() / weight;
+
+                min_rounds = match min_rounds {
+                    Some(current_min_rounds) => Some(current_min_rounds.min(rounds)),
+                    None => Some(rounds),
+                };
+            }
+        }
+
+        // all queues are currently empty (should not happen as this task only runs with non-empty queues)
+        assert!(
+            min_rounds.is_some(),
+            "Scheduler queues are empty when the consumer task runs."
+        );
+
+        drop(flow_queues);
+        drop(flow_weights);
+
+        // The weighted round-robin scheduling discipline simply schedules W packets in each round of processing,
+        // where W is the integer weight of a flow.
+        for _ in 0..min_rounds.unwrap() {
+            for flow_id in &flow_ids {
+                let flow_weights = self.flow_weights.read().unwrap();
+                let flow_queues = self.flow_queues.read().unwrap();
+                let weight = flow_weights.get(flow_id).unwrap_or(&1);
+
+                if let Some(flow_queue) = flow_queues.get(flow_id) {
+                    for _ in 0..*weight {
+                        if let Some(packet) = flow_queue.pop() {
+                            batch.push(packet);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        let flow_queues = self.flow_queues.read().unwrap();
+        flow_queues.values().all(|queue| queue.is_empty())
+    }
+
+    fn queue_len(&self, flow_id: FlowId) -> usize {
+        let flow_queues = self.flow_queues.read().unwrap();
+        flow_queues.get(&flow_id).map_or(0, |queue| queue.len())
+    }
+
+    fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        let mut flow_weights = self.flow_weights.write().unwrap();
+        flow_weights.insert(flow_id, weight);
     }
 }

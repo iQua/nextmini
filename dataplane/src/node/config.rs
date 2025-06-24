@@ -160,7 +160,7 @@ pub struct LocalConfig {
     pub protocol: Protocol,
 
     // The scheduling discipline
-    #[default(SchedulingDiscipline::Fifo)]
+    #[default(SchedulingDiscipline::Wrr)]
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 
@@ -183,6 +183,12 @@ pub struct LocalConfig {
     #[default(4)]
     #[arg(long)]
     pub reorder_tolerance: usize,
+
+    // The sending rate of the scheduler in bytes per second
+    // default set close to the limit of Nextmini
+    #[default(450_000_000.0)]
+    #[arg(long)]
+    pub scheduler_sending_rate: f32,
 }
 
 impl LocalConfig {
