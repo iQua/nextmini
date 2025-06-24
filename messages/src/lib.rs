@@ -49,6 +49,21 @@ pub enum FlowSize {
     Duration(f64),
 }
 
+impl FlowSize {
+    pub fn exceeded(&self, sent_size: u64, start_time: Option<std::time::Instant>) -> bool {
+        match *self {
+            FlowSize::Bytes(size) => sent_size >= size as u64,
+            FlowSize::Duration(duration) => {
+                if let Some(start) = start_time {
+                    start.elapsed().as_secs_f64() >= duration
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
 /// The specification of a token bucket traffic shaper.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TokenBucketSpec {
