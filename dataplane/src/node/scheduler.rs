@@ -389,7 +389,7 @@ impl SchedulerQueue for WrrQueue {
         drop(flow_queues);
 
         loop {
-            let mut emptied_queues = 0;
+            let mut should_break = false;
 
             for flow_id in &flow_ids {
                 let flow_weights = self.flow_weights.read().unwrap();
@@ -397,6 +397,11 @@ impl SchedulerQueue for WrrQueue {
                 let weight = flow_weights.get(flow_id).unwrap_or(&1);
 
                 if let Some(flow_queue) = flow_queues.get(flow_id) {
+                    if flow_queue.len() < *weight {
+                        should_break = true;
+                        continue;
+                    }
+
                     for _ in 0..*weight {
                         if let Some(packet) = flow_queue.pop() {
                             batch.push(packet);
@@ -405,12 +410,12 @@ impl SchedulerQueue for WrrQueue {
 
                     // Current queue is emptied, this should be the last round
                     if flow_queue.is_empty() {
-                        emptied_queues += 1;
+                        should_break = true;
                     }
                 }
             }
 
-            if emptied_queues > 0 || self.is_empty() {
+            if should_break {
                 break;
             }
         }
