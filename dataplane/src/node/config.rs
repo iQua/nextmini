@@ -1,4 +1,5 @@
-use nextmini_messages::FlowSize;
+use std::net::Ipv4Addr;
+
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
@@ -8,14 +9,13 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
+use nextmini_messages::FlowSpec;
 use nextmini_messages::{ControllerToDataplane, Flow, Protocol};
 
 use crate::node::NodeId;
 use crate::node::NodeIdExt;
 use crate::node::drop::DropStrategy;
 use crate::node::scheduler::SchedulingDiscipline;
-
-use std::net::Ipv4Addr;
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
@@ -202,7 +202,7 @@ pub struct LocalConfig {
     #[default(vec![Flow {
         src_node_id: 0,
         dst_node_id: 0,
-        flow_size: FlowSize::Bytes(1_000_000_000),
+        flow_size: FlowSpec::Bytes(1_000_000_000),
     }])]
     #[arg(skip)]
     pub flow: Vec<Flow>,
