@@ -439,26 +439,10 @@ impl smoltcp::phy::TxToken for PacketTxToken {
     {
         let mut buf = vec![0; len];
         let result = f(&mut buf);
-        let start_total = StdInstant::now();
-
-        let start_packet_new = StdInstant::now();
         let packet = Packet::new(len, buf);
-        info!("Packet::new took: {:?}", start_packet_new.elapsed());
 
-        let size = packet.packet_size as f32;
         // uses non-blocking send() to send the outbound packet
-        let start_process_packet = StdInstant::now();
         self.0.process_packet(packet);
-        info!("process_packet took: {:?}", start_process_packet.elapsed());
-
-        let duration = start_total.elapsed().as_secs_f32();
-        let rate_mbps = if duration > 0.0 {
-            size * 8.0 / (1024.0 * 1024.0) / duration
-        } else {
-            f32::INFINITY
-        };
-
-        info!("Tx rate: {:.2} Mbps", rate_mbps);
 
         result
     }
