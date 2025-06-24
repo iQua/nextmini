@@ -410,19 +410,8 @@ impl SchedulerQueue for WrrQueue {
                 }
             }
 
-            if emptied_queues > 0 {
-                if emptied_queues > 1 || self.is_empty() {
-                    break;
-                }
-
-                // Only one queue is not empty, we continue the loop
-                let flow_queues = self.flow_queues.read().unwrap();
-                flow_ids = flow_queues
-                    .iter()
-                    .filter(|(_, queue)| !queue.is_empty())
-                    .map(|(id, _)| id)
-                    .cloned()
-                    .collect();
+            if emptied_queues > 0 || self.is_empty() {
+                break;
             }
         }
     }
