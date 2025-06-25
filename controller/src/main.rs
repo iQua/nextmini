@@ -341,6 +341,8 @@ async fn handle_connection(
                             }
                         }
 
+                        // sets the flow weights
+                        // Pending changes according to user space tcp implementation
                         if config.flow_weights.len() > 0 {
                             info!("Setting flow weights for node {}", node_id);
                         }
@@ -380,13 +382,8 @@ async fn handle_connection(
                                     node_id
                                 ),
                                 Err(e) => error!(
-                                    "Failed to send the SetFlowWeight message to for {:?}:{} to {:?}:{} at {}, {}.",
-                                    flow_weight.src_ip,
-                                    flow_weight.src_port,
-                                    flow_weight.dst_ip,
-                                    flow_weight.dst_port,
-                                    node_id,
-                                    e
+                                    "Failed to send the SetFlowWeight message to {}, {}.",
+                                    node_id, e
                                 ),
                             }
                         }
