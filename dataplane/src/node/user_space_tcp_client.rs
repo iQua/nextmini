@@ -61,7 +61,7 @@ impl UserSpaceTcpClient {
         }
     }
 
-    // adds new outgoing flows to the client.
+    // adds new outgoing flows to the client
     pub fn add_flows(&mut self, outgoing_flows: Vec<Flow>, sockets: &mut SocketSet) {
         for flow in outgoing_flows {
             let i = self.handles.len();
@@ -101,7 +101,8 @@ impl UserSpaceTcpClient {
                         .ip_addr(self.config.user_space_base_addr, self.config.local_netmask),
                 );
                 let remote_endpoint = (remote_addr, base_server_port as u16);
-                // assigns client port automatically h
+
+                // assigns client port automatically
                 let client_port = self.config.user_space_client_port + i as u16;
 
                 // connects to a remote endpoint
@@ -119,14 +120,13 @@ impl UserSpaceTcpClient {
                 }
             }
 
-            // sees if the socket is active
+            // sends data if the socket is active
             if socket.is_active() {
                 if !self.states[i].connected {
                     self.states[i].connected = true;
                     info!("Client {} connected successfully.", i);
                 }
 
-                // sends data
                 if socket.can_send()
                     && !self.flows[i]
                         .flow_size
@@ -145,8 +145,8 @@ impl UserSpaceTcpClient {
                         buf[..to_send].fill(0xAA);
                         (to_send, to_send)
                     }) {
-                        // prints out the throughput per sec for client
                         Ok(sent) if sent > 0 => {
+                            // prints out the throughput per sec for client
                             self.states[i].test_throughput("Client", i, sent as u64);
 
                             if self.flows[i]

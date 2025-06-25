@@ -56,7 +56,7 @@ impl UserSpaceTcpServer {
         }
     }
 
-    // adds new incoming flows to the server.
+    // adds new incoming flows to the server
     pub fn add_flows(&mut self, incoming_flows: Vec<Flow>, sockets: &mut SocketSet) {
         for flow in incoming_flows {
             let i = self.handles.len();
