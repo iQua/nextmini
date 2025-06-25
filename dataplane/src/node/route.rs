@@ -82,18 +82,12 @@ impl RoutingTable {
 
     /// Converts a node ID to its TUN IP address.
     pub fn node_id_to_ip(&self, node_id: NodeId) -> Ipv4Addr {
-        node_id.ip_addr(
-            self.config.virtual_base_addr,
-            self.config.local_netmask,
-        )
+        node_id.ip_addr(self.config.virtual_base_addr, self.config.local_netmask)
     }
 
     /// Converts a node ID to its user space IP address.
     pub fn node_id_to_user_space_ip(&self, node_id: NodeId) -> Ipv4Addr {
-        node_id.ip_addr(
-            self.config.user_space_base_addr,
-            self.config.local_netmask,
-        )
+        node_id.ip_addr(self.config.user_space_base_addr, self.config.local_netmask)
     }
 
     /// Converts IP address to node ID, supporting both TUN and user space networks.
