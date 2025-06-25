@@ -5,7 +5,8 @@ use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, info};
 
-use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::config::LocalConfig;
+use crate::node::{FlowId, FlowIdExt, NodeId, NodeIdExt};
 
 /// The routing table in the dataplane.
 #[derive(Clone)]
@@ -13,14 +14,7 @@ pub struct RoutingTable {
     /// Local node ID
     pub local_id: NodeId,
 
-    /// Base IPv4 address for node ID calculation (e.g., [10, 0, 0, 0])
-    base_ipv4_addr: [u8; 4],
-
-    /// Base IPv4 address for user space network (e.g., [192, 168, 0, 0])
-    user_space_base_addr: [u8; 4],
-
-    /// Network mask for subnet calculations
-    net_mask: [u8; 4],
+    config: LocalConfig,
 
     /// Source-destination node ID pair -> available route IDs
     available_routes: AHashMap<(NodeId, NodeId), Vec<usize>>,
@@ -36,14 +30,12 @@ pub struct RoutingTable {
 }
 
 impl RoutingTable {
-    pub fn new(local_id: NodeId) -> Self {
+    pub fn new(local_id: NodeId, config: LocalConfig) -> Self {
         Self {
             route_next_hop: AHashMap::default(),
             available_routes: AHashMap::default(),
             local_id,
-            base_ipv4_addr: [10, 0, 0, 0],
-            user_space_base_addr: [192, 168, 0, 0],
-            net_mask: [255, 255, 255, 0],
+            config,
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
@@ -89,27 +81,28 @@ impl RoutingTable {
     }
 
     /// Converts a node ID to its TUN IP address.
-    pub fn node_id_to_ip(&self, node_id: usize) -> Ipv4Addr {
-        let base_ip = u32::from_be_bytes(self.base_ipv4_addr);
-        let ip_addr = base_ip + node_id as u32;
-
-        Ipv4Addr::from(ip_addr)
+    pub fn node_id_to_ip(&self, node_id: NodeId) -> Ipv4Addr {
+        node_id.ip_addr(
+            self.config.virtual_base_addr,
+            self.config.local_netmask,
+        )
     }
 
     /// Converts a node ID to its user space IP address.
-    pub fn node_id_to_user_space_ip(&self, node_id: usize) -> Ipv4Addr {
-        let base_ip = u32::from_be_bytes(self.user_space_base_addr);
-        let ip_addr = base_ip + node_id as u32;
-        Ipv4Addr::from(ip_addr)
+    pub fn node_id_to_user_space_ip(&self, node_id: NodeId) -> Ipv4Addr {
+        node_id.ip_addr(
+            self.config.user_space_base_addr,
+            self.config.local_netmask,
+        )
     }
 
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);
-        let netmask = u32::from_be_bytes(self.net_mask);
+        let netmask = u32::from(self.config.local_netmask);
 
-        let tun_base = u32::from_be_bytes(self.base_ipv4_addr);
-        let user_space_base = u32::from_be_bytes(self.user_space_base_addr);
+        let tun_base = u32::from(self.config.virtual_base_addr);
+        let user_space_base = u32::from(self.config.user_space_base_addr);
 
         match ip_addr & netmask {
             subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,

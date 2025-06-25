@@ -44,16 +44,13 @@ pub trait NodeIdExt {
 impl NodeIdExt for NodeId {
     fn ip_addr(&self, base_addr: Ipv4Addr, net_mask: Ipv4Addr) -> Ipv4Addr {
         // makes a copy of the base address
-        let base_ip = u32::from_be_bytes(base_addr.octets());
+        let base_ip = u32::from(base_addr);
 
         // adds the node ID as an offset to the base address
         let new_ip = base_ip.wrapping_add(*self as u32);
 
-        // creates a new virtual address
-        let new_virtual_addr = new_ip.to_be_bytes();
-
         // applies the netmask to protect against overflow
-        let net_mask = u32::from_be_bytes(net_mask.octets());
+        let net_mask = u32::from(net_mask);
         let network = base_ip & net_mask;
         let new_network = new_ip & net_mask;
 
@@ -64,7 +61,7 @@ impl NodeIdExt for NodeId {
                 self
             );
         } else {
-            new_virtual_addr.into()
+            Ipv4Addr::from(new_ip)
         }
     }
 }
