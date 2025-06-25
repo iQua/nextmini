@@ -325,6 +325,7 @@ async fn handle_connection(
                         let msg = ControllerToDataplane::AddFlows {
                             flows: config.flows.clone(),
                         };
+
                         match write_arc
                             .lock()
                             .await
