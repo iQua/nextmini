@@ -281,6 +281,7 @@ impl ControllerToDataplaneReceiver {
                     self.user_space_tcp = Some(tcp_source_arc);
                 }
             }
+            // Pending changes according to user space tcp implementation
             ControllerToDataplane::SetFlowWeight {
                 src_ip,
                 dst_ip,
