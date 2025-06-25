@@ -17,7 +17,7 @@ use crate::node::network_interface::NetworkInterfaceHandle;
 use crate::node::processor::{ProcessorHandle, ProcessorMessage};
 use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
-use crate::node::user_space_tcp::UserSpaceTcpSource;
+use crate::node::user_space_tcp::{UserSpaceTcpHandle, UserSpaceTcpSource};
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -56,7 +56,7 @@ impl ControllerInterfaceHandle {
             receiver_stream,
             processors,
             reporter: reporter.clone(),
-            user_space_tcp: None,
+            user_space_tcp_handle: None,
         };
 
         tokio::spawn(async move {
@@ -167,8 +167,13 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
+
+    // reports metrics to controller
     reporter: ControllerReporterHandle,
-    user_space_tcp: Option<Arc<UserSpaceTcpSource>>,
+
+    // sends AddFlows message user-space TCP
+    // the user-space TCP source is only created on the first AddFlows message.
+    user_space_tcp_handle: Option<UserSpaceTcpHandle>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -225,6 +230,7 @@ impl ControllerToDataplaneReceiver {
                     );
                 }
             }
+
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
                     "Setting the link rate for node {} to {} bytes/second with a bucket size of {} bytes.",
@@ -233,6 +239,7 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.limit_rate(node_id, spec);
             }
+
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!(
                     "Installing {} routes on node {}.",
@@ -242,6 +249,7 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.update_routing_table(routes);
             }
+
             ControllerToDataplane::AddFlows { flows } => {
                 info!(
                     "Add {} flows for node {}.",
@@ -254,12 +262,10 @@ impl ControllerToDataplaneReceiver {
                 // if we creates a new tcp_source for each AddFlows message or for each flow
                 // for now, since we are using <Ipv4Addr, Arc<dyn LocalDestination>>
                 // processor doesn't know about which tcp_source to send.
-                if self.user_space_tcp.is_none() && !self.config.user_space_address.is_unspecified()
+                if self.user_space_tcp_handle.is_none()
+                    && !self.config.user_space_address.is_unspecified()
                 {
-                    // the first time for adding flows
-
-                    // Creates a new tcp_source.
-                    let tcp_source = UserSpaceTcpSource::new(
+                    let (tcp_source, flow_receiver) = UserSpaceTcpSource::new(
                         self.config.clone(),
                         self.config.user_space_address,
                         self.processors.clone(),
@@ -275,10 +281,18 @@ impl ControllerToDataplaneReceiver {
                         ))
                         .expect("Failed to connect to the user-space TCP source.");
 
-                    // Starts the user-space tcp thread.
-                    tcp_source_arc.start(flows);
+                    // starts the user-space tcp thread,
+                    // passes the receiver end of the channel.
+                    tcp_source_arc.start(flow_receiver);
 
-                    self.user_space_tcp = Some(tcp_source_arc);
+                    // creates and saves a user-space TCP handle
+                    self.user_space_tcp_handle =
+                        Some(UserSpaceTcpHandle::new(tcp_source_arc.flow_sender.clone()));
+                }
+
+                // sends the new flows to the user-space TCP.
+                if let Some(user_space_tcp_source) = &self.user_space_tcp_handle {
+                    user_space_tcp_source.add_flows(flows);
                 }
             }
             // Pending changes according to user space tcp implementation

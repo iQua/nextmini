@@ -17,6 +17,27 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use nextmini_messages::Flow;
 
+pub enum UserSpaceTcpMessage {
+    AddFlows(Vec<Flow>),
+}
+
+#[derive(Clone)]
+pub struct UserSpaceTcpHandle {
+    sender: flume::Sender<UserSpaceTcpMessage>,
+}
+
+// wraps the sending AddFlows message channel
+impl UserSpaceTcpHandle {
+    pub fn new(sender: flume::Sender<UserSpaceTcpMessage>) -> Self {
+        Self { sender }
+    }
+
+    // sends a vector of flows to be added to the user-space TCP source.
+    pub fn add_flows(&self, flows: Vec<Flow>) {
+        let _ = self.sender.send(UserSpaceTcpMessage::AddFlows(flows));
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct UserSpaceTcpSource {
     config: LocalConfig,
@@ -24,11 +45,22 @@ pub struct UserSpaceTcpSource {
     processor_handle: ProcessorHandle,
     packet_sender: flume::Sender<Packet>,
     packet_receiver: flume::Receiver<Packet>,
+
+    // the sender for sending AddFlows message to the user-space TCP thread.
+    pub flow_sender: flume::Sender<UserSpaceTcpMessage>,
 }
 
+// creates a new user-space TCP source and a channel for receiving AddFlows message.
 impl UserSpaceTcpSource {
-    pub fn new(config: LocalConfig, ip_addr: Ipv4Addr, processor_handle: ProcessorHandle) -> Self {
+    pub fn new(
+        config: LocalConfig,
+        ip_addr: Ipv4Addr,
+        processor_handle: ProcessorHandle,
+    ) -> (Self, flume::Receiver<UserSpaceTcpMessage>) {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
+
+        // an unbounded channel for receiving flows
+        let (flow_sender, flow_receiver) = flume::unbounded();
 
         let tcp_source = Self {
             config,
@@ -36,13 +68,14 @@ impl UserSpaceTcpSource {
             processor_handle,
             packet_sender: packet_sender.clone(),
             packet_receiver,
+            flow_sender,
         };
 
-        tcp_source
+        (tcp_source, flow_receiver)
     }
 
     /// Starts the user-space TCP source as a virtual device.
-    pub fn start(&self, flows: Vec<Flow>) {
+    pub fn start(&self, flow_receiver: flume::Receiver<UserSpaceTcpMessage>) {
         let device = VirtualDevice {
             config: self.config.clone(),
             receiver: self.packet_receiver.clone(),
@@ -63,37 +96,48 @@ impl UserSpaceTcpSource {
 
         // creates the TCP socket set
         let mut sockets = SocketSet::new(vec![]);
-
-        // creates server sockets based on the number of inbound flows
-        // TODO: thinks of a new design
-        let incoming_flows: Vec<_> = flows
-            .iter()
-            .filter(|f| f.dst_node_id == self.config.node_id)
-            .cloned() // gets the ownership of Flow
-            .collect();
-
         let node_id = self.config.node_id;
-
-        let outgoing_flows: Vec<_> = flows
-            .iter()
-            .filter(|f| f.src_node_id == node_id)
-            .cloned()
-            .collect();
 
         // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
         thread::spawn(move || {
             let mut device = device;
 
-            let mut server =
-                UserSpaceTcpServer::new(config_clone.clone(), incoming_flows, &mut sockets);
-
-            let mut client =
-                UserSpaceTcpClient::new(config_clone.clone(), outgoing_flows, &mut sockets);
+            // creates server and client instances immediately with empty initial flows.
+            // waits for the new AddFlows messgaes.
+            let mut server = UserSpaceTcpServer::new(config_clone.clone(), vec![], &mut sockets);
+            let mut client = UserSpaceTcpClient::new(config_clone.clone(), vec![], &mut sockets);
 
             loop {
                 let timestamp = Instant::now();
 
+                // transmits packets queued in the sockets
+                // and receives packets queued in the device.
                 iface.poll(timestamp, &mut device, &mut sockets);
+
+                // checks for new flow control messages with non-blocking.
+                if let Ok(message) = flow_receiver.try_recv() {
+                    match message {
+                        UserSpaceTcpMessage::AddFlows(flows) => {
+                            // filters for incoming flows for this node.
+                            let incoming_flows: Vec<_> = flows
+                                .iter()
+                                .filter(|f| f.dst_node_id == node_id) // as server side
+                                .cloned()
+                                .collect();
+
+                            // filters for outgoing flows from this node.
+                            let outgoing_flows: Vec<_> = flows
+                                .iter()
+                                .filter(|f| f.src_node_id == node_id) // as client side
+                                .cloned()
+                                .collect();
+
+                            // adds flows to the existing server and client for the first time or afterwards.
+                            server.add_flows(incoming_flows, &mut sockets);
+                            client.add_flows(outgoing_flows, &mut sockets);
+                        }
+                    }
+                }
 
                 // starts listening from client
                 server.process(&mut sockets);
