@@ -212,8 +212,8 @@ impl UserSpaceTcpSource {
                                         server_states[i].bytes_total,
                                         server_states[i].start_time,
                                     ) {
+                                        println!("Server received all the flows.");
                                         socket.close();
-                                        println!("Server received all the flows.")
                                     }
                                 }
                                 Err(e) => {
@@ -307,8 +307,8 @@ impl UserSpaceTcpSource {
                                         client_states[i].bytes_total,
                                         client_states[i].start_time,
                                     ) {
+                                        println!("Client sent all the flows.");
                                         socket.close();
-                                        println!("Client sent all the flows.")
                                     }
                                 }
                                 Err(e) => {
