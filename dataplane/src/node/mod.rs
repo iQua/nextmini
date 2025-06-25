@@ -13,6 +13,9 @@ pub mod scheduler;
 pub mod tcp;
 pub mod token_bucket;
 pub mod user_space_tcp;
+pub mod user_space_tcp_client;
+pub mod user_space_tcp_server;
+pub mod user_space_tcp_utils;
 
 #[cfg(target_os = "linux")]
 pub mod local_reader_tso;
