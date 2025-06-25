@@ -7,4 +7,4 @@ n_nodes = 2
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-flow_size = { Bytes = 100000000000 }
+flow_size = { Bytes = 1_000_000_000_0 }
