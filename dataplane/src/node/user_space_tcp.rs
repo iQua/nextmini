@@ -3,7 +3,7 @@ use std::thread;
 
 use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::time::{Duration, Instant};
+use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr};
 use tracing::error;
 
