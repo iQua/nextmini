@@ -141,6 +141,7 @@ impl UserSpaceTcpSource {
 
                 // starts listening from client
                 server.process(&mut sockets);
+
                 // starts connecting to server
                 client.process(&mut sockets, iface.context());
 
