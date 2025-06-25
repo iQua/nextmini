@@ -85,11 +85,6 @@ impl RoutingTable {
         node_id.ip_addr(self.config.virtual_base_addr, self.config.local_netmask)
     }
 
-    /// Converts a node ID to its user space IP address.
-    pub fn node_id_to_user_space_ip(&self, node_id: NodeId) -> Ipv4Addr {
-        node_id.ip_addr(self.config.user_space_base_addr, self.config.local_netmask)
-    }
-
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);
