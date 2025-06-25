@@ -153,6 +153,11 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub local_address: Ipv4Addr,
 
+    // The tun virtual base network address from the controller.
+    #[default(default_virtual_base_addr())]
+    #[arg(skip)]
+    pub virtual_base_addr: Ipv4Addr,
+
     // The user-space network address.
     #[default(default_user_space_address())]
     #[arg(skip)]
@@ -220,6 +225,10 @@ pub struct LocalConfig {
 
 fn default_local_address() -> Ipv4Addr {
     Ipv4Addr::new(10, 0, 0, 1)
+}
+
+fn default_virtual_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(10, 0, 0, 0)
 }
 
 fn default_user_space_address() -> Ipv4Addr {
@@ -349,13 +358,10 @@ impl LocalConfig {
                         self.node_id = node_id;
                         self.protocol = protocol;
                         self.local_netmask = net_mask;
+                        self.virtual_base_addr = virtual_base_addr;
                         self.user_space_base_addr = user_space_base_addr;
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
-
-                        self.local_address = node_id.ip_addr(virtual_base_addr, self.local_netmask);
-                        self.user_space_address =
-                            node_id.ip_addr(self.user_space_base_addr, self.local_netmask);
 
                         self.scheduler_type = SchedulingDiscipline::Fifo;
                     }
