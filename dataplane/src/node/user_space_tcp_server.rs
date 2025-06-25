@@ -56,6 +56,31 @@ impl UserSpaceTcpServer {
         }
     }
 
+    // adds new incoming flows to the server.
+    pub fn add_flows(&mut self, incoming_flows: Vec<Flow>, sockets: &mut SocketSet) {
+        for flow in incoming_flows {
+            let i = self.handles.len();
+            let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+            let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+
+            let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
+            let server_handle = sockets.add(server_socket);
+            self.handles.push(server_handle);
+
+            info!("Created server socket {}", i);
+
+            self.states.push(ConnectionState {
+                connected: false,
+                start_time: StdInstant::now(),
+                time_last_updated: StdInstant::now(),
+                bytes_last_updated: 0,
+                bytes_total: 0,
+            });
+            self.listening.push(false);
+            self.flows.push(flow);
+        }
+    }
+
     pub fn process(&mut self, sockets: &mut SocketSet) {
         // always uses the same server port
         let base_server_port = self.config.user_space_server_port;

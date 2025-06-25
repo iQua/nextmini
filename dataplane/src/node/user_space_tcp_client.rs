@@ -61,6 +61,32 @@ impl UserSpaceTcpClient {
         }
     }
 
+    // adds new outgoing flows to the client.
+    pub fn add_flows(&mut self, outgoing_flows: Vec<Flow>, sockets: &mut SocketSet) {
+        for flow in outgoing_flows {
+            let i = self.handles.len();
+
+            let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+            let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+
+            let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
+            let client_handle = sockets.add(client_socket);
+            self.handles.push(client_handle);
+
+            info!("Created client socket {} for an outgoing flow.", i);
+
+            self.states.push(ConnectionState {
+                connected: false,
+                start_time: StdInstant::now(),
+                time_last_updated: StdInstant::now(),
+                bytes_last_updated: 0,
+                bytes_total: 0,
+            });
+            self.connecting.push(false);
+            self.flows.push(flow);
+        }
+    }
+
     pub fn process(&mut self, sockets: &mut SocketSet, iface_context: &mut Context) {
         let base_server_port = self.config.user_space_server_port;
 
