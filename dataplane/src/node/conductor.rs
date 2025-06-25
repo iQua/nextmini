@@ -1,9 +1,6 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processor actor, and the local
 /// interface actor.
-use std::net::Ipv4Addr;
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
 use tracing::info;
 
