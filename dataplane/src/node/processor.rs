@@ -147,7 +147,7 @@ impl SequentialProcHandle {
             let mut proc = Processor {
                 packet_receiver: PacketReceiver::Sequential(packet_receiver),
                 broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
+                routing_table: RoutingTable::new(config.clone()),
                 local_destinations: AHashMap::new(),
                 schedulers: AHashMap::new(),
             };
@@ -191,7 +191,7 @@ impl ConcurrentProcHandle {
             let mut proc = Processor {
                 packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
+                routing_table: RoutingTable::new(config.clone()),
                 local_destinations: AHashMap::new(),
                 schedulers: AHashMap::new(),
             };
