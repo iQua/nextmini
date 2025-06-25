@@ -1,7 +1,7 @@
 use std::cmp;
 use std::net::Ipv4Addr;
 use std::thread;
-use std::time::{Duration as StdDuration, Instant as StdInstant};
+use std::time::Instant as StdInstant;
 
 use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
@@ -71,7 +71,7 @@ impl UserSpaceTcpSource {
                 .unwrap();
         });
 
-        // socket buffer
+        // socket buffer 655350 by default
         const SOCKET_BUFFER_SIZE: usize = 655350;
 
         // connects to a remote endpoint
@@ -79,6 +79,7 @@ impl UserSpaceTcpSource {
         let mut sockets = SocketSet::new(vec![]);
 
         // first, creates server sockets based on the number of inbound flows
+        // TODO: thinks of a new design
         let mut server_handles = Vec::new();
         let incoming_flows: Vec<_> = flows
             .iter()
@@ -178,117 +179,39 @@ impl UserSpaceTcpSource {
                                 (len, len)
                             }) {
                                 Ok(received) if received > 0 => {
-                                    server_states[i].start_time = StdInstant::now();
-                                    // info!("Server {} started receiving data", i);
-
-                                    server_states[i].bytes_last_updated += received as u64;
-
-                                    if server_states[i].bytes_last_updated % 100_000_000 == 0 {
-                                        info!(
-                                            "Server {} received {} MB",
-                                            i,
-                                            server_states[i].bytes_last_updated / 1_000_000
-                                        );
+                                    if server_states[i].bytes_total == 0 {
+                                        server_states[i].start_time = StdInstant::now();
+                                        info!("Server {} started receiving data", i);
                                     }
-
-                                    if incoming_flows[i].flow_size.exceeded(
-                                        server_states[i].bytes_last_updated,
-                                        server_states[i].start_time,
-                                    ) {
-                                        info!(
-                                            "Server {} received all expected data ({}), closing connection.",
-                                            i, server_states[i].bytes_last_updated
-                                        );
-
-                                        let end_time = StdInstant::now();
-                                        let elapsed =
-                                            end_time.duration_since(server_states[i].start_time);
-                                        let elapsed_secs = elapsed.as_secs_f64();
-
-                                        if server_states[i].bytes_last_updated > 0 {
-                                            if elapsed_secs < 0.001 {
-                                                let elapsed_micros = elapsed.as_micros();
-                                                let throughput_gbps =
-                                                    (server_states[i].bytes_last_updated as f64
-                                                        * 8.0)
-                                                        / (elapsed_micros as f64 * 1000.0);
-                                                info!(
-                                                    "Server {} throughput: {:.3} Gbps ({} bytes in {} μs)",
-                                                    i,
-                                                    throughput_gbps,
-                                                    server_states[i].bytes_last_updated,
-                                                    elapsed_micros
-                                                );
-                                            } else {
-                                                let throughput_gbps =
-                                                    (server_states[i].bytes_last_updated as f64
-                                                        * 8.0)
-                                                        / (elapsed_secs * 1_000_000_000.0);
-                                                info!(
-                                                    "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                                    i,
-                                                    throughput_gbps,
-                                                    server_states[i].bytes_last_updated,
-                                                    elapsed_secs
-                                                );
-                                            }
-                                        } else {
-                                            info!(
-                                                "Server {} received all data in a single burst, cannot calculate throughput accurately.",
-                                                i
-                                            );
-                                        }
-
-                                        socket.close();
-                                    }
-                                }
-
-                                Ok(received) if received > 0 => {
-                                    server_states[i].start_time = StdInstant::now();
-                                    info!("Server {} started receiving data", i);
 
                                     server_states[i].bytes_total += received as u64;
+                                    server_states[i].bytes_last_updated += received as u64;
+                                    let now = StdInstant::now();
 
-                                    if server_states[i].bytes_total % 100_000_000 == 0 {
-                                        info!(
-                                            "Server {} received {} MB",
+                                    let elapsed_time = now
+                                        .duration_since(server_states[i].time_last_updated)
+                                        .as_secs_f64();
+                                    if elapsed_time > 1.0 {
+                                        let throughput =
+                                            (server_states[i].bytes_last_updated as f64 * 8.0)
+                                                / (elapsed_time * 1_000_000_000.0);
+
+                                        println!(
+                                            "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
                                             i,
-                                            server_states[i].bytes_total / 1_000_000
+                                            throughput,
+                                            server_states[i].bytes_last_updated,
+                                            elapsed_time
                                         );
+
+                                        server_states[i].bytes_last_updated = 0;
+                                        server_states[i].time_last_updated = now;
                                     }
 
                                     if incoming_flows[i].flow_size.exceeded(
                                         server_states[i].bytes_total,
                                         server_states[i].start_time,
                                     ) {
-                                        info!(
-                                            "Server {} received all expected data ({} bytes), closing connection.",
-                                            i, server_states[i].bytes_total
-                                        );
-
-                                        let end_time = StdInstant::now();
-                                        let elapsed =
-                                            end_time.duration_since(server_states[i].start_time);
-                                        let elapsed_secs = elapsed.as_secs_f64();
-
-                                        if server_states[i].bytes_total > 0 {
-                                            let throughput_gbps =
-                                                (server_states[i].bytes_total as f64 * 8.0)
-                                                    / (elapsed_secs * 1_000_000_000.0);
-                                            info!(
-                                                "Server {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                                i,
-                                                throughput_gbps,
-                                                server_states[i].bytes_total,
-                                                elapsed_secs
-                                            );
-                                        } else {
-                                            info!(
-                                                "Server {} received all data in a single burst, cannot calculate throughput accurately.",
-                                                i
-                                            );
-                                        }
-
                                         socket.close();
                                     }
                                 }
@@ -355,6 +278,7 @@ impl UserSpaceTcpSource {
                                 (to_send, to_send)
                             }) {
                                 Ok(sent) if sent > 0 => {
+                                    client_states[i].bytes_total += sent as u64;
                                     client_states[i].bytes_last_updated += sent as u64;
                                     let now = StdInstant::now();
 
@@ -379,27 +303,9 @@ impl UserSpaceTcpSource {
                                     }
 
                                     if outgoing_flows[i].flow_size.exceeded(
-                                        client_states[i].bytes_last_updated,
+                                        client_states[i].bytes_total,
                                         client_states[i].start_time,
                                     ) {
-                                        let end_time = StdInstant::now();
-
-                                        let elapsed =
-                                            end_time.duration_since(client_states[i].start_time);
-                                        let elapsed_secs = elapsed.as_secs_f64();
-
-                                        let throughput =
-                                            (client_states[i].bytes_last_updated as f64 * 8.0)
-                                                / (elapsed_secs * 1_000_000_000.0);
-
-                                        info!(
-                                            "Client {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                                            i,
-                                            throughput,
-                                            client_states[i].bytes_last_updated,
-                                            elapsed_secs
-                                        );
-
                                         socket.close();
                                     }
                                 }
