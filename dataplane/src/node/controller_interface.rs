@@ -15,7 +15,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::network_interface::NetworkInterfaceHandle;
-use crate::node::processor::ProcessorHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorMessage};
 use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::SchedulerHandle;
 use crate::node::user_space_tcp::UserSpaceTcpSource;
@@ -25,7 +25,6 @@ pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
-    pub user_space_tcp: Option<Arc<UserSpaceTcpSource>>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
@@ -35,8 +34,7 @@ impl ControllerInterfaceHandle {
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
         // connects to the controller over WebSockets
-        let (config, processors, ws_stream, user_space_tcp) =
-            ControllerInterfaceHandle::connect(config).await;
+        let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
@@ -50,7 +48,6 @@ impl ControllerInterfaceHandle {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
-            user_space_tcp: user_space_tcp.clone(),
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
@@ -60,7 +57,7 @@ impl ControllerInterfaceHandle {
             receiver_stream,
             processors,
             reporter: reporter.clone(),
-            user_space_tcp,
+            user_space_tcp: None,
         };
 
         tokio::spawn(async move {
@@ -79,7 +76,6 @@ impl ControllerInterfaceHandle {
         LocalConfig,
         ProcessorHandle,
         WebSocketStream<MaybeTlsStream<TcpStream>>,
-        Option<Arc<UserSpaceTcpSource>>,
     ) {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -124,19 +120,7 @@ impl ControllerInterfaceHandle {
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
 
-        let user_space_tcp = if !config.user_space_address.is_unspecified() {
-            let tcp_source = UserSpaceTcpSource::new(
-                config.clone(),
-                config.user_space_address,
-                processors.clone(),
-            );
-
-            Some(Arc::new(tcp_source))
-        } else {
-            None
-        };
-
-        (config, processors, ws_stream, user_space_tcp)
+        (config, processors, ws_stream)
     }
 
     /// Sends a message to the controller.
@@ -266,8 +250,36 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                if let Some(tcp_source) = &self.user_space_tcp {
-                    tcp_source.start(flows);
+                // Creates the user space TCP source on the first AddFlows message.
+                // This should avoids the ip assignment issue.
+                // if we creates a new tcp_source for each AddFlows message or for each flow
+                // for now, since we are using <Ipv4Addr, Arc<dyn LocalDestination>>
+                // processor doesn't know about which tcp_source to send.
+                if self.user_space_tcp.is_none() && !self.config.user_space_address.is_unspecified()
+                {
+                    // the first time for adding flows
+
+                    // Creates a new tcp_source.
+                    let tcp_source = UserSpaceTcpSource::new(
+                        self.config.clone(),
+                        self.config.user_space_address,
+                        self.processors.clone(),
+                    );
+
+                    let tcp_source_arc = Arc::new(tcp_source);
+
+                    self.processors
+                        .broadcast_sender()
+                        .send(ProcessorMessage::ConnectLocalDestination(
+                            tcp_source_arc.ip_addr,
+                            tcp_source_arc.clone(),
+                        ))
+                        .expect("Failed to connect to the user-space TCP source.");
+
+                    // Starts the user-space tcp thread.
+                    tcp_source_arc.start(flows);
+
+                    self.user_space_tcp = Some(tcp_source_arc);
                 }
             }
             ControllerToDataplane::SetFlowWeight {

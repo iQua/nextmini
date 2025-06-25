@@ -14,7 +14,6 @@ use crate::node::config::LocalConfig;
 use crate::node::controller_interface::ControllerInterfaceHandle;
 use crate::node::local_interface::LocalInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::processor::ProcessorMessage;
 use crate::node::quic::QuicServer;
 use crate::node::tcp::TcpServer;
 
@@ -47,17 +46,6 @@ impl Conductor {
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone());
         processors.connect_local_interface(local_interface.clone());
-
-        let user_space_tcp = controller_interface.user_space_tcp.clone();
-        if let Some(tcp_source) = user_space_tcp {
-            processors
-                .broadcast_sender()
-                .send(ProcessorMessage::ConnectLocalDestination(
-                    tcp_source.ip_addr,
-                    tcp_source.clone(),
-                ))
-                .expect("Failed to connect to the user-space TCP source.");
-        }
 
         Conductor {
             config,
