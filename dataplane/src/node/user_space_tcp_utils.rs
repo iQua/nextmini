@@ -30,9 +30,10 @@ impl ConnectionState {
 
         self.bytes_total += bytes_added;
         self.bytes_last_updated += bytes_added;
-        let now = StdInstant::now();
 
+        let now = StdInstant::now();
         let elapsed_time = now.duration_since(self.time_last_updated).as_secs_f64();
+
         if elapsed_time > 1.0 {
             let throughput =
                 (self.bytes_last_updated as f64 * 8.0) / (elapsed_time * 1_000_000_000.0);
