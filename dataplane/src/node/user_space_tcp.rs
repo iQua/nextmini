@@ -100,20 +100,20 @@ impl UserSpaceTcpSource {
                 // starts connecting to server
                 client.process(&mut sockets, iface.context());
 
-                match iface.poll_delay(timestamp, &sockets) {
-                    Some(Duration::ZERO) => {
-                        continue;
-                    }
-                    Some(delay) => {
-                        // println!("Delayed for {}", delay);
-                        // thread::sleep(delay.into());
-                        continue;
-                    }
-                    None => {
-                        continue;
-                        // thread::sleep(StdDuration::from_millis(1));
-                    }
-                }
+                // match iface.poll_delay(timestamp, &sockets) {
+                //     Some(Duration::ZERO) => {
+                //         continue;
+                //     }
+                //     Some(delay) => {
+                //         // println!("Delayed for {}", delay);
+                //         // thread::sleep(delay.into());
+                //         continue;
+                //     }
+                //     None => {
+                //         continue;
+                //         // thread::sleep(StdDuration::from_millis(1));
+                //     }
+                // }
             }
         });
     }
