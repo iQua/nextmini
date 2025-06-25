@@ -30,11 +30,11 @@ pub struct RoutingTable {
 }
 
 impl RoutingTable {
-    pub fn new(local_id: NodeId, config: LocalConfig) -> Self {
+    pub fn new(config: LocalConfig) -> Self {
         Self {
             route_next_hop: AHashMap::default(),
             available_routes: AHashMap::default(),
-            local_id,
+            local_id: config.node_id,
             config,
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
