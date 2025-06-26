@@ -18,7 +18,7 @@ use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::LocalDestination;
 use crate::node::config::{Feature, LocalConfig};
-use crate::node::local_interface::LocalInterfaceHandle;
+use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::SchedulerHandle;

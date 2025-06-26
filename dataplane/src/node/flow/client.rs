@@ -9,7 +9,7 @@ use tracing::{error, info};
 
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
-use crate::node::user_space_tcp_utils::ConnectionState;
+use crate::node::flow::state::ConnectionState;
 use nextmini_messages::{Flow, FlowSpec};
 
 // socket buffer 655350 by default

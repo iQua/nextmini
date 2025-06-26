@@ -17,9 +17,9 @@ use crate::node::local_reader_tso::LocalReader;
 use crate::node::local_writer_tso::LocalWriter;
 
 #[cfg(not(target_os = "linux"))]
-use crate::node::local_reader::LocalReader;
+use crate::node::local::reader::LocalReader;
 #[cfg(not(target_os = "linux"))]
-use crate::node::local_writer::LocalWriter;
+use crate::node::local::writer::LocalWriter;
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]

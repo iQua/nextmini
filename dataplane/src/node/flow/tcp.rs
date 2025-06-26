@@ -7,15 +7,15 @@ use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr};
 use tracing::error;
 
-use crate::node::config::LocalConfig;
-use crate::node::user_space_tcp_client::UserSpaceTcpClient;
-use crate::node::user_space_tcp_server::UserSpaceTcpServer;
-use crate::node::user_space_tcp_utils::VirtualDevice;
+use nextmini_messages::Flow;
 
 use crate::node::LocalDestination;
+use crate::node::config::LocalConfig;
+use crate::node::flow::client::UserSpaceTcpClient;
+use crate::node::flow::device::VirtualDevice;
+use crate::node::flow::server::UserSpaceTcpServer;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use nextmini_messages::Flow;
 
 pub enum UserSpaceTcpMessage {
     AddFlows(Vec<Flow>),

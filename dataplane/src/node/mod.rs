@@ -2,7 +2,8 @@ pub mod conductor;
 pub mod config;
 pub mod controller_interface;
 pub mod drop;
-pub mod local_interface;
+pub mod flow;
+pub mod local;
 pub mod network_interface;
 pub mod packet;
 pub mod processor;
@@ -12,20 +13,6 @@ pub mod route;
 pub mod scheduler;
 pub mod tcp;
 pub mod token_bucket;
-pub mod user_space_tcp;
-pub mod user_space_tcp_client;
-pub mod user_space_tcp_server;
-pub mod user_space_tcp_utils;
-
-#[cfg(target_os = "linux")]
-pub mod local_reader_tso;
-#[cfg(target_os = "linux")]
-pub mod local_writer_tso;
-
-#[cfg(not(target_os = "linux"))]
-pub mod local_reader;
-#[cfg(not(target_os = "linux"))]
-pub mod local_writer;
 
 use jumphash::JumpHasher;
 use std::net::Ipv4Addr;

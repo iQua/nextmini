@@ -8,7 +8,7 @@ use tun_rs::AsyncDevice;
 
 use crate::node::FlowId;
 use crate::node::config::{Feature, LocalConfig};
-use crate::node::local_interface::{LocalInterfaceMessage, ShutdownMessage};
+use crate::node::local::interface::{LocalInterfaceMessage, ShutdownMessage};
 use crate::node::packet::Packet;
 
 pub enum LocalWriter {

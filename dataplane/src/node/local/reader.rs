@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 use tun_rs::AsyncDevice;
 
 use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::local_interface::ShutdownMessage;
+use crate::node::local::interface::ShutdownMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 

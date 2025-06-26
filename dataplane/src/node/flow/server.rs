@@ -6,7 +6,7 @@ use smoltcp::socket::tcp;
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
-use crate::node::user_space_tcp_utils::ConnectionState;
+use crate::node::flow::state::ConnectionState;
 use nextmini_messages::Flow;
 
 // socket buffer 655350 by default
