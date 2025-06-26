@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
 use tracing::warn;
 
-use crate::node::drop::PacketDrop;
 use crate::node::packet::Packet;
+use crate::node::scheduler::drop::PacketDrop;
 use crate::node::scheduler::queue::SchedulerQueue;
 use crate::node::scheduler::scheduler::SchedulerReaderMessage;
 use crate::node::scheduler::scheduler::SchedulingDiscipline;

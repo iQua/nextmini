@@ -9,9 +9,9 @@ use crate::node::FlowId;
 use nextmini_messages::TokenBucketSpec;
 
 use crate::node::config::LocalConfig;
-use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
+use crate::node::scheduler::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
 use crate::node::scheduler::fifo::FifoQueue;
 use crate::node::scheduler::queue::SchedulerQueue;
 use crate::node::scheduler::reader::SchedulerReader;

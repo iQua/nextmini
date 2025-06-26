@@ -1,3 +1,4 @@
+pub mod drop;
 pub mod fifo;
 pub mod queue;
 pub mod reader;
