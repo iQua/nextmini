@@ -5,9 +5,9 @@ use serde::Deserialize;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error};
 
-use crate::node::FlowId;
 use nextmini_messages::TokenBucketSpec;
 
+use crate::node::FlowId;
 use crate::node::config::LocalConfig;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;

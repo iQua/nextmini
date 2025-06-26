@@ -1,6 +1,6 @@
 pub mod conductor;
 pub mod config;
-pub mod controller_interface;
+pub mod controller;
 pub mod flow;
 pub mod local;
 pub mod network;

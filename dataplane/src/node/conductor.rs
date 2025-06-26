@@ -8,7 +8,7 @@ use nextmini_messages::Protocol;
 
 use super::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
-use crate::node::controller_interface::ControllerInterfaceHandle;
+use crate::node::controller::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
