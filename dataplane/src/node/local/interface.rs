@@ -12,9 +12,9 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
 #[cfg(target_os = "linux")]
-use crate::node::local_reader_tso::LocalReader;
+use crate::node::local::reader_tso::LocalReader;
 #[cfg(target_os = "linux")]
-use crate::node::local_writer_tso::LocalWriter;
+use crate::node::local::writer_tso::LocalWriter;
 
 #[cfg(not(target_os = "linux"))]
 use crate::node::local::reader::LocalReader;
