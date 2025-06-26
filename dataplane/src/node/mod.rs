@@ -10,7 +10,6 @@ pub mod processor;
 pub mod reporter;
 pub mod route;
 pub mod scheduler;
-pub mod token_bucket;
 
 use jumphash::JumpHasher;
 use std::net::Ipv4Addr;

@@ -17,7 +17,7 @@ use crate::node::flow::tcp::{UserSpaceTcpHandle, UserSpaceTcpSource};
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::{ProcessorHandle, ProcessorMessage};
 use crate::node::reporter::ControllerReporterHandle;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {

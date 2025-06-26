@@ -15,7 +15,7 @@ use nextmini_messages::{ControllerToDataplane, Flow, Protocol};
 use crate::node::NodeId;
 use crate::node::NodeIdExt;
 use crate::node::drop::DropStrategy;
-use crate::node::scheduler::SchedulingDiscipline;
+use crate::node::scheduler::scheduler::SchedulingDiscipline;
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]

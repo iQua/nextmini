@@ -21,7 +21,7 @@ use crate::node::config::{Feature, LocalConfig};
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.

@@ -20,7 +20,7 @@ use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::reporter::ControllerReporterHandle;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 
 pub struct QuicServer {
     config: LocalConfig,
