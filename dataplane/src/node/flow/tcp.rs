@@ -10,6 +10,7 @@ use tracing::error;
 use nextmini_messages::Flow;
 
 use crate::node::LocalDestination;
+use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::client::UserSpaceTcpClient;
 use crate::node::flow::device::VirtualDevice;
@@ -17,24 +18,28 @@ use crate::node::flow::server::UserSpaceTcpServer;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-pub enum UserSpaceTcpMessage {
-    AddFlows(Vec<Flow>),
-}
-
 #[derive(Clone)]
 pub struct UserSpaceTcpHandle {
-    sender: flume::Sender<UserSpaceTcpMessage>,
+    // sender: flume::Sender<UserSpaceTcpMessage>,
+    config: LocalConfig,
+    processors: ProcessorHandle,
 }
 
-// wraps the sending AddFlows message channel
 impl UserSpaceTcpHandle {
-    pub fn new(sender: flume::Sender<UserSpaceTcpMessage>) -> Self {
-        Self { sender }
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        Self { config, processors }
     }
 
-    // sends a vector of flows to be added to the user-space TCP source.
+    // create a new source for each flow.
     pub fn add_flows(&self, flows: Vec<Flow>) {
-        let _ = self.sender.send(UserSpaceTcpMessage::AddFlows(flows));
+        for flow in flows {
+            let _tcp_source = UserSpaceTcpSource::new(
+                self.config.clone(),
+                self.config.user_space_base_addr, // should be the unique id for each tcp source
+                self.processors.clone(),
+                flow,
+            );
+        }
     }
 }
 
@@ -45,9 +50,7 @@ pub struct UserSpaceTcpSource {
     processor_handle: ProcessorHandle,
     packet_sender: flume::Sender<Packet>,
     packet_receiver: flume::Receiver<Packet>,
-
-    // the sender for sending AddFlows message to the user-space TCP thread.
-    pub flow_sender: flume::Sender<UserSpaceTcpMessage>,
+    flow: Flow, // each source is now associated with a single flow.
 }
 
 // creates a new user-space TCP source and a channel for receiving AddFlows message.
@@ -56,11 +59,9 @@ impl UserSpaceTcpSource {
         config: LocalConfig,
         ip_addr: Ipv4Addr,
         processor_handle: ProcessorHandle,
-    ) -> (Self, flume::Receiver<UserSpaceTcpMessage>) {
+        flow: Flow,
+    ) -> Self {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
-
-        // an unbounded channel for receiving flows
-        let (flow_sender, flow_receiver) = flume::unbounded();
 
         let tcp_source = Self {
             config,
@@ -68,14 +69,14 @@ impl UserSpaceTcpSource {
             processor_handle,
             packet_sender: packet_sender.clone(),
             packet_receiver,
-            flow_sender,
+            flow,
         };
 
-        (tcp_source, flow_receiver)
+        tcp_source
     }
 
     /// Starts the user-space TCP source as a virtual device.
-    pub fn start(&self, flow_receiver: flume::Receiver<UserSpaceTcpMessage>) {
+    pub fn start(&self) {
         let device = VirtualDevice {
             config: self.config.clone(),
             receiver: self.packet_receiver.clone(),
@@ -115,6 +116,7 @@ impl UserSpaceTcpSource {
                 iface.poll(timestamp, &mut device, &mut sockets);
 
                 // checks for new flow control messages with non-blocking.
+                /*
                 if let Ok(message) = flow_receiver.try_recv() {
                     match message {
                         UserSpaceTcpMessage::AddFlows(flows) => {
@@ -138,6 +140,7 @@ impl UserSpaceTcpSource {
                         }
                     }
                 }
+                */
 
                 // starts listening from client
                 server.process(&mut sockets);

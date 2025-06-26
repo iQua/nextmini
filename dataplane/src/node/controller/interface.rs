@@ -257,37 +257,15 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                // Creates the user space TCP source on the first AddFlows message.
-                // This should avoids the ip assignment issue.
-                // if we creates a new tcp_source for each AddFlows message or for each flow
-                // for now, since we are using <Ipv4Addr, Arc<dyn LocalDestination>>
-                // processor doesn't know about which tcp_source to send.
+                // creates the user space TCP handle on the first AddFlows message.
                 if self.user_space_tcp_handle.is_none()
                     && !self.config.user_space_address.is_unspecified()
                 {
-                    let (tcp_source, flow_receiver) = UserSpaceTcpSource::new(
+                    // creates and saves a user-space TCP handle.
+                    self.user_space_tcp_handle = Some(UserSpaceTcpHandle::new(
                         self.config.clone(),
-                        self.config.user_space_address,
                         self.processors.clone(),
-                    );
-
-                    let tcp_source_arc = Arc::new(tcp_source);
-
-                    self.processors
-                        .broadcast_sender()
-                        .send(ProcessorMessage::ConnectLocalDestination(
-                            tcp_source_arc.ip_addr,
-                            tcp_source_arc.clone(),
-                        ))
-                        .expect("Failed to connect to the user-space TCP source.");
-
-                    // starts the user-space tcp thread,
-                    // passes the receiver end of the channel.
-                    tcp_source_arc.start(flow_receiver);
-
-                    // creates and saves a user-space TCP handle
-                    self.user_space_tcp_handle =
-                        Some(UserSpaceTcpHandle::new(tcp_source_arc.flow_sender.clone()));
+                    ));
                 }
 
                 // sends the new flows to the user-space TCP.
