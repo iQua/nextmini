@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval};
@@ -14,9 +13,9 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
-use crate::node::flow::tcp::{UserSpaceTcpHandle, UserSpaceTcpSource};
+use crate::node::flow::tcp::UserSpaceTcp;
 use crate::node::network::interface::NetworkInterfaceHandle;
-use crate::node::processor::{ProcessorHandle, ProcessorMessage};
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
@@ -52,11 +51,11 @@ impl ControllerInterfaceHandle {
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
-            config,
+            config: config.clone(),
             receiver_stream,
-            processors,
+            processors: processors.clone(),
             reporter: reporter.clone(),
-            user_space_tcp_handle: None,
+            user_space_tcp: UserSpaceTcp::new(config, processors),
         };
 
         tokio::spawn(async move {
@@ -171,9 +170,7 @@ pub struct ControllerToDataplaneReceiver {
     // reports metrics to controller
     reporter: ControllerReporterHandle,
 
-    // sends AddFlows message user-space TCP
-    // the user-space TCP source is only created on the first AddFlows message.
-    user_space_tcp_handle: Option<UserSpaceTcpHandle>,
+    user_space_tcp: UserSpaceTcp,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -251,29 +248,9 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                info!(
-                    "Add {} flows for node {}.",
-                    flows.len(),
-                    self.config.node_id
-                );
-
-                // creates the user space TCP handle on the first AddFlows message.
-                if self.user_space_tcp_handle.is_none()
-                    && !self.config.user_space_address.is_unspecified()
-                {
-                    // creates and saves a user-space TCP handle.
-                    self.user_space_tcp_handle = Some(UserSpaceTcpHandle::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                    ));
-                }
-
-                // sends the new flows to the user-space TCP.
-                if let Some(user_space_tcp_source) = &self.user_space_tcp_handle {
-                    user_space_tcp_source.add_flows(flows);
-                }
+                self.user_space_tcp.add_flows(flows);
             }
-            // Pending changes according to user space tcp implementation
+
             ControllerToDataplane::SetFlowWeight {
                 src_ip,
                 dst_ip,

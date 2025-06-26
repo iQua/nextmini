@@ -1,176 +1,117 @@
-use std::net::Ipv4Addr;
-use std::thread;
+use std::sync::Arc;
+use tracing::{error, info};
 
-use flume;
-use smoltcp::iface::{Config, Interface, SocketSet};
-use smoltcp::time::Instant;
-use smoltcp::wire::{IpAddress, IpCidr};
-use tracing::error;
-
-use nextmini_messages::Flow;
-
-use crate::node::LocalDestination;
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
-use crate::node::flow::client::UserSpaceTcpClient;
-use crate::node::flow::device::VirtualDevice;
-use crate::node::flow::server::UserSpaceTcpServer;
-use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::flow::client::ClientHandle;
+use crate::node::flow::server::ServerHandle;
+use crate::node::processor::{ProcessorHandle, ProcessorMessage};
+use nextmini_messages::Flow;
 
-#[derive(Clone)]
-pub struct UserSpaceTcpHandle {
-    // sender: flume::Sender<UserSpaceTcpMessage>,
+pub struct UserSpaceTcp {
     config: LocalConfig,
     processors: ProcessorHandle,
+    client_handle: Option<ClientHandle>,
+    server_handle: Option<Arc<ServerHandle>>,
 }
 
-impl UserSpaceTcpHandle {
+impl UserSpaceTcp {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self { config, processors }
-    }
-
-    // create a new source for each flow.
-    pub fn add_flows(&self, flows: Vec<Flow>) {
-        for flow in flows {
-            let _tcp_source = UserSpaceTcpSource::new(
-                self.config.clone(),
-                self.config.user_space_base_addr, // should be the unique id for each tcp source
-                self.processors.clone(),
-                flow,
-            );
+        Self {
+            config,
+            processors,
+            client_handle: None,
+            server_handle: None,
         }
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct UserSpaceTcpSource {
-    config: LocalConfig,
-    pub ip_addr: Ipv4Addr,
-    processor_handle: ProcessorHandle,
-    packet_sender: flume::Sender<Packet>,
-    packet_receiver: flume::Receiver<Packet>,
-    flow: Flow, // each source is now associated with a single flow.
-}
+    pub fn add_flows(&mut self, flows: Vec<Flow>) {
+        info!(
+            "Add {} flows for node {}.",
+            flows.len(),
+            self.config.node_id
+        );
 
-// creates a new user-space TCP source and a channel for receiving AddFlows message.
-impl UserSpaceTcpSource {
-    pub fn new(
-        config: LocalConfig,
-        ip_addr: Ipv4Addr,
-        processor_handle: ProcessorHandle,
-        flow: Flow,
-    ) -> Self {
-        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
+        // creates the user space TCP handle on the first AddFlows message.
+        self.create_handles();
 
-        let tcp_source = Self {
-            config,
-            ip_addr,
-            processor_handle,
-            packet_sender: packet_sender.clone(),
-            packet_receiver,
-            flow,
-        };
-
-        tcp_source
-    }
-
-    /// Starts the user-space TCP source as a virtual device.
-    pub fn start(&self) {
-        let device = VirtualDevice {
-            config: self.config.clone(),
-            receiver: self.packet_receiver.clone(),
-            sender: self.processor_handle.clone(),
-        };
-        let config_clone = self.config.clone();
-
-        // sets up for IP layer without needing hardware address
-        let config = Config::new(smoltcp::wire::HardwareAddress::Ip);
-
-        // sets up Layer 3 using the provided IP address
-        let mut iface = Interface::new(config, &mut device.clone(), Instant::now());
-        iface.update_ip_addrs(|addrs| {
-            addrs
-                .push(IpCidr::new(IpAddress::from(self.ip_addr), 24))
-                .unwrap();
-        });
-
-        // creates the TCP socket set
-        let mut sockets = SocketSet::new(vec![]);
+        // identifies incoming or outgoing flows to create client or server thread
         let node_id = self.config.node_id;
 
-        // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
-        thread::spawn(move || {
-            let mut device = device;
+        let incoming_flows: Vec<_> = flows
+            .iter()
+            .filter(|f| f.dst_node_id == node_id)
+            .cloned()
+            .collect();
 
-            // creates server and client instances immediately with empty initial flows.
-            // waits for the new AddFlows messgaes.
-            let mut server = UserSpaceTcpServer::new(config_clone.clone(), vec![], &mut sockets);
-            let mut client = UserSpaceTcpClient::new(config_clone.clone(), vec![], &mut sockets);
+        let outgoing_flows: Vec<_> = flows
+            .iter()
+            .filter(|f| f.src_node_id == node_id)
+            .cloned()
+            .collect();
 
-            loop {
-                let timestamp = Instant::now();
-
-                // transmits packets queued in the sockets
-                // and receives packets queued in the device.
-                iface.poll(timestamp, &mut device, &mut sockets);
-
-                // checks for new flow control messages with non-blocking.
-                /*
-                if let Ok(message) = flow_receiver.try_recv() {
-                    match message {
-                        UserSpaceTcpMessage::AddFlows(flows) => {
-                            // filters for incoming flows for this node.
-                            let incoming_flows: Vec<_> = flows
-                                .iter()
-                                .filter(|f| f.dst_node_id == node_id) // as server side
-                                .cloned()
-                                .collect();
-
-                            // filters for outgoing flows from this node.
-                            let outgoing_flows: Vec<_> = flows
-                                .iter()
-                                .filter(|f| f.src_node_id == node_id) // as client side
-                                .cloned()
-                                .collect();
-
-                            // adds flows to the existing server and client for the first time or afterwards.
-                            server.add_flows(incoming_flows, &mut sockets);
-                            client.add_flows(outgoing_flows, &mut sockets);
-                        }
+        // adds flows to server
+        // one thread for multiple flows/servers
+        if !incoming_flows.is_empty() {
+            if let Some(server_handle) = &self.server_handle {
+                for flow in incoming_flows {
+                    if let Err(e) = server_handle.add_flow(flow) {
+                        error!("Failed to add flow to server: {}", e);
                     }
                 }
-                */
-
-                // starts listening from client
-                server.process(&mut sockets);
-
-                // starts connecting to server
-                client.process(&mut sockets, iface.context());
-
-                // match iface.poll_delay(timestamp, &sockets) {
-                //     Some(Duration::ZERO) => {
-                //         continue;
-                //     }
-                //     Some(delay) => {
-                //         // println!("Delayed for {}", delay);
-                //         // thread::sleep(delay.into());
-                //         continue;
-                //     }
-                //     None => {
-                //         continue;
-                //         // thread::sleep(StdDuration::from_millis(1));
-                //     }
-                // }
             }
-        });
-    }
-}
+        }
 
-impl LocalDestination for UserSpaceTcpSource {
-    fn send_packet(&self, packet: Packet) {
-        if let Err(e) = self.packet_sender.try_send(packet) {
-            error!("Failed to send packet to user-space TCP source: {:?}", e);
+        // adds flows to client
+        if !outgoing_flows.is_empty() {
+            if let Some(client_handle) = &self.client_handle {
+                client_handle.add_flows(outgoing_flows);
+            }
+        }
+    }
+
+    // creates handles for client or server
+    fn create_handles(&mut self) {
+        if self.client_handle.is_none()
+            && self.server_handle.is_none()
+            && !self.config.user_space_address.is_unspecified()
+        {
+            info!("Starting to create client and server handles.");
+
+            // creates client handle
+            self.client_handle = Some(ClientHandle::new(
+                self.config.clone(),
+                self.processors.clone(),
+            ));
+
+            // creates server handle
+            // used by processor and user-space tcp
+            let server_handle = Arc::new(ServerHandle::new(
+                self.config.clone(),
+                self.processors.clone(),
+            ));
+
+            // obtains user-space server as LocalDestination
+            let ip_addr = self
+                .config
+                .node_id
+                .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
+
+            let _ = self
+                .processors
+                .broadcast_sender()
+                .send(ProcessorMessage::ConnectLocalDestination(
+                    ip_addr,
+                    server_handle.clone(),
+                ))
+                .map(|_| {
+                    info!(
+                        "Obtains user-space tcp server as LocalDestination for IP {}.",
+                        ip_addr
+                    );
+                });
+
+            self.server_handle = Some(server_handle);
         }
     }
 }

@@ -1,169 +1,227 @@
 use std::cmp;
+use std::thread;
 use std::time::Instant as StdInstant;
 
-use smoltcp::iface::SocketHandle;
-use smoltcp::iface::{Context, SocketSet};
+use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
-use smoltcp::wire::IpAddress;
+use smoltcp::time::Instant;
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tracing::{error, info};
 
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
+use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
+use crate::node::processor::ProcessorHandle;
 use nextmini_messages::{Flow, FlowSpec};
 
 // socket buffer 655350 by default
 const SOCKET_BUFFER_SIZE: usize = 655350;
 
-pub struct UserSpaceTcpClient {
+// creates a new thread for each flow
+
+pub struct ClientHandle {
     config: LocalConfig,
-    handles: Vec<SocketHandle>,
-    states: Vec<ConnectionState>,
-    connecting: Vec<bool>,
-    flows: Vec<Flow>,
+    processor_handle: ProcessorHandle,
+}
+
+impl ClientHandle {
+    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
+        Self {
+            config,
+            processor_handle,
+        }
+    }
+
+    pub fn add_flows(&self, flows: Vec<Flow>) {
+        for i in 0..flows.len() {
+            let config = self.config.clone();
+            let flow = flows[i].clone();
+            let processor_handle = self.processor_handle.clone();
+            let client_port = self.config.user_space_client_port;
+
+            // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
+            thread::spawn(move || {
+                let client = UserSpaceTcpClient::new(
+                    config.clone(),
+                    flow.clone(),
+                    processor_handle.clone(),
+                    client_port + i as u16, // needs to be set a unique number
+                );
+                client.start();
+            });
+
+            info!("Client handle created and thread started");
+        }
+    }
+}
+
+struct UserSpaceTcpClient {
+    config: LocalConfig,
+    flow: Flow,
+    processor_handle: ProcessorHandle,
+    state: ConnectionState,
+    connecting: bool,
+    client_port: u16,
 }
 
 impl UserSpaceTcpClient {
-    pub fn new(config: LocalConfig, outgoing_flows: Vec<Flow>, sockets: &mut SocketSet) -> Self {
-        let mut handles = Vec::new();
+    fn new(
+        config: LocalConfig,
+        flow: Flow,
+        processor_handle: ProcessorHandle,
+        client_port: u16,
+    ) -> Self {
+        info!(
+            "Creats user-space TCP client for outgoing flow on port {}.",
+            client_port
+        );
 
-        for (i, _flow) in outgoing_flows.iter().enumerate() {
-            let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-            let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-
-            let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
-            let client_handle = sockets.add(client_socket);
-
-            handles.push(client_handle);
-
-            info!("Created client socket {} for an outgoing flow.", i);
-        }
-
-        let states = outgoing_flows
-            .iter()
-            .map(|_f| ConnectionState {
-                connected: false,
-                start_time: StdInstant::now(),
-                time_last_updated: StdInstant::now(),
-                bytes_last_updated: 0,
-                bytes_total: 0,
-            })
-            .collect();
-
-        let connecting = vec![false; handles.len()];
+        let state = ConnectionState {
+            connected: false,
+            start_time: StdInstant::now(),
+            time_last_updated: StdInstant::now(),
+            bytes_last_updated: 0,
+            bytes_total: 0,
+        };
 
         Self {
             config,
-            handles,
-            states,
-            connecting,
-            flows: outgoing_flows,
+            flow,
+            processor_handle,
+            state,
+            connecting: false,
+            client_port,
         }
     }
 
-    // adds new outgoing flows to the client
-    pub fn add_flows(&mut self, outgoing_flows: Vec<Flow>, sockets: &mut SocketSet) {
-        for flow in outgoing_flows {
-            let i = self.handles.len();
+    /// Starts the user-space TCP source as a virtual device.
+    fn start(mut self) {
+        info!("Starts user-space TCP client.");
 
-            let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-            let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        // creates a virtual device using the passed processor handle
+        let (_, packet_receiver) = flume::bounded(self.config.channel_capacity);
 
-            let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
-            let client_handle = sockets.add(client_socket);
-            self.handles.push(client_handle);
+        // creates a virtual device using the passed processor handle
+        let mut device = VirtualDevice {
+            config: self.config.clone(),
+            receiver: packet_receiver,
+            sender: self.processor_handle.clone(),
+        };
 
-            info!("Created client socket {} for an outgoing flow.", i);
+        // sets up for IP layer without needing hardware address
+        let config = Config::new(HardwareAddress::Ip);
 
-            self.states.push(ConnectionState {
-                connected: false,
-                start_time: StdInstant::now(),
-                time_last_updated: StdInstant::now(),
-                bytes_last_updated: 0,
-                bytes_total: 0,
-            });
-            self.connecting.push(false);
-            self.flows.push(flow);
-        }
-    }
+        // sets up Layer 3 using the provided IP address
+        let ip_addr = self
+            .config
+            .node_id
+            .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
+        let mut iface = Interface::new(config, &mut device, Instant::now());
+        iface.update_ip_addrs(|addrs| {
+            addrs
+                .push(IpCidr::new(IpAddress::from(ip_addr), 24))
+                .unwrap();
+        });
 
-    pub fn process(&mut self, sockets: &mut SocketSet, iface_context: &mut Context) {
-        let base_server_port = self.config.user_space_server_port;
+        // creates the TCP socket set for client
+        let mut sockets = SocketSet::new(vec![]);
 
-        for (i, &client_handle) in self.handles.iter().enumerate() {
-            let flow = &self.flows[i];
+        let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+
+        let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
+        let client_handle = sockets.add(client_socket);
+
+        info!("User-space client initialized, starting main loop.");
+
+        loop {
+            let timestamp = Instant::now();
+
+            // polls the interface for packet transmission/reception
+            iface.poll(timestamp, &mut device, &mut sockets);
+
             let socket = sockets.get_mut::<tcp::Socket>(client_handle);
 
-            if !socket.is_open() && !self.connecting[i] {
-                // obtains remote_addr using ip_addr()
-                let remote_addr = IpAddress::from(
-                    flow.dst_node_id
-                        .ip_addr(self.config.user_space_base_addr, self.config.local_netmask),
-                );
-                let remote_endpoint = (remote_addr, base_server_port as u16);
+            // handles client connection and sends out data
+            self.client_connection(socket, iface.context());
+            self.send_data(socket);
+        }
+    }
 
-                // assigns client port automatically
-                let client_port = self.config.user_space_client_port + i as u16;
+    fn client_connection(
+        &mut self,
+        socket: &mut tcp::Socket,
+        iface_context: &mut smoltcp::iface::Context,
+    ) {
+        if !socket.is_open() && !self.connecting {
+            let remote_addr = IpAddress::from(
+                self.flow
+                    .dst_node_id
+                    .ip_addr(self.config.user_space_base_addr, self.config.local_netmask),
+            );
+            let remote_endpoint = (remote_addr, self.config.user_space_server_port as u16);
 
-                // connects to a remote endpoint
-                match socket.connect(iface_context, remote_endpoint, client_port) {
-                    Ok(_) => {
-                        info!(
-                            "Client {} connecting from port {} to {}:{}.",
-                            i, client_port, remote_addr, base_server_port
-                        );
-                        self.connecting[i] = true;
-                    }
-                    Err(e) => {
-                        error!("Client {} connect error: {:?}.", i, e);
-                    }
+            match socket.connect(iface_context, remote_endpoint, self.client_port) {
+                Ok(_) => {
+                    info!(
+                        "Client connecting from port {} to {}:{}",
+                        self.client_port, remote_addr, self.config.user_space_server_port
+                    );
+                    self.connecting = true;
+                }
+                Err(e) => {
+                    error!("Client connect error: {:?}", e);
                 }
             }
+        }
+    }
 
-            // sends data if the socket is active
-            if socket.is_active() {
-                if !self.states[i].connected {
-                    self.states[i].connected = true;
-                    info!("Client {} connected successfully.", i);
-                }
+    fn send_data(&mut self, socket: &mut tcp::Socket) {
+        if !socket.is_active() {
+            return;
+        }
 
-                if socket.can_send()
-                    && !self.flows[i]
-                        .flow_size
-                        .exceeded(self.states[i].bytes_total, self.states[i].start_time)
+        if !self.state.connected {
+            self.state.connected = true;
+            info!("Client connected successfully");
+        }
+
+        if !socket.can_send()
+            || self
+                .flow
+                .flow_size
+                .exceeded(self.state.bytes_total, self.state.start_time)
+        {
+            return;
+        }
+
+        let remaining = match self.flow.flow_size {
+            FlowSpec::Bytes(size) => size as u64 - self.state.bytes_total,
+            _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
+        };
+
+        match socket.send(|buf| {
+            let to_send = cmp::min(buf.len(), remaining as usize);
+            buf[..to_send].fill(0xAA);
+            (to_send, to_send)
+        }) {
+            Ok(sent) if sent > 0 => {
+                self.state.test_throughput("Client", 0, sent as u64);
+
+                if self
+                    .flow
+                    .flow_size
+                    .exceeded(self.state.bytes_total, self.state.start_time)
                 {
-                    let remaining = if let FlowSpec::Bytes(size) = self.flows[i].flow_size {
-                        size as u64 - self.states[i].bytes_total
-                    } else {
-                        // For duration-based flows, we can send as much as the buffer allows.
-                        // The check for finishing is handled by `exceeded`.
-                        SOCKET_BUFFER_SIZE as u64
-                    };
-
-                    match socket.send(|buf| {
-                        let to_send = cmp::min(buf.len(), remaining as usize);
-                        buf[..to_send].fill(0xAA);
-                        (to_send, to_send)
-                    }) {
-                        Ok(sent) if sent > 0 => {
-                            // prints out the throughput per sec for client
-                            self.states[i].test_throughput("Client", i, sent as u64);
-
-                            if self.flows[i]
-                                .flow_size
-                                .exceeded(self.states[i].bytes_total, self.states[i].start_time)
-                            {
-                                println!("Client sent all the flows.");
-                                socket.close();
-                            }
-                        }
-                        Err(e) => {
-                            error!("Client {} send error: {:?}.", i, e);
-                        }
-                        Ok(_) => {}
-                    }
+                    info!("Client finished sending flow data");
+                    socket.close();
                 }
             }
+            Err(e) => {
+                error!("Client send error: {:?}", e);
+            }
+            Ok(_) => {}
         }
     }
 }
