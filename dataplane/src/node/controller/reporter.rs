@@ -7,7 +7,7 @@ use tracing::error;
 
 use nextmini_messages::{DataplaneToController, Metric};
 
-use crate::node::controller::ControllerInterfaceHandle;
+use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct FlowMetric {

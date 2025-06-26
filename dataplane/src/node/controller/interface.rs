@@ -13,10 +13,10 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::tcp::{UserSpaceTcpHandle, UserSpaceTcpSource};
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::{ProcessorHandle, ProcessorMessage};
-use crate::node::reporter::ControllerReporterHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
 #[derive(Clone)]

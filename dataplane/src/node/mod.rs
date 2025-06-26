@@ -6,7 +6,6 @@ pub mod local;
 pub mod network;
 pub mod packet;
 pub mod processor;
-pub mod reporter;
 pub mod route;
 pub mod scheduler;
 

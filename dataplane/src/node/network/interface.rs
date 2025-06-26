@@ -8,11 +8,11 @@ use nextmini_messages::Protocol;
 
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
+use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reporter::{ControllerReporterHandle, FlowMetric};
 
 pub enum NetworkStream {
     Tcp(TcpStream),
