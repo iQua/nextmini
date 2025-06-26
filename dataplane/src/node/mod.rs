@@ -4,14 +4,12 @@ pub mod controller_interface;
 pub mod drop;
 pub mod flow;
 pub mod local;
-pub mod network_interface;
+pub mod network;
 pub mod packet;
 pub mod processor;
-pub mod quic;
 pub mod reporter;
 pub mod route;
 pub mod scheduler;
-pub mod tcp;
 pub mod token_bucket;
 
 use jumphash::JumpHasher;

@@ -12,7 +12,7 @@ use nextmini_messages::TokenBucketSpec;
 
 use crate::node::config::LocalConfig;
 use crate::node::drop::{CapacityUnit, DropStrategy, PacketDrop, Red, TailDrop};
-use crate::node::network_interface::NetworkInterfaceHandle;
+use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::token_bucket::TokenBucket;
 
