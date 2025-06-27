@@ -13,7 +13,8 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
-use crate::node::flow::tcp::UserSpaceTcp;
+use crate::node::flow::client::UserSpaceClientHandle;
+use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
@@ -55,7 +56,8 @@ impl ControllerInterfaceHandle {
             receiver_stream,
             processors: processors.clone(),
             reporter: reporter.clone(),
-            user_space_tcp: UserSpaceTcp::new(config, processors),
+            client_handle: None,
+            server_handle: None,
         };
 
         tokio::spawn(async move {
@@ -170,7 +172,9 @@ pub struct ControllerToDataplaneReceiver {
     // reports metrics to controller
     reporter: ControllerReporterHandle,
 
-    user_space_tcp: UserSpaceTcp,
+    // handles for client and server flows
+    client_handle: Option<UserSpaceClientHandle>,
+    server_handle: Option<UserSpaceServerHandle>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -248,7 +252,49 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                self.user_space_tcp.add_flows(flows);
+                let node_id = self.config.node_id;
+
+                // filters incoming and outgoing flows
+                let incoming_flows: Vec<_> = flows
+                    .iter()
+                    .filter(|f| f.dst_node_id == node_id)
+                    .cloned()
+                    .collect();
+
+                let outgoing_flows: Vec<_> = flows
+                    .iter()
+                    .filter(|f| f.src_node_id == node_id)
+                    .cloned()
+                    .collect();
+
+                // creates handle if it doesn't exist
+                if self.server_handle.is_none() {
+                    let handle = UserSpaceServerHandle::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                    );
+                    self.processors.connect_server_handle(handle.clone());
+                    self.server_handle = Some(handle);
+                }
+
+                if self.client_handle.is_none() {
+                    let handle = UserSpaceClientHandle::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                    );
+                    self.processors.connect_client_handle(handle.clone());
+                    self.client_handle = Some(handle);
+                }
+
+                // adds flows to server
+                if let Some(handle) = &self.server_handle {
+                    let _ = handle.add_flows(incoming_flows);
+                }
+
+                // adds flows to client
+                if let Some(handle) = &self.client_handle {
+                    let _ = handle.add_flows(outgoing_flows);
+                }
             }
 
             ControllerToDataplane::SetFlowWeight {

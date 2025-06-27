@@ -18,6 +18,8 @@ use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::LocalDestination;
 use crate::node::config::{Feature, LocalConfig};
+use crate::node::flow::client::UserSpaceClientHandle;
+use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
@@ -34,7 +36,8 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    ConnectLocalDestination(Ipv4Addr, Arc<dyn LocalDestination>),
+    ConnectUserSpaceClientHandle(UserSpaceClientHandle),
+    ConnectUserSpaceServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
@@ -72,6 +75,7 @@ impl ProcessorHandle {
         Ok(())
     }
 
+    // connects the local interface to the processor
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -79,6 +83,36 @@ impl ProcessorHandle {
         {
             error!(
                 "Error connecting the processors to the local interface: {}.",
+                e
+            );
+        };
+    }
+
+    // connects the client handle to the processor
+    pub fn connect_client_handle(&self, client_handle: UserSpaceClientHandle) {
+        if let Err(e) =
+            self.broadcast_sender()
+                .send(ProcessorMessage::ConnectUserSpaceClientHandle(
+                    client_handle,
+                ))
+        {
+            error!(
+                "Error connecting the client handle to the processors: {}.",
+                e
+            );
+        };
+    }
+
+    // connects the server handle to the processor
+    pub fn connect_server_handle(&self, server_handle: UserSpaceServerHandle) {
+        if let Err(e) =
+            self.broadcast_sender()
+                .send(ProcessorMessage::ConnectUserSpaceServerHandle(
+                    server_handle,
+                ))
+        {
+            error!(
+                "Error connecting the server handle to the processors: {}.",
                 e
             );
         };
@@ -144,13 +178,11 @@ impl SequentialProcHandle {
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
-            let mut proc = Processor {
-                packet_receiver: PacketReceiver::Sequential(packet_receiver),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.clone()),
-                local_destinations: AHashMap::new(),
-                schedulers: AHashMap::new(),
-            };
+            let mut proc = Processor::new(
+                PacketReceiver::Sequential(packet_receiver),
+                broadcast_sender.subscribe(),
+                config.clone(),
+            );
 
             tokio::spawn(async move {
                 proc.run().await;
@@ -188,13 +220,11 @@ impl ConcurrentProcHandle {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
-            let mut proc = Processor {
-                packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.clone()),
-                local_destinations: AHashMap::new(),
-                schedulers: AHashMap::new(),
-            };
+            let mut proc = Processor::new(
+                PacketReceiver::Concurrent(packet_receiver.clone()),
+                broadcast_sender.subscribe(),
+                config.clone(),
+            );
 
             tokio::spawn(async move {
                 proc.run().await;
@@ -266,23 +296,71 @@ impl PacketReceiver {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
+    config: LocalConfig,
+
     // receives packets from the network interface or local interface
     packet_receiver: PacketReceiver,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
-    // the routing table
-    routing_table: RoutingTable,
+    // stores the three handles
+    local_interface_handle: Option<Arc<LocalInterfaceHandle>>,
+    client_handle: Option<Arc<UserSpaceClientHandle>>,
+    server_handle: Option<Arc<UserSpaceServerHandle>>,
 
-    // a hashmap to support multiple local destinations: the TUN interface and user-space TCP sources.
-    local_destinations: AHashMap<Ipv4Addr, Arc<dyn LocalDestination>>,
+    // routing table
+    routing_table: RoutingTable,
 
     // schedulers, one for each outbound network interface
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
+    pub fn new(
+        packet_receiver: PacketReceiver,
+        broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+        config: LocalConfig,
+    ) -> Self {
+        Self {
+            packet_receiver,
+            broadcast_receiver,
+            local_interface_handle: None,
+            client_handle: None,
+            server_handle: None,
+            routing_table: RoutingTable::new(config.clone()),
+            schedulers: AHashMap::new(),
+            config,
+        }
+    }
+
+    /// returns a local destination based on the destination IP and port
+    fn local_destination(
+        &self,
+        dst_ip: Ipv4Addr,
+        dst_port: u16,
+    ) -> Option<Arc<dyn LocalDestination>> {
+        // if dst_ip is local interface, returns local interface handle
+        if dst_ip == self.config.local_address {
+            if let Some(handle) = &self.local_interface_handle {
+                return Some(handle.clone() as Arc<dyn LocalDestination>);
+            }
+        } else {
+            // if is server port, returns server handle
+            if dst_port == self.config.user_space_server_port {
+                if let Some(handle) = self.server_handle.clone() {
+                    return Some(handle as Arc<dyn LocalDestination>);
+                }
+            } else {
+                // returns client handle
+                if let Some(handle) = self.client_handle.clone() {
+                    return Some(handle as Arc<dyn LocalDestination>);
+                }
+            }
+        }
+        None
+    }
+
     async fn run(&mut self) {
         loop {
             tokio::select! {
@@ -318,14 +396,13 @@ impl Processor {
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
-                self.local_destinations.insert(
-                    self.routing_table
-                        .node_id_to_ip(self.routing_table.local_id),
-                    Arc::new(local_interface),
-                );
+                self.local_interface_handle = Some(Arc::new(local_interface));
             }
-            ProcessorMessage::ConnectLocalDestination(ip, dest) => {
-                self.local_destinations.insert(ip, dest);
+            ProcessorMessage::ConnectUserSpaceClientHandle(client) => {
+                self.client_handle = Some(Arc::new(client));
+            }
+            ProcessorMessage::ConnectUserSpaceServerHandle(server) => {
+                self.server_handle = Some(Arc::new(server));
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
@@ -377,11 +454,15 @@ impl Processor {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP sources
             let dst_ip = packet.flow_id.dst_ip();
+            let dst_port = packet.flow_id.dst_port();
 
-            if let Some(dest) = self.local_destinations.get(&dst_ip) {
+            if let Some(dest) = self.local_destination(dst_ip, dst_port) {
                 dest.send_packet(packet);
             } else {
-                error!("No local destination for IP: {}", dst_ip);
+                error!(
+                    "No local destination for IP: {} and port: {}",
+                    dst_ip, dst_port
+                );
             }
         } else {
             if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
