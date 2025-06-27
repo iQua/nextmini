@@ -83,13 +83,115 @@ impl ClientHandle {
     }
 }
 
+struct ClientState {
+    connection_state: ConnectionState,
+    connecting: bool,
+    flow: Flow,
+    client_port: u16,
+}
+
+impl ClientState {
+    fn new(flow: Flow, client_port: u16) -> Self {
+        Self {
+            connection_state: ConnectionState {
+                connected: false,
+                start_time: StdInstant::now(),
+                time_last_updated: StdInstant::now(),
+                bytes_last_updated: 0,
+                bytes_total: 0,
+            },
+            connecting: false,
+            flow,
+            client_port,
+        }
+    }
+
+    fn try_connect(&mut self, socket: &mut tcp::Socket, iface_context: &mut smoltcp::iface::Context, config: &LocalConfig) {
+        // if the socket is not open and we are not connecting
+        if !socket.is_open() && !self.connecting {
+            // gets the remote address
+            let remote_addr = IpAddress::from(
+                self.flow.dst_node_id
+                    .ip_addr(config.user_space_base_addr, config.local_netmask),
+            );
+            // sets the remote endpoint
+            let remote_endpoint = (remote_addr, config.user_space_server_port);
+
+            // connects to the remote endpoint
+            match socket.connect(iface_context, remote_endpoint, self.client_port) {
+                Ok(_) => {
+                    info!(
+                        "Client connecting from port {} to {}:{}",
+                        self.client_port, remote_addr, config.user_space_server_port
+                    );
+
+                    self.connecting = true;
+                }
+                Err(e) => {
+                    error!("Client connect error: {:?}", e);
+                }
+            }
+        }
+    }
+
+    fn handle_data_sending(&mut self, socket: &mut tcp::Socket) {
+        // if the socket is not active
+        if !socket.is_active() {
+            return;
+        }
+
+        // if not connected
+        if !self.connection_state.connected {
+            // sets connected to true
+            self.connection_state.connected = true;
+            info!("Client connected successfully");
+        }
+
+        // if we can't send data or the flow has exceeded its size
+        if socket.can_send()
+            && !self.flow
+                .flow_size
+                .exceeded(self.connection_state.bytes_total, self.connection_state.start_time)
+        {
+            let remaining = match self.flow.flow_size {
+                FlowSpec::Bytes(size) => size as u64 - self.connection_state.bytes_total,
+                _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
+            };
+
+            // sends the data
+            match socket.send(|buf| {
+                let to_send = cmp::min(buf.len(), remaining as usize);
+                // fills the buffer with data
+                buf[..to_send].fill(0xAA);
+                (to_send, to_send)
+            }) {
+                Ok(sent) if sent > 0 => {
+                    // updates the throughput
+                    self.connection_state.test_throughput("Client", 0, sent as u64);
+
+                    // if the flow has finished
+                    if self.flow
+                        .flow_size
+                        .exceeded(self.connection_state.bytes_total, self.connection_state.start_time)
+                    {
+                        info!("Client finished sending flow data");
+                        // closes the socket
+                        socket.close();
+                    }
+                }
+                Err(e) => {
+                    error!("Client send error: {:?}", e);
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+}
+
 struct UserSpaceTcpClient {
     config: LocalConfig,
-    flow: Flow,
     processor_handle: ProcessorHandle,
-    state: ConnectionState,
-    connecting: bool,
-    client_port: u16,
+    client_state: ClientState,
     packet_receiver: flume::Receiver<Packet>,
 }
 
@@ -106,22 +208,10 @@ impl UserSpaceTcpClient {
             client_port
         );
 
-        // initializes the connection state
-        let state = ConnectionState {
-            connected: false,
-            start_time: StdInstant::now(),
-            time_last_updated: StdInstant::now(),
-            bytes_last_updated: 0,
-            bytes_total: 0,
-        };
-
         Self {
             config,
-            flow,
             processor_handle,
-            state,
-            connecting: false,
-            client_port,
+            client_state: ClientState::new(flow, client_port),
             packet_receiver,
         }
     }
@@ -130,15 +220,12 @@ impl UserSpaceTcpClient {
     fn start(self) {
         let Self {
             config,
-            flow,
             processor_handle,
-            state: mut client_state,
-            mut connecting,
-            client_port,
+            mut client_state,
             packet_receiver,
         } = self;
 
-        info!("Starts user-space TCP client on port {}.", client_port);
+        info!("Starts user-space TCP client on port {}.", client_state.client_port);
 
         // creates a virtual device using the passed processor handle
         let mut device = VirtualDevice {
@@ -164,33 +251,10 @@ impl UserSpaceTcpClient {
             let timestamp = Instant::now();
 
             // gets a mutable reference to the socket
-            let socket = sockets.get_mut::<tcp::Socket>(client_handle);
+            let mut socket = sockets.get_mut::<tcp::Socket>(client_handle);
 
-            // if the socket is not open and we are not connecting
-            if !socket.is_open() && !connecting {
-                // gets the remote address
-                let remote_addr = IpAddress::from(
-                    flow.dst_node_id
-                        .ip_addr(config.user_space_base_addr, config.local_netmask),
-                );
-                // sets the remote endpoint
-                let remote_endpoint = (remote_addr, config.user_space_server_port);
-
-                // connects to the remote endpoint
-                match socket.connect(iface.context(), remote_endpoint, client_port) {
-                    Ok(_) => {
-                        info!(
-                            "Client connecting from port {} to {}:{}",
-                            client_port, remote_addr, config.user_space_server_port
-                        );
-
-                        connecting = true;
-                    }
-                    Err(e) => {
-                        error!("Client connect error: {:?}", e);
-                    }
-                }
-            }
+            // try to establish a connection if we haven't started
+            client_state.try_connect(&mut socket, iface.context(), &config);
 
             // polls the interface
             iface.poll(timestamp, &mut device, &mut sockets);
@@ -201,60 +265,14 @@ impl UserSpaceTcpClient {
             if socket.state() == tcp::State::Closed {
                 info!(
                     "Socket for port {} is closed, client thread shutting down.",
-                    client_port
+                    client_state.client_port
                 );
                 break;
             }
 
             // sends data if possible
-            // if the socket is not active
-            if socket.is_active() {
-                // if not connected
-                if !client_state.connected {
-                    // sets connected to true
-                    client_state.connected = true;
-                    info!("Client connected successfully");
-                }
-
-                // if we can't send data or the flow has exceeded its size
-                if socket.can_send()
-                    && !flow
-                        .flow_size
-                        .exceeded(client_state.bytes_total, client_state.start_time)
-                {
-                    let remaining = match flow.flow_size {
-                        FlowSpec::Bytes(size) => size as u64 - client_state.bytes_total,
-                        _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
-                    };
-
-                    // sends the data
-                    match socket.send(|buf| {
-                        let to_send = cmp::min(buf.len(), remaining as usize);
-                        // fills the buffer with data
-                        buf[..to_send].fill(0xAA);
-                        (to_send, to_send)
-                    }) {
-                        Ok(sent) if sent > 0 => {
-                            // updates the throughput
-                            client_state.test_throughput("Client", 0, sent as u64);
-
-                            // if the flow has finished
-                            if flow
-                                .flow_size
-                                .exceeded(client_state.bytes_total, client_state.start_time)
-                            {
-                                info!("Client finished sending flow data");
-                                // closes the socket
-                                socket.close();
-                            }
-                        }
-                        Err(e) => {
-                            error!("Client send error: {:?}", e);
-                        }
-                        Ok(_) => {}
-                    }
-                }
-            }
+            let mut socket = sockets.get_mut::<tcp::Socket>(client_handle);
+            client_state.handle_data_sending(&mut socket);
         }
     }
 }
