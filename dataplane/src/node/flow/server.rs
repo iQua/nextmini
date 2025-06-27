@@ -6,7 +6,7 @@ use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::router::PacketRouter;
 use crate::node::flow::state::ConnectionState;
-use crate::node::flow::tcp::{create_interface, create_tcp_socket};
+use crate::node::flow::tcp::{SOCKET_BUFFER_SIZE, create_interface};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use nextmini_messages::Flow;
@@ -106,8 +106,13 @@ impl ServerState {
         // gets the index of the new flow
         let i = self.handles.len();
 
+        // creates a new server receive buffer
+        let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        // creates a new server transmit buffer
+        let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+
         // creates a new TCP socket
-        let server_socket = create_tcp_socket();
+        let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
 
         // adds the socket to the socket set
         let server_handle = sockets.add(server_socket);
@@ -264,7 +269,13 @@ impl UserSpaceTcpServer {
 
         // creates sockets for initial flows
         for i in 0..server_state.flows.len() {
-            let server_socket = create_tcp_socket();
+            // creates the server receive buffer
+            let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+            // creates the server transmit buffer
+            let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+            // creates a new TCP socket
+            let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
+            // adds the socket to the socket set
             let server_handle = sockets.add(server_socket);
             server_state.handles.push(server_handle);
 

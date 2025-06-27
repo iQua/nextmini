@@ -15,7 +15,7 @@ use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::router::PacketRouter;
 use crate::node::flow::state::ConnectionState;
-use crate::node::flow::tcp::{create_tcp_socket, create_interface, SOCKET_BUFFER_SIZE};
+use crate::node::flow::tcp::{create_interface, SOCKET_BUFFER_SIZE};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use nextmini_messages::{Flow, FlowSpec};
@@ -239,8 +239,13 @@ impl UserSpaceTcpClient {
         // creates the TCP socket set for client
         let mut sockets = SocketSet::new(vec![]);
 
+        // creates the client receive buffer
+        let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        // creates the client transmit buffer
+        let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+
         // creates a new TCP socket
-        let client_socket = create_tcp_socket();
+        let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
         // adds the socket to the socket set
         let client_handle = sockets.add(client_socket);
 

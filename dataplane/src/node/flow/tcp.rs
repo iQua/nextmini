@@ -2,7 +2,6 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 use smoltcp::iface::{Config, Interface};
-use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 
@@ -18,12 +17,6 @@ use nextmini_messages::Flow;
 // socket buffer 65535000 by default
 pub const SOCKET_BUFFER_SIZE: usize = 65535000;
 
-// creates a new TCP socket with default buffer sizes
-pub fn create_tcp_socket<'a>() -> tcp::Socket<'a> {
-    let rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-    let tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-    tcp::Socket::new(rx_buffer, tx_buffer)
-}
 
 // creates and initializes a network interface
 pub fn create_interface(config: &LocalConfig, device: &mut VirtualDevice) -> Interface {
