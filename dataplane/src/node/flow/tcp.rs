@@ -4,18 +4,23 @@ use tracing::{error, info};
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::client::ClientHandle;
+use crate::node::flow::router::PacketRouter;
 use crate::node::flow::server::ServerHandle;
 use crate::node::processor::{ProcessorHandle, ProcessorMessage};
 use nextmini_messages::Flow;
 
+// represents the user-space TCP stack
 pub struct UserSpaceTcp {
     config: LocalConfig,
     processors: ProcessorHandle,
+    // client handle
     client_handle: Option<ClientHandle>,
+    // server handle
     server_handle: Option<Arc<ServerHandle>>,
 }
 
 impl UserSpaceTcp {
+    // creates a new user-space TCP stack
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self {
             config,
@@ -25,6 +30,7 @@ impl UserSpaceTcp {
         }
     }
 
+    // adds flows to the user-space TCP stack
     pub fn add_flows(&mut self, flows: Vec<Flow>) {
         info!(
             "Add {} flows for node {}.",
@@ -38,12 +44,14 @@ impl UserSpaceTcp {
         // identifies incoming or outgoing flows to create client or server thread
         let node_id = self.config.node_id;
 
+        // filters for incoming flows
         let incoming_flows: Vec<_> = flows
             .iter()
             .filter(|f| f.dst_node_id == node_id)
             .cloned()
             .collect();
 
+        // filters for outgoing flows
         let outgoing_flows: Vec<_> = flows
             .iter()
             .filter(|f| f.src_node_id == node_id)
@@ -78,40 +86,41 @@ impl UserSpaceTcp {
         {
             info!("Starting to create client and server handles.");
 
+            // creates a new packet router
+            let router = Arc::new(PacketRouter::new(&self.config));
+
             // creates client handle
             self.client_handle = Some(ClientHandle::new(
                 self.config.clone(),
                 self.processors.clone(),
+                router.clone(),
             ));
 
             // creates server handle
-            // used by processor and user-space tcp
-            let server_handle = Arc::new(ServerHandle::new(
+            self.server_handle = Some(Arc::new(ServerHandle::new(
                 self.config.clone(),
                 self.processors.clone(),
-            ));
+                router.clone(),
+            )));
 
-            // obtains user-space server as LocalDestination
+            // obtains user-space router as LocalDestination
+            // gets the IP address of the node
             let ip_addr = self
                 .config
                 .node_id
                 .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
 
+            // connects the local destination to the processor
             let _ = self
                 .processors
                 .broadcast_sender()
-                .send(ProcessorMessage::ConnectLocalDestination(
-                    ip_addr,
-                    server_handle.clone(),
-                ))
+                .send(ProcessorMessage::ConnectLocalDestination(ip_addr, router))
                 .map(|_| {
                     info!(
-                        "Obtains user-space tcp server as LocalDestination for IP {}.",
+                        "Obtains user-space tcp router as LocalDestination for IP {}.",
                         ip_addr
                     );
                 });
-
-            self.server_handle = Some(server_handle);
         }
     }
 }
