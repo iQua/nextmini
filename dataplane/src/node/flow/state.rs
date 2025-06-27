@@ -15,10 +15,19 @@ pub struct ConnectionState {
 impl ConnectionState {
     // node_type: node as client or server
     // bytes_added: bytes received or sent
-    pub fn test_throughput(&mut self, node_type: &str, id: usize, bytes_added: u64) {
+    pub fn test_throughput(&mut self, id: usize, node_id: usize, port: Option<u16>, bytes_added: u64) {
         if self.bytes_total == 0 {
             self.start_time = StdInstant::now();
-            info!("{} {} started transferring data", node_type, id);
+            match port {
+                Some(port) => info!(
+                    "Client on port {} started transferring data to node {}", 
+                    port, node_id
+                ),
+                None => info!(
+                    "Server {} started receiving data from node {}", 
+                    id, node_id
+                ),
+            }
         }
 
         self.bytes_total += bytes_added;
@@ -31,10 +40,16 @@ impl ConnectionState {
             let throughput =
                 (self.bytes_last_updated as f64 * 8.0) / (elapsed_time * 1_000_000_000.0);
 
-            println!(
-                "{} {} throughput: {:.3} Gbps ({} bytes in {:.3}s)",
-                node_type, id, throughput, self.bytes_last_updated, elapsed_time
-            );
+            match port {
+                Some(port) => info!(
+                    "Client from port {} to node {} has throughput: {:.3} Gbps ({} bytes in {:.3}s)", 
+                    port, node_id, throughput, self.bytes_last_updated, elapsed_time
+                ),
+                None => info!(
+                    "Server {} receiving from node {} has throughput: {:.3} Gbps ({} bytes in {:.3}s)", 
+                    id, node_id, throughput, self.bytes_last_updated, elapsed_time
+                ),
+            }
 
             self.bytes_last_updated = 0;
             self.time_last_updated = now;

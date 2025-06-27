@@ -194,7 +194,7 @@ impl UserSpaceTcpServer {
                     }) {
                         // if data received, print out the throughput
                         Ok(received) if received > 0 => {
-                            self.states[i].test_throughput("Server", i, received as u64);
+                            self.states[i].test_throughput(i, self.flows[i].src_node_id, None, received as u64);
 
                             if self.flows[i]
                                 .flow_size
