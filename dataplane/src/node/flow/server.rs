@@ -20,12 +20,12 @@ const SOCKET_BUFFER_SIZE: usize = 655350;
 
 // still handles multiple sockets for a single thread for now.
 #[derive(Clone, Debug)]
-pub struct ServerHandle {
+pub struct UserSpaceServerHandle {
     flow_sender: flume::Sender<Vec<Flow>>,
     packet_sender: flume::Sender<Packet>,
 }
 
-impl ServerHandle {
+impl UserSpaceServerHandle {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
         let (flow_sender, flow_receiver) = flume::unbounded();
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
@@ -215,7 +215,7 @@ impl UserSpaceTcpServer {
     }
 }
 
-impl LocalDestination for ServerHandle {
+impl LocalDestination for UserSpaceServerHandle {
     fn send_packet(&self, packet: Packet) {
         if let Err(e) = self.packet_sender.try_send(packet) {
             error!("Failed to send packet to user-space TCP server: {:?}.", e);

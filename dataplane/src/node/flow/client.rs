@@ -24,7 +24,7 @@ const SOCKET_BUFFER_SIZE: usize = 655350;
 
 // creates a new thread for each flow
 #[derive(Debug, Clone)]
-pub struct ClientHandle {
+pub struct UserSpaceClientHandle {
     config: LocalConfig,
     processor_handle: ProcessorHandle,
     packet_receiver: flume::Receiver<Packet>,
@@ -32,7 +32,7 @@ pub struct ClientHandle {
     next_client_port: Arc<AtomicU16>,
 }
 
-impl ClientHandle {
+impl UserSpaceClientHandle {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
         // uses an atomic counter to ensure unique client ports
@@ -71,8 +71,8 @@ impl ClientHandle {
     }
 }
 
-// implements the LocalDestination trait for ClientHandle
-impl LocalDestination for ClientHandle {
+// implements the LocalDestination trait for UserSpaceClientHandle
+impl LocalDestination for UserSpaceClientHandle {
     fn send_packet(&self, packet: Packet) {
         self.packet_sender.send(packet).unwrap();
     }
