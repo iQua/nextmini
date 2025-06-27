@@ -6,7 +6,7 @@ use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, info};
 
 use crate::node::config::LocalConfig;
-use crate::node::{FlowId, FlowIdExt, NodeId, NodeIdExt};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 /// The routing table in the dataplane.
 #[derive(Clone)]
@@ -80,10 +80,10 @@ impl RoutingTable {
         (src_node_id, dst_node_id)
     }
 
-    /// Converts a node ID to its TUN IP address.
-    pub fn node_id_to_ip(&self, node_id: NodeId) -> Ipv4Addr {
-        node_id.ip_addr(self.config.virtual_base_addr, self.config.local_netmask)
-    }
+    // /// Converts a node ID to its TUN IP address.
+    // pub fn node_id_to_ip(&self, node_id: NodeId) -> Ipv4Addr {
+    //     node_id.ip_addr(self.config.virtual_base_addr, self.config.local_netmask)
+    // }
 
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
