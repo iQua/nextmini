@@ -1,13 +1,45 @@
 use std::sync::Arc;
 use tracing::{error, info};
 
+use smoltcp::iface::{Config, Interface};
+use smoltcp::socket::tcp;
+use smoltcp::time::Instant;
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::client::ClientHandle;
+use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::router::PacketRouter;
 use crate::node::flow::server::ServerHandle;
 use crate::node::processor::{ProcessorHandle, ProcessorMessage};
 use nextmini_messages::Flow;
+
+// socket buffer 65535000 by default
+pub const SOCKET_BUFFER_SIZE: usize = 65535000;
+
+// creates a new TCP socket with default buffer sizes
+pub fn create_tcp_socket<'a>() -> tcp::Socket<'a> {
+    let rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+    let tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+    tcp::Socket::new(rx_buffer, tx_buffer)
+}
+
+// creates and initializes a network interface
+pub fn create_interface(config: &LocalConfig, device: &mut VirtualDevice) -> Interface {
+    let iface_config = Config::new(HardwareAddress::Ip);
+    let ip_addr = config
+        .node_id
+        .ip_addr(config.user_space_base_addr, config.local_netmask);
+
+    let mut iface = Interface::new(iface_config, device, Instant::now());
+    iface.update_ip_addrs(|addrs| {
+        addrs
+            .push(IpCidr::new(IpAddress::from(ip_addr), 24))
+            .unwrap();
+    });
+    iface
+}
 
 // represents the user-space TCP stack
 pub struct UserSpaceTcp {

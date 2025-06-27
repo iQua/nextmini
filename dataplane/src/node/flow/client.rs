@@ -4,10 +4,10 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::thread;
 use std::time::Instant as StdInstant;
 
-use smoltcp::iface::{Config, Interface, SocketSet};
+use smoltcp::iface::SocketSet;
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
-use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+use smoltcp::wire::IpAddress;
 use tracing::{error, info};
 
 use crate::node::NodeIdExt;
@@ -15,12 +15,10 @@ use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::router::PacketRouter;
 use crate::node::flow::state::ConnectionState;
+use crate::node::flow::tcp::{create_tcp_socket, create_interface, SOCKET_BUFFER_SIZE};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use nextmini_messages::{Flow, FlowSpec};
-
-// socket buffer 65535000 by default, increased to handle larger flows
-const SOCKET_BUFFER_SIZE: usize = 65535000;
 
 // creates a new thread for each flow
 pub struct ClientHandle {
@@ -149,31 +147,13 @@ impl UserSpaceTcpClient {
             sender: processor_handle.clone(),
         };
 
-        // sets up for IP layer without needing hardware address
-        let iface_config = Config::new(HardwareAddress::Ip);
-
-        // sets up Layer 3 using the provided IP address
-        let ip_addr = config
-            .node_id
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let mut iface = Interface::new(iface_config, &mut device, Instant::now());
-        iface.update_ip_addrs(|addrs| {
-            // adds the IP address to the interface
-            addrs
-                .push(IpCidr::new(IpAddress::from(ip_addr), 24))
-                .unwrap();
-        });
+        let mut iface = create_interface(&config, &mut device);
 
         // creates the TCP socket set for client
         let mut sockets = SocketSet::new(vec![]);
 
-        // creates the client receive buffer
-        let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-        // creates the client transmit buffer
-        let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-
         // creates a new TCP socket
-        let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
+        let client_socket = create_tcp_socket();
         // adds the socket to the socket set
         let client_handle = sockets.add(client_socket);
 
