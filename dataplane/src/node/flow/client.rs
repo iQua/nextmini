@@ -16,26 +16,22 @@ use nextmini_messages::{Flow, FlowSpec};
 
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
+use crate::node::flow::SOCKET_BUFFER_SIZE;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-// socket buffer 655350 by default
-const SOCKET_BUFFER_SIZE: usize = 655350;
-
-// creates a new thread for each flow
 #[derive(Debug, Clone)]
 pub struct UserSpaceClientHandle {
     config: LocalConfig,
     processor_handle: ProcessorHandle,
-    next_client_port: Arc<AtomicU16>,
+    next_client_port: u16,
 }
 
 impl UserSpaceClientHandle {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        // uses an atomic counter to ensure unique client ports
-        let next_client_port = Arc::new(AtomicU16::new(config.user_space_client_port));
+        let next_client_port = config.user_space_client_port;
 
         Self {
             config,
@@ -44,11 +40,12 @@ impl UserSpaceClientHandle {
         }
     }
 
-    pub fn add_flows(&self, flows: Vec<Flow>) {
+    pub fn add_flows(&mut self, flows: Vec<Flow>) {
         for flow in flows {
             let config = self.config.clone();
             let processor_handle = self.processor_handle.clone();
-            let client_port = self.next_client_port.fetch_add(1, Ordering::SeqCst);
+            self.next_client_port += 1;
+            let client_port = self.next_client_port;
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
             self.processor_handle

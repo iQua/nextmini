@@ -7,6 +7,8 @@ use crate::node::LocalDestination;
 use crate::node::packet::Packet;
 use tokio::sync::mpsc;
 
+const SOCKET_BUFFER_SIZE: usize = 655350;
+
 /// A trait for sending packets to destinations in user-space TCP flows.
 impl LocalDestination for mpsc::Sender<Packet> {
     fn send_packet(&self, packet: Packet) {

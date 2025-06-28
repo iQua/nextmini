@@ -9,15 +9,15 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use nextmini_messages::Flow;
+
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
+use crate::node::flow::SOCKET_BUFFER_SIZE;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use nextmini_messages::Flow;
-
-const SOCKET_BUFFER_SIZE: usize = 655350;
 
 #[derive(Debug, Clone)]
 pub struct UserSpaceServerHandle {
