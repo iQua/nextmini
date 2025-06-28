@@ -204,13 +204,14 @@ impl UserSpaceClient {
         if !socket.can_send()
             || self
                 .flow
-                .flow_size
+                .flow_spec
+                .flow_len
                 .exceeded(self.state.bytes_total, self.state.start_time)
         {
             return;
         }
 
-        let remaining = match self.flow.flow_size {
+        let remaining = match self.flow.flow_spec.flow_len {
             FlowLen::Bytes(size) => size as u64 - self.state.bytes_total,
             _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
         };
@@ -231,7 +232,8 @@ impl UserSpaceClient {
 
                 if self
                     .flow
-                    .flow_size
+                    .flow_spec
+                    .flow_len
                     .exceeded(self.state.bytes_total, self.state.start_time)
                 {
                     info!("A user-space TCP client has finished sending all its data.");
