@@ -4,14 +4,20 @@
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tokio::sync::mpsc;
+use flume;
 
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
+pub enum Receiver {
+    Mpsc(mpsc::Receiver<Packet>),
+    Flume(flume::Receiver<Packet>),
+}
+
 pub struct VirtualDevice {
     pub config: LocalConfig,
-    pub receiver: mpsc::Receiver<Packet>,
+    pub receiver: Receiver,
     pub sender: ProcessorHandle,
 }
 
@@ -20,10 +26,14 @@ impl Device for VirtualDevice {
     type TxToken<'a> = PacketTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        match self.receiver.try_recv() {
+        let result = match &mut self.receiver {
+            Receiver::Mpsc(r) => r.try_recv().map_err(|e| e.to_string()),
+            Receiver::Flume(r) => r.try_recv().map_err(|e| e.to_string()),
+        };
+
+        match result {
             Ok(packet) => Some((PacketRxToken(packet), PacketTxToken(self.sender.clone()))),
-            Err(mpsc::error::TryRecvError::Empty) => None,
-            Err(mpsc::error::TryRecvError::Disconnected) => None,
+            Err(_) => None,
         }
     }
 

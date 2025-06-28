@@ -16,7 +16,7 @@ use nextmini_messages::{Flow, FlowSpec};
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::SOCKET_BUFFER_SIZE;
-use crate::node::flow::device::VirtualDevice;
+use crate::node::flow::device::{Receiver, VirtualDevice};
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -113,7 +113,7 @@ impl UserSpaceClient {
         // creates a virtual device using the passed processor handle
         let mut device = VirtualDevice {
             config: self.config.clone(),
-            receiver: packet_receiver,
+            receiver: Receiver::Mpsc(packet_receiver),
             sender: self.processor_handle.clone(),
         };
 
