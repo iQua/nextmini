@@ -322,11 +322,9 @@ impl Processor {
         dst_port: u16,
     ) -> Option<Arc<dyn LocalDestination>> {
         if dst_ip == self.config.local_address {
-            if let Some(handle) = &self.local_interface_handle {
-                Some(handle.clone() as Arc<dyn LocalDestination>)
-            } else {
-                None
-            }
+            self.local_interface_handle
+                .clone()
+                .map(|h| h as Arc<dyn LocalDestination>)
         } else {
             self.local_destinations.get(&dst_port).cloned()
         }

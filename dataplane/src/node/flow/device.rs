@@ -1,4 +1,3 @@
-use crate::node::LocalDestination;
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tokio::sync::mpsc;
@@ -63,13 +62,5 @@ impl TxToken for PacketTxToken {
         self.0.process_packet(packet);
 
         result
-    }
-}
-
-impl LocalDestination for mpsc::Sender<Packet> {
-    fn send_packet(&self, packet: Packet) {
-        if self.try_send(packet).is_err() {
-            tracing::error!("Failed to send packet to local destination");
-        }
     }
 }

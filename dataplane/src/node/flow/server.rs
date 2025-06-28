@@ -36,15 +36,6 @@ impl UserSpaceServerHandle {
     }
 
     pub fn add_flows(&self, flows: Vec<Flow>) {
-        // for the server, all flows listen on the same port. we only need one listener thread.
-        // this logic assumes we can have multiple TCP sockets listening on the same port,
-        // which smoltcp supports.
-        // we will create one thread to handle all incoming connections
-        // on the well-known server port.
-
-        // if we want to use the same port for multiple flows
-        // socketset can know which flow is which socket.
-        // but if we use a thread per server,
         if flows.is_empty() {
             return;
         }
@@ -56,7 +47,7 @@ impl UserSpaceServerHandle {
         self.processor_handle
             .connect_local_destination(self.config.user_space_server_port, Arc::new(packet_sender));
 
-        // Spawns a single thread to manage all server sockets for the designated port
+        // spawns a single thread to manage all server sockets for the designated port
         thread::spawn(move || {
             let server = UserSpaceTcpServer::new(config, flows, processor_handle, packet_receiver);
             server.start();
