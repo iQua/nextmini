@@ -56,16 +56,21 @@ impl UserSpaceClientHandle {
                 .ip_addr(config.user_space_base_addr, config.local_netmask);
             let server_port = config.user_space_server_port;
 
+            // connects this client as a local destination for packets destined to this flow
             let flow_id = ((u32::from(server_ip) as u128) << 96)
                 | ((u32::from(client_ip) as u128) << 64)
                 | ((server_port as u128) << 48)
                 | ((client_port as u128) << 32);
 
-            // connects this client as a local destination for packets destined to this flow
             self.processor_handle
                 .connect_local_destination(flow_id, Arc::new(packet_sender));
 
-            // sets the flow weight for this flow
+            // updates the flow id for this flow and sets the flow weight
+            let flow_id = ((u32::from(client_ip) as u128) << 96)
+                | ((u32::from(server_ip) as u128) << 64)
+                | ((client_port as u128) << 48)
+                | ((server_port as u128) << 32);
+
             if let Some(weight) = flow.flow_spec.flow_weight {
                 self.processor_handle.set_flow_weight(flow_id, weight);
             }
