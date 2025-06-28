@@ -24,10 +24,13 @@ impl ConnectionState {
             self.start_time = StdInstant::now();
             match port {
                 Some(port) => info!(
-                    "Client on port {} started transferring data to node {}",
+                    "A user-space TCP client on port {} has started transferring data to node {}.",
                     port, node_id
                 ),
-                None => info!("Server {} started receiving data from node {}", id, node_id),
+                None => info!(
+                    "A user-space TCP server {} has started receiving data from node {}.",
+                    id, node_id
+                ),
             }
         }
 

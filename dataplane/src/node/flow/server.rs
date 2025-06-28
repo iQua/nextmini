@@ -163,8 +163,6 @@ impl UserSpaceServer {
 
             if socket.is_active() && !self.states[i].connected {
                 self.states[i].connected = true;
-
-                info!("The server has accepted a new connection.");
             }
 
             if socket.can_recv() {

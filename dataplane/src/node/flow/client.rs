@@ -66,8 +66,6 @@ impl UserSpaceClientHandle {
 
                 client.run();
             });
-
-            info!("A user-space TCP client thread has been started.");
         }
     }
 }
@@ -114,8 +112,6 @@ impl UserSpaceClient {
 
     /// Runs a user-space TCP client by connecting and sending to a server.
     fn run(mut self) {
-        info!("Starting a user-space TCP client thread.");
-
         let packet_receiver = self.packet_receiver.take().unwrap();
 
         // creates a virtual device using the passed processor handle
@@ -176,7 +172,7 @@ impl UserSpaceClient {
             match socket.connect(iface_context, remote_endpoint, self.client_port) {
                 Ok(_) => {
                     info!(
-                        "A new user-space TCP client has connected to a server from port {} to {}:{}",
+                        "A new user-space TCP client has connected to a server from port {} to {}:{}.",
                         self.client_port, remote_addr, self.config.user_space_server_port
                     );
                     self.state.connected = true;
