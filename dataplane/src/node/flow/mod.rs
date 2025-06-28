@@ -5,7 +5,6 @@ pub mod state;
 
 use crate::node::LocalDestination;
 use crate::node::packet::Packet;
-use flume;
 use tokio::sync::mpsc;
 
 const SOCKET_BUFFER_SIZE: usize = 655350;
@@ -14,15 +13,7 @@ const SOCKET_BUFFER_SIZE: usize = 655350;
 impl LocalDestination for mpsc::Sender<Packet> {
     fn send_packet(&self, packet: Packet) {
         if self.try_send(packet).is_err() {
-            tracing::error!("Failed to send packet to a client local destination");
-        }
-    }
-}
-
-impl LocalDestination for flume::Sender<Packet> {
-    fn send_packet(&self, packet: Packet) {
-        if self.try_send(packet).is_err() {
-            tracing::error!("Failed to send packet to a server local destination");
+            tracing::error!("Failed to send packet to local destination");
         }
     }
 }

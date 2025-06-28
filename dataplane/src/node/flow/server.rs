@@ -7,6 +7,7 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use nextmini_messages::Flow;
@@ -14,12 +15,10 @@ use nextmini_messages::Flow;
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::SOCKET_BUFFER_SIZE;
-use crate::node::flow::device::{Receiver, VirtualDevice};
+use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-
-use flume;
 
 #[derive(Debug, Clone)]
 pub struct UserSpaceServerHandle {
@@ -36,23 +35,17 @@ impl UserSpaceServerHandle {
     }
 
     pub fn add_flows(&self, flows: Vec<Flow>) {
-        if flows.is_empty() {
-            return;
-        }
-
-        let (packet_sender, packet_receiver) = flume::bounded(self.config.channel_capacity);
-
-        self.processor_handle
-            .connect_local_destination(self.config.user_space_server_port, Arc::new(packet_sender));
-
-        // spawns a thread for each flow, all sharing the same flume receiver
         for flow in flows {
             let config = self.config.clone();
             let processor_handle = self.processor_handle.clone();
-            let receiver_clone = packet_receiver.clone();
+            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
+            self.processor_handle
+                .connect_local_destination(self.config.user_space_server_port, Arc::new(packet_sender));
+
+            // spawns a single thread to manage all server sockets for the designated port
             thread::spawn(move || {
-                let server = UserSpaceServer::new(config, flow, processor_handle, receiver_clone);
+                let server = UserSpaceServer::new(config, flow, processor_handle, packet_receiver);
 
                 server.run();
             });
@@ -64,7 +57,7 @@ struct UserSpaceServer {
     config: LocalConfig,
     flow: Flow,
     processor_handle: ProcessorHandle,
-    packet_receiver: Option<flume::Receiver<Packet>>,
+    packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
     listening: bool,
 }
@@ -74,9 +67,11 @@ impl UserSpaceServer {
         config: LocalConfig,
         flow: Flow,
         processor_handle: ProcessorHandle,
-        packet_receiver: flume::Receiver<Packet>,
+        packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
-        info!("Creating a new user-space TCP server for a single flow.");
+        info!(
+            "Creating a new user-space TCP server for a single flow."
+        );
 
         let state = ConnectionState {
             connected: false,
@@ -101,7 +96,7 @@ impl UserSpaceServer {
 
         let mut device = VirtualDevice {
             config: self.config.clone(),
-            receiver: Receiver::Flume(packet_receiver),
+            receiver: packet_receiver,
             sender: self.processor_handle.clone(),
         };
 
@@ -120,7 +115,7 @@ impl UserSpaceServer {
         });
 
         let mut sockets = SocketSet::new(vec![]);
-
+        
         let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
         let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
         let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
@@ -168,8 +163,7 @@ impl UserSpaceServer {
                         received as u64,
                     );
 
-                    if self
-                        .flow
+                    if self.flow
                         .flow_size
                         .exceeded(self.state.bytes_total, self.state.start_time)
                     {
