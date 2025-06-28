@@ -232,7 +232,12 @@ impl UserSpaceTcpClient {
             (to_send, to_send)
         }) {
             Ok(sent) if sent > 0 => {
-                self.state.test_throughput(0, self.flow.dst_node_id, Some(self.client_port), sent as u64);
+                self.state.test_throughput(
+                    0,
+                    self.flow.dst_node_id,
+                    Some(self.client_port),
+                    sent as u64,
+                );
 
                 if self
                     .flow
@@ -244,7 +249,7 @@ impl UserSpaceTcpClient {
                 }
             }
             Err(e) => {
-                error!("Client send error: {:?}", e);
+                error!("Client sends error: {:?}", e);
             }
             Ok(_) => {}
         }
