@@ -12,14 +12,14 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
 #[cfg(target_os = "linux")]
-use crate::node::local_reader_tso::LocalReader;
+use crate::node::local::reader_tso::LocalReader;
 #[cfg(target_os = "linux")]
-use crate::node::local_writer_tso::LocalWriter;
+use crate::node::local::writer_tso::LocalWriter;
 
 #[cfg(not(target_os = "linux"))]
-use crate::node::local_reader::LocalReader;
+use crate::node::local::reader::LocalReader;
 #[cfg(not(target_os = "linux"))]
-use crate::node::local_writer::LocalWriter;
+use crate::node::local::writer::LocalWriter;
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
 #[derive(Clone)]
@@ -105,23 +105,18 @@ impl LocalInterfaceHandle {
     }
 
     /// Converts a netmask tuple to prefix length. Used in 'LocalInterfaceHandle::create_tun_device()'.
-    fn mask_to_prefix(mask: (u8, u8, u8, u8)) -> u8 {
-        let mask_u32 = u32::from_be_bytes([mask.0, mask.1, mask.2, mask.3]);
+    fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
+        let mask_u32 = u32::from_be_bytes(mask.octets());
         mask_u32.count_ones() as u8
     }
 
     /// Creates local TUN devices for communicating with the application.
     #[cfg(not(target_os = "linux"))]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
-        let ipv4_addr = config.local_address;
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
 
         let dev = DeviceBuilder::new()
-            .ipv4(
-                Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
-                ipv4_prefix,
-                None,
-            )
+            .ipv4(config.local_address, ipv4_prefix, None)
             .mtu(config.mtu as u16)
             .build_async()
             .expect("Failed to create tun device");
@@ -139,16 +134,11 @@ impl LocalInterfaceHandle {
         let num_queues = config.num_tun_queues;
 
         let if_name = config.tun_interface_name.clone();
-        let ipv4_addr = config.local_address;
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
 
         let dev = DeviceBuilder::new()
             .name(&if_name)
-            .ipv4(
-                Ipv4Addr::new(ipv4_addr.0, ipv4_addr.1, ipv4_addr.2, ipv4_addr.3),
-                ipv4_prefix,
-                None,
-            )
+            .ipv4(config.local_address, ipv4_prefix, None)
             .mtu(config.mtu as u16)
             .multi_queue(true) // enables multi-queue support
             .offload(true) // enables TSO support

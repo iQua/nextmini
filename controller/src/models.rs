@@ -7,7 +7,6 @@ pub struct Node {
     pub private_network_name: Option<String>,
     pub private_network_addr: String,
     pub public_network_addr: String,
-    pub virtual_network_addr: String,
 }
 
 #[derive(Clone, FromRow, Debug)]
@@ -16,15 +15,4 @@ pub struct Route {
     pub dst_node_id: i32,
     pub route_id: i32,
     pub route: Vec<i32>,
-}
-
-#[allow(dead_code)]
-#[derive(FromRow, Debug)]
-pub struct Metrics {
-    pub id: i32,
-    pub prev_hop_id: Option<i32>,
-    pub hop_id: Option<i32>,
-    pub flow_id: Vec<u8>,
-    pub time_read: chrono::DateTime<chrono::Utc>,
-    pub bytes: i32,
 }

@@ -10,12 +10,11 @@ use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::controller::reporter::ControllerReporterHandle;
+use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::scheduler::SchedulerHandle;
-
-use super::reporter::ControllerReporterHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 
 pub struct TcpServer {
     config: LocalConfig,

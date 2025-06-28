@@ -18,11 +18,11 @@ use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::LocalDestination;
 use crate::node::config::{Feature, LocalConfig};
-use crate::node::local_interface::LocalInterfaceHandle;
+use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::SchedulerHandle;
-use crate::node::{FlowIdExt, NodeId};
+use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -34,8 +34,12 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    ConnectLocalDestination(Ipv4Addr, Arc<dyn LocalDestination>),
+    ConnectLocalDestination {
+        port: u16,
+        destination: Arc<dyn LocalDestination>,
+    },
     RateLimit(NodeId, TokenBucketSpec),
+    SetFlowWeight(FlowId, usize),
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +75,7 @@ impl ProcessorHandle {
         Ok(())
     }
 
+    // connects the local interface to the processor
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -78,6 +83,19 @@ impl ProcessorHandle {
         {
             error!(
                 "Error connecting the processors to the local interface: {}.",
+                e
+            );
+        };
+    }
+
+    // connects the client handle to the processor
+    pub fn connect_local_destination(&self, port: u16, destination: Arc<dyn LocalDestination>) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectLocalDestination { port, destination })
+        {
+            error!(
+                "Error connecting the client handle to the processors: {}.",
                 e
             );
         };
@@ -113,6 +131,18 @@ impl ProcessorHandle {
             ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
         }
     }
+
+    pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SetFlowWeight(flow_id, weight))
+        {
+            error!(
+                "Error sending the SetFlowWeight message to the processors: {}",
+                e
+            );
+        };
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -131,13 +161,11 @@ impl SequentialProcHandle {
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
-            let mut proc = Processor {
-                packet_receiver: PacketReceiver::Sequential(packet_receiver),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
-                local_destinations: AHashMap::new(),
-                schedulers: AHashMap::new(),
-            };
+            let mut proc = Processor::new(
+                PacketReceiver::Sequential(packet_receiver),
+                broadcast_sender.subscribe(),
+                config.clone(),
+            );
 
             tokio::spawn(async move {
                 proc.run().await;
@@ -175,13 +203,11 @@ impl ConcurrentProcHandle {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
-            let mut proc = Processor {
-                packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
-                local_destinations: AHashMap::new(),
-                schedulers: AHashMap::new(),
-            };
+            let mut proc = Processor::new(
+                PacketReceiver::Concurrent(packet_receiver.clone()),
+                broadcast_sender.subscribe(),
+                config.clone(),
+            );
 
             tokio::spawn(async move {
                 proc.run().await;
@@ -253,34 +279,68 @@ impl PacketReceiver {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
-    // receives packets from the network interface or local interface
+    config: LocalConfig,
+
+    // receives packets from the network interface, local interface, or user-space TCP flows
     packet_receiver: PacketReceiver,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
-    // the routing table
-    routing_table: RoutingTable,
+    // the local TUN interface and local destinations (for destinations in user-space TCP flows)
+    local_interface_handle: Option<Arc<LocalInterfaceHandle>>,
+    local_destinations: AHashMap<u16, Arc<dyn LocalDestination>>,
 
-    // a hashmap to support multiple local destinations: the TUN interface and user-space TCP sources.
-    local_destinations: AHashMap<Ipv4Addr, Arc<dyn LocalDestination>>,
+    // routing table
+    routing_table: RoutingTable,
 
     // schedulers, one for each outbound network interface
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
+    pub fn new(
+        packet_receiver: PacketReceiver,
+        broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+        config: LocalConfig,
+    ) -> Self {
+        Self {
+            packet_receiver,
+            broadcast_receiver,
+            local_interface_handle: None,
+            local_destinations: AHashMap::new(),
+            routing_table: RoutingTable::new(config.clone()),
+            schedulers: AHashMap::new(),
+            config,
+        }
+    }
+
+    /// Locates a local destination based on the destination IP address and port number.
+    fn local_destination(
+        &self,
+        dst_ip: Ipv4Addr,
+        dst_port: u16,
+    ) -> Option<Arc<dyn LocalDestination>> {
+        if dst_ip == self.config.local_address {
+            self.local_interface_handle
+                .clone()
+                .map(|h| h as Arc<dyn LocalDestination>)
+        } else {
+            self.local_destinations.get(&dst_port).cloned()
+        }
+    }
+
     async fn run(&mut self) {
         loop {
             tokio::select! {
-                // Wait for the first packet or a broadcast message
+                // waits for the first packet or a broadcast message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
                         ProcessorPacket::ProcessPacket(first_packet) => {
-                            // Start a batch with the first packet
+                            // starts a batch with the first packet
                             self.process_packet(first_packet);
 
-                            // Start processing packets in batches
+                            // starts processing packets in batches
                             while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
                                 self.process_packet(packet);
                             }
@@ -294,7 +354,6 @@ impl Processor {
         }
     }
 
-    // New helper method to handle non-packet messages
     async fn handle_message(&mut self, msg: ProcessorMessage) {
         match msg {
             ProcessorMessage::UpdateRoutingTable(routes) => {
@@ -305,18 +364,20 @@ impl Processor {
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
-                self.local_destinations.insert(
-                    self.routing_table
-                        .node_id_to_ip(self.routing_table.local_id),
-                    Arc::new(local_interface),
-                );
+                self.local_interface_handle = Some(Arc::new(local_interface));
             }
-            ProcessorMessage::ConnectLocalDestination(ip, dest) => {
-                self.local_destinations.insert(ip, dest);
+            ProcessorMessage::ConnectLocalDestination { port, destination } => {
+                self.local_destinations.insert(port, destination);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
                     scheduler.limit_rate(spec);
+                }
+            }
+            ProcessorMessage::SetFlowWeight(flow_id, weight) => {
+                // updates the flow weight for all schedulers
+                for (_, scheduler) in self.schedulers.iter_mut() {
+                    scheduler.set_flow_weight(flow_id, weight);
                 }
             }
         }
@@ -356,13 +417,17 @@ impl Processor {
     fn send_packet(&self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
-            // and user-space TCP sources
+            // and user-space TCP clients
             let dst_ip = packet.flow_id.dst_ip();
+            let dst_port = packet.flow_id.dst_port();
 
-            if let Some(dest) = self.local_destinations.get(&dst_ip) {
+            if let Some(dest) = self.local_destination(dst_ip, dst_port) {
                 dest.send_packet(packet);
             } else {
-                error!("No local destination for IP: {}", dst_ip);
+                error!(
+                    "No local destination for IP: {} and port: {}",
+                    dst_ip, dst_port
+                );
             }
         } else {
             if let Some(scheduler) = self.schedulers.get(&next_hop_id) {

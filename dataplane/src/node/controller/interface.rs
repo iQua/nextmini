@@ -12,10 +12,12 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::NetworkInterfaceHandle;
+use crate::node::controller::reporter::ControllerReporterHandle;
+use crate::node::flow::client::UserSpaceClientHandle;
+use crate::node::flow::server::UserSpaceServerHandle;
+use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reporter::ControllerReporterHandle;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -49,11 +51,18 @@ impl ControllerInterfaceHandle {
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
+        let user_space_client_handle =
+            UserSpaceClientHandle::new(config.clone(), processors.clone());
+        let user_space_server_handle =
+            UserSpaceServerHandle::new(config.clone(), processors.clone());
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
-            config,
+            config: config.clone(),
             receiver_stream,
-            processors,
+            processors: processors.clone(),
             reporter: reporter.clone(),
+            user_space_client_handle,
+            user_space_server_handle,
         };
 
         tokio::spawn(async move {
@@ -164,7 +173,13 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
+
+    // reports metrics to controller
     reporter: ControllerReporterHandle,
+
+    // handles for user-space TCP flows
+    user_space_client_handle: UserSpaceClientHandle,
+    user_space_server_handle: UserSpaceServerHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -221,6 +236,7 @@ impl ControllerToDataplaneReceiver {
                     );
                 }
             }
+
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
                     "Setting the link rate for node {} to {} bytes/second with a bucket size of {} bytes.",
@@ -229,6 +245,7 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.limit_rate(node_id, spec);
             }
+
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!(
                     "Installing {} routes on node {}.",
@@ -237,6 +254,51 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.processors.update_routing_table(routes);
+            }
+
+            ControllerToDataplane::AddFlows { flows } => {
+                info!(
+                    "Adding {} user-space flows to node {}.",
+                    flows.len(),
+                    self.config.node_id
+                );
+
+                let node_id = self.config.node_id;
+
+                let outbound_flows: Vec<_> = flows
+                    .iter()
+                    .filter(|f| f.src_node_id == node_id)
+                    .cloned()
+                    .collect();
+                self.user_space_client_handle.add_flows(outbound_flows);
+
+                let inbound_flows: Vec<_> = flows
+                    .iter()
+                    .filter(|f| f.dst_node_id == node_id)
+                    .cloned()
+                    .collect();
+                self.user_space_server_handle.add_flows(inbound_flows);
+            }
+
+            ControllerToDataplane::SetFlowWeight {
+                src_ip,
+                dst_ip,
+                src_port,
+                dst_port,
+                weight,
+            } => {
+                info!(
+                    "Setting the flow weight {} at node {}.",
+                    weight, self.config.node_id
+                );
+
+                // Convert the 4-tuple to a flow_id
+                let flow_id = ((src_ip as u128) << 96)
+                    | ((dst_ip as u128) << 64)
+                    | ((src_port as u128) << 48)
+                    | ((dst_port as u128) << 32);
+
+                self.processors.set_flow_weight(flow_id, weight);
             }
             _ => error!("Received a message with an unknown type from the controller."),
         }

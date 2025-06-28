@@ -9,7 +9,7 @@ use tun_rs::{AsyncDevice, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
 use crate::node::FlowId;
 use crate::node::config::{Feature, LocalConfig};
-use crate::node::local_interface::{LocalInterfaceMessage, ShutdownMessage};
+use crate::node::local::interface::{LocalInterfaceMessage, ShutdownMessage};
 use crate::node::packet::Packet;
 
 pub enum LocalWriter {

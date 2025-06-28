@@ -1,35 +1,52 @@
 pub mod conductor;
 pub mod config;
-pub mod controller_interface;
-pub mod drop;
-pub mod local_interface;
-pub mod network_interface;
+pub mod controller;
+pub mod flow;
+pub mod local;
+pub mod network;
 pub mod packet;
 pub mod processor;
-pub mod quic;
-pub mod reporter;
 pub mod route;
 pub mod scheduler;
-pub mod tcp;
-pub mod token_bucket;
-pub mod user_space_tcp;
-
-#[cfg(target_os = "linux")]
-pub mod local_reader_tso;
-#[cfg(target_os = "linux")]
-pub mod local_writer_tso;
-
-#[cfg(not(target_os = "linux"))]
-pub mod local_reader;
-#[cfg(not(target_os = "linux"))]
-pub mod local_writer;
 
 use jumphash::JumpHasher;
+use std::net::Ipv4Addr;
 
 use crate::node::packet::Packet;
 
 /// The node ID.
 pub type NodeId = usize;
+
+/// Converts a NodeId to a virtual IP address.
+pub trait NodeIdExt {
+    /// Computes a new virtual IP address by adding the node ID to the base address.
+    fn ip_addr(&self, base_addr: Ipv4Addr, net_mask: Ipv4Addr) -> Ipv4Addr;
+}
+
+impl NodeIdExt for NodeId {
+    fn ip_addr(&self, base_addr: Ipv4Addr, net_mask: Ipv4Addr) -> Ipv4Addr {
+        // makes a copy of the base address
+        let base_ip = u32::from(base_addr);
+
+        // adds the node ID as an offset to the base address
+        let new_ip = base_ip.wrapping_add(*self as u32);
+
+        // applies the netmask to protect against overflow
+        let net_mask = u32::from(net_mask);
+        let network = base_ip & net_mask;
+        let new_network = new_ip & net_mask;
+
+        // checks if the new virtual address is outside the subnet
+        if network != new_network {
+            panic!(
+                "Could not generate IP for node {}, the node ID might be too large for the network mask.",
+                self
+            );
+        } else {
+            Ipv4Addr::from(new_ip)
+        }
+    }
+}
 
 /// The maximum Maximum Transmission Unit (MTU).
 const MAX_MTU: usize = 6400;

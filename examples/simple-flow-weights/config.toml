@@ -1,4 +1,3 @@
-# This file is used to configure node2.
 private_network_interface = "eth0"
 private_network_name = "net1"
 num_tun_queues = 1
@@ -6,4 +5,3 @@ num_packet_processors = 1
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
-user_space_tcp_ip = "172.16.8.5"

@@ -18,7 +18,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucke
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_notification};
 use crate::models::{Node, Route};
-use crate::utils::{build_routes_for_node, build_startup_response, create_new_virtual_addr};
+use crate::utils::{build_routes_for_node, build_startup_response};
 
 mod config;
 mod db;
@@ -122,37 +122,15 @@ async fn handle_connection(
                             maybe_node_id.unwrap()
                         };
 
-                        // checks if the node_id is already used
+                        // checks if the node ID is already used
                         if node_ws.read().await.contains_key(&node_id) {
                             warn!("Node ID {} is already used.", node_id);
                             continue;
                         }
 
-                        // assigns a virtual address to this node
-                        let virtual_addr = match create_new_virtual_addr(
-                            config.base_addr,
-                            config.net_mask,
-                            node_id,
-                        ) {
-                            Some(addr) => addr,
-                            None => {
-                                error!("Failed to create a virtual address for node {}.", node_id);
-                                continue;
-                            }
-                        };
-
-                        let virtual_network_addr = virtual_addr
-                            .iter()
-                            .map(|x| x.to_string())
-                            .collect::<Vec<_>>()
-                            .join(".");
-
                         info!(
-                            "Created new node {} with private address {}, public address {}, and virtual address {}.",
-                            node_id,
-                            private_network_addr,
-                            public_network_addr,
-                            &virtual_network_addr,
+                            "Registered new node {} with private address {} and public address {}.",
+                            node_id, private_network_addr, public_network_addr,
                         );
 
                         let new_node = Node {
@@ -160,26 +138,23 @@ async fn handle_connection(
                             private_network_name: Some(private_network_name.clone()),
                             private_network_addr,
                             public_network_addr,
-                            virtual_network_addr,
                         };
 
-                        // Insert node into database
+                        // inserts the new node into the database
                         match sqlx::query(
                             r#"
-                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr, virtual_network_addr)
-                            VALUES ($1, $2, $3, $4, $5)
+                            INSERT INTO nodes (id, private_network_name, private_network_addr, public_network_addr)
+                            VALUES ($1, $2, $3, $4)
                             ON CONFLICT (id) DO UPDATE SET
                                 private_network_name = EXCLUDED.private_network_name,
                                 private_network_addr = EXCLUDED.private_network_addr,
-                                public_network_addr = EXCLUDED.public_network_addr,
-                                virtual_network_addr = EXCLUDED.virtual_network_addr
-                            "#
+                                public_network_addr = EXCLUDED.public_network_addr
+                            "#,
                         )
                         .bind(new_node.id)
                         .bind(&new_node.private_network_name)
                         .bind(&new_node.private_network_addr)
                         .bind(&new_node.public_network_addr)
-                        .bind(&new_node.virtual_network_addr)
                         .execute(&*db_pool)
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
@@ -189,11 +164,12 @@ async fn handle_connection(
                             }
                         }
 
-                        // Send startup response
+                        // sends the startup response
                         let response = build_startup_response(
                             node_id,
-                            virtual_addr,
                             config.net_mask,
+                            config.base_addr,
+                            config.user_space_base_addr,
                             config.protocol.clone(),
                         );
 
@@ -307,8 +283,9 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
-                        // sets the link rates
-                        info!("Setting link rates for node {}", node_id);
+                        if config.link_rates.len() > 0 {
+                            info!("Setting link rates for node {}", node_id);
+                        }
 
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
@@ -341,7 +318,78 @@ async fn handle_connection(
                                 }
                             }
                         }
+
+                        // adds the flows
+                        info!("Adding flows for node {}", node_id);
+
+                        let msg = ControllerToDataplane::AddFlows {
+                            flows: config.flows.clone(),
+                        };
+
+                        match write_arc
+                            .lock()
+                            .await
+                            .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                            .await
+                        {
+                            Ok(_) => info!(
+                                "Sent AddFlows message with {} flows to node {}",
+                                &config.flows.len(),
+                                node_id,
+                            ),
+                            Err(e) => {
+                                error!("Failed to send AddFlows message to node {}: {}", node_id, e)
+                            }
+                        }
+
+                        // sets the flow weights
+                        // Pending changes according to user space tcp implementation
+                        if config.flow_weights.len() > 0 {
+                            info!("Setting flow weights for node {}", node_id);
+                        }
+
+                        for flow_weight in &config.flow_weights {
+                            // Convert IP addresses from [u8; 4] to u32
+                            let src_ip = ((flow_weight.src_ip[0] as u32) << 24)
+                                | ((flow_weight.src_ip[1] as u32) << 16)
+                                | ((flow_weight.src_ip[2] as u32) << 8)
+                                | (flow_weight.src_ip[3] as u32);
+
+                            let dst_ip = ((flow_weight.dst_ip[0] as u32) << 24)
+                                | ((flow_weight.dst_ip[1] as u32) << 16)
+                                | ((flow_weight.dst_ip[2] as u32) << 8)
+                                | (flow_weight.dst_ip[3] as u32);
+
+                            let msg = ControllerToDataplane::SetFlowWeight {
+                                src_ip,
+                                dst_ip,
+                                src_port: flow_weight.src_port,
+                                dst_port: flow_weight.dst_port,
+                                weight: flow_weight.weight,
+                            };
+
+                            match write_arc
+                                .lock()
+                                .await
+                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .await
+                            {
+                                Ok(_) => info!(
+                                    "Sent the SetFlowWeight message to {:?}:{} to {:?}:{} at {}.",
+                                    flow_weight.src_ip,
+                                    flow_weight.src_port,
+                                    flow_weight.dst_ip,
+                                    flow_weight.dst_port,
+                                    node_id
+                                ),
+                                Err(e) => error!(
+                                    "Failed to send the SetFlowWeight message to {}, {}.",
+                                    node_id, e
+                                ),
+                            }
+                        }
                     }
+
                     DataplaneToController::Metrics { metrics } => {
                         if let Some(_) = current_node_id {
                             for metric in metrics {
