@@ -1,3 +1,4 @@
+// A TCP client for user-space flows, implemented using SmolTcp.
 use std::cmp;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -11,13 +12,14 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use nextmini_messages::{Flow, FlowSpec};
+
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use nextmini_messages::{Flow, FlowSpec};
 
 // socket buffer 655350 by default
 const SOCKET_BUFFER_SIZE: usize = 655350;
@@ -52,7 +54,7 @@ impl UserSpaceClientHandle {
             self.processor_handle
                 .connect_local_destination(client_port, Arc::new(packet_sender));
 
-            // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
+            // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
                 let client = UserSpaceTcpClient::new(
                     config,
@@ -61,10 +63,11 @@ impl UserSpaceClientHandle {
                     client_port,
                     packet_receiver,
                 );
-                client.start();
+
+                client.run();
             });
 
-            info!("Client handle created and thread started");
+            info!("A user-space TCP client thread has been started.");
         }
     }
 }
@@ -75,7 +78,6 @@ struct UserSpaceTcpClient {
     processor_handle: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
-    connecting: bool,
     client_port: u16,
 }
 
@@ -106,16 +108,14 @@ impl UserSpaceTcpClient {
             processor_handle,
             packet_receiver: Some(packet_receiver),
             state,
-            connecting: false,
             client_port,
         }
     }
 
-    /// Starts the user-space TCP source as a virtual device.
-    fn start(mut self) {
-        info!("Starts user-space TCP client.");
+    /// Runs a user-space TCP client by connecting and sending to a server.
+    fn run(mut self) {
+        info!("Starting a user-space TCP client thread.");
 
-        // Take the packet_receiver out of the Option
         let packet_receiver = self.packet_receiver.take().unwrap();
 
         // creates a virtual device using the passed processor handle
@@ -125,14 +125,13 @@ impl UserSpaceTcpClient {
             sender: self.processor_handle.clone(),
         };
 
-        // sets up for IP layer without needing hardware address
+        // sets up Layer 3 using the provided IP address, without needing a hardware address
         let config = Config::new(HardwareAddress::Ip);
-
-        // sets up Layer 3 using the provided IP address
         let ip_addr = self
             .config
             .node_id
             .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
+
         let mut iface = Interface::new(config, &mut device, Instant::now());
         iface.update_ip_addrs(|addrs| {
             addrs
@@ -140,16 +139,14 @@ impl UserSpaceTcpClient {
                 .unwrap();
         });
 
-        // creates the TCP socket set for client
+        // creates a socket set for a new TCP client
         let mut sockets = SocketSet::new(vec![]);
 
-        let client_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-        let client_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
 
-        let client_socket = tcp::Socket::new(client_rx_buffer, client_tx_buffer);
-        let client_handle = sockets.add(client_socket);
-
-        info!("User-space client initialized, starting main loop.");
+        let socket = tcp::Socket::new(rx_buffer, tx_buffer);
+        let socket_handle = sockets.add(socket);
 
         loop {
             // gets the current time
@@ -158,20 +155,17 @@ impl UserSpaceTcpClient {
             // polls the interface for packet transmission/reception
             iface.poll(timestamp, &mut device, &mut sockets);
 
-            let socket = sockets.get_mut::<tcp::Socket>(client_handle);
+            let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
 
             // handles client connection and sends out data
-            self.client_connection(socket, iface.context());
-            self.send_data(socket);
+            self.connect(socket, iface.context());
+            self.send(socket);
         }
     }
 
-    fn client_connection(
-        &mut self,
-        socket: &mut tcp::Socket,
-        iface_context: &mut smoltcp::iface::Context,
-    ) {
-        if !socket.is_open() && !self.connecting {
+    // Connects to a user-space TCP server.
+    fn connect(&mut self, socket: &mut tcp::Socket, iface_context: &mut smoltcp::iface::Context) {
+        if !socket.is_open() && !self.state.connected {
             let remote_addr = IpAddress::from(
                 self.flow
                     .dst_node_id
@@ -182,26 +176,22 @@ impl UserSpaceTcpClient {
             match socket.connect(iface_context, remote_endpoint, self.client_port) {
                 Ok(_) => {
                     info!(
-                        "Client connecting from port {} to {}:{}",
+                        "A new user-space TCP client has connected to a server from port {} to {}:{}",
                         self.client_port, remote_addr, self.config.user_space_server_port
                     );
-                    self.connecting = true;
+                    self.state.connected = true;
                 }
                 Err(e) => {
-                    error!("Client connect error: {:?}", e);
+                    error!("Error connecting to a user-space TCP server: {:?}", e);
                 }
             }
         }
     }
 
-    fn send_data(&mut self, socket: &mut tcp::Socket) {
+    /// Sends data, as much as possible or up to a certain flow rate, to the user-space TCP server.
+    fn send(&mut self, socket: &mut tcp::Socket) {
         if !socket.is_active() {
             return;
-        }
-
-        if !self.state.connected {
-            self.state.connected = true;
-            info!("Client connected successfully");
         }
 
         if !socket.can_send()
@@ -236,12 +226,12 @@ impl UserSpaceTcpClient {
                     .flow_size
                     .exceeded(self.state.bytes_total, self.state.start_time)
                 {
-                    info!("Client finished sending flow data");
+                    info!("A user-space TCP flow has finished sending all its data.");
                     socket.close();
                 }
             }
             Err(e) => {
-                error!("Client sends error: {:?}", e);
+                error!("Error sending to a user-space TCP server: {:?}", e);
             }
             Ok(_) => {}
         }

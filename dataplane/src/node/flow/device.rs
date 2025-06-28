@@ -1,3 +1,6 @@
+/// Implements a virtual device for SmolTcp to send and receive packets through the rest of Nextmini.
+/// Packets are received using a Tokio mpsc channel from the processors, and sent via a sequential
+/// or concurrent processor handle.
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tokio::sync::mpsc;

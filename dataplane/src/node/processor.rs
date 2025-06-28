@@ -281,13 +281,13 @@ impl PacketReceiver {
 struct Processor {
     config: LocalConfig,
 
-    // receives packets from the network interface or local interface
+    // receives packets from the network interface, local interface, or user-space TCP flows
     packet_receiver: PacketReceiver,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
-    // local interface handle and local destinations
+    // the local TUN interface and local destinations (for destinations in user-space TCP flows)
     local_interface_handle: Option<Arc<LocalInterfaceHandle>>,
     local_destinations: AHashMap<u16, Arc<dyn LocalDestination>>,
 
