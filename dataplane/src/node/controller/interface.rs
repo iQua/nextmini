@@ -34,6 +34,9 @@ impl ControllerInterfaceHandle {
         // connects to the controller over WebSockets
         let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
 
+        // enables the processor to spawn servers on demand
+        processors.enable_server_spawning(processors.clone());
+
         let (sender_stream, receiver_stream) = ws_stream.split();
 
         // Initialize the controller sender and receiver
@@ -269,15 +272,6 @@ impl ControllerToDataplaneReceiver {
 
                 if !outbound_flows.is_empty() {
                     self.user_space_client_handle.add_flows(outbound_flows);
-                }
-
-                // checks if there are any flows destined for this node.
-                let has_inbound_flows = flows.iter().any(|f| f.dst_node_id == node_id);
-
-                if has_inbound_flows {
-                    // enables the processor to spawn servers on demand
-                    self.processors
-                        .enable_server_spawning(self.processors.clone());
                 }
             }
 
