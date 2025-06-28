@@ -244,6 +244,25 @@ fn default_netmask() -> Ipv4Addr {
 }
 
 impl LocalConfig {
+    /// Converts IP address to node ID, supporting both TUN and user space networks.
+    pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
+        let ip_addr = u32::from(ip);
+        let netmask = u32::from(self.local_netmask);
+
+        let tun_base = u32::from(self.virtual_base_addr);
+        let user_space_base = u32::from(self.user_space_base_addr);
+
+        match ip_addr & netmask {
+            subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
+            subnet if subnet == (user_space_base & netmask) => {
+                (ip_addr - user_space_base) as NodeId
+            }
+            _ => {
+                panic!("Detected unknown IP {}.", ip);
+            }
+        }
+    }
+
     /// Creates a new instance of LocalConfig.
     pub fn new() -> LocalConfig {
         let mut args = Args::parse();

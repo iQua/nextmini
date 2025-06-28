@@ -1,5 +1,3 @@
-use std::net::Ipv4Addr;
-
 use ahash::AHashMap;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
@@ -74,34 +72,10 @@ impl RoutingTable {
         let src_ip = flow_id.src_ip();
         let dst_ip = flow_id.dst_ip();
 
-        let src_node_id = self.ip_to_node_id(src_ip);
-        let dst_node_id = self.ip_to_node_id(dst_ip);
+        let src_node_id = self.config.ip_to_node_id(src_ip);
+        let dst_node_id = self.config.ip_to_node_id(dst_ip);
 
         (src_node_id, dst_node_id)
-    }
-
-    // /// Converts a node ID to its TUN IP address.
-    // pub fn node_id_to_ip(&self, node_id: NodeId) -> Ipv4Addr {
-    //     node_id.ip_addr(self.config.virtual_base_addr, self.config.local_netmask)
-    // }
-
-    /// Converts IP address to node ID, supporting both TUN and user space networks.
-    fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
-        let ip_addr = u32::from(ip);
-        let netmask = u32::from(self.config.local_netmask);
-
-        let tun_base = u32::from(self.config.virtual_base_addr);
-        let user_space_base = u32::from(self.config.user_space_base_addr);
-
-        match ip_addr & netmask {
-            subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
-            subnet if subnet == (user_space_base & netmask) => {
-                (ip_addr - user_space_base) as NodeId
-            }
-            _ => {
-                panic!("Detected unknown IP {}.", ip);
-            }
-        }
     }
 
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
