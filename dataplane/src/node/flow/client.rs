@@ -56,7 +56,7 @@ impl UserSpaceClientHandle {
 
             // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
-                let client = UserSpaceTcpClient::new(
+                let client = UserSpaceClient::new(
                     config,
                     flow,
                     processor_handle,
@@ -72,7 +72,7 @@ impl UserSpaceClientHandle {
     }
 }
 
-struct UserSpaceTcpClient {
+struct UserSpaceClient {
     config: LocalConfig,
     flow: Flow,
     processor_handle: ProcessorHandle,
@@ -81,7 +81,7 @@ struct UserSpaceTcpClient {
     client_port: u16,
 }
 
-impl UserSpaceTcpClient {
+impl UserSpaceClient {
     fn new(
         config: LocalConfig,
         flow: Flow,

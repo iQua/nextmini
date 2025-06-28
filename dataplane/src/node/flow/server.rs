@@ -28,7 +28,6 @@ pub struct UserSpaceServerHandle {
 
 impl UserSpaceServerHandle {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        info!("Server handle created.");
         Self {
             config,
             processor_handle,
@@ -49,13 +48,14 @@ impl UserSpaceServerHandle {
 
         // spawns a single thread to manage all server sockets for the designated port
         thread::spawn(move || {
-            let server = UserSpaceTcpServer::new(config, flows, processor_handle, packet_receiver);
-            server.start();
+            let server = UserSpaceServer::new(config, flows, processor_handle, packet_receiver);
+
+            server.run();
         });
     }
 }
 
-struct UserSpaceTcpServer {
+struct UserSpaceServer {
     config: LocalConfig,
     flows: Vec<Flow>,
     processor_handle: ProcessorHandle,
@@ -64,7 +64,7 @@ struct UserSpaceTcpServer {
     listening: bool,
 }
 
-impl UserSpaceTcpServer {
+impl UserSpaceServer {
     fn new(
         config: LocalConfig,
         flows: Vec<Flow>,
@@ -93,9 +93,7 @@ impl UserSpaceTcpServer {
         }
     }
 
-    fn start(mut self) {
-        info!("Starts running server.");
-
+    fn run(mut self) {
         let packet_receiver = self.packet_receiver.take().unwrap();
         let mut device = VirtualDevice {
             config: self.config.clone(),

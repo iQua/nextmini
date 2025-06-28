@@ -11,22 +11,23 @@ pub struct ConnectionState {
     pub bytes_total: u64,
 }
 
-// Implements test_throughput for both client and server side.
+// Measures and reports throughput for both the client and the server.
 impl ConnectionState {
-    // node_type: node as client or server
-    // bytes_added: bytes received or sent
-    pub fn test_throughput(&mut self, id: usize, node_id: usize, port: Option<u16>, bytes_added: u64) {
+    pub fn test_throughput(
+        &mut self,
+        id: usize,
+        node_id: usize,
+        port: Option<u16>,
+        bytes_added: u64,
+    ) {
         if self.bytes_total == 0 {
             self.start_time = StdInstant::now();
             match port {
                 Some(port) => info!(
-                    "Client on port {} started transferring data to node {}", 
+                    "Client on port {} started transferring data to node {}",
                     port, node_id
                 ),
-                None => info!(
-                    "Server {} started receiving data from node {}", 
-                    id, node_id
-                ),
+                None => info!("Server {} started receiving data from node {}", id, node_id),
             }
         }
 
@@ -42,11 +43,11 @@ impl ConnectionState {
 
             match port {
                 Some(port) => info!(
-                    "Client from port {} to node {} has throughput: {:.3} Gbps ({} bytes in {:.3}s)", 
+                    "Throughput at the client from port {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
                     port, node_id, throughput, self.bytes_last_updated, elapsed_time
                 ),
                 None => info!(
-                    "Server {} receiving from node {} has throughput: {:.3} Gbps ({} bytes in {:.3}s)", 
+                    "Throughput at the server {} receiving from node {}: {:.3} Gbps ({} bytes in {:.3}s)",
                     id, node_id, throughput, self.bytes_last_updated, elapsed_time
                 ),
             }
