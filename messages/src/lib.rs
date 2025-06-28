@@ -42,10 +42,20 @@ pub enum Protocol {
 pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub flow_size: FlowLen,
+    pub flow_spec: FlowSpec,
 }
 
-/// The size of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.
+/// The specification of a user-space TCP flow.
+#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
+pub struct FlowSpec {
+    pub flow_len: FlowLen,
+    #[serde(default)]
+    pub flow_rate: Option<usize>,
+    #[serde(default)]
+    pub flow_weight: Option<usize>,
+}
+
+/// The length of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum FlowLen {
     Bytes(usize),
