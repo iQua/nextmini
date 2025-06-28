@@ -35,64 +35,58 @@ impl UserSpaceServerHandle {
     }
 
     pub fn add_flows(&self, flows: Vec<Flow>) {
-        if flows.is_empty() {
-            return;
+        for flow in flows {
+            let config = self.config.clone();
+            let processor_handle = self.processor_handle.clone();
+            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+
+            self.processor_handle
+                .connect_local_destination(self.config.user_space_server_port, Arc::new(packet_sender));
+
+            // spawns a single thread to manage all server sockets for the designated port
+            thread::spawn(move || {
+                let server = UserSpaceServer::new(config, flow, processor_handle, packet_receiver);
+
+                server.run();
+            });
         }
-
-        let config = self.config.clone();
-        let processor_handle = self.processor_handle.clone();
-        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
-
-        self.processor_handle
-            .connect_local_destination(self.config.user_space_server_port, Arc::new(packet_sender));
-
-        // spawns a single thread to manage all server sockets for the designated port
-        thread::spawn(move || {
-            let server = UserSpaceServer::new(config, flows, processor_handle, packet_receiver);
-
-            server.run();
-        });
     }
 }
 
 struct UserSpaceServer {
     config: LocalConfig,
-    flows: Vec<Flow>,
+    flow: Flow,
     processor_handle: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
-    states: Vec<ConnectionState>,
+    state: ConnectionState,
     listening: bool,
 }
 
 impl UserSpaceServer {
     fn new(
         config: LocalConfig,
-        flows: Vec<Flow>,
+        flow: Flow,
         processor_handle: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         info!(
-            "Creating a new user-space TCP server for {} flows.",
-            flows.len()
+            "Creating a new user-space TCP server for a single flow."
         );
 
-        let states = flows
-            .iter()
-            .map(|_| ConnectionState {
-                connected: false,
-                start_time: StdInstant::now(),
-                time_last_updated: StdInstant::now(),
-                bytes_last_updated: 0,
-                bytes_total: 0,
-            })
-            .collect();
+        let state = ConnectionState {
+            connected: false,
+            start_time: StdInstant::now(),
+            time_last_updated: StdInstant::now(),
+            bytes_last_updated: 0,
+            bytes_total: 0,
+        };
 
         Self {
             config,
-            flows,
+            flow,
             processor_handle,
             packet_receiver: Some(packet_receiver),
-            states,
+            state,
             listening: false,
         }
     }
@@ -121,74 +115,66 @@ impl UserSpaceServer {
         });
 
         let mut sockets = SocketSet::new(vec![]);
-        let mut socket_handles = Vec::new();
-
-        for _ in &self.flows {
-            let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-            let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-            let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
-            let handle = sockets.add(server_socket);
-            socket_handles.push(handle);
-        }
+        
+        let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
+        let socket_handle = sockets.add(server_socket);
 
         loop {
             let timestamp = Instant::now();
 
             iface.poll(timestamp, &mut device, &mut sockets);
-            self.recv(&mut sockets, &socket_handles);
+            self.recv(&mut sockets, socket_handle);
         }
     }
 
-    fn recv(&mut self, sockets: &mut SocketSet, handles: &[SocketHandle]) {
+    fn recv(&mut self, sockets: &mut SocketSet, handle: SocketHandle) {
         let base_server_port = self.config.user_space_server_port;
 
         // Set up listening sockets if not already done
         if !self.listening {
-            for &handle in handles {
-                let socket = sockets.get_mut::<tcp::Socket>(handle);
-                if !socket.is_listening() {
-                    if let Err(e) = socket.listen(base_server_port) {
-                        error!(
-                            "Server failed to listen on port {}: {:?}",
-                            base_server_port, e
-                        );
-                    }
+            let socket = sockets.get_mut::<tcp::Socket>(handle);
+            if !socket.is_listening() {
+                if let Err(e) = socket.listen(base_server_port) {
+                    error!(
+                        "Server failed to listen on port {}: {:?}",
+                        base_server_port, e
+                    );
                 }
             }
 
             self.listening = true;
         }
 
-        for (i, &handle) in handles.iter().enumerate() {
-            let socket = sockets.get_mut::<tcp::Socket>(handle);
+        let socket = sockets.get_mut::<tcp::Socket>(handle);
 
-            if socket.is_active() && !self.states[i].connected {
-                self.states[i].connected = true;
-            }
+        if socket.is_active() && !self.state.connected {
+            self.state.connected = true;
+        }
 
-            if socket.can_recv() {
-                match socket.recv(|buf| (buf.len(), buf.len())) {
-                    Ok(received) if received > 0 => {
-                        self.states[i].test_throughput(
-                            self.flows[i].src_node_id,
-                            self.flows[i].src_node_id,
-                            None,
-                            received as u64,
-                        );
+        if socket.can_recv() {
+            match socket.recv(|buf| (buf.len(), buf.len())) {
+                Ok(received) if received > 0 => {
+                    self.state.test_throughput(
+                        self.flow.src_node_id,
+                        self.flow.src_node_id,
+                        None,
+                        received as u64,
+                    );
 
-                        if self.flows[i]
-                            .flow_size
-                            .exceeded(self.states[i].bytes_total, self.states[i].start_time)
-                        {
-                            info!("A user-space TCP server has finished receiving all its data.");
-                            socket.close();
-                        }
+                    if self.flow
+                        .flow_size
+                        .exceeded(self.state.bytes_total, self.state.start_time)
+                    {
+                        info!("A user-space TCP server has finished receiving all its data.");
+                        socket.close();
                     }
-                    Err(e) => {
-                        error!("Error receiving from a user-space TCP client: {:?}", e);
-                    }
-                    _ => {}
                 }
+                Err(e) => {
+                    error!("Error receiving from a user-space TCP client: {:?}", e);
+                }
+                _ => {}
             }
         }
     }
