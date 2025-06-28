@@ -315,7 +315,7 @@ impl Processor {
         }
     }
 
-    /// returns a local destination based on the destination IP and port
+    /// Locates a local destination based on the destination IP address and port number.
     fn local_destination(
         &self,
         dst_ip: Ipv4Addr,
@@ -333,14 +333,14 @@ impl Processor {
     async fn run(&mut self) {
         loop {
             tokio::select! {
-                // Wait for the first packet or a broadcast message
+                // waits for the first packet or a broadcast message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
                         ProcessorPacket::ProcessPacket(first_packet) => {
-                            // Start a batch with the first packet
+                            // starts a batch with the first packet
                             self.process_packet(first_packet);
 
-                            // Start processing packets in batches
+                            // starts processing packets in batches
                             while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
                                 self.process_packet(packet);
                             }
@@ -354,7 +354,6 @@ impl Processor {
         }
     }
 
-    // New helper method to handle non-packet messages
     async fn handle_message(&mut self, msg: ProcessorMessage) {
         match msg {
             ProcessorMessage::UpdateRoutingTable(routes) => {
@@ -418,7 +417,7 @@ impl Processor {
     fn send_packet(&self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
-            // and user-space TCP sources
+            // and user-space TCP clients
             let dst_ip = packet.flow_id.dst_ip();
             let dst_port = packet.flow_id.dst_port();
 

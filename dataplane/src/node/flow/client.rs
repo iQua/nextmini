@@ -226,7 +226,7 @@ impl UserSpaceClient {
                     .flow_size
                     .exceeded(self.state.bytes_total, self.state.start_time)
                 {
-                    info!("A user-space TCP flow has finished sending all its data.");
+                    info!("A user-space TCP client has finished sending all its data.");
                     socket.close();
                 }
             }

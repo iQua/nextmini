@@ -51,13 +51,18 @@ impl ControllerInterfaceHandle {
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
+        let user_space_client_handle =
+            UserSpaceClientHandle::new(config.clone(), processors.clone());
+        let user_space_server_handle =
+            UserSpaceServerHandle::new(config.clone(), processors.clone());
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
             receiver_stream,
             processors: processors.clone(),
             reporter: reporter.clone(),
-            client_handle: None,
-            server_handle: None,
+            user_space_client_handle,
+            user_space_server_handle,
         };
 
         tokio::spawn(async move {
@@ -172,9 +177,9 @@ pub struct ControllerToDataplaneReceiver {
     // reports metrics to controller
     reporter: ControllerReporterHandle,
 
-    // handles for client and server flows
-    client_handle: Option<UserSpaceClientHandle>,
-    server_handle: Option<UserSpaceServerHandle>,
+    // handles for user-space TCP flows
+    user_space_client_handle: UserSpaceClientHandle,
+    user_space_server_handle: UserSpaceServerHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -252,43 +257,27 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
+                info!(
+                    "Adding {} user-space flows to node {}.",
+                    flows.len(),
+                    self.config.node_id
+                );
+
                 let node_id = self.config.node_id;
 
-                // filters incoming and outgoing flows
-                let incoming_flows: Vec<_> = flows
-                    .iter()
-                    .filter(|f| f.dst_node_id == node_id)
-                    .cloned()
-                    .collect();
-
-                let outgoing_flows: Vec<_> = flows
+                let outbound_flows: Vec<_> = flows
                     .iter()
                     .filter(|f| f.src_node_id == node_id)
                     .cloned()
                     .collect();
+                self.user_space_client_handle.add_flows(outbound_flows);
 
-                // creates handle if it doesn't exist
-                if self.server_handle.is_none() {
-                    let handle =
-                        UserSpaceServerHandle::new(self.config.clone(), self.processors.clone());
-                    self.server_handle = Some(handle);
-                }
-
-                if self.client_handle.is_none() {
-                    let handle =
-                        UserSpaceClientHandle::new(self.config.clone(), self.processors.clone());
-                    self.client_handle = Some(handle);
-                }
-
-                // adds flows to server
-                if let Some(handle) = &self.server_handle {
-                    let _ = handle.add_flows(incoming_flows);
-                }
-
-                // adds flows to client
-                if let Some(handle) = &self.client_handle {
-                    let _ = handle.add_flows(outgoing_flows);
-                }
+                let inbound_flows: Vec<_> = flows
+                    .iter()
+                    .filter(|f| f.dst_node_id == node_id)
+                    .cloned()
+                    .collect();
+                self.user_space_server_handle.add_flows(inbound_flows);
             }
 
             ControllerToDataplane::SetFlowWeight {

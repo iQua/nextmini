@@ -17,7 +17,6 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use nextmini_messages::Flow;
 
-// socket buffer 655350 by default
 const SOCKET_BUFFER_SIZE: usize = 655350;
 
 #[derive(Debug, Clone)]
@@ -71,7 +70,11 @@ impl UserSpaceServer {
         processor_handle: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
-        info!("Creating user-space TCP server for {} flows.", flows.len());
+        info!(
+            "Creating a new user-space TCP server for {} flows.",
+            flows.len()
+        );
+
         let states = flows
             .iter()
             .map(|_| ConnectionState {
@@ -95,12 +98,14 @@ impl UserSpaceServer {
 
     fn run(mut self) {
         let packet_receiver = self.packet_receiver.take().unwrap();
+
         let mut device = VirtualDevice {
             config: self.config.clone(),
             receiver: packet_receiver,
             sender: self.processor_handle.clone(),
         };
 
+        // sets up Layer 3 using the provided IP address, without needing a hardware address
         let config = Config::new(HardwareAddress::Ip);
         let ip_addr = self
             .config
@@ -125,16 +130,15 @@ impl UserSpaceServer {
             socket_handles.push(handle);
         }
 
-        info!("User-space TCP server initialized, starting main loop.");
-
         loop {
             let timestamp = Instant::now();
+
             iface.poll(timestamp, &mut device, &mut sockets);
-            self.receive_data(&mut sockets, &socket_handles);
+            self.recv(&mut sockets, &socket_handles);
         }
     }
 
-    fn receive_data(&mut self, sockets: &mut SocketSet, handles: &[SocketHandle]) {
+    fn recv(&mut self, sockets: &mut SocketSet, handles: &[SocketHandle]) {
         let base_server_port = self.config.user_space_server_port;
 
         // Set up listening sockets if not already done
@@ -150,6 +154,7 @@ impl UserSpaceServer {
                     }
                 }
             }
+
             self.listening = true;
         }
 
@@ -158,7 +163,8 @@ impl UserSpaceServer {
 
             if socket.is_active() && !self.states[i].connected {
                 self.states[i].connected = true;
-                info!("Server accepted connection for flow {}", i);
+
+                info!("The server has accepted a new connection.");
             }
 
             if socket.can_recv() {
@@ -175,12 +181,12 @@ impl UserSpaceServer {
                             .flow_size
                             .exceeded(self.states[i].bytes_total, self.states[i].start_time)
                         {
-                            info!("Server received all data.");
+                            info!("A user-space TCP server has finished receiving all its data.");
                             socket.close();
                         }
                     }
                     Err(e) => {
-                        error!("Server receives error: {:?}.", e);
+                        error!("Error receiving from a user-space TCP client: {:?}", e);
                     }
                     _ => {}
                 }
