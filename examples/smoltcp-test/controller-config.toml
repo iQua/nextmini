@@ -2,7 +2,7 @@ protocol = "tcp"
 
 [topology]
 type = "full_mesh"
-n_nodes = 2
+n_nodes = 3
 
 [[flows]]
 src_node_id = 1
@@ -13,7 +13,17 @@ flow_size = { Bytes = 1_000_000_000_0 }
 # Q: if we are using only one tcp connection between nodes,
 # do we compete for the same connection?
 # then the two flows will be competing for the same connection
+# [[flows]]
+# src_node_id = 1
+# dst_node_id = 3
+# flow_size = { Bytes = 1_000_000_000_0 }
+
 [[flows]]
-src_node_id = 2
-dst_node_id = 1
+src_node_id = 3
+dst_node_id = 2
+flow_size = { Bytes = 1_000_000_000_0 }
+
+[[flows]]
+src_node_id = 3
+dst_node_id = 2
 flow_size = { Bytes = 1_000_000_000_0 }

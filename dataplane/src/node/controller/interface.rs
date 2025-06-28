@@ -269,20 +269,14 @@ impl ControllerToDataplaneReceiver {
 
                 // creates handle if it doesn't exist
                 if self.server_handle.is_none() {
-                    let handle = UserSpaceServerHandle::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                    );
-                    self.processors.connect_server_handle(handle.clone());
+                    let handle =
+                        UserSpaceServerHandle::new(self.config.clone(), self.processors.clone());
                     self.server_handle = Some(handle);
                 }
 
                 if self.client_handle.is_none() {
-                    let handle = UserSpaceClientHandle::new(
-                        self.config.clone(),
-                        self.processors.clone(),
-                    );
-                    self.processors.connect_client_handle(handle.clone());
+                    let handle =
+                        UserSpaceClientHandle::new(self.config.clone(), self.processors.clone());
                     self.client_handle = Some(handle);
                 }
 

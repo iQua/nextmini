@@ -8,9 +8,9 @@ use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use crate::node::LocalDestination;
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
@@ -27,22 +27,17 @@ const SOCKET_BUFFER_SIZE: usize = 655350;
 pub struct UserSpaceClientHandle {
     config: LocalConfig,
     processor_handle: ProcessorHandle,
-    packet_receiver: flume::Receiver<Packet>,
-    packet_sender: flume::Sender<Packet>,
     next_client_port: Arc<AtomicU16>,
 }
 
 impl UserSpaceClientHandle {
     pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
         // uses an atomic counter to ensure unique client ports
         let next_client_port = Arc::new(AtomicU16::new(config.user_space_client_port));
 
         Self {
             config,
             processor_handle,
-            packet_receiver,
-            packet_sender,
             next_client_port,
         }
     }
@@ -52,7 +47,10 @@ impl UserSpaceClientHandle {
             let config = self.config.clone();
             let processor_handle = self.processor_handle.clone();
             let client_port = self.next_client_port.fetch_add(1, Ordering::SeqCst);
-            let packet_receiver = self.packet_receiver.clone();
+            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+
+            self.processor_handle
+                .connect_local_destination(client_port, Arc::new(packet_sender));
 
             // spawns a new thread as smoltcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
@@ -71,18 +69,11 @@ impl UserSpaceClientHandle {
     }
 }
 
-// implements the LocalDestination trait for UserSpaceClientHandle
-impl LocalDestination for UserSpaceClientHandle {
-    fn send_packet(&self, packet: Packet) {
-        self.packet_sender.send(packet).unwrap();
-    }
-}
-
 struct UserSpaceTcpClient {
     config: LocalConfig,
     flow: Flow,
     processor_handle: ProcessorHandle,
-    packet_receiver: flume::Receiver<Packet>,
+    packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
     connecting: bool,
     client_port: u16,
@@ -94,7 +85,7 @@ impl UserSpaceTcpClient {
         flow: Flow,
         processor_handle: ProcessorHandle,
         client_port: u16,
-        packet_receiver: flume::Receiver<Packet>,
+        packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         info!(
             "Creats user-space TCP client for outgoing flow on port {}.",
@@ -113,7 +104,7 @@ impl UserSpaceTcpClient {
             config,
             flow,
             processor_handle,
-            packet_receiver,
+            packet_receiver: Some(packet_receiver),
             state,
             connecting: false,
             client_port,
@@ -124,7 +115,8 @@ impl UserSpaceTcpClient {
     fn start(mut self) {
         info!("Starts user-space TCP client.");
 
-        let packet_receiver = self.packet_receiver.clone();
+        // Take the packet_receiver out of the Option
+        let packet_receiver = self.packet_receiver.take().unwrap();
 
         // creates a virtual device using the passed processor handle
         let mut device = VirtualDevice {

@@ -18,8 +18,6 @@ use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::LocalDestination;
 use crate::node::config::{Feature, LocalConfig};
-use crate::node::flow::client::UserSpaceClientHandle;
-use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
@@ -36,8 +34,10 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    ConnectUserSpaceClientHandle(UserSpaceClientHandle),
-    ConnectUserSpaceServerHandle(UserSpaceServerHandle),
+    ConnectLocalDestination {
+        port: u16,
+        destination: Arc<dyn LocalDestination>,
+    },
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
@@ -89,30 +89,13 @@ impl ProcessorHandle {
     }
 
     // connects the client handle to the processor
-    pub fn connect_client_handle(&self, client_handle: UserSpaceClientHandle) {
-        if let Err(e) =
-            self.broadcast_sender()
-                .send(ProcessorMessage::ConnectUserSpaceClientHandle(
-                    client_handle,
-                ))
+    pub fn connect_local_destination(&self, port: u16, destination: Arc<dyn LocalDestination>) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectLocalDestination { port, destination })
         {
             error!(
                 "Error connecting the client handle to the processors: {}.",
-                e
-            );
-        };
-    }
-
-    // connects the server handle to the processor
-    pub fn connect_server_handle(&self, server_handle: UserSpaceServerHandle) {
-        if let Err(e) =
-            self.broadcast_sender()
-                .send(ProcessorMessage::ConnectUserSpaceServerHandle(
-                    server_handle,
-                ))
-        {
-            error!(
-                "Error connecting the server handle to the processors: {}.",
                 e
             );
         };
@@ -304,10 +287,9 @@ struct Processor {
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
-    // stores the three handles
+    // local interface handle and local destinations
     local_interface_handle: Option<Arc<LocalInterfaceHandle>>,
-    client_handle: Option<Arc<UserSpaceClientHandle>>,
-    server_handle: Option<Arc<UserSpaceServerHandle>>,
+    local_destinations: AHashMap<u16, Arc<dyn LocalDestination>>,
 
     // routing table
     routing_table: RoutingTable,
@@ -326,8 +308,7 @@ impl Processor {
             packet_receiver,
             broadcast_receiver,
             local_interface_handle: None,
-            client_handle: None,
-            server_handle: None,
+            local_destinations: AHashMap::new(),
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
             config,
@@ -340,25 +321,15 @@ impl Processor {
         dst_ip: Ipv4Addr,
         dst_port: u16,
     ) -> Option<Arc<dyn LocalDestination>> {
-        // if dst_ip is local interface, returns local interface handle
         if dst_ip == self.config.local_address {
             if let Some(handle) = &self.local_interface_handle {
-                return Some(handle.clone() as Arc<dyn LocalDestination>);
+                Some(handle.clone() as Arc<dyn LocalDestination>)
+            } else {
+                None
             }
         } else {
-            // if is server port, returns server handle
-            if dst_port == self.config.user_space_server_port {
-                if let Some(handle) = self.server_handle.clone() {
-                    return Some(handle as Arc<dyn LocalDestination>);
-                }
-            } else {
-                // returns client handle
-                if let Some(handle) = self.client_handle.clone() {
-                    return Some(handle as Arc<dyn LocalDestination>);
-                }
-            }
+            self.local_destinations.get(&dst_port).cloned()
         }
-        None
     }
 
     async fn run(&mut self) {
@@ -398,11 +369,8 @@ impl Processor {
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface_handle = Some(Arc::new(local_interface));
             }
-            ProcessorMessage::ConnectUserSpaceClientHandle(client) => {
-                self.client_handle = Some(Arc::new(client));
-            }
-            ProcessorMessage::ConnectUserSpaceServerHandle(server) => {
-                self.server_handle = Some(Arc::new(server));
+            ProcessorMessage::ConnectLocalDestination { port, destination } => {
+                self.local_destinations.insert(port, destination);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {

@@ -1,14 +1,15 @@
+use crate::node::LocalDestination;
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
+use tokio::sync::mpsc;
 
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-#[derive(Clone)]
 pub struct VirtualDevice {
     pub config: LocalConfig,
-    pub receiver: flume::Receiver<Packet>,
+    pub receiver: mpsc::Receiver<Packet>,
     pub sender: ProcessorHandle,
 }
 
@@ -17,10 +18,11 @@ impl Device for VirtualDevice {
     type TxToken<'a> = PacketTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        self.receiver
-            .try_recv()
-            .ok()
-            .map(|packet| (PacketRxToken(packet), PacketTxToken(self.sender.clone())))
+        match self.receiver.try_recv() {
+            Ok(packet) => Some((PacketRxToken(packet), PacketTxToken(self.sender.clone()))),
+            Err(mpsc::error::TryRecvError::Empty) => None,
+            Err(mpsc::error::TryRecvError::Disconnected) => None,
+        }
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
@@ -61,5 +63,13 @@ impl TxToken for PacketTxToken {
         self.0.process_packet(packet);
 
         result
+    }
+}
+
+impl LocalDestination for mpsc::Sender<Packet> {
+    fn send_packet(&self, packet: Packet) {
+        if self.try_send(packet).is_err() {
+            tracing::error!("Failed to send packet to local destination");
+        }
     }
 }
