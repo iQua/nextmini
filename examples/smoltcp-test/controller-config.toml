@@ -7,14 +7,14 @@ n_nodes = 3
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-flow_size = { Bytes = 1_000_000_000_0 }
+flow_spec = { flow_len = { Bytes = 1_000_000_000 }, flow_weight = 1 }
 
 [[flows]]
 src_node_id = 1
 dst_node_id = 3
-flow_size = { Bytes = 1_000_000_000_0 }
+flow_spec = { flow_len = { Bytes = 1_000_000_000 }, flow_weight = 2 }
 
 [[flows]]
 src_node_id = 3
 dst_node_id = 2
-flow_size = { Bytes = 1_000_000_000_0 }
+flow_spec = { flow_len = { Bytes = 1_000_000_000 }, flow_weight = 3 }

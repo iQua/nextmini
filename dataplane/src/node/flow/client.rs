@@ -72,6 +72,12 @@ impl UserSpaceClientHandle {
                 | ((server_port as u128) << 32);
 
             if let Some(weight) = flow.flow_spec.flow_weight {
+                info!(
+                    "Setting flow weight {} for user space flow from node {} to node {}.",
+                    weight,
+                    flow.src_node_id,
+                    flow.dst_node_id
+                );
                 self.processor_handle.set_flow_weight(flow_id, weight);
             }
 

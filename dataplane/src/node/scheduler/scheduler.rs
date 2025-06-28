@@ -86,7 +86,7 @@ impl SchedulerHandle {
         }
     }
 
-    /// TO BE IMPLEMENTED : Pending changes according to flow spec
+    /// Sets the weight of a flow.
     pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
         if let Err(e) = self
             .writer_sender
