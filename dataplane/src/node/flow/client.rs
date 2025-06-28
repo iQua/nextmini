@@ -65,6 +65,11 @@ impl UserSpaceClientHandle {
             self.processor_handle
                 .connect_local_destination(flow_id, Arc::new(packet_sender));
 
+            // sets the flow weight for this flow
+            if let Some(weight) = flow.flow_spec.flow_weight {
+                self.processor_handle.set_flow_weight(flow_id, weight);
+            }
+
             // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
                 let client = UserSpaceClient::new(
