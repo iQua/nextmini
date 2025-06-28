@@ -1,3 +1,4 @@
+// A TCP server for user-space flows, implemented using SmolTcp.
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant as StdInstant;

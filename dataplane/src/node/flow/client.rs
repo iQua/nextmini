@@ -1,7 +1,6 @@
 // A TCP client for user-space flows, implemented using SmolTcp.
 use std::cmp;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU16, Ordering};
 use std::thread;
 use std::time::Instant as StdInstant;
 
