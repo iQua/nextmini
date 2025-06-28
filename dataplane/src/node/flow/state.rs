@@ -15,23 +15,18 @@ pub struct ConnectionState {
 impl ConnectionState {
     pub fn test_throughput(
         &mut self,
-        id: usize,
-        node_id: usize,
-        port: Option<u16>,
+        node_role: &str, // the node serves as "client" or "server"
+        local_id: usize,
+        remote_node_id: usize,
+        port: u16,
         bytes_added: u64,
     ) {
         if self.bytes_total == 0 {
             self.start_time = StdInstant::now();
-            match port {
-                Some(port) => info!(
-                    "A user-space TCP client on port {} has started transferring data to node {}.",
-                    port, node_id
-                ),
-                None => info!(
-                    "A user-space TCP server {} has started receiving data from node {}.",
-                    id, node_id
-                ),
-            }
+            info!(
+                "A user-space TCP {} on port {} has started transferring data to node {}.",
+                node_role, port, remote_node_id
+            );
         }
 
         self.bytes_total += bytes_added;
@@ -44,16 +39,16 @@ impl ConnectionState {
             let throughput =
                 (self.bytes_last_updated as f64 * 8.0) / (elapsed_time * 1_000_000_000.0);
 
-            match port {
-                Some(port) => info!(
-                    "Throughput at the client from port {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
-                    port, node_id, throughput, self.bytes_last_updated, elapsed_time
-                ),
-                None => info!(
-                    "Throughput at the server {} receiving from node {}: {:.3} Gbps ({} bytes in {:.3}s)",
-                    id, node_id, throughput, self.bytes_last_updated, elapsed_time
-                ),
-            }
+            info!(
+                "Throughput at the {} (node {}) on port {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
+                node_role,
+                local_id,
+                port,
+                remote_node_id,
+                throughput,
+                self.bytes_last_updated,
+                elapsed_time
+            );
 
             self.bytes_last_updated = 0;
             self.time_last_updated = now;

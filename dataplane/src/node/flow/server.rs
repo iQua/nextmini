@@ -10,52 +10,37 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use nextmini_messages::Flow;
-
-use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::flow::SOCKET_BUFFER_SIZE;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, FlowIdExt, NodeIdExt};
 
 #[derive(Debug, Clone)]
-pub struct UserSpaceServerHandle {
-    processor_handle: ProcessorHandle,
-    config: LocalConfig,
-}
+pub struct UserSpaceServerHandle {}
 
 impl UserSpaceServerHandle {
-    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
-        Self {
-            config,
-            processor_handle,
-        }
-    }
+    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle, flow_id: FlowId) -> Self {
+        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
-    pub fn add_flows(&self, flows: Vec<Flow>) {
-        for flow in flows {
-            let config = self.config.clone();
-            let processor_handle = self.processor_handle.clone();
-            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+        // server as a local destination for packets destined to this flow
+        processor_handle.connect_local_destination(flow_id, Arc::new(packet_sender));
 
-            self.processor_handle
-                .connect_local_destination(self.config.user_space_server_port, Arc::new(packet_sender));
+        // spawn a single thread for one server/flow
+        thread::spawn(move || {
+            let server = UserSpaceServer::new(config, flow_id, processor_handle, packet_receiver);
+            server.run();
+        });
 
-            // spawns a single thread to manage all server sockets for the designated port
-            thread::spawn(move || {
-                let server = UserSpaceServer::new(config, flow, processor_handle, packet_receiver);
-
-                server.run();
-            });
-        }
+        Self {}
     }
 }
 
 struct UserSpaceServer {
     config: LocalConfig,
-    flow: Flow,
+    flow_id: FlowId,
     processor_handle: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
@@ -65,13 +50,11 @@ struct UserSpaceServer {
 impl UserSpaceServer {
     fn new(
         config: LocalConfig,
-        flow: Flow,
+        flow_id: FlowId,
         processor_handle: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
-        info!(
-            "Creating a new user-space TCP server for a single flow."
-        );
+        info!("Creating a new user-space TCP server for a single flow.");
 
         let state = ConnectionState {
             connected: false,
@@ -83,7 +66,7 @@ impl UserSpaceServer {
 
         Self {
             config,
-            flow,
+            flow_id,
             processor_handle,
             packet_receiver: Some(packet_receiver),
             state,
@@ -115,7 +98,7 @@ impl UserSpaceServer {
         });
 
         let mut sockets = SocketSet::new(vec![]);
-        
+
         let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
         let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
         let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
@@ -156,20 +139,19 @@ impl UserSpaceServer {
         if socket.can_recv() {
             match socket.recv(|buf| (buf.len(), buf.len())) {
                 Ok(received) if received > 0 => {
+                    let src_ip = self.flow_id.src_ip();
+                    let dst_ip = self.flow_id.dst_ip();
+
+                    let src_node_id = self.config.ip_to_node_id(src_ip);
+                    let dst_node_id = self.config.ip_to_node_id(dst_ip);
+
                     self.state.test_throughput(
-                        self.flow.src_node_id,
-                        self.flow.src_node_id,
-                        None,
+                        "server", // node serves as a server
+                        dst_node_id,
+                        src_node_id,
+                        self.flow_id.dst_port(),
                         received as u64,
                     );
-
-                    if self.flow
-                        .flow_size
-                        .exceeded(self.state.bytes_total, self.state.start_time)
-                    {
-                        info!("A user-space TCP server has finished receiving all its data.");
-                        socket.close();
-                    }
                 }
                 Err(e) => {
                     error!("Error receiving from a user-space TCP client: {:?}", e);

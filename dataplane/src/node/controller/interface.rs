@@ -14,7 +14,6 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
-use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
@@ -53,8 +52,6 @@ impl ControllerInterfaceHandle {
 
         let user_space_client_handle =
             UserSpaceClientHandle::new(config.clone(), processors.clone());
-        let user_space_server_handle =
-            UserSpaceServerHandle::new(config.clone(), processors.clone());
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
@@ -62,7 +59,6 @@ impl ControllerInterfaceHandle {
             processors: processors.clone(),
             reporter: reporter.clone(),
             user_space_client_handle,
-            user_space_server_handle,
         };
 
         tokio::spawn(async move {
@@ -179,7 +175,6 @@ pub struct ControllerToDataplaneReceiver {
 
     // handles for user-space TCP flows
     user_space_client_handle: UserSpaceClientHandle,
-    user_space_server_handle: UserSpaceServerHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -265,19 +260,25 @@ impl ControllerToDataplaneReceiver {
 
                 let node_id = self.config.node_id;
 
+                // filters for outbound flows, for clients starting connections
                 let outbound_flows: Vec<_> = flows
                     .iter()
                     .filter(|f| f.src_node_id == node_id)
                     .cloned()
                     .collect();
-                self.user_space_client_handle.add_flows(outbound_flows);
 
-                let inbound_flows: Vec<_> = flows
-                    .iter()
-                    .filter(|f| f.dst_node_id == node_id)
-                    .cloned()
-                    .collect();
-                self.user_space_server_handle.add_flows(inbound_flows);
+                if !outbound_flows.is_empty() {
+                    self.user_space_client_handle.add_flows(outbound_flows);
+                }
+
+                // checks if there are any flows destined for this node.
+                let has_inbound_flows = flows.iter().any(|f| f.dst_node_id == node_id);
+
+                if has_inbound_flows {
+                    // enables the processor to spawn servers on demand
+                    self.processors
+                        .enable_server_spawning(self.processors.clone());
+                }
             }
 
             ControllerToDataplane::SetFlowWeight {

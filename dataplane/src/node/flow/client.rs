@@ -47,8 +47,23 @@ impl UserSpaceClientHandle {
             let client_port = self.next_client_port;
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
+            // extracts flow_id where server is source, client is destination
+            let client_ip = config
+                .node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+            let server_ip =
+                flow.dst_node_id
+                    .ip_addr(config.user_space_base_addr, config.local_netmask);
+            let server_port = config.user_space_server_port;
+
+            let flow_id = ((u32::from(server_ip) as u128) << 96)
+                | ((u32::from(client_ip) as u128) << 64)
+                | ((server_port as u128) << 48)
+                | ((client_port as u128) << 32);
+
+            // connects this client as a local destination for packets destined to this flow
             self.processor_handle
-                .connect_local_destination(client_port, Arc::new(packet_sender));
+                .connect_local_destination(flow_id, Arc::new(packet_sender));
 
             // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
@@ -207,9 +222,10 @@ impl UserSpaceClient {
         }) {
             Ok(sent) if sent > 0 => {
                 self.state.test_throughput(
-                    0,
+                    "client",
+                    self.config.node_id,
                     self.flow.dst_node_id,
-                    Some(self.client_port),
+                    self.client_port,
                     sent as u64,
                 );
 
