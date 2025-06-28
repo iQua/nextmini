@@ -11,7 +11,7 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use nextmini_messages::{Flow, FlowSpec};
+use nextmini_messages::{Flow, FlowLen};
 
 use crate::node::NodeIdExt;
 use crate::node::config::LocalConfig;
@@ -51,9 +51,9 @@ impl UserSpaceClientHandle {
             let client_ip = config
                 .node_id
                 .ip_addr(config.user_space_base_addr, config.local_netmask);
-            let server_ip =
-                flow.dst_node_id
-                    .ip_addr(config.user_space_base_addr, config.local_netmask);
+            let server_ip = flow
+                .dst_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
             let server_port = config.user_space_server_port;
 
             let flow_id = ((u32::from(server_ip) as u128) << 96)
@@ -211,7 +211,7 @@ impl UserSpaceClient {
         }
 
         let remaining = match self.flow.flow_size {
-            FlowSpec::Bytes(size) => size as u64 - self.state.bytes_total,
+            FlowLen::Bytes(size) => size as u64 - self.state.bytes_total,
             _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
         };
 

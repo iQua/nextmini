@@ -42,21 +42,21 @@ pub enum Protocol {
 pub struct Flow {
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub flow_size: FlowSpec,
+    pub flow_size: FlowLen,
 }
 
 /// The size of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum FlowSpec {
+pub enum FlowLen {
     Bytes(usize),
     Duration(f64),
 }
 
-impl FlowSpec {
+impl FlowLen {
     pub fn exceeded(&self, sent_size: u64, start_time: std::time::Instant) -> bool {
         match *self {
-            FlowSpec::Bytes(size) => sent_size >= size as u64,
-            FlowSpec::Duration(duration) => start_time.elapsed().as_secs_f64() >= duration,
+            FlowLen::Bytes(size) => sent_size >= size as u64,
+            FlowLen::Duration(duration) => start_time.elapsed().as_secs_f64() >= duration,
         }
     }
 }

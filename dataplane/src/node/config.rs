@@ -9,7 +9,7 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::FlowSpec;
+use nextmini_messages::FlowLen;
 use nextmini_messages::{ControllerToDataplane, Flow, Protocol};
 
 use crate::node::NodeId;
@@ -207,7 +207,7 @@ pub struct LocalConfig {
     #[default(vec![Flow {
         src_node_id: 0,
         dst_node_id: 0,
-        flow_size: FlowSpec::Bytes(1_000_000_000),
+        flow_size: FlowLen::Bytes(1_000_000_000),
     }])]
     #[arg(skip)]
     pub flow: Vec<Flow>,
