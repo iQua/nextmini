@@ -90,9 +90,10 @@ services:
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
+      - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 10 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
@@ -113,6 +114,7 @@ services:
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
+      - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 10 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
