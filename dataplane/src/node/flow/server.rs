@@ -146,12 +146,8 @@ impl UserSpaceServer {
                     let src_node_id = self.config.ip_to_node_id(src_ip);
                     let dst_node_id = self.config.ip_to_node_id(dst_ip);
 
-                    self.state.test_throughput(
-                        dst_node_id,
-                        src_node_id,
-                        self.flow_id.dst_port(),
-                        received as u64,
-                    );
+                    self.state
+                        .test_throughput(dst_node_id, src_node_id, received as u64);
                 }
                 Err(e) => {
                     error!("Error receiving from a user-space TCP client: {:?}", e);

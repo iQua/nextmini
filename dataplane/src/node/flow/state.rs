@@ -12,18 +12,12 @@ pub struct ConnectionState {
 
 // Measures and reports throughput for both the client and the server.
 impl ConnectionState {
-    pub fn test_throughput(
-        &mut self,
-        local_id: usize,
-        remote_node_id: usize,
-        port: u16,
-        bytes_added: u64,
-    ) {
+    pub fn test_throughput(&mut self, local_id: usize, remote_node_id: usize, bytes_added: u64) {
         if self.bytes_total == 0 {
             self.start_time = StdInstant::now();
             info!(
-                "A user-space TCP on port {} has started transferring data to node {}.",
-                port, remote_node_id
+                "A user-space flow has started transferring data from node {} to node {}.",
+                local_id, remote_node_id
             );
         }
 
@@ -38,13 +32,8 @@ impl ConnectionState {
                 (self.bytes_last_updated as f64 * 8.0) / (elapsed_time * 1_000_000_000.0);
 
             info!(
-                "Throughput at node {} on port {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
-                local_id,
-                port,
-                remote_node_id,
-                throughput,
-                self.bytes_last_updated,
-                elapsed_time
+                "Throughput from node {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
+                local_id, remote_node_id, throughput, self.bytes_last_updated, elapsed_time
             );
 
             self.bytes_last_updated = 0;

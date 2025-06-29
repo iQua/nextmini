@@ -240,12 +240,8 @@ impl UserSpaceClient {
                     }
                 }
 
-                self.state.test_throughput(
-                    self.config.node_id,
-                    self.flow.dst_node_id,
-                    self.client_port,
-                    sent as u64,
-                );
+                self.state
+                    .test_throughput(self.config.node_id, self.flow.dst_node_id, sent as u64);
 
                 if self
                     .flow
