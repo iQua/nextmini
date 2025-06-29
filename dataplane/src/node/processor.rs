@@ -431,7 +431,6 @@ impl Processor {
                 .clone()
                 .expect("The user-space server has not yet been connected.");
 
-            println!("Adding a new server...");
             let sender = server_handle.add_server(flow_id);
             self.user_space_senders.insert(flow_id, sender.clone());
 

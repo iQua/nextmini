@@ -170,9 +170,10 @@ impl UserSpaceClient {
 
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
 
-            if socket.is_open() {
+            if socket.is_active() {
                 self.send(socket);
             } else {
+                println!("The socket is no longer open. Terminating.");
                 break;
             }
         }
@@ -204,59 +205,48 @@ impl UserSpaceClient {
 
     /// Sends data, as much as possible or up to a certain flow rate, to the user-space TCP server.
     fn send(&mut self, socket: &mut tcp::Socket) {
-        if !socket.is_active() {
-            return;
-        }
+        if socket.can_send() {
+            let remaining = match self.flow.flow_spec.flow_len {
+                FlowLen::Bytes(size) => size as u64 - self.state.bytes_total,
+                _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
+            };
 
-        if !socket.can_send()
-            || self
-                .flow
-                .flow_spec
-                .flow_len
-                .exceeded(self.state.bytes_total, self.state.start_time)
-        {
-            return;
-        }
+            let sending_start_time = StdInstant::now();
 
-        let remaining = match self.flow.flow_spec.flow_len {
-            FlowLen::Bytes(size) => size as u64 - self.state.bytes_total,
-            _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
-        };
+            match socket.send(|buf| {
+                let to_send = cmp::min(buf.len(), remaining as usize);
+                buf[..to_send].fill(0xAA);
+                (to_send, to_send)
+            }) {
+                Ok(sent) if sent > 0 => {
+                    // calculates the time to wait for a specified flow rate
+                    if let Some(flow_rate) = self.flow.flow_spec.flow_rate {
+                        let expected_time = Duration::from_secs_f64(sent as f64 / flow_rate as f64);
+                        let actual_time = sending_start_time.elapsed();
 
-        let sending_start_time = StdInstant::now();
+                        if expected_time > actual_time {
+                            thread::sleep(expected_time - actual_time);
+                        }
+                    }
 
-        match socket.send(|buf| {
-            let to_send = cmp::min(buf.len(), remaining as usize);
-            buf[..to_send].fill(0xAA);
-            (to_send, to_send)
-        }) {
-            Ok(sent) if sent > 0 => {
-                // Calculates the time to wait for specified flow rate
-                if let Some(flow_rate) = self.flow.flow_spec.flow_rate {
-                    let expected_time = Duration::from_secs_f64(sent as f64 / flow_rate as f64);
-                    let actual_time = sending_start_time.elapsed();
-                    if expected_time > actual_time {
-                        thread::sleep(expected_time - actual_time);
+                    self.state
+                        .update(self.config.node_id, self.flow.dst_node_id, sent as u64);
+
+                    if self
+                        .flow
+                        .flow_spec
+                        .flow_len
+                        .exceeded(self.state.bytes_total, self.state.start_time)
+                    {
+                        info!("A user-space TCP client has finished sending all its data.");
+                        socket.close();
                     }
                 }
-
-                self.state
-                    .update(self.config.node_id, self.flow.dst_node_id, sent as u64);
-
-                if self
-                    .flow
-                    .flow_spec
-                    .flow_len
-                    .exceeded(self.state.bytes_total, self.state.start_time)
-                {
-                    info!("A user-space TCP client has finished sending all its data.");
-                    socket.close();
+                Err(e) => {
+                    error!("Error sending to a user-space TCP server: {:?}", e);
                 }
+                Ok(_) => {}
             }
-            Err(e) => {
-                error!("Error sending to a user-space TCP server: {:?}", e);
-            }
-            Ok(_) => {}
         }
     }
 }

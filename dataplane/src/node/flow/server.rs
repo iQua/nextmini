@@ -137,9 +137,10 @@ impl UserSpaceServer {
             iface.poll(timestamp, &mut device, &mut sockets);
 
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
-            if socket.is_open() {
+            if socket.is_active() {
                 self.recv(socket);
             } else {
+                println!("The socket is closed. Terminating.");
                 break;
             }
 
