@@ -424,6 +424,8 @@ impl Processor {
         if let Some(sender) = self.user_space_senders.get(&flow_id) {
             sender.clone()
         } else {
+            assert!(flow_id.dst_port() == self.config.user_space_server_port);
+
             let server_handle = self
                 .server_handle
                 .clone()

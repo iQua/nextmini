@@ -106,11 +106,6 @@ impl UserSpaceClient {
         client_port: u16,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
-        info!(
-            "Creats user-space TCP client for outgoing flow on port {}.",
-            client_port
-        );
-
         let state = ConnectionState {
             start_time: StdInstant::now(),
             time_last_updated: StdInstant::now(),
@@ -162,6 +157,10 @@ impl UserSpaceClient {
         let socket = tcp::Socket::new(rx_buffer, tx_buffer);
         let socket_handle = sockets.add(socket);
 
+        // handles client connection and sends out data
+        let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
+        self.connect(socket, iface.context());
+
         loop {
             // gets the current time
             let timestamp = Instant::now();
@@ -171,9 +170,11 @@ impl UserSpaceClient {
 
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
 
-            // handles client connection and sends out data
-            self.connect(socket, iface.context());
-            self.send(socket);
+            if socket.is_open() {
+                self.send(socket);
+            } else {
+                break;
+            }
         }
     }
 

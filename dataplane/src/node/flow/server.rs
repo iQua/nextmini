@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 
-use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
+use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
@@ -135,7 +135,13 @@ impl UserSpaceServer {
             let timestamp = Instant::now();
 
             iface.poll(timestamp, &mut device, &mut sockets);
-            self.recv(&mut sockets, socket_handle);
+
+            let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
+            if socket.is_open() {
+                self.recv(socket);
+            } else {
+                break;
+            }
 
             let now = Instant::now();
             match iface.poll_at(now, &sockets) {
@@ -155,9 +161,7 @@ impl UserSpaceServer {
         }
     }
 
-    fn recv(&mut self, sockets: &mut SocketSet, handle: SocketHandle) {
-        let socket = sockets.get_mut::<tcp::Socket>(handle);
-
+    fn recv(&mut self, socket: &mut tcp::Socket) {
         if socket.can_recv() {
             match socket.recv(|buf| (buf.len(), buf.len())) {
                 Err(e) => {
