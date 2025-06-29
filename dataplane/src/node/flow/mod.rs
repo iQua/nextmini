@@ -9,14 +9,15 @@ use tokio::sync::mpsc;
 const SOCKET_BUFFER_SIZE: usize = 655350;
 
 /// A trait for sending packets to destinations in user-space TCP flows.
-pub trait UserSpaceSender: Send + Sync + std::fmt::Debug {
-    fn send_packet(&self, packet: Packet);
-}
+pub type UserSpaceSender = mpsc::Sender<Packet>;
+// pub trait UserSpaceSender: Send + Sync + std::fmt::Debug {
+//     fn send_packet(&self, packet: Packet);
+// }
 
-impl UserSpaceSender for mpsc::Sender<Packet> {
-    fn send_packet(&self, packet: Packet) {
-        if self.try_send(packet).is_err() {
-            tracing::error!("Failed to send a packet to its local destination.");
-        }
-    }
-}
+// impl UserSpaceSender for mpsc::Sender<Packet> {
+//     fn send_packet(&self, packet: Packet) {
+//         if self.try_send(packet).is_err() {
+//             tracing::error!("Failed to send a packet to its local destination.");
+//         }
+//     }
+// }

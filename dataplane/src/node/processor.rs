@@ -36,7 +36,7 @@ pub enum ProcessorMessage {
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectUserSpaceSender {
         flow_id: FlowId,
-        destination: Arc<dyn UserSpaceSender>,
+        sender: UserSpaceSender,
     },
     ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
@@ -90,17 +90,10 @@ impl ProcessorHandle {
     }
 
     // connects the client handle to the processor
-    pub fn connect_local_destination(
-        &self,
-        flow_id: FlowId,
-        destination: Arc<dyn UserSpaceSender>,
-    ) {
+    pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectUserSpaceSender {
-                flow_id,
-                destination,
-            })
+            .send(ProcessorMessage::ConnectUserSpaceSender { flow_id, sender })
         {
             error!(
                 "Error connecting the client handle to the processors: {}.",
@@ -307,9 +300,12 @@ struct Processor {
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
-    // the local TUN interface and local destinations (for destination packets)
+    // the local TUN interface
     local_interface: Option<Arc<LocalInterfaceHandle>>,
-    local_destinations: AHashMap<FlowId, Arc<dyn UserSpaceSender>>,
+
+    // channel senders for packets in user-space TCP flows
+    user_space_senders: AHashMap<FlowId, UserSpaceSender>,
+
     // the user-space TCP server handle
     server_handle: Option<UserSpaceServerHandle>,
 
@@ -330,32 +326,11 @@ impl Processor {
             packet_receiver,
             broadcast_receiver,
             local_interface: None,
-            local_destinations: AHashMap::new(),
+            user_space_senders: AHashMap::new(),
             server_handle: None,
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
             config,
-        }
-    }
-
-    /// Locates a local destination based on the destination IP address and port number.
-    fn local_destination(&mut self, flow_id: FlowId) -> Option<Arc<dyn UserSpaceSender>> {
-        if flow_id.dst_ip() == self.config.local_address {
-            self.local_interface
-                .clone()
-                .map(|l| l as Arc<dyn UserSpaceSender>)
-        } else {
-            if let Some(destination) = self.local_destinations.get(&flow_id) {
-                Some(destination.clone())
-            } else {
-                if let Some(server_handle) = &self.server_handle {
-                    let packet_sender = server_handle.add_server(flow_id);
-                    let destination: Arc<dyn UserSpaceSender> = Arc::new(packet_sender);
-                    return Some(destination);
-                }
-
-                None
-            }
         }
     }
 
@@ -395,11 +370,8 @@ impl Processor {
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
             }
-            ProcessorMessage::ConnectUserSpaceSender {
-                flow_id,
-                destination,
-            } => {
-                self.local_destinations.insert(flow_id, destination);
+            ProcessorMessage::ConnectUserSpaceSender { flow_id, sender } => {
+                self.user_space_senders.insert(flow_id, sender);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
@@ -447,18 +419,44 @@ impl Processor {
         }
     }
 
+    /// Locates a channel sender for delivering packets in user-space flows, based on the flow ID.
+    fn user_space_sender(&mut self, flow_id: FlowId) -> UserSpaceSender {
+        if let Some(sender) = self.user_space_senders.get(&flow_id) {
+            sender.clone()
+        } else {
+            let server_handle = self
+                .server_handle
+                .clone()
+                .expect("The user-space server has not yet been connected.");
+
+            let sender = server_handle.add_server(flow_id);
+            self.user_space_senders.insert(flow_id, sender.clone());
+
+            sender
+        }
+    }
+
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
     fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
-            let flow_id = packet.flow_id;
-
-            if let Some(dest) = self.local_destination(flow_id) {
-                dest.send_packet(packet);
+            if packet.flow_id.dst_ip() == self.config.local_address {
+                if let Some(ref local_interface) = self.local_interface {
+                    local_interface.write_packet(packet);
+                } else {
+                    error!("The local interface has not yet been connected.");
+                }
             } else {
-                error!("No local destination found for flow_id: {}", flow_id);
+                let flow_id = packet.flow_id;
+
+                let dest = self.user_space_sender(flow_id);
+                if dest.try_send(packet).is_err() {
+                    tracing::error!(
+                        "Failed to send a packet in user-space flows to its local destination."
+                    );
+                }
             }
         } else {
             if let Some(scheduler) = self.schedulers.get(&next_hop_id) {

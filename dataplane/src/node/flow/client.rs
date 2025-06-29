@@ -1,6 +1,5 @@
 // A TCP client for user-space flows, implemented using SmolTcp.
 use std::cmp;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant as StdInstant};
 
@@ -63,7 +62,7 @@ impl UserSpaceClientHandle {
                 | ((client_port as u128) << 32);
 
             self.processor_handle
-                .connect_local_destination(flow_id, Arc::new(packet_sender));
+                .connect_user_space_sender(flow_id, packet_sender);
 
             // set flow weights for this flow
             if let Some(weight) = flow.flow_spec.flow_weight {

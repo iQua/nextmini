@@ -37,7 +37,7 @@ impl UserSpaceServerHandle {
     }
 
     // starts a new server thread for a given flow.
-    pub fn add_server(&self, flow_id: FlowId) -> mpsc::Sender<Packet> {
+    pub fn add_server(&self, flow_id: FlowId) -> UserSpaceSender {
         let mut senders = self.packet_senders.lock().unwrap();
         if let Some(existing_sender) = senders.get(&flow_id) {
             return existing_sender.clone();
@@ -48,16 +48,16 @@ impl UserSpaceServerHandle {
         // insert into HashMap to track this server
         senders.insert(flow_id, packet_sender.clone());
 
-        let destination: Arc<dyn UserSpaceSender> = Arc::new(packet_sender.clone());
+        let sender: UserSpaceSender = packet_sender.clone();
         self.processor_handle
-            .connect_local_destination(flow_id, destination);
+            .connect_user_space_sender(flow_id, sender);
 
         let config = self.config.clone();
         let processor_handle = self.processor_handle.clone();
 
         let server = UserSpaceServer::new(config, flow_id, processor_handle, packet_receiver);
 
-        // spawn a single thread for one server/flow
+        // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
             server.run();
         });

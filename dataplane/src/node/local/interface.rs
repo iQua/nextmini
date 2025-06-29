@@ -7,7 +7,6 @@ use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
 use crate::node::config::LocalConfig;
-use crate::node::flow::UserSpaceSender;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
@@ -36,13 +35,6 @@ pub enum LocalInterfaceMessage {
 pub struct LocalInterfaceHandle {
     shutdown_sender: broadcast::Sender<ShutdownMessage>,
     write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
-}
-
-/// Implements the common UserSpaceSender trait, shared between the TUN interface and user-space TCP sources.
-impl UserSpaceSender for LocalInterfaceHandle {
-    fn send_packet(&self, packet: Packet) {
-        self.write_packet(packet);
-    }
 }
 
 impl LocalInterfaceHandle {
