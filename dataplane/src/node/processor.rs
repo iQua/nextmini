@@ -295,7 +295,7 @@ struct Processor {
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
     // the local TUN interface and local destinations (for destination packets)
-    local_interface_handle: Option<Arc<LocalInterfaceHandle>>,
+    local_interface: Option<Arc<LocalInterfaceHandle>>,
     local_destinations: AHashMap<FlowId, Arc<dyn LocalDestination>>,
 
     // the routing table
@@ -314,7 +314,7 @@ impl Processor {
         Self {
             packet_receiver,
             broadcast_receiver,
-            local_interface_handle: None,
+            local_interface: None,
             local_destinations: AHashMap::new(),
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
@@ -323,11 +323,11 @@ impl Processor {
     }
 
     /// Locates a local destination based on the destination IP address and port number.
-    fn local_destination(&mut self, flow_id: FlowId) -> Option<Arc<dyn LocalDestination>> {
+    fn local_destination(&self, flow_id: FlowId) -> Option<Arc<dyn LocalDestination>> {
         if flow_id.dst_ip() == self.config.local_address {
-            self.local_interface_handle
+            self.local_interface
                 .clone()
-                .map(|h| h as Arc<dyn LocalDestination>)
+                .map(|l| l as Arc<dyn LocalDestination>)
         } else {
             if let Some(destination) = self.local_destinations.get(&flow_id) {
                 Some(destination.clone())
@@ -371,7 +371,7 @@ impl Processor {
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
-                self.local_interface_handle = Some(Arc::new(local_interface));
+                self.local_interface = Some(Arc::new(local_interface));
             }
             ProcessorMessage::ConnectLocalDestination {
                 flow_id,
