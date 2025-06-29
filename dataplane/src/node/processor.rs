@@ -298,9 +298,6 @@ struct Processor {
     local_interface_handle: Option<Arc<LocalInterfaceHandle>>,
     local_destinations: AHashMap<FlowId, Arc<dyn LocalDestination>>,
 
-    // processor handle for creating servers
-    processor_handle: Option<ProcessorHandle>,
-
     // the routing table
     routing_table: RoutingTable,
 
@@ -319,7 +316,6 @@ impl Processor {
             broadcast_receiver,
             local_interface_handle: None,
             local_destinations: AHashMap::new(),
-            processor_handle: None,
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
             config,
@@ -336,14 +332,6 @@ impl Processor {
             if let Some(destination) = self.local_destinations.get(&flow_id) {
                 Some(destination.clone())
             } else {
-                // creates a server handle for the unknown flow
-                if let Some(processor_handle) = &self.processor_handle {
-                    UserSpaceServerHandle::new(
-                        self.config.clone(),
-                        processor_handle.clone(),
-                        flow_id,
-                    );
-                }
                 None
             }
         }
@@ -390,9 +378,6 @@ impl Processor {
                 destination,
             } => {
                 self.local_destinations.insert(flow_id, destination);
-            }
-            ProcessorMessage::EnableServerSpawning(processor_handle) => {
-                self.processor_handle = Some(processor_handle);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
