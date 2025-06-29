@@ -38,7 +38,6 @@ pub enum ProcessorMessage {
         flow_id: FlowId,
         destination: Arc<dyn LocalDestination>,
     },
-    EnableServerSpawning(ProcessorHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
@@ -104,18 +103,6 @@ impl ProcessorHandle {
         {
             error!(
                 "Error connecting the client handle to the processors: {}.",
-                e
-            );
-        };
-    }
-
-    pub fn enable_server_spawning(&self, processor_handle: ProcessorHandle) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMessage::EnableServerSpawning(processor_handle))
-        {
-            error!(
-                "Error sending the EnableServerSpawning message to the processors: {}",
                 e
             );
         };
