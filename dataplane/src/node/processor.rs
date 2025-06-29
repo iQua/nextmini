@@ -38,7 +38,7 @@ pub enum ProcessorMessage {
         flow_id: FlowId,
         destination: Arc<dyn LocalDestination>,
     },
-    SetServerHandle(UserSpaceServerHandle),
+    ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
@@ -140,13 +140,13 @@ impl ProcessorHandle {
         }
     }
 
-    pub fn set_server_handle(&self, server_handle: UserSpaceServerHandle) {
+    pub fn connect_server_handle(&self, server_handle: UserSpaceServerHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::SetServerHandle(server_handle))
+            .send(ProcessorMessage::ConnectServerHandle(server_handle))
         {
             error!(
-                "Error sending the SetServerHandle message to the processors: {}",
+                "Error sending the ConnectServerHandle message to the processors: {}",
                 e
             );
         };
@@ -310,6 +310,7 @@ struct Processor {
     // the local TUN interface and local destinations (for destination packets)
     local_interface: Option<Arc<LocalInterfaceHandle>>,
     local_destinations: AHashMap<FlowId, Arc<dyn LocalDestination>>,
+    // the user-space TCP server handle
     server_handle: Option<UserSpaceServerHandle>,
 
     // the routing table
@@ -399,7 +400,7 @@ impl Processor {
                     scheduler.limit_rate(spec);
                 }
             }
-            ProcessorMessage::SetServerHandle(user_space_server_handle) => {
+            ProcessorMessage::ConnectServerHandle(user_space_server_handle) => {
                 self.server_handle = Some(user_space_server_handle);
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {

@@ -57,7 +57,7 @@ impl ControllerInterfaceHandle {
         // creates the server handle for the processor to use.
         let user_space_server_handle =
             UserSpaceServerHandle::new(config.clone(), processors.clone());
-        processors.set_server_handle(user_space_server_handle);
+        processors.connect_server_handle(user_space_server_handle);
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
