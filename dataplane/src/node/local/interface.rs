@@ -6,8 +6,8 @@ use tracing::{error, info};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
-use crate::node::LocalDestination;
 use crate::node::config::LocalConfig;
+use crate::node::flow::UserSpaceSender;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
@@ -38,8 +38,8 @@ pub struct LocalInterfaceHandle {
     write_senders: Vec<mpsc::Sender<LocalInterfaceMessage>>,
 }
 
-/// Implements the common LocalDestination trait, shared between the TUN interface and user-space TCP sources.
-impl LocalDestination for LocalInterfaceHandle {
+/// Implements the common UserSpaceSender trait, shared between the TUN interface and user-space TCP sources.
+impl UserSpaceSender for LocalInterfaceHandle {
     fn send_packet(&self, packet: Packet) {
         self.write_packet(packet);
     }

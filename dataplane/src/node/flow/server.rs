@@ -13,12 +13,12 @@ use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
-use crate::node::flow::SOCKET_BUFFER_SIZE;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
+use crate::node::flow::{SOCKET_BUFFER_SIZE, UserSpaceSender};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::{FlowId, FlowIdExt, LocalDestination, NodeIdExt};
+use crate::node::{FlowId, FlowIdExt, NodeIdExt};
 
 #[derive(Debug, Clone)]
 pub struct UserSpaceServerHandle {
@@ -48,7 +48,7 @@ impl UserSpaceServerHandle {
         // insert into HashMap to track this server
         senders.insert(flow_id, packet_sender.clone());
 
-        let destination: Arc<dyn LocalDestination> = Arc::new(packet_sender.clone());
+        let destination: Arc<dyn UserSpaceSender> = Arc::new(packet_sender.clone());
         self.processor_handle
             .connect_local_destination(flow_id, destination);
 

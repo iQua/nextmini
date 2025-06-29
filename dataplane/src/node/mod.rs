@@ -12,8 +12,6 @@ pub mod scheduler;
 use jumphash::JumpHasher;
 use std::net::Ipv4Addr;
 
-use crate::node::packet::Packet;
-
 /// The node ID.
 pub type NodeId = usize;
 
@@ -56,11 +54,6 @@ const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;
 
 /// The packet buffer, used for receiving a packet from the network.
 type PacketBuf = Vec<u8>;
-
-// A common interface for all types of local packet destinations: the TUN interface and user-space TCP sources.
-pub trait LocalDestination: Send + Sync + std::fmt::Debug {
-    fn send_packet(&self, packet: Packet);
-}
 
 /// The flow ID is a 128-bit integer, used to store complete 4-tuple: src_ip(32) + dst_ip(32) + src_port(16)
 /// + dst_port(16) + reserved(32)

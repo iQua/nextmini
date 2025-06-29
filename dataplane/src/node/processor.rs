@@ -15,8 +15,8 @@ use tracing::{error, warn};
 
 use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
-use crate::node::LocalDestination;
 use crate::node::config::{Feature, LocalConfig};
+use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
@@ -34,9 +34,9 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    ConnectLocalDestination {
+    ConnectUserSpaceSender {
         flow_id: FlowId,
-        destination: Arc<dyn LocalDestination>,
+        destination: Arc<dyn UserSpaceSender>,
     },
     ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
@@ -93,11 +93,11 @@ impl ProcessorHandle {
     pub fn connect_local_destination(
         &self,
         flow_id: FlowId,
-        destination: Arc<dyn LocalDestination>,
+        destination: Arc<dyn UserSpaceSender>,
     ) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectLocalDestination {
+            .send(ProcessorMessage::ConnectUserSpaceSender {
                 flow_id,
                 destination,
             })
@@ -309,7 +309,7 @@ struct Processor {
 
     // the local TUN interface and local destinations (for destination packets)
     local_interface: Option<Arc<LocalInterfaceHandle>>,
-    local_destinations: AHashMap<FlowId, Arc<dyn LocalDestination>>,
+    local_destinations: AHashMap<FlowId, Arc<dyn UserSpaceSender>>,
     // the user-space TCP server handle
     server_handle: Option<UserSpaceServerHandle>,
 
@@ -339,18 +339,18 @@ impl Processor {
     }
 
     /// Locates a local destination based on the destination IP address and port number.
-    fn local_destination(&mut self, flow_id: FlowId) -> Option<Arc<dyn LocalDestination>> {
+    fn local_destination(&mut self, flow_id: FlowId) -> Option<Arc<dyn UserSpaceSender>> {
         if flow_id.dst_ip() == self.config.local_address {
             self.local_interface
                 .clone()
-                .map(|l| l as Arc<dyn LocalDestination>)
+                .map(|l| l as Arc<dyn UserSpaceSender>)
         } else {
             if let Some(destination) = self.local_destinations.get(&flow_id) {
                 Some(destination.clone())
             } else {
                 if let Some(server_handle) = &self.server_handle {
                     let packet_sender = server_handle.add_server(flow_id);
-                    let destination: Arc<dyn LocalDestination> = Arc::new(packet_sender);
+                    let destination: Arc<dyn UserSpaceSender> = Arc::new(packet_sender);
                     return Some(destination);
                 }
 
@@ -395,7 +395,7 @@ impl Processor {
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
             }
-            ProcessorMessage::ConnectLocalDestination {
+            ProcessorMessage::ConnectUserSpaceSender {
                 flow_id,
                 destination,
             } => {
