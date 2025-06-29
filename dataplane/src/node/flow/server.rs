@@ -147,6 +147,22 @@ impl UserSpaceServer {
 
             iface.poll(timestamp, &mut device, &mut sockets);
             self.recv(&mut sockets, socket_handle);
+
+            let now = Instant::now();
+            match iface.poll_at(now, &sockets) {
+                Some(poll_at) if now < poll_at => {
+                    // waits for an incoming packet
+                    let _ = device.receiver.recv();
+                }
+                Some(_) => {
+                    // smoltcp wants to be polled immediately
+                    continue;
+                }
+                None => {
+                    // waits for an incoming packet
+                    let _ = device.receiver.recv();
+                }
+            }
         }
     }
 
