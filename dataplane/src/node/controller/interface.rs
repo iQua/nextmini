@@ -264,18 +264,7 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                let node_id = self.config.node_id;
-
-                // filters for outbound flows, for clients starting connections
-                let outbound_flows: Vec<_> = flows
-                    .iter()
-                    .filter(|f| f.src_node_id == node_id)
-                    .cloned()
-                    .collect();
-
-                if !outbound_flows.is_empty() {
-                    self.user_space_client_handle.add_flows(outbound_flows);
-                }
+                self.user_space_client_handle.add_flows(flows);
             }
 
             _ => error!("Received a message with an unknown type from the controller."),
