@@ -13,7 +13,7 @@ const SOCKET_BUFFER_SIZE: usize = 655350;
 impl LocalDestination for mpsc::Sender<Packet> {
     fn send_packet(&self, packet: Packet) {
         if self.try_send(packet).is_err() {
-            tracing::error!("Failed to send packet to local destination");
+            tracing::error!("Failed to send a packet to its local destination.");
         }
     }
 }
