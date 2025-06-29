@@ -70,7 +70,6 @@ impl UserSpaceServer {
         info!("Creating a new user-space TCP server for a single flow.");
 
         let state = ConnectionState {
-            connected: false,
             start_time: StdInstant::now(),
             time_last_updated: StdInstant::now(),
             bytes_last_updated: 0,
@@ -136,10 +135,6 @@ impl UserSpaceServer {
                     e
                 );
             }
-        }
-
-        if socket.is_active() && !self.state.connected {
-            self.state.connected = true;
         }
 
         if socket.can_recv() {

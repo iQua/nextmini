@@ -4,7 +4,6 @@ use tracing::info;
 
 #[derive(Debug, Clone)]
 pub struct ConnectionState {
-    pub connected: bool,
     pub start_time: StdInstant,
     pub time_last_updated: StdInstant,
     pub bytes_last_updated: u64,
