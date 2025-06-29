@@ -58,7 +58,6 @@ struct UserSpaceServer {
     processor_handle: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
-    listening: bool,
 }
 
 impl UserSpaceServer {
@@ -84,7 +83,6 @@ impl UserSpaceServer {
             processor_handle,
             packet_receiver: Some(packet_receiver),
             state,
-            listening: false,
         }
     }
 
@@ -127,23 +125,18 @@ impl UserSpaceServer {
     }
 
     fn recv(&mut self, sockets: &mut SocketSet, handle: SocketHandle) {
-        // Set up listening sockets if not already done
-        if !self.listening {
-            let socket = sockets.get_mut::<tcp::Socket>(handle);
-            if !socket.is_listening() {
-                if let Err(e) = socket.listen(self.flow_id.dst_port()) {
-                    error!(
-                        "Server failed to listen on port {}: {:?}",
-                        self.flow_id.dst_port(),
-                        e
-                    );
-                }
-            }
-
-            self.listening = true;
-        }
-
         let socket = sockets.get_mut::<tcp::Socket>(handle);
+
+        // Set up listening socket if not already done.
+        if !socket.is_listening() {
+            if let Err(e) = socket.listen(self.flow_id.dst_port()) {
+                error!(
+                    "Server failed to listen on port {}: {:?}",
+                    self.flow_id.dst_port(),
+                    e
+                );
+            }
+        }
 
         if socket.is_active() && !self.state.connected {
             self.state.connected = true;
