@@ -328,8 +328,12 @@ async fn handle_connection(
                             .collect();
 
                         if flows.len() > 0 {
-                            info!("Adding flows for node {}", node_id);
-                            let msg = ControllerToDataplane::AddFlows { flows: flows };
+                            info!(
+                                "Adding {} user-space TCP flows to node {}.",
+                                flows.len(),
+                                node_id
+                            );
+                            let msg = ControllerToDataplane::AddFlows { flows };
 
                             match write_arc
                                 .lock()
@@ -337,11 +341,7 @@ async fn handle_connection(
                                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                                 .await
                             {
-                                Ok(_) => info!(
-                                    "Sent AddFlows message with {} flows to node {}",
-                                    flows.len(),
-                                    node_id,
-                                ),
+                                Ok(_) => {}
                                 Err(e) => {
                                     error!(
                                         "Failed to send AddFlows message to node {}: {}",
