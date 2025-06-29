@@ -320,25 +320,34 @@ async fn handle_connection(
                         }
 
                         // adds the flows
-                        info!("Adding flows for node {}", node_id);
+                        let flows: Vec<_> = config
+                            .flows
+                            .iter()
+                            .filter(|flow| flow.src_node_id == node_id)
+                            .cloned()
+                            .collect();
 
-                        let msg = ControllerToDataplane::AddFlows {
-                            flows: config.flows.clone(),
-                        };
+                        if flows.len() > 0 {
+                            info!("Adding flows for node {}", node_id);
+                            let msg = ControllerToDataplane::AddFlows { flows: flows };
 
-                        match write_arc
-                            .lock()
-                            .await
-                            .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                            .await
-                        {
-                            Ok(_) => info!(
-                                "Sent AddFlows message with {} flows to node {}",
-                                &config.flows.len(),
-                                node_id,
-                            ),
-                            Err(e) => {
-                                error!("Failed to send AddFlows message to node {}: {}", node_id, e)
+                            match write_arc
+                                .lock()
+                                .await
+                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .await
+                            {
+                                Ok(_) => info!(
+                                    "Sent AddFlows message with {} flows to node {}",
+                                    &config.flows.len(),
+                                    node_id,
+                                ),
+                                Err(e) => {
+                                    error!(
+                                        "Failed to send AddFlows message to node {}: {}",
+                                        node_id, e
+                                    )
+                                }
                             }
                         }
                     }
