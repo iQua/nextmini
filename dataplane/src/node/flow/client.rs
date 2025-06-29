@@ -240,7 +240,6 @@ impl UserSpaceClient {
                 }
 
                 self.state.test_throughput(
-                    "client",
                     self.config.node_id,
                     self.flow.dst_node_id,
                     self.client_port,

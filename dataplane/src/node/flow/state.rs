@@ -14,7 +14,6 @@ pub struct ConnectionState {
 impl ConnectionState {
     pub fn test_throughput(
         &mut self,
-        node_role: &str, // the node serves as "client" or "server"
         local_id: usize,
         remote_node_id: usize,
         port: u16,
@@ -23,8 +22,8 @@ impl ConnectionState {
         if self.bytes_total == 0 {
             self.start_time = StdInstant::now();
             info!(
-                "A user-space TCP {} on port {} has started transferring data to node {}.",
-                node_role, port, remote_node_id
+                "A user-space TCP on port {} has started transferring data to node {}.",
+                port, remote_node_id
             );
         }
 
@@ -39,8 +38,7 @@ impl ConnectionState {
                 (self.bytes_last_updated as f64 * 8.0) / (elapsed_time * 1_000_000_000.0);
 
             info!(
-                "Throughput at the {} (node {}) on port {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
-                node_role,
+                "Throughput at node {} on port {} to node {}: {:.3} Gbps ({} bytes in {:.3}s)",
                 local_id,
                 port,
                 remote_node_id,

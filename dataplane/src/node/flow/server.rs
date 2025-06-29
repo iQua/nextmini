@@ -147,7 +147,6 @@ impl UserSpaceServer {
                     let dst_node_id = self.config.ip_to_node_id(dst_ip);
 
                     self.state.test_throughput(
-                        "server", // node serves as a server
                         dst_node_id,
                         src_node_id,
                         self.flow_id.dst_port(),
