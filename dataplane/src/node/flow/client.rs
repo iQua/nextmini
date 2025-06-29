@@ -79,13 +79,8 @@ impl UserSpaceClientHandle {
                 self.processor_handle.set_flow_weight(flow_id, weight);
             }
 
-            let client = UserSpaceClient::new(
-                config,
-                flow,
-                processor_handle,
-                client_port,
-                packet_receiver,
-            );
+            let client =
+                UserSpaceClient::new(config, flow, processor_handle, client_port, packet_receiver);
 
             // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
@@ -118,7 +113,6 @@ impl UserSpaceClient {
         );
 
         let state = ConnectionState {
-            connected: false,
             start_time: StdInstant::now(),
             time_last_updated: StdInstant::now(),
             bytes_last_updated: 0,
@@ -186,7 +180,7 @@ impl UserSpaceClient {
 
     // Connects to a user-space TCP server.
     fn connect(&mut self, socket: &mut tcp::Socket, iface_context: &mut smoltcp::iface::Context) {
-        if !socket.is_open() && !self.state.connected {
+        if !socket.is_open() {
             let remote_addr = IpAddress::from(
                 self.flow
                     .dst_node_id
@@ -200,7 +194,6 @@ impl UserSpaceClient {
                         "A new user-space TCP client has connected to a server from port {} to {}:{}.",
                         self.client_port, remote_addr, self.config.user_space_server_port
                     );
-                    self.state.connected = true;
                 }
                 Err(e) => {
                     error!("Error connecting to a user-space TCP server: {:?}", e);
