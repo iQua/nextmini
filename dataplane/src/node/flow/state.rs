@@ -12,7 +12,7 @@ pub struct ConnectionState {
 
 // Measures and reports throughput for both the client and the server.
 impl ConnectionState {
-    pub fn test_throughput(&mut self, local_id: usize, remote_node_id: usize, bytes_added: u64) {
+    pub fn update(&mut self, local_id: usize, remote_node_id: usize, bytes_added: u64) {
         if self.bytes_total == 0 {
             self.start_time = StdInstant::now();
             info!(
