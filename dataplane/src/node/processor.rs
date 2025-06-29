@@ -38,6 +38,7 @@ pub enum ProcessorMessage {
         flow_id: FlowId,
         destination: Arc<dyn LocalDestination>,
     },
+    SetServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
@@ -137,6 +138,18 @@ impl ProcessorHandle {
             ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
             ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
         }
+    }
+
+    pub fn set_server_handle(&self, server_handle: UserSpaceServerHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SetServerHandle(server_handle))
+        {
+            error!(
+                "Error sending the SetServerHandle message to the processors: {}",
+                e
+            );
+        };
     }
 
     pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
@@ -297,6 +310,7 @@ struct Processor {
     // the local TUN interface and local destinations (for destination packets)
     local_interface: Option<Arc<LocalInterfaceHandle>>,
     local_destinations: AHashMap<FlowId, Arc<dyn LocalDestination>>,
+    server_handle: Option<UserSpaceServerHandle>,
 
     // the routing table
     routing_table: RoutingTable,
@@ -316,6 +330,7 @@ impl Processor {
             broadcast_receiver,
             local_interface: None,
             local_destinations: AHashMap::new(),
+            server_handle: None,
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
             config,
@@ -383,6 +398,9 @@ impl Processor {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
                     scheduler.limit_rate(spec);
                 }
+            }
+            ProcessorMessage::SetServerHandle(user_space_server_handle) => {
+                self.server_handle = Some(user_space_server_handle);
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
