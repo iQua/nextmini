@@ -34,7 +34,7 @@ impl UserSpaceServerHandle {
         }
     }
 
-    // starts a new server thread for a given flow.
+    // starts a new server thread for a user-space TCP flow.
     pub fn add_server(&self, flow_id: FlowId) -> UserSpaceSender {
         let mut senders = self.packet_senders.lock().unwrap();
         if let Some(existing_sender) = senders.get(&flow_id) {

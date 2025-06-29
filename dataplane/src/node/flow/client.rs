@@ -239,7 +239,7 @@ impl UserSpaceClient {
                         .exceeded(self.state.bytes_total, self.state.start_time)
                     {
                         info!("A user-space TCP client has finished sending all its data.");
-                        socket.close();
+                        socket.abort();
                     }
                 }
                 Err(e) => {
