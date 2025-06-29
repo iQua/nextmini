@@ -3,7 +3,6 @@ use ahash::AHashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use std::time::Instant as StdInstant;
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp;
@@ -14,7 +13,6 @@ use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
-use crate::node::flow::state::ConnectionState;
 use crate::node::flow::{SOCKET_BUFFER_SIZE, UserSpaceSender};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -71,7 +69,6 @@ struct UserSpaceServer {
     flow_id: FlowId,
     processor_handle: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
-    state: ConnectionState,
 }
 
 impl UserSpaceServer {
@@ -83,19 +80,11 @@ impl UserSpaceServer {
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
 
-        let state = ConnectionState {
-            start_time: StdInstant::now(),
-            time_last_updated: StdInstant::now(),
-            bytes_last_updated: 0,
-            bytes_total: 0,
-        };
-
         Self {
             config,
             flow_id,
             processor_handle,
             packet_receiver: Some(packet_receiver),
-            state,
         }
     }
 
@@ -171,15 +160,6 @@ impl UserSpaceServer {
 
         if socket.can_recv() {
             match socket.recv(|buf| (buf.len(), buf.len())) {
-                Ok(received) if received > 0 => {
-                    let src_ip = self.flow_id.src_ip();
-                    let dst_ip = self.flow_id.dst_ip();
-
-                    let src_node_id = self.config.ip_to_node_id(src_ip);
-                    let dst_node_id = self.config.ip_to_node_id(dst_ip);
-
-                    self.state.update(dst_node_id, src_node_id, received as u64);
-                }
                 Err(e) => {
                     error!("Error receiving from a user-space TCP client: {:?}", e);
                 }
