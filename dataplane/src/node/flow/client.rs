@@ -79,16 +79,16 @@ impl UserSpaceClientHandle {
                 self.processor_handle.set_flow_weight(flow_id, weight);
             }
 
+            let client = UserSpaceClient::new(
+                config,
+                flow,
+                processor_handle,
+                client_port,
+                packet_receiver,
+            );
+
             // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
-                let client = UserSpaceClient::new(
-                    config,
-                    flow,
-                    processor_handle,
-                    client_port,
-                    packet_receiver,
-                );
-
                 client.run();
             });
         }

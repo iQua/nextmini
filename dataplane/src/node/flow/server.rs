@@ -16,25 +16,39 @@ use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::{FlowId, FlowIdExt, NodeIdExt};
+use crate::node::{FlowId, FlowIdExt, LocalDestination, NodeIdExt};
 
 #[derive(Debug, Clone)]
-pub struct UserSpaceServerHandle {}
+pub struct UserSpaceServerHandle {
+    config: LocalConfig,
+    processor_handle: ProcessorHandle,
+}
 
 impl UserSpaceServerHandle {
-    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle, flow_id: FlowId) -> Self {
-        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
+        Self {
+            config,
+            processor_handle,
+        }
+    }
 
-        // server as a local destination for packets destined to this flow
-        processor_handle.connect_local_destination(flow_id, Arc::new(packet_sender));
+    // starts a new server thread for a given flow.
+    pub fn add_server(&self, flow_id: FlowId) {
+        let (packet_sender, packet_receiver) = mpsc::channel(self.config.channel_capacity);
+
+        let destination: Arc<dyn LocalDestination> = Arc::new(packet_sender);
+        self.processor_handle
+            .connect_local_destination(flow_id, destination);
+
+        let config = self.config.clone();
+        let processor_handle = self.processor_handle.clone();
+
+        let server = UserSpaceServer::new(config, flow_id, processor_handle, packet_receiver);
 
         // spawn a single thread for one server/flow
         thread::spawn(move || {
-            let server = UserSpaceServer::new(config, flow_id, processor_handle, packet_receiver);
             server.run();
         });
-
-        Self {}
     }
 }
 
@@ -113,16 +127,15 @@ impl UserSpaceServer {
     }
 
     fn recv(&mut self, sockets: &mut SocketSet, handle: SocketHandle) {
-        let base_server_port = self.config.user_space_server_port;
-
         // Set up listening sockets if not already done
         if !self.listening {
             let socket = sockets.get_mut::<tcp::Socket>(handle);
             if !socket.is_listening() {
-                if let Err(e) = socket.listen(base_server_port) {
+                if let Err(e) = socket.listen(self.flow_id.dst_port()) {
                     error!(
                         "Server failed to listen on port {}: {:?}",
-                        base_server_port, e
+                        self.flow_id.dst_port(),
+                        e
                     );
                 }
             }
