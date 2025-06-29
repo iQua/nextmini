@@ -1,4 +1,5 @@
 // A TCP server for user-space flows, implemented using SmolTcp.
+use ahash::AHashMap;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant as StdInstant;
@@ -22,6 +23,7 @@ use crate::node::{FlowId, FlowIdExt, LocalDestination, NodeIdExt};
 pub struct UserSpaceServerHandle {
     config: LocalConfig,
     processor_handle: ProcessorHandle,
+    packet_senders: AHashMap<FlowId, mpsc::Sender<Packet>>,
 }
 
 impl UserSpaceServerHandle {
@@ -29,12 +31,20 @@ impl UserSpaceServerHandle {
         Self {
             config,
             processor_handle,
+            packet_senders: AHashMap::new(),
         }
     }
 
     // starts a new server thread for a given flow.
-    pub fn add_server(&self, flow_id: FlowId) {
+    pub fn add_server(&mut self, flow_id: FlowId) {
+        if self.packet_senders.contains_key(&flow_id) {
+            return;
+        }
+
         let (packet_sender, packet_receiver) = mpsc::channel(self.config.channel_capacity);
+
+        // insert into HashMap to track this server
+        self.packet_senders.insert(flow_id, packet_sender.clone());
 
         let destination: Arc<dyn LocalDestination> = Arc::new(packet_sender);
         self.processor_handle

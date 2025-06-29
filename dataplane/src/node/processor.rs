@@ -339,7 +339,7 @@ impl Processor {
     }
 
     /// Locates a local destination based on the destination IP address and port number.
-    fn local_destination(&self, flow_id: FlowId) -> Option<Arc<dyn LocalDestination>> {
+    fn local_destination(&mut self, flow_id: FlowId) -> Option<Arc<dyn LocalDestination>> {
         if flow_id.dst_ip() == self.config.local_address {
             self.local_interface
                 .clone()
@@ -348,6 +348,10 @@ impl Processor {
             if let Some(destination) = self.local_destinations.get(&flow_id) {
                 Some(destination.clone())
             } else {
+                if let Some(server_handle) = &mut self.server_handle {
+                    server_handle.add_server(flow_id);
+                }
+
                 None
             }
         }
