@@ -173,7 +173,10 @@ impl UserSpaceClient {
             if socket.is_active() {
                 self.send(socket);
             } else {
-                println!("The socket is no longer open. Terminating.");
+                info!(
+                    "The user-space TCP client socket connected from port {} to node {} has been closed. Terminating.",
+                    self.client_port, self.flow.dst_node_id
+                );
                 break;
             }
         }
