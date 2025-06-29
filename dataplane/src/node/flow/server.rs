@@ -129,6 +129,19 @@ impl UserSpaceServer {
         let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
         let socket_handle = sockets.add(server_socket);
 
+        let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
+
+        // Set up listening socket if not already done.
+        if !socket.is_open() {
+            if let Err(e) = socket.listen(self.flow_id.dst_port()) {
+                error!(
+                    "Server failed to listen on port {}: {:?}",
+                    self.flow_id.dst_port(),
+                    e
+                );
+            }
+        }
+
         loop {
             let timestamp = Instant::now();
 
@@ -139,17 +152,6 @@ impl UserSpaceServer {
 
     fn recv(&mut self, sockets: &mut SocketSet, handle: SocketHandle) {
         let socket = sockets.get_mut::<tcp::Socket>(handle);
-
-        // Set up listening socket if not already done.
-        if !socket.is_listening() {
-            if let Err(e) = socket.listen(self.flow_id.dst_port()) {
-                error!(
-                    "Server failed to listen on port {}: {:?}",
-                    self.flow_id.dst_port(),
-                    e
-                );
-            }
-        }
 
         if socket.can_recv() {
             match socket.recv(|buf| (buf.len(), buf.len())) {
