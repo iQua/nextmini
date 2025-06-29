@@ -65,15 +65,15 @@ impl UserSpaceClientHandle {
             self.processor_handle
                 .connect_local_destination(flow_id, Arc::new(packet_sender));
 
-            // updates the flow id for this flow and sets the flow weight
-            let flow_id = ((u32::from(client_ip) as u128) << 96)
-                | ((u32::from(server_ip) as u128) << 64)
-                | ((client_port as u128) << 48)
-                | ((server_port as u128) << 32);
-
+            // set flow weights for this flow
             if let Some(weight) = flow.flow_spec.flow_weight {
+                let flow_id = ((u32::from(client_ip) as u128) << 96)
+                    | ((u32::from(server_ip) as u128) << 64)
+                    | ((client_port as u128) << 48)
+                    | ((server_port as u128) << 32);
+
                 info!(
-                    "Setting flow weight {} for user space flow from node {} to node {}.",
+                    "Set flow weight {} for user space flow from node {} to node {}.",
                     weight, flow.src_node_id, flow.dst_node_id
                 );
                 self.processor_handle.set_flow_weight(flow_id, weight);
