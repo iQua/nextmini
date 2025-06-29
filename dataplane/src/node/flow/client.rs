@@ -173,6 +173,26 @@ impl UserSpaceClient {
             if socket.is_active() {
                 self.send(socket);
             } else {
+                let client_ip = self
+                    .config
+                    .node_id
+                    .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
+                let server_ip = self
+                    .flow
+                    .dst_node_id
+                    .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
+
+                let client_port = self.client_port;
+                let server_port = self.config.user_space_server_port;
+
+                let flow_id = ((u32::from(server_ip) as u128) << 96)
+                    | ((u32::from(client_ip) as u128) << 64)
+                    | ((server_port as u128) << 48)
+                    | ((client_port as u128) << 32);
+
+                // Disconnect the packet sender
+                self.processor_handle.disconnect_user_space_handle(flow_id);
+
                 info!(
                     "The user-space TCP client socket connected from port {} to node {} has been closed. Terminating.",
                     self.client_port, self.flow.dst_node_id

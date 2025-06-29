@@ -38,6 +38,7 @@ pub enum ProcessorMessage {
         flow_id: FlowId,
         sender: UserSpaceSender,
     },
+    DisconnectUserSpaceSender(FlowId),
     ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
@@ -100,6 +101,19 @@ impl ProcessorHandle {
                 e
             );
         };
+    }
+
+    // terminates the user-space sender
+    pub fn disconnect_user_space_handle(&self, flow_id: FlowId) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::DisconnectUserSpaceSender(flow_id))
+        {
+            error!(
+                "Error sending the TerminateUserSpaceSender message to the processors: {}",
+                e
+            );
+        }
     }
 
     pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
@@ -372,6 +386,9 @@ impl Processor {
             }
             ProcessorMessage::ConnectUserSpaceSender { flow_id, sender } => {
                 self.user_space_senders.insert(flow_id, sender);
+            }
+            ProcessorMessage::DisconnectUserSpaceSender(flow_id) => {
+                self.user_space_senders.remove(&flow_id);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {

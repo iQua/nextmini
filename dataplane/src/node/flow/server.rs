@@ -140,6 +140,10 @@ impl UserSpaceServer {
             if socket.is_active() {
                 self.recv(socket);
             } else {
+                // Disconnect the packet sender
+                self.processor_handle
+                    .disconnect_user_space_handle(self.flow_id);
+
                 info!(
                     "The user-space TCP server socket receiving from node {} has been closed. Terminating.",
                     self.config.ip_to_node_id(self.flow_id.src_ip())
