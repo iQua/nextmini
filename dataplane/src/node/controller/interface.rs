@@ -14,6 +14,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
+use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
@@ -34,9 +35,6 @@ impl ControllerInterfaceHandle {
         // connects to the controller over WebSockets
         let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
 
-        // enables the processor to spawn servers on demand
-        processors.enable_server_spawning(processors.clone());
-
         let (sender_stream, receiver_stream) = ws_stream.split();
 
         // Initialize the controller sender and receiver
@@ -55,6 +53,9 @@ impl ControllerInterfaceHandle {
 
         let user_space_client_handle =
             UserSpaceClientHandle::new(config.clone(), processors.clone());
+
+        // creates the server handle for the processor to use.
+        let user_space_server_handle = UserSpaceServerHandle::new(config.clone(), processors.clone());
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
@@ -274,6 +275,7 @@ impl ControllerToDataplaneReceiver {
                     self.user_space_client_handle.add_flows(outbound_flows);
                 }
             }
+
             _ => error!("Received a message with an unknown type from the controller."),
         }
     }
