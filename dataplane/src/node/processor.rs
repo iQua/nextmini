@@ -348,8 +348,10 @@ impl Processor {
             if let Some(destination) = self.local_destinations.get(&flow_id) {
                 Some(destination.clone())
             } else {
-                if let Some(server_handle) = &mut self.server_handle {
-                    server_handle.add_server(flow_id);
+                if let Some(server_handle) = &self.server_handle {
+                    let packet_sender = server_handle.add_server(flow_id);
+                    let destination: Arc<dyn LocalDestination> = Arc::new(packet_sender);
+                    return Some(destination);
                 }
 
                 None
