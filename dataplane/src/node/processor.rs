@@ -437,11 +437,13 @@ impl Processor {
     }
 
     /// Locates a channel sender for delivering packets in user-space flows, based on the flow ID.
-    fn user_space_sender(&mut self, flow_id: FlowId) -> UserSpaceSender {
+    fn user_space_sender(&mut self, flow_id: FlowId) -> Option<UserSpaceSender> {
         if let Some(sender) = self.user_space_senders.get(&flow_id) {
-            sender.clone()
+            Some(sender.clone())
         } else {
-            assert!(flow_id.dst_port() == self.config.user_space_server_port);
+            if flow_id.dst_port() != self.config.user_space_server_port {
+                return None;
+            }
 
             let server_handle = self
                 .server_handle
@@ -451,7 +453,7 @@ impl Processor {
             let sender = server_handle.add_server(flow_id);
             self.user_space_senders.insert(flow_id, sender.clone());
 
-            sender
+            Some(sender)
         }
     }
 
@@ -471,10 +473,12 @@ impl Processor {
                 let flow_id = packet.flow_id;
 
                 let dest = self.user_space_sender(flow_id);
-                if dest.try_send(packet).is_err() {
-                    tracing::error!(
-                        "Failed to send a packet in user-space flows to its local destination."
-                    );
+                if let Some(sender) = dest {
+                    if sender.try_send(packet).is_err() {
+                        tracing::error!(
+                            "Failed to send a packet in user-space flows to its local destination."
+                        );
+                    }
                 }
             }
         } else {
