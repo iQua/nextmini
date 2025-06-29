@@ -339,7 +339,7 @@ async fn handle_connection(
                             {
                                 Ok(_) => info!(
                                     "Sent AddFlows message with {} flows to node {}",
-                                    &config.flows.len(),
+                                    flows.len(),
                                     node_id,
                                 ),
                                 Err(e) => {
