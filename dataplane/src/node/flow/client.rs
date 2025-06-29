@@ -223,6 +223,8 @@ impl UserSpaceClient {
             _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
         };
 
+        let sending_start_time = StdInstant::now();
+
         match socket.send(|buf| {
             let to_send = cmp::min(buf.len(), remaining as usize);
             buf[..to_send].fill(0xAA);
@@ -231,11 +233,10 @@ impl UserSpaceClient {
             Ok(sent) if sent > 0 => {
                 // Calculates the time to wait for specified flow rate
                 if let Some(flow_rate) = self.flow.flow_spec.flow_rate {
-                    let elapsed = self.state.start_time.elapsed().as_secs_f64();
-                    let expected_time =
-                        (sent as f64 + self.state.bytes_total as f64) / flow_rate as f64;
-                    if expected_time > elapsed {
-                        thread::sleep(Duration::from_secs_f64(expected_time - elapsed));
+                    let expected_time = Duration::from_secs_f64(sent as f64 / flow_rate as f64);
+                    let actual_time = sending_start_time.elapsed();
+                    if expected_time > actual_time {
+                        thread::sleep(expected_time - actual_time);
                     }
                 }
 
