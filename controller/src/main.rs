@@ -414,3 +414,40 @@ async fn handle_connection(
         node_ws.write().await.remove(&node_id);
     }
 }
+
+async fn send_flows(config: Config, node_ws: NodeWriterMap) {
+    let node_ws_guard = node_ws.read().await;
+
+    for (&node_id, writer) in node_ws_guard.iter() {
+        let flows: Vec<_> = config
+            .flows
+            .iter()
+            .filter(|flow| flow.src_node_id == node_id)
+            .cloned()
+            .collect();
+
+        if flows.len() > 0 {
+            info!(
+                "Adding {} user-space TCP flows to node {}.",
+                flows.len(),
+                node_id
+            );
+
+            let msg = ControllerToDataplane::AddFlows { flows };
+
+            match writer
+                .lock()
+                .await
+                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .await
+            {
+                Ok(_) => {
+                    info!("Successfully sent flows to node {}", node_id);
+                }
+                Err(e) => {
+                    error!("Failed to send flows to node {}: {}", node_id, e);
+                }
+            }
+        }
+    }
+}
