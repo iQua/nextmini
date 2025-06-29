@@ -2,7 +2,7 @@
 use std::cmp;
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant as StdInstant;
+use std::time::{Duration, Instant as StdInstant};
 
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
@@ -74,9 +74,7 @@ impl UserSpaceClientHandle {
             if let Some(weight) = flow.flow_spec.flow_weight {
                 info!(
                     "Setting flow weight {} for user space flow from node {} to node {}.",
-                    weight,
-                    flow.src_node_id,
-                    flow.dst_node_id
+                    weight, flow.src_node_id, flow.dst_node_id
                 );
                 self.processor_handle.set_flow_weight(flow_id, weight);
             }
@@ -232,12 +230,23 @@ impl UserSpaceClient {
             _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows
         };
 
+        let sending_start_time = StdInstant::now();
+
         match socket.send(|buf| {
             let to_send = cmp::min(buf.len(), remaining as usize);
             buf[..to_send].fill(0xAA);
             (to_send, to_send)
         }) {
             Ok(sent) if sent > 0 => {
+                // Calculates the time to wait for specified flow rate
+                if let Some(flow_rate) = self.flow.flow_spec.flow_rate {
+                    let elapsed = sending_start_time.elapsed().as_secs_f64();
+                    let expected_time = sent as f64 / flow_rate as f64;
+                    if expected_time > elapsed {
+                        thread::sleep(Duration::from_secs_f64(expected_time - elapsed));
+                    }
+                }
+
                 self.state.test_throughput(
                     "client",
                     self.config.node_id,
