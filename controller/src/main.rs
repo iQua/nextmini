@@ -387,7 +387,7 @@ async fn handle_connection(
                 "Received a message that is not a binary or a ping message. Something may be wrong."
             ),
             Err(e) => {
-                error!("Error receiving the message: {}", e);
+                error!("Error receiving the message: {}.", e);
                 break;
             }
         }
@@ -426,10 +426,10 @@ async fn send_flows(config: Config, node_ws: NodeWriterMap) {
                 .await
             {
                 Ok(_) => {
-                    info!("Successfully sent flows to node {}", node_id);
+                    info!("Successfully sent flows to node {}.", node_id);
                 }
                 Err(e) => {
-                    error!("Failed to send flows to node {}: {}", node_id, e);
+                    error!("Failed to send flows to node {}: {}.", node_id, e);
                 }
             }
         }
