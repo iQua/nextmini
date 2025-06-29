@@ -329,35 +329,19 @@ async fn handle_connection(
                             }
                         }
 
-                        // adds the flows
-                        let flows: Vec<_> = config
-                            .flows
-                            .iter()
-                            .filter(|flow| flow.src_node_id == node_id)
-                            .cloned()
-                            .collect();
-
-                        if flows.len() > 0 {
-                            info!(
-                                "Adding {} user-space TCP flows to node {}.",
-                                flows.len(),
-                                node_id
-                            );
-                            let msg = ControllerToDataplane::AddFlows { flows };
-
-                            match write_arc
-                                .lock()
-                                .await
-                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                                .await
-                            {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    error!(
-                                        "Failed to send AddFlows message to node {}: {}",
-                                        node_id, e
-                                    )
-                                }
+                        // sends flows when all expected nodes are connected
+                        if let Some(expected_node_count) = config.topology.n_nodes {
+                            if connected_node_count == expected_node_count {
+                                info!(
+                                    "All {} nodes connected, sending flows to all nodes.",
+                                    expected_node_count
+                                );
+                                send_flows(config.clone(), node_ws.clone()).await;
+                            } else {
+                                info!(
+                                    "Waiting for all nodes to connect before sending flows ({}/{} connected).",
+                                    connected_node_count, expected_node_count
+                                );
                             }
                         }
                     }
