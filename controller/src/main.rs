@@ -404,7 +404,7 @@ async fn send_flows(config: Config, node_ws: NodeWriterMap) {
         let flows: Vec<_> = config
             .flows
             .iter()
-            .filter(|flow| flow.src_node_id == node_id)
+            .filter(|flow| flow.src_node_id == node_id || flow.dst_node_id == node_id)
             .cloned()
             .collect();
 
