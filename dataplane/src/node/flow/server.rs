@@ -50,6 +50,7 @@ impl UserSpaceServerHandle {
             .src_node_id
             .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
         let mut specs = self.flow_specs.lock().unwrap();
+
         specs.insert(IpAddress::from(src_ip), flow.flow_spec);
     }
 
@@ -73,9 +74,10 @@ impl UserSpaceServerHandle {
         let config = self.config.clone();
         let processors = self.processors.clone();
 
-        // looks up the pre-stored FlowSpec using the source IP of the incoming packet.
+        // consults the FlowSpec hashmap using the source IP of the incoming packet
         let src_ip = flow_id.src_ip();
         let specs = self.flow_specs.lock().unwrap();
+
         let flow_rate = specs
             .get(&IpAddress::from(src_ip))
             .and_then(|spec| spec.flow_rate);
