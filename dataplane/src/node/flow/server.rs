@@ -145,7 +145,8 @@ impl UserSpaceServer {
                     .disconnect_user_space_handle(self.flow_id);
 
                 info!(
-                    "The user-space TCP server socket receiving from node {} has been closed. Terminating.",
+                    "The user-space TCP server on node {} has terminated. It has been receiving from node {}.",
+                    self.config.node_id,
                     self.config.ip_to_node_id(self.flow_id.src_ip())
                 );
                 break;

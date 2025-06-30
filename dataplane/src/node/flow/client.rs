@@ -194,8 +194,8 @@ impl UserSpaceClient {
                 self.processor_handle.disconnect_user_space_handle(flow_id);
 
                 info!(
-                    "The user-space TCP client socket connected from port {} to node {} has been closed. Terminating.",
-                    self.client_port, self.flow.dst_node_id
+                    "The user-space TCP flow from node {} to node {} has finished. The client is closing.",
+                    self.flow.src_node_id, self.flow.dst_node_id
                 );
                 break;
             }
