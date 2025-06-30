@@ -1,4 +1,5 @@
 use crossbeam_queue::ArrayQueue;
+use tracing::warn;
 
 use crate::node::FlowId;
 use crate::node::packet::Packet;
@@ -37,6 +38,7 @@ impl SchedulerQueue for FifoQueue {
     }
 
     fn set_flow_weight(&self, _flow_id: FlowId, _weight: usize) {
+        warn!("Trying to set flow weight for FIFO queue.");
         // Do nothing for FIFO queue
     }
 }
