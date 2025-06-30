@@ -55,7 +55,7 @@ impl ControllerInterfaceHandle {
 
         // creates the server handle for the processor to use.
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
-        processors.connect_server(user_space_server);
+        processors.connect_server(user_space_server.clone());
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
@@ -63,6 +63,7 @@ impl ControllerInterfaceHandle {
             processors: processors.clone(),
             reporter: reporter.clone(),
             user_space_client,
+            user_space_server,
         };
 
         tokio::spawn(async move {
@@ -179,6 +180,7 @@ pub struct ControllerToDataplaneReceiver {
 
     // handles for user-space TCP flows
     user_space_client: UserSpaceClientHandle,
+    user_space_server: UserSpaceServerHandle,
 }
 
 impl ControllerToDataplaneReceiver {
