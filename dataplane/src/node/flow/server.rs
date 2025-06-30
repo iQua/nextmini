@@ -5,11 +5,11 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
+use tokio::sync::mpsc;
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
@@ -23,7 +23,7 @@ use crate::node::{FlowId, FlowIdExt, NodeIdExt};
 pub struct UserSpaceServerHandle {
     config: LocalConfig,
     processor_handle: ProcessorHandle,
-    packet_senders: Arc<Mutex<AHashMap<FlowId, flume::Sender<Packet>>>>,
+    packet_senders: Arc<Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>>,
 }
 
 impl UserSpaceServerHandle {
@@ -42,7 +42,7 @@ impl UserSpaceServerHandle {
             return existing_sender.clone();
         }
 
-        let (packet_sender, packet_receiver) = flume::bounded(self.config.channel_capacity);
+        let (packet_sender, packet_receiver) = mpsc::channel(self.config.channel_capacity);
 
         // insert into HashMap to track this server
         senders.insert(flow_id, packet_sender.clone());
@@ -69,7 +69,7 @@ struct UserSpaceServer {
     config: LocalConfig,
     flow_id: FlowId,
     processor_handle: ProcessorHandle,
-    packet_receiver: Option<flume::Receiver<Packet>>,
+    packet_receiver: Option<mpsc::Receiver<Packet>>,
 }
 
 impl UserSpaceServer {
@@ -77,7 +77,7 @@ impl UserSpaceServer {
         config: LocalConfig,
         flow_id: FlowId,
         processor_handle: ProcessorHandle,
-        packet_receiver: flume::Receiver<Packet>,
+        packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
 
