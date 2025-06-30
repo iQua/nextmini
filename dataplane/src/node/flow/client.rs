@@ -64,7 +64,7 @@ impl UserSpaceClientHandle {
             self.processors
                 .connect_user_space_sender(flow_id, packet_sender);
 
-            // set flow weights for this flow
+            // sets flow weights for this flow
             if let Some(weight) = flow.flow_spec.flow_weight {
                 let flow_id = ((u32::from(client_ip) as u128) << 96)
                     | ((u32::from(server_ip) as u128) << 64)
