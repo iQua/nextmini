@@ -155,7 +155,7 @@ impl UserSpaceServer {
             }
 
             if device.receiver.is_empty() {
-                thread::sleep(Duration::from_nanos(1000));
+                thread::sleep(Duration::from_nanos(1));
             }
         }
     }
