@@ -4,9 +4,9 @@ pub mod server;
 pub mod state;
 
 use crate::node::packet::Packet;
-use tokio::sync::mpsc;
+use flume;
 
 const SOCKET_BUFFER_SIZE: usize = 655350;
 
 /// A type for sending packets to destinations in user-space TCP flows.
-pub type UserSpaceSender = mpsc::Sender<Packet>;
+pub type UserSpaceSender = flume::Sender<Packet>;
