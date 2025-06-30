@@ -80,7 +80,7 @@ impl UserSpaceServerHandle {
             .get(&IpAddress::from(src_ip))
             .and_then(|spec| spec.flow_rate);
 
-        let server = UserSpaceServer::new(config, flow_id, processors, packet_receiver, flow_rate);
+        let server = UserSpaceServer::new(config, flow_id, flow_rate, processors, packet_receiver);
 
         // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
@@ -94,27 +94,27 @@ impl UserSpaceServerHandle {
 struct UserSpaceServer {
     config: LocalConfig,
     flow_id: FlowId,
+    flow_rate: Option<usize>,
     processors: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
-    flow_rate: Option<usize>,
 }
 
 impl UserSpaceServer {
     fn new(
         config: LocalConfig,
         flow_id: FlowId,
+        flow_rate: Option<usize>,
         processors: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
-        flow_rate: Option<usize>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
 
         Self {
             config,
             flow_id,
+            flow_rate,
             processors,
             packet_receiver: Some(packet_receiver),
-            flow_rate,
         }
     }
 
