@@ -47,7 +47,7 @@ impl SchedulerWriter {
             }
 
             // waits for notification if queues are empty
-            if self.queue.is_empty() {
+            while self.queue.is_empty() {
                 self.queues_not_empty.notified().await;
             }
 
