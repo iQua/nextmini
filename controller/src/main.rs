@@ -293,12 +293,10 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
-                        if config.link_rates.len() > 0 {
-                            info!("Setting link rates for node {}.", node_id);
-                        }
-
                         for link_rate in &config.link_rates {
                             if link_rate.src_node_id == node_id {
+                                info!("Setting link rates for node {}.", node_id);
+
                                 let spec = TokenBucketSpec {
                                     rate: link_rate.rate,
                                     bucket_size: link_rate.bucket_size,
@@ -315,7 +313,7 @@ async fn handle_connection(
                                     .await
                                 {
                                     Ok(_) => info!(
-                                        "Set link rate for node {} to node {} at {} bytes/second with bucket size {} bytes.",
+                                        "The link rate for node {} to node {} is now set at {} bytes/second with bucket size {} bytes.",
                                         node_id,
                                         link_rate.dst_node_id,
                                         link_rate.rate,

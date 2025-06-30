@@ -238,8 +238,8 @@ impl ControllerToDataplaneReceiver {
 
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
-                    "Setting the link rate for node {} to {} bytes/second with a bucket size of {} bytes.",
-                    node_id, spec.rate, spec.bucket_size,
+                    "The link rate from node {} to node {} is now set to {} bytes/second, with a bucket size of {} bytes.",
+                    self.config.node_id, node_id, spec.rate, spec.bucket_size,
                 );
 
                 self.processors.limit_rate(node_id, spec);

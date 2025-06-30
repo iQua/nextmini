@@ -384,6 +384,7 @@ impl LocalConfig {
                         self.user_space_base_addr = user_space_base_addr;
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
+                        self.scheduler_type = SchedulingDiscipline::Wrr;
                     }
 
                     // Adding flows message.

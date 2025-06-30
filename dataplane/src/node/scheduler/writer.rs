@@ -33,6 +33,7 @@ impl SchedulerWriter {
             token_bucket: None,
         }
     }
+
     pub async fn run(&mut self) {
         loop {
             while let Ok(message) = self.receiver.try_recv() {
