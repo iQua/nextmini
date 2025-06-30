@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::{Flow, Protocol};
+use nextmini_messages::{Flow, Protocol, SchedulingDiscipline};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
@@ -86,11 +86,13 @@ pub struct Config {
     #[serde(default)]
     pub topology: Topology,
 
-    /// Should database be reset before starting the controller?
-
-    /// flows configuration
+    /// The Flows configuration
     #[serde(default)]
     pub flows: Vec<Flow>, // A list of flows.
+
+    /// The scheduler type
+    #[serde(default = "default_scheduler_type")]
+    pub scheduler_type: SchedulingDiscipline,
 
     /// The database configuration.
     #[serde(default = "default_db_config")]
@@ -123,6 +125,11 @@ fn default_user_space_base_addr() -> Ipv4Addr {
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
+}
+
+/// The default scheduler type: FIFO
+fn default_scheduler_type() -> SchedulingDiscipline {
+    SchedulingDiscipline::Fifo
 }
 
 /// The default configuration for the database
@@ -183,6 +190,7 @@ impl Default for Config {
             flows: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),
+            scheduler_type: default_scheduler_type(),
             db: default_db_config(),
         }
     }

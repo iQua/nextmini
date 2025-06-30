@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use clap::ValueEnum;
-use serde::Deserialize;
 use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error};
 
-use nextmini_messages::TokenBucketSpec;
+use nextmini_messages::{SchedulingDiscipline, TokenBucketSpec};
 
 use crate::node::FlowId;
 use crate::node::config::LocalConfig;
@@ -17,16 +15,6 @@ use crate::node::scheduler::queue::SchedulerQueue;
 use crate::node::scheduler::reader::SchedulerReader;
 use crate::node::scheduler::writer::SchedulerWriter;
 use crate::node::scheduler::wrr::WrrQueue;
-
-/// The scheduling discipline.
-#[allow(unused)]
-#[derive(Clone, Copy, Debug, PartialEq, Deserialize, ValueEnum, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum SchedulingDiscipline {
-    #[default]
-    Fifo,
-    Wrr,
-}
 
 /// The types of messages sent to the scheduler.
 pub enum SchedulerReaderMessage {

@@ -1,5 +1,5 @@
 /// Implements utility functions for the controller.
-use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry};
+use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry, SchedulingDiscipline};
 
 use crate::models::Route;
 use tracing::debug;
@@ -11,6 +11,7 @@ pub fn build_startup_response(
     virtual_base_addr: std::net::Ipv4Addr,
     user_space_base_addr: std::net::Ipv4Addr,
     protocol: Protocol,
+    scheduler_type: SchedulingDiscipline,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
@@ -18,6 +19,7 @@ pub fn build_startup_response(
         virtual_base_addr,
         user_space_base_addr,
         protocol,
+        scheduler_type,
     }
 }
 

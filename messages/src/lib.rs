@@ -37,6 +37,15 @@ pub enum Protocol {
     Quic,
 }
 
+/// The scheduling discipline for all schedulers.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SchedulingDiscipline {
+    #[default]
+    Fifo,
+    Wrr,
+}
+
 /// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
@@ -90,6 +99,7 @@ pub enum ControllerToDataplane {
         #[serde(with = "ip_ser")]
         user_space_base_addr: Ipv4Addr,
         protocol: Protocol,
+        scheduler_type: SchedulingDiscipline,
     },
     AddNode {
         remote_node_id: usize,

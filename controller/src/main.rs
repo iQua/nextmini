@@ -171,6 +171,7 @@ async fn handle_connection(
                             config.base_addr,
                             config.user_space_base_addr,
                             config.protocol.clone(),
+                            config.scheduler_type.clone(),
                         );
 
                         match write_arc

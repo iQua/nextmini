@@ -9,12 +9,13 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol};
+use nextmini_messages::{
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol, SchedulingDiscipline,
+};
 
 use crate::node::NodeId;
 use crate::node::NodeIdExt;
 use crate::node::scheduler::drop::DropStrategy;
-use crate::node::scheduler::scheduler::SchedulingDiscipline;
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
@@ -376,6 +377,7 @@ impl LocalConfig {
                         virtual_base_addr,
                         user_space_base_addr,
                         protocol,
+                        scheduler_type,
                     } => {
                         self.node_id = node_id;
                         self.protocol = protocol;
@@ -384,7 +386,7 @@ impl LocalConfig {
                         self.user_space_base_addr = user_space_base_addr;
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
-                        self.scheduler_type = SchedulingDiscipline::Wrr;
+                        self.scheduler_type = scheduler_type;
                     }
 
                     // Adding flows message.
