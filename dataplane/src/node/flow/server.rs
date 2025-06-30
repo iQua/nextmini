@@ -160,8 +160,18 @@ impl UserSpaceServer {
                 break;
             }
 
-            if device.receiver.is_empty() {
-                thread::sleep(Duration::from_nanos(1));
+            match self.flow_rate {
+                Some(rate) if rate < 1_000_000 => {
+                    // for lower flow rates, sleep briefly to reduce CPU usage.
+                    println!("Sleeping for 1 nanosecond to reduce CPU usage.");
+                    if device.receiver.is_empty() {
+                        thread::sleep(Duration::from_nanos(1));
+                    }
+                }
+                _ => {
+                    println!("Flow rate is high, not sleeping.");
+                    // for higher flow rates, do nothing to maximize CPU usage.
+                }
             }
         }
     }
