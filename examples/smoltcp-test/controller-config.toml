@@ -1,8 +1,15 @@
 protocol = "tcp"
+scheduler_type = "wrr"
 
 [topology]
 type = "full_mesh"
 n_nodes = 3
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 2
+rate = 1_000_000
+bucket_size = 9000
 
 [[flows]]
 src_node_id = 1
@@ -11,8 +18,8 @@ flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_weight = 1 }
 
 # [[flows]]
 # src_node_id = 1
-# dst_node_id = 3
-# flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_weight = 1 }
+# dst_node_id = 2
+# flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_weight = 2 }
 
 # [[flows]]
 # src_node_id = 3
