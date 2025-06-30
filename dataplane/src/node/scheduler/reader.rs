@@ -3,11 +3,12 @@ use std::sync::Arc;
 use tokio::sync::{Notify, mpsc};
 use tracing::warn;
 
+use nextmini_messages::SchedulingDiscipline;
+
 use crate::node::packet::Packet;
 use crate::node::scheduler::drop::PacketDrop;
 use crate::node::scheduler::queue::SchedulerQueue;
 use crate::node::scheduler::scheduler::SchedulerReaderMessage;
-use nextmini_messages::SchedulingDiscipline;
 
 /// Producer side of scheduler
 pub struct SchedulerReader {

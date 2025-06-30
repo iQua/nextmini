@@ -298,8 +298,9 @@ async fn handle_connection(
                         // sends flows and link rates when all nodes are connected
                         if let Some(expected_node_count) = config.topology.n_nodes {
                             if connected_node_count == expected_node_count {
-                                // Wait for all links to be established
+                                // waits for all links to be established
                                 tokio::time::sleep(Duration::from_secs(1)).await;
+
                                 info!(
                                     "All {} nodes connected, sending flows and link rates to all nodes.",
                                     expected_node_count
@@ -436,7 +437,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                 .await
             {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => error!(
                     "Failed to send the SetLinkRate message to node {}: {}.",
                     link_rate.src_node_id, e
