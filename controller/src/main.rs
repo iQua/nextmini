@@ -308,7 +308,7 @@ async fn handle_connection(
 
                                 send_link_rates(config.clone(), node_ws.clone()).await;
 
-                                // wait for all link rates to be set
+                                // waits for all link rates to be set before sending the flows
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_flows(config.clone(), node_ws.clone()).await;
                             } else {
