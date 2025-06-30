@@ -305,8 +305,8 @@ async fn handle_connection(
                                     expected_node_count
                                 );
 
-                                send_flows(config.clone(), node_ws.clone()).await;
                                 send_link_rates(config.clone(), node_ws.clone()).await;
+                                send_flows(config.clone(), node_ws.clone()).await;
                             } else {
                                 info!(
                                     "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
