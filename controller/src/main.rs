@@ -409,10 +409,19 @@ async fn send_flows(config: Config, node_ws: NodeWriterMap) {
 async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
     let node_ws_guard = node_ws.read().await;
 
-    for link_rate in &config.link_rates {
-        if let Some(writer) = node_ws_guard.get(&link_rate.src_node_id) {
-            info!("Setting link rates for node {}.", link_rate.src_node_id);
+    for (node_id, writer) in node_ws_guard.iter() {
+        let link_rates: Vec<_> = config
+            .link_rates
+            .iter()
+            .filter(|link_rate| link_rate.src_node_id == *node_id)
+            .cloned()
+            .collect();
 
+        if link_rates.len() > 0 {
+            info!("Setting link rates for node {}.", node_id);
+        }
+
+        for link_rate in link_rates {
             let msg = ControllerToDataplane::SetLinkRate {
                 node_id: link_rate.dst_node_id,
                 spec: TokenBucketSpec {
@@ -427,13 +436,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                 .await
             {
-                Ok(_) => info!(
-                    "The link rate for node {} to node {} is now set at {} bytes/second with bucket size {} bytes.",
-                    link_rate.src_node_id,
-                    link_rate.dst_node_id,
-                    link_rate.rate,
-                    link_rate.bucket_size
-                ),
+                Ok(_) => {},
                 Err(e) => error!(
                     "Failed to send the SetLinkRate message to node {}: {}.",
                     link_rate.src_node_id, e
