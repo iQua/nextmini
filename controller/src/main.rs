@@ -8,6 +8,7 @@ use sqlx::{Pool, Postgres};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::Duration;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
@@ -294,51 +295,21 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
-                        for link_rate in &config.link_rates {
-                            if link_rate.src_node_id == node_id {
-                                info!("Setting link rates for node {}.", node_id);
-
-                                let spec = TokenBucketSpec {
-                                    rate: link_rate.rate,
-                                    bucket_size: link_rate.bucket_size,
-                                };
-                                let msg = ControllerToDataplane::SetLinkRate {
-                                    node_id: link_rate.dst_node_id,
-                                    spec,
-                                };
-
-                                match write_arc
-                                    .lock()
-                                    .await
-                                    .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                                    .await
-                                {
-                                    Ok(_) => info!(
-                                        "The link rate for node {} to node {} is now set at {} bytes/second with bucket size {} bytes.",
-                                        node_id,
-                                        link_rate.dst_node_id,
-                                        link_rate.rate,
-                                        link_rate.bucket_size
-                                    ),
-                                    Err(e) => error!(
-                                        "Failed to send the SetLinkRate message to node {}: {}.",
-                                        node_id, e
-                                    ),
-                                }
-                            }
-                        }
-
-                        // sends flows when all expected nodes are connected
+                        // sends flows and link rates when all nodes are connected
                         if let Some(expected_node_count) = config.topology.n_nodes {
                             if connected_node_count == expected_node_count {
+                                // Wait for all links to be established
+                                tokio::time::sleep(Duration::from_secs(1)).await;
                                 info!(
-                                    "All {} nodes connected, sending flows to all nodes.",
+                                    "All {} nodes connected, sending flows and link rates to all nodes.",
                                     expected_node_count
                                 );
+
                                 send_flows(config.clone(), node_ws.clone()).await;
+                                send_link_rates(config.clone(), node_ws.clone()).await;
                             } else {
                                 info!(
-                                    "Waiting for all nodes to connect before sending flows ({}/{} connected).",
+                                    "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
                                     connected_node_count, expected_node_count
                                 );
                             }
@@ -430,6 +401,43 @@ async fn send_flows(config: Config, node_ws: NodeWriterMap) {
                 Err(e) => {
                     error!("Failed to send flows to node {}: {}.", node_id, e);
                 }
+            }
+        }
+    }
+}
+
+async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
+    let node_ws_guard = node_ws.read().await;
+
+    for link_rate in &config.link_rates {
+        if let Some(writer) = node_ws_guard.get(&link_rate.src_node_id) {
+            info!("Setting link rates for node {}.", link_rate.src_node_id);
+
+            let msg = ControllerToDataplane::SetLinkRate {
+                node_id: link_rate.dst_node_id,
+                spec: TokenBucketSpec {
+                    rate: link_rate.rate,
+                    bucket_size: link_rate.bucket_size,
+                },
+            };
+
+            match writer
+                .lock()
+                .await
+                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .await
+            {
+                Ok(_) => info!(
+                    "The link rate for node {} to node {} is now set at {} bytes/second with bucket size {} bytes.",
+                    link_rate.src_node_id,
+                    link_rate.dst_node_id,
+                    link_rate.rate,
+                    link_rate.bucket_size
+                ),
+                Err(e) => error!(
+                    "Failed to send the SetLinkRate message to node {}: {}.",
+                    link_rate.src_node_id, e
+                ),
             }
         }
     }
