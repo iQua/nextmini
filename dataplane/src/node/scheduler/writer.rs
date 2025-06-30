@@ -40,7 +40,6 @@ impl SchedulerWriter {
                     SchedulerWriterMessage::RateLimit(spec) => {
                         self.token_bucket = Some(TokenBucket::new(spec));
                     }
-                    // This design should be revisited after user-space flows are ready
                     SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
                         self.queue.set_flow_weight(flow_id, weight);
                     }
