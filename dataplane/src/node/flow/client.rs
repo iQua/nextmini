@@ -7,7 +7,7 @@ use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
-use tokio::sync::mpsc;
+use flume;
 use tracing::{error, info};
 
 use nextmini_messages::{Flow, FlowLen};
@@ -44,7 +44,7 @@ impl UserSpaceClientHandle {
             let processor_handle = self.processor_handle.clone();
             self.next_client_port += 1;
             let client_port = self.next_client_port;
-            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+            let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
             // extracts flow_id where server is source, client is destination
             let client_ip = config
@@ -93,7 +93,7 @@ struct UserSpaceClient {
     config: LocalConfig,
     flow: Flow,
     processor_handle: ProcessorHandle,
-    packet_receiver: Option<mpsc::Receiver<Packet>>,
+    packet_receiver: Option<flume::Receiver<Packet>>,
     state: ConnectionState,
     client_port: u16,
 }
@@ -104,7 +104,7 @@ impl UserSpaceClient {
         flow: Flow,
         processor_handle: ProcessorHandle,
         client_port: u16,
-        packet_receiver: mpsc::Receiver<Packet>,
+        packet_receiver: flume::Receiver<Packet>,
     ) -> Self {
         let state = ConnectionState {
             start_time: StdInstant::now(),
