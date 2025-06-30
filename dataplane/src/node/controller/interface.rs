@@ -258,13 +258,27 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                info!(
-                    "Adding {} user-space TCP flows to node {}.",
-                    flows.len(),
-                    self.config.node_id
-                );
+                let mut client_flows = Vec::new();
 
-                self.user_space_client.add_flows(flows);
+                for flow in &flows {
+                    if flow.dst_node_id == self.config.node_id {
+                        // this node is the server for this flow.
+                        self.user_space_server.store_flow_spec(flow.clone());
+                    }
+                    if flow.src_node_id == self.config.node_id {
+                        // this node is the client for this flow.
+                        client_flows.push(flow.clone());
+                    }
+                }
+
+                if !client_flows.is_empty() {
+                    info!(
+                        "Adding {} user-space flows to node {}.",
+                        client_flows.len(),
+                        self.config.node_id
+                    );
+                    self.user_space_client.add_flows(client_flows);
+                }
             }
 
             _ => error!("Received a message with an unknown type from the controller."),
