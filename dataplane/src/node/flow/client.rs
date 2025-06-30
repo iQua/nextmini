@@ -46,7 +46,7 @@ impl UserSpaceClientHandle {
             let client_port = self.next_client_port;
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
-            // extracts flow_id where server is source, client is destination
+            // extracts the flow ID, where server is source, client is destination
             let client_ip = config
                 .node_id
                 .ip_addr(config.user_space_base_addr, config.local_netmask);
@@ -72,8 +72,8 @@ impl UserSpaceClientHandle {
                     | ((server_port as u128) << 32);
 
                 info!(
-                    "Set flow weight {} for user space flow from node {} to node {}.",
-                    weight, flow.src_node_id, flow.dst_node_id
+                    "Set flow weight {} for a user space TCP flow from node {} (port {}) to node {} (port {}).",
+                    weight, flow.src_node_id, client_port, flow.dst_node_id, server_port
                 );
                 self.processors.set_flow_weight(flow_id, weight);
             }

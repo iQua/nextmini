@@ -261,7 +261,7 @@ async fn handle_connection(
                         }
 
                         // installs routes
-                        info!("Installing routes for node {}", node_id);
+                        info!("Installing routes for node {}.", node_id);
 
                         let routes: Vec<Route> = match sqlx::query_as("SELECT * FROM routes")
                             .fetch_all(&*db_pool)
@@ -294,7 +294,7 @@ async fn handle_connection(
                         }
 
                         if config.link_rates.len() > 0 {
-                            info!("Setting link rates for node {}", node_id);
+                            info!("Setting link rates for node {}.", node_id);
                         }
 
                         for link_rate in &config.link_rates {

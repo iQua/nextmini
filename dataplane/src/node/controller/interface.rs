@@ -257,7 +257,7 @@ impl ControllerToDataplaneReceiver {
 
             ControllerToDataplane::AddFlows { flows } => {
                 info!(
-                    "Adding {} user-space flows to node {}.",
+                    "Adding {} user-space TCP flows to node {}.",
                     flows.len(),
                     self.config.node_id
                 );
