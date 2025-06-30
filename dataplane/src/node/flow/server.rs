@@ -159,7 +159,7 @@ impl UserSpaceServer {
                 }
                 Some(_) => {
                     // smoltcp wants to be polled immediately
-                    continue;
+                    std::thread::yield_now();
                 }
                 None => {
                     // waits for an incoming packet
