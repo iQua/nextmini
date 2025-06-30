@@ -27,12 +27,14 @@ pub struct UserSpaceServerHandle {
 
     processors: ProcessorHandle,
 
+    // stores flow specifications keyed by source IP address to retrieve flow configuration
+    flow_specs: Arc<Mutex<AHashMap<IpAddress, FlowSpec>>>,
+
     // a hashmap of flow IDs to packet channel senders needs to be maintained since multiple processors
     // may request adding a new server for the same flow ID concurrently, but the new server thread should
     // only be created once for each flow ID. Subsequent requests will be served by consulting this hashmap.
     // This hashmap also needs to be shared across all processor tasks in a thread-safe way.
     packet_senders: Arc<Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>>,
-    flow_specs: Arc<Mutex<AHashMap<IpAddress, FlowSpec>>>,
 }
 
 impl UserSpaceServerHandle {
@@ -40,8 +42,8 @@ impl UserSpaceServerHandle {
         Self {
             config,
             processors,
-            packet_senders: Arc::new(Mutex::new(AHashMap::new())),
             flow_specs: Arc::new(Mutex::new(AHashMap::new())),
+            packet_senders: Arc::new(Mutex::new(AHashMap::new())),
         }
     }
 
