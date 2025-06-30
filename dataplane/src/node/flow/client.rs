@@ -23,17 +23,17 @@ use crate::node::processor::ProcessorHandle;
 #[derive(Debug, Clone)]
 pub struct UserSpaceClientHandle {
     config: LocalConfig,
-    processor_handle: ProcessorHandle,
+    processors: ProcessorHandle,
     next_client_port: u16,
 }
 
 impl UserSpaceClientHandle {
-    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         let next_client_port = config.user_space_client_port;
 
         Self {
             config,
-            processor_handle,
+            processors,
             next_client_port,
         }
     }
@@ -41,7 +41,7 @@ impl UserSpaceClientHandle {
     pub fn add_flows(&mut self, flows: Vec<Flow>) {
         for flow in flows {
             let config = self.config.clone();
-            let processor_handle = self.processor_handle.clone();
+            let processors = self.processors.clone();
             self.next_client_port += 1;
             let client_port = self.next_client_port;
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
@@ -61,7 +61,7 @@ impl UserSpaceClientHandle {
                 | ((server_port as u128) << 48)
                 | ((client_port as u128) << 32);
 
-            self.processor_handle
+            self.processors
                 .connect_user_space_sender(flow_id, packet_sender);
 
             // set flow weights for this flow
@@ -75,11 +75,11 @@ impl UserSpaceClientHandle {
                     "Set flow weight {} for user space flow from node {} to node {}.",
                     weight, flow.src_node_id, flow.dst_node_id
                 );
-                self.processor_handle.set_flow_weight(flow_id, weight);
+                self.processors.set_flow_weight(flow_id, weight);
             }
 
             let client =
-                UserSpaceClient::new(config, flow, processor_handle, client_port, packet_receiver);
+                UserSpaceClient::new(config, flow, processors, client_port, packet_receiver);
 
             // spawns a new thread as SmolTcp is not designed to use async Rust and Tokio
             thread::spawn(move || {
@@ -92,7 +92,7 @@ impl UserSpaceClientHandle {
 struct UserSpaceClient {
     config: LocalConfig,
     flow: Flow,
-    processor_handle: ProcessorHandle,
+    processors: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
     client_port: u16,
@@ -102,7 +102,7 @@ impl UserSpaceClient {
     fn new(
         config: LocalConfig,
         flow: Flow,
-        processor_handle: ProcessorHandle,
+        processors: ProcessorHandle,
         client_port: u16,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
@@ -116,7 +116,7 @@ impl UserSpaceClient {
         Self {
             config,
             flow,
-            processor_handle,
+            processors,
             packet_receiver: Some(packet_receiver),
             state,
             client_port,
@@ -131,7 +131,7 @@ impl UserSpaceClient {
         let mut device = VirtualDevice {
             config: self.config.clone(),
             receiver: packet_receiver,
-            sender: self.processor_handle.clone(),
+            sender: self.processors.clone(),
         };
 
         // sets up Layer 3 using the provided IP address, without needing a hardware address
@@ -190,8 +190,8 @@ impl UserSpaceClient {
                     | ((server_port as u128) << 48)
                     | ((client_port as u128) << 32);
 
-                // Disconnect the packet sender
-                self.processor_handle.disconnect_user_space_handle(flow_id);
+                // removes the user-space packet sender from the processors
+                self.processors.disconnect_user_space_sender(flow_id);
 
                 info!(
                     "The user-space TCP flow from node {} to node {} has finished. The client is closing.",

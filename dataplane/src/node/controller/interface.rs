@@ -51,20 +51,18 @@ impl ControllerInterfaceHandle {
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
-        let user_space_client_handle =
-            UserSpaceClientHandle::new(config.clone(), processors.clone());
+        let user_space_client = UserSpaceClientHandle::new(config.clone(), processors.clone());
 
         // creates the server handle for the processor to use.
-        let user_space_server_handle =
-            UserSpaceServerHandle::new(config.clone(), processors.clone());
-        processors.connect_server_handle(user_space_server_handle);
+        let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
+        processors.connect_server(user_space_server);
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
             receiver_stream,
             processors: processors.clone(),
             reporter: reporter.clone(),
-            user_space_client_handle,
+            user_space_client,
         };
 
         tokio::spawn(async move {
@@ -180,7 +178,7 @@ pub struct ControllerToDataplaneReceiver {
     reporter: ControllerReporterHandle,
 
     // handles for user-space TCP flows
-    user_space_client_handle: UserSpaceClientHandle,
+    user_space_client: UserSpaceClientHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -264,7 +262,7 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                self.user_space_client_handle.add_flows(flows);
+                self.user_space_client.add_flows(flows);
             }
 
             _ => error!("Received a message with an unknown type from the controller."),

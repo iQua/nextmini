@@ -22,39 +22,46 @@ use crate::node::{FlowId, FlowIdExt, NodeIdExt};
 #[derive(Debug, Clone)]
 pub struct UserSpaceServerHandle {
     config: LocalConfig,
-    processor_handle: ProcessorHandle,
+
+    processors: ProcessorHandle,
+
+    // a hashmap of flow IDs to packet channel senders needs to be maintained since multiple processors
+    // may request adding a new server for the same flow ID concurrently, but the new server thread should
+    // only be created once for each flow ID. Subsequent requests will be served by consulting this hashmap.
+    // This hashmap also needs to be shared across all processor tasks in a thread-safe way.
     packet_senders: Arc<Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>>,
 }
 
 impl UserSpaceServerHandle {
-    pub fn new(config: LocalConfig, processor_handle: ProcessorHandle) -> Self {
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self {
             config,
-            processor_handle,
+            processors,
             packet_senders: Arc::new(Mutex::new(AHashMap::new())),
         }
     }
 
-    // starts a new server thread for a user-space TCP flow.
+    // Starts a new server thread for a user-space TCP flow.
     pub fn add_server(&self, flow_id: FlowId) -> UserSpaceSender {
+        // consults the shared hashmap for channels that may have just been created
         let mut senders = self.packet_senders.lock().unwrap();
         if let Some(existing_sender) = senders.get(&flow_id) {
             return existing_sender.clone();
         }
 
+        // creates a new channel for processors to send to the user-space TCP server
         let (packet_sender, packet_receiver) = mpsc::channel(self.config.channel_capacity);
 
-        // insert into HashMap to track this server
+        // inserts into the shared hashmap for later retrieval, if the same flow ID is requested
         senders.insert(flow_id, packet_sender.clone());
 
         let sender: UserSpaceSender = packet_sender.clone();
-        self.processor_handle
-            .connect_user_space_sender(flow_id, sender);
+        self.processors.connect_user_space_sender(flow_id, sender);
 
         let config = self.config.clone();
-        let processor_handle = self.processor_handle.clone();
+        let processors = self.processors.clone();
 
-        let server = UserSpaceServer::new(config, flow_id, processor_handle, packet_receiver);
+        let server = UserSpaceServer::new(config, flow_id, processors, packet_receiver);
 
         // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
@@ -68,7 +75,7 @@ impl UserSpaceServerHandle {
 struct UserSpaceServer {
     config: LocalConfig,
     flow_id: FlowId,
-    processor_handle: ProcessorHandle,
+    processors: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
 }
 
@@ -76,7 +83,7 @@ impl UserSpaceServer {
     fn new(
         config: LocalConfig,
         flow_id: FlowId,
-        processor_handle: ProcessorHandle,
+        processors: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
@@ -84,7 +91,7 @@ impl UserSpaceServer {
         Self {
             config,
             flow_id,
-            processor_handle,
+            processors,
             packet_receiver: Some(packet_receiver),
         }
     }
@@ -95,7 +102,7 @@ impl UserSpaceServer {
         let mut device = VirtualDevice {
             config: self.config.clone(),
             receiver: packet_receiver,
-            sender: self.processor_handle.clone(),
+            sender: self.processors.clone(),
         };
 
         // sets up Layer 3 using the provided IP address, without needing a hardware address
@@ -114,14 +121,14 @@ impl UserSpaceServer {
 
         let mut sockets = SocketSet::new(vec![]);
 
-        let server_rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-        let server_tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
-        let server_socket = tcp::Socket::new(server_rx_buffer, server_tx_buffer);
-        let socket_handle = sockets.add(server_socket);
+        let rx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let tx_buffer = tcp::SocketBuffer::new(vec![0; SOCKET_BUFFER_SIZE]);
+        let socket = tcp::Socket::new(rx_buffer, tx_buffer);
+        let socket_handle = sockets.add(socket);
 
         let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
 
-        // Set up listening socket if not already done.
+        // listens on the socket
         if !socket.is_open() {
             if let Err(e) = socket.listen(self.flow_id.dst_port()) {
                 error!(
@@ -142,9 +149,8 @@ impl UserSpaceServer {
             if socket.is_active() {
                 self.recv(socket);
             } else {
-                // Disconnect the packet sender
-                self.processor_handle
-                    .disconnect_user_space_handle(self.flow_id);
+                // removes the packet sender from the processors
+                self.processors.disconnect_user_space_sender(self.flow_id);
 
                 info!(
                     "The user-space TCP server on node {} has terminated. It has been receiving from node {}.",

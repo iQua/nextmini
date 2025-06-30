@@ -103,14 +103,15 @@ impl ProcessorHandle {
         };
     }
 
-    // terminates the user-space sender
-    pub fn disconnect_user_space_handle(&self, flow_id: FlowId) {
+    // Disconnects the user-space packet sender from the processor's hashmap of senders.
+    // This is needed when a user-space TCP flow finishes.
+    pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::DisconnectUserSpaceSender(flow_id))
         {
             error!(
-                "Error sending the TerminateUserSpaceSender message to the processors: {}",
+                "Error sending the DisconnectUserSpaceSender message to the processors: {}",
                 e
             );
         }
@@ -147,10 +148,10 @@ impl ProcessorHandle {
         }
     }
 
-    pub fn connect_server_handle(&self, server_handle: UserSpaceServerHandle) {
+    pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectServerHandle(server_handle))
+            .send(ProcessorMessage::ConnectServerHandle(server))
         {
             error!(
                 "Error sending the ConnectServerHandle message to the processors: {}",
@@ -321,7 +322,7 @@ struct Processor {
     user_space_senders: AHashMap<FlowId, UserSpaceSender>,
 
     // the user-space TCP server handle
-    server_handle: Option<UserSpaceServerHandle>,
+    server: Option<UserSpaceServerHandle>,
 
     // the routing table
     routing_table: RoutingTable,
@@ -341,7 +342,7 @@ impl Processor {
             broadcast_receiver,
             local_interface: None,
             user_space_senders: AHashMap::new(),
-            server_handle: None,
+            server: None,
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
             config,
@@ -395,8 +396,8 @@ impl Processor {
                     scheduler.limit_rate(spec);
                 }
             }
-            ProcessorMessage::ConnectServerHandle(user_space_server_handle) => {
-                self.server_handle = Some(user_space_server_handle);
+            ProcessorMessage::ConnectServerHandle(user_space_server) => {
+                self.server = Some(user_space_server);
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
@@ -446,7 +447,7 @@ impl Processor {
             }
 
             let server_handle = self
-                .server_handle
+                .server
                 .clone()
                 .expect("The user-space server has not yet been connected.");
 
