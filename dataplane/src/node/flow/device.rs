@@ -3,15 +3,17 @@
 /// processors, and sent via a sequential or concurrent processor handle.
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
-use tokio::sync::mpsc;
+
+use flume;
 
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
+#[derive(Clone)]
 pub struct VirtualDevice {
     pub config: LocalConfig,
-    pub receiver: mpsc::Receiver<Packet>,
+    pub receiver: flume::Receiver<Packet>,
     pub sender: ProcessorHandle,
 }
 
@@ -20,11 +22,10 @@ impl Device for VirtualDevice {
     type TxToken<'a> = PacketTxToken;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        match self.receiver.try_recv() {
-            Ok(packet) => Some((PacketRxToken(packet), PacketTxToken(self.sender.clone()))),
-            Err(mpsc::error::TryRecvError::Empty) => None,
-            Err(mpsc::error::TryRecvError::Disconnected) => None,
-        }
+        self.receiver
+            .try_recv()
+            .ok()
+            .map(|packet| (PacketRxToken(packet), PacketTxToken(self.sender.clone())))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {

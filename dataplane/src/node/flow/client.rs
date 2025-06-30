@@ -3,11 +3,11 @@ use std::cmp;
 use std::thread;
 use std::time::{Duration, Instant as StdInstant};
 
+use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
-use flume;
 use tracing::{error, info};
 
 use nextmini_messages::{Flow, FlowLen};
