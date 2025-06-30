@@ -12,6 +12,8 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
+use nextmini_messages::{Flow, FlowSpec};
+
 use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::{SOCKET_BUFFER_SIZE, UserSpaceSender};
@@ -30,6 +32,7 @@ pub struct UserSpaceServerHandle {
     // only be created once for each flow ID. Subsequent requests will be served by consulting this hashmap.
     // This hashmap also needs to be shared across all processor tasks in a thread-safe way.
     packet_senders: Arc<Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>>,
+    flow_specs: Arc<Mutex<AHashMap<IpAddress, FlowSpec>>>,
 }
 
 impl UserSpaceServerHandle {
@@ -38,10 +41,19 @@ impl UserSpaceServerHandle {
             config,
             processors,
             packet_senders: Arc::new(Mutex::new(AHashMap::new())),
+            flow_specs: Arc::new(Mutex::new(AHashMap::new())),
         }
     }
 
-    // Starts a new server thread for a user-space TCP flow.
+    pub fn store_flow_spec(&self, flow: Flow) {
+        let src_ip = flow
+            .src_node_id
+            .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
+        let mut specs = self.flow_specs.lock().unwrap();
+        specs.insert(IpAddress::from(src_ip), flow.flow_spec);
+    }
+
+    // starts a new server thread for a user-space TCP flow.
     pub fn add_server(&self, flow_id: FlowId) -> UserSpaceSender {
         // consults the shared hashmap for channels that may have just been created
         let mut senders = self.packet_senders.lock().unwrap();
@@ -61,7 +73,14 @@ impl UserSpaceServerHandle {
         let config = self.config.clone();
         let processors = self.processors.clone();
 
-        let server = UserSpaceServer::new(config, flow_id, processors, packet_receiver);
+        // looks up the pre-stored FlowSpec using the source IP of the incoming packet.
+        let src_ip = flow_id.src_ip();
+        let specs = self.flow_specs.lock().unwrap();
+        let flow_rate = specs
+            .get(&IpAddress::from(src_ip))
+            .and_then(|spec| spec.flow_rate);
+
+        let server = UserSpaceServer::new(config, flow_id, processors, packet_receiver, flow_rate);
 
         // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
@@ -77,6 +96,7 @@ struct UserSpaceServer {
     flow_id: FlowId,
     processors: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
+    flow_rate: Option<usize>,
 }
 
 impl UserSpaceServer {
@@ -85,6 +105,7 @@ impl UserSpaceServer {
         flow_id: FlowId,
         processors: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
+        flow_rate: Option<usize>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
 
@@ -93,6 +114,7 @@ impl UserSpaceServer {
             flow_id,
             processors,
             packet_receiver: Some(packet_receiver),
+            flow_rate,
         }
     }
 
