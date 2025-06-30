@@ -53,7 +53,7 @@ impl UserSpaceServerHandle {
         specs.insert(IpAddress::from(src_ip), flow.flow_spec);
     }
 
-    // starts a new server thread for a user-space TCP flow.
+    // Starts a new server thread for a user-space TCP flow.
     pub fn add_server(&self, flow_id: FlowId) -> UserSpaceSender {
         // consults the shared hashmap for channels that may have just been created
         let mut senders = self.packet_senders.lock().unwrap();
