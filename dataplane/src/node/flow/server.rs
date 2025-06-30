@@ -3,12 +3,13 @@ use ahash::AHashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
+use flume;
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
-use flume;
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
@@ -137,6 +138,7 @@ impl UserSpaceServer {
             iface.poll(timestamp, &mut device, &mut sockets);
 
             let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
+
             if socket.is_active() {
                 self.recv(socket);
             } else {
@@ -152,20 +154,8 @@ impl UserSpaceServer {
                 break;
             }
 
-            let now = Instant::now();
-            match iface.poll_at(now, &sockets) {
-                Some(poll_at) if now < poll_at => {
-                    // waits for an incoming packet
-                    let _ = device.receiver.recv();
-                }
-                Some(_) => {
-                    // smoltcp wants to be polled immediately
-                    continue;
-                }
-                None => {
-                    // waits for an incoming packet
-                    let _ = device.receiver.recv();
-                }
+            if device.receiver.is_empty() {
+                thread::sleep(Duration::from_nanos(1000));
             }
         }
     }
