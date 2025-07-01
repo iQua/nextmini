@@ -1,7 +1,10 @@
 /// Implements utility functions for the controller.
-use nextmini_messages::{ControllerToDataplane, Protocol, RoutingTableEntry, SchedulingDiscipline};
+use nextmini_messages::{
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol, RoutingTableEntry,
+    SchedulingDiscipline,
+};
 
-use crate::models::Route;
+use crate::models::{DbFlow, Route};
 use tracing::debug;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
@@ -20,6 +23,44 @@ pub fn build_startup_response(
         user_space_base_addr,
         protocol,
         scheduler_type,
+    }
+}
+
+/// Builds flow information for a specific node, filtering to only include flows
+/// where the node is either the source or destination.
+pub fn build_flows_for_node(flows: Vec<DbFlow>, node_id: i32) -> Option<ControllerToDataplane> {
+    debug!("Building flows for node {}", node_id);
+
+    let flows: Vec<Flow> = flows
+        .into_iter()
+        .filter(|flow| flow.src_node_id == node_id || flow.dst_node_id == node_id)
+        .filter(|flow| !flow.is_finished) // Only include unfinished flows
+        .map(|flow| {
+            // Convert database Flow to message Flow
+            let flow_len = match flow.flow_len_type.as_str() {
+                "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
+                "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
+                _ => FlowLen::Bytes(0), // Default fallback
+            };
+
+            Flow {
+                src_node_id: flow.src_node_id as usize,
+                dst_node_id: flow.dst_node_id as usize,
+                flow_spec: FlowSpec {
+                    flow_len,
+                    flow_rate: flow.flow_rate.map(|r| r as usize),
+                    flow_weight: flow.flow_weight.map(|w| w as usize),
+                },
+            }
+        })
+        .collect();
+
+    if flows.is_empty() {
+        debug!("No flows for node {}. Nothing updated.", node_id);
+        None
+    } else {
+        debug!("Built {} flows for node {}.", flows.len(), node_id);
+        Some(ControllerToDataplane::AddFlows { flows })
     }
 }
 
