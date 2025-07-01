@@ -34,7 +34,7 @@ pub fn build_flows_for_node(flow: DbFlow) -> ControllerToDataplane {
     let flow_len = match flow.flow_len_type.as_str() {
         "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
         "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
-        _ => FlowLen::Bytes(0), // Default fallback
+        _ => FlowLen::Bytes(0), // default fallback
     };
 
     let message_flow = Flow {
