@@ -25,6 +25,8 @@ use crate::node::processor::ProcessorHandle;
 pub struct UserSpaceClientHandle {
     config: LocalConfig,
     processors: ProcessorHandle,
+
+    // handles communication with the controller, including flow completion notifications
     reporter: ControllerReporterHandle,
     next_client_port: u16,
 }
@@ -210,6 +212,7 @@ impl UserSpaceClient {
                 // removes the user-space packet sender from the processors
                 self.processors.disconnect_user_space_sender(flow_id);
 
+                // reports flow completion to the controller if this flow has a database ID.
                 if let Some(controller_id) = self.flow.controller_id {
                     self.reporter.report_flow_finished(controller_id);
                 }

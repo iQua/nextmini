@@ -27,6 +27,8 @@ pub struct UserSpaceServerHandle {
     config: LocalConfig,
 
     processors: ProcessorHandle,
+
+    // handles communication with the controller, including flow completion notifications
     reporter: ControllerReporterHandle,
 
     // stores flow specifications keyed by source IP address to retrieve flow configuration
@@ -54,6 +56,10 @@ impl UserSpaceServerHandle {
         }
     }
 
+    // Stores flow specification and controller ID for later retrieval by servers.
+    // This creates a mapping from source IP to flow configuration so that when
+    // a server is created for an incoming connection, it can consult the correct
+    // flow rate limits and controller ID for flow completion notifications.
     pub fn store_flow_spec(&self, flow: Flow) {
         let src_ip = flow
             .src_node_id
@@ -203,6 +209,7 @@ impl UserSpaceServer {
                 // removes the packet sender from the processors
                 self.processors.disconnect_user_space_sender(self.flow_id);
 
+                // reports flow completion to the controller if this flow has a database ID.
                 if let Some(controller_id) = self.controller_id {
                     self.reporter.report_flow_finished(controller_id);
                 }
