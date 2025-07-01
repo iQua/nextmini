@@ -535,7 +535,7 @@ pub async fn setup_flow_notification(
         CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
         RETURNS TRIGGER AS $$
         BEGIN
-            PERFORM pg_notify('auto_sync_flows', '{"id":"'|| NEW.id || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '"}');
+            PERFORM pg_notify('auto_sync_flows', '{"newly_inserted_id":"'|| NEW.id || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '"}');
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -589,7 +589,7 @@ pub async fn setup_flow_notification(
 
     // spawns a task to handle flow notifications by installing flows to relevant nodes
     tokio::spawn(async move {
-        let mut stream = listener.into_stream(); // converts listener to stream
+        let mut stream = listener.into_stream();
 
         while let Some(notification) = stream.next().await {
             match notification {
@@ -597,38 +597,35 @@ pub async fn setup_flow_notification(
                     let channel = notif.channel();
 
                     if channel == "auto_sync_flows" {
-                        // Parse the notification payload to get the newly inserted flow ID
                         let payload = notif.payload();
                         info!("Received flow notification: {}", payload);
 
-                        // Parse JSON to extract flow ID
+                        // Parse and get a newly inserted flow ID
                         match serde_json::from_str::<serde_json::Value>(payload) {
                             Ok(json) => {
-                                if let Some(flow_id) = json
-                                    .get("id")
+                                if let Some(id) = json
+                                    .get("newly_inserted_id")
                                     .and_then(|v| v.as_str())
                                     .and_then(|s| s.parse::<i32>().ok())
                                 {
-                                    // Fetch only the newly inserted flow
                                     match sqlx::query_as::<_, DbFlow>(
                                         "SELECT * FROM flows WHERE id = $1",
                                     )
-                                    .bind(flow_id)
+                                    .bind(id)
                                     .fetch_one(&*db_pool)
                                     .await
                                     {
                                         Ok(new_flow) => {
                                             info!(
                                                 "Installing newly inserted flow {} into the dataplane.",
-                                                flow_id
+                                                id
                                             );
 
-                                            // Send the new flow to relevant nodes only
                                             let node_ws_guard = node_ws.read().await;
 
                                             for (node_id, ws_arc) in node_ws_guard.iter() {
                                                 if let Some(msg) = build_flows_for_node(
-                                                    vec![new_flow.clone()],
+                                                    new_flow.clone(),
                                                     *node_id as i32,
                                                 ) {
                                                     let msg_binary =
@@ -642,11 +639,11 @@ pub async fn setup_flow_notification(
                                                     {
                                                         Ok(_) => info!(
                                                             "Sent new flow {} to node {}.",
-                                                            flow_id, node_id
+                                                            id, node_id
                                                         ),
                                                         Err(e) => error!(
                                                             "Failed to send flow {} to node {}: {}",
-                                                            flow_id, node_id, e
+                                                            id, node_id, e
                                                         ),
                                                     }
                                                 }
@@ -654,12 +651,12 @@ pub async fn setup_flow_notification(
                                         }
                                         Err(e) => error!(
                                             "Failed to fetch newly inserted flow {}: {}",
-                                            flow_id, e
+                                            id, e
                                         ),
                                     }
                                 } else {
                                     error!(
-                                        "Failed to parse flow ID from notification payload: {}",
+                                        "Failed to parse newly_inserted_id from notification payload: {}",
                                         payload
                                     );
                                 }
