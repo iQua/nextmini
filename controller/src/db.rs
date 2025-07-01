@@ -615,37 +615,54 @@ pub async fn setup_flow_notification(
                                     .fetch_one(&*db_pool)
                                     .await
                                     {
-                                        Ok(new_flow) => {
+                                        Ok(flow) => {
                                             info!(
                                                 "Installing newly inserted flow {} into the dataplane.",
                                                 id
                                             );
 
                                             let node_ws_guard = node_ws.read().await;
+                                            let msg = build_flows_for_node(flow.clone());
+                                            let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
-                                            for (node_id, ws_arc) in node_ws_guard.iter() {
-                                                if let Some(msg) = build_flows_for_node(
-                                                    new_flow.clone(),
-                                                    *node_id as i32,
-                                                ) {
-                                                    let msg_binary =
-                                                        rmp_serde::to_vec(&msg).unwrap();
+                                            let src_node_id = flow.src_node_id as usize;
+                                            let dst_node_id = flow.dst_node_id as usize;
 
-                                                    match ws_arc
-                                                        .lock()
-                                                        .await
-                                                        .send(Message::binary(msg_binary))
-                                                        .await
-                                                    {
-                                                        Ok(_) => info!(
-                                                            "Sent new flow {} to node {}.",
-                                                            id, node_id
-                                                        ),
-                                                        Err(e) => error!(
-                                                            "Failed to send flow {} to node {}: {}",
-                                                            id, node_id, e
-                                                        ),
-                                                    }
+                                            // Send to source node
+                                            if let Some(ws_arc) = node_ws_guard.get(&src_node_id) {
+                                                match ws_arc
+                                                    .lock()
+                                                    .await
+                                                    .send(Message::binary(msg_binary.clone()))
+                                                    .await
+                                                {
+                                                    Ok(_) => info!(
+                                                        "Sent new flow {} to source node {}.",
+                                                        id, src_node_id
+                                                    ),
+                                                    Err(e) => error!(
+                                                        "Failed to send flow {} to source node {}: {}",
+                                                        id, src_node_id, e
+                                                    ),
+                                                }
+                                            }
+
+                                            // Send to destination node
+                                            if let Some(ws_arc) = node_ws_guard.get(&dst_node_id) {
+                                                match ws_arc
+                                                    .lock()
+                                                    .await
+                                                    .send(Message::binary(msg_binary.clone()))
+                                                    .await
+                                                {
+                                                    Ok(_) => info!(
+                                                        "Sent new flow {} to destination node {}.",
+                                                        id, dst_node_id
+                                                    ),
+                                                    Err(e) => error!(
+                                                        "Failed to send flow {} to destination node {}: {}",
+                                                        id, dst_node_id, e
+                                                    ),
                                                 }
                                             }
                                         }

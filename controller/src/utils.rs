@@ -26,37 +26,29 @@ pub fn build_startup_response(
     }
 }
 
-/// Builds flow information for a specific node, filtering to only include the flow
-/// if the node is either the source or destination.
-pub fn build_flows_for_node(flow: DbFlow, node_id: i32) -> Option<ControllerToDataplane> {
-    debug!("Building flow for node {}", node_id);
+/// Converting DbFlow to ControllerToDataplane message.
+pub fn build_flows_for_node(flow: DbFlow) -> ControllerToDataplane {
+    debug!("Building flow message for flow id {}", flow.id);
 
-    // Check if this node is involved in the flow and if the flow is unfinished
-    if (flow.src_node_id == node_id || flow.dst_node_id == node_id) && !flow.is_finished {
-        // Convert database Flow to message Flow
-        let flow_len = match flow.flow_len_type.as_str() {
-            "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
-            "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
-            _ => FlowLen::Bytes(0), // Default fallback
-        };
+    // Convert database Flow to message Flow
+    let flow_len = match flow.flow_len_type.as_str() {
+        "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
+        "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
+        _ => FlowLen::Bytes(0), // Default fallback
+    };
 
-        let message_flow = Flow {
-            src_node_id: flow.src_node_id as usize,
-            dst_node_id: flow.dst_node_id as usize,
-            flow_spec: FlowSpec {
-                flow_len,
-                flow_rate: flow.flow_rate.map(|r| r as usize),
-                flow_weight: flow.flow_weight.map(|w| w as usize),
-            },
-        };
+    let message_flow = Flow {
+        src_node_id: flow.src_node_id as usize,
+        dst_node_id: flow.dst_node_id as usize,
+        flow_spec: FlowSpec {
+            flow_len,
+            flow_rate: flow.flow_rate.map(|r| r as usize),
+            flow_weight: flow.flow_weight.map(|w| w as usize),
+        },
+    };
 
-        debug!("Built flow for node {}.", node_id);
-        Some(ControllerToDataplane::AddFlows {
-            flows: vec![message_flow],
-        })
-    } else {
-        debug!("No flow for node {}. Nothing updated.", node_id);
-        None
+    ControllerToDataplane::AddFlows {
+        flows: vec![message_flow],
     }
 }
 
