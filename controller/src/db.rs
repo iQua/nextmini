@@ -12,8 +12,8 @@ use sqlx::{Pool, Postgres, Row};
 
 use crate::WebSocketWriter;
 use crate::config;
-use crate::models::Route;
-use crate::utils::build_routes_for_node;
+use crate::models::{DbFlow, Route};
+use crate::utils::{build_flows_for_node, build_routes_for_node};
 use tracing::{error, info, warn};
 
 /// Creates the tables in the database, if they do not exist yet.
@@ -56,6 +56,34 @@ async fn create_db(pool: &Pool<Postgres>) {
     .await
     .expect("Failed to create routes table");
 
+    // id: Unique identifier for the flow, automatically assigned by controller.
+    // src_node_id: Source node ID for the flow.
+    // dst_node_id: Destination node ID for the flow.
+    // flow_len_type: Type of flow length specification ('bytes' or 'duration').
+    // flow_len_bytes: Flow length in bytes (used when flow_len_type is 'bytes').
+    // flow_len_duration: Flow length in seconds (used when flow_len_type is 'duration').
+    // flow_rate: Optional flow rate in bytes per second.
+    // flow_weight: Optional flow weight for scheduling.
+    // is_finished: Whether this flow has completed.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS flows (
+            id SERIAL PRIMARY KEY,
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
+            flow_len_type TEXT NOT NULL CHECK (flow_len_type IN ('bytes', 'duration')),
+            flow_len_bytes BIGINT,
+            flow_len_duration DOUBLE PRECISION,
+            flow_rate INTEGER,
+            flow_weight INTEGER,
+            is_finished BOOLEAN NOT NULL DEFAULT FALSE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to create flows table");
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS metrics (
@@ -80,6 +108,11 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .execute(pool)
         .await
         .expect("Failed to drop metrics table");
+
+    sqlx::query("DROP TABLE IF EXISTS flows")
+        .execute(pool)
+        .await
+        .expect("Failed to drop flows table");
 
     sqlx::query("DROP TABLE IF EXISTS routes")
         .execute(pool)
@@ -120,6 +153,25 @@ async fn reset_db(pool: &Pool<Postgres>) {
     .execute(pool)
     .await
     .expect("Failed to recreate routes table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE flows (
+            id SERIAL PRIMARY KEY,
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
+            flow_len_type TEXT NOT NULL CHECK (flow_len_type IN ('bytes', 'duration')),
+            flow_len_bytes BIGINT,
+            flow_len_duration DOUBLE PRECISION,
+            flow_rate INTEGER,
+            flow_weight INTEGER,
+            is_finished BOOLEAN NOT NULL DEFAULT FALSE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate flows table");
 
     sqlx::query(
         r#"
@@ -304,10 +356,52 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         }
     }
 
+    // adds custom flows from the configuration file
+    info!("Adding custom flows from the configuration file.");
+
+    for flow in config.flows.clone() {
+        let src_node_id = flow.src_node_id as i32;
+        let dst_node_id = flow.dst_node_id as i32;
+
+        // Convert FlowLen to database format
+        let (flow_len_type, flow_len_bytes, flow_len_duration) = match flow.flow_spec.flow_len {
+            nextmini_messages::FlowLen::Bytes(bytes) => ("bytes", Some(bytes as i64), None),
+            nextmini_messages::FlowLen::Duration(duration) => ("duration", None, Some(duration)),
+        };
+
+        // Insert flow with auto-generated id
+        let result = sqlx::query(
+            r#"
+            INSERT INTO flows (src_node_id, dst_node_id, flow_len_type, flow_len_bytes, flow_len_duration, flow_rate, flow_weight, is_finished)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING id
+            "#,
+        )
+        .bind(src_node_id)
+        .bind(dst_node_id)
+        .bind(flow_len_type)
+        .bind(flow_len_bytes)
+        .bind(flow_len_duration)
+        .bind(flow.flow_spec.flow_rate.map(|r| r as i32))
+        .bind(flow.flow_spec.flow_weight.map(|w| w as i32))
+        .bind(false) // is_finished defaults to false
+        .fetch_optional(&pool)
+        .await
+        .expect("Failed to insert custom flow");
+
+        if let Some(row) = result {
+            let flow_id: i32 = row.get("id");
+            info!(
+                "Auto-assigned flow id {} to custom flow from node {} to node {} with {:?}",
+                flow_id, src_node_id, dst_node_id, flow.flow_spec
+            );
+        }
+    }
+
     pool
 }
 
-pub async fn setup_notification(
+pub async fn setup_route_notification(
     db_pool: Arc<Pool<Postgres>>,
 
     // a hashmap from the node ID to its corresponding WebSocket sink
@@ -419,6 +513,158 @@ pub async fn setup_notification(
                             } else {
                                 error!("No node to install flow to.");
                             }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Error receiving notification: {}", e);
+                }
+            }
+        }
+    });
+}
+
+pub async fn setup_flow_notification(
+    db_pool: Arc<Pool<Postgres>>,
+
+    // a hashmap from the node ID to its corresponding WebSocket sink
+    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+) {
+    // Create the flow notification function and trigger
+    let create_flow_function_sql = r#"
+        CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
+        RETURNS TRIGGER AS $$
+        BEGIN
+            PERFORM pg_notify('auto_sync_flows', '{"id":"'|| NEW.id || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '"}');
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+    "#;
+
+    let create_flow_trigger_sql = r#"
+        CREATE TRIGGER flow_notification_trigger
+        AFTER INSERT ON "flows"
+        FOR EACH ROW
+        EXECUTE FUNCTION notify_flow_trigger_function();
+    "#;
+
+    let check_flow_trigger_sql = r#"
+        SELECT 1
+        FROM pg_trigger
+        WHERE tgname = 'flow_notification_trigger'
+        AND tgrelid = '"flows"'::regclass;
+    "#;
+
+    let mut conn = db_pool
+        .acquire()
+        .await
+        .expect("Failed to acquire connection");
+
+    // Check and create flow trigger if it doesn't exist
+    let flow_row: Option<(i32,)> = sqlx::query_as(check_flow_trigger_sql)
+        .fetch_optional(&mut *conn)
+        .await
+        .expect("Failed to check flow trigger existence");
+
+    if flow_row.is_none() {
+        sqlx::query(create_flow_function_sql)
+            .execute(&mut *conn)
+            .await
+            .expect("Failed to create flow notification function");
+        sqlx::query(create_flow_trigger_sql)
+            .execute(&mut *conn)
+            .await
+            .expect("Failed to create flow trigger");
+        info!("Created flow notification trigger");
+    }
+
+    // Set up listener for flow notifications
+    let mut listener = PgListener::connect_with(&db_pool)
+        .await
+        .expect("Failed to connect listener");
+    listener
+        .listen("auto_sync_flows")
+        .await
+        .expect("Failed to listen to auto_sync_flows");
+
+    // spawns a task to handle flow notifications by installing flows to relevant nodes
+    tokio::spawn(async move {
+        let mut stream = listener.into_stream(); // converts listener to stream
+
+        while let Some(notification) = stream.next().await {
+            match notification {
+                Ok(notif) => {
+                    let channel = notif.channel();
+
+                    if channel == "auto_sync_flows" {
+                        // Parse the notification payload to get the newly inserted flow ID
+                        let payload = notif.payload();
+                        info!("Received flow notification: {}", payload);
+
+                        // Parse JSON to extract flow ID
+                        match serde_json::from_str::<serde_json::Value>(payload) {
+                            Ok(json) => {
+                                if let Some(flow_id) = json
+                                    .get("id")
+                                    .and_then(|v| v.as_str())
+                                    .and_then(|s| s.parse::<i32>().ok())
+                                {
+                                    // Fetch only the newly inserted flow
+                                    match sqlx::query_as::<_, DbFlow>(
+                                        "SELECT * FROM flows WHERE id = $1",
+                                    )
+                                    .bind(flow_id)
+                                    .fetch_one(&*db_pool)
+                                    .await
+                                    {
+                                        Ok(new_flow) => {
+                                            info!(
+                                                "Installing newly inserted flow {} into the dataplane.",
+                                                flow_id
+                                            );
+
+                                            // Send the new flow to relevant nodes only
+                                            let node_ws_guard = node_ws.read().await;
+
+                                            for (node_id, ws_arc) in node_ws_guard.iter() {
+                                                if let Some(msg) = build_flows_for_node(
+                                                    vec![new_flow.clone()],
+                                                    *node_id as i32,
+                                                ) {
+                                                    let msg_binary =
+                                                        rmp_serde::to_vec(&msg).unwrap();
+
+                                                    match ws_arc
+                                                        .lock()
+                                                        .await
+                                                        .send(Message::binary(msg_binary))
+                                                        .await
+                                                    {
+                                                        Ok(_) => info!(
+                                                            "Sent new flow {} to node {}.",
+                                                            flow_id, node_id
+                                                        ),
+                                                        Err(e) => error!(
+                                                            "Failed to send flow {} to node {}: {}",
+                                                            flow_id, node_id, e
+                                                        ),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => error!(
+                                            "Failed to fetch newly inserted flow {}: {}",
+                                            flow_id, e
+                                        ),
+                                    }
+                                } else {
+                                    error!(
+                                        "Failed to parse flow ID from notification payload: {}",
+                                        payload
+                                    );
+                                }
+                            }
+                            Err(e) => error!("Failed to parse notification payload as JSON: {}", e),
                         }
                     }
                 }
