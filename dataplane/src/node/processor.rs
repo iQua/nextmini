@@ -2,9 +2,10 @@
 /// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
+use ahash::AHashMap;
 use flume;
 use tokio;
 use tokio::sync::broadcast;
@@ -15,10 +16,12 @@ use tracing::{error, warn};
 use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
-use crate::node::local_interface::LocalInterfaceHandle;
+use crate::node::flow::UserSpaceSender;
+use crate::node::flow::server::UserSpaceServerHandle;
+use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
@@ -26,16 +29,22 @@ pub enum ProcessorPacket {
     ProcessPacket(Packet),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
+    ConnectUserSpaceSender {
+        flow_id: FlowId,
+        sender: UserSpaceSender,
+    },
+    DisconnectUserSpaceSender(FlowId),
+    ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ProcessorHandle {
     Sequential(SequentialProcHandle),
     Concurrent(ConcurrentProcHandle),
@@ -68,6 +77,7 @@ impl ProcessorHandle {
         Ok(())
     }
 
+    // connects the local interface to the processor
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -78,6 +88,33 @@ impl ProcessorHandle {
                 e
             );
         };
+    }
+
+    // connects the client handle to the processor
+    pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectUserSpaceSender { flow_id, sender })
+        {
+            error!(
+                "Error connecting the client handle to the processors: {}.",
+                e
+            );
+        };
+    }
+
+    // Disconnects the user-space packet sender from the processor's hashmap of senders.
+    // This is needed when a user-space TCP flow finishes.
+    pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::DisconnectUserSpaceSender(flow_id))
+        {
+            error!(
+                "Error sending the DisconnectUserSpaceSender message to the processors: {}",
+                e
+            );
+        }
     }
 
     pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
@@ -111,6 +148,18 @@ impl ProcessorHandle {
         }
     }
 
+    pub fn connect_server(&self, server: UserSpaceServerHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectServerHandle(server))
+        {
+            error!(
+                "Error sending the ConnectServerHandle message to the processors: {}",
+                e
+            );
+        };
+    }
+
     pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
         if let Err(e) = self
             .broadcast_sender()
@@ -124,7 +173,7 @@ impl ProcessorHandle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SequentialProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
@@ -140,13 +189,11 @@ impl SequentialProcHandle {
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
-            let mut proc = Processor {
-                packet_receiver: PacketReceiver::Sequential(packet_receiver),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
-                local_interface: None,
-                schedulers: HashMap::new(),
-            };
+            let mut proc = Processor::new(
+                PacketReceiver::Sequential(packet_receiver),
+                broadcast_sender.subscribe(),
+                config.clone(),
+            );
 
             tokio::spawn(async move {
                 proc.run().await;
@@ -172,7 +219,7 @@ impl SequentialProcHandle {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ConcurrentProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
@@ -184,13 +231,11 @@ impl ConcurrentProcHandle {
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
-            let mut proc = Processor {
-                packet_receiver: PacketReceiver::Concurrent(packet_receiver.clone()),
-                broadcast_receiver: broadcast_sender.subscribe(),
-                routing_table: RoutingTable::new(config.node_id),
-                local_interface: None,
-                schedulers: HashMap::new(),
-            };
+            let mut proc = Processor::new(
+                PacketReceiver::Concurrent(packet_receiver.clone()),
+                broadcast_sender.subscribe(),
+                config.clone(),
+            );
 
             tokio::spawn(async move {
                 proc.run().await;
@@ -262,34 +307,59 @@ impl PacketReceiver {
 
 // Processes packets and forwards them to the next hop.
 struct Processor {
-    // receives packets from the network interface or local interface
+    config: LocalConfig,
+
+    // receives packets from the network interface, local interface, or user-space TCP flows
     packet_receiver: PacketReceiver,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
+    // the local TUN interface
+    local_interface: Option<Arc<LocalInterfaceHandle>>,
+
+    // channel senders for packets in user-space TCP flows
+    user_space_senders: AHashMap<FlowId, UserSpaceSender>,
+
+    // the user-space TCP server handle
+    server: Option<UserSpaceServerHandle>,
+
     // the routing table
     routing_table: RoutingTable,
 
-    // the local interface
-    local_interface: Option<LocalInterfaceHandle>,
-
-    // schedulers, one for each outbound network interface
-    schedulers: HashMap<NodeId, SchedulerHandle>,
+    // the schedulers (for upstream packets)
+    schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
+    pub fn new(
+        packet_receiver: PacketReceiver,
+        broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+        config: LocalConfig,
+    ) -> Self {
+        Self {
+            packet_receiver,
+            broadcast_receiver,
+            local_interface: None,
+            user_space_senders: AHashMap::new(),
+            server: None,
+            routing_table: RoutingTable::new(config.clone()),
+            schedulers: AHashMap::new(),
+            config,
+        }
+    }
+
     async fn run(&mut self) {
         loop {
             tokio::select! {
-                // Wait for the first packet or a broadcast message
+                // waits for the first packet or a broadcast message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
                         ProcessorPacket::ProcessPacket(first_packet) => {
-                            // Start a batch with the first packet
+                            // starts a batch with the first packet
                             self.process_packet(first_packet);
 
-                            // Start processing packets in batches
+                            // starts processing packets in batches
                             while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
                                 self.process_packet(packet);
                             }
@@ -303,7 +373,6 @@ impl Processor {
         }
     }
 
-    // New helper method to handle non-packet messages
     async fn handle_message(&mut self, msg: ProcessorMessage) {
         match msg {
             ProcessorMessage::UpdateRoutingTable(routes) => {
@@ -314,12 +383,21 @@ impl Processor {
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
-                self.local_interface = Some(local_interface);
+                self.local_interface = Some(Arc::new(local_interface));
+            }
+            ProcessorMessage::ConnectUserSpaceSender { flow_id, sender } => {
+                self.user_space_senders.insert(flow_id, sender);
+            }
+            ProcessorMessage::DisconnectUserSpaceSender(flow_id) => {
+                self.user_space_senders.remove(&flow_id);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
                 if let Some(scheduler) = self.schedulers.get(&node_id) {
                     scheduler.limit_rate(spec);
                 }
+            }
+            ProcessorMessage::ConnectServerHandle(user_space_server) => {
+                self.server = Some(user_space_server);
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
@@ -359,14 +437,50 @@ impl Processor {
         }
     }
 
-    /// Sends a packet to its destined next hop, including local delivery to the TUN interface.
-    fn send_packet(&self, packet: Packet, next_hop_id: NodeId) {
+    /// Locates a channel sender for delivering packets in user-space flows, based on the flow ID.
+    fn user_space_sender(&mut self, flow_id: FlowId) -> Option<UserSpaceSender> {
+        if let Some(sender) = self.user_space_senders.get(&flow_id) {
+            Some(sender.clone())
+        } else {
+            if flow_id.dst_port() != self.config.user_space_server_port {
+                return None;
+            }
+
+            let server_handle = self
+                .server
+                .clone()
+                .expect("The user-space server has not yet been connected.");
+
+            let sender = server_handle.add_server(flow_id);
+            self.user_space_senders.insert(flow_id, sender.clone());
+
+            Some(sender)
+        }
+    }
+
+    /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
+    /// a user-space TCP client, or a user-space TCP server.
+    fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
-            // local delivery
-            if let Some(ref local_interface) = self.local_interface {
-                local_interface.write_packet(packet);
+            // local delivery: use the destination IP address to distinguish between the TUN interface
+            // and user-space TCP clients or servers
+            if packet.flow_id.dst_ip() == self.config.local_address {
+                if let Some(ref local_interface) = self.local_interface {
+                    local_interface.write_packet(packet);
+                } else {
+                    error!("The local interface has not yet been connected.");
+                }
             } else {
-                error!("The local interface has not yet been connected.");
+                let flow_id = packet.flow_id;
+
+                let dest = self.user_space_sender(flow_id);
+                if let Some(sender) = dest {
+                    if sender.try_send(packet).is_err() {
+                        tracing::error!(
+                            "Failed to send a packet in user-space flows to its local destination."
+                        );
+                    }
+                }
             }
         } else {
             if let Some(scheduler) = self.schedulers.get(&next_hop_id) {

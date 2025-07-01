@@ -1,3 +1,5 @@
+use std::net::Ipv4Addr;
+
 use tokio_tungstenite::tungstenite::{Error, Message};
 
 use clap_serde_derive::ClapSerde;
@@ -7,11 +9,13 @@ use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, Protocol};
+use nextmini_messages::{
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol, SchedulingDiscipline,
+};
 
 use crate::node::NodeId;
-use crate::node::drop::DropStrategy;
-use crate::node::scheduler::SchedulingDiscipline;
+use crate::node::NodeIdExt;
+use crate::node::scheduler::drop::DropStrategy;
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
@@ -145,14 +149,29 @@ pub struct LocalConfig {
     pub quic_congestion_control: CongestionControl,
 
     // The local network address
-    #[default(10, 0, 0, 1)]
+    #[default(default_local_address())]
     #[arg(skip)]
-    pub local_address: (u8, u8, u8, u8),
+    pub local_address: Ipv4Addr,
+
+    // The tun virtual base network address from the controller.
+    #[default(default_virtual_base_addr())]
+    #[arg(skip)]
+    pub virtual_base_addr: Ipv4Addr,
+
+    // The user-space network address.
+    #[default(default_user_space_address())]
+    #[arg(skip)]
+    pub user_space_address: Ipv4Addr,
+
+    // The user-space base network address.
+    #[default(default_user_space_base_addr())]
+    #[arg(skip)]
+    pub user_space_base_addr: Ipv4Addr,
 
     // The local network mask
-    #[default(255, 255, 255, 0)]
+    #[default(default_netmask())]
     #[arg(skip)]
-    pub local_netmask: (u8, u8, u8, u8),
+    pub local_netmask: Ipv4Addr,
 
     // The transport protocol: TCP or QUIC
     #[default(Protocol::Tcp)]
@@ -160,7 +179,7 @@ pub struct LocalConfig {
     pub protocol: Protocol,
 
     // The scheduling discipline
-    #[default(SchedulingDiscipline::Wrr)]
+    #[default(SchedulingDiscipline::Fifo)]
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 
@@ -184,14 +203,70 @@ pub struct LocalConfig {
     #[arg(long)]
     pub reorder_tolerance: usize,
 
-    // The sending rate of the scheduler in bytes per second
-    // default set close to the limit of Nextmini
-    #[default(450_000_000.0)]
+    // The flow config received from controller
+    #[default(vec![Flow {
+        src_node_id: 0,
+        dst_node_id: 0,
+        flow_spec: FlowSpec {
+            flow_len: FlowLen::Bytes(1_000_000_000),
+            flow_rate: None,
+            flow_weight: None,
+        },
+    }])]
+    #[arg(skip)]
+    pub flow: Vec<Flow>,
+
+    // The user space client port automatically assigned by dataplane.
+    #[default(45535)]
     #[arg(long)]
-    pub scheduler_sending_rate: f32,
+    pub user_space_client_port: u16,
+
+    // The user space server port automatically assigned by dataplane.
+    #[default(8888)]
+    #[arg(long)]
+    pub user_space_server_port: u16,
+}
+
+fn default_local_address() -> Ipv4Addr {
+    Ipv4Addr::new(10, 0, 0, 1)
+}
+
+fn default_virtual_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(10, 0, 0, 0)
+}
+
+fn default_user_space_address() -> Ipv4Addr {
+    Ipv4Addr::new(192, 168, 0, 1)
+}
+
+fn default_user_space_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(192, 168, 0, 0)
+}
+
+fn default_netmask() -> Ipv4Addr {
+    Ipv4Addr::new(255, 255, 255, 0)
 }
 
 impl LocalConfig {
+    /// Converts IP address to node ID, supporting both TUN and user space networks.
+    pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
+        let ip_addr = u32::from(ip);
+        let netmask = u32::from(self.local_netmask);
+
+        let tun_base = u32::from(self.virtual_base_addr);
+        let user_space_base = u32::from(self.user_space_base_addr);
+
+        match ip_addr & netmask {
+            subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
+            subnet if subnet == (user_space_base & netmask) => {
+                (ip_addr - user_space_base) as NodeId
+            }
+            _ => {
+                panic!("Detected unknown IP {}.", ip);
+            }
+        }
+    }
+
     /// Creates a new instance of LocalConfig.
     pub fn new() -> LocalConfig {
         let mut args = Args::parse();
@@ -298,16 +373,27 @@ impl LocalConfig {
                 match controller_response {
                     ControllerToDataplane::StartUp {
                         node_id,
-                        addr,
                         net_mask,
+                        virtual_base_addr,
+                        user_space_base_addr,
                         protocol,
+                        scheduler_type,
                     } => {
                         self.node_id = node_id;
-                        self.local_address = (addr[0], addr[1], addr[2], addr[3]);
-                        self.local_netmask = (net_mask[0], net_mask[1], net_mask[2], net_mask[3]);
                         self.protocol = protocol;
-                        self.scheduler_type = SchedulingDiscipline::Fifo;
+                        self.local_netmask = net_mask;
+                        self.virtual_base_addr = virtual_base_addr;
+                        self.user_space_base_addr = user_space_base_addr;
+                        self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
+                        self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
+                        self.scheduler_type = scheduler_type;
                     }
+
+                    // Adding flows message.
+                    ControllerToDataplane::AddFlows { flows } => {
+                        self.flow = flows;
+                    }
+
                     _ => {
                         error!(
                             "A message with an unexpected type has been received from the controller."

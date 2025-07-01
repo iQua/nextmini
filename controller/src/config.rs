@@ -1,18 +1,19 @@
 /// Defines configuration structs and loading logic.
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::Protocol;
+use nextmini_messages::{Flow, Protocol, SchedulingDiscipline};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
     pub route: Vec<usize>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
     pub user: String,
     pub password: String,
@@ -47,14 +48,6 @@ pub struct LinkRate {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct FlowWeight {
-    pub src_ip: [u8; 4],
-    pub dst_ip: [u8; 4],
-    pub src_port: u16,
-    pub dst_port: u16,
-    pub weight: usize,
-}
-#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     /// The port to listen on
     #[serde(default = "default_port")]
@@ -62,12 +55,16 @@ pub struct Config {
 
     /// The base ipv4 address for the network
     #[serde(default = "default_base_addr")]
-    pub base_addr: [u8; 4],
+    pub base_addr: Ipv4Addr,
 
     /// The net mask for the network.
     /// This is used to calculate the ipv4 address for each node. Change this only if you understand what you are doing.
     #[serde(default = "default_net_mask")]
-    pub net_mask: [u8; 4],
+    pub net_mask: Ipv4Addr,
+
+    /// The base ipv4 address for user-space smoltcp network
+    #[serde(default = "default_user_space_base_addr")]
+    pub user_space_base_addr: Ipv4Addr,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -85,15 +82,18 @@ pub struct Config {
     #[serde(default)]
     pub link_rates: Vec<LinkRate>, // A list of link rates.
 
-    /// A vector of flow weights.
-    #[serde(default)]
-    pub flow_weights: Vec<FlowWeight>,
-
     /// Topology configuration for automatic route generation.
     #[serde(default)]
     pub topology: Topology,
 
-    /// Should database be reset before starting the controller?
+    /// The Flows configuration
+    #[serde(default)]
+    pub flows: Vec<Flow>, // A list of flows.
+
+    /// The scheduler type
+    #[serde(default = "default_scheduler_type")]
+    pub scheduler_type: SchedulingDiscipline,
+
     /// The database configuration.
     #[serde(default = "default_db_config")]
     pub db: DBConfig,
@@ -107,19 +107,29 @@ fn default_port() -> u16 {
 }
 
 /// The default base ipv4 address for the network
-fn default_base_addr() -> [u8; 4] {
-    [10, 0, 0, 0]
+fn default_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(10, 0, 0, 0)
 }
 
 /// The default net mask for the network.
-fn default_net_mask() -> [u8; 4] {
+fn default_net_mask() -> Ipv4Addr {
     // accommodates up to 255 * 255 nodes in the private network
-    [255, 255, 0, 0]
+    Ipv4Addr::new(255, 255, 0, 0)
+}
+
+/// The default base ipv4 address for user-space smoltcp network
+fn default_user_space_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(192, 168, 0, 0)
 }
 
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
+}
+
+/// The default scheduler type: FIFO
+fn default_scheduler_type() -> SchedulingDiscipline {
+    SchedulingDiscipline::Fifo
 }
 
 /// The default configuration for the database
@@ -174,11 +184,13 @@ impl Default for Config {
             port: default_port(),
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
+            user_space_base_addr: default_user_space_base_addr(),
             protocol: default_protocol(),
             routes: Vec::new(),
+            flows: Vec::new(),
             link_rates: Vec::new(),
-            flow_weights: Vec::new(),
             topology: Topology::default(),
+            scheduler_type: default_scheduler_type(),
             db: default_db_config(),
         }
     }
@@ -239,8 +251,8 @@ mod tests {
 
         // Verify basic configuration
         assert_eq!(config.protocol, Protocol::Quic);
-        assert_eq!(config.base_addr, [10, 0, 0, 0]);
-        assert_eq!(config.net_mask, [255, 255, 255, 0]);
+        assert_eq!(config.base_addr, Ipv4Addr::new(10, 0, 0, 0));
+        assert_eq!(config.net_mask, Ipv4Addr::new(255, 255, 255, 0));
 
         // Verify routes were processed correctly
         assert_eq!(config.routes.len(), 3);

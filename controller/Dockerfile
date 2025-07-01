@@ -34,7 +34,8 @@ RUN apk update && \
     iputils-ping \
     iperf3 \
     openssl \
-    ca-certificates
+    ca-certificates \
+    htop
 
 WORKDIR /var/nextmini
 COPY --from=build /var/nextmini/server/target/release/controller /var/nextmini/controller

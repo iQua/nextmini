@@ -12,10 +12,12 @@ use tracing::{error, info};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
-use crate::node::network_interface::NetworkInterfaceHandle;
+use crate::node::controller::reporter::ControllerReporterHandle;
+use crate::node::flow::client::UserSpaceClientHandle;
+use crate::node::flow::server::UserSpaceServerHandle;
+use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reporter::ControllerReporterHandle;
-use crate::node::scheduler::SchedulerHandle;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -49,11 +51,19 @@ impl ControllerInterfaceHandle {
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
+        let user_space_client = UserSpaceClientHandle::new(config.clone(), processors.clone());
+
+        // creates the server handle for the processor to use.
+        let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
+        processors.connect_server(user_space_server.clone());
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
-            config,
+            config: config.clone(),
             receiver_stream,
-            processors,
+            processors: processors.clone(),
             reporter: reporter.clone(),
+            user_space_client,
+            user_space_server,
         };
 
         tokio::spawn(async move {
@@ -164,7 +174,13 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
+
+    // reports metrics to controller
     reporter: ControllerReporterHandle,
+
+    // handles for user-space TCP flows
+    user_space_client: UserSpaceClientHandle,
+    user_space_server: UserSpaceServerHandle,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -221,14 +237,16 @@ impl ControllerToDataplaneReceiver {
                     );
                 }
             }
+
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
-                    "Setting the link rate for node {} to {} bytes/second with a bucket size of {} bytes.",
-                    node_id, spec.rate, spec.bucket_size,
+                    "The link rate from node {} to node {} is now set to {} bytes/second, with a bucket size of {} bytes.",
+                    self.config.node_id, node_id, spec.rate, spec.bucket_size,
                 );
 
                 self.processors.limit_rate(node_id, spec);
             }
+
             ControllerToDataplane::InstallRoutes { routes } => {
                 info!(
                     "Installing {} routes on node {}.",
@@ -238,26 +256,31 @@ impl ControllerToDataplaneReceiver {
 
                 self.processors.update_routing_table(routes);
             }
-            ControllerToDataplane::SetFlowWeight {
-                src_ip,
-                dst_ip,
-                src_port,
-                dst_port,
-                weight,
-            } => {
-                info!(
-                    "Setting the flow weight {} at node {}.",
-                    weight, self.config.node_id
-                );
 
-                // Convert the 4-tuple to a flow_id
-                let flow_id = ((src_ip as u128) << 96)
-                    | ((dst_ip as u128) << 64)
-                    | ((src_port as u128) << 48)
-                    | ((dst_port as u128) << 32);
+            ControllerToDataplane::AddFlows { flows } => {
+                let mut client_flows = Vec::new();
 
-                self.processors.set_flow_weight(flow_id, weight);
+                for flow in &flows {
+                    if flow.dst_node_id == self.config.node_id {
+                        // this node is the server for this flow.
+                        self.user_space_server.store_flow_spec(flow.clone());
+                    }
+                    if flow.src_node_id == self.config.node_id {
+                        // this node is the client for this flow.
+                        client_flows.push(flow.clone());
+                    }
+                }
+
+                if !client_flows.is_empty() {
+                    info!(
+                        "Adding {} user-space flows to node {}.",
+                        client_flows.len(),
+                        self.config.node_id
+                    );
+                    self.user_space_client.add_flows(client_flows);
+                }
             }
+
             _ => error!("Received a message with an unknown type from the controller."),
         }
     }

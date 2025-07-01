@@ -4,7 +4,7 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
-use crate::node::local_interface::ShutdownMessage;
+use crate::node::local::interface::ShutdownMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 

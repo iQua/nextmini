@@ -48,7 +48,8 @@ RUN apk update && \
     net-tools \
     iputils-ping \
     iperf3 \
-    openssl
+    openssl \
+    htop
 
 ENV RUST_LOG=info
 

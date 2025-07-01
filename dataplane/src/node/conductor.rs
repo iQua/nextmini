@@ -6,14 +6,13 @@ use tracing::info;
 
 use nextmini_messages::Protocol;
 
+use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
-use crate::node::controller_interface::ControllerInterfaceHandle;
-use crate::node::local_interface::LocalInterfaceHandle;
+use crate::node::controller::interface::ControllerInterfaceHandle;
+use crate::node::local::interface::LocalInterfaceHandle;
+use crate::node::network::quic::QuicServer;
+use crate::node::network::tcp::TcpServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::quic::QuicServer;
-use crate::node::tcp::TcpServer;
-
-use super::reporter::ControllerReporterHandle;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -43,7 +42,6 @@ impl Conductor {
 
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone());
-
         processors.connect_local_interface(local_interface.clone());
 
         Conductor {
@@ -76,6 +74,7 @@ impl Conductor {
             self.config.node_id, self.config.private_network_addr, self.config.private_network_port
         );
 
+        // starts listening with either TCP or QUIC on published ports (private and/or public)
         let public_port = self.config.public_network_port.clone();
         let private_port = self.config.private_network_port.clone();
 
