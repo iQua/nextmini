@@ -26,9 +26,9 @@ pub fn build_startup_response(
     }
 }
 
-/// Builds a flow message for a specific node.
+/// Builds an adding flow message for a specific node.
 pub fn build_flows_for_node(flow: DbFlow) -> ControllerToDataplane {
-    debug!("Building flow message for flow id {}", flow.id);
+    debug!("Building an adding flow message for flow id {}", flow.id);
 
     // converts database Flow to message Flow.
     let flow_len = match flow.flow_len_type.as_str() {
@@ -38,6 +38,7 @@ pub fn build_flows_for_node(flow: DbFlow) -> ControllerToDataplane {
     };
 
     let message_flow = Flow {
+        controller_id: Some(flow.id),
         src_node_id: flow.src_node_id as usize,
         dst_node_id: flow.dst_node_id as usize,
         flow_spec: FlowSpec {
