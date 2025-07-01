@@ -352,6 +352,40 @@ async fn handle_connection(
                             );
                         }
                     }
+                    DataplaneToController::FlowFinished { controller_id } => {
+                        info!("Received FlowFinished message for flow {}.", controller_id);
+                        match sqlx::query(
+                            r#"
+                            UPDATE flows
+                            SET is_finished = TRUE
+                            WHERE id = $1
+                            "#,
+                        )
+                        .bind(controller_id)
+                        .execute(&*db_pool)
+                        .await
+                        {
+                            Ok(result) => {
+                                if result.rows_affected() > 0 {
+                                    info!(
+                                        "Marked flow {} as finished in the database.",
+                                        controller_id
+                                    );
+                                } else {
+                                    warn!(
+                                        "Flow with ID {} not found in the database.",
+                                        controller_id
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to update flow {} in the database: {}.",
+                                    controller_id, e
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Ok(Message::Ping(_)) => {
