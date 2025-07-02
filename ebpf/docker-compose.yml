@@ -1,0 +1,52 @@
+version: "3.8"
+
+networks:
+  tcp_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.0.1.0/24
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tcp_server
+    networks:
+      tcp_network:
+        ipv4_address: 10.0.1.10
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+    command: ./server
+
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tcp_proxy
+    networks:
+      tcp_network:
+        ipv4_address: 10.0.1.20
+    depends_on:
+      - server
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+    command: ./proxy
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tcp_client
+    networks:
+      tcp_network:
+        ipv4_address: 10.0.1.30
+    depends_on:
+      - proxy
+    restart: "no" # Client runs once and exits
+    environment:
+      - RUST_LOG=info
+    command: ./client
