@@ -1,34 +1,134 @@
 version: "3.8"
 
 services:
-    aya-test:
+    # eBPF Socket Redirection Container
+    ebpf-proxy:
         build:
             context: .
             dockerfile: Dockerfile
-        container_name: aya-ebpf-test
+        container_name: ebpf-socket-proxy
         privileged: true
         cap_add:
             - SYS_ADMIN
             - NET_ADMIN
+            - BPF
         volumes:
-            - /proc:/host/proc:ro
             - /sys:/host/sys:ro
+            - /proc:/host/proc:ro
+            - /sys/fs/cgroup:/sys/fs/cgroup:rw
+        networks:
+            ebpf_net:
+                ipv4_address: 172.20.0.10
         environment:
             - RUST_LOG=info
-        ports:
-            - "8080:8080"
-        stdin_open: true
-        tty: true
         command: >
             sh -c "
-              echo 'eBPF Test Environment Ready!' &&
-              echo 'Binary location: /usr/local/bin/aya' &&
-              echo 'Usage:' &&
-              echo '  docker exec aya-ebpf-test aya' &&
-              echo '  docker exec aya-ebpf-test python3 -m http.server 8080' &&
+              echo 'eBPF Socket Redirection Proxy Ready!' &&
+              echo 'Starting eBPF program...' &&
+              /usr/local/bin/aya
+            "
+
+    # Backend Server 1
+    backend1:
+        image: python:3.9-slim
+        container_name: backend-server-1
+        networks:
+            ebpf_net:
+                ipv4_address: 172.20.0.11
+        working_dir: /tmp
+        command: >
+            sh -c "
+              echo '<h1>Backend Server 1</h1><p>Server ID: backend-1</p><p>IP: 172.20.0.11:8080</p>' > index.html &&
+              python3 -m http.server 8080
+            "
+        expose:
+            - "8080"
+
+    # Backend Server 2
+    backend2:
+        image: python:3.9-slim
+        container_name: backend-server-2
+        networks:
+            ebpf_net:
+                ipv4_address: 172.20.0.12
+        working_dir: /tmp
+        command: >
+            sh -c "
+              echo '<h1>Backend Server 2</h1><p>Server ID: backend-2</p><p>IP: 172.20.0.12:8080</p>' > index.html &&
+              python3 -m http.server 8080
+            "
+        expose:
+            - "8080"
+
+    # Backend Server 3
+    backend3:
+        image: python:3.9-slim
+        container_name: backend-server-3
+        networks:
+            ebpf_net:
+                ipv4_address: 172.20.0.13
+        working_dir: /tmp
+        command: >
+            sh -c "
+              echo '<h1>Backend Server 3</h1><p>Server ID: backend-3</p><p>IP: 172.20.0.13:8080</p>' > index.html &&
+              python3 -m http.server 8080
+            "
+        expose:
+            - "8080"
+
+    # Test Client
+    test-client:
+        image: alpine:latest
+        container_name: test-client
+        networks:
+            ebpf_net:
+                ipv4_address: 172.20.0.20
+        depends_on:
+            - backend1
+            - backend2
+            - backend3
+            - ebpf-proxy
+        volumes:
+            - ./test-scripts:/scripts:ro
+        command: >
+            sh -c "
+              apk add --no-cache curl &&
+              echo 'Test Client Ready!' &&
+              echo 'Available backends:' &&
+              echo '  - Backend 1: 172.20.0.11:8080' &&
+              echo '  - Backend 2: 172.20.0.12:8080' &&
+              echo '  - Backend 3: 172.20.0.13:8080' &&
+              echo 'eBPF Proxy: 172.20.0.10' &&
+              echo '' &&
+              echo 'Run tests with:' &&
+              echo '  docker exec test-client /scripts/test-redirection.sh' &&
               tail -f /dev/null
             "
 
+    # Load Balancer Frontend (Target for redirection)
+    frontend:
+        image: nginx:alpine
+        container_name: frontend-lb
+        networks:
+            ebpf_net:
+                ipv4_address: 172.20.0.5
+        ports:
+            - "9080:80"
+        volumes:
+            - ./nginx.conf:/etc/nginx/nginx.conf:ro
+        depends_on:
+            - backend1
+            - backend2
+            - backend3
+
 networks:
-    default:
+    ebpf_net:
         driver: bridge
+        ipam:
+            config:
+                - subnet: 172.20.0.0/16
+                  gateway: 172.20.0.1
+
+volumes:
+    test-content:
+    test-scripts:
