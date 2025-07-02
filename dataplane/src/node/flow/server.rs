@@ -15,7 +15,6 @@ use tracing::{error, info};
 use nextmini_messages::{Flow, FlowSpec};
 
 use crate::node::config::LocalConfig;
-use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::{SOCKET_BUFFER_SIZE, UserSpaceSender};
 use crate::node::packet::Packet;
@@ -28,11 +27,8 @@ pub struct UserSpaceServerHandle {
 
     processors: ProcessorHandle,
 
-    // handles communication with the controller, including flow completion notifications
-    reporter: ControllerReporterHandle,
-
     // stores flow specifications keyed by source IP address to retrieve flow configuration
-    flow_specs: Arc<Mutex<AHashMap<IpAddress, (FlowSpec, Option<i32>)>>>,
+    flow_specs: Arc<Mutex<AHashMap<IpAddress, FlowSpec>>>,
 
     // a hashmap of flow IDs to packet channel senders needs to be maintained since multiple processors
     // may request adding a new server for the same flow ID concurrently, but the new server thread should
@@ -42,34 +38,26 @@ pub struct UserSpaceServerHandle {
 }
 
 impl UserSpaceServerHandle {
-    pub fn new(
-        config: LocalConfig,
-        processors: ProcessorHandle,
-        reporter: ControllerReporterHandle,
-    ) -> Self {
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self {
             config,
             processors,
-            reporter,
             flow_specs: Arc::new(Mutex::new(AHashMap::new())),
             packet_senders: Arc::new(Mutex::new(AHashMap::new())),
         }
     }
 
-    // Stores flow specification and controller ID for later retrieval by servers.
+    // Stores flow specification for later retrieval by servers.
     // This creates a mapping from source IP to flow configuration so that when
     // a server is created for an incoming connection, it can consult the correct
-    // flow rate limits and controller ID for flow completion notifications.
+    // flow rate limits.
     pub fn store_flow_spec(&self, flow: Flow) {
         let src_ip = flow
             .src_node_id
             .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
         let mut specs = self.flow_specs.lock().unwrap();
 
-        specs.insert(
-            IpAddress::from(src_ip),
-            (flow.flow_spec, flow.controller_id),
-        );
+        specs.insert(IpAddress::from(src_ip), flow.flow_spec);
     }
 
     // Starts a new server thread for a user-space TCP flow.
@@ -91,25 +79,16 @@ impl UserSpaceServerHandle {
 
         let config = self.config.clone();
         let processors = self.processors.clone();
-        let reporter = self.reporter.clone();
 
         // consults the FlowSpec hashmap using the source IP of the incoming packet
         let src_ip = flow_id.src_ip();
         let specs = self.flow_specs.lock().unwrap();
 
-        let (flow_rate, controller_id) = specs
+        let flow_rate = specs
             .get(&IpAddress::from(src_ip))
-            .map_or((None, None), |(spec, id)| (spec.flow_rate, *id));
+            .map_or(None, |spec| spec.flow_rate);
 
-        let server = UserSpaceServer::new(
-            config,
-            flow_id,
-            controller_id,
-            flow_rate,
-            processors,
-            reporter,
-            packet_receiver,
-        );
+        let server = UserSpaceServer::new(config, flow_id, flow_rate, processors, packet_receiver);
 
         // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
@@ -123,10 +102,8 @@ impl UserSpaceServerHandle {
 struct UserSpaceServer {
     config: LocalConfig,
     flow_id: FlowId,
-    controller_id: Option<i32>,
     flow_rate: Option<usize>,
     processors: ProcessorHandle,
-    reporter: ControllerReporterHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
 }
 
@@ -134,10 +111,8 @@ impl UserSpaceServer {
     fn new(
         config: LocalConfig,
         flow_id: FlowId,
-        controller_id: Option<i32>,
         flow_rate: Option<usize>,
         processors: ProcessorHandle,
-        reporter: ControllerReporterHandle,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
@@ -145,10 +120,8 @@ impl UserSpaceServer {
         Self {
             config,
             flow_id,
-            controller_id,
             flow_rate,
             processors,
-            reporter,
             packet_receiver: Some(packet_receiver),
         }
     }
@@ -208,11 +181,6 @@ impl UserSpaceServer {
             } else {
                 // removes the packet sender from the processors
                 self.processors.disconnect_user_space_sender(self.flow_id);
-
-                // reports flow completion to the controller if this flow has a database ID.
-                if let Some(controller_id) = self.controller_id {
-                    self.reporter.report_flow_finished(controller_id);
-                }
 
                 info!(
                     "The user-space TCP server on node {} has terminated. It has been receiving from node {}.",
