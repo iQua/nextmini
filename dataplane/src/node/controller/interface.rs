@@ -51,7 +51,8 @@ impl ControllerInterfaceHandle {
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
-        let user_space_client = UserSpaceClientHandle::new(config.clone(), processors.clone());
+        let user_space_client =
+            UserSpaceClientHandle::new(config.clone(), processors.clone(), reporter.clone());
 
         // creates the server handle for the processor to use.
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());

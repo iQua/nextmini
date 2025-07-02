@@ -19,9 +19,10 @@ pub struct FlowMetric {
 
 pub enum FlowMetricMessage {
     FlowMetric(FlowMetric),
+    FlowFinished(i32),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ControllerReporterHandle {
     sender: UnboundedSender<FlowMetricMessage>,
 }
@@ -47,6 +48,18 @@ impl ControllerReporterHandle {
                     e
                 );
             }
+        }
+    }
+
+    pub fn report_flow_finished(&self, controller_id: i32) {
+        if let Err(e) = self
+            .sender
+            .send(FlowMetricMessage::FlowFinished(controller_id))
+        {
+            error!(
+                "Error sending a flow finished message to the controller reporter: {}",
+                e
+            );
         }
     }
 }
@@ -76,16 +89,24 @@ impl ControllerReporter {
         loop {
             tokio::select! {
                 // receives new metrics data
-                Some(FlowMetricMessage::FlowMetric(metric)) = self.receiver.recv() => {
-                    let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
-                        FlowMetric {
-                            flow_id: metric.flow_id,
-                            local_node_id: metric.local_node_id,
-                            remote_node_id: metric.remote_node_id,
-                            bytes: 0
-                        });
+                Some(msg) = self.receiver.recv() => {
+                    match msg {
+                        FlowMetricMessage::FlowMetric(metric) => {
+                            let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
+                                FlowMetric {
+                                    flow_id: metric.flow_id,
+                                    local_node_id: metric.local_node_id,
+                                    remote_node_id: metric.remote_node_id,
+                                    bytes: 0
+                                });
 
-                    (*flow_metric).bytes += metric.bytes;
+                            (*flow_metric).bytes += metric.bytes;
+                        }
+                        FlowMetricMessage::FlowFinished(controller_id) => {
+                            let msg = DataplaneToController::FlowFinished { controller_id };
+                            self.controller.send(msg).await;
+                        }
+                    }
                 }
                 // timer tick: calculate flow rates and transmit to the controller
                 _ = metrics_tick.tick() => {

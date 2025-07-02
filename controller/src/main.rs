@@ -4,7 +4,6 @@ use std::sync::Arc;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use sqlx::{Pool, Postgres};
-
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
@@ -17,8 +16,10 @@ use tracing_subscriber;
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucketSpec};
 
 use crate::config::{Config, get_config};
-use crate::db::{init_db, setup_notification};
+use crate::db::{init_db, setup_flow_notification, setup_route_notification};
+use crate::models::DbFlow;
 use crate::models::{Node, Route};
+use crate::utils::build_flows_for_node;
 use crate::utils::{build_routes_for_node, build_startup_response};
 
 mod config;
@@ -43,7 +44,8 @@ async fn main() {
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
     // Set up database notifications
-    setup_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_route_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_flow_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
@@ -310,7 +312,7 @@ async fn handle_connection(
 
                                 // waits for all link rates to be set before sending the flows
                                 tokio::time::sleep(Duration::from_millis(100)).await;
-                                send_flows(config.clone(), node_ws.clone()).await;
+                                send_flows(node_ws.clone(), db_pool.clone()).await;
                             } else {
                                 info!(
                                     "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
@@ -351,6 +353,40 @@ async fn handle_connection(
                             );
                         }
                     }
+                    DataplaneToController::FlowFinished { controller_id } => {
+                        info!("Received FlowFinished message for flow {}.", controller_id);
+                        match sqlx::query(
+                            r#"
+                            UPDATE flows
+                            SET is_finished = TRUE
+                            WHERE id = $1
+                            "#,
+                        )
+                        .bind(controller_id)
+                        .execute(&*db_pool)
+                        .await
+                        {
+                            Ok(result) => {
+                                if result.rows_affected() > 0 {
+                                    info!(
+                                        "Marked flow {} as finished in the database.",
+                                        controller_id
+                                    );
+                                } else {
+                                    warn!(
+                                        "Flow with ID {} not found in the database.",
+                                        controller_id
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to update flow {} in the database: {}.",
+                                    controller_id, e
+                                );
+                            }
+                        }
+                    }
                 }
             }
             Ok(Message::Ping(_)) => {
@@ -373,25 +409,36 @@ async fn handle_connection(
     }
 }
 
-async fn send_flows(config: Config, node_ws: NodeWriterMap) {
+async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
+    let db_flows: Vec<DbFlow> =
+        match sqlx::query_as("SELECT * FROM flows WHERE is_finished = false")
+            .fetch_all(&*db_pool)
+            .await
+        {
+            Ok(flows) => flows,
+            Err(e) => {
+                error!("Failed to fetch flows from database: {}.", e);
+                return;
+            }
+        };
+
     let node_ws_guard = node_ws.read().await;
 
     for (&node_id, writer) in node_ws_guard.iter() {
-        let flows: Vec<_> = config
-            .flows
+        let flows: Vec<DbFlow> = db_flows
             .iter()
-            .filter(|flow| flow.src_node_id == node_id || flow.dst_node_id == node_id)
+            .filter(|flow| flow.src_node_id == node_id as i32 || flow.dst_node_id == node_id as i32)
             .cloned()
             .collect();
 
-        if flows.len() > 0 {
+        if !flows.is_empty() {
             info!(
                 "Adding {} user-space TCP flows to node {}.",
                 flows.len(),
                 node_id
             );
 
-            let msg = ControllerToDataplane::AddFlows { flows };
+            let msg = build_flows_for_node(flows);
 
             match writer
                 .lock()

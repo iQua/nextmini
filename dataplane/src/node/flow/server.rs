@@ -47,6 +47,10 @@ impl UserSpaceServerHandle {
         }
     }
 
+    // Stores flow specification for later retrieval by servers.
+    // This creates a mapping from source IP to flow configuration so that when
+    // a server is created for an incoming connection, it can consult the correct
+    // flow rate limits.
     pub fn store_flow_spec(&self, flow: Flow) {
         let src_ip = flow
             .src_node_id
@@ -82,7 +86,7 @@ impl UserSpaceServerHandle {
 
         let flow_rate = specs
             .get(&IpAddress::from(src_ip))
-            .and_then(|spec| spec.flow_rate);
+            .map_or(None, |spec| spec.flow_rate);
 
         let server = UserSpaceServer::new(config, flow_id, flow_rate, processors, packet_receiver);
 

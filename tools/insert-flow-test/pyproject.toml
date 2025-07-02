@@ -1,0 +1,20 @@
+[project]
+name = "insert-flows"
+version = "0.1.0"
+description = "Flow manager for Strato controller database"
+# readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "psycopg2-binary>=2.9.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+insert-flows = "insert_flows:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
