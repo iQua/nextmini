@@ -1,5 +1,5 @@
 services:
-  strato_node:
+  nextmini_node:
     container_name: node
     hostname: node
     build:
@@ -10,7 +10,7 @@ services:
       - 5432:5432
       - 3000:3000
     volumes:
-      - ../../:/var/strato
+      - ../../:/var/nextmini
     cap_add:
       - NET_ADMIN
     command: /bin/sh -c "sleep infinity"

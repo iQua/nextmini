@@ -1,15 +1,15 @@
-version: '3'
+version: "3"
 services:
   node:
-    container_name: strato
-    hostname: strato
-    image: strato_datapath
+    container_name: nextmini
+    hostname: nextmini
+    image: nextmini_datapath
     build:
-        context: .
-        dockerfile: ./Dockerfile
+      context: .
+      dockerfile: ./Dockerfile
     privileged: true
     volumes:
-      - .:/var/strato
+      - .:/var/nextmini
     cap_add:
-        - NET_ADMIN
-    command: /bin/bash -c "/var/node/target/release/strato ws://192.168.196.158:3000"
+      - NET_ADMIN
+    command: /bin/bash -c "/var/node/target/release/nextmini ws://192.168.196.158:3000"
