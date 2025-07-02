@@ -26,4 +26,4 @@ There are two features that can be enabled: `sequential` and `concurrent`.
 
 For routes, firstly, you can choose the topology, where we define two types: `full_mesh` and  `ring`. Then, if you have multiple routes between two nodes, the system will choose one of them randomly to achieve load balancing. You can also specify the link rates for each route, which will be used to determine the maximum bandwidth available for that route.
 
-For flows, you only need to specify the source and destination node IDs and the flow specific parameters like flow_len, flow_rate, and flow_weight.
+For flows, you only need to specify the source and destination node IDs and the flow specific parameters like `flow_len`, `flow_rate`, and `flow_weight`.
