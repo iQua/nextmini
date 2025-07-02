@@ -22,7 +22,7 @@ impl TcpProxy {
         }
     }
 
-    pub async fn run(&self){
+    pub async fn run(&self) {
         tracing_subscriber::fmt::init();
 
         // Load the eBPF program
@@ -41,6 +41,10 @@ impl TcpProxy {
         // Connect to server
         let server_stream = TcpStream::connect(&self.server_addr).await?;
         info!("Connected to server: {}", self.server_addr);
+
+        // Get raw fds
+        let client_fd = client_stream.as_raw_fd() as u32;
+        let server_fd = server_stream.as_raw_fd() as u32;
 
         // Insert remote ports into sockhash map
     }
