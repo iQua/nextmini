@@ -36,7 +36,7 @@ aya-build = { workspace = true }
 # Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
-aya-ebpf = { path = "../aya-ebpf" }
+aya-ebpf-local = { path = "../aya-ebpf-local" }
 
 [[bin]]
 name = "aya"

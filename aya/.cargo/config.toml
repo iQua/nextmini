@@ -1,0 +1,11 @@
+[build]
+target-dir = "target"
+
+[target.bpfel-unknown-none]
+runner = "bpf-linker"
+
+[target."cfg(all())"]
+runner = "sudo -E"
+
+[unstable]
+build-std = ["core"]

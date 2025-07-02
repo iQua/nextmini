@@ -1,11 +1,10 @@
 [package]
-name = "aya-ebpf"
+name = "aya-ebpf-local"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 aya-common = { path = "../aya-common" }
-
 aya-ebpf = { workspace = true }
 aya-log-ebpf = { workspace = true }
 

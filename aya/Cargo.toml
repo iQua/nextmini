@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "aya",
     "aya-common",
-    "aya-ebpf",
+    "aya-ebpf-local",
 ]
 default-members = ["aya", "aya-common"]
 

@@ -3,10 +3,11 @@
 #[derive(Copy, Clone)]
 #[repr(C)]
 pub struct SockKey {
-    pub remote_ip4: u32,
-    pub local_ip4: u32,
-    pub remote_port: u32,
-    pub local_port: u32,
+    pub sip4: u32,     // Source IP
+    pub dip4: u32,     // Destination IP  
+    pub family: u8,    // Protocol family
+    pub sport: u32,    // Source port
+    pub dport: u32,    // Destination port
 }
 
 #[cfg(feature = "user")]
