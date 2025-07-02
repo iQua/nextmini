@@ -1,4 +1,4 @@
-# Run the examples
+# Running the Examples
 
 Nextmini has multiple introductory examples, which can be run by the following commands:
 
@@ -34,7 +34,7 @@ There are two features that can be enabled: `sequential` and `concurrent`.
 
 `controller-config.toml` is the configuration file for controller, where you can specify the flows, routes, link rates, and other parameters like scheduler type and protocol used to connect between nodes.
 
-For routes, firstly, you can choose the topology, where we define two types: `full_mesh` and `ring`. Then, if you have multiple routes between two nodes, the system will choose one of them randomly to achieve load balancing.
+To define routes, you can first choose the topology, where we define two types: `full_mesh` and `ring`, which include default routes. You can also define your own routes explicitly. If you define multiple routes between two nodes, the system will choose one of them randomly to achieve load balancing.
 
 For link rates, you can also specify the link rates between two nodes, which will be used to determine the maximum bandwidth available for that link.
 
