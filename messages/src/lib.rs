@@ -17,6 +17,9 @@ pub enum DataplaneToController {
     Metrics {
         metrics: Vec<Metric>,
     },
+    FlowFinished {
+        controller_id: i32,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -49,6 +52,7 @@ pub enum SchedulingDiscipline {
 /// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
+    pub controller_id: Option<i32>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
     pub flow_spec: FlowSpec,

@@ -622,7 +622,7 @@ pub async fn setup_flow_notification(
                                             );
 
                                             let node_ws_guard = node_ws.read().await;
-                                            let msg = build_flows_for_node(flow.clone());
+                                            let msg = build_flows_for_node(vec![flow.clone()]);
                                             let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
                                             let src_node_id = flow.src_node_id as usize;

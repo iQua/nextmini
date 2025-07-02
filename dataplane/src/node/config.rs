@@ -205,6 +205,7 @@ pub struct LocalConfig {
 
     // The flow config received from controller
     #[default(vec![Flow {
+        controller_id: None,
         src_node_id: 0,
         dst_node_id: 0,
         flow_spec: FlowSpec {
