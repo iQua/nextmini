@@ -32,6 +32,11 @@ services:
     depends_on:
       - server
     restart: unless-stopped
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+      - BPF
     environment:
       - RUST_LOG=info
     command: ./proxy

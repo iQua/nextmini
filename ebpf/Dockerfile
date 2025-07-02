@@ -1,46 +1,60 @@
-FROM rust:alpine AS build
+FROM rust:1.82-bookworm AS build
 
-RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
+RUN apt-get update && \
+    apt-get install -y \
+    curl bash \
     openssh-client \
     openssh-server \
-    git\
+    git \
     vim \
-    build-base \
+    build-essential \
     net-tools \
     iputils-ping \
     iperf3 \
-    openssl
+    openssl \
+    clang \
+    llvm \
+    libelf-dev \
+    zlib1g-dev \
+    pkg-config \
+    libbpf-dev \
+    linux-libc-dev \
+    && ln -sf /usr/include/x86_64-linux-gnu/asm /usr/include/asm
 
 # Set the log level
 ENV RUST_LOG=info
+
+# Install rustfmt component
+RUN rustup component add rustfmt
 
 # Setup the ebpf directory
 WORKDIR /var/ebpf
 
 # Copy the source code
 COPY Cargo.toml /var/ebpf/Cargo.toml
+COPY build.rs /var/ebpf/build.rs
 COPY src /var/ebpf/src
+COPY ebpf /var/ebpf/ebpf
 
 # Build all binaries from source
 RUN cargo build --release
 
-FROM alpine:latest
+FROM debian:bookworm-slim
 
-RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
+RUN apt-get update && \
+    apt-get install -y \
+    curl bash \
     openssh-client \
     openssh-server \
-    git\
+    git \
     vim \
-    build-base \
     net-tools \
     iputils-ping \
     iperf3 \
     openssl \
-    htop
+    htop \
+    libelf1 \
+    libbpf1
 
 ENV RUST_LOG=info
 
