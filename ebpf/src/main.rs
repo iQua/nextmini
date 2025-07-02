@@ -42,11 +42,6 @@ impl TcpProxy {
         let server_stream = TcpStream::connect(&self.server_addr).await?;
         info!("Connected to server: {}", self.server_addr);
 
-        // Get raw fds
-        let client_fd = client_stream.as_raw_fd() as u64;
-        let server_fd = server_stream.as_raw_fd() as u64;
-        info!("Client FD: {}, Server FD: {}", client_fd, server_fd);
-
-        // Insert raw fds into sockhash map
+        // Insert remote ports into sockhash map
     }
 }

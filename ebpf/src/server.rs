@@ -16,14 +16,11 @@ impl TcpServer {
     pub async fn run(&self) {
         tracing_subscriber::fmt::init();
         let listener = TcpListener::bind(&self.bind_addr).await.unwrap();
-        info!("Listening on {}", self.bind_addr);
 
         // Accept one connection
         match listener.accept().await {
-            Ok((mut stream, client_addr)) => {
-                info!("Client connected: {}", client_addr);
+            Ok((mut stream, _)) => {
                 handle_client(&mut stream).await;
-                info!("Server finished processing request");
             }
             Err(e) => {
                 error!("Accept error: {}", e);

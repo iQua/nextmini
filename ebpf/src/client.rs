@@ -17,7 +17,6 @@ impl TcpClient {
 
     pub async fn run(&self) {
         tracing_subscriber::fmt::init();
-        info!("Client starting..");
 
         let mut stream = match TcpStream::connect(&self.proxy_addr).await {
             Ok(stream) => stream,
@@ -26,7 +25,6 @@ impl TcpClient {
                 return;
             }
         };
-        info!("Connected to proxy at {}", self.proxy_addr);
 
         // Send one message
         if let Err(e) = stream.write_all(self.message.as_bytes()).await {
