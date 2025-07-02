@@ -390,7 +390,7 @@ pub async fn setup_notification(
                     let channel = notif.channel();
 
                     if channel == "auto_sync_routes" {
-                        // Strato does not support installing routes individually, so we need to find
+                        // Nextmini does not support installing routes individually, so we need to find
                         // all routes from the database and re-install them all
                         info!("Installing route updates into the dataplane.");
 

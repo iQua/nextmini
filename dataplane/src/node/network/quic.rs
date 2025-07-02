@@ -136,7 +136,7 @@ impl QuicClient {
 
         let mut connection = loop {
             let addr: SocketAddr = remote_addr.parse().unwrap();
-            let connect = client::Connect::new(addr).with_server_name("Strato");
+            let connect = client::Connect::new(addr).with_server_name("Nextmini");
 
             match client.connect(connect).await {
                 Ok(mut connection) => {
