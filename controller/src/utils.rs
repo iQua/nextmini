@@ -26,12 +26,12 @@ pub fn build_startup_response(
     }
 }
 
-/// Builds an adding flow message for flows.
+/// Builds an AddFlow message for flows.
 pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
     let message_flows: Vec<Flow> = flows
         .into_iter()
         .map(|flow| {
-            debug!("Building an adding flow message for flow id {}", flow.id);
+            debug!("Building an AddFlow message for flow id {}", flow.id);
 
             // converts database Flow to message Flow.
             let flow_len = match flow.flow_len_type.as_str() {
@@ -74,7 +74,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             route.route_id, route.route, route.src_node_id, route.dst_node_id
         );
 
-        // Find the position of this node in the route path
+        // finds the position of this node in the route path
         let idx = route.route.iter().position(|&x| x == node_id);
 
         let next_hop = if let Some(idx) = idx {
@@ -86,7 +86,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
                 route.route[idx + 1] as usize
             }
         } else {
-            // Node not in route path - set next_hop to 0
+            // Node not in route path — set next_hop to 0
             debug!(
                 "Node {} is not in route {:?}, setting next_hop to 0.",
                 node_id, route.route
@@ -100,7 +100,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
             node_id, route.route, next_hop
         );
 
-        // Send route endpoints for dataplane's direction indexing
+        // sends route endpoints for dataplane's direction indexing
         let src_node_id = route.route[0] as usize; // Route source
         let dst_node_id = route.route[route.route.len() - 1] as usize; // Route destination
 

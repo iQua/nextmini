@@ -407,7 +407,7 @@ pub async fn setup_route_notification(
     // a hashmap from the node ID to its corresponding WebSocket sink
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
 ) {
-    // Create the notification function and trigger
+    // creates the notification function and trigger
     let flow_table_name = "routes";
 
     let create_function_sql = r#"
@@ -461,7 +461,7 @@ pub async fn setup_route_notification(
             .expect("Failed to create trigger");
     }
 
-    // Set up listener
+    // sets up a listener
     let mut listener = PgListener::connect_with(&db_pool)
         .await
         .expect("Failed to connect listener");
@@ -530,7 +530,7 @@ pub async fn setup_flow_notification(
     // a hashmap from the node ID to its corresponding WebSocket sink
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
 ) {
-    // Create the flow notification function and trigger
+    // creates the flow notification function and trigger
     let create_flow_function_sql = r#"
         CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
         RETURNS TRIGGER AS $$
@@ -560,7 +560,7 @@ pub async fn setup_flow_notification(
         .await
         .expect("Failed to acquire connection");
 
-    // Check and create flow trigger if it doesn't exist
+    // checks and creates a flow trigger if it doesn't exist
     let flow_row: Option<(i32,)> = sqlx::query_as(check_flow_trigger_sql)
         .fetch_optional(&mut *conn)
         .await
@@ -578,7 +578,7 @@ pub async fn setup_flow_notification(
         info!("Created flow notification trigger");
     }
 
-    // Set up listener for flow notifications
+    // sets up a listener for flow notifications
     let mut listener = PgListener::connect_with(&db_pool)
         .await
         .expect("Failed to connect listener");

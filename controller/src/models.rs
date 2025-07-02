@@ -19,7 +19,6 @@ pub struct Route {
 
 #[derive(Clone, FromRow, Debug)]
 pub struct DbFlow {
-    #[allow(dead_code)]
     pub id: i32,
     pub src_node_id: i32,
     pub dst_node_id: i32,
