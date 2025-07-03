@@ -16,3 +16,4 @@ lightning_logs/
 **/__pycache__
 **/server_cert.pem
 **/server_key.pem
+**/loopback-ebpf/target

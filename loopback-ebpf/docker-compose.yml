@@ -1,0 +1,26 @@
+services:
+  loopback-ebpf:
+    build: .
+    container_name: loopback-ebpf
+    # Full privileges are required to load eBPF programs, attach to cgroups,
+    # and interact with the kernel.
+    privileged: true
+    cap_add:
+      # SYS_ADMIN is required for many eBPF operations.
+      - SYS_ADMIN
+      # NET_ADMIN is required for network-related eBPF programs.
+      - NET_ADMIN
+      # BPF allows for more fine-grained control over eBPF syscalls on newer kernels.
+      - BPF
+    volumes:
+      # Mount necessary kernel filesystems for eBPF operations.
+      - /sys:/host/sys:ro
+      - /proc:/host/proc:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+    # By removing 'network_mode: host', the container will have its own network namespace.
+    # The loopback client/server test will run within this container's namespace,
+    # which is the correct and most robust setup for this scenario.
+    restart: unless-stopped 

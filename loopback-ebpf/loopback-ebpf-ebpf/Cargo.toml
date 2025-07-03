@@ -1,0 +1,17 @@
+[package]
+name = "loopback-ebpf-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+loopback-ebpf-common = { path = "../loopback-ebpf-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "loopback-ebpf"
+path = "src/main.rs"
