@@ -1,0 +1,30 @@
+FROM rust:1.70
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    clang \
+    llvm \
+    libbpf-dev \
+    linux-headers-generic \
+    linux-libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY Cargo.toml .
+COPY src/ src/
+COPY sockmap_redirect.c .
+COPY sockmap_loader.c .
+COPY Makefile .
+COPY vmlinux.h .
+COPY start-proxy.sh .
+COPY simple_test.c .
+COPY test_loader.c .
+
+RUN cargo build --release --bin proxy
+RUN make
+RUN chmod +x start-proxy.sh
+
+EXPOSE 8081
+
+CMD ["./start-proxy.sh"]
