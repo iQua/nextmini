@@ -80,6 +80,7 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Tcp => match self.config.operating_mode {
+                // uses TcpServer to handle the connections for normal operating mode.
                 OperatingMode::Normal => {
                     if public_port == private_port {
                         let mut tcp_server = TcpServer::new(
@@ -111,6 +112,7 @@ impl Conductor {
                         }
                     }
                 }
+                // uses TcpMaxServer to handle the connections for max operating mode.
                 OperatingMode::Max => {
                     if public_port == private_port {
                         let mut tcp_max_server = TcpMaxServer::new(self.processors.clone());
@@ -119,8 +121,7 @@ impl Conductor {
                             .await;
                     } else {
                         let mut tcp_max_server_public = TcpMaxServer::new(self.processors.clone());
-                        let mut tcp_max_server_private =
-                            TcpMaxServer::new(self.processors.clone());
+                        let mut tcp_max_server_private = TcpMaxServer::new(self.processors.clone());
 
                         let public_addr = format!("{}:{}", "0.0.0.0", public_port);
                         let private_addr = format!("{}:{}", "0.0.0.0", private_port);
