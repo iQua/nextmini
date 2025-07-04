@@ -49,6 +49,15 @@ pub enum SchedulingDiscipline {
     Wrr,
 }
 
+/// The operating mode of the dataplane node.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OperatingMode {
+    #[default]
+    Normal,
+    Max,
+}
+
 /// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
