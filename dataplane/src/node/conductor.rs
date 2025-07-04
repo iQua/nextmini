@@ -11,7 +11,8 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
-use crate::node::network::tcp::{TcpMaxServer, TcpServer};
+use crate::node::network::tcp::TcpServer;
+use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::processor::ProcessorHandle;
 
 pub struct Conductor {
@@ -115,13 +116,16 @@ impl Conductor {
                 // uses TcpMaxServer to handle the connections for max operating mode.
                 OperatingMode::Max => {
                     if public_port == private_port {
-                        let mut tcp_max_server = TcpMaxServer::new(self.processors.clone());
+                        let mut tcp_max_server =
+                            TcpMaxServer::new(self.config.clone(), self.processors.clone());
                         tcp_max_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                             .await;
                     } else {
-                        let mut tcp_max_server_public = TcpMaxServer::new(self.processors.clone());
-                        let mut tcp_max_server_private = TcpMaxServer::new(self.processors.clone());
+                        let mut tcp_max_server_public =
+                            TcpMaxServer::new(self.config.clone(), self.processors.clone());
+                        let mut tcp_max_server_private =
+                            TcpMaxServer::new(self.config.clone(), self.processors.clone());
 
                         let public_addr = format!("{}:{}", "0.0.0.0", public_port);
                         let private_addr = format!("{}:{}", "0.0.0.0", private_port);
