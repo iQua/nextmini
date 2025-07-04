@@ -4,7 +4,7 @@
 use tokio::sync::mpsc;
 use tracing::info;
 
-use nextmini_messages::Protocol;
+use nextmini_messages::{OperatingMode, Protocol};
 
 use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
@@ -80,7 +80,7 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Tcp => match self.config.operating_mode {
-                nextmini_messages::OperatingMode::Normal => {
+                OperatingMode::Normal => {
                     if public_port == private_port {
                         let mut tcp_server = TcpServer::new(
                             self.config.clone(),
@@ -111,7 +111,7 @@ impl Conductor {
                         }
                     }
                 }
-                nextmini_messages::OperatingMode::Max => {
+                OperatingMode::Max => {
                     if public_port == private_port {
                         let mut tcp_max_server = TcpMaxServer::new(
                             self.config.clone(),
