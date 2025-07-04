@@ -198,7 +198,7 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub feature: Feature,
 
-    // The operating mode, received from the controller
+    // The operating mode
     #[default(OperatingMode::Normal)]
     #[arg(skip)]
     pub operating_mode: OperatingMode,
