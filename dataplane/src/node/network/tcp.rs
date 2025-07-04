@@ -16,6 +16,73 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
+pub struct TcpMaxServer {
+    config: LocalConfig,
+    processors: ProcessorHandle,
+    reporter: ControllerReporterHandle,
+}
+
+impl TcpMaxServer {
+    pub fn new(
+        config: LocalConfig,
+        processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
+    ) -> Self {
+        Self {
+            config,
+            processors,
+            reporter,
+        }
+    }
+
+    pub async fn start_listening(&mut self, addr: &String) {
+        let listener = match TcpListener::bind(addr).await {
+            Ok(listener) => listener,
+            Err(e) => {
+                error!("Failed to bind to address {}: {}", addr, e);
+                return;
+            }
+        };
+
+        let mut node_id_buf: [u8; 8] = [0; 8];
+
+        loop {
+            let mut stream = match listener.accept().await {
+                Ok((stream, socket_addr)) => {
+                    info!("Connection accepted from {:?}.", socket_addr);
+                    stream
+                }
+                Err(e) => {
+                    error!("Failed to accept TCP connection: {}", e);
+                    continue;
+                }
+            };
+
+            if let Err(e) = stream.read_exact(&mut node_id_buf).await {
+                error!("Failed to read node ID: {}", e);
+                continue;
+            }
+
+            let mut cursor = Cursor::new(&node_id_buf);
+
+            let remote_node_id = match cursor.read_u64().await {
+                Ok(id) => id as usize,
+                Err(e) => {
+                    error!("Failed to parse node ID: {}", e);
+                    continue;
+                }
+            };
+
+            info!("Incoming connection from node {}...", remote_node_id);
+
+            // TODO ： Obtain the flow_id
+            // Pass the stream and flow id to processor
+
+            info!("Connected to node {}.", remote_node_id);
+        }
+    }
+}
+
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
