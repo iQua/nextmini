@@ -79,6 +79,8 @@ impl TcpMaxServer {
             // pass the stream and flow_id to the processor
             self.processors.splice_upstream(flow_id, stream);
 
+            // May need to sleep for a while to ensure splicing is complete
+
             // Process the first packet
             self.processors.process_packet(packet);
 
