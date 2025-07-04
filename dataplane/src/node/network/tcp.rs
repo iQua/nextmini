@@ -17,22 +17,12 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
 pub struct TcpMaxServer {
-    config: LocalConfig,
     processors: ProcessorHandle,
-    reporter: ControllerReporterHandle,
 }
 
 impl TcpMaxServer {
-    pub fn new(
-        config: LocalConfig,
-        processors: ProcessorHandle,
-        reporter: ControllerReporterHandle,
-    ) -> Self {
-        Self {
-            config,
-            processors,
-            reporter,
-        }
+    pub fn new(processors: ProcessorHandle) -> Self {
+        Self { processors }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -92,7 +82,10 @@ impl TcpMaxServer {
             // Process the first packet
             self.processors.process_packet(packet);
 
-            info!("Connected to node {}.", remote_node_id);
+            info!(
+                "Tcp connection spliced for flow from node {}.",
+                remote_node_id
+            );
         }
     }
 }
