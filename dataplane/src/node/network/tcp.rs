@@ -75,8 +75,21 @@ impl TcpMaxServer {
 
             info!("Incoming connection from node {}...", remote_node_id);
 
-            // TODO ： Obtain the flow_id
-            // Pass the stream and flow id to processor
+            // Read the first packet
+            let mut buf = vec![0; RECEIVE_BUF_SIZE];
+
+            if let Err(e) = stream.read_exact(&mut buf).await {
+                error!("Failed to read the first packet: {}", e);
+                continue;
+            }
+
+            let packet = Packet::new(buf.len(), buf);
+            let flow_id = packet.flow_id;
+
+            // pass the stream and flow_id to the processor
+
+            // Process the first packet
+            self.processors.process_packet(packet);
 
             info!("Connected to node {}.", remote_node_id);
         }
