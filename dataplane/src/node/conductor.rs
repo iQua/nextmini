@@ -113,25 +113,14 @@ impl Conductor {
                 }
                 OperatingMode::Max => {
                     if public_port == private_port {
-                        let mut tcp_max_server = TcpMaxServer::new(
-                            self.config.clone(),
-                            self.processors.clone(),
-                            self.reporter.clone(),
-                        );
+                        let mut tcp_max_server = TcpMaxServer::new(self.processors.clone());
                         tcp_max_server
                             .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
                             .await;
                     } else {
-                        let mut tcp_max_server_public = TcpMaxServer::new(
-                            self.config.clone(),
-                            self.processors.clone(),
-                            self.reporter.clone(),
-                        );
-                        let mut tcp_max_server_private = TcpMaxServer::new(
-                            self.config.clone(),
-                            self.processors.clone(),
-                            self.reporter.clone(),
-                        );
+                        let mut tcp_max_server_public = TcpMaxServer::new(self.processors.clone());
+                        let mut tcp_max_server_private =
+                            TcpMaxServer::new(self.processors.clone());
 
                         let public_addr = format!("{}:{}", "0.0.0.0", public_port);
                         let private_addr = format!("{}:{}", "0.0.0.0", private_port);
