@@ -1,6 +1,6 @@
 /// Implements utility functions for the controller.
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol, RoutingTableEntry,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, RoutingTableEntry,
     SchedulingDiscipline,
 };
 
@@ -15,6 +15,7 @@ pub fn build_startup_response(
     user_space_base_addr: std::net::Ipv4Addr,
     protocol: Protocol,
     scheduler_type: SchedulingDiscipline,
+    operating_mode: OperatingMode,
 ) -> ControllerToDataplane {
     ControllerToDataplane::StartUp {
         node_id,
@@ -23,6 +24,7 @@ pub fn build_startup_response(
         user_space_base_addr,
         protocol,
         scheduler_type,
+        operating_mode,
     }
 }
 
