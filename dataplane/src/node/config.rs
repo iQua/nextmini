@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol, SchedulingDiscipline,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, SchedulingDiscipline,
 };
 
 use crate::node::NodeId;
@@ -198,6 +198,11 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub feature: Feature,
 
+    // The operating mode, received from the controller
+    #[default(OperatingMode::Normal)]
+    #[arg(skip)]
+    pub operating_mode: OperatingMode,
+
     // Reorder tolerance for the multipath mode
     #[default(4)]
     #[arg(long)]
@@ -379,6 +384,7 @@ impl LocalConfig {
                         user_space_base_addr,
                         protocol,
                         scheduler_type,
+                        operating_mode,
                     } => {
                         self.node_id = node_id;
                         self.protocol = protocol;
@@ -388,6 +394,7 @@ impl LocalConfig {
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
                         self.scheduler_type = scheduler_type;
+                        self.operating_mode = operating_mode;
                     }
 
                     // Adding flows message.
