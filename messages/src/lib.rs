@@ -113,6 +113,7 @@ pub enum ControllerToDataplane {
         user_space_base_addr: Ipv4Addr,
         protocol: Protocol,
         scheduler_type: SchedulingDiscipline,
+        operating_mode: OperatingMode,
     },
     AddNode {
         remote_node_id: usize,
