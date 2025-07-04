@@ -87,6 +87,7 @@ impl TcpMaxServer {
             let flow_id = packet.flow_id;
 
             // pass the stream and flow_id to the processor
+            self.processors.splice_upstream(flow_id, stream);
 
             // Process the first packet
             self.processors.process_packet(packet);

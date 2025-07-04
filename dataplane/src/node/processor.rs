@@ -8,6 +8,7 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use flume;
 use tokio;
+use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
@@ -42,6 +43,7 @@ pub enum ProcessorMessage {
     ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    SpliceUpstream(FlowId, Arc<TcpStream>),
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +172,18 @@ impl ProcessorHandle {
                 e
             );
         };
+    }
+
+    pub fn splice_upstream(&self, flow_id: FlowId, stream: TcpStream) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SpliceUpstream(flow_id, Arc::new(stream)))
+        {
+            error!(
+                "Error sending the SpliceUpstream message to the processors: {}",
+                e
+            );
+        }
     }
 }
 
@@ -404,6 +418,9 @@ impl Processor {
                 for (_, scheduler) in self.schedulers.iter_mut() {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
+            }
+            ProcessorMessage::SpliceUpstream(flow_id, stream) => {
+                // TODO : Implement this
             }
         }
     }
