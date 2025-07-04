@@ -25,6 +25,12 @@ use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub enum SchedulerKey {
+    Node(NodeId),
+    Flow(FlowId),
+}
+
 // Message types for the processor actor.
 pub enum ProcessorPacket {
     ProcessPacket(Packet),
@@ -342,7 +348,7 @@ struct Processor {
     routing_table: RoutingTable,
 
     // the schedulers (for upstream packets)
-    schedulers: AHashMap<NodeId, SchedulerHandle>,
+    schedulers: AHashMap<SchedulerKey, SchedulerHandle>,
 }
 
 impl Processor {
@@ -394,7 +400,8 @@ impl Processor {
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
                 // updates the scheduler for a given node ID
-                self.schedulers.insert(node_id, scheduler);
+                self.schedulers
+                    .insert(SchedulerKey::Node(node_id), scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
@@ -406,7 +413,7 @@ impl Processor {
                 self.user_space_senders.remove(&flow_id);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
-                if let Some(scheduler) = self.schedulers.get(&node_id) {
+                if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(node_id)) {
                     scheduler.limit_rate(spec);
                 }
             }
@@ -415,8 +422,10 @@ impl Processor {
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
-                for (_, scheduler) in self.schedulers.iter_mut() {
-                    scheduler.set_flow_weight(flow_id, weight);
+                for (key, scheduler) in self.schedulers.iter_mut() {
+                    if let SchedulerKey::Node(_) = key {
+                        scheduler.set_flow_weight(flow_id, weight);
+                    }
                 }
             }
             ProcessorMessage::SpliceUpstream(flow_id, stream) => {
@@ -500,7 +509,7 @@ impl Processor {
                 }
             }
         } else {
-            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
+            if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(next_hop_id)) {
                 scheduler.send(packet);
             }
         }
