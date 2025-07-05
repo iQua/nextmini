@@ -14,7 +14,7 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
+use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::flow::UserSpaceSender;
@@ -26,21 +26,14 @@ use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
-#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
-pub enum SchedulerKey {
-    Node(NodeId),
-    Flow(FlowId),
-}
-
 // Message types for the processor actor.
-pub enum ProcessorPacket {
+pub enum ProcessorMaxPacket {
     ProcessPacket(Packet),
 }
 
 #[derive(Debug, Clone)]
-pub enum ProcessorMessage {
+pub enum ProcessorMaxMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectUserSpaceSender {
         flow_id: FlowId,
@@ -48,49 +41,40 @@ pub enum ProcessorMessage {
     },
     DisconnectUserSpaceSender(FlowId),
     ConnectServerHandle(UserSpaceServerHandle),
-    RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
     SpliceUpstream(FlowId, Arc<TcpStream>),
 }
 
 #[derive(Clone, Debug)]
-pub enum ProcessorHandle {
-    Sequential(SequentialProcHandle),
-    Concurrent(ConcurrentProcHandle),
+pub enum ProcessorMaxHandle {
+    Sequential(SequentialProcMaxHandle),
+    Concurrent(ConcurrentProcMaxHandle),
 }
 
-impl ProcessorHandle {
+impl ProcessorMaxHandle {
     pub fn new(config: LocalConfig) -> Self {
         match config.feature {
-            Feature::Sequential => ProcessorHandle::Sequential(SequentialProcHandle::new(config)),
-            Feature::Concurrent => ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config)),
+            Feature::Sequential => {
+                ProcessorMaxHandle::Sequential(SequentialProcMaxHandle::new(config))
+            }
+            Feature::Concurrent => {
+                ProcessorMaxHandle::Concurrent(ConcurrentProcMaxHandle::new(config))
+            }
         }
     }
 
-    pub fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage> {
+    pub fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMaxMessage> {
         match self {
-            ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
-            ProcessorHandle::Concurrent(handle) => &handle.broadcast_sender,
+            ProcessorMaxHandle::Sequential(handle) => &handle.broadcast_sender,
+            ProcessorMaxHandle::Concurrent(handle) => &handle.broadcast_sender,
         }
-    }
-
-    pub fn add_node(
-        &self,
-        node_id: NodeId,
-        scheduler: SchedulerHandle,
-    ) -> Result<(), SendError<ProcessorMessage>> {
-        let _ = self
-            .broadcast_sender()
-            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
-
-        Ok(())
     }
 
     // connects the local interface to the processor
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectLocalInterface(local_interface))
+            .send(ProcessorMaxMessage::ConnectLocalInterface(local_interface))
         {
             error!(
                 "Error connecting the processors to the local interface: {}.",
@@ -101,10 +85,9 @@ impl ProcessorHandle {
 
     // connects the client handle to the processor
     pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMessage::ConnectUserSpaceSender { flow_id, sender })
-        {
+        if let Err(e) = self.broadcast_sender().send(
+            ProcessorMaxMessage::ConnectUserSpaceSender { flow_id, sender },
+        ) {
             error!(
                 "Error connecting the client handle to the processors: {}.",
                 e
@@ -117,7 +100,7 @@ impl ProcessorHandle {
     pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::DisconnectUserSpaceSender(flow_id))
+            .send(ProcessorMaxMessage::DisconnectUserSpaceSender(flow_id))
         {
             error!(
                 "Error sending the DisconnectUserSpaceSender message to the processors: {}",
@@ -129,7 +112,7 @@ impl ProcessorHandle {
     pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::UpdateRoutingTable(routes))
+            .send(ProcessorMaxMessage::UpdateRoutingTable(routes))
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the processors: {}",
@@ -138,29 +121,17 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMessage::RateLimit(node_id, spec))
-        {
-            error!(
-                "Error sending the SetRateLimiter message to the processors: {}",
-                e
-            );
-        };
-    }
-
     pub fn process_packet(&self, packet: Packet) {
         match self {
-            ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
-            ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
+            ProcessorMaxHandle::Sequential(handle) => handle.process_packet(packet),
+            ProcessorMaxHandle::Concurrent(handle) => handle.process_packet(packet),
         }
     }
 
     pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectServerHandle(server))
+            .send(ProcessorMaxMessage::ConnectServerHandle(server))
         {
             error!(
                 "Error sending the ConnectServerHandle message to the processors: {}",
@@ -172,7 +143,7 @@ impl ProcessorHandle {
     pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::SetFlowWeight(flow_id, weight))
+            .send(ProcessorMaxMessage::SetFlowWeight(flow_id, weight))
         {
             error!(
                 "Error sending the SetFlowWeight message to the processors: {}",
@@ -184,7 +155,10 @@ impl ProcessorHandle {
     pub fn splice_upstream(&self, flow_id: FlowId, stream: TcpStream) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::SpliceUpstream(flow_id, Arc::new(stream)))
+            .send(ProcessorMaxMessage::SpliceUpstream(
+                flow_id,
+                Arc::new(stream),
+            ))
         {
             error!(
                 "Error sending the SpliceUpstream message to the processors: {}",
@@ -195,12 +169,12 @@ impl ProcessorHandle {
 }
 
 #[derive(Clone, Debug)]
-pub struct SequentialProcHandle {
-    broadcast_sender: broadcast::Sender<ProcessorMessage>,
-    packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
+pub struct SequentialProcMaxHandle {
+    broadcast_sender: broadcast::Sender<ProcessorMaxMessage>,
+    packet_senders: Vec<mpsc::Sender<ProcessorMaxPacket>>,
 }
 
-impl SequentialProcHandle {
+impl SequentialProcMaxHandle {
     pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
@@ -210,8 +184,8 @@ impl SequentialProcHandle {
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
-            let mut proc = Processor::new(
-                PacketReceiver::Sequential(packet_receiver),
+            let mut proc = ProcessorMax::new(
+                PacketMaxReceiver::Sequential(packet_receiver),
                 broadcast_sender.subscribe(),
                 config.clone(),
             );
@@ -231,9 +205,9 @@ impl SequentialProcHandle {
         let idx = packet.flow_id.hash(self.packet_senders.len());
         let sender = &self.packet_senders[idx];
 
-        if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+        if let Err(e) = sender.try_send(ProcessorMaxPacket::ProcessPacket(packet)) {
             warn!(
-                "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                "SequentialProcMaxHandle: Error sending a packet to the processor: {}.",
                 e
             );
         }
@@ -241,19 +215,19 @@ impl SequentialProcHandle {
 }
 
 #[derive(Clone, Debug)]
-pub struct ConcurrentProcHandle {
-    broadcast_sender: broadcast::Sender<ProcessorMessage>,
-    packet_sender: flume::Sender<ProcessorPacket>,
+pub struct ConcurrentProcMaxHandle {
+    broadcast_sender: broadcast::Sender<ProcessorMaxMessage>,
+    packet_sender: flume::Sender<ProcessorMaxPacket>,
 }
 
-impl ConcurrentProcHandle {
+impl ConcurrentProcMaxHandle {
     pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
-            let mut proc = Processor::new(
-                PacketReceiver::Concurrent(packet_receiver.clone()),
+            let mut proc = ProcessorMax::new(
+                PacketMaxReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_sender.subscribe(),
                 config.clone(),
             );
@@ -272,69 +246,69 @@ impl ConcurrentProcHandle {
     pub fn process_packet(&self, packet: Packet) {
         if let Err(e) = self
             .packet_sender
-            .try_send(ProcessorPacket::ProcessPacket(packet))
+            .try_send(ProcessorMaxPacket::ProcessPacket(packet))
         {
             warn!(
-                "ConcurrentProcHandle: Error sending a packet to the processor: {}",
+                "ConcurrentProcMaxHandle: Error sending a packet to the processor: {}",
                 e
             );
         }
     }
 }
 
-pub enum PacketReceiver {
-    Sequential(mpsc::Receiver<ProcessorPacket>),
-    Concurrent(flume::Receiver<ProcessorPacket>),
+pub enum PacketMaxReceiver {
+    Sequential(mpsc::Receiver<ProcessorMaxPacket>),
+    Concurrent(flume::Receiver<ProcessorMaxPacket>),
 }
 
 #[derive(Debug)]
-pub enum PacketTryRecvError {
+pub enum PacketMaxTryRecvError {
     FlumeRecvError(flume::TryRecvError),
     MpscRecvError(mpsc::error::TryRecvError),
 }
 
-impl Display for PacketTryRecvError {
+impl Display for PacketMaxTryRecvError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            PacketTryRecvError::FlumeRecvError(err) => {
+            PacketMaxTryRecvError::FlumeRecvError(err) => {
                 write!(f, "Error receiving from a flume mpmc channel: {}", err)
             }
-            PacketTryRecvError::MpscRecvError(err) => {
+            PacketMaxTryRecvError::MpscRecvError(err) => {
                 write!(f, "Error receiving from a mpsc channel: {}", err)
             }
         }
     }
 }
 
-impl PacketReceiver {
-    pub async fn recv(&mut self) -> Option<ProcessorPacket> {
+impl PacketMaxReceiver {
+    pub async fn recv(&mut self) -> Option<ProcessorMaxPacket> {
         match self {
-            PacketReceiver::Sequential(receiver) => receiver.recv().await,
-            PacketReceiver::Concurrent(receiver) => receiver.recv_async().await.ok(),
+            PacketMaxReceiver::Sequential(receiver) => receiver.recv().await,
+            PacketMaxReceiver::Concurrent(receiver) => receiver.recv_async().await.ok(),
         }
     }
 
-    pub fn try_recv(&mut self) -> Result<ProcessorPacket, PacketTryRecvError> {
+    pub fn try_recv(&mut self) -> Result<ProcessorMaxPacket, PacketMaxTryRecvError> {
         match self {
-            PacketReceiver::Sequential(receiver) => receiver
+            PacketMaxReceiver::Sequential(receiver) => receiver
                 .try_recv()
-                .map_err(PacketTryRecvError::MpscRecvError),
-            PacketReceiver::Concurrent(receiver) => receiver
+                .map_err(PacketMaxTryRecvError::MpscRecvError),
+            PacketMaxReceiver::Concurrent(receiver) => receiver
                 .try_recv()
-                .map_err(PacketTryRecvError::FlumeRecvError),
+                .map_err(PacketMaxTryRecvError::FlumeRecvError),
         }
     }
 }
 
 // Processes packets and forwards them to the next hop.
-struct Processor {
+struct ProcessorMax {
     config: LocalConfig,
 
     // receives packets from the network interface, local interface, or user-space TCP flows
-    packet_receiver: PacketReceiver,
+    packet_receiver: PacketMaxReceiver,
 
     // receives messages from the broadcast channel (from the controller interface or the conductor)
-    broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+    broadcast_receiver: broadcast::Receiver<ProcessorMaxMessage>,
 
     // the local TUN interface
     local_interface: Option<Arc<LocalInterfaceHandle>>,
@@ -349,13 +323,13 @@ struct Processor {
     routing_table: RoutingTable,
 
     // the schedulers (for upstream packets)
-    schedulers: AHashMap<SchedulerKey, SchedulerHandle>,
+    schedulers: AHashMap<FlowId, SchedulerHandle>,
 }
 
-impl Processor {
+impl ProcessorMax {
     pub fn new(
-        packet_receiver: PacketReceiver,
-        broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+        packet_receiver: PacketMaxReceiver,
+        broadcast_receiver: broadcast::Receiver<ProcessorMaxMessage>,
         config: LocalConfig,
     ) -> Self {
         Self {
@@ -376,12 +350,12 @@ impl Processor {
                 // waits for the first packet or a broadcast message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
-                        ProcessorPacket::ProcessPacket(first_packet) => {
+                        ProcessorMaxPacket::ProcessPacket(first_packet) => {
                             // starts a batch with the first packet
                             self.process_packet(first_packet);
 
                             // starts processing packets in batches
-                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
+                            while let Ok(ProcessorMaxPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
                                 self.process_packet(packet);
                             }
                         }
@@ -394,42 +368,30 @@ impl Processor {
         }
     }
 
-    async fn handle_message(&mut self, msg: ProcessorMessage) {
+    async fn handle_message(&mut self, msg: ProcessorMaxMessage) {
         match msg {
-            ProcessorMessage::UpdateRoutingTable(routes) => {
+            ProcessorMaxMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
-            ProcessorMessage::AddNode(node_id, scheduler) => {
-                // updates the scheduler for a given node ID
-                self.schedulers
-                    .insert(SchedulerKey::Node(node_id), scheduler);
-            }
-            ProcessorMessage::ConnectLocalInterface(local_interface) => {
+            ProcessorMaxMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
             }
-            ProcessorMessage::ConnectUserSpaceSender { flow_id, sender } => {
+            ProcessorMaxMessage::ConnectUserSpaceSender { flow_id, sender } => {
                 self.user_space_senders.insert(flow_id, sender);
             }
-            ProcessorMessage::DisconnectUserSpaceSender(flow_id) => {
+            ProcessorMaxMessage::DisconnectUserSpaceSender(flow_id) => {
                 self.user_space_senders.remove(&flow_id);
             }
-            ProcessorMessage::RateLimit(node_id, spec) => {
-                if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(node_id)) {
-                    scheduler.limit_rate(spec);
-                }
-            }
-            ProcessorMessage::ConnectServerHandle(user_space_server) => {
+            ProcessorMaxMessage::ConnectServerHandle(user_space_server) => {
                 self.server = Some(user_space_server);
             }
-            ProcessorMessage::SetFlowWeight(flow_id, weight) => {
-                // updates the flow weight for all schedulers
-                for (key, scheduler) in self.schedulers.iter_mut() {
-                    if let SchedulerKey::Node(_) = key {
-                        scheduler.set_flow_weight(flow_id, weight);
-                    }
+            ProcessorMaxMessage::SetFlowWeight(flow_id, weight) => {
+                // updates the flow weight for a scheduler
+                if let Some(scheduler) = self.schedulers.get_mut(&flow_id) {
+                    scheduler.set_flow_weight(flow_id, weight);
                 }
             }
-            ProcessorMessage::SpliceUpstream(flow_id, stream) => {
+            ProcessorMaxMessage::SpliceUpstream(_flow_id, _stream) => {
                 // TODO : Implement this
             }
         }
@@ -486,8 +448,8 @@ impl Processor {
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
-    fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
-        if next_hop_id == self.routing_table.local_id {
+    fn send_packet(&mut self, packet: Packet, _next_hop_id: NodeId) {
+        if _next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
             if packet.flow_id.dst_ip() == self.config.local_address {
@@ -509,17 +471,14 @@ impl Processor {
                 }
             }
         } else {
-            let scheduler_key = match self.config.operating_mode {
-                OperatingMode::Normal => SchedulerKey::Node(next_hop_id),
-                OperatingMode::Max => SchedulerKey::Flow(packet.flow_id),
-            };
+            let scheduler_key = packet.flow_id;
 
             if let Some(scheduler) = self.schedulers.get(&scheduler_key) {
                 scheduler.send(packet);
             } else {
                 // We are on the src node and the tcp connection is not spliced yet
 
-                let tcp_max_client = TcpMaxClient::new(self.config.clone());
+                let _tcp_max_client = TcpMaxClient::new(self.config.clone());
 
                 // Get the TCP stream for the client, need to know remote node addr
 
