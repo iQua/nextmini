@@ -21,7 +21,6 @@ use crate::node::config::{Feature, LocalConfig};
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
-use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
@@ -494,8 +493,9 @@ impl Processor {
         if next_hop_id == self.routing_table.local_id {
             let scheduler = self
                 .tcp_max_client
+                .as_ref()
                 .unwrap()
-                .connect_as_client(flow_id, &next_hop_addr, next_hop_id)
+                .connect_as_dst_node(inbound_stream)
                 .await;
 
             // inserts reversed flow id.
@@ -510,6 +510,7 @@ impl Processor {
 
         let mut outbound_stream = self
             .tcp_max_client
+            .as_ref()
             .unwrap()
             .connect_as_relay(flow_id, &next_hop_addr)
             .await;
@@ -619,8 +620,9 @@ impl Processor {
 
                         let scheduler = self
                             .tcp_max_client
+                            .as_ref()
                             .unwrap()
-                            .connect_as_client(packet.flow_id, &remote_addr, next_hop_id)
+                            .connect_as_src_node(packet.flow_id, &remote_addr, next_hop_id)
                             .await;
 
                         // sends the packet

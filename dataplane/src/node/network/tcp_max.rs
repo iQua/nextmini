@@ -92,7 +92,24 @@ impl TcpMaxClient {
         }
     }
 
-    pub async fn connect_as_client(
+    pub async fn connect_as_dst_node(
+        &self,
+        stream: TcpStream,
+    ) -> SchedulerHandle {
+        let network_interface = NetworkInterfaceHandle::new(
+            self.config.clone(),
+            NetworkStream::Tcp(stream),
+            self.processor.clone(),
+            self.reporter.clone(),
+            self.config.node_id,
+        ).await;
+
+        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+
+        scheduler
+    }
+
+    pub async fn connect_as_src_node(
         &self,
         flow_id: FlowId,
         remote_addr: &str,
