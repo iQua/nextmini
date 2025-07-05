@@ -8,7 +8,6 @@ use tracing::{error, info};
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
