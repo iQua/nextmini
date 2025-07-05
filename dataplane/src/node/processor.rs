@@ -410,16 +410,16 @@ impl Processor {
                     match msg {
                         ProcessorPacket::ProcessPacket(first_packet) => {
                             // starts a batch with the first packet
-                            self.process_packet(first_packet);
+                            self.process_packet(first_packet).await;
 
                             // starts processing packets in batches
                             while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
-                                self.process_packet(packet);
+                                self.process_packet(packet).await;
                             }
                         }
                         // for relay nodes
                         ProcessorPacket::SpliceConnection(flow_id, stream) => {
-                            self.handle_splice_connection(flow_id, stream);
+                            self.handle_splice_connection(flow_id, stream).await;
                         }
                     }
                 }
@@ -516,7 +516,7 @@ impl Processor {
     }
 
     /// Process inbound packets for outbound delivery
-    fn process_packet(&mut self, packet: Packet) {
+    async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
         // selects the route ID for a new flow
@@ -529,7 +529,7 @@ impl Processor {
 
             // routes the packet to its next hop
             if let Some(next_hop_id) = self.routing_table.get_next_hop_by_route(route_id) {
-                self.send_packet(packet, next_hop_id);
+                self.send_packet(packet, next_hop_id).await;
             } else {
                 error!(
                     "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
@@ -567,7 +567,7 @@ impl Processor {
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
-    fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
@@ -603,6 +603,8 @@ impl Processor {
 
                         // To get the TCP stream for the client, needs to know remote node addr.
                         let remote_addr = self.node_addresses[&next_hop_id].clone();
+
+                        // connects to the remote node using the TCP client, we need to use await.
                         let stream = tcp_max_client.connect(packet.flow_id, &remote_addr).await;
 
                         let network_interface =
