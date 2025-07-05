@@ -514,10 +514,14 @@ impl ProcessorMax {
                 let stream = tcp_max_client.connect(remote_addr);
 
                 // Create network interface and scheduler from the TCP stream
-
-                // Insert the scheduler into the hashmap
+                let network_interface = NetworkInterfaceHandle::new(self.config.clone(), stream);
+                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
                 // Send the packet through this scheduler
+                scheduler.send(packet);
+
+                // Insert the scheduler into the hashmap
+                self.schedulers.insert(scheduler_key, scheduler);
             }
         }
     }
