@@ -12,7 +12,8 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tracing::{error, warn};
+use tokio_splice::zero_copy_bidirectional;
+use tracing::{error, info, warn};
 
 use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
 
@@ -386,7 +387,7 @@ impl ProcessorMax {
                         }
                         // for relay nodes
                         ProcessorMaxPacket::SpliceConnection(flow_id, stream) => {
-                            // TODO: Implement splice logic
+                            self.handle_splice_connection(flow_id, stream);
                         }
                     }
                 }
@@ -424,6 +425,39 @@ impl ProcessorMax {
                 }
             }
         }
+    }
+
+    fn handle_splice_connection(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
+        let mut next_hop_addr = "";
+        if let Some(route_id) = self.routing_table.select_route_for_flow(flow_id) {
+            if route_id == 0 {
+                error!("No route can be selected during splicing.");
+                return;
+            }
+            let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+            next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
+        }
+
+        let config_clone = self.config.clone();
+
+        tokio::spawn(async move {
+            let tcp_max_client = TcpMaxClient {
+                config: config_clone,
+            };
+            let mut outbound_stream = tcp_max_client.connect(flow_id, &next_hop_addr).await;
+
+            match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+                Ok((tx_bytes, rx_bytes)) => {
+                    info!(
+                        "Spliced connection for flow {} to {} (tx: {} bytes, rx: {} bytes)",
+                        flow_id, next_hop_addr, tx_bytes, rx_bytes
+                    );
+                }
+                Err(e) => {
+                    error!("Error during zero-copy splice for flow {}: {}", flow_id, e);
+                }
+            }
+        });
     }
 
     /// Process inbound packets for outbound delivery
