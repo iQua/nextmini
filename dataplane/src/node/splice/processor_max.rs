@@ -447,10 +447,10 @@ impl ProcessorMax {
             let mut outbound_stream = tcp_max_client.connect(flow_id, &next_hop_addr).await;
 
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
-                Ok((tx_bytes, rx_bytes)) => {
+                Ok((upstream_bytes, downstream_bytes)) => {
                     info!(
                         "Spliced connection for flow {} to {} (tx: {} bytes, rx: {} bytes)",
-                        flow_id, next_hop_addr, tx_bytes, rx_bytes
+                        flow_id, next_hop_addr, upstream_bytes, downstream_bytes
                     );
                 }
                 Err(e) => {
