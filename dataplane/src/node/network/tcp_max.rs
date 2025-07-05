@@ -7,6 +7,7 @@ use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
 use crate::node::processor::ProcessorHandle;
+use crate::node::scheduler::scheduler::Scheduler;
 use crate::node::{FlowId, FlowIdExt};
 
 pub struct TcpMaxServer {
@@ -70,11 +71,33 @@ impl TcpMaxServer {
 }
 
 pub struct TcpMaxClient {
-    pub config: LocalConfig,
+    config: LocalConfig,
+    processor: ProcessorHandle,
+    reporter: ControllerReporterHandle,
 }
 
 impl TcpMaxClient {
-    pub async fn connect(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
+    pub async fn connect_as_client(
+        &self,
+        flow_id: FlowId,
+        remote_addr: &str,
+        remote_node_id: NodeId,
+    ) -> SchedulerHandle {
+        let stream = self.connect_as_relay(flow_id, remote_addr).await;
+
+        let network_interface = NetworkInterfaceHandle::new(
+            self.config.clone(),
+            stream,
+            self.processor.clone(),
+            self.reporter.clone(),
+            remote_node_id,
+        );
+        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+
+        scheduler
+    }
+
+    pub async fn connect_as_relay(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);

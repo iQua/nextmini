@@ -623,8 +623,6 @@ impl Processor {
                     // Normal mode: find pre-configured scheduler
                     if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(next_hop_id)) {
                         scheduler.send(packet);
-                    } else {
-                        warn!("No scheduler found for next hop {}", next_hop_id);
                     }
                 }
             }
