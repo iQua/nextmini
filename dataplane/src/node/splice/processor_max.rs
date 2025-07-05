@@ -35,6 +35,7 @@ pub enum ProcessorMaxPacket {
 #[derive(Debug, Clone)]
 pub enum ProcessorMaxMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
+    AddNode(NodeId, String),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectUserSpaceSender {
         flow_id: FlowId,
@@ -120,6 +121,15 @@ impl ProcessorMaxHandle {
                 e
             );
         };
+    }
+
+    pub fn add_node(&self, node_id: NodeId, remote_addr: String) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMaxMessage::AddNode(node_id, remote_addr))
+        {
+            error!("Error sending the AddNode message to the processors: {}", e);
+        }
     }
 
     pub fn process_packet(&self, packet: Packet) {
@@ -334,6 +344,9 @@ struct ProcessorMax {
 
     // the schedulers (for upstream packets)
     schedulers: AHashMap<FlowId, SchedulerHandle>,
+
+    // the remote nodes addresses
+    node_addresses: AHashMap<NodeId, String>,
 }
 
 impl ProcessorMax {
@@ -350,6 +363,7 @@ impl ProcessorMax {
             server: None,
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
+            node_addresses: AHashMap::new(),
             config,
         }
     }
@@ -387,6 +401,9 @@ impl ProcessorMax {
         match msg {
             ProcessorMaxMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
+            }
+            ProcessorMaxMessage::AddNode(node_id, remote_addr) => {
+                self.node_addresses.insert(node_id, remote_addr);
             }
             ProcessorMaxMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
@@ -490,9 +507,11 @@ impl ProcessorMax {
             } else {
                 // We are on the src node and the tcp connection is not spliced yet
 
-                let _tcp_max_client = TcpMaxClient::new(self.config.clone());
+                let tcp_max_client = TcpMaxClient::new(self.config.clone());
 
                 // Get the TCP stream for the client, need to know remote node addr
+                let remote_addr = self.node_addresses[&packet.flow_id.dst_node_id].clone();
+                let stream = tcp_max_client.connect(remote_addr);
 
                 // Create network interface and scheduler from the TCP stream
 
