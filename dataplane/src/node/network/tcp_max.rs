@@ -7,10 +7,11 @@ use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
-use crate::node::processor::ProcessorHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::{FlowId, FlowIdExt};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
@@ -80,6 +81,18 @@ pub struct TcpMaxClient {
 }
 
 impl TcpMaxClient {
+    pub fn new(
+        config: LocalConfig,
+        processor: ProcessorHandle,
+        reporter: ControllerReporterHandle,
+    ) -> Self {
+        Self {
+            config,
+            processor,
+            reporter,
+        }
+    }
+
     pub async fn connect_as_client(
         &self,
         flow_id: FlowId,
@@ -94,7 +107,8 @@ impl TcpMaxClient {
             self.processor.clone(),
             self.reporter.clone(),
             remote_node_id,
-        ).await;
+        )
+        .await;
         let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
         scheduler
