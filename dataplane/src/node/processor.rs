@@ -48,6 +48,7 @@ pub enum ProcessorMessage {
     // For max mode
     AddNodeAddress(NodeId, String),
     SpliceConnection(FlowId, TcpStream),
+    ConnectTcpMaxClient(TcpMaxClient),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectUserSpaceSender {
         flow_id: FlowId,
@@ -96,6 +97,18 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the AddNodeAddress message to the processors: {}",
+                e
+            );
+        }
+    }
+
+    pub fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectTcpMaxClient(tcp_max_client))
+        {
+            error!(
+                "Error sending the ConnectTcpMaxClient message to the processors: {}",
                 e
             );
         }
@@ -450,6 +463,9 @@ impl Processor {
                     self.handle_splice_connection(flow_id, stream).await;
                 }
             }
+            ProcessorMessage::ConnectTcpMaxClient(tcp_max_client) => {
+                self.tcp_max_client = Some(tcp_max_client);
+            }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
             }
@@ -499,6 +515,7 @@ impl Processor {
 
         let mut outbound_stream = self
             .tcp_max_client
+            .unwrap()
             .connect_as_relay(flow_id, &next_hop_addr)
             .await;
 
@@ -607,6 +624,7 @@ impl Processor {
 
                         let scheduler = self
                             .tcp_max_client
+                            .unwrap()
                             .connect_as_client(packet.flow_id, &remote_addr, next_hop_id)
                             .await;
 
