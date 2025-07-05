@@ -241,7 +241,7 @@ impl ControllerToDataplaneReceiver {
 
                     let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                    self.processors.add_node(remote_node_id, scheduler);
+                    let _ = self.processors.add_node(remote_node_id, scheduler);
                 }
 
                 OperatingMode::Max => {
