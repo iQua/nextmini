@@ -58,7 +58,7 @@ impl ControllerInterfaceHandle {
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
 
-        // connect the tcp max client to the processor if at max mode
+        // connects the tcp max client to the processor if at max mode.
         if let OperatingMode::Max = config.operation_mode {
             let tcp_max_client = TcpMaxClient {
                 config: config.clone(),
