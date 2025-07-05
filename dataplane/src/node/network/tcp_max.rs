@@ -9,8 +9,9 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
+use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::{FlowId, FlowIdExt};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
@@ -72,6 +73,7 @@ impl TcpMaxServer {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct TcpMaxClient {
     config: LocalConfig,
     processor: ProcessorHandle,
@@ -89,11 +91,11 @@ impl TcpMaxClient {
 
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
-            stream,
+            NetworkStream::Tcp(stream),
             self.processor.clone(),
             self.reporter.clone(),
             remote_node_id,
-        );
+        ).await;
         let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
         scheduler
