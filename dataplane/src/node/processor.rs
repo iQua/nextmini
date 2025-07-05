@@ -26,7 +26,6 @@ use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::splice::tcp_max::TcpMaxClient;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 #[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
@@ -488,21 +487,21 @@ impl Processor {
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
 
-        // Handle the case where we are at the dst node
+        // handles the case where we are at the dst node.
         if next_hop_id == self.routing_table.local_id {
             let scheduler = self
                 .tcp_max_client
                 .connect_as_client(flow_id, &next_hop_addr, next_hop_id)
                 .await;
 
-            // Insert reversed flow id
+            // inserts reversed flow id.
             self.schedulers
                 .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
 
             return;
         }
 
-        // Handle the case where we are at a relay node
+        // handles the case where we are at a relay node.
         let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
         let mut outbound_stream = self
@@ -510,6 +509,7 @@ impl Processor {
             .connect_as_relay(flow_id, &next_hop_addr)
             .await;
 
+        // spawns a new task to handle the connection splicing.
         tokio::spawn(async move {
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                 Ok((upstream_bytes, downstream_bytes)) => {
@@ -525,7 +525,7 @@ impl Processor {
         });
     }
 
-    /// Process inbound packets for outbound delivery
+    /// Processes inbound packets for outbound delivery
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
@@ -609,7 +609,7 @@ impl Processor {
                     } else {
                         // We are on the src node and the tcp connection is not spliced yet
 
-                        // Get the remote node address
+                        // gets the remote node address
                         let remote_addr = self.node_addresses[&next_hop_id].clone();
 
                         let scheduler = self
@@ -624,8 +624,8 @@ impl Processor {
                         self.schedulers.insert(scheduler_key, scheduler);
                     }
                 }
+
                 OperatingMode::Normal => {
-                    // Normal mode: find pre-configured scheduler
                     if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(next_hop_id)) {
                         scheduler.send(packet);
                     }
