@@ -85,9 +85,10 @@ impl ProcessorMaxHandle {
 
     // connects the client handle to the processor
     pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
-        if let Err(e) = self.broadcast_sender().send(
-            ProcessorMaxMessage::ConnectUserSpaceSender { flow_id, sender },
-        ) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMaxMessage::ConnectUserSpaceSender { flow_id, sender })
+        {
             error!(
                 "Error connecting the client handle to the processors: {}.",
                 e
