@@ -381,6 +381,9 @@ struct Processor {
 
     // the remote nodes addresses (for max mode)
     node_addresses: AHashMap<NodeId, String>,
+
+    // the tcp max client
+    tcp_max_client: TcpMaxClient,
 }
 
 impl Processor {
@@ -388,6 +391,7 @@ impl Processor {
         packet_receiver: PacketReceiver,
         broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
         config: LocalConfig,
+        tcp_max_client: TcpMaxClient,
     ) -> Self {
         Self {
             packet_receiver,
@@ -399,6 +403,7 @@ impl Processor {
             schedulers: AHashMap::new(),
             node_addresses: AHashMap::new(),
             config,
+            tcp_max_client,
         }
     }
 
@@ -479,28 +484,27 @@ impl Processor {
 
         // Handle the case where we are at the dst node
         if next_hop_id == self.routing_table.local_id {
-            // TODO: Handle the case where we are at the dst node, needs a new NetworkInterfaceHandle
-            let net_work_interface =
-                NetworkInterfaceHandle::new(self.config.clone(), inbound_stream);
-            let scheduler = SchedulerHandle::new(self.config.clone(), net_work_interface);
+            let scheduler = self
+                .tcp_max_client
+                .connect_as_client(flow_id, &next_hop_addr, next_hop_id)
+                .await;
 
-            // Insert reversed flow id since dst node needs to send packets via the scheduler
+            // Insert reversed flow id
             self.schedulers
                 .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
+
             return;
         }
 
-        // Handle the case where we are at the relay node
+        // Handle the case where we are at a relay node
         let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
-        let config_clone = self.config.clone();
+        let mut outbound_stream = self
+            .tcp_max_client
+            .connect_as_relay(flow_id, &next_hop_addr)
+            .await;
 
         tokio::spawn(async move {
-            let tcp_max_client = TcpMaxClient {
-                config: config_clone,
-            };
-            let mut outbound_stream = tcp_max_client.connect(flow_id, &next_hop_addr).await;
-
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                 Ok((upstream_bytes, downstream_bytes)) => {
                     info!(
@@ -599,23 +603,18 @@ impl Processor {
                     } else {
                         // We are on the src node and the tcp connection is not spliced yet
 
-                        let tcp_max_client = TcpMaxClient::new(self.config.clone());
-
-                        // To get the TCP stream for the client, needs to know remote node addr.
+                        // Get the remote node address
                         let remote_addr = self.node_addresses[&next_hop_id].clone();
 
-                        // connects to the remote node using the TCP client, we need to use await.
-                        let stream = tcp_max_client.connect(packet.flow_id, &remote_addr).await;
+                        let scheduler = self
+                            .tcp_max_client
+                            .connect_as_client(packet.flow_id, &remote_addr, next_hop_id)
+                            .await;
 
-                        let network_interface =
-                            NetworkInterfaceHandle::new(self.config.clone(), stream);
-                        let scheduler =
-                            SchedulerHandle::new(self.config.clone(), network_interface);
-
-                        // sends the packet through this scheduler.
+                        // sends the packet
                         scheduler.send(packet);
 
-                        // inserts the scheduler into the hashmap.
+                        // inserts the scheduler into the hashmap
                         self.schedulers.insert(scheduler_key, scheduler);
                     }
                 }
