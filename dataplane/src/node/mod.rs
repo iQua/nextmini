@@ -65,6 +65,7 @@ pub trait FlowIdExt {
     fn dst_ip(&self) -> std::net::Ipv4Addr;
     fn src_port(&self) -> u16;
     fn dst_port(&self) -> u16;
+    fn reverse(&self) -> FlowId;
     fn hash(&self, capacity: usize) -> usize;
 }
 
@@ -89,6 +90,20 @@ impl FlowIdExt for FlowId {
     /// Extracts the destination port
     fn dst_port(&self) -> u16 {
         ((self >> 32) & 0xFFFF) as u16
+    }
+
+    fn reverse(&self) -> FlowId {
+        let src_ip = self.src_ip();
+        let dst_ip = self.dst_ip();
+        let src_port = self.src_port();
+        let dst_port = self.dst_port();
+
+        let new_src_ip = u32::from(dst_ip) as u128;
+        let new_dst_ip = u32::from(src_ip) as u128;
+        let new_src_port = dst_port as u128;
+        let new_dst_port = src_port as u128;
+
+        (new_src_ip << 96) | (new_dst_ip << 64) | (new_src_port << 48) | (new_dst_port << 32)
     }
 
     /// Computes the hash value using Jump Hash, a consistent hash function

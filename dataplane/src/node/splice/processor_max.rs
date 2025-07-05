@@ -428,15 +428,22 @@ impl ProcessorMax {
     }
 
     fn handle_splice_connection(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
-        let mut next_hop_addr = "";
-        if let Some(route_id) = self.routing_table.select_route_for_flow(flow_id) {
-            if route_id == 0 {
-                error!("No route can be selected during splicing.");
-                return;
-            }
-            let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
-            next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
+        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
+        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+
+        // Handle the case where we are at the dst node
+        if next_hop_id == self.routing_table.local_id {
+            let net_work_interface =
+                NetworkInterfaceHandle::new(self.config.clone(), inbound_stream);
+            let scheduler = SchedulerHandle::new(self.config.clone(), net_work_interface);
+
+            // Insert reversed flow id since dst node needs to send packets via the scheduler
+            self.schedulers.insert(flow_id.reverse(), scheduler);
+            return;
         }
+
+        // Handle the case where we are at the relay node
+        let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
         let config_clone = self.config.clone();
 
@@ -511,8 +518,8 @@ impl ProcessorMax {
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
-    fn send_packet(&mut self, packet: Packet, _next_hop_id: NodeId) {
-        if _next_hop_id == self.routing_table.local_id {
+    fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+        if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
             if packet.flow_id.dst_ip() == self.config.local_address {
