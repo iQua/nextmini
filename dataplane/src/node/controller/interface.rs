@@ -9,7 +9,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, OperatingMode};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
@@ -219,25 +219,31 @@ impl ControllerToDataplaneReceiver {
             ControllerToDataplane::AddNode {
                 remote_node_id,
                 remote_addr,
-            } => {
-                let network_interface = NetworkInterfaceHandle::new_as_client(
-                    self.config.clone(),
-                    remote_node_id,
-                    remote_addr.clone(),
-                    self.processors.clone(),
-                    self.reporter.clone(),
-                )
-                .await;
+            } => match self.config.operation_mode {
+                OperatingMode::Normal => {
+                    // Create new connection to the remote node
+                    let network_interface = NetworkInterfaceHandle::new_as_client(
+                        self.config.clone(),
+                        remote_node_id,
+                        remote_addr.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    )
+                    .await;
 
-                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+                    let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
-                    error!(
-                        "Failed to add node {} with address {}: {}.",
-                        remote_node_id, remote_addr, e
-                    );
+                    if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
+                        error!(
+                            "Failed to add node {} with address {}: {}.",
+                            remote_node_id, remote_addr, e
+                        );
+                    }
                 }
-            }
+                OperatingMode::Max => {
+                    // Only pass the node if and remote address to processor_max
+                }
+            },
 
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
