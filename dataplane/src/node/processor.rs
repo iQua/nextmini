@@ -14,12 +14,13 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
+use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
@@ -437,7 +438,6 @@ impl Processor {
     /// Process inbound packets for outbound delivery
     fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
-
         // selects the route ID for a new flow
         if let Some(route_id) = self.routing_table.select_route_for_flow(packet_flow_id) {
             if route_id == 0 {
@@ -509,8 +509,25 @@ impl Processor {
                 }
             }
         } else {
-            if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(next_hop_id)) {
+            let scheduler_key = match self.config.operating_mode {
+                OperatingMode::Normal => SchedulerKey::Node(next_hop_id),
+                OperatingMode::Max => SchedulerKey::Flow(packet.flow_id),
+            };
+
+            if let Some(scheduler) = self.schedulers.get(&scheduler_key) {
                 scheduler.send(packet);
+            } else {
+                // We are on the src node and the tcp connection is not spliced yet
+
+                let tcp_max_client = TcpMaxClient::new(self.config.clone());
+
+                // Get the TCP stream for the client, need to know remote node addr
+
+                // Create network interface and scheduler from the TCP stream
+
+                // Insert the scheduler into the hashmap
+
+                // Send the packet through this scheduler
             }
         }
     }
