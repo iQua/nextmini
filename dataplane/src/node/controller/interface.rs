@@ -15,7 +15,8 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
-use crate::node::network::interface::{NetworkInterfaceHandle, TcpMaxClient};
+use crate::node::network::interface::NetworkInterfaceHandle;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
@@ -59,12 +60,9 @@ impl ControllerInterfaceHandle {
         processors.connect_server(user_space_server.clone());
 
         // connects the tcp max client to the processor if at max mode.
-        if let OperatingMode::Max = config.operation_mode {
-            let tcp_max_client = TcpMaxClient {
-                config: config.clone(),
-                processor: processors.clone(),
-                reporter: reporter.clone(),
-            };
+        if let OperatingMode::Max = config.operating_mode {
+            let tcp_max_client =
+                TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
             processors.connect_tcp_max_client(tcp_max_client);
         }
 
@@ -229,9 +227,9 @@ impl ControllerToDataplaneReceiver {
             ControllerToDataplane::AddNode {
                 remote_node_id,
                 remote_addr,
-            } => match self.config.operation_mode {
+            } => match self.config.operating_mode {
                 OperatingMode::Normal => {
-                    // Create new connection to the remote node
+                    // creates new connection to the remote node.
                     let network_interface = NetworkInterfaceHandle::new_as_client(
                         self.config.clone(),
                         remote_node_id,
@@ -243,15 +241,12 @@ impl ControllerToDataplaneReceiver {
 
                     let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                    if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
-                        error!(
-                            "Failed to add node {} with address {}: {}.",
-                            remote_node_id, remote_addr, e
-                        );
-                    }
+                    self.processors.add_node(remote_node_id, scheduler);
                 }
+
                 OperatingMode::Max => {
-                    // Only pass the node if and remote address to processor_max
+                    self.processors
+                        .add_node_address(remote_node_id, remote_addr);
                 }
             },
 
