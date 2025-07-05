@@ -67,10 +67,14 @@ pub enum ProcessorHandle {
 }
 
 impl ProcessorHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(config: LocalConfig, tcp_max_client: TcpMaxClient) -> Self {
         match config.feature {
-            Feature::Sequential => ProcessorHandle::Sequential(SequentialProcHandle::new(config)),
-            Feature::Concurrent => ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config)),
+            Feature::Sequential => {
+                ProcessorHandle::Sequential(SequentialProcHandle::new(config, tcp_max_client))
+            }
+            Feature::Concurrent => {
+                ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config, tcp_max_client))
+            }
         }
     }
 
@@ -229,7 +233,7 @@ pub struct SequentialProcHandle {
 }
 
 impl SequentialProcHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(config: LocalConfig, tcp_max_client: TcpMaxClient) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
@@ -242,6 +246,7 @@ impl SequentialProcHandle {
                 PacketReceiver::Sequential(packet_receiver),
                 broadcast_sender.subscribe(),
                 config.clone(),
+                tcp_max_client,
             );
 
             tokio::spawn(async move {
@@ -275,7 +280,7 @@ pub struct ConcurrentProcHandle {
 }
 
 impl ConcurrentProcHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(config: LocalConfig, tcp_max_client: TcpMaxClient) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
@@ -284,6 +289,7 @@ impl ConcurrentProcHandle {
                 PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_sender.subscribe(),
                 config.clone(),
+                tcp_max_client,
             );
 
             tokio::spawn(async move {
