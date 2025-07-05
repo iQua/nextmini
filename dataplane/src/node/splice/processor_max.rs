@@ -449,12 +449,12 @@ impl ProcessorMax {
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                 Ok((upstream_bytes, downstream_bytes)) => {
                     info!(
-                        "Spliced connection for flow {} to {} (tx: {} bytes, rx: {} bytes)",
+                        "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
                         flow_id, next_hop_addr, upstream_bytes, downstream_bytes
                     );
                 }
                 Err(e) => {
-                    error!("Error during zero-copy splice for flow {}: {}", flow_id, e);
+                    error!("Error during splicing for flow {}: {}.", flow_id, e);
                 }
             }
         });
