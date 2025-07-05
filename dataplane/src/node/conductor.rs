@@ -12,8 +12,8 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
+use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::splice::tcp_max::TcpMaxServer;
 
 pub struct Conductor {
     config: LocalConfig,
