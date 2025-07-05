@@ -509,7 +509,7 @@ impl ProcessorMax {
 
                 let tcp_max_client = TcpMaxClient::new(self.config.clone());
 
-                // Get the TCP stream for the client, need to know remote node addr
+                // To get the TCP stream for the client, needs to know remote node addr.
                 let remote_addr = self.node_addresses[&packet.flow_id.dst_node_id].clone();
                 let stream = tcp_max_client.connect(remote_addr);
 
