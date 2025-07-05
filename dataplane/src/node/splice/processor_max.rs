@@ -29,6 +29,7 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 // Message types for the processor actor.
 pub enum ProcessorMaxPacket {
     ProcessPacket(Packet),
+    SpliceConnection(FlowId, TcpStream),
 }
 
 #[derive(Debug, Clone)]
@@ -42,7 +43,6 @@ pub enum ProcessorMaxMessage {
     DisconnectUserSpaceSender(FlowId),
     ConnectServerHandle(UserSpaceServerHandle),
     SetFlowWeight(FlowId, usize),
-    SpliceUpstream(FlowId, Arc<TcpStream>),
 }
 
 #[derive(Clone, Debug)]
@@ -153,18 +153,27 @@ impl ProcessorMaxHandle {
         };
     }
 
-    pub fn splice_upstream(&self, flow_id: FlowId, stream: TcpStream) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMaxMessage::SpliceUpstream(
-                flow_id,
-                Arc::new(stream),
-            ))
-        {
-            error!(
-                "Error sending the SpliceUpstream message to the processors: {}",
-                e
-            );
+    pub fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
+        let packet = ProcessorMaxPacket::SpliceConnection(flow_id, stream);
+        match self {
+            ProcessorMaxHandle::Sequential(handle) => {
+                let idx = flow_id.hash(handle.packet_senders.len());
+                let sender = &handle.packet_senders[idx];
+                if let Err(e) = sender.try_send(packet) {
+                    warn!(
+                        "SequentialProcMaxHandle: Error sending a splice connection to the processor: {}.",
+                        e
+                    );
+                }
+            }
+            ProcessorMaxHandle::Concurrent(handle) => {
+                if let Err(e) = handle.packet_sender.try_send(packet) {
+                    warn!(
+                        "ConcurrentProcMaxHandle: Error sending a splice connection to the processor: {}.",
+                        e
+                    );
+                }
+            }
         }
     }
 }
@@ -351,6 +360,7 @@ impl ProcessorMax {
                 // waits for the first packet or a broadcast message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
+                        // for src node and dst node
                         ProcessorMaxPacket::ProcessPacket(first_packet) => {
                             // starts a batch with the first packet
                             self.process_packet(first_packet);
@@ -359,6 +369,10 @@ impl ProcessorMax {
                             while let Ok(ProcessorMaxPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
                                 self.process_packet(packet);
                             }
+                        }
+                        // for relay nodes
+                        ProcessorMaxPacket::SpliceConnection(flow_id, stream) => {
+                            // TODO: Implement splice logic
                         }
                     }
                 }
@@ -391,9 +405,6 @@ impl ProcessorMax {
                 if let Some(scheduler) = self.schedulers.get_mut(&flow_id) {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
-            }
-            ProcessorMaxMessage::SpliceUpstream(_flow_id, _stream) => {
-                // TODO : Implement this
             }
         }
     }
