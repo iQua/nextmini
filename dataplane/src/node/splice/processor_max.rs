@@ -8,21 +8,29 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use flume;
 use tokio;
+use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
+use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy, Debug)]
+pub enum SchedulerKey {
+    Node(NodeId),
+    Flow(FlowId),
+}
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -42,6 +50,7 @@ pub enum ProcessorMessage {
     ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    SpliceUpstream(FlowId, Arc<TcpStream>),
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +179,18 @@ impl ProcessorHandle {
                 e
             );
         };
+    }
+
+    pub fn splice_upstream(&self, flow_id: FlowId, stream: TcpStream) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SpliceUpstream(flow_id, Arc::new(stream)))
+        {
+            error!(
+                "Error sending the SpliceUpstream message to the processors: {}",
+                e
+            );
+        }
     }
 }
 
@@ -328,7 +349,7 @@ struct Processor {
     routing_table: RoutingTable,
 
     // the schedulers (for upstream packets)
-    schedulers: AHashMap<NodeId, SchedulerHandle>,
+    schedulers: AHashMap<SchedulerKey, SchedulerHandle>,
 }
 
 impl Processor {
@@ -380,7 +401,8 @@ impl Processor {
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
                 // updates the scheduler for a given node ID
-                self.schedulers.insert(node_id, scheduler);
+                self.schedulers
+                    .insert(SchedulerKey::Node(node_id), scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
@@ -392,7 +414,7 @@ impl Processor {
                 self.user_space_senders.remove(&flow_id);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
-                if let Some(scheduler) = self.schedulers.get(&node_id) {
+                if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(node_id)) {
                     scheduler.limit_rate(spec);
                 }
             }
@@ -401,9 +423,14 @@ impl Processor {
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
-                for (_, scheduler) in self.schedulers.iter_mut() {
-                    scheduler.set_flow_weight(flow_id, weight);
+                for (key, scheduler) in self.schedulers.iter_mut() {
+                    if let SchedulerKey::Node(_) = key {
+                        scheduler.set_flow_weight(flow_id, weight);
+                    }
                 }
+            }
+            ProcessorMessage::SpliceUpstream(flow_id, stream) => {
+                // TODO : Implement this
             }
         }
     }
@@ -411,7 +438,6 @@ impl Processor {
     /// Process inbound packets for outbound delivery
     fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
-
         // selects the route ID for a new flow
         if let Some(route_id) = self.routing_table.select_route_for_flow(packet_flow_id) {
             if route_id == 0 {
@@ -483,8 +509,25 @@ impl Processor {
                 }
             }
         } else {
-            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
+            let scheduler_key = match self.config.operating_mode {
+                OperatingMode::Normal => SchedulerKey::Node(next_hop_id),
+                OperatingMode::Max => SchedulerKey::Flow(packet.flow_id),
+            };
+
+            if let Some(scheduler) = self.schedulers.get(&scheduler_key) {
                 scheduler.send(packet);
+            } else {
+                // We are on the src node and the tcp connection is not spliced yet
+
+                let tcp_max_client = TcpMaxClient::new(self.config.clone());
+
+                // Get the TCP stream for the client, need to know remote node addr
+
+                // Create network interface and scheduler from the TCP stream
+
+                // Insert the scheduler into the hashmap
+
+                // Send the packet through this scheduler
             }
         }
     }
