@@ -79,13 +79,16 @@ impl ProcessorHandle {
         }
     }
 
-    pub fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
-        if let Err(e) = self
+    pub fn add_node(
+        &self,
+        node_id: NodeId,
+        scheduler: SchedulerHandle,
+    ) -> Result<(), SendError<ProcessorMessage>> {
+        let _ = self
             .broadcast_sender()
-            .send(ProcessorMessage::AddNode(node_id, scheduler))
-        {
-            error!("Error sending the AddNode message to the processors: {}", e);
-        }
+            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
+
+        Ok(())
     }
 
     pub fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
