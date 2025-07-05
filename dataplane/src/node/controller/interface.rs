@@ -15,7 +15,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
-use crate::node::network::interface::NetworkInterfaceHandle;
+use crate::node::network::interface::{NetworkInterfaceHandle, TcpMaxClient};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
@@ -57,6 +57,16 @@ impl ControllerInterfaceHandle {
         // creates the server handle for the processor to use.
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
+
+        // connect the tcp max client to the processor if at max mode
+        if let OperatingMode::Max = config.operation_mode {
+            let tcp_max_client = TcpMaxClient {
+                config: config.clone(),
+                processor: processors.clone(),
+                reporter: reporter.clone(),
+            };
+            processors.connect_tcp_max_client(tcp_max_client);
+        }
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
