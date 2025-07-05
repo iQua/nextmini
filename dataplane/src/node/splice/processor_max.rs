@@ -513,14 +513,14 @@ impl ProcessorMax {
                 let remote_addr = self.node_addresses[&packet.flow_id.dst_node_id].clone();
                 let stream = tcp_max_client.connect(remote_addr);
 
-                // Create network interface and scheduler from the TCP stream
+                // creates network interface and scheduler from the TCP stream.
                 let network_interface = NetworkInterfaceHandle::new(self.config.clone(), stream);
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                // Send the packet through this scheduler
+                // sends the packet through this scheduler.
                 scheduler.send(packet);
 
-                // Insert the scheduler into the hashmap
+                // inserts the scheduler into the hashmap.
                 self.schedulers.insert(scheduler_key, scheduler);
             }
         }
