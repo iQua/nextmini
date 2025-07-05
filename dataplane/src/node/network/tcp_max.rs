@@ -7,7 +7,7 @@ use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
 use crate::node::processor::ProcessorHandle;
-use crate::node::scheduler::scheduler::Scheduler;
+use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt};
 
 pub struct TcpMaxServer {
