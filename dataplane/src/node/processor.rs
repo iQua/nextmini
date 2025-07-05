@@ -47,7 +47,6 @@ pub enum ProcessorMessage {
     AddNode(NodeId, SchedulerHandle),
     // For max mode
     AddNodeAddress(NodeId, String),
-    SpliceConnection(FlowId, TcpStream),
     ConnectTcpMaxClient(TcpMaxClient),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectUserSpaceSender {
@@ -458,11 +457,6 @@ impl Processor {
             ProcessorMessage::AddNodeAddress(node_id, remote_addr) => {
                 self.node_addresses.insert(node_id, remote_addr);
             }
-            ProcessorMessage::SpliceConnection(flow_id, stream) => {
-                if self.config.operating_mode == OperatingMode::Max {
-                    self.handle_splice_connection(flow_id, stream).await;
-                }
-            }
             ProcessorMessage::ConnectTcpMaxClient(tcp_max_client) => {
                 self.tcp_max_client = Some(tcp_max_client);
             }
@@ -500,6 +494,7 @@ impl Processor {
         if next_hop_id == self.routing_table.local_id {
             let scheduler = self
                 .tcp_max_client
+                .unwrap()
                 .connect_as_client(flow_id, &next_hop_addr, next_hop_id)
                 .await;
 
