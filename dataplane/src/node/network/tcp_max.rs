@@ -26,7 +26,7 @@ impl TcpMaxServer {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
             Err(e) => {
-                error!("Max: Failed to bind to address {}: {}", addr, e);
+                error!("Failed to bind to address {}: {}", addr, e);
                 return;
             }
         };
@@ -36,17 +36,17 @@ impl TcpMaxServer {
         loop {
             let mut stream = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
-                    info!("Max: Connection accepted from {:?}.", socket_addr);
+                    info!("Connection accepted from {:?}.", socket_addr);
                     stream
                 }
                 Err(e) => {
-                    error!("Max: Failed to accept TCP connection: {}", e);
+                    error!("Failed to accept TCP connection: {}", e);
                     continue;
                 }
             };
 
             if let Err(e) = stream.read_exact(&mut flow_id_buf).await {
-                error!("Max: Failed to read flow ID: {}", e);
+                error!("Failed to read flow ID: {}", e);
                 continue;
             }
 
@@ -55,19 +55,19 @@ impl TcpMaxServer {
             let flow_id: FlowId = match cursor.read_u128().await {
                 Ok(id) => id,
                 Err(e) => {
-                    error!("Max: Failed to parse flow ID: {}", e);
+                    error!("Failed to parse flow ID: {}", e);
                     continue;
                 }
             };
 
             let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
 
-            info!("Max: Incoming connection from node {}...", remote_node_id);
+            info!("Incoming connection from node {}...", remote_node_id);
 
             // Tell the processor to splice the upstream
             self.processors.splice_connection(flow_id, stream);
 
-            info!("Max: Connected to node {}.", remote_node_id);
+            info!("Connected to node {}.", remote_node_id);
         }
     }
 }
@@ -92,15 +92,17 @@ impl TcpMaxClient {
         }
     }
 
-    pub async fn connect_as_dst_node(&self, stream: TcpStream) -> SchedulerHandle {
+    pub async fn connect_as_dst_node(
+        &self,
+        stream: TcpStream,
+    ) -> SchedulerHandle {
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
             NetworkStream::Tcp(stream),
             self.processor.clone(),
             self.reporter.clone(),
             self.config.node_id,
-        )
-        .await;
+        ).await;
 
         let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
@@ -139,18 +141,18 @@ impl TcpMaxClient {
                     stream
                         .write_all(&flow_id.to_be_bytes())
                         .await
-                        .expect("Max: Failed to send local node id to the node");
+                        .expect("Failed to send local node id to the node");
 
                     info!(
-                        "Max: Connected to node {} with TCP.",
-                        self.config.ip_to_node_id(flow_id.dst_ip())
+                        "Connected to node {} with TCP.",
+                        self.config.ip_to_node_id(flow_id.src_ip())
                     );
 
                     return stream;
                 }
                 Err(e) => {
                     error!(
-                        "Max: Failed to connect to node address {} with error: {}, retrying in {}s.",
+                        "Failed to connect to node address {} with error: {}, retrying in {}s.",
                         remote_addr,
                         e,
                         delay.as_secs()
@@ -159,7 +161,7 @@ impl TcpMaxClient {
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRY {
-                        panic!("Max: Maximum retry reached for TCP connection to {remote_addr}");
+                        panic!("Maximum retry reached for TCP connection to {remote_addr}");
                     }
 
                     delay = delay.mul_f32(1.5); // Exponential backoff
