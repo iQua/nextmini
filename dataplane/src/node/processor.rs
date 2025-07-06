@@ -20,9 +20,11 @@ use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
+use crate::node::packet_processor::PacketProcessor;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
+use tokio::net::TcpStream;
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -170,6 +172,70 @@ impl ProcessorHandle {
                 e
             );
         };
+    }
+}
+
+impl PacketProcessor for ProcessorHandle {
+    fn process_packet(&self, packet: Packet) {
+        ProcessorHandle::process_packet(self, packet)
+    }
+
+    fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+        ProcessorHandle::update_routing_table(self, routes)
+    }
+
+    fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
+        if let Err(e) = ProcessorHandle::add_node(self, node_id, scheduler) {
+            error!(
+                "ProcessorHandle::add_node: failed to add node {}: {}",
+                node_id, e
+            );
+        }
+    }
+
+    fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
+        warn!(
+            "ProcessorHandle::add_node_address: not supported in normal mode. node_id={}, remote_addr={}",
+            node_id, remote_addr
+        );
+    }
+
+    fn connect_tcp_max_client(&self, tcp_max_client: crate::node::splice::tcp_max::TcpMaxClient) {
+        warn!(
+            "ProcessorHandle::connect_tcp_max_client: not supported in normal mode. client={:?}",
+            tcp_max_client
+        );
+    }
+
+    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
+        ProcessorHandle::connect_local_interface(self, local_interface)
+    }
+
+    fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
+        ProcessorHandle::connect_user_space_sender(self, flow_id, sender)
+    }
+
+    fn disconnect_user_space_sender(&self, flow_id: FlowId) {
+        ProcessorHandle::disconnect_user_space_sender(self, flow_id)
+    }
+
+    fn connect_server(&self, server: UserSpaceServerHandle) {
+        ProcessorHandle::connect_server(self, server)
+    }
+
+    fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
+        ProcessorHandle::limit_rate(self, node_id, spec)
+    }
+
+    fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
+        ProcessorHandle::set_flow_weight(self, flow_id, weight)
+    }
+
+    fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
+        warn!(
+            "ProcessorHandle::splice_connection: not supported in normal mode. flow_id={}, stream={:?}",
+            flow_id, stream
+        );
     }
 }
 

@@ -4,7 +4,7 @@
 use tokio::sync::mpsc;
 use tracing::info;
 
-use nextmini_messages::Protocol;
+use nextmini_messages::{OperatingMode, Protocol};
 
 use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
@@ -12,8 +12,7 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
-use crate::node::processor::ProcessorHandle;
-use crate::node::splice::connector::ConnectorHandle;
+use crate::node::packet_processor::PacketProcessor;
 use crate::node::splice::tcp_max::TcpMaxServer;
 
 pub struct Conductor {
@@ -22,11 +21,8 @@ pub struct Conductor {
     /// the local interface readers and writers
     local_interface: LocalInterfaceHandle,
 
-    /// the processors
-    processors: ProcessorHandle,
-
-    /// the connector
-    connector: ConnectorHandle,
+    /// the packet processor
+    packet_processor: Box<dyn PacketProcessor>,
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
@@ -43,17 +39,20 @@ impl Conductor {
         let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
 
         config = controller_interface.config.clone();
-        let processors = controller_interface.processors.clone();
-        let connector = controller_interface.connector.clone();
+
+        let packet_processor: Box<dyn PacketProcessor> = match config.operating_mode {
+            OperatingMode::Normal => Box::new(controller_interface.processors),
+            OperatingMode::Max => Box::new(controller_interface.connector),
+        };
+
         let local_interface: LocalInterfaceHandle =
-            LocalInterfaceHandle::new(config.clone(), processors.clone());
-        processors.connect_local_interface(local_interface.clone());
+            LocalInterfaceHandle::new(config.clone(), packet_processor.clone());
+        packet_processor.connect_local_interface(local_interface.clone());
 
         Conductor {
             config,
             local_interface,
-            processors,
-            connector,
+            packet_processor,
             reporter,
             main_shutdown_recv: Some(main_shutdown_recv),
         }
@@ -88,16 +87,17 @@ impl Conductor {
         match self.config.protocol {
             Protocol::Tcp => {
                 // uses TcpMaxServer to handle the connections for max operating mode.
-                let mut tcp_max_server = TcpMaxServer::new(self.config.clone(), self.connector.clone());
+                let mut tcp_max_server =
+                    TcpMaxServer::new(self.config.clone(), self.packet_processor.clone());
 
                 // uses TcpServer to handle the connections for normal operating mode.
                 if public_port == private_port {
                     let mut tcp_server = TcpServer::new(
                         self.config.clone(),
-                        self.processors.clone(),
+                        self.packet_processor.clone(),
                         self.reporter.clone(),
                     );
-                    
+
                     let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
                     let tcp_server_addr = format!("{}:{}", "0.0.0.0", public_port);
 
@@ -108,12 +108,12 @@ impl Conductor {
                 } else {
                     let mut tcp_server_public = TcpServer::new(
                         self.config.clone(),
-                        self.processors.clone(),
+                        self.packet_processor.clone(),
                         self.reporter.clone(),
                     );
                     let mut tcp_server_private = TcpServer::new(
                         self.config.clone(),
-                        self.processors.clone(),
+                        self.packet_processor.clone(),
                         self.reporter.clone(),
                     );
 
@@ -127,12 +127,12 @@ impl Conductor {
                         _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
                     }
                 }
-            },
+            }
             Protocol::Quic => {
                 if public_port == private_port {
                     let mut quic_server = QuicServer::new(
                         self.config.clone(),
-                        self.processors.clone(),
+                        self.packet_processor.clone(),
                         self.reporter.clone(),
                     );
                     quic_server
@@ -141,12 +141,12 @@ impl Conductor {
                 } else {
                     let mut quic_server_public = QuicServer::new(
                         self.config.clone(),
-                        self.processors.clone(),
+                        self.packet_processor.clone(),
                         self.reporter.clone(),
                     );
                     let mut quic_server_private = QuicServer::new(
                         self.config.clone(),
-                        self.processors.clone(),
+                        self.packet_processor.clone(),
                         self.reporter.clone(),
                     );
 
