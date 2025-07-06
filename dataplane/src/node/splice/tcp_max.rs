@@ -6,7 +6,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
-use crate::node::connector::ConnectorHandle;
+use crate::node::splice::connector::ConnectorHandle;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::scheduler::scheduler::SchedulerHandle;

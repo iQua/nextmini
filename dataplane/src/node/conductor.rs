@@ -4,7 +4,7 @@
 use tokio::sync::mpsc;
 use tracing::info;
 
-use nextmini_messages::{OperatingMode, Protocol};
+use nextmini_messages::Protocol;
 
 use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
@@ -13,6 +13,7 @@ use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
 use crate::node::processor::ProcessorHandle;
+use crate::node::splice::connector::ConnectorHandle;
 use crate::node::splice::tcp_max::TcpMaxServer;
 
 pub struct Conductor {
@@ -23,6 +24,9 @@ pub struct Conductor {
 
     /// the processors
     processors: ProcessorHandle,
+
+    /// the connector
+    connector: ConnectorHandle,
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
@@ -40,7 +44,7 @@ impl Conductor {
 
         config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
-
+        let connector = controller_interface.connector.clone();
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone());
         processors.connect_local_interface(local_interface.clone());
@@ -49,6 +53,7 @@ impl Conductor {
             config,
             local_interface,
             processors,
+            connector,
             reporter,
             main_shutdown_recv: Some(main_shutdown_recv),
         }
@@ -78,62 +83,42 @@ impl Conductor {
         // starts listening with either TCP or QUIC on published ports (private and/or public)
         let public_port = self.config.public_network_port.clone();
         let private_port = self.config.private_network_port.clone();
+        let tcp_max_server_port = self.config.tcp_max_server_port.clone();
 
         match self.config.protocol {
-            Protocol::Tcp => match self.config.operating_mode {
-                // uses TcpServer to handle the connections for normal operating mode.
-                OperatingMode::Normal => {
-                    if public_port == private_port {
-                        let mut tcp_server = TcpServer::new(
-                            self.config.clone(),
-                            self.processors.clone(),
-                            self.reporter.clone(),
-                        );
-                        tcp_server
-                            .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                            .await;
-                    } else {
-                        let mut tcp_server_public = TcpServer::new(
-                            self.config.clone(),
-                            self.processors.clone(),
-                            self.reporter.clone(),
-                        );
-                        let mut tcp_server_private = TcpServer::new(
-                            self.config.clone(),
-                            self.processors.clone(),
-                            self.reporter.clone(),
-                        );
-
-                        let public_addr = format!("{}:{}", "0.0.0.0", public_port);
-                        let private_addr = format!("{}:{}", "0.0.0.0", private_port);
-
-                        tokio::select! {
-                            _ = tcp_server_public.start_listening(&public_addr) => {},
-                            _ = tcp_server_private.start_listening(&private_addr) => {},
-                        }
-                    }
-                }
+            Protocol::Tcp => {
                 // uses TcpMaxServer to handle the connections for max operating mode.
-                OperatingMode::Max => {
-                    if public_port == private_port {
-                        let mut tcp_max_server =
-                            TcpMaxServer::new(self.config.clone(), self.processors.clone());
-                        tcp_max_server
-                            .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
-                            .await;
-                    } else {
-                        let mut tcp_max_server_public =
-                            TcpMaxServer::new(self.config.clone(), self.processors.clone());
-                        let mut tcp_max_server_private =
-                            TcpMaxServer::new(self.config.clone(), self.processors.clone());
+                let mut tcp_max_server = TcpMaxServer::new(self.config.clone(), self.connector.clone());
 
-                        let public_addr = format!("{}:{}", "0.0.0.0", public_port);
-                        let private_addr = format!("{}:{}", "0.0.0.0", private_port);
+                // uses TcpServer to handle the connections for normal operating mode.
+                if public_port == private_port {
+                    let mut tcp_server = TcpServer::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    );
+                    tcp_max_server.start_listening(&format!("{}:{}", "0.0.0.0", tcp_max_server_port)).await;
+                    tcp_server.start_listening(&format!("{}:{}", "0.0.0.0", public_port)).await;
+                } else {
+                    let mut tcp_server_public = TcpServer::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    );
+                    let mut tcp_server_private = TcpServer::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    );
 
-                        tokio::select! {
-                            _ = tcp_max_server_public.start_listening(&public_addr) => {},
-                            _ = tcp_max_server_private.start_listening(&private_addr) => {},
-                        }
+                    let public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    let private_addr = format!("{}:{}", "0.0.0.0", private_port);
+                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
+
+                    tokio::select! {
+                        _ = tcp_server_public.start_listening(&public_addr) => {},
+                        _ = tcp_server_private.start_listening(&private_addr) => {},
+                        _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
                     }
                 }
             },
