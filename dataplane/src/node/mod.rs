@@ -8,6 +8,7 @@ pub mod packet;
 pub mod processor;
 pub mod route;
 pub mod scheduler;
+pub mod splice;
 
 use jumphash::JumpHasher;
 use std::net::Ipv4Addr;

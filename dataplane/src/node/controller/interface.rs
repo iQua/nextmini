@@ -75,7 +75,7 @@ impl ControllerInterfaceHandle {
             config: config.clone(),
             receiver_stream,
             processors: processors.clone(),
-            connector,
+            connector: connector.clone(),
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
