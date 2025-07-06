@@ -458,6 +458,7 @@ impl Processor {
             }
             ProcessorMessage::AddNodeAddress(node_id, remote_addr) => {
                 self.node_addresses.insert(node_id, remote_addr);
+                info!("Successfully inserted node_id{}, remote_addr.", node_id);
             }
             ProcessorMessage::ConnectTcpMaxClient(tcp_max_client) => {
                 self.tcp_max_client = Some(tcp_max_client);
@@ -489,32 +490,63 @@ impl Processor {
     }
 
     async fn handle_splice_connection(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
-        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
-        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+        let Some(route_id) = self.routing_table.select_route_for_flow(flow_id) else {
+            error!("No route can be selected for flow {}.", flow_id);
+            return;
+        };
+        let Some(next_hop_id) = self.routing_table.get_next_hop_by_route(route_id) else {
+            error!(
+                "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
+                route_id, flow_id
+            );
+            return;
+        };
 
         // handles the case where we are at the dst node.
         if next_hop_id == self.routing_table.local_id {
-            let scheduler = self
-                .tcp_max_client
-                .as_ref()
-                .unwrap()
-                .connect_as_dst_node(inbound_stream)
-                .await;
+            let Some(tcp_max_client) = self.tcp_max_client.as_ref() else {
+                error!("The tcp_max_client has not yet been connected.");
+                return;
+            };
+            let scheduler = tcp_max_client.connect_as_dst_node(inbound_stream).await;
+
+            info!("scheduler created for dst node{}", next_hop_id);
+            let reverse_flow_id = flow_id.reverse();
+            let src_node_id = self.config.ip_to_node_id(reverse_flow_id.src_ip());
+            let dst_node_id = self.config.ip_to_node_id(reverse_flow_id.dst_ip());
+            info!(
+                "Adding scheduler to processor map with reversed flow id from src node {} to dst node {} from src port {} to dst port {}.",
+                src_node_id,
+                dst_node_id,
+                reverse_flow_id.src_port(),
+                reverse_flow_id.dst_port()
+            );
 
             // inserts reversed flow id.
             self.schedulers
-                .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
+                .insert(SchedulerKey::Flow(reverse_flow_id), scheduler);
 
+            info!(
+                "Scheduler for flow {} inserted successfully.",
+                reverse_flow_id
+            );
             return;
         }
 
         // handles the case where we are at a relay node.
-        let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
+        let Some(next_hop_addr) = self.node_addresses.get(&next_hop_id).cloned() else {
+            error!(
+                "The address of node {} is not known at relay node.",
+                next_hop_id
+            );
+            return;
+        };
 
-        let mut outbound_stream = self
-            .tcp_max_client
-            .as_ref()
-            .unwrap()
+        let Some(tcp_max_client) = self.tcp_max_client.as_ref() else {
+            error!("The tcp_max_client has not yet been connected.");
+            return;
+        };
+        let mut outbound_stream = tcp_max_client
             .connect_as_relay(flow_id, &next_hop_addr)
             .await;
 
@@ -572,10 +604,10 @@ impl Processor {
                 return None;
             }
 
-            let server_handle = self
-                .server
-                .clone()
-                .expect("The user-space server has not yet been connected.");
+            let Some(server_handle) = self.server.clone() else {
+                error!("The user-space server has not yet been connected.");
+                return None;
+            };
 
             let sender = server_handle.add_server(flow_id);
             self.user_space_senders.insert(flow_id, sender.clone());
@@ -613,13 +645,28 @@ impl Processor {
                 OperatingMode::Max => {
                     let scheduler_key = SchedulerKey::Flow(packet.flow_id);
 
+                    let src_node_id = self.config.ip_to_node_id(packet.flow_id.src_ip());
+                    let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+                    info!(
+                        "Processing packet from node {} to node {} with flow id {}.",
+                        src_node_id, dst_node_id, packet.flow_id
+                    );
+
                     if let Some(scheduler) = self.schedulers.get(&scheduler_key) {
                         scheduler.send(packet);
                     } else {
+                        info!(
+                            "No scheduler found for src port {} to dst port {}. Creating a new one.",
+                            packet.flow_id.src_port(),
+                            packet.flow_id.dst_port()
+                        );
                         // We are on the src node and the tcp connection is not spliced yet
 
                         // gets the remote node address
-                        let remote_addr = self.node_addresses[&next_hop_id].clone();
+                        let Some(remote_addr) = self.node_addresses.get(&next_hop_id) else {
+                            info!("The address of node {} is not known.", next_hop_id);
+                            return;
+                        };
 
                         let scheduler = self
                             .tcp_max_client

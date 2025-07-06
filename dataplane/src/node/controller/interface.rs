@@ -247,6 +247,7 @@ impl ControllerToDataplaneReceiver {
                 OperatingMode::Max => {
                     self.processors
                         .add_node_address(remote_node_id, remote_addr);
+                    info!("Added node address for node {}.", remote_node_id);
                 }
             },
 
