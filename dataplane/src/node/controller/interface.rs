@@ -18,12 +18,14 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::splice::connector::ConnectorHandle;
 use crate::node::splice::tcp_max::TcpMaxClient;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
+    pub connector: ConnectorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
 }
 
@@ -34,7 +36,8 @@ impl ControllerInterfaceHandle {
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
         // connects to the controller over WebSockets
-        let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
+        let (config, processors, connector, ws_stream) =
+            ControllerInterfaceHandle::connect(config).await;
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
@@ -47,6 +50,7 @@ impl ControllerInterfaceHandle {
         let controller_interface = Self {
             config: config.clone(),
             processors: processors.clone(),
+            connector: connector.clone(),
             northbridge_sender,
         };
 
@@ -58,18 +62,20 @@ impl ControllerInterfaceHandle {
         // creates the server handle for the processor to use.
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
+        connector.connect_server(user_space_server.clone());
 
         // connects the tcp max client to the processor if at max mode.
         if let OperatingMode::Max = config.operating_mode {
             let tcp_max_client =
                 TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
-            processors.connect_tcp_max_client(tcp_max_client);
+            connector.connect_tcp_max_client(tcp_max_client);
         }
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
             receiver_stream,
             processors: processors.clone(),
+            connector,
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
@@ -90,6 +96,7 @@ impl ControllerInterfaceHandle {
     ) -> (
         LocalConfig,
         ProcessorHandle,
+        ConnectorHandle,
         WebSocketStream<MaybeTlsStream<TcpStream>>,
     ) {
         let url = url::Url::parse(&config.controller_addr).unwrap();
@@ -134,8 +141,9 @@ impl ControllerInterfaceHandle {
 
         // starts the processor actor
         let processors = ProcessorHandle::new(config.clone());
+        let connector = ConnectorHandle::new(config.clone());
 
-        (config, processors, ws_stream)
+        (config, processors, connector, ws_stream)
     }
 
     /// Sends a message to the controller.
@@ -183,6 +191,7 @@ pub struct ControllerToDataplaneReceiver {
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
+    connector: ConnectorHandle,
 
     // reports metrics to controller
     reporter: ControllerReporterHandle,
@@ -245,8 +254,7 @@ impl ControllerToDataplaneReceiver {
                 }
 
                 OperatingMode::Max => {
-                    self.processors
-                        .add_node_address(remote_node_id, remote_addr);
+                    self.connector.add_node_address(remote_node_id, remote_addr);
                 }
             },
 
@@ -267,6 +275,7 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.processors.update_routing_table(routes);
+                self.connector.update_routing_table(routes);
             }
 
             ControllerToDataplane::AddFlows { flows } => {

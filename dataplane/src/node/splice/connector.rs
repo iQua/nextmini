@@ -24,12 +24,6 @@ use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::splice::tcp_max::TcpMaxClient;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
-#[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
-enum SchedulerKey {
-    Node(NodeId),
-    Flow(FlowId),
-}
-
 // Message types for the connector actor.
 pub enum ConnectorPacket {
     ProcessPacket(Packet),
@@ -259,7 +253,7 @@ struct Connector {
     routing_table: RoutingTable,
 
     // a unified hashmap for schedulers in both normal and max modes
-    schedulers: AHashMap<SchedulerKey, SchedulerHandle>,
+    schedulers: AHashMap<FlowId, SchedulerHandle>,
 
     // the remote nodes addresses (for max mode)
     node_addresses: AHashMap<NodeId, String>,
@@ -321,10 +315,6 @@ impl Connector {
             ConnectorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
-            ConnectorMessage::AddNode(node_id, scheduler) => {
-                self.schedulers
-                    .insert(SchedulerKey::Node(node_id), scheduler);
-            }
             ConnectorMessage::AddNodeAddress(node_id, remote_addr) => {
                 self.node_addresses.insert(node_id, remote_addr);
             }
@@ -339,11 +329,6 @@ impl Connector {
             }
             ConnectorMessage::DisconnectUserSpaceSender(flow_id) => {
                 self.user_space_senders.remove(&flow_id);
-            }
-            ConnectorMessage::RateLimit(node_id, spec) => {
-                if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(node_id)) {
-                    scheduler.limit_rate(spec);
-                }
             }
             ConnectorMessage::ConnectServerHandle(user_space_server) => {
                 self.server = Some(user_space_server);
@@ -373,7 +358,7 @@ impl Connector {
 
             // stores the scheduler with a reversed flow ID to handle the return traffic.
             self.schedulers
-                .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
+                .insert(flow_id.reverse(), scheduler);
 
             return;
         }
@@ -484,9 +469,7 @@ impl Connector {
             match self.config.operating_mode {
                 OperatingMode::Max => {
                     // if a scheduler for this flow already exists, the connection is established.
-                    let scheduler_key = SchedulerKey::Flow(packet.flow_id);
-
-                    if let Some(scheduler) = self.schedulers.get(&scheduler_key) {
+                    if let Some(scheduler) = self.schedulers.get(&packet.flow_id) {
                         scheduler.send(packet);
                     } else {
                         // for the first packet of a new flow on the source node.
@@ -505,7 +488,7 @@ impl Connector {
                         scheduler.send(packet);
 
                         // stores the new scheduler then subsequent packets can use the same connection.
-                        self.schedulers.insert(scheduler_key, scheduler);
+                        self.schedulers.insert(packet.flow_id, scheduler);
                     }
                 }
             }
