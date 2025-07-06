@@ -56,23 +56,37 @@ pub enum ConnectorMessage {
 }
 
 #[derive(Clone, Debug)]
-pub enum ConnectorHandle {
-    Sequential(SequentialConnectHandle),
+pub struct ConnectorHandle {
+    message_sender: mpsc::Sender<ConnectorMessage>,
+    // a single MPSC channel for the connector to process packets sequentially
+    packet_sender: mpsc::Sender<ConnectorPacket>,
 }
 
 impl ConnectorHandle {
     pub fn new(config: LocalConfig) -> Self {
-        match config.feature {
-            Feature::Sequential => {
-                ConnectorHandle::Sequential(SequentialConnectHandle::new(config))
-            }
+        let (message_sender, message_receiver) = mpsc::channel(config.channel_capacity);
+
+        // creates one MPSC channel for the single connector.
+        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
+
+        let mut connector = Connector::new(
+            packet_receiver,
+            message_receiver,
+            config,
+        );
+
+        tokio::spawn(async move {
+            connector.run().await;
+        });
+
+        Self {
+            message_sender,
+            packet_sender,
         }
     }
 
     pub fn message_sender(&self) -> &mpsc::Sender<ConnectorMessage> {
-        match self {
-            ConnectorHandle::Sequential(handle) => &handle.message_sender,
-        }
+        &self.message_sender
     }
 
     pub fn add_node(
@@ -176,8 +190,14 @@ impl ConnectorHandle {
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        match self {
-            ConnectorHandle::Sequential(handle) => handle.process_packet(packet),
+        if let Err(e) = self
+            .packet_sender
+            .try_send(ConnectorPacket::ProcessPacket(packet))
+        {
+            warn!(
+                "SequentialConnectHandle: Error sending a packet to the Connector: {}.",
+                e
+            );
         }
     }
 
@@ -207,98 +227,11 @@ impl ConnectorHandle {
 
     pub fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
         let packet = ConnectorPacket::SpliceConnection(flow_id, stream);
-        match self {
-            ConnectorHandle::Sequential(handle) => {
-                if let Err(e) = handle.packet_sender.try_send(packet) {
-                    warn!(
-                        "SequentialConnectHandle: Error sending a splice connection to the Connector: {}.",
-                        e
-                    );
-                }
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SequentialConnectHandle {
-    message_sender: mpsc::Sender<ConnectorMessage>,
-
-    // a single MPSC channel for the connector to process packets sequentially
-    packet_sender: mpsc::Sender<ConnectorPacket>,
-}
-
-impl SequentialConnectHandle {
-    pub fn new(config: LocalConfig) -> Self {
-        let (message_sender, message_receiver) = mpsc::channel(config.channel_capacity);
-
-        // creates one MPSC channel for the single connector.
-        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
-
-        let mut connector = Connector::new(
-            PacketReceiver::Sequential(packet_receiver),
-            message_receiver,
-            config,
-        );
-
-        tokio::spawn(async move {
-            connector.run().await;
-        });
-
-        Self {
-            message_sender,
-            packet_sender,
-        }
-    }
-
-    pub fn process_packet(&self, packet: Packet) {
-        if let Err(e) = self
-            .packet_sender
-            .try_send(ConnectorPacket::ProcessPacket(packet))
-        {
-            warn!(
+        if let Err(e) = self.packet_sender.try_send(packet) {
+            error!(
                 "SequentialConnectHandle: Error sending a packet to the Connector: {}.",
                 e
             );
-        }
-    }
-}
-
-pub enum PacketReceiver {
-    Sequential(mpsc::Receiver<ConnectorPacket>),
-}
-
-#[derive(Debug)]
-pub enum PacketTryRecvError {
-    FlumeRecvError(flume::TryRecvError),
-    MpscRecvError(mpsc::error::TryRecvError),
-}
-
-impl Display for PacketTryRecvError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PacketTryRecvError::FlumeRecvError(err) => {
-                write!(f, "Error receiving from a flume mpmc channel: {}", err)
-            }
-            PacketTryRecvError::MpscRecvError(err) => {
-                write!(f, "Error receiving from a mpsc channel: {}", err)
-            }
-        }
-    }
-}
-
-impl PacketReceiver {
-    pub async fn recv(&mut self) -> Option<ConnectorPacket> {
-        match self {
-            PacketReceiver::Sequential(receiver) => receiver.recv().await,
-        }
-    }
-
-    pub fn try_recv(&mut self) -> Result<ConnectorPacket, PacketTryRecvError> {
-        match self {
-            PacketReceiver::Sequential(receiver) => receiver
-                .try_recv()
-                .map_err(PacketTryRecvError::MpscRecvError),
         }
     }
 }
@@ -308,7 +241,7 @@ struct Connector {
     config: LocalConfig,
 
     // receives packets from the network interface, local interface, or user-space TCP flows
-    packet_receiver: PacketReceiver,
+    packet_receiver: mpsc::Receiver<ConnectorPacket>,
 
     // receives messages from the mpsc channel (from the controller interface or the conductor)
     message_receiver: mpsc::Receiver<ConnectorMessage>,
@@ -337,7 +270,7 @@ struct Connector {
 
 impl Connector {
     pub fn new(
-        packet_receiver: PacketReceiver,
+        packet_receiver: mpsc::Receiver<ConnectorPacket>,
         message_receiver: mpsc::Receiver<ConnectorMessage>,
         config: LocalConfig,
     ) -> Self {
@@ -573,12 +506,6 @@ impl Connector {
 
                         // stores the new scheduler then subsequent packets can use the same connection.
                         self.schedulers.insert(scheduler_key, scheduler);
-                    }
-                }
-
-                OperatingMode::Normal => {
-                    if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(next_hop_id)) {
-                        scheduler.send(packet);
                     }
                 }
             }
