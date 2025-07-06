@@ -58,13 +58,15 @@ pub enum ConnectorMessage {
 
 #[derive(Clone, Debug)]
 pub enum ConnectorHandle {
-    Sequential(SequentialProcHandle),
+    Sequential(SequentialConnectHandle),
 }
 
 impl ConnectorHandle {
     pub fn new(config: LocalConfig) -> Self {
         match config.feature {
-            Feature::Sequential => ConnectorHandle::Sequential(SequentialProcHandle::new(config)),
+            Feature::Sequential => {
+                ConnectorHandle::Sequential(SequentialConnectHandle::new(config))
+            }
         }
     }
 
@@ -93,12 +95,13 @@ impl ConnectorHandle {
             .send(ConnectorMessage::AddNodeAddress(node_id, remote_addr))
         {
             error!(
-                "Error sending the AddNodeAddress message to the Connectors: {}",
+                "Error sending the AddNodeAddress message to the connector: {}",
                 e
             );
         }
     }
 
+    // connects the tcp max client to the connector.
     pub fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
         if let Err(e) = self
             .broadcast_sender()
@@ -111,7 +114,7 @@ impl ConnectorHandle {
         }
     }
 
-    // connects the local interface to the connector
+    // connects the local interface to the connector.
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -124,7 +127,7 @@ impl ConnectorHandle {
         };
     }
 
-    // connects the client handle to the connector
+    // connects the client handle to the connector.
     pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
         if let Err(e) = self
             .broadcast_sender()
@@ -151,13 +154,14 @@ impl ConnectorHandle {
         }
     }
 
+    // updates the routing table.
     pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         if let Err(e) = self
             .broadcast_sender()
             .send(ConnectorMessage::UpdateRoutingTable(routes))
         {
             error!(
-                "Error sending the UpdateRoutingTable message to the Connectors: {}",
+                "Error sending the UpdateRoutingTable message to the connector: {}",
                 e
             );
         };
@@ -169,7 +173,7 @@ impl ConnectorHandle {
             .send(ConnectorMessage::RateLimit(node_id, spec))
         {
             error!(
-                "Error sending the SetRateLimiter message to the Connectors: {}",
+                "Error sending the SetRateLimiter message to the connector: {}",
                 e
             );
         };
@@ -187,7 +191,7 @@ impl ConnectorHandle {
             .send(ConnectorMessage::ConnectServerHandle(server))
         {
             error!(
-                "Error sending the ConnectServerHandle message to the Connectors: {}",
+                "Error sending the ConnectServerHandle message to the connector: {}",
                 e
             );
         };
@@ -199,7 +203,7 @@ impl ConnectorHandle {
             .send(ConnectorMessage::SetFlowWeight(flow_id, weight))
         {
             error!(
-                "Error sending the SetFlowWeight message to the Connectors: {}",
+                "Error sending the SetFlowWeight message to the connector: {}",
                 e
             );
         };
@@ -209,11 +213,9 @@ impl ConnectorHandle {
         let packet = ConnectorPacket::SpliceConnection(flow_id, stream);
         match self {
             ConnectorHandle::Sequential(handle) => {
-                let idx = flow_id.hash(handle.packet_senders.len());
-                let sender = &handle.packet_senders[idx];
-                if let Err(e) = sender.try_send(packet) {
+                if let Err(e) = handle.packet_sender.try_send(packet) {
                     warn!(
-                        "SequentialProcMaxHandle: Error sending a splice connection to the Connector: {}.",
+                        "SequentialConnectHandle: Error sending a splice connection to the Connector: {}.",
                         e
                     );
                 }
@@ -223,45 +225,43 @@ impl ConnectorHandle {
 }
 
 #[derive(Clone, Debug)]
-pub struct SequentialProcHandle {
+pub struct SequentialConnectHandle {
     broadcast_sender: broadcast::Sender<ConnectorMessage>,
-    packet_senders: Vec<mpsc::Sender<ConnectorPacket>>,
+
+    // a single MPSC channel for the connector to process packets sequentially
+    packet_sender: mpsc::Sender<ConnectorPacket>,
 }
 
-impl SequentialProcHandle {
+impl SequentialConnectHandle {
     pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
-        let mut packet_senders = Vec::with_capacity(config.num_packet_connectors);
 
-        for _ in 0..config.num_packet_connectors {
-            // for each Connector, creates one MPSC channel
-            let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
-            packet_senders.push(packet_sender);
+        // creates one MPSC channel for the single connector.
+        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
-            let mut proc = Connector::new(
-                PacketReceiver::Sequential(packet_receiver),
-                broadcast_sender.subscribe(),
-                config.clone(),
-            );
+        let mut connector = Connector::new(
+            PacketReceiver::Sequential(packet_receiver),
+            broadcast_sender.subscribe(),
+            config,
+        );
 
-            tokio::spawn(async move {
-                proc.run().await;
-            });
-        }
+        tokio::spawn(async move {
+            connector.run().await;
+        });
 
         Self {
             broadcast_sender,
-            packet_senders,
+            packet_sender,
         }
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        let idx = packet.flow_id.hash(self.packet_senders.len());
-        let sender = &self.packet_senders[idx];
-
-        if let Err(e) = sender.try_send(ConnectorPacket::ProcessPacket(packet)) {
+        if let Err(e) = self
+            .packet_sender
+            .try_send(ConnectorPacket::ProcessPacket(packet))
+        {
             warn!(
-                "SequentialProcHandle: Error sending a packet to the Connector: {}.",
+                "SequentialConnectHandle: Error sending a packet to the Connector: {}.",
                 e
             );
         }
