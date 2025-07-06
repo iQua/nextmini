@@ -97,8 +97,13 @@ impl Conductor {
                         self.processors.clone(),
                         self.reporter.clone(),
                     );
-                    tcp_max_server.start_listening(&format!("{}:{}", "0.0.0.0", tcp_max_server_port)).await;
-                    tcp_server.start_listening(&format!("{}:{}", "0.0.0.0", public_port)).await;
+                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
+                    let tcp_server_addr = format!("{}:{}", "0.0.0.0", public_port);
+
+                    tokio::select! {
+                        _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
+                        _ = tcp_server.start_listening(&tcp_server_addr) => {},
+                    }
                 } else {
                     let mut tcp_server_public = TcpServer::new(
                         self.config.clone(),
@@ -111,13 +116,13 @@ impl Conductor {
                         self.reporter.clone(),
                     );
 
-                    let public_addr = format!("{}:{}", "0.0.0.0", public_port);
-                    let private_addr = format!("{}:{}", "0.0.0.0", private_port);
+                    let tcp_server_public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    let tcp_server_private_addr = format!("{}:{}", "0.0.0.0", private_port);
                     let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
 
                     tokio::select! {
-                        _ = tcp_server_public.start_listening(&public_addr) => {},
-                        _ = tcp_server_private.start_listening(&private_addr) => {},
+                        _ = tcp_server_public.start_listening(&tcp_server_public_addr) => {},
+                        _ = tcp_server_private.start_listening(&tcp_server_private_addr) => {},
                         _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
                     }
                 }
