@@ -14,7 +14,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber;
 
 use nextmini_messages::{
-    ControllerToDataplane, DataplaneToController, OperatingMode, TokenBucketSpec,
+    ControllerToDataplane, DataplaneToController, TokenBucketSpec,
 };
 
 use crate::config::{Config, get_config};
@@ -169,6 +169,9 @@ async fn handle_connection(
                             }
                         }
 
+                        // Finds the node specification for the current node
+                        let node_spec = config.nodes.iter().find(|node| node.node_id == node_id).cloned();
+
                         // sends the startup response
                         let response = build_startup_response(
                             node_id,
@@ -177,7 +180,7 @@ async fn handle_connection(
                             config.user_space_base_addr,
                             config.protocol.clone(),
                             config.scheduler_type.clone(),
-                            config.operating_mode,
+                            node_spec,
                         );
 
                         match write_arc

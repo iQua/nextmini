@@ -1,7 +1,7 @@
 /// Implements utility functions for the controller.
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, RoutingTableEntry,
-    SchedulingDiscipline,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, NodeSpec, OperatingMode, Protocol,
+    RoutingTableEntry, SchedulingDiscipline,
 };
 
 use crate::models::{DbFlow, Route};
@@ -15,8 +15,15 @@ pub fn build_startup_response(
     user_space_base_addr: std::net::Ipv4Addr,
     protocol: Protocol,
     scheduler_type: SchedulingDiscipline,
-    operating_mode: OperatingMode,
+    nodes: Option<NodeSpec>,
 ) -> ControllerToDataplane {
+    // Set default node specification if None
+    let node_spec = nodes.unwrap_or(NodeSpec {
+        node_id,
+        operating_mode: OperatingMode::Normal,
+    });
+
+    // Building the startup message.
     ControllerToDataplane::StartUp {
         node_id,
         net_mask,
@@ -24,7 +31,7 @@ pub fn build_startup_response(
         user_space_base_addr,
         protocol,
         scheduler_type,
-        operating_mode,
+        node_spec,
     }
 }
 

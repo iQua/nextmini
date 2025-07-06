@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::{Flow, OperatingMode, Protocol, SchedulingDiscipline};
+use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
@@ -99,8 +99,7 @@ pub struct Config {
     pub db: DBConfig,
 
     /// The operating mode.
-    #[serde(default = "default_operating_mode")]
-    pub operating_mode: OperatingMode,
+    pub nodes: Vec<NodeSpec>,
 }
 
 // Default values if they are missing from the configuration file
@@ -134,11 +133,6 @@ fn default_protocol() -> Protocol {
 /// The default scheduler type: FIFO
 fn default_scheduler_type() -> SchedulingDiscipline {
     SchedulingDiscipline::Fifo
-}
-
-/// The default operating mode: Normal
-fn default_operating_mode() -> OperatingMode {
-    OperatingMode::Normal
 }
 
 /// The default configuration for the database
@@ -195,13 +189,13 @@ impl Default for Config {
             net_mask: default_net_mask(),
             user_space_base_addr: default_user_space_base_addr(),
             protocol: default_protocol(),
-            operating_mode: default_operating_mode(),
             routes: Vec::new(),
             flows: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),
             scheduler_type: default_scheduler_type(),
             db: default_db_config(),
+            nodes: Vec::new(),
         }
     }
 }

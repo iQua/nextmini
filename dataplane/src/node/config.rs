@@ -384,7 +384,7 @@ impl LocalConfig {
                         user_space_base_addr,
                         protocol,
                         scheduler_type,
-                        operating_mode,
+                        node_spec,
                     } => {
                         self.node_id = node_id;
                         self.protocol = protocol;
@@ -394,7 +394,7 @@ impl LocalConfig {
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
                         self.scheduler_type = scheduler_type;
-                        self.operating_mode = operating_mode;
+                        self.operating_mode = node_spec.operating_mode;
                     }
 
                     // Adding flows message.
