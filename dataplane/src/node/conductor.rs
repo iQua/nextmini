@@ -97,6 +97,7 @@ impl Conductor {
                         self.processors.clone(),
                         self.reporter.clone(),
                     );
+                    
                     let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
                     let tcp_server_addr = format!("{}:{}", "0.0.0.0", public_port);
 
