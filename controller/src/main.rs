@@ -249,7 +249,7 @@ async fn handle_connection(
                                 remote_addr: addr,
                             };
 
-                            // informs the existing nodes about the new node by updating their connections
+                            // informs the new node to connect to the existing node 
                             match write_arc
                                 .lock()
                                 .await
