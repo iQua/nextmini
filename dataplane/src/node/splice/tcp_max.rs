@@ -6,20 +6,20 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
+use crate::node::connector::ConnectorHandle;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
-    processors: ProcessorHandle,
+    connector: ConnectorHandle,
 }
 
 impl TcpMaxServer {
-    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self { config, processors }
+    pub fn new(config: LocalConfig, connector: ConnectorHandle) -> Self {
+        Self { config, connector }
     }
 
     pub async fn start_listening(&mut self, addr: &String) {
@@ -64,8 +64,8 @@ impl TcpMaxServer {
 
             info!("Incoming connection from node {}...", remote_node_id);
 
-            // Tell the processor to splice the upstream
-            self.processors.splice_connection(flow_id, stream);
+            // Tell the connector to splice the upstream
+            self.connector.splice_connection(flow_id, stream);
 
             info!("Connected to node {}.", remote_node_id);
         }
@@ -75,34 +75,32 @@ impl TcpMaxServer {
 #[derive(Debug, Clone)]
 pub struct TcpMaxClient {
     config: LocalConfig,
-    processor: ProcessorHandle,
+    connector: ConnectorHandle,
     reporter: ControllerReporterHandle,
 }
 
 impl TcpMaxClient {
     pub fn new(
         config: LocalConfig,
-        processor: ProcessorHandle,
+        connector: ConnectorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         Self {
             config,
-            processor,
+            connector,
             reporter,
         }
     }
 
-    pub async fn connect_as_dst_node(
-        &self,
-        stream: TcpStream,
-    ) -> SchedulerHandle {
+    pub async fn connect_as_dst_node(&self, stream: TcpStream) -> SchedulerHandle {
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
             NetworkStream::Tcp(stream),
-            self.processor.clone(),
+            self.connector.clone(),
             self.reporter.clone(),
             self.config.node_id,
-        ).await;
+        )
+        .await;
 
         let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
@@ -120,7 +118,7 @@ impl TcpMaxClient {
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
             NetworkStream::Tcp(stream),
-            self.processor.clone(),
+            self.connector.clone(),
             self.reporter.clone(),
             remote_node_id,
         )
