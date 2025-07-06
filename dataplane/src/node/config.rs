@@ -91,6 +91,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
+    // The max mode tcp server port
+    #[default("8081".to_string())]
+    #[arg(skip)]
+    pub tcp_max_server_port: String,
+
     #[default(0)]
     #[arg(long)]
     pub node_id: NodeId,
@@ -382,6 +387,7 @@ impl LocalConfig {
                         net_mask,
                         virtual_base_addr,
                         user_space_base_addr,
+                        tcp_max_server_port,
                         protocol,
                         scheduler_type,
                         node_spec,
@@ -393,6 +399,7 @@ impl LocalConfig {
                         self.user_space_base_addr = user_space_base_addr;
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
+                        self.tcp_max_server_port = tcp_max_server_port;
                         self.scheduler_type = scheduler_type;
                         self.operating_mode = node_spec.operating_mode;
                     }

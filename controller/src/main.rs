@@ -178,6 +178,7 @@ async fn handle_connection(
                             config.net_mask,
                             config.base_addr,
                             config.user_space_base_addr,
+                            config.tcp_max_server_port.clone(),
                             config.protocol.clone(),
                             config.scheduler_type.clone(),
                             node_spec,
