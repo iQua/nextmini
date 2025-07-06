@@ -16,9 +16,9 @@ use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
-use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::splice::tcp_max::TcpMaxClient;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
