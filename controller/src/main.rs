@@ -13,7 +13,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucketSpec};
+use nextmini_messages::{
+    ControllerToDataplane, DataplaneToController, OperatingMode, TokenBucketSpec,
+};
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
@@ -262,6 +264,39 @@ async fn handle_connection(
                                     "Failed to send an AddNode message to node {}: {}.",
                                     node_id, e
                                 ),
+                            }
+
+                            // informs the existing node about the new node
+                            if config.operating_mode == OperatingMode::Max {
+                                let node_ws_guard = node_ws.read().await;
+                                if let Some(writer) = node_ws_guard.get(&(node.id as usize)) {
+                                    let remote_addr = if new_node.private_network_name
+                                        == node.private_network_name
+                                    {
+                                        new_node.private_network_addr.clone()
+                                    } else {
+                                        new_node.public_network_addr.clone()
+                                    };
+                                    let msg = ControllerToDataplane::AddNode {
+                                        remote_node_id: new_node.id as usize,
+                                        remote_addr,
+                                    };
+                                    match writer
+                                        .lock()
+                                        .await
+                                        .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                        .await
+                                    {
+                                        Ok(_) => info!(
+                                            "Sent an AddNode message for node {} to node {}.",
+                                            new_node.id, node.id
+                                        ),
+                                        Err(e) => error!(
+                                            "Failed to send an AddNode message to node {}: {}.",
+                                            node.id, e
+                                        ),
+                                    }
+                                }
                             }
                         }
 
