@@ -7,9 +7,8 @@ use ahash::AHashMap;
 use flume;
 use tokio;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
-use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info, warn};
 
@@ -70,9 +69,9 @@ impl ConnectorHandle {
         }
     }
 
-    pub fn broadcast_sender(&self) -> &broadcast::Sender<ConnectorMessage> {
+    pub fn message_sender(&self) -> &mpsc::Sender<ConnectorMessage> {
         match self {
-            ConnectorHandle::Sequential(handle) => &handle.broadcast_sender,
+            ConnectorHandle::Sequential(handle) => &handle.message_sender,
         }
     }
 
@@ -80,19 +79,16 @@ impl ConnectorHandle {
         &self,
         node_id: NodeId,
         scheduler: SchedulerHandle,
-    ) -> Result<(), SendError<ConnectorMessage>> {
-        let _ = self
-            .broadcast_sender()
-            .send(ConnectorMessage::AddNode(node_id, scheduler))?;
-
-        Ok(())
+    ) -> Result<(), TrySendError<ConnectorMessage>> {
+        self.message_sender()
+            .try_send(ConnectorMessage::AddNode(node_id, scheduler))
     }
 
     // adds a remote node address for the max mode.
     pub fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::AddNodeAddress(node_id, remote_addr))
+            .message_sender()
+            .try_send(ConnectorMessage::AddNodeAddress(node_id, remote_addr))
         {
             error!(
                 "Error sending the AddNodeAddress message to the connector: {}",
@@ -104,8 +100,8 @@ impl ConnectorHandle {
     // connects the tcp max client to the connector.
     pub fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client))
+            .message_sender()
+            .try_send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client))
         {
             error!(
                 "Error sending the ConnectTcpMaxClient message to the connector: {}",
@@ -117,8 +113,8 @@ impl ConnectorHandle {
     // connects the local interface to the connector.
     pub fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::ConnectLocalInterface(local_interface))
+            .message_sender()
+            .try_send(ConnectorMessage::ConnectLocalInterface(local_interface))
         {
             error!(
                 "Error connecting the connector to the local interface: {}.",
@@ -130,8 +126,8 @@ impl ConnectorHandle {
     // connects the client handle to the connector.
     pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::ConnectUserSpaceSender { flow_id, sender })
+            .message_sender()
+            .try_send(ConnectorMessage::ConnectUserSpaceSender { flow_id, sender })
         {
             error!(
                 "Error connecting the client handle to the connector: {}.",
@@ -144,8 +140,8 @@ impl ConnectorHandle {
     // This is needed when a user-space TCP flow finishes.
     pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::DisconnectUserSpaceSender(flow_id))
+            .message_sender()
+            .try_send(ConnectorMessage::DisconnectUserSpaceSender(flow_id))
         {
             error!(
                 "Error sending the DisconnectUserSpaceSender message to the connector: {}",
@@ -157,8 +153,8 @@ impl ConnectorHandle {
     // updates the routing table.
     pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::UpdateRoutingTable(routes))
+            .message_sender()
+            .try_send(ConnectorMessage::UpdateRoutingTable(routes))
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the connector: {}",
@@ -169,8 +165,8 @@ impl ConnectorHandle {
 
     pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::RateLimit(node_id, spec))
+            .message_sender()
+            .try_send(ConnectorMessage::RateLimit(node_id, spec))
         {
             error!(
                 "Error sending the SetRateLimiter message to the connector: {}",
@@ -187,8 +183,8 @@ impl ConnectorHandle {
 
     pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::ConnectServerHandle(server))
+            .message_sender()
+            .try_send(ConnectorMessage::ConnectServerHandle(server))
         {
             error!(
                 "Error sending the ConnectServerHandle message to the connector: {}",
@@ -199,8 +195,8 @@ impl ConnectorHandle {
 
     pub fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
         if let Err(e) = self
-            .broadcast_sender()
-            .send(ConnectorMessage::SetFlowWeight(flow_id, weight))
+            .message_sender()
+            .try_send(ConnectorMessage::SetFlowWeight(flow_id, weight))
         {
             error!(
                 "Error sending the SetFlowWeight message to the connector: {}",
@@ -226,7 +222,7 @@ impl ConnectorHandle {
 
 #[derive(Clone, Debug)]
 pub struct SequentialConnectHandle {
-    broadcast_sender: broadcast::Sender<ConnectorMessage>,
+    message_sender: mpsc::Sender<ConnectorMessage>,
 
     // a single MPSC channel for the connector to process packets sequentially
     packet_sender: mpsc::Sender<ConnectorPacket>,
@@ -234,14 +230,14 @@ pub struct SequentialConnectHandle {
 
 impl SequentialConnectHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let (message_sender, message_receiver) = mpsc::channel(config.channel_capacity);
 
         // creates one MPSC channel for the single connector.
         let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
         let mut connector = Connector::new(
             PacketReceiver::Sequential(packet_receiver),
-            broadcast_sender.subscribe(),
+            message_receiver,
             config,
         );
 
@@ -250,7 +246,7 @@ impl SequentialConnectHandle {
         });
 
         Self {
-            broadcast_sender,
+            message_sender,
             packet_sender,
         }
     }
@@ -314,8 +310,8 @@ struct Connector {
     // receives packets from the network interface, local interface, or user-space TCP flows
     packet_receiver: PacketReceiver,
 
-    // receives messages from the broadcast channel (from the controller interface or the conductor)
-    broadcast_receiver: broadcast::Receiver<ConnectorMessage>,
+    // receives messages from the mpsc channel (from the controller interface or the conductor)
+    message_receiver: mpsc::Receiver<ConnectorMessage>,
 
     // the local TUN interface
     local_interface: Option<Arc<LocalInterfaceHandle>>,
@@ -342,12 +338,12 @@ struct Connector {
 impl Connector {
     pub fn new(
         packet_receiver: PacketReceiver,
-        broadcast_receiver: broadcast::Receiver<ConnectorMessage>,
+        message_receiver: mpsc::Receiver<ConnectorMessage>,
         config: LocalConfig,
     ) -> Self {
         Self {
             packet_receiver,
-            broadcast_receiver,
+            message_receiver,
             local_interface: None,
             user_space_senders: AHashMap::new(),
             server: None,
@@ -362,7 +358,7 @@ impl Connector {
     async fn run(&mut self) {
         loop {
             tokio::select! {
-                // waits for the first packet or a broadcast message
+                // waits for the first packet or a message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
                         ConnectorPacket::ProcessPacket(first_packet) => {
@@ -380,8 +376,8 @@ impl Connector {
                         }
                     }
                 }
-                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
-                    self.handle_message(broadcast_msg).await;
+                Some(message) = self.message_receiver.recv() => {
+                    self.handle_message(message).await;
                 }
             }
         }
@@ -434,6 +430,7 @@ impl Connector {
 
         // handles the case where we are at the dst node.
         if next_hop_id == self.routing_table.local_id {
+            // if we are on the dst node and the tcp connection is not spliced yet.
             let scheduler = self
                 .tcp_max_client
                 .as_ref()
@@ -441,7 +438,7 @@ impl Connector {
                 .connect_as_dst_node(inbound_stream)
                 .await;
 
-            // inserts reversed flow id.
+            // stores the scheduler with a reversed flow ID to handle the return traffic.
             self.schedulers
                 .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
 
@@ -451,6 +448,8 @@ impl Connector {
         // handles the case where we are at a relay node.
         let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
+        // as a relay, use the TcpMaxClient to establish a new outbound connection to the next hop,
+        // passing along the original flow ID.
         let mut outbound_stream = self
             .tcp_max_client
             .as_ref()
@@ -551,12 +550,13 @@ impl Connector {
         } else {
             match self.config.operating_mode {
                 OperatingMode::Max => {
+                    // if a scheduler for this flow already exists, the connection is established.
                     let scheduler_key = SchedulerKey::Flow(packet.flow_id);
 
                     if let Some(scheduler) = self.schedulers.get(&scheduler_key) {
                         scheduler.send(packet);
                     } else {
-                        // We are on the src node and the tcp connection is not spliced yet
+                        // for the first packet of a new flow on the source node.
 
                         // gets the remote node address
                         let remote_addr = self.node_addresses[&next_hop_id].clone();
@@ -571,7 +571,7 @@ impl Connector {
                         // sends the packet
                         scheduler.send(packet);
 
-                        // inserts the scheduler into the hashmap
+                        // stores the new scheduler then subsequent packets can use the same connection.
                         self.schedulers.insert(scheduler_key, scheduler);
                     }
                 }
