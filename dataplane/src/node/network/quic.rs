@@ -69,7 +69,7 @@ impl QuicServer {
             let config = self.config.clone();
             let processors = self.processors.clone();
 
-            info!("Connection accepted from {:?}.", connection.remote_addr());
+            info!("QUIC connection accepted from {:?}.", connection.remote_addr());
 
             if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
                 let mut node_id_buf: [u8; 8] = [0; 8];
@@ -82,7 +82,7 @@ impl QuicServer {
 
                 let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
 
-                info!("Incoming connection from node {}...", remote_node_id);
+                info!("Incoming QUIC connection from node {}...", remote_node_id);
 
                 // handles an inbound connection from a new client
                 let network_interface = NetworkInterfaceHandle::new(

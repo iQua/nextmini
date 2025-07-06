@@ -49,7 +49,7 @@ impl TcpServer {
         loop {
             let mut stream = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
-                    info!("Connection accepted from {:?}.", socket_addr);
+                    info!("TCP connection accepted from {:?}.", socket_addr);
                     stream
                 }
                 Err(e) => {
@@ -73,7 +73,7 @@ impl TcpServer {
                 }
             };
 
-            info!("Incoming connection from node {}...", remote_node_id);
+            info!("Incoming TCP connection from node {}...", remote_node_id);
 
             // handles an inbound connection from a new client
             let network_interface = NetworkInterfaceHandle::new(
@@ -99,7 +99,7 @@ impl TcpServer {
                 continue;
             }
 
-            info!("Connected to node {}.", remote_node_id);
+            info!("Connected to node {} with TCP.", remote_node_id);
         }
     }
 }
