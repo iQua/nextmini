@@ -63,11 +63,7 @@ impl ConnectorHandle {
         // creates one MPSC channel for the single connector.
         let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
 
-        let mut connector = Connector::new(
-            packet_receiver,
-            message_receiver,
-            config,
-        );
+        let mut connector = Connector::new(packet_receiver, message_receiver, config);
 
         tokio::spawn(async move {
             connector.run().await;
@@ -357,8 +353,7 @@ impl Connector {
                 .await;
 
             // stores the scheduler with a reversed flow ID to handle the return traffic.
-            self.schedulers
-                .insert(flow_id.reverse(), scheduler);
+            self.schedulers.insert(flow_id.reverse(), scheduler);
 
             return;
         }
@@ -466,31 +461,27 @@ impl Connector {
                 }
             }
         } else {
-            match self.config.operating_mode {
-                OperatingMode::Max => {
-                    // if a scheduler for this flow already exists, the connection is established.
-                    if let Some(scheduler) = self.schedulers.get(&packet.flow_id) {
-                        scheduler.send(packet);
-                    } else {
-                        // for the first packet of a new flow on the source node.
+            // if a scheduler for this flow already exists, the connection is established.
+            if let Some(scheduler) = self.schedulers.get(&packet.flow_id) {
+                scheduler.send(packet);
+            } else {
+                // for the first packet of a new flow on the source node.
 
-                        // gets the remote node address
-                        let remote_addr = self.node_addresses[&next_hop_id].clone();
+                // gets the remote node address
+                let remote_addr = self.node_addresses[&next_hop_id].clone();
 
-                        let scheduler = self
-                            .tcp_max_client
-                            .as_ref()
-                            .unwrap()
-                            .connect_as_src_node(packet.flow_id, &remote_addr, next_hop_id)
-                            .await;
+                let scheduler = self
+                    .tcp_max_client
+                    .as_ref()
+                    .unwrap()
+                    .connect_as_src_node(packet.flow_id, &remote_addr, next_hop_id)
+                    .await;
 
-                        // sends the packet
-                        scheduler.send(packet);
+                // sends the packet
+                scheduler.send(packet);
 
-                        // stores the new scheduler then subsequent packets can use the same connection.
-                        self.schedulers.insert(packet.flow_id, scheduler);
-                    }
-                }
+                // stores the new scheduler then subsequent packets can use the same connection.
+                self.schedulers.insert(packet.flow_id, scheduler);
             }
         }
     }
