@@ -249,7 +249,7 @@ async fn handle_connection(
                                 remote_addr: addr,
                             };
 
-                            // informs the new node to connect to the existing node 
+                            // informs the new node to connect to the existing node
                             match write_arc
                                 .lock()
                                 .await
@@ -267,35 +267,32 @@ async fn handle_connection(
                             }
 
                             // informs the existing node about the new node
-                            if config.operating_mode == OperatingMode::Max {
-                                let node_ws_guard = node_ws.read().await;
-                                if let Some(writer) = node_ws_guard.get(&(node.id as usize)) {
-                                    let remote_addr = if new_node.private_network_name
-                                        == node.private_network_name
-                                    {
+                            let node_ws_guard = node_ws.read().await;
+                            if let Some(writer) = node_ws_guard.get(&(node.id as usize)) {
+                                let remote_addr =
+                                    if new_node.private_network_name == node.private_network_name {
                                         new_node.private_network_addr.clone()
                                     } else {
                                         new_node.public_network_addr.clone()
                                     };
-                                    let msg = ControllerToDataplane::AddNode {
-                                        remote_node_id: new_node.id as usize,
-                                        remote_addr,
-                                    };
-                                    match writer
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                                        .await
-                                    {
-                                        Ok(_) => info!(
-                                            "Sent an AddNode message for node {} to node {}.",
-                                            new_node.id, node.id
-                                        ),
-                                        Err(e) => error!(
-                                            "Failed to send an AddNode message to node {}: {}.",
-                                            node.id, e
-                                        ),
-                                    }
+                                let msg = ControllerToDataplane::AddNode {
+                                    remote_node_id: new_node.id as usize,
+                                    remote_addr,
+                                };
+                                match writer
+                                    .lock()
+                                    .await
+                                    .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                    .await
+                                {
+                                    Ok(_) => info!(
+                                        "Sent an AddNode message for node {} to node {}.",
+                                        new_node.id, node.id
+                                    ),
+                                    Err(e) => error!(
+                                        "Failed to send an AddNode message to node {}: {}.",
+                                        node.id, e
+                                    ),
                                 }
                             }
                         }
