@@ -19,24 +19,24 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::packet_processor::PacketProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
 pub struct QuicServer {
     config: LocalConfig,
-    processors: ProcessorHandle,
+    packet_processor: PacketProcessorHandle,
     reporter: ControllerReporterHandle,
 }
 
 impl QuicServer {
     pub fn new(
         config: LocalConfig,
-        processors: ProcessorHandle,
+        packet_processor: PacketProcessorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         Self {
             config,
-            processors,
+            packet_processor,
             reporter,
         }
     }
@@ -186,18 +186,21 @@ impl QuicClient {
 /// An actor that reads packets from a QUIC stream.
 pub struct QuicReader {
     stream: ReceiveStream,
-    processors: ProcessorHandle,
+    packet_processor: PacketProcessorHandle,
 }
 
 impl QuicReader {
-    pub fn new(stream: ReceiveStream, processors: ProcessorHandle) -> Self {
-        Self { processors, stream }
+    pub fn new(stream: ReceiveStream, packet_processor: PacketProcessorHandle) -> Self {
+        Self {
+            packet_processor,
+            stream,
+        }
     }
 
     pub async fn run(&mut self) {
         loop {
             if let Ok(packet) = self.read_packet().await {
-                self.processors.process_packet(packet);
+                self.packet_processor.process_packet(packet);
             }
         }
     }

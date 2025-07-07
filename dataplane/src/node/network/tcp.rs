@@ -13,19 +13,19 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
-use crate::node::processor::ProcessorHandle;
+use crate::node::packet_processor::PacketProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
 pub struct TcpServer {
     config: LocalConfig,
-    processors: ProcessorHandle,
+    processors: PacketProcessorHandle,
     reporter: ControllerReporterHandle,
 }
 
 impl TcpServer {
     pub fn new(
         config: LocalConfig,
-        processors: ProcessorHandle,
+        processors: PacketProcessorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         Self {
@@ -151,12 +151,15 @@ impl TcpClient {
 
 pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
-    processors: ProcessorHandle,
+    packet_processor: PacketProcessorHandle,
 }
 
 impl TcpReader {
-    pub fn new(stream: ReadHalf<TcpStream>, processors: ProcessorHandle) -> Self {
-        Self { stream, processors }
+    pub fn new(stream: ReadHalf<TcpStream>, packet_processor: PacketProcessorHandle) -> Self {
+        Self {
+            stream,
+            packet_processor,
+        }
     }
 
     pub async fn run(mut self) {
@@ -164,7 +167,7 @@ impl TcpReader {
             // reads a packet from the TCP connection
             if let Ok(packet) = self.read_packet().await {
                 // forwards the packet to the processor
-                self.processors.process_packet(packet);
+                self.packet_processor.process_packet(packet);
             }
         }
     }

@@ -142,7 +142,7 @@ impl TcpMaxClient {
                         .expect("Failed to send local node id to the node");
 
                     info!(
-                        "Connected to node {} with TCP.",
+                        "Connected to node {} with TCP max.",
                         self.config.ip_to_node_id(flow_id.src_ip())
                     );
 
