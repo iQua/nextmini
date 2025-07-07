@@ -58,6 +58,88 @@ pub enum ProcessorMessage {
     SetFlowWeight(FlowId, usize),
 }
 
+pub struct Connector {
+    packet_receiver: mpsc::Receiver<ProcessorPacket>,
+    routing_table: RoutingTable,
+    node_addresses: AHashMap<NodeId, String>,
+    tcp_max_client: Option<TcpMaxClient>,
+    schedulers: AHashMap<SchedulerKey, SchedulerHandle>,
+    config: LocalConfig,
+}
+
+impl Connector {
+    pub fn new(
+        packet_receiver: mpsc::Receiver<ProcessorPacket>,
+        config: LocalConfig,
+    ) -> Self {
+        Self {
+            packet_receiver,
+            routing_table: RoutingTable::new(config.node_id),
+            node_addresses: AHashMap::new(),
+            tcp_max_client: None,
+            schedulers: AHashMap::new(),
+            config,
+        }
+    }
+
+    pub async fn run(&mut self) {
+        loop {
+            if let Some(packet) = self.packet_receiver.recv().await {
+                if let ProcessorPacket::InboundMaxRequest(flow_id, stream) = packet {
+                    self.handle_inbound_request(flow_id, stream).await;
+                }
+            }
+        }
+    }
+
+    async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
+        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
+        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+
+        // handles the case where we are at the dst node.
+        if next_hop_id == self.routing_table.local_id {
+            let scheduler = self
+                .tcp_max_client
+                .as_ref()
+                .unwrap()
+                .connect_as_dst_node(inbound_stream, next_hop_id)
+                .await;
+
+            // inserts reversed flow id.
+            self.schedulers
+                .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
+
+            return;
+        }
+
+        // handles the case where we are at a relay node.
+        let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
+
+        let mut outbound_stream = self
+            .tcp_max_client
+            .as_ref()
+            .unwrap()
+            .connect_as_relay(flow_id, &next_hop_addr)
+            .await;
+
+        // TODO: We might don't need to spawn the task;
+        // spawns a new task to handle the connection splicing.
+        tokio::spawn(async move {
+            match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+                Ok((upstream_bytes, downstream_bytes)) => {
+                    info!(
+                        "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
+                        flow_id, next_hop_addr, upstream_bytes, downstream_bytes
+                    );
+                }
+                Err(e) => {
+                    error!("Error during splicing for flow {}: {}.", flow_id, e);
+                }
+            }
+        });
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ProcessorHandle {
     Sequential(SequentialProcHandle),
@@ -210,23 +292,20 @@ impl ProcessorHandle {
         };
     }
 
-    // TODO: changed thr name to inbound max_request
-    pub fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
+    pub fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
         let inbound_max_request = ProcessorPacket::InboundMaxRequest(flow_id, stream);
         // TODO: no need to match
         match self {
             ProcessorHandle::Sequential(handle) => {
-                let idx = flow_id.hash(handle.packet_senders.len());
-                let sender = &handle.packet_senders[idx];
-                if let Err(e) = sender.try_send(incoming_request) {
+                if let Err(e) = handle.connector_sender.try_send(inbound_max_request) {
                     warn!(
-                        "SequentialProcMaxHandle: Error sending a splice connection to the processor: {}.",
+                        "SequentialProcMaxHandle: Error sending a splice connection to the connector: {}.",
                         e
                     );
                 }
             }
             ProcessorHandle::Concurrent(handle) => {
-                if let Err(e) = handle.packet_sender.try_send(packet) {
+                if let Err(e) = handle.connector_sender.try_send(inbound_max_request) {
                     warn!(
                         "ConcurrentProcMaxHandle: Error sending a splice connection to the processor: {}.",
                         e
@@ -241,16 +320,13 @@ impl ProcessorHandle {
 pub struct SequentialProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
+    connector_sender: mpsc::Sender<ProcessorPacket>,
 }
 
 impl SequentialProcHandle {
     pub fn new(config: LocalConfig) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
-
-        // TODO: spawns a new single task for connector
-
-        let mut connector = Connector::new();
 
         for _ in 0..config.num_packet_processors {
             // for each Processor, creates one MPSC channel
@@ -268,7 +344,10 @@ impl SequentialProcHandle {
             });
         }
 
-        // TODO:
+        let (connector_sender, connector_receiver) = mpsc::channel(config.channel_capacity);
+        let mut connector =
+            Connector::new(connector_receiver, config);
+
         tokio::spawn(async move {
             connector.run().await;
         });
@@ -276,6 +355,7 @@ impl SequentialProcHandle {
         Self {
             broadcast_sender,
             packet_senders,
+            connector_sender,
         }
     }
 
@@ -296,6 +376,7 @@ impl SequentialProcHandle {
 pub struct ConcurrentProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
+    connector_sender: mpsc::Sender<ProcessorPacket>,
 }
 
 impl ConcurrentProcHandle {
@@ -315,9 +396,17 @@ impl ConcurrentProcHandle {
             });
         }
 
+        let (connector_sender, connector_receiver) = mpsc::channel(config.channel_capacity);
+        let mut connector = Connector::new(connector_receiver, config.clone());
+
+        tokio::spawn(async move {
+            connector.run().await;
+        });
+
         Self {
             broadcast_sender,
             packet_sender,
+            connector_sender,
         }
     }
 
@@ -497,53 +586,6 @@ impl Processor {
                 }
             }
         }
-    }
-
-    async fn handle_inbound_max_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
-        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
-        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
-
-        // handles the case where we are at the dst node.
-        if next_hop_id == self.routing_table.local_id {
-            let scheduler = self
-                .tcp_max_client
-                .as_ref()
-                .unwrap()
-                .connect_as_dst_node(inbound_stream, next_hop_id)
-                .await;
-
-            // inserts reversed flow id.
-            self.schedulers
-                .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
-
-            return;
-        }
-
-        // handles the case where we are at a relay node.
-        let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
-
-        let mut outbound_stream = self
-            .tcp_max_client
-            .as_ref()
-            .unwrap()
-            .connect_as_relay(flow_id, &next_hop_addr)
-            .await;
-
-        // TODO: We might don't need to spawn the task;
-        // spawns a new task to handle the connection splicing.
-        tokio::spawn(async move {
-            match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
-                Ok((upstream_bytes, downstream_bytes)) => {
-                    info!(
-                        "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
-                        flow_id, next_hop_addr, upstream_bytes, downstream_bytes
-                    );
-                }
-                Err(e) => {
-                    error!("Error during splicing for flow {}: {}.", flow_id, e);
-                }
-            }
-        });
     }
 
     /// Processes inbound packets for outbound delivery

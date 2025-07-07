@@ -65,7 +65,7 @@ impl TcpMaxServer {
             info!("Incoming connection from node {}...", remote_node_id);
 
             // Tell the processor to splice the upstream
-            self.processors.splice_connection(flow_id, stream);
+            self.processors.inbound_max_request(flow_id, stream);
 
             info!("Connected to node {}.", remote_node_id);
         }
