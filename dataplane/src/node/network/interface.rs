@@ -12,7 +12,7 @@ use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::packet::Packet;
-use crate::node::packet_processor::PacketProcessorHandle;
+use crate::node::processor::ProcessorHandle;
 
 pub enum NetworkStream {
     Tcp(TcpStream),
@@ -48,7 +48,7 @@ impl NetworkInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
         stream: NetworkStream,
-        packet_processor: PacketProcessorHandle,
+        processors: ProcessorHandle,
         reporter: ControllerReporterHandle,
         remote_node_id: NodeId,
     ) -> Self {
@@ -56,7 +56,7 @@ impl NetworkInterfaceHandle {
         // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
         // for the sake of improved performance and simplicity.
         let local_id = config.node_id;
-        let network_interface = NetworkInterface::new(config, packet_processor);
+        let network_interface = NetworkInterface::new(config, processors);
 
         let writer = network_interface.init(stream);
 
@@ -73,12 +73,12 @@ impl NetworkInterfaceHandle {
         config: LocalConfig,
         remote_node_id: NodeId,
         remote_addr: String,
-        packet_processor: PacketProcessorHandle,
+        processors: ProcessorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         let local_id = config.node_id;
 
-        let mut network_interface = NetworkInterface::new(config, packet_processor);
+        let mut network_interface = NetworkInterface::new(config, processors);
 
         // there is no need to call tokio::spawn here, as the reader task will be
         // spawned in init() itself
@@ -120,15 +120,12 @@ impl NetworkInterfaceHandle {
 /// The network interface actor, used for sending and receiving packets over the network.
 pub struct NetworkInterface {
     config: LocalConfig,
-    packet_processor: PacketProcessorHandle,
+    processors: ProcessorHandle,
 }
 
 impl NetworkInterface {
-    pub fn new(config: LocalConfig, packet_processor: PacketProcessorHandle) -> Self {
-        Self {
-            config,
-            packet_processor,
-        }
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        Self { config, processors }
     }
 
     pub async fn init_as_client(
@@ -168,7 +165,7 @@ impl NetworkInterface {
             NetworkStream::Tcp(stream) => {
                 let (reader, writer) = tokio::io::split(stream);
 
-                let tcp_reader = TcpReader::new(reader, self.packet_processor.clone());
+                let tcp_reader = TcpReader::new(reader, self.processors.clone());
                 let tcp_writer = TcpWriter::new(writer);
 
                 tokio::spawn(async move {
@@ -180,7 +177,7 @@ impl NetworkInterface {
             NetworkStream::Quic(stream) => {
                 let (receive_stream, send_stream) = stream.split();
 
-                let mut quic_reader = QuicReader::new(receive_stream, self.packet_processor.clone());
+                let mut quic_reader = QuicReader::new(receive_stream, self.processors.clone());
                 let quic_writer = QuicWriter::new(send_stream);
 
                 tokio::spawn(async move {

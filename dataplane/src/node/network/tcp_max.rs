@@ -8,21 +8,20 @@ use tracing::{error, info};
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::splice::connector::ConnectorHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
-    connector: ConnectorHandle,
+    processors: ProcessorHandle,
 }
 
 impl TcpMaxServer {
-    pub fn new(config: LocalConfig, connector: ConnectorHandle) -> Self {
-        Self { config, connector }
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
+        Self { config, processors }
     }
 
-    // starts TCP max server that listens for incoming connections.
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -37,11 +36,11 @@ impl TcpMaxServer {
         loop {
             let mut stream = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
-                    info!("Tcp max connection accepted from {:?}.", socket_addr);
+                    info!("Connection accepted from {:?}.", socket_addr);
                     stream
                 }
                 Err(e) => {
-                    error!("Failed to accept TCP max connection: {}", e);
+                    error!("Failed to accept TCP connection: {}", e);
                     continue;
                 }
             };
@@ -63,15 +62,12 @@ impl TcpMaxServer {
 
             let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
 
-            info!(
-                "Incoming TCP max connection from node {}...",
-                remote_node_id
-            );
+            info!("Incoming connection from node {}...", remote_node_id);
 
-            // Tell the connector to splice the upstream
-            self.connector.splice_connection(flow_id, stream);
+            // Tell the processor to splice the upstream
+            self.processors.splice_connection(flow_id, stream);
 
-            info!("Connected to node {} with TCP max.", remote_node_id);
+            info!("Connected to node {}.", remote_node_id);
         }
     }
 }
@@ -79,32 +75,34 @@ impl TcpMaxServer {
 #[derive(Debug, Clone)]
 pub struct TcpMaxClient {
     config: LocalConfig,
-    connector: ConnectorHandle,
+    processor: ProcessorHandle,
     reporter: ControllerReporterHandle,
 }
 
 impl TcpMaxClient {
     pub fn new(
         config: LocalConfig,
-        connector: ConnectorHandle,
+        processor: ProcessorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         Self {
             config,
-            connector,
+            processor,
             reporter,
         }
     }
 
-    pub async fn connect_as_dst_node(&self, stream: TcpStream) -> SchedulerHandle {
+    pub async fn connect_as_dst_node(
+        &self,
+        stream: TcpStream,
+    ) -> SchedulerHandle {
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
             NetworkStream::Tcp(stream),
-            self.connector.clone(),
+            self.processor.clone(),
             self.reporter.clone(),
             self.config.node_id,
-        )
-        .await;
+        ).await;
 
         let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
@@ -122,7 +120,7 @@ impl TcpMaxClient {
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
             NetworkStream::Tcp(stream),
-            self.connector.clone(),
+            self.processor.clone(),
             self.reporter.clone(),
             remote_node_id,
         )
@@ -146,7 +144,7 @@ impl TcpMaxClient {
                         .expect("Failed to send local node id to the node");
 
                     info!(
-                        "Connected to node {} with TCP max.",
+                        "Connected to node {} with TCP.",
                         self.config.ip_to_node_id(flow_id.src_ip())
                     );
 

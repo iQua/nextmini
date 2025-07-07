@@ -19,7 +19,6 @@ use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::{SOCKET_BUFFER_SIZE, UserSpaceSender};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::splice::connector::ConnectorHandle;
 use crate::node::{FlowId, FlowIdExt, NodeIdExt};
 
 #[derive(Debug, Clone)]
@@ -27,7 +26,6 @@ pub struct UserSpaceServerHandle {
     config: LocalConfig,
 
     processors: ProcessorHandle,
-    connector: ConnectorHandle,
 
     // stores flow specifications keyed by source IP address to retrieve flow configuration
     flow_specs: Arc<Mutex<AHashMap<IpAddress, FlowSpec>>>,
@@ -40,15 +38,10 @@ pub struct UserSpaceServerHandle {
 }
 
 impl UserSpaceServerHandle {
-    pub fn new(
-        config: LocalConfig,
-        processors: ProcessorHandle,
-        connector: ConnectorHandle,
-    ) -> Self {
+    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self {
             config,
             processors,
-            connector,
             flow_specs: Arc::new(Mutex::new(AHashMap::new())),
             packet_senders: Arc::new(Mutex::new(AHashMap::new())),
         }
@@ -86,7 +79,6 @@ impl UserSpaceServerHandle {
 
         let config = self.config.clone();
         let processors = self.processors.clone();
-        let connector = self.connector.clone();
 
         // consults the FlowSpec hashmap using the source IP of the incoming packet
         let src_ip = flow_id.src_ip();
@@ -96,14 +88,7 @@ impl UserSpaceServerHandle {
             .get(&IpAddress::from(src_ip))
             .map_or(None, |spec| spec.flow_rate);
 
-        let server = UserSpaceServer::new(
-            config,
-            flow_id,
-            flow_rate,
-            processors,
-            connector,
-            packet_receiver,
-        );
+        let server = UserSpaceServer::new(config, flow_id, flow_rate, processors, packet_receiver);
 
         // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
@@ -119,7 +104,6 @@ struct UserSpaceServer {
     flow_id: FlowId,
     flow_rate: Option<usize>,
     processors: ProcessorHandle,
-    connector: ConnectorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
 }
 
@@ -129,7 +113,6 @@ impl UserSpaceServer {
         flow_id: FlowId,
         flow_rate: Option<usize>,
         processors: ProcessorHandle,
-        connector: ConnectorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
@@ -139,7 +122,6 @@ impl UserSpaceServer {
             flow_id,
             flow_rate,
             processors,
-            connector,
             packet_receiver: Some(packet_receiver),
         }
     }
@@ -150,8 +132,7 @@ impl UserSpaceServer {
         let mut device = VirtualDevice {
             config: self.config.clone(),
             receiver: packet_receiver,
-            processors: self.processors.clone(),
-            connector: self.connector.clone(),
+            sender: self.processors.clone(),
         };
 
         // sets up Layer 3 using the provided IP address, without needing a hardware address

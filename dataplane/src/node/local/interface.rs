@@ -9,7 +9,6 @@ use crate::node::FlowIdExt;
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::splice::connector::ConnectorHandle;
 
 #[cfg(target_os = "linux")]
 use crate::node::local::reader_tso::LocalReader;
@@ -39,11 +38,7 @@ pub struct LocalInterfaceHandle {
 }
 
 impl LocalInterfaceHandle {
-    pub fn new(
-        processor: ProcessorHandle,
-        connector: ConnectorHandle,
-        config: LocalConfig,
-    ) -> Self {
+    pub fn new(config: LocalConfig, processor: ProcessorHandle) -> Self {
         // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
         // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
         let tun_devices = Self::create_tun_devices(config.clone());
@@ -58,13 +53,8 @@ impl LocalInterfaceHandle {
             let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
             write_senders.push(write_sender);
 
-            let mut reader = LocalReader::new(
-                dev.clone(),
-                shutdown_sender.subscribe(),
-                processor.clone(),
-                connector.clone(),
-                config.clone(),
-            );
+            let mut reader =
+                LocalReader::new(dev.clone(), shutdown_sender.subscribe(), processor.clone());
 
             tokio::spawn(async move {
                 reader.run().await;

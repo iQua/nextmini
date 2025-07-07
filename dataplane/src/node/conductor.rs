@@ -12,21 +12,17 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
+use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::splice::connector::ConnectorHandle;
-use crate::node::splice::tcp_max::TcpMaxServer;
 
 pub struct Conductor {
     config: LocalConfig,
 
-    /// the processor for normal mode
-    processor: ProcessorHandle,
-
-    /// the connector for max mode
-    connector: ConnectorHandle,
-
     /// the local interface readers and writers
     local_interface: LocalInterfaceHandle,
+
+    /// the processors
+    processors: ProcessorHandle,
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
@@ -43,21 +39,16 @@ impl Conductor {
         let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
 
         config = controller_interface.config.clone();
-
-        let processor = ProcessorHandle::new(config.clone());
-        let connector = ConnectorHandle::new(config.clone());
+        let processors = controller_interface.processors.clone();
 
         let local_interface: LocalInterfaceHandle =
-            LocalInterfaceHandle::new(processor.clone(), connector.clone(), config.clone());
-
-        processor.connect_local_interface(local_interface.clone());
-        connector.connect_local_interface(local_interface.clone());
+            LocalInterfaceHandle::new(config.clone(), processors.clone());
+        processors.connect_local_interface(local_interface.clone());
 
         Conductor {
             config,
             local_interface,
-            processor,
-            connector,
+            processors,
             reporter,
             main_shutdown_recv: Some(main_shutdown_recv),
         }
@@ -137,7 +128,7 @@ impl Conductor {
                 if public_port == private_port {
                     let mut quic_server = QuicServer::new(
                         self.config.clone(),
-                        self.processor.clone(),
+                        self.processors.clone(),
                         self.reporter.clone(),
                     );
                     quic_server
@@ -146,12 +137,12 @@ impl Conductor {
                 } else {
                     let mut quic_server_public = QuicServer::new(
                         self.config.clone(),
-                        self.processor.clone(),
+                        self.processors.clone(),
                         self.reporter.clone(),
                     );
                     let mut quic_server_private = QuicServer::new(
                         self.config.clone(),
-                        self.processor.clone(),
+                        self.processors.clone(),
                         self.reporter.clone(),
                     );
 

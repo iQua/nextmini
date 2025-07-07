@@ -20,13 +20,11 @@ use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::splice::connector::ConnectorHandle;
 
 #[derive(Debug, Clone)]
 pub struct UserSpaceClientHandle {
     config: LocalConfig,
     processors: ProcessorHandle,
-    connector: ConnectorHandle,
 
     // handles communication with the controller, including flow completion notifications
     reporter: ControllerReporterHandle,
@@ -37,7 +35,6 @@ impl UserSpaceClientHandle {
     pub fn new(
         config: LocalConfig,
         processors: ProcessorHandle,
-        connector: ConnectorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         let next_client_port = config.user_space_client_port;
@@ -45,7 +42,6 @@ impl UserSpaceClientHandle {
         Self {
             config,
             processors,
-            connector,
             reporter,
             next_client_port,
         }
@@ -55,7 +51,6 @@ impl UserSpaceClientHandle {
         for flow in flows {
             let config = self.config.clone();
             let processors = self.processors.clone();
-            let connector = self.connector.clone();
             let reporter = self.reporter.clone();
             self.next_client_port += 1;
             let client_port = self.next_client_port;
@@ -97,7 +92,6 @@ impl UserSpaceClientHandle {
                 config,
                 flow,
                 processors,
-                connector,
                 reporter,
                 client_port,
                 packet_receiver,
@@ -115,7 +109,6 @@ struct UserSpaceClient {
     config: LocalConfig,
     flow: Flow,
     processors: ProcessorHandle,
-    connector: ConnectorHandle,
     reporter: ControllerReporterHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
@@ -127,7 +120,6 @@ impl UserSpaceClient {
         config: LocalConfig,
         flow: Flow,
         processors: ProcessorHandle,
-        connector: ConnectorHandle,
         reporter: ControllerReporterHandle,
         client_port: u16,
         packet_receiver: mpsc::Receiver<Packet>,
@@ -143,7 +135,6 @@ impl UserSpaceClient {
             config,
             flow,
             processors,
-            connector,
             reporter,
             packet_receiver: Some(packet_receiver),
             state,
@@ -155,12 +146,11 @@ impl UserSpaceClient {
     fn run(mut self) {
         let packet_receiver = self.packet_receiver.take().unwrap();
 
-        // creates a virtual device using both processor and connector handles
+        // creates a virtual device using the passed processor handle
         let mut device = VirtualDevice {
             config: self.config.clone(),
             receiver: packet_receiver,
-            processors: self.processors.clone(),
-            connector: self.connector.clone(),
+            sender: self.processors.clone(),
         };
 
         // sets up Layer 3 using the provided IP address, without needing a hardware address

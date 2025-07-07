@@ -5,11 +5,9 @@ pub mod flow;
 pub mod local;
 pub mod network;
 pub mod packet;
-pub mod packet_processor;
 pub mod processor;
 pub mod route;
 pub mod scheduler;
-pub mod splice;
 
 use jumphash::JumpHasher;
 use std::net::Ipv4Addr;
