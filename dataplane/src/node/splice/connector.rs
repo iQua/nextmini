@@ -227,59 +227,6 @@ impl ConnectorHandle {
     }
 }
 
-impl PacketProcessor for ConnectorHandle {
-    fn process_packet(&self, packet: Packet) {
-        ConnectorHandle::process_packet(self, packet)
-    }
-
-    fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        ConnectorHandle::update_routing_table(self, routes)
-    }
-
-    fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
-        warn!(
-            "ConnectorHandle::add_node: not supported in max mode. node_id={}, scheduler={:?}",
-            node_id, scheduler
-        );
-    }
-
-    fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
-        ConnectorHandle::add_node_address(self, node_id, remote_addr)
-    }
-
-    fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
-        ConnectorHandle::connect_tcp_max_client(self, tcp_max_client)
-    }
-
-    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
-        ConnectorHandle::connect_local_interface(self, local_interface)
-    }
-
-    fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
-        ConnectorHandle::connect_user_space_sender(self, flow_id, sender)
-    }
-
-    fn disconnect_user_space_sender(&self, flow_id: FlowId) {
-        ConnectorHandle::disconnect_user_space_sender(self, flow_id)
-    }
-
-    fn connect_server(&self, server: UserSpaceServerHandle) {
-        ConnectorHandle::connect_server(self, server)
-    }
-
-    fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
-        ConnectorHandle::limit_rate(self, node_id, spec)
-    }
-
-    fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        ConnectorHandle::set_flow_weight(self, flow_id, weight)
-    }
-
-    fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
-        ConnectorHandle::splice_connection(self, flow_id, stream)
-    }
-}
-
 // Processes packets and forwards them to the next hop.
 struct Connector {
     config: LocalConfig,

@@ -12,7 +12,9 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
-use crate::node::packet_processor::PacketProcessor;
+use crate::node::packet_processor::{PacketProcessor, PacketProcessorHandle};
+use crate::node::processor::ProcessorHandle;
+use crate::node::splice::connector::ConnectorHandle;
 use crate::node::splice::tcp_max::TcpMaxServer;
 
 pub struct Conductor {
@@ -22,7 +24,7 @@ pub struct Conductor {
     local_interface: LocalInterfaceHandle,
 
     /// the packet processor
-    packet_processor: Box<dyn PacketProcessor>,
+    packet_processor: PacketProcessorHandle,
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
@@ -40,9 +42,11 @@ impl Conductor {
 
         config = controller_interface.config.clone();
 
-        let packet_processor: Box<dyn PacketProcessor> = match config.operating_mode {
-            OperatingMode::Normal => Box::new(controller_interface.processors),
-            OperatingMode::Max => Box::new(controller_interface.connector),
+        let packet_processor: PacketProcessorHandle = match config.operating_mode {
+            OperatingMode::Normal => {
+                PacketProcessorHandle::Normal(ProcessorHandle::new(config.clone()))
+            }
+            OperatingMode::Max => PacketProcessorHandle::Max(ConnectorHandle::new(config.clone())),
         };
 
         let local_interface: LocalInterfaceHandle =
