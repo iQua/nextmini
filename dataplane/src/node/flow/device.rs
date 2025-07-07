@@ -5,14 +5,18 @@ use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tokio::sync::mpsc;
 
+use nextmini_messages::OperatingMode;
+
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::splice::connector::ConnectorHandle;
 
 pub struct VirtualDevice {
     pub config: LocalConfig,
     pub receiver: mpsc::Receiver<Packet>,
-    pub sender: ProcessorHandle,
+    pub processors: ProcessorHandle,
+    pub connector: ConnectorHandle,
 }
 
 impl Device for VirtualDevice {
@@ -21,14 +25,25 @@ impl Device for VirtualDevice {
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         match self.receiver.try_recv() {
-            Ok(packet) => Some((PacketRxToken(packet), PacketTxToken(self.sender.clone()))),
+            Ok(packet) => Some((
+                PacketRxToken(packet),
+                PacketTxToken {
+                    processors: self.processors.clone(),
+                    connector: self.connector.clone(),
+                    config: self.config.clone(),
+                },
+            )),
             Err(mpsc::error::TryRecvError::Empty) => None,
             Err(mpsc::error::TryRecvError::Disconnected) => None,
         }
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
-        Some(PacketTxToken(self.sender.clone()))
+        Some(PacketTxToken {
+            processors: self.processors.clone(),
+            connector: self.connector.clone(),
+            config: self.config.clone(),
+        })
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -50,7 +65,11 @@ impl RxToken for PacketRxToken {
     }
 }
 
-pub struct PacketTxToken(pub ProcessorHandle);
+pub struct PacketTxToken {
+    pub processors: ProcessorHandle,
+    pub connector: ConnectorHandle,
+    pub config: LocalConfig,
+}
 
 impl TxToken for PacketTxToken {
     fn consume<R, F>(self, len: usize, f: F) -> R
@@ -61,8 +80,15 @@ impl TxToken for PacketTxToken {
         let result = f(&mut buf);
         let packet = Packet::new(len, buf);
 
-        // uses non-blocking send() to send the outbound packet
-        self.0.process_packet(packet);
+        // decides which processor to use based on the node's operating mode
+        match self.config.operating_mode {
+            OperatingMode::Normal => {
+                self.processors.process_packet(packet);
+            }
+            OperatingMode::Max => {
+                self.connector.process_packet(packet);
+            }
+        }
 
         result
     }
