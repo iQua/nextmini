@@ -95,13 +95,14 @@ impl TcpMaxClient {
     pub async fn connect_as_dst_node(
         &self,
         stream: TcpStream,
+        remote_node_id: NodeId,
     ) -> SchedulerHandle {
         let network_interface = NetworkInterfaceHandle::new(
             self.config.clone(),
             NetworkStream::Tcp(stream),
             self.processor.clone(),
             self.reporter.clone(),
-            self.config.node_id,
+            remote_node_id,
         ).await;
 
         let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
@@ -144,7 +145,7 @@ impl TcpMaxClient {
                         .expect("Failed to send local node id to the node");
 
                     info!(
-                        "Connected to node {} with TCP.",
+                        "Connected to node {} with TCP MAX.",
                         self.config.ip_to_node_id(flow_id.src_ip())
                     );
 
@@ -161,7 +162,7 @@ impl TcpMaxClient {
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRY {
-                        panic!("Maximum retry reached for TCP connection to {remote_addr}");
+                        panic!("Maximum retry reached for TCP MAX connection to {remote_addr}");
                     }
 
                     delay = delay.mul_f32(1.5); // Exponential backoff

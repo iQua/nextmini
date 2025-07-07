@@ -4,7 +4,7 @@
 use tokio::sync::mpsc;
 use tracing::info;
 
-use nextmini_messages::{OperatingMode, Protocol};
+use nextmini_messages::Protocol;
 
 use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;

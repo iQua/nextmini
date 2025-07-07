@@ -500,7 +500,7 @@ impl Processor {
                 .tcp_max_client
                 .as_ref()
                 .unwrap()
-                .connect_as_dst_node(inbound_stream)
+                .connect_as_dst_node(inbound_stream, next_hop_id)
                 .await;
 
             // inserts reversed flow id.

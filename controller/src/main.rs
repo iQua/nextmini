@@ -279,6 +279,11 @@ async fn handle_connection(
                                     } else {
                                         new_node.public_network_addr.clone()
                                     };
+                                
+                                // replace the port with the TCP-MAX server port
+                                let remote_ip = remote_addr.split(':').next().unwrap();
+                                let remote_addr = format!("{}:{}", remote_ip, config.tcp_max_server_port);
+                                
                                 let msg = ControllerToDataplane::AddNode {
                                     remote_node_id: new_node.id as usize,
                                     remote_addr,
