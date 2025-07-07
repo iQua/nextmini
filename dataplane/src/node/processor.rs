@@ -36,7 +36,7 @@ enum SchedulerKey {
 // Message types for the processor actor.
 pub enum ProcessorPacket {
     ProcessPacket(Packet),
-    SpliceConnection(FlowId, TcpStream),
+    InboundMaxRequest(FlowId, TcpStream),
 }
 
 #[derive(Debug, Clone)]
@@ -212,7 +212,7 @@ impl ProcessorHandle {
 
     // TODO: changed thr name to inbound max_request
     pub fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
-        let inbound_max_request = ProcessorPacket::SpliceConnection(flow_id, stream);
+        let inbound_max_request = ProcessorPacket::InboundMaxRequest(flow_id, stream);
         // TODO: no need to match
         match self {
             ProcessorHandle::Sequential(handle) => {
@@ -248,6 +248,10 @@ impl SequentialProcHandle {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
+        // TODO: spawns a new single task for connector
+
+        let mut connector = Connector::new();
+
         for _ in 0..config.num_packet_processors {
             // for each Processor, creates one MPSC channel
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
@@ -263,6 +267,11 @@ impl SequentialProcHandle {
                 proc.run().await;
             });
         }
+
+        // TODO:
+        tokio::spawn(async move {
+            connector.run().await;
+        });
 
         Self {
             broadcast_sender,
@@ -437,7 +446,7 @@ impl Processor {
                             }
                         }
                         // for relay nodes
-                        ProcessorPacket::SpliceConnection(flow_id, stream) => {
+                        ProcessorPacket::InboundMaxRequest(flow_id, stream) => {
                             self.handle_inbound_max_request(flow_id, stream).await;
                         }
                     }
