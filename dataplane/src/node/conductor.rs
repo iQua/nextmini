@@ -12,7 +12,6 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
-use crate::node::packet_processor::{PacketProcessor, PacketProcessorHandle};
 use crate::node::processor::ProcessorHandle;
 use crate::node::splice::connector::ConnectorHandle;
 use crate::node::splice::tcp_max::TcpMaxServer;
@@ -20,11 +19,14 @@ use crate::node::splice::tcp_max::TcpMaxServer;
 pub struct Conductor {
     config: LocalConfig,
 
+    /// the processor for normal mode
+    processor: ProcessorHandle,
+
+    /// the connector for max mode
+    connector: ConnectorHandle,
+
     /// the local interface readers and writers
     local_interface: LocalInterfaceHandle,
-
-    /// the packet processor
-    packet_processor: PacketProcessorHandle,
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
@@ -42,21 +44,20 @@ impl Conductor {
 
         config = controller_interface.config.clone();
 
-        let packet_processor: PacketProcessorHandle = match config.operating_mode {
-            OperatingMode::Normal => {
-                PacketProcessorHandle::Normal(ProcessorHandle::new(config.clone()))
-            }
-            OperatingMode::Max => PacketProcessorHandle::Max(ConnectorHandle::new(config.clone())),
-        };
+        let processor = ProcessorHandle::new(config.clone());
+        let connector = ConnectorHandle::new(config.clone());
 
         let local_interface: LocalInterfaceHandle =
-            LocalInterfaceHandle::new(config.clone(), packet_processor.clone());
-        packet_processor.connect_local_interface(local_interface.clone());
+            LocalInterfaceHandle::new(processor.clone(), connector.clone(), config.clone());
+
+        processor.connect_local_interface(local_interface.clone());
+        connector.connect_local_interface(local_interface.clone());
 
         Conductor {
             config,
             local_interface,
-            packet_processor,
+            processor,
+            connector,
             reporter,
             main_shutdown_recv: Some(main_shutdown_recv),
         }
@@ -92,13 +93,13 @@ impl Conductor {
             Protocol::Tcp => {
                 // uses TcpMaxServer to handle the connections for max operating mode.
                 let mut tcp_max_server =
-                    TcpMaxServer::new(self.config.clone(), self.packet_processor.clone());
+                    TcpMaxServer::new(self.config.clone(), self.connector.clone());
 
                 // uses TcpServer to handle the connections for normal operating mode.
                 if public_port == private_port {
                     let mut tcp_server = TcpServer::new(
                         self.config.clone(),
-                        self.packet_processor.clone(),
+                        self.processor.clone(),
                         self.reporter.clone(),
                     );
 
@@ -112,12 +113,12 @@ impl Conductor {
                 } else {
                     let mut tcp_server_public = TcpServer::new(
                         self.config.clone(),
-                        self.packet_processor.clone(),
+                        self.processor.clone(),
                         self.reporter.clone(),
                     );
                     let mut tcp_server_private = TcpServer::new(
                         self.config.clone(),
-                        self.packet_processor.clone(),
+                        self.processor.clone(),
                         self.reporter.clone(),
                     );
 
@@ -136,7 +137,7 @@ impl Conductor {
                 if public_port == private_port {
                     let mut quic_server = QuicServer::new(
                         self.config.clone(),
-                        self.packet_processor.clone(),
+                        self.processor.clone(),
                         self.reporter.clone(),
                     );
                     quic_server
@@ -145,12 +146,12 @@ impl Conductor {
                 } else {
                     let mut quic_server_public = QuicServer::new(
                         self.config.clone(),
-                        self.packet_processor.clone(),
+                        self.processor.clone(),
                         self.reporter.clone(),
                     );
                     let mut quic_server_private = QuicServer::new(
                         self.config.clone(),
-                        self.packet_processor.clone(),
+                        self.processor.clone(),
                         self.reporter.clone(),
                     );
 

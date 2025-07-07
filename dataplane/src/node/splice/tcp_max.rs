@@ -6,10 +6,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
 use crate::node::config::LocalConfig;
-use crate::node::splice::connector::ConnectorHandle;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::splice::connector::ConnectorHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub struct TcpMaxServer {
@@ -22,6 +22,7 @@ impl TcpMaxServer {
         Self { config, connector }
     }
 
+    // starts TCP max server that listens for incoming connections.
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -62,7 +63,10 @@ impl TcpMaxServer {
 
             let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
 
-            info!("Incoming TCP max connection from node {}...", remote_node_id);
+            info!(
+                "Incoming TCP max connection from node {}...",
+                remote_node_id
+            );
 
             // Tell the connector to splice the upstream
             self.connector.splice_connection(flow_id, stream);

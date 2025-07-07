@@ -4,15 +4,21 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
+use nextmini_messages::OperatingMode;
+
+use crate::node::config::LocalConfig;
 use crate::node::local::interface::ShutdownMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::splice::connector::ConnectorHandle;
 
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
 pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     processor: ProcessorHandle,
+    connector: ConnectorHandle,
+    config: LocalConfig,
     // for TSO support on Linux
     original_buffer: Vec<u8>,
     packet_buffers: Vec<Vec<u8>>,
@@ -24,11 +30,15 @@ impl LocalReader {
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         processor: ProcessorHandle,
+        connector: ConnectorHandle,
+        config: LocalConfig,
     ) -> Self {
         Self {
             device,
             shutdown_receiver,
             processor,
+            connector,
+            config,
             original_buffer: vec![0; VIRTIO_NET_HDR_LEN + 65535],
             packet_buffers: vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE],
             packet_sizes: vec![0; IDEAL_BATCH_SIZE],
@@ -76,8 +86,15 @@ impl LocalReader {
                             continue;
                         }
 
-                        // sends to the processor for routing and forwarding
-                        self.processor.process_packet(packet);
+                        // decides which processor to use based on the node's operating mode
+                        match self.config.operating_mode {
+                            OperatingMode::Normal => {
+                                self.processor.process_packet(packet);
+                            }
+                            OperatingMode::Max => {
+                                self.connector.process_packet(packet);
+                            }
+                        }
                     }
                 }
             }
