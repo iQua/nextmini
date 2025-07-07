@@ -1,5 +1,5 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
-/// the dataplane node, including the controller interface actor, the processor actor, and the local
+/// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
 use tokio::sync::mpsc;
 use tracing::info;
@@ -84,13 +84,13 @@ impl Conductor {
             Protocol::Tcp => {
                 // uses TcpMaxServer to handle the connections for max operating mode.
                 let mut tcp_max_server =
-                    TcpMaxServer::new(self.config.clone(), self.connector.clone());
+                    TcpMaxServer::new(self.config.clone(), self.processors.clone());
 
                 // uses TcpServer to handle the connections for normal operating mode.
                 if public_port == private_port {
                     let mut tcp_server = TcpServer::new(
                         self.config.clone(),
-                        self.processor.clone(),
+                        self.processors.clone(),
                         self.reporter.clone(),
                     );
 
@@ -104,12 +104,12 @@ impl Conductor {
                 } else {
                     let mut tcp_server_public = TcpServer::new(
                         self.config.clone(),
-                        self.processor.clone(),
+                        self.processors.clone(),
                         self.reporter.clone(),
                     );
                     let mut tcp_server_private = TcpServer::new(
                         self.config.clone(),
-                        self.processor.clone(),
+                        self.processors.clone(),
                         self.reporter.clone(),
                     );
 
