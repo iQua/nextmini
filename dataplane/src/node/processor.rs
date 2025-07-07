@@ -42,9 +42,9 @@ pub enum ProcessorPacket {
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    // For normal mode
+    // for normal mode
     AddNode(NodeId, SchedulerHandle),
-    // For max mode
+    // for max mode
     AddNodeAddress(NodeId, String),
     ConnectTcpMaxClient(TcpMaxClient),
     ConnectLocalInterface(LocalInterfaceHandle),
@@ -210,13 +210,15 @@ impl ProcessorHandle {
         };
     }
 
+    // TODO: changed thr name to inbound max_request
     pub fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
-        let packet = ProcessorPacket::SpliceConnection(flow_id, stream);
+        let inbound_max_request = ProcessorPacket::SpliceConnection(flow_id, stream);
+        // TODO: no need to match
         match self {
             ProcessorHandle::Sequential(handle) => {
                 let idx = flow_id.hash(handle.packet_senders.len());
                 let sender = &handle.packet_senders[idx];
-                if let Err(e) = sender.try_send(packet) {
+                if let Err(e) = sender.try_send(incoming_request) {
                     warn!(
                         "SequentialProcMaxHandle: Error sending a splice connection to the processor: {}.",
                         e
@@ -436,7 +438,7 @@ impl Processor {
                         }
                         // for relay nodes
                         ProcessorPacket::SpliceConnection(flow_id, stream) => {
-                            self.handle_splice_connection(flow_id, stream).await;
+                            self.handle_inbound_max_request(flow_id, stream).await;
                         }
                     }
                 }
@@ -488,7 +490,7 @@ impl Processor {
         }
     }
 
-    async fn handle_splice_connection(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
+    async fn handle_inbound_max_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
 
@@ -518,6 +520,7 @@ impl Processor {
             .connect_as_relay(flow_id, &next_hop_addr)
             .await;
 
+        // TODO: We might don't need to spawn the task;
         // spawns a new task to handle the connection splicing.
         tokio::spawn(async move {
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
