@@ -80,15 +80,6 @@ impl ConnectorHandle {
         &self.message_sender
     }
 
-    pub fn add_node(
-        &self,
-        node_id: NodeId,
-        scheduler: SchedulerHandle,
-    ) -> Result<(), TrySendError<ConnectorMessage>> {
-        self.message_sender()
-            .try_send(ConnectorMessage::AddNode(node_id, scheduler))
-    }
-
     // adds a remote node address for the max mode.
     pub fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
         if let Err(e) = self

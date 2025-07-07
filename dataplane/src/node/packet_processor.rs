@@ -5,11 +5,11 @@ use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::packet::Packet;
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::splice::connector::ConnectorHandle;
 use crate::node::splice::tcp_max::TcpMaxClient;
 use crate::node::{FlowId, NodeId};
-use crate::node::processor::ProcessorHandle;
-use crate::node::splice::connector::ConnectorHandle;
 
 /// the packet processing logic for both "normal" and "max" operating modes.
 
@@ -46,34 +46,6 @@ impl PacketProcessor for PacketProcessorHandle {
         match self {
             PacketProcessorHandle::Normal(handle) => handle.update_routing_table(routes),
             PacketProcessorHandle::Max(handle) => handle.update_routing_table(routes),
-        }
-    }
-
-    fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
-        match self {
-            PacketProcessorHandle::Normal(handle) => handle.add_node(node_id, scheduler),
-            PacketProcessorHandle::Max(handle) => handle.add_node(node_id, scheduler),
-        }
-    }
-
-    fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
-        match self {
-            PacketProcessorHandle::Normal(handle) => handle.add_node_address(node_id, remote_addr),
-            PacketProcessorHandle::Max(handle) => handle.add_node_address(node_id, remote_addr),
-        }
-    }
-
-    fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
-        match self {
-            PacketProcessorHandle::Normal(handle) => handle.connect_tcp_max_client(tcp_max_client),
-            PacketProcessorHandle::Max(handle) => handle.connect_tcp_max_client(tcp_max_client),
-        }
-    }
-
-    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
-        match self {
-            PacketProcessorHandle::Normal(handle) => handle.connect_local_interface(local_interface),
-            PacketProcessorHandle::Max(handle) => handle.connect_local_interface(local_interface),
         }
     }
 
@@ -114,9 +86,43 @@ impl PacketProcessor for PacketProcessorHandle {
         }
     }
 
+    fn connect_local_interface(&self, local_interface: LocalInterfaceHandle) {
+        match self {
+            PacketProcessorHandle::Normal(handle) => {
+                handle.connect_local_interface(local_interface)
+            }
+            PacketProcessorHandle::Max(handle) => handle.connect_local_interface(local_interface),
+        }
+    }
+
+    // Not supported in Max mode.
+    fn add_node(&self, node_id: NodeId, scheduler: SchedulerHandle) {
+        match self {
+            PacketProcessorHandle::Normal(handle) => handle.add_node(node_id, scheduler),
+            PacketProcessorHandle::Max(_) => {}
+        }
+    }
+
+    // Not supported in Normal mode.
+    fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
+        match self {
+            PacketProcessorHandle::Normal(_) => {}
+            PacketProcessorHandle::Max(handle) => handle.add_node_address(node_id, remote_addr),
+        }
+    }
+
+    // Not supported in Normal mode.
+    fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
+        match self {
+            PacketProcessorHandle::Normal(_) => {}
+            PacketProcessorHandle::Max(handle) => handle.connect_tcp_max_client(tcp_max_client),
+        }
+    }
+
+    // Not supported in Normal mode.
     fn splice_connection(&self, flow_id: FlowId, stream: TcpStream) {
         match self {
-            PacketProcessorHandle::Normal(handle) => handle.splice_connection(flow_id, stream),
+            PacketProcessorHandle::Normal(_) => {}
             PacketProcessorHandle::Max(handle) => handle.splice_connection(flow_id, stream),
         }
     }
