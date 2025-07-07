@@ -19,24 +19,24 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
-use crate::node::packet_processor::PacketProcessorHandle;
+use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
 pub struct QuicServer {
     config: LocalConfig,
-    packet_processor: PacketProcessorHandle,
+    processors: ProcessorHandle,
     reporter: ControllerReporterHandle,
 }
 
 impl QuicServer {
     pub fn new(
         config: LocalConfig,
-        packet_processor: PacketProcessorHandle,
+        processors: ProcessorHandle,
         reporter: ControllerReporterHandle,
     ) -> Self {
         Self {
             config,
-            packet_processor,
+            processors,
             reporter,
         }
     }
@@ -69,7 +69,7 @@ impl QuicServer {
             let config = self.config.clone();
             let processors = self.processors.clone();
 
-            info!("QUIC connection accepted from {:?}.", connection.remote_addr());
+            info!("Connection accepted from {:?}.", connection.remote_addr());
 
             if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
                 let mut node_id_buf: [u8; 8] = [0; 8];
@@ -82,7 +82,7 @@ impl QuicServer {
 
                 let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
 
-                info!("Incoming QUIC connection from node {}...", remote_node_id);
+                info!("Incoming connection from node {}...", remote_node_id);
 
                 // handles an inbound connection from a new client
                 let network_interface = NetworkInterfaceHandle::new(
@@ -186,21 +186,18 @@ impl QuicClient {
 /// An actor that reads packets from a QUIC stream.
 pub struct QuicReader {
     stream: ReceiveStream,
-    packet_processor: PacketProcessorHandle,
+    processors: ProcessorHandle,
 }
 
 impl QuicReader {
-    pub fn new(stream: ReceiveStream, packet_processor: PacketProcessorHandle) -> Self {
-        Self {
-            packet_processor,
-            stream,
-        }
+    pub fn new(stream: ReceiveStream, processors: ProcessorHandle) -> Self {
+        Self { processors, stream }
     }
 
     pub async fn run(&mut self) {
         loop {
             if let Ok(packet) = self.read_packet().await {
-                self.packet_processor.process_packet(packet);
+                self.processors.process_packet(packet);
             }
         }
     }
