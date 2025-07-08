@@ -317,8 +317,13 @@ async fn handle_connection(
                                     expected_node_count
                                 );
 
-                                // update remote nodes addresses for connector
-                                send_nodes_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
+                                // updates remote nodes addresses for the connector
+                                send_nodes_addresses(
+                                    config.clone(),
+                                    node_ws.clone(),
+                                    db_pool.clone(),
+                                )
+                                .await;
 
                                 // waits for all nodes to receive the AddNode messages
                                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -529,26 +534,27 @@ async fn send_nodes_addresses(
 
     let node_ws_guard = node_ws.read().await;
 
-    info!("Sending AddNodeAddress messages for {} nodes.", node_ws_guard.len());
+    info!(
+        "Sending AddNodeAddress messages for {} nodes.",
+        node_ws_guard.len()
+    );
 
     for (node_id, writer) in node_ws_guard.iter() {
         let remote_nodes: Vec<_> = nodes
             .iter()
             .filter(|node| node.id != *node_id as i32)
             .collect();
-        
-        for node in remote_nodes{
-            let remote_addr =
-                if node.private_network_name == node.private_network_name {
-                    node.private_network_addr.clone()
-                } else {
-                    node.public_network_addr.clone()
-                };
+
+        for node in remote_nodes {
+            let remote_addr = if node.private_network_name == node.private_network_name {
+                node.private_network_addr.clone()
+            } else {
+                node.public_network_addr.clone()
+            };
 
             // replace the port with the Tcp max server port
             let remote_ip = remote_addr.split(':').next().unwrap();
-            let remote_addr =
-                format!("{}:{}", remote_ip, config.max_server_port.to_string());
+            let remote_addr = format!("{}:{}", remote_ip, config.max_server_port.to_string());
 
             let msg = ControllerToDataplane::AddNodeAddress {
                 remote_node_id: node.id as usize,
@@ -561,7 +567,7 @@ async fn send_nodes_addresses(
                 .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                 .await
             {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => error!(
                     "Failed to send an AddNodeAddress message to node {}: {}.",
                     node.id, e

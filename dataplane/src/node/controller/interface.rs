@@ -232,23 +232,28 @@ impl ControllerToDataplaneReceiver {
                     remote_node_id,
                     remote_addr.clone(),
                     self.processors.clone(),
-                        self.reporter.clone(),
-                    )
-                    .await;
+                    self.reporter.clone(),
+                )
+                .await;
 
-                    let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                    let _ = self.processors.add_node(remote_node_id, scheduler);
-            },
+                let _ = self.processors.add_node(remote_node_id, scheduler);
+            }
 
             ControllerToDataplane::AddNodeAddress {
                 remote_node_id,
                 remote_max_server_addr,
             } => {
-                // adds remote tcp max server address to the connector
-                info!("Adding node {} tcp max server address for node {}", remote_node_id, self.config.node_id);
+                info!(
+                    "Adding node {} tcp max server address for node {}",
+                    remote_node_id, self.config.node_id
+                );
 
-                self.processors.add_node_address(remote_node_id, remote_max_server_addr).await;
+                // adds remote tcp max server address to the connector.
+                self.processors
+                    .add_node_address(remote_node_id, remote_max_server_addr)
+                    .await;
             }
 
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
