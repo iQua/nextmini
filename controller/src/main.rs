@@ -13,7 +13,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 use tracing_subscriber;
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucketSpec};
+use nextmini_messages::{
+    ControllerToDataplane, DataplaneToController, TokenBucketSpec,
+};
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
@@ -168,11 +170,7 @@ async fn handle_connection(
                         }
 
                         // Finds the node specification for the current node
-                        let node_spec = config
-                            .nodes
-                            .iter()
-                            .find(|node| node.node_id == node_id)
-                            .cloned();
+                        let node_spec = config.nodes.iter().find(|node| node.node_id == node_id).cloned();
 
                         // sends the startup response
                         let response = build_startup_response(
@@ -281,7 +279,11 @@ async fn handle_connection(
                                     } else {
                                         new_node.public_network_addr.clone()
                                     };
-
+                                
+                                // replace the port with the TCP-MAX server port
+                                let remote_ip = remote_addr.split(':').next().unwrap();
+                                let remote_addr = format!("{}:{}", remote_ip, config.tcp_max_server_port);
+                                
                                 let msg = ControllerToDataplane::AddNode {
                                     remote_node_id: new_node.id as usize,
                                     remote_addr,
