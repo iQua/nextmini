@@ -67,8 +67,8 @@ pub struct Config {
     pub user_space_base_addr: Ipv4Addr,
 
     /// The max mode tcp server port
-    #[serde(default = "default_tcp_max_server_port")]
-    pub tcp_max_server_port: String,
+    #[serde(default = "default_max_server_port")]
+    pub max_server_port: String,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -110,7 +110,7 @@ pub struct Config {
 // Default values if they are missing from the configuration file
 
 /// The default max mode tcp server port
-fn default_tcp_max_server_port() -> String {
+fn default_max_server_port() -> String {
     "8081".to_string()
 }
 
@@ -198,7 +198,7 @@ impl Default for Config {
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
             user_space_base_addr: default_user_space_base_addr(),
-            tcp_max_server_port: default_tcp_max_server_port(),
+            max_server_port: default_max_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
             flows: Vec::new(),

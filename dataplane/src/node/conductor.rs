@@ -78,7 +78,7 @@ impl Conductor {
         // starts listening with either TCP or QUIC on published ports (private and/or public)
         let public_port = self.config.public_network_port.clone();
         let private_port = self.config.private_network_port.clone();
-        let tcp_max_server_port = self.config.tcp_max_server_port.clone();
+        let max_server_port = self.config.max_server_port.clone();
 
         match self.config.protocol {
             Protocol::Tcp => {
@@ -94,7 +94,7 @@ impl Conductor {
                         self.reporter.clone(),
                     );
 
-                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
+                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
                     let tcp_server_addr = format!("{}:{}", "0.0.0.0", public_port);
 
                     tokio::select! {
@@ -115,7 +115,7 @@ impl Conductor {
 
                     let tcp_server_public_addr = format!("{}:{}", "0.0.0.0", public_port);
                     let tcp_server_private_addr = format!("{}:{}", "0.0.0.0", private_port);
-                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", tcp_max_server_port);
+                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
 
                     tokio::select! {
                         _ = tcp_server_public.start_listening(&tcp_server_public_addr) => {},

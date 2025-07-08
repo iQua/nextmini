@@ -120,7 +120,7 @@ pub enum ControllerToDataplane {
         virtual_base_addr: Ipv4Addr,
         #[serde(with = "ip_ser")]
         user_space_base_addr: Ipv4Addr,
-        tcp_max_server_port: String,
+        max_server_port: String,
         protocol: Protocol,
         scheduler_type: SchedulingDiscipline,
         node_spec: NodeSpec,
