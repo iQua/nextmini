@@ -101,11 +101,12 @@ impl Connector {
         let next_hop_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let remote_addr = self.node_addresses[&next_hop_id].clone();
 
-        let scheduler = self
-            .tcp_max_client
-            .as_ref()
-            .unwrap()
-            .connect_as_src_node(packet.flow_id, &remote_addr, next_hop_id)
+        let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
+        let stream = tcp_max_client
+            .request_remote(packet.flow_id, &remote_addr)
+            .await;
+        let scheduler = tcp_max_client
+            .initialize_scheduler(stream, next_hop_id)
             .await;
 
         // sends the packet
@@ -120,11 +121,9 @@ impl Connector {
 
         // handles the case at the dst node.
         if next_hop_id == self.routing_table.local_id {
-            let scheduler = self
-                .tcp_max_client
-                .as_ref()
-                .unwrap()
-                .connect_as_dst_node(inbound_stream, next_hop_id)
+            let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
+            let scheduler = tcp_max_client
+                .initialize_scheduler(inbound_stream, next_hop_id)
                 .await;
 
             // inserts reversed flow id.
@@ -140,7 +139,7 @@ impl Connector {
             .tcp_max_client
             .as_ref()
             .unwrap()
-            .connect_as_relay(flow_id, &next_hop_addr)
+            .request_remote(flow_id, &next_hop_addr)
             .await;
 
         // TODO: We might don't need to spawn the task;

@@ -92,46 +92,7 @@ impl TcpMaxClient {
         }
     }
 
-    pub async fn connect_as_dst_node(
-        &self,
-        stream: TcpStream,
-        remote_node_id: NodeId,
-    ) -> SchedulerHandle {
-        let network_interface = NetworkInterfaceHandle::new(
-            self.config.clone(),
-            NetworkStream::Tcp(stream),
-            self.processor.clone(),
-            self.reporter.clone(),
-            remote_node_id,
-        ).await;
-
-        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
-
-        scheduler
-    }
-
-    pub async fn connect_as_src_node(
-        &self,
-        flow_id: FlowId,
-        remote_addr: &str,
-        remote_node_id: NodeId,
-    ) -> SchedulerHandle {
-        let stream = self.connect_as_relay(flow_id, remote_addr).await;
-
-        let network_interface = NetworkInterfaceHandle::new(
-            self.config.clone(),
-            NetworkStream::Tcp(stream),
-            self.processor.clone(),
-            self.reporter.clone(),
-            remote_node_id,
-        )
-        .await;
-        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
-
-        scheduler
-    }
-
-    pub async fn connect_as_relay(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
+    pub async fn request_remote(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);
@@ -169,5 +130,24 @@ impl TcpMaxClient {
                 }
             }
         }
+    }
+
+    pub async fn initialize_scheduler(
+        &self,
+        stream: TcpStream,
+        remote_node_id: NodeId,
+    ) -> SchedulerHandle {
+        let network_interface = NetworkInterfaceHandle::new(
+            self.config.clone(),
+            NetworkStream::Tcp(stream),
+            self.processor.clone(),
+            self.reporter.clone(),
+            remote_node_id,
+        )
+        .await;
+
+        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+
+        scheduler
     }
 }
