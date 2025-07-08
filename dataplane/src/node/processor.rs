@@ -6,7 +6,6 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use flume;
 use tokio;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -66,13 +65,6 @@ impl ProcessorHandle {
         match self {
             ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
             ProcessorHandle::Concurrent(handle) => &handle.broadcast_sender,
-        }
-    }
-
-    pub fn connector_packet_sender(&self) -> &mpsc::Sender<ProcessorPacket> {
-        match self {
-            ProcessorHandle::Sequential(handle) => &handle.connector_packet_sender,
-            ProcessorHandle::Concurrent(handle) => &handle.connector_packet_sender,
         }
     }
 
@@ -174,45 +166,12 @@ impl ProcessorHandle {
 
     // processes a packet called by the local reader actor
     pub fn process_packet(&self, packet: Packet) {
-        let operating_mode = match self {
-            ProcessorHandle::Sequential(handle) => handle.operating_mode,
-            ProcessorHandle::Concurrent(handle) => handle.operating_mode,
-        };
-
-        match operating_mode {
-            OperatingMode::Normal => match self {
-                ProcessorHandle::Sequential(handle) => {
-                    let idx = packet.flow_id.hash(handle.packet_senders.len());
-                    let sender = handle.packet_senders[idx].clone();
-                    if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
-                        warn!(
-                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
-                            e
-                        );
-                    }
-                }
-                ProcessorHandle::Concurrent(handle) => {
-                    if let Err(e) = handle
-                        .packet_sender
-                        .try_send(ProcessorPacket::ProcessPacket(packet))
-                    {
-                        warn!(
-                            "ConcurrentProcHandle: Error sending a packet to the processor: {}",
-                            e
-                        );
-                    }
-                }
-            },
-            OperatingMode::Max => {
-                if let Err(e) = self
-                    .connector_packet_sender()
-                    .try_send(ProcessorPacket::ProcessPacket(packet))
-                {
-                    warn!("Error sending a packet to the connector: {}", e);
-                }
-            }
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
+            ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
         }
     }
+
 
     pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
@@ -280,7 +239,7 @@ impl ProcessorHandle {
 
 #[derive(Clone, Debug)]
 pub struct SequentialProcHandle {
-    operating_mode: OperatingMode,
+    config: LocalConfig,
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
     connector_packet_sender: mpsc::Sender<ProcessorPacket>,
@@ -324,18 +283,55 @@ impl SequentialProcHandle {
         });
 
         Self {
-            operating_mode: config.operating_mode,
+            config,
             broadcast_sender,
             packet_senders,
             connector_packet_sender,
             connector_message_sender,
         }
     }
+    pub fn process_packet(&self, packet: Packet) {
+        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let sender = &self.packet_senders[idx];
+
+        let packet_flow_id = packet.flow_id;
+        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                warn!(
+                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                    e
+                );
+            }
+        }else{
+            // sends according to the operating mode at src node
+            match self.config.operating_mode {
+                OperatingMode::Normal => {
+                    if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            e
+                        );
+                    }
+                }
+                OperatingMode::Max => {
+                    if let Err(e) = self.connector_packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ConcurrentProcHandle {
-    operating_mode: OperatingMode,
+    config: LocalConfig,
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
     connector_packet_sender: mpsc::Sender<ProcessorPacket>,
@@ -375,11 +371,47 @@ impl ConcurrentProcHandle {
         });
 
         Self {
-            operating_mode: config.operating_mode,
+            config,
             broadcast_sender,
             packet_sender,
             connector_packet_sender,
             connector_message_sender,
+        }
+    }
+    pub fn process_packet(&self, packet: Packet) {
+
+        let packet_flow_id = packet.flow_id;
+        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            if let Err(e) = self.packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                warn!(
+                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                    e
+                );
+            }
+        }else{
+            // sends according to the operating mode at src node
+            match self.config.operating_mode {
+                OperatingMode::Normal => {
+                    if let Err(e) = self.packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            e
+                        );
+                    }
+                }
+                OperatingMode::Max => {
+                    if let Err(e) = self.connector_packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                            e
+                        );
+                    }
+                }
+            }
         }
     }
 }
