@@ -19,6 +19,7 @@ use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::connector::Connector;
+use crate::node::connector::ConnectorMessage;
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
@@ -27,7 +28,6 @@ use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
-use crate::node::connector::ConnectorMessage;
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -76,14 +76,13 @@ impl ProcessorHandle {
             ProcessorHandle::Concurrent(handle) => &handle.connector_packet_sender,
         }
     }
-    
+
     pub fn connector_message_sender(&self) -> &mpsc::Sender<ConnectorMessage> {
         match self {
             ProcessorHandle::Sequential(handle) => &handle.connector_message_sender,
             ProcessorHandle::Concurrent(handle) => &handle.connector_message_sender,
         }
     }
-
 
     pub fn add_node(
         &self,
@@ -150,8 +149,15 @@ impl ProcessorHandle {
         };
 
         // send to the connector
-        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::UpdateRoutingTable(routes)).await {
-            error!("Error sending the UpdateRoutingTable message to the connector: {}", e);
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::UpdateRoutingTable(routes))
+            .await
+        {
+            error!(
+                "Error sending the UpdateRoutingTable message to the connector: {}",
+                e
+            );
         }
     }
 
@@ -198,25 +204,44 @@ impl ProcessorHandle {
         };
     }
 
-    
     pub async fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
-        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::AddNodeAddress(node_id, remote_addr)).await {
-            error!("Error sending the AddNodeAddress message to the connector: {}", e);
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::AddNodeAddress(node_id, remote_addr))
+            .await
+        {
+            error!(
+                "Error sending the AddNodeAddress message to the connector: {}",
+                e
+            );
         }
     }
-    
+
     pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
-        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client)).await {
-            error!("Error sending the ConnectTcpMaxClient message to the connector: {}", e);
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client))
+            .await
+        {
+            error!(
+                "Error sending the ConnectTcpMaxClient message to the connector: {}",
+                e
+            );
         }
     }
 
     pub async fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
-        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::InboundMaxRequest(flow_id, stream)).await {
-            error!("Error sending the InboundMaxRequest message to the connector: {}", e);
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::InboundMaxRequest(flow_id, stream))
+            .await
+        {
+            error!(
+                "Error sending the InboundMaxRequest message to the connector: {}",
+                e
+            );
         }
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -286,7 +311,10 @@ impl SequentialProcHandle {
                 }
             }
             OperatingMode::Max => {
-                if let Err(e) = self.connector_packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                if let Err(e) = self
+                    .connector_packet_sender
+                    .try_send(ProcessorPacket::ProcessPacket(packet))
+                {
                     warn!(
                         "SequentialProcHandle: Error sending a packet to the connector: {}.",
                         e
@@ -294,7 +322,6 @@ impl SequentialProcHandle {
                 }
             }
         };
-
     }
 }
 
@@ -494,8 +521,7 @@ impl Processor {
                 self.routing_table.install_routes(routes);
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
-                self.schedulers
-                    .insert(node_id, scheduler);
+                self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));

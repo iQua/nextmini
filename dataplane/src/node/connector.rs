@@ -8,15 +8,15 @@ use tracing::{error, info, warn};
 use nextmini_messages::RoutingTableEntry;
 
 use crate::node::config::LocalConfig;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorPacket;
 use crate::node::route::RoutingTable;
-use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub enum ConnectorMessage {
-    AddNodeAddress(NodeId, String),      
+    AddNodeAddress(NodeId, String),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     ConnectTcpMaxClient(TcpMaxClient),
     InboundMaxRequest(FlowId, TcpStream),
@@ -124,8 +124,7 @@ impl Connector {
                 .await;
 
             // inserts reversed flow id.
-            self.schedulers
-                .insert(flow_id.reverse(), scheduler);
+            self.schedulers.insert(flow_id.reverse(), scheduler);
 
             return;
         }
