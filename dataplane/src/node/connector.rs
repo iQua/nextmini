@@ -91,13 +91,13 @@ impl Connector {
     async fn process_packet(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
 
-        // Send the packet directly if tcp max connection is established
+        // sends the packet directly when the tcp max connection is established
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             scheduler.send(packet);
             return;
         }
 
-        // We are on the src node and the tcp connection is not spliced yet
+        // initiates tcp max connections as the src node
         let next_hop_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let remote_addr = self.node_addresses[&next_hop_id].clone();
 
@@ -111,7 +111,6 @@ impl Connector {
         // sends the packet
         scheduler.send(packet);
 
-        // inserts the scheduler into the hashmap
         self.schedulers.insert(flow_id, scheduler);
     }
 
@@ -119,7 +118,7 @@ impl Connector {
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
 
-        // handles the case where we are at the dst node.
+        // handles the case at the dst node.
         if next_hop_id == self.routing_table.local_id {
             let scheduler = self
                 .tcp_max_client
@@ -134,7 +133,7 @@ impl Connector {
             return;
         }
 
-        // handles the case where we are at a relay node.
+        // handles the case at a relay node.
         let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
         let mut outbound_stream = self
