@@ -5,18 +5,26 @@ use tokio::sync::mpsc;
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info, warn};
 
+use nextmini_messages::RoutingTableEntry;
+
 use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorPacket;
-use crate::node::processor::ProcessorMessage;
 use crate::node::route::RoutingTable;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
+pub enum ConnectorMessage {
+    AddNodeAddress(NodeId, String),      
+    UpdateRoutingTable(Vec<RoutingTableEntry>),
+    ConnectTcpMaxClient(TcpMaxClient),
+    InboundMaxRequest(FlowId, TcpStream),
+}
+
 pub struct Connector {
     packet_receiver: mpsc::Receiver<ProcessorPacket>,
-    message_receiver: mpsc::Receiver<ProcessorMessage>,
+    message_receiver: mpsc::Receiver<ConnectorMessage>,
     config: LocalConfig,
     tcp_max_client: Option<TcpMaxClient>,
     routing_table: RoutingTable,
@@ -27,7 +35,7 @@ pub struct Connector {
 impl Connector {
     pub fn new(
         packet_receiver: mpsc::Receiver<ProcessorPacket>,
-        message_receiver: mpsc::Receiver<ProcessorMessage>,
+        message_receiver: mpsc::Receiver<ConnectorMessage>,
         config: LocalConfig,
     ) -> Self {
         Self {
@@ -58,21 +66,20 @@ impl Connector {
         }
     }
 
-    async fn handle_message(&mut self, msg: ProcessorMessage) {
+    async fn handle_message(&mut self, msg: ConnectorMessage) {
         match msg {
-            ProcessorMessage::ConnectTcpMaxClient(tcp_max_client) => {
+            ConnectorMessage::ConnectTcpMaxClient(tcp_max_client) => {
                 self.tcp_max_client = Some(tcp_max_client);
             }
-            ProcessorMessage::AddNodeAddress(node_id, address) => {
+            ConnectorMessage::AddNodeAddress(node_id, address) => {
                 self.node_addresses.insert(node_id, address);
             }
-            ProcessorMessage::UpdateRoutingTable(routes) => {
+            ConnectorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
-            ProcessorMessage::InboundMaxRequest(flow_id, stream) => {
+            ConnectorMessage::InboundMaxRequest(flow_id, stream) => {
                 self.handle_inbound_request(flow_id, stream).await;
             }
-            _ => {}
         }
     }
 

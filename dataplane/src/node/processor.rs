@@ -27,6 +27,7 @@ use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::connector::ConnectorMessage;
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -36,9 +37,7 @@ pub enum ProcessorPacket {
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    AddNode(NodeId, SchedulerHandle), // for normal mode
-    AddNodeAddress(NodeId, String),   // for max mode
-    ConnectTcpMaxClient(TcpMaxClient),
+    AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectServerHandle(UserSpaceServerHandle),
     ConnectUserSpaceSender {
@@ -48,7 +47,6 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
-    InboundMaxRequest(FlowId, TcpStream),
 }
 
 #[derive(Clone, Debug)]
@@ -72,19 +70,20 @@ impl ProcessorHandle {
         }
     }
 
-    pub fn connector_message_sender(&self) -> &mpsc::Sender<ProcessorMessage> {
-        match self {
-            ProcessorHandle::Sequential(handle) => &handle.connector_message_sender,
-            ProcessorHandle::Concurrent(handle) => &handle.connector_message_sender,
-        }
-    }
-
     pub fn connector_packet_sender(&self) -> &mpsc::Sender<ProcessorPacket> {
         match self {
             ProcessorHandle::Sequential(handle) => &handle.connector_packet_sender,
             ProcessorHandle::Concurrent(handle) => &handle.connector_packet_sender,
         }
     }
+    
+    pub fn connector_message_sender(&self) -> &mpsc::Sender<ConnectorMessage> {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.connector_message_sender,
+            ProcessorHandle::Concurrent(handle) => &handle.connector_message_sender,
+        }
+    }
+
 
     pub fn add_node(
         &self,
@@ -96,14 +95,6 @@ impl ProcessorHandle {
             .send(ProcessorMessage::AddNode(node_id, scheduler))?;
 
         Ok(())
-    }
-
-    pub async fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
-        self.connector_message_sender().send(ProcessorMessage::AddNodeAddress(node_id, remote_addr)).await;
-    }
-
-    pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
-        self.connector_message_sender().send(ProcessorMessage::ConnectTcpMaxClient(tcp_max_client)).await;
     }
 
     // connects the local interface to the processor
@@ -159,7 +150,9 @@ impl ProcessorHandle {
         };
 
         // send to the connector
-        self.connector_message_sender().send(ProcessorMessage::UpdateRoutingTable(routes)).await;
+        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::UpdateRoutingTable(routes)).await {
+            error!("Error sending the UpdateRoutingTable message to the connector: {}", e);
+        }
     }
 
     pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
@@ -205,9 +198,25 @@ impl ProcessorHandle {
         };
     }
 
-    pub async fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
-        self.connector_message_sender().send(ProcessorMessage::InboundMaxRequest(flow_id, stream)).await;
+    
+    pub async fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
+        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::AddNodeAddress(node_id, remote_addr)).await {
+            error!("Error sending the AddNodeAddress message to the connector: {}", e);
+        }
     }
+    
+    pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
+        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client)).await {
+            error!("Error sending the ConnectTcpMaxClient message to the connector: {}", e);
+        }
+    }
+
+    pub async fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
+        if let Err(e) = self.connector_message_sender().send(ConnectorMessage::InboundMaxRequest(flow_id, stream)).await {
+            error!("Error sending the InboundMaxRequest message to the connector: {}", e);
+        }
+    }
+
 }
 
 #[derive(Clone, Debug)]
@@ -216,7 +225,7 @@ pub struct SequentialProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
     connector_packet_sender: mpsc::Sender<ProcessorPacket>,
-    connector_message_sender: mpsc::Sender<ProcessorMessage>,
+    connector_message_sender: mpsc::Sender<ConnectorMessage>,
 }
 
 impl SequentialProcHandle {
@@ -295,7 +304,7 @@ pub struct ConcurrentProcHandle {
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
     connector_packet_sender: mpsc::Sender<ProcessorPacket>,
-    connector_message_sender: mpsc::Sender<ProcessorMessage>,
+    connector_message_sender: mpsc::Sender<ConnectorMessage>,
 }
 
 impl ConcurrentProcHandle {
@@ -511,7 +520,6 @@ impl Processor {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
             }
-            _ => {}
         }
     }
 
