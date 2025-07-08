@@ -3,7 +3,7 @@ use tokio;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_splice::zero_copy_bidirectional;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use nextmini_messages::RoutingTableEntry;
 

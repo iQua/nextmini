@@ -12,8 +12,7 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tokio_splice::zero_copy_bidirectional;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 
 use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 
