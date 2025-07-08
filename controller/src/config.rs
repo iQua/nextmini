@@ -110,7 +110,7 @@ pub struct Config {
 // Default values if they are missing from the configuration file
 
 /// The default port for the TCP server operating in max mode to listen on
-fn default_max_server_port() -> String {
+fn default_max_server_port() -> u16 {
     8081
 }
 
