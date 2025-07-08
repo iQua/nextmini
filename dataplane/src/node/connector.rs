@@ -1,38 +1,22 @@
-use std::fmt::{Display, Formatter};
-use std::sync::Arc;
-
 use ahash::AHashMap;
-use flume;
 use tokio;
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
-use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
-
-use crate::node::config::{Feature, LocalConfig};
-use crate::node::flow::UserSpaceSender;
-use crate::node::flow::server::UserSpaceServerHandle;
-use crate::node::local::interface::LocalInterfaceHandle;
-use crate::node::network::tcp_max::TcpMaxClient;
+use crate::node::config::LocalConfig;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorPacket;
+use crate::node::processor::ProcessorMessage;
 use crate::node::route::RoutingTable;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
-pub enum ConnectorMessage {
-    ConnectTcpMaxClient(TcpMaxClient),
-    AddNodeAddress(NodeId, String),
-    UpdateRoutingTable(Vec<RoutingTableEntry>),
-}
-
 pub struct Connector {
     packet_receiver: mpsc::Receiver<ProcessorPacket>,
-    message_receiver: mpsc::Receiver<ConnectorMessage>,
+    message_receiver: mpsc::Receiver<ProcessorMessage>,
     config: LocalConfig,
     tcp_max_client: Option<TcpMaxClient>,
     routing_table: RoutingTable,
@@ -43,15 +27,15 @@ pub struct Connector {
 impl Connector {
     pub fn new(
         packet_receiver: mpsc::Receiver<ProcessorPacket>,
-        message_receiver: mpsc::Receiver<ConnectorMessage>,
+        message_receiver: mpsc::Receiver<ProcessorMessage>,
         config: LocalConfig,
     ) -> Self {
         Self {
             packet_receiver,
             message_receiver,
-            config,
+            config: config.clone(),
             tcp_max_client: None,
-            routing_table: RoutingTable::new(config.node_id),
+            routing_table: RoutingTable::new(config),
             node_addresses: AHashMap::new(),
             schedulers: AHashMap::new(),
         }
@@ -68,26 +52,27 @@ impl Connector {
                         ProcessorPacket::ProcessPacket(packet) => {
                             self.process_packet(packet).await;
                         }
-                        ProcessorPacket::InboundMaxRequest(flow_id, stream) => {
-                            self.handle_inbound_request(flow_id, stream).await;
-                        }
                     }
                 }
             }
         }
     }
 
-    async fn handle_message(&mut self, msg: ConnectorMessage) {
+    async fn handle_message(&mut self, msg: ProcessorMessage) {
         match msg {
-            ConnectorMessage::ConnectTcpMaxClient(tcp_max_client) => {
+            ProcessorMessage::ConnectTcpMaxClient(tcp_max_client) => {
                 self.tcp_max_client = Some(tcp_max_client);
             }
-            ConnectorMessage::AddNodeAddress(node_id, address) => {
+            ProcessorMessage::AddNodeAddress(node_id, address) => {
                 self.node_addresses.insert(node_id, address);
             }
-            ConnectorMessage::UpdateRoutingTable(routes) => {
+            ProcessorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
+            ProcessorMessage::InboundMaxRequest(flow_id, stream) => {
+                self.handle_inbound_request(flow_id, stream).await;
+            }
+            _ => {}
         }
     }
 
@@ -133,7 +118,7 @@ impl Connector {
 
             // inserts reversed flow id.
             self.schedulers
-                .insert(SchedulerKey::Flow(flow_id.reverse()), scheduler);
+                .insert(flow_id.reverse(), scheduler);
 
             return;
         }

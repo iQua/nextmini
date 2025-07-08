@@ -31,7 +31,6 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 // Message types for the processor actor.
 pub enum ProcessorPacket {
     ProcessPacket(Packet),
-    InboundMaxRequest(FlowId, TcpStream),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +48,7 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    InboundMaxRequest(FlowId, TcpStream),
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +72,20 @@ impl ProcessorHandle {
         }
     }
 
+    pub fn connector_message_sender(&self) -> &mpsc::Sender<ProcessorMessage> {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.connector_message_sender,
+            ProcessorHandle::Concurrent(handle) => &handle.connector_message_sender,
+        }
+    }
+
+    pub fn connector_packet_sender(&self) -> &mpsc::Sender<ProcessorPacket> {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.connector_packet_sender,
+            ProcessorHandle::Concurrent(handle) => &handle.connector_packet_sender,
+        }
+    }
+
     pub fn add_node(
         &self,
         node_id: NodeId,
@@ -84,28 +98,12 @@ impl ProcessorHandle {
         Ok(())
     }
 
-    pub fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMessage::AddNodeAddress(node_id, remote_addr))
-        {
-            error!(
-                "Error sending the AddNodeAddress message to the processors: {}",
-                e
-            );
-        }
+    pub async fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
+        self.connector_message_sender().send(ProcessorMessage::AddNodeAddress(node_id, remote_addr)).await;
     }
 
-    pub fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMessage::ConnectTcpMaxClient(tcp_max_client))
-        {
-            error!(
-                "Error sending the ConnectTcpMaxClient message to the processors: {}",
-                e
-            );
-        }
+    pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
+        self.connector_message_sender().send(ProcessorMessage::ConnectTcpMaxClient(tcp_max_client)).await;
     }
 
     // connects the local interface to the processor
@@ -148,16 +146,20 @@ impl ProcessorHandle {
         }
     }
 
-    pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+        // broadcast to all processors
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::UpdateRoutingTable(routes))
+            .send(ProcessorMessage::UpdateRoutingTable(routes.clone()))
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the processors: {}",
                 e
             );
         };
+
+        // send to the connector
+        self.connector_message_sender().send(ProcessorMessage::UpdateRoutingTable(routes)).await;
     }
 
     pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
@@ -203,35 +205,18 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
-        let inbound_max_request = ProcessorPacket::InboundMaxRequest(flow_id, stream);
-        // TODO: no need to match
-        match self {
-            ProcessorHandle::Sequential(handle) => {
-                if let Err(e) = handle.connector_sender.try_send(inbound_max_request) {
-                    warn!(
-                        "SequentialProcMaxHandle: Error sending a splice connection to the connector: {}.",
-                        e
-                    );
-                }
-            }
-            ProcessorHandle::Concurrent(handle) => {
-                if let Err(e) = handle.connector_sender.try_send(inbound_max_request) {
-                    warn!(
-                        "ConcurrentProcMaxHandle: Error sending a splice connection to the processor: {}.",
-                        e
-                    );
-                }
-            }
-        }
+    pub async fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
+        self.connector_message_sender().send(ProcessorMessage::InboundMaxRequest(flow_id, stream)).await;
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct SequentialProcHandle {
+    operating_mode: OperatingMode,
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
-    connector_sender: mpsc::Sender<ProcessorPacket>,
+    connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    connector_message_sender: mpsc::Sender<ProcessorMessage>,
 }
 
 impl SequentialProcHandle {
@@ -256,39 +241,61 @@ impl SequentialProcHandle {
         }
 
         // create a new connector
-        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
-        let (message_sender, message_receiver) = mpsc::channel(config.channel_capacity);
-        let mut connector = Connector::new(packet_receiver, message_sender, config);
+        let (connector_packet_sender, connector_packet_receiver) =
+            mpsc::channel(config.channel_capacity);
+        let (connector_message_sender, connector_message_receiver) =
+            mpsc::channel(config.channel_capacity);
+        let mut connector = Connector::new(
+            connector_packet_receiver,
+            connector_message_receiver,
+            config.clone(),
+        );
 
         tokio::spawn(async move {
             connector.run().await;
         });
 
         Self {
+            operating_mode: config.operating_mode,
             broadcast_sender,
             packet_senders,
-            connector_sender,
+            connector_packet_sender,
+            connector_message_sender,
         }
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        let idx = packet.flow_id.hash(self.packet_senders.len());
-        let sender = &self.packet_senders[idx];
+        match self.operating_mode {
+            OperatingMode::Normal => {
+                let idx = packet.flow_id.hash(self.packet_senders.len());
+                let sender = self.packet_senders[idx].clone();
+                if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                    warn!(
+                        "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                        e
+                    );
+                }
+            }
+            OperatingMode::Max => {
+                if let Err(e) = self.connector_packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                    warn!(
+                        "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                        e
+                    );
+                }
+            }
+        };
 
-        if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
-            warn!(
-                "SequentialProcHandle: Error sending a packet to the processor: {}.",
-                e
-            );
-        }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ConcurrentProcHandle {
+    operating_mode: OperatingMode,
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
-    connector_sender: mpsc::Sender<ProcessorPacket>,
+    connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    connector_message_sender: mpsc::Sender<ProcessorMessage>,
 }
 
 impl ConcurrentProcHandle {
@@ -309,30 +316,53 @@ impl ConcurrentProcHandle {
         }
 
         // create a new connector
-        let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
-        let (message_sender, message_receiver) = mpsc::channel(config.channel_capacity);
-        let mut connector = Connector::new(packet_receiver, message_sender, config);
+        let (connector_packet_sender, connector_packet_receiver) =
+            mpsc::channel(config.channel_capacity);
+        let (connector_message_sender, connector_message_receiver) =
+            mpsc::channel(config.channel_capacity);
+        let mut connector = Connector::new(
+            connector_packet_receiver,
+            connector_message_receiver,
+            config.clone(),
+        );
 
         tokio::spawn(async move {
             connector.run().await;
         });
 
         Self {
+            operating_mode: config.operating_mode,
             broadcast_sender,
             packet_sender,
-            connector_sender,
+            connector_packet_sender,
+            connector_message_sender,
         }
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        if let Err(e) = self
-            .packet_sender
-            .try_send(ProcessorPacket::ProcessPacket(packet))
-        {
-            warn!(
-                "ConcurrentProcHandle: Error sending a packet to the processor: {}",
-                e
-            );
+        match self.operating_mode {
+            OperatingMode::Normal => {
+                if let Err(e) = self
+                    .packet_sender
+                    .try_send(ProcessorPacket::ProcessPacket(packet))
+                {
+                    warn!(
+                        "ConcurrentProcHandle: Error sending a packet to the processor: {}",
+                        e
+                    );
+                }
+            }
+            OperatingMode::Max => {
+                if let Err(e) = self
+                    .connector_packet_sender
+                    .try_send(ProcessorPacket::ProcessPacket(packet))
+                {
+                    warn!(
+                        "ConcurrentProcHandle: Error sending a packet to the connector: {}",
+                        e
+                    );
+                }
+            }
         }
     }
 }
@@ -404,13 +434,7 @@ struct Processor {
     routing_table: RoutingTable,
 
     // a unified hashmap for schedulers in both normal and max modes
-    schedulers: AHashMap<SchedulerKey, SchedulerHandle>,
-
-    // the remote nodes addresses (for max mode)
-    node_addresses: AHashMap<NodeId, String>,
-
-    // the tcp max client
-    tcp_max_client: Option<TcpMaxClient>,
+    schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 
 impl Processor {
@@ -427,9 +451,7 @@ impl Processor {
             server: None,
             routing_table: RoutingTable::new(config.clone()),
             schedulers: AHashMap::new(),
-            node_addresses: AHashMap::new(),
             config,
-            tcp_max_client: None,
         }
     }
 
@@ -448,10 +470,6 @@ impl Processor {
                                 self.process_packet(packet).await;
                             }
                         }
-                        // for relay nodes
-                        ProcessorPacket::InboundMaxRequest(flow_id, stream) => {
-                            self.handle_inbound_max_request(flow_id, stream).await;
-                        }
                     }
                 }
                 Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
@@ -468,13 +486,7 @@ impl Processor {
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
                 self.schedulers
-                    .insert(SchedulerKey::Node(node_id), scheduler);
-            }
-            ProcessorMessage::AddNodeAddress(node_id, remote_addr) => {
-                self.node_addresses.insert(node_id, remote_addr);
-            }
-            ProcessorMessage::ConnectTcpMaxClient(tcp_max_client) => {
-                self.tcp_max_client = Some(tcp_max_client);
+                    .insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
@@ -486,7 +498,7 @@ impl Processor {
                 self.user_space_senders.remove(&flow_id);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
-                if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(node_id)) {
+                if let Some(scheduler) = self.schedulers.get(&node_id) {
                     scheduler.limit_rate(spec);
                 }
             }
@@ -499,6 +511,7 @@ impl Processor {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
             }
+            _ => {}
         }
     }
 
@@ -577,7 +590,7 @@ impl Processor {
                 }
             }
         } else {
-            if let Some(scheduler) = self.schedulers.get(&SchedulerKey::Node(next_hop_id)) {
+            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
                 scheduler.send(packet);
             }
         }
