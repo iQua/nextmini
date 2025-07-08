@@ -25,7 +25,6 @@ pub enum ConnectorMessage {
 pub struct Connector {
     packet_receiver: mpsc::Receiver<ProcessorPacket>,
     message_receiver: mpsc::Receiver<ConnectorMessage>,
-    config: LocalConfig,
     tcp_max_client: Option<TcpMaxClient>,
     routing_table: RoutingTable,
     node_addresses: AHashMap<NodeId, String>,
@@ -41,7 +40,6 @@ impl Connector {
         Self {
             packet_receiver,
             message_receiver,
-            config: config.clone(),
             tcp_max_client: None,
             routing_table: RoutingTable::new(config),
             node_addresses: AHashMap::new(),

@@ -173,9 +173,43 @@ impl ProcessorHandle {
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        match self {
-            ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
-            ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
+        let operating_mode = match self {
+            ProcessorHandle::Sequential(handle) => handle.operating_mode,
+            ProcessorHandle::Concurrent(handle) => handle.operating_mode,
+        };
+
+        match operating_mode {
+            OperatingMode::Normal => match self {
+                ProcessorHandle::Sequential(handle) => {
+                    let idx = packet.flow_id.hash(handle.packet_senders.len());
+                    let sender = handle.packet_senders[idx].clone();
+                    if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            e
+                        );
+                    }
+                }
+                ProcessorHandle::Concurrent(handle) => {
+                    if let Err(e) = handle
+                        .packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
+                        warn!(
+                            "ConcurrentProcHandle: Error sending a packet to the processor: {}",
+                            e
+                        );
+                    }
+                }
+            },
+            OperatingMode::Max => {
+                if let Err(e) = self
+                    .connector_packet_sender()
+                    .try_send(ProcessorPacket::ProcessPacket(packet))
+                {
+                    warn!("Error sending a packet to the connector: {}", e);
+                }
+            }
         }
     }
 
@@ -296,32 +330,6 @@ impl SequentialProcHandle {
             connector_message_sender,
         }
     }
-
-    pub fn process_packet(&self, packet: Packet) {
-        match self.operating_mode {
-            OperatingMode::Normal => {
-                let idx = packet.flow_id.hash(self.packet_senders.len());
-                let sender = self.packet_senders[idx].clone();
-                if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
-                    warn!(
-                        "SequentialProcHandle: Error sending a packet to the processor: {}.",
-                        e
-                    );
-                }
-            }
-            OperatingMode::Max => {
-                if let Err(e) = self
-                    .connector_packet_sender
-                    .try_send(ProcessorPacket::ProcessPacket(packet))
-                {
-                    warn!(
-                        "SequentialProcHandle: Error sending a packet to the connector: {}.",
-                        e
-                    );
-                }
-            }
-        };
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -371,33 +379,6 @@ impl ConcurrentProcHandle {
             packet_sender,
             connector_packet_sender,
             connector_message_sender,
-        }
-    }
-
-    pub fn process_packet(&self, packet: Packet) {
-        match self.operating_mode {
-            OperatingMode::Normal => {
-                if let Err(e) = self
-                    .packet_sender
-                    .try_send(ProcessorPacket::ProcessPacket(packet))
-                {
-                    warn!(
-                        "ConcurrentProcHandle: Error sending a packet to the processor: {}",
-                        e
-                    );
-                }
-            }
-            OperatingMode::Max => {
-                if let Err(e) = self
-                    .connector_packet_sender
-                    .try_send(ProcessorPacket::ProcessPacket(packet))
-                {
-                    warn!(
-                        "ConcurrentProcHandle: Error sending a packet to the connector: {}",
-                        e
-                    );
-                }
-            }
         }
     }
 }

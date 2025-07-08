@@ -63,7 +63,7 @@ impl ControllerInterfaceHandle {
         if let OperatingMode::Max = config.operating_mode {
             let tcp_max_client =
                 TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
-            processors.connect_tcp_max_client(tcp_max_client);
+            processors.connect_tcp_max_client(tcp_max_client).await;
         }
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
@@ -246,7 +246,7 @@ impl ControllerToDataplaneReceiver {
 
                 OperatingMode::Max => {
                     self.processors
-                        .add_node_address(remote_node_id, remote_addr);
+                        .add_node_address(remote_node_id, remote_addr).await;
                 }
             },
 
@@ -266,7 +266,7 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                self.processors.update_routing_table(routes);
+                self.processors.update_routing_table(routes).await;
             }
 
             ControllerToDataplane::AddFlows { flows } => {
