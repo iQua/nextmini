@@ -271,42 +271,6 @@ async fn handle_connection(
                                     node_id, e
                                 ),
                             }
-
-                            // informs the existing node about the new node
-                            let node_ws_guard = node_ws.read().await;
-                            if let Some(writer) = node_ws_guard.get(&(node.id as usize)) {
-                                let remote_addr =
-                                    if new_node.private_network_name == node.private_network_name {
-                                        new_node.private_network_addr.clone()
-                                    } else {
-                                        new_node.public_network_addr.clone()
-                                    };
-
-                                // replace the port with the TCP-MAX server port
-                                let remote_ip = remote_addr.split(':').next().unwrap();
-                                let remote_addr =
-                                    format!("{}:{}", remote_ip, config.max_server_port);
-
-                                let msg = ControllerToDataplane::AddNode {
-                                    remote_node_id: new_node.id as usize,
-                                    remote_addr,
-                                };
-                                match writer
-                                    .lock()
-                                    .await
-                                    .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                                    .await
-                                {
-                                    Ok(_) => info!(
-                                        "Sent an AddNode message for node {} to node {}.",
-                                        new_node.id, node.id
-                                    ),
-                                    Err(e) => error!(
-                                        "Failed to send an AddNode message to node {}: {}.",
-                                        node.id, e
-                                    ),
-                                }
-                            }
                         }
 
                         // installs routes
@@ -349,10 +313,15 @@ async fn handle_connection(
                                 tokio::time::sleep(Duration::from_secs(1)).await;
 
                                 info!(
-                                    "All {} nodes connected, sending flows and link rates to all nodes.",
+                                    "All {} nodes connected, sending node addresses,link rates and flows to all nodes.",
                                     expected_node_count
                                 );
 
+                                // update remote nodes addresses for connector
+                                send_nodes_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
+
+                                // waits for all nodes to receive the AddNode messages
+                                tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_link_rates(config.clone(), node_ws.clone()).await;
 
                                 // waits for all link rates to be set before sending the flows
@@ -536,6 +505,66 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
                 Err(e) => error!(
                     "Failed to send the SetLinkRate message to node {}: {}.",
                     link_rate.src_node_id, e
+                ),
+            }
+        }
+    }
+}
+
+async fn send_nodes_addresses(
+    config: Config,
+    node_ws: NodeWriterMap,
+    db_pool: Arc<Pool<Postgres>>,
+) {
+    let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
+        .fetch_all(&*db_pool)
+        .await
+    {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            error!("Failed to fetch nodes from database: {}", e);
+            return;
+        }
+    };
+
+    let node_ws_guard = node_ws.read().await;
+
+    info!("Sending AddNodeAddress messages for {} nodes.", node_ws_guard.len());
+
+    for (node_id, writer) in node_ws_guard.iter() {
+        let remote_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|node| node.id != *node_id as i32)
+            .collect();
+        
+        for node in remote_nodes{
+            let remote_addr =
+                if node.private_network_name == node.private_network_name {
+                    node.private_network_addr.clone()
+                } else {
+                    node.public_network_addr.clone()
+                };
+
+            // replace the port with the Tcp max server port
+            let remote_ip = remote_addr.split(':').next().unwrap();
+            let remote_addr =
+                format!("{}:{}", remote_ip, config.max_server_port.to_string());
+
+            let msg = ControllerToDataplane::AddNodeAddress {
+                remote_node_id: node.id as usize,
+                remote_max_server_addr: remote_addr,
+            };
+
+            match writer
+                .lock()
+                .await
+                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .await
+            {
+                Ok(_) => {},
+                Err(e) => error!(
+                    "Failed to send an AddNodeAddress message to node {}: {}.",
+                    node.id, e
                 ),
             }
         }

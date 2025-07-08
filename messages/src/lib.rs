@@ -129,6 +129,10 @@ pub enum ControllerToDataplane {
         remote_node_id: usize,
         remote_addr: String,
     },
+    AddNodeAddress {
+        remote_node_id: usize,
+        remote_max_server_addr: String,
+    },
     InstallRoutes {
         routes: Vec<RoutingTableEntry>,
     },
