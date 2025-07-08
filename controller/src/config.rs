@@ -49,7 +49,7 @@ pub struct LinkRate {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
-    /// The port to listen on
+    /// The port for the persistent TCP/QUIC server operating in normal mode to listen on
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -66,9 +66,9 @@ pub struct Config {
     #[serde(default = "default_user_space_base_addr")]
     pub user_space_base_addr: Ipv4Addr,
 
-    /// The max mode tcp server port
+    /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
     #[serde(default = "default_max_server_port")]
-    pub max_server_port: String,
+    pub max_server_port: u16,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -109,9 +109,9 @@ pub struct Config {
 
 // Default values if they are missing from the configuration file
 
-/// The default max mode tcp server port
+/// The default port for the TCP server operating in max mode to listen on
 fn default_max_server_port() -> String {
-    "8081".to_string()
+    8081
 }
 
 /// The default port number to listen on

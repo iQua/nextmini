@@ -13,7 +13,7 @@ pub fn build_startup_response(
     net_mask: std::net::Ipv4Addr,
     virtual_base_addr: std::net::Ipv4Addr,
     user_space_base_addr: std::net::Ipv4Addr,
-    max_server_port: String,
+    max_server_port: u16,
     protocol: Protocol,
     scheduler_type: SchedulingDiscipline,
     nodes: Option<NodeSpec>,

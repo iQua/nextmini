@@ -91,10 +91,10 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
-    /// The port for the TCP server operating in max mode to listen on
-    #[default("8081".to_string())]
+    /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
+    #[default(8081)]
     #[arg(skip)]
-    pub max_server_port: String,
+    pub max_server_port: u16,
 
     #[default(0)]
     #[arg(long)]
