@@ -227,28 +227,29 @@ impl ControllerToDataplaneReceiver {
             ControllerToDataplane::AddNode {
                 remote_node_id,
                 remote_addr,
-            } => match self.config.operating_mode {
-                OperatingMode::Normal => {
-                    // creates new connection to the remote node.
-                    let network_interface = NetworkInterfaceHandle::new_as_client(
-                        self.config.clone(),
-                        remote_node_id,
-                        remote_addr.clone(),
-                        self.processors.clone(),
-                        self.reporter.clone(),
-                    )
+            } => {
+                // creates new connection to the remote node.
+                let network_interface = NetworkInterfaceHandle::new_as_client(
+                    self.config.clone(),
+                    remote_node_id,
+                    remote_addr.clone(),
+                    self.processors.clone(),
+                    self.reporter.clone(),
+                )
+                .await;
+
+                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+
+                let _ = self.processors.add_node(remote_node_id, scheduler);
+
+                // replace the port with the TCP-MAX server port
+                let remote_ip = remote_addr.split(':').next().unwrap();
+                let remote_addr = format!("{}:{}", remote_ip, config.tcp_max_server_port);
+
+                self.processors
+                    .add_node_address(remote_node_id, remote_addr)
                     .await;
-
-                    let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
-
-                    let _ = self.processors.add_node(remote_node_id, scheduler);
-                }
-
-                OperatingMode::Max => {
-                    self.processors
-                        .add_node_address(remote_node_id, remote_addr).await;
-                }
-            },
+            }
 
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
                 info!(
