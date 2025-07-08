@@ -172,7 +172,6 @@ impl ProcessorHandle {
         }
     }
 
-
     pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -305,7 +304,7 @@ impl SequentialProcHandle {
                     e
                 );
             }
-        }else{
+        } else {
             // sends according to the operating mode at src node
             match self.config.operating_mode {
                 OperatingMode::Normal => {
@@ -317,7 +316,10 @@ impl SequentialProcHandle {
                     }
                 }
                 OperatingMode::Max => {
-                    if let Err(e) = self.connector_packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                    if let Err(e) = self
+                        .connector_packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
                         warn!(
                             "SequentialProcHandle: Error sending a packet to the connector: {}.",
                             e
@@ -378,25 +380,30 @@ impl ConcurrentProcHandle {
             connector_message_sender,
         }
     }
-    pub fn process_packet(&self, packet: Packet) {
 
+    pub fn process_packet(&self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
         let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
 
-
         // sends through the processor for local delivery
         if dst_node_id == self.config.node_id {
-            if let Err(e) = self.packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+            if let Err(e) = self
+                .packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet))
+            {
                 warn!(
                     "SequentialProcHandle: Error sending a packet to the processor: {}.",
                     e
                 );
             }
-        }else{
+        } else {
             // sends according to the operating mode at src node
             match self.config.operating_mode {
                 OperatingMode::Normal => {
-                    if let Err(e) = self.packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                    if let Err(e) = self
+                        .packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
                         warn!(
                             "SequentialProcHandle: Error sending a packet to the processor: {}.",
                             e
@@ -404,7 +411,10 @@ impl ConcurrentProcHandle {
                     }
                 }
                 OperatingMode::Max => {
-                    if let Err(e) = self.connector_packet_sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                    if let Err(e) = self
+                        .connector_packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
                         warn!(
                             "SequentialProcHandle: Error sending a packet to the connector: {}.",
                             e
