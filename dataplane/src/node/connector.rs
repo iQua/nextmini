@@ -97,10 +97,15 @@ impl Connector {
             return;
         }
 
-        // initiates tcp max connections as the src node
-        let next_hop_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
-        let remote_addr = self.node_addresses[&next_hop_id].clone();
+        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
+        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
 
+        if next_hop_id == self.routing_table.local_id {
+            // TODO: Handle local delivery here
+        }
+
+        // initiates tcp max connections as the src node
+        let remote_addr = self.node_addresses[&next_hop_id].clone();
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
         let stream = tcp_max_client
             .request_remote(packet.flow_id, &remote_addr)
