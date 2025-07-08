@@ -244,7 +244,7 @@ impl ControllerToDataplaneReceiver {
 
                 // replace the port with the TCP-MAX server port
                 let remote_ip = remote_addr.split(':').next().unwrap();
-                let remote_addr = format!("{}:{}", remote_ip, self.config.tcp_max_server_port);
+                let remote_addr = format!("{}:{}", remote_ip, config.tcp_max_server_port);
 
                 self.processors
                     .add_node_address(remote_node_id, remote_addr)
