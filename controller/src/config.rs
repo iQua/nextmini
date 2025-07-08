@@ -103,6 +103,7 @@ pub struct Config {
     pub db: DBConfig,
 
     /// The operating mode.
+    #[serde(default)]
     pub nodes: Vec<NodeSpec>,
 }
 
