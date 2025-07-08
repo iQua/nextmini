@@ -172,6 +172,7 @@ impl ProcessorHandle {
         };
     }
 
+    // processes a packet called by the local reader actor
     pub fn process_packet(&self, packet: Packet) {
         let operating_mode = match self {
             ProcessorHandle::Sequential(handle) => handle.operating_mode,
