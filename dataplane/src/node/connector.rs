@@ -50,15 +50,22 @@ impl Connector {
     pub async fn run(&mut self) {
         loop {
             tokio::select! {
-                Some(msg) = self.message_receiver.recv() => {
-                    self.handle_message(msg).await;
-                }
+                // waits for a first packet or a message
                 Some(msg) = self.packet_receiver.recv() => {
                     match msg {
-                        ProcessorPacket::ProcessPacket(packet) => {
-                            self.process_packet(packet).await;
+                        // starts a batch with the first packet
+                        ProcessorPacket::ProcessPacket(first_packet) => {
+                            self.process_packet(first_packet).await;
+
+                            // starts processing packets in batches
+                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
+                                self.process_packet(packet).await;
+                            }
                         }
                     }
+                }
+                Some(msg) = self.message_receiver.recv() => {
+                    self.handle_message(msg).await;
                 }
             }
         }
