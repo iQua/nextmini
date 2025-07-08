@@ -59,12 +59,10 @@ impl ControllerInterfaceHandle {
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
 
-        // connects the tcp max client to the processor if at max mode.
-        if let OperatingMode::Max = config.operating_mode {
-            let tcp_max_client =
-                TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
-            processors.connect_tcp_max_client(tcp_max_client).await;
-        }
+        // connects the tcp max client
+        let tcp_max_client =
+            TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
+        processors.connect_tcp_max_client(tcp_max_client).await;
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
@@ -246,7 +244,8 @@ impl ControllerToDataplaneReceiver {
 
                 OperatingMode::Max => {
                     self.processors
-                        .add_node_address(remote_node_id, remote_addr).await;
+                        .add_node_address(remote_node_id, remote_addr)
+                        .await;
                 }
             },
 
