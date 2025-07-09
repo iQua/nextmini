@@ -78,7 +78,7 @@ impl Conductor {
         // starts listening with either TCP or QUIC on published ports (private and/or public)
         let public_port = self.config.public_network_port.clone();
         let private_port = self.config.private_network_port.clone();
-        let max_server_port = self.config.max_server_port.clone();
+        let max_server_port = self.config.max_server_port;
 
         match self.config.protocol {
             Protocol::Tcp => {
