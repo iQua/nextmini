@@ -106,13 +106,13 @@ impl Connector {
         // sends directly when the tcp max connection is established or establishes a new connection.
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             scheduler.send(packet);
-        }else{
+        } else {
             let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
             let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
-    
+
             // initiates tcp max connections as the src node
             let remote_addr = self.node_addresses[&next_hop_id].clone();
-    
+
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
             // requests a remote stream for the flow
             let stream = tcp_max_client
@@ -122,10 +122,10 @@ impl Connector {
             let scheduler = tcp_max_client
                 .initialize_scheduler(stream, next_hop_id)
                 .await;
-    
+
             // sends the packet
             scheduler.send(packet);
-    
+
             // maps the flow id to the scheduler for following packets
             self.schedulers.insert(flow_id, scheduler);
         }
@@ -146,13 +146,11 @@ impl Connector {
 
             // inserts reversed flow id.
             self.schedulers.insert(flow_id.reverse(), scheduler);
-        }else{
+        } else {
             let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
-    
-            let mut outbound_stream = tcp_max_client
-                .request_remote(flow_id, &next_hop_addr)
-                .await;
-    
+
+            let mut outbound_stream = tcp_max_client.request_remote(flow_id, &next_hop_addr).await;
+
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                 Ok((upstream_bytes, downstream_bytes)) => {
                     info!(
@@ -165,6 +163,5 @@ impl Connector {
                 }
             }
         }
-
     }
 }
