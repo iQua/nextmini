@@ -146,8 +146,6 @@ impl TcpMaxClient {
         )
         .await;
 
-        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
-
-        scheduler
+        SchedulerHandle::new(self.config.clone(), network_interface)
     }
 }
