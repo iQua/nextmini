@@ -266,17 +266,20 @@ impl SequentialProcHandle {
             });
         }
 
-        // create a new connector
+        // create a packet channel for the connector
         let (connector_packet_sender, connector_packet_receiver) =
             mpsc::channel(config.channel_capacity);
+        // create a message channel for the connector
         let (connector_message_sender, connector_message_receiver) =
             mpsc::channel(config.channel_capacity);
+        // create a new connector
         let mut connector = Connector::new(
             connector_packet_receiver,
             connector_message_receiver,
             config.clone(),
         );
 
+        // spawns a single connector task
         tokio::spawn(async move {
             connector.run().await;
         });
@@ -289,6 +292,7 @@ impl SequentialProcHandle {
             connector_message_sender,
         }
     }
+
     pub fn process_packet(&self, packet: Packet) {
         let idx = packet.flow_id.hash(self.packet_senders.len());
         let sender = &self.packet_senders[idx];
