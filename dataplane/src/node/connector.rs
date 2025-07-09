@@ -159,20 +159,16 @@ impl Connector {
             .request_remote(flow_id, &next_hop_addr)
             .await;
 
-        // TODO: We might don't need to spawn the task here;
-        // spawns a new task to handle the connection splicing.
-        tokio::spawn(async move {
-            match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
-                Ok((upstream_bytes, downstream_bytes)) => {
-                    info!(
-                        "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
-                        flow_id, next_hop_addr, upstream_bytes, downstream_bytes
-                    );
-                }
-                Err(e) => {
-                    error!("Error during splicing for flow {}: {}.", flow_id, e);
-                }
+        match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+            Ok((upstream_bytes, downstream_bytes)) => {
+                info!(
+                    "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
+                    flow_id, next_hop_addr, upstream_bytes, downstream_bytes
+                );
             }
-        });
+            Err(e) => {
+                error!("Error during splicing for flow {}: {}.", flow_id, e);
+            }
+        }
     }
 }
