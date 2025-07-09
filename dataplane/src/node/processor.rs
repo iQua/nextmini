@@ -496,7 +496,7 @@ struct Processor {
     // the routing table
     routing_table: RoutingTable,
 
-    // a unified hashmap for schedulers in both normal and max modes
+    // a unified hashmap for schedulers in normal mode
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 

@@ -23,11 +23,22 @@ pub enum ConnectorMessage {
 }
 
 pub struct Connector {
+    // receives packets from the processor handle at the src node in max mode
     packet_receiver: mpsc::Receiver<ProcessorPacket>,
+
+    // receives messages from the processor handle
     message_receiver: mpsc::Receiver<ConnectorMessage>,
+
+    // the tcp max client
     tcp_max_client: Option<TcpMaxClient>,
+
+    // the routing table
     routing_table: RoutingTable,
+
+    // the remote node addresses
     node_addresses: AHashMap<NodeId, String>,
+
+    // a hashmap for the schedulers in max mode
     schedulers: AHashMap<FlowId, SchedulerHandle>,
 }
 
