@@ -540,7 +540,17 @@ async fn send_nodes_addresses(
     );
 
     for (node_id, writer) in node_ws_guard.iter() {
-        let current_node = nodes.iter().find(|node| node.id == *node_id as i32).unwrap();
+        let current_node = match nodes.iter().find(|n| n.id == *node_id as i32) {
+            Some(node) => node,
+            None => {
+                warn!(
+                    "Node {} is in the writer map but not in the database, skipping.",
+                    node_id
+                );
+                continue;
+            }
+        };
+
         let remote_nodes: Vec<_> = nodes
             .iter()
             .filter(|node| node.id != *node_id as i32)
