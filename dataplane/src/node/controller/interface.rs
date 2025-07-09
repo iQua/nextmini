@@ -245,12 +245,6 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_max_server_addr,
             } => {
-                info!(
-                    "Adding node {} tcp max server address for node {}",
-                    remote_node_id, self.config.node_id
-                );
-
-                // adds remote tcp max server address to the connector.
                 self.processors
                     .add_node_address(remote_node_id, remote_max_server_addr)
                     .await;
