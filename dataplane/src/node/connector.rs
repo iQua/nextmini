@@ -103,73 +103,68 @@ impl Connector {
     async fn process_packet(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
 
-        // sends the packet directly when the tcp max connection is established at the src node.
+        // sends directly when the tcp max connection is established or establishes a new connection.
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             scheduler.send(packet);
-            return;
+        }else{
+            let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
+            let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+    
+            // initiates tcp max connections as the src node
+            let remote_addr = self.node_addresses[&next_hop_id].clone();
+    
+            let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
+            // requests a remote stream for the flow
+            let stream = tcp_max_client
+                .request_remote(packet.flow_id, &remote_addr)
+                .await;
+            // initializes a scheduler with network interface for the flow
+            let scheduler = tcp_max_client
+                .initialize_scheduler(stream, next_hop_id)
+                .await;
+    
+            // sends the packet
+            scheduler.send(packet);
+    
+            // maps the flow id to the scheduler for following packets
+            self.schedulers.insert(flow_id, scheduler);
         }
-
-        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
-        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
-
-        // initiates tcp max connections as the src node
-        let remote_addr = self.node_addresses[&next_hop_id].clone();
-
-        let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
-        // requests a remote stream for the flow
-        let stream = tcp_max_client
-            .request_remote(packet.flow_id, &remote_addr)
-            .await;
-        // initializes a scheduler with network interface for the flow
-        let scheduler = tcp_max_client
-            .initialize_scheduler(stream, next_hop_id)
-            .await;
-
-        // sends the packet
-        scheduler.send(packet);
-
-        // maps the flow id to the scheduler for following packets
-        self.schedulers.insert(flow_id, scheduler);
     }
 
     // Handles inbound requests as relay nodes.
     async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+        let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
 
-        // handles the case at the dst node.
+        // creates a scheduler for response packets, if at the dst node.
+        // requests and splices the connection to the next hop, if at the relay node.
         if next_hop_id == self.routing_table.local_id {
-            let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
             let scheduler = tcp_max_client
                 .initialize_scheduler(inbound_stream, next_hop_id)
                 .await;
 
             // inserts reversed flow id.
             self.schedulers.insert(flow_id.reverse(), scheduler);
-
-            return;
-        }
-
-        // handles the case at a relay node.
-        let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
-
-        let mut outbound_stream = self
-            .tcp_max_client
-            .as_ref()
-            .unwrap()
-            .request_remote(flow_id, &next_hop_addr)
-            .await;
-
-        match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
-            Ok((upstream_bytes, downstream_bytes)) => {
-                info!(
-                    "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
-                    flow_id, next_hop_addr, upstream_bytes, downstream_bytes
-                );
-            }
-            Err(e) => {
-                error!("Error during splicing for flow {}: {}.", flow_id, e);
+        }else{
+            let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
+    
+            let mut outbound_stream = tcp_max_client
+                .request_remote(flow_id, &next_hop_addr)
+                .await;
+    
+            match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+                Ok((upstream_bytes, downstream_bytes)) => {
+                    info!(
+                        "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
+                        flow_id, next_hop_addr, upstream_bytes, downstream_bytes
+                    );
+                }
+                Err(e) => {
+                    error!("Error during splicing for flow {}: {}.", flow_id, e);
+                }
             }
         }
+
     }
 }
