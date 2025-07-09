@@ -132,6 +132,7 @@ impl Connector {
         self.schedulers.insert(flow_id, scheduler);
     }
 
+    // Handles inbound requests as relay nodes.
     async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
