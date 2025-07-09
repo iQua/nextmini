@@ -629,6 +629,7 @@ impl Processor {
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+        // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers

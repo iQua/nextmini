@@ -147,7 +147,7 @@ impl Connector {
             .request_remote(flow_id, &next_hop_addr)
             .await;
 
-        // TODO: We might don't need to spawn the task;
+        // TODO: We might don't need to spawn the task here;
         // spawns a new task to handle the connection splicing.
         tokio::spawn(async move {
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
