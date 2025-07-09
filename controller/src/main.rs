@@ -540,14 +540,14 @@ async fn send_nodes_addresses(
     );
 
     for (node_id, writer) in node_ws_guard.iter() {
-        let current_node = nodes.iter().find(|node| node.id == *node_id as i32);
+        let current_node = nodes.iter().find(|node| node.id == *node_id as i32).unwrap();
         let remote_nodes: Vec<_> = nodes
             .iter()
             .filter(|node| node.id != *node_id as i32)
             .collect();
 
         for node in remote_nodes {
-            let remote_addr = if Some(node.private_network_name) == current_node.private_network_name {
+            let remote_addr = if node.private_network_name == current_node.private_network_name {
                 node.private_network_addr.clone()
             } else {
                 node.public_network_addr.clone()
