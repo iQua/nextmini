@@ -74,12 +74,9 @@ impl UserSpaceClientHandle {
             self.processors
                 .connect_user_space_sender(flow_id, packet_sender);
 
-            // sets flow weights for this flow
+            // sets flow weights for this flow, where the client is the source and the server is the destination
             if let Some(weight) = flow.flow_spec.flow_weight {
-                let flow_id = ((u32::from(client_ip) as u128) << 96)
-                    | ((u32::from(server_ip) as u128) << 64)
-                    | ((client_port as u128) << 48)
-                    | ((server_port as u128) << 32);
+                let flow_id = flow_id.reverse();
 
                 info!(
                     "Set flow weight {} for a user space TCP flow from node {} (port {}) to node {} (port {}).",
