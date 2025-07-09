@@ -182,7 +182,7 @@ async fn handle_connection(
                             config.user_space_base_addr,
                             config.max_server_port,
                             config.protocol.clone(),
-                            config.scheduler_type.clone(),
+                            config.scheduler_type,
                             node_spec,
                         );
 
@@ -342,7 +342,7 @@ async fn handle_connection(
                     }
 
                     DataplaneToController::Metrics { metrics } => {
-                        if let Some(_) = current_node_id {
+                        if current_node_id.is_some() {
                             for metric in metrics {
                                 if metric.bytes == 0 {
                                     continue;
@@ -487,7 +487,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
             .cloned()
             .collect();
 
-        if link_rates.len() > 0 {
+        if !link_rates.is_empty() {
             info!("Setting link rates for node {}.", node_id);
         }
 
@@ -540,13 +540,14 @@ async fn send_nodes_addresses(
     );
 
     for (node_id, writer) in node_ws_guard.iter() {
+        let current_node = nodes.iter().find(|node| node.id == *node_id as i32);
         let remote_nodes: Vec<_> = nodes
             .iter()
             .filter(|node| node.id != *node_id as i32)
             .collect();
 
         for node in remote_nodes {
-            let remote_addr = if node.private_network_name == node.private_network_name {
+            let remote_addr = if Some(node.private_network_name) == current_node.private_network_name {
                 node.private_network_addr.clone()
             } else {
                 node.public_network_addr.clone()
@@ -554,7 +555,7 @@ async fn send_nodes_addresses(
 
             // replace the port with the Tcp max server port
             let remote_ip = remote_addr.split(':').next().unwrap();
-            let remote_addr = format!("{}:{}", remote_ip, config.max_server_port.to_string());
+            let remote_addr = format!("{}:{}", remote_ip, config.max_server_port);
 
             let msg = ControllerToDataplane::AddNodeAddress {
                 remote_node_id: node.id as usize,
