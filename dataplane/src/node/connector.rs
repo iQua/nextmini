@@ -88,10 +88,11 @@ impl Connector {
         }
     }
 
+    /// Processes packets at the src node.
     async fn process_packet(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
 
-        // sends the packet directly when the tcp max connection is established at the src node
+        // sends the packet directly when the tcp max connection is established at the src node.
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             scheduler.send(packet);
             return;
@@ -106,10 +107,13 @@ impl Connector {
 
         // initiates tcp max connections as the src node
         let remote_addr = self.node_addresses[&next_hop_id].clone();
+
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
+        // requests a remote stream for the flow
         let stream = tcp_max_client
             .request_remote(packet.flow_id, &remote_addr)
             .await;
+        // initializes a scheduler with network interface for the flow
         let scheduler = tcp_max_client
             .initialize_scheduler(stream, next_hop_id)
             .await;
@@ -117,6 +121,7 @@ impl Connector {
         // sends the packet
         scheduler.send(packet);
 
+        // maps the flow id to the scheduler for following packets
         self.schedulers.insert(flow_id, scheduler);
     }
 
