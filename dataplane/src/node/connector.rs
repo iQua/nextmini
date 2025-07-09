@@ -103,7 +103,7 @@ impl Connector {
     async fn process_packet(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
 
-        // sends directly when the tcp max connection is established or establishes a new connection.
+        // sends directly when the tcp max connection is established or initiates a new connection.
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             scheduler.send(packet);
         } else {
