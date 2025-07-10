@@ -173,6 +173,16 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub user_space_base_addr: Ipv4Addr,
 
+    // The external network address.
+    #[default(default_external_base_address())]
+    #[arg(skip)]
+    pub external_base_address: Ipv4Addr,
+
+    // The external base network address.
+    #[default(default_external_base_addr())]
+    #[arg(skip)]
+    pub external_base_addr: Ipv4Addr,
+
     // The local network mask
     #[default(default_netmask())]
     #[arg(skip)]
@@ -254,6 +264,16 @@ fn default_user_space_base_addr() -> Ipv4Addr {
     Ipv4Addr::new(192, 168, 0, 0)
 }
 
+// The external base address for default external client.
+fn default_external_base_address() -> Ipv4Addr {
+    Ipv4Addr::new(172, 16, 8, 5)
+}
+
+// The external base address for external traffic.
+fn default_external_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(172, 16, 8, 0)
+}
+
 fn default_netmask() -> Ipv4Addr {
     Ipv4Addr::new(255, 255, 255, 0)
 }
@@ -266,12 +286,14 @@ impl LocalConfig {
 
         let tun_base = u32::from(self.virtual_base_addr);
         let user_space_base = u32::from(self.user_space_base_addr);
+        let external_base = u32::from(self.external_base_addr);
 
         match ip_addr & netmask {
             subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
             subnet if subnet == (user_space_base & netmask) => {
                 (ip_addr - user_space_base) as NodeId
             }
+            subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
             _ => {
                 panic!("Detected unknown IP {}.", ip);
             }
