@@ -66,6 +66,10 @@ pub struct Config {
     #[serde(default = "default_user_space_base_addr")]
     pub user_space_base_addr: Ipv4Addr,
 
+    /// The base ipv4 address for external network
+    #[serde(default = "default_user_space_base_addr")]
+    pub external_base_addr: Ipv4Addr,
+
     /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
     #[serde(default = "default_max_server_port")]
     pub max_server_port: u16,
@@ -135,6 +139,11 @@ fn default_user_space_base_addr() -> Ipv4Addr {
     Ipv4Addr::new(192, 168, 0, 0)
 }
 
+/// The default base ipv4 address for external network
+fn default_external_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(172, 16, 8, 0)
+}
+
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
@@ -198,6 +207,7 @@ impl Default for Config {
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
             user_space_base_addr: default_user_space_base_addr(),
+            external_base_addr: default_external_base_addr(),
             max_server_port: default_max_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),

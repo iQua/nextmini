@@ -180,6 +180,7 @@ async fn handle_connection(
                             config.net_mask,
                             config.base_addr,
                             config.user_space_base_addr,
+                            config.external_base_addr,
                             config.max_server_port,
                             config.protocol.clone(),
                             config.scheduler_type,
