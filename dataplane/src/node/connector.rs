@@ -157,8 +157,13 @@ impl Connector {
             // inserts reversed flow id.
             self.schedulers.insert(flow_id.reverse(), scheduler);
         } else {
-            let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
-
+            // calculates external server's IPv4 address if not in node_addresses
+            let next_hop_addr = match self.node_addresses.get(&next_hop_id) {
+                Some(addr) => addr.clone(),
+                None => {
+                    self.config.local_address; // subjected to changes according to the LocalConfig
+                }
+            };
             let mut outbound_stream = tcp_max_client
                 .request_remote(first_packet, &next_hop_addr)
                 .await;
