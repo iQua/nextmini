@@ -1,4 +1,3 @@
-use std::io::Cursor;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,7 +11,7 @@ use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::{FlowIdExt, NodeId};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
