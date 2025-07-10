@@ -46,7 +46,7 @@ impl TcpMaxServer {
                 }
             };
 
-            // Reads the first packet
+            // reads the first packet from the stream
             let first_packet = match self.read_packet(&mut stream).await {
                 Ok(packet) => packet,
                 Err(e) => {
@@ -55,16 +55,19 @@ impl TcpMaxServer {
                 }
             };
 
+            // TODO: Change the logging to print correct information
+            // gets the next hop's node ID from the first packet's flow ID for logging
             let remote_node_id = self.config.ip_to_node_id(first_packet.flow_id.src_ip());
 
-            // TODO : Corrected logs below
-            info!("Incoming connection from node {}...", remote_node_id);
+            // TODO: Corrected logs below
+            // info!("Incoming connection from node {}...", remote_node_id);
 
-            // Tell the processor to splice the upstream
+            // tells the processor to splice the upstream
             self.processors
                 .inbound_max_request(first_packet, stream)
                 .await;
 
+            // TODO: Corrected logs below
             info!("Connected to node {}.", remote_node_id);
         }
     }
@@ -101,7 +104,7 @@ impl TcpMaxClient {
         }
     }
 
-    /// requests a tcp connection and writes the first packet.
+    /// Requests a tcp connection and writes the first packet.
     pub async fn request_remote(&self, packet: Packet, remote_addr: &str) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
@@ -143,6 +146,8 @@ impl TcpMaxClient {
         }
     }
 
+    /// Initializes a scheduler with a network interface for src node and dst node
+    /// Used by dst node only when dst node is in max mode.
     pub async fn initialize_scheduler(
         &self,
         stream: TcpStream,
