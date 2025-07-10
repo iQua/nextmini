@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use tokio;
-use tokio::net::TcpStream;
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info};
@@ -116,9 +116,7 @@ impl Connector {
 
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
             // requests a remote stream for the flow
-            let stream = tcp_max_client
-                .request_remote(packet, &remote_addr)
-                .await;
+            let stream = tcp_max_client.request_remote(packet, &remote_addr).await;
             // initializes a scheduler with network interface for the flow
             let scheduler = tcp_max_client
                 .initialize_scheduler(stream, next_hop_id)
@@ -145,7 +143,10 @@ impl Connector {
         // requests and splices the connection to the next hop, if at the relay node.
         if next_hop_id == self.routing_table.local_id {
             // Writes the first packet
-            if let Err(_) = inbound_stream.write_all(&first_packet.buf[0..first_packet.packet_size]).await {
+            if let Err(_) = inbound_stream
+                .write_all(&first_packet.buf[0..first_packet.packet_size])
+                .await
+            {
                 error!("Failed to write first packet");
             }
 
