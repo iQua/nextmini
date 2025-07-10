@@ -132,7 +132,13 @@ impl Connector {
     }
 
     // Handles inbound requests as relay nodes.
-    async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
+    async fn handle_inbound_request(
+        &mut self,
+        first_packet: Packet,
+        mut inbound_stream: TcpStream,
+    ) {
+        let flow_id = first_packet.flow_id;
+
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
@@ -140,6 +146,11 @@ impl Connector {
         // creates a scheduler for response packets, if at the dst node.
         // requests and splices the connection to the next hop, if at the relay node.
         if next_hop_id == self.routing_table.local_id {
+            // Writes the first packet
+            if let Err(e) = inbound_stream.write_all(&first_packet.to_be_bytes()).await {
+                error!("Failed to write first packet: {}", e);
+            }
+
             let scheduler = tcp_max_client
                 .initialize_scheduler(inbound_stream, next_hop_id)
                 .await;
@@ -149,7 +160,9 @@ impl Connector {
         } else {
             let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
-            let mut outbound_stream = tcp_max_client.request_remote(flow_id, &next_hop_addr).await;
+            let mut outbound_stream = tcp_max_client
+                .request_remote(first_packet, &next_hop_addr)
+                .await;
 
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                 Ok((upstream_bytes, downstream_bytes)) => {
