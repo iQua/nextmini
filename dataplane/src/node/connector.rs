@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use tokio;
 use tokio::net::TcpStream;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info};
@@ -19,7 +20,7 @@ pub enum ConnectorMessage {
     AddNodeAddress(NodeId, String),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     ConnectTcpMaxClient(TcpMaxClient),
-    InboundMaxRequest(FlowId, TcpStream),
+    InboundMaxRequest(Packet, TcpStream),
 }
 
 pub struct Connector {
@@ -93,8 +94,8 @@ impl Connector {
             ConnectorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
-            ConnectorMessage::InboundMaxRequest(flow_id, stream) => {
-                self.handle_inbound_request(flow_id, stream).await;
+            ConnectorMessage::InboundMaxRequest(packet, stream) => {
+                self.handle_inbound_request(packet, stream).await;
             }
         }
     }
@@ -116,15 +117,12 @@ impl Connector {
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
             // requests a remote stream for the flow
             let stream = tcp_max_client
-                .request_remote(packet.flow_id, &remote_addr)
+                .request_remote(packet, &remote_addr)
                 .await;
             // initializes a scheduler with network interface for the flow
             let scheduler = tcp_max_client
                 .initialize_scheduler(stream, next_hop_id)
                 .await;
-
-            // sends the packet
-            scheduler.send(packet);
 
             // maps the flow id to the scheduler for following packets
             self.schedulers.insert(flow_id, scheduler);
@@ -147,8 +145,8 @@ impl Connector {
         // requests and splices the connection to the next hop, if at the relay node.
         if next_hop_id == self.routing_table.local_id {
             // Writes the first packet
-            if let Err(e) = inbound_stream.write_all(&first_packet.to_be_bytes()).await {
-                error!("Failed to write first packet: {}", e);
+            if let Err(_) = inbound_stream.write_all(&first_packet.buf[0..first_packet.packet_size]).await {
+                error!("Failed to write first packet");
             }
 
             let scheduler = tcp_max_client

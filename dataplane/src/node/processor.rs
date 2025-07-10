@@ -222,10 +222,10 @@ impl ProcessorHandle {
         }
     }
 
-    pub async fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
+    pub async fn inbound_max_request(&self, packet: Packet, stream: TcpStream) {
         if let Err(e) = self
             .connector_message_sender()
-            .send(ConnectorMessage::InboundMaxRequest(flow_id, stream))
+            .send(ConnectorMessage::InboundMaxRequest(packet, stream))
             .await
         {
             error!(

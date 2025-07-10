@@ -40,14 +40,14 @@ impl TcpMaxServer {
                     info!("Connection accepted from {:?}.", socket_addr);
                     stream
                 }
-                Err(e) => {
-                    error!("Failed to accept TCP connection: {}", e);
+                Err(_) => {
+                    error!("Failed to accept TCP connection");
                     continue;
                 }
             };
 
             // Reads the first packet
-            let first_packet = match self.read_packet(stream).await {
+            let first_packet = match self.read_packet(&mut stream).await {
                 Ok(packet) => packet,
                 Err(e) => {
                     error!("Failed to read first packet: {}", e);
@@ -55,7 +55,7 @@ impl TcpMaxServer {
                 }
             };
 
-            let remote_node_id = self.config.ip_to_node_id(first_packet.src_ip());
+            let remote_node_id = self.config.ip_to_node_id(first_packet.flow_id.src_ip());
 
             // TODO : Corrected logs below
             info!("Incoming connection from node {}...", remote_node_id);
@@ -70,7 +70,7 @@ impl TcpMaxServer {
     }
 
     /// Reads a single packet from the TCP connection.
-    async fn read_packet(&mut self, stream: &mut TcpStream) -> Result<Packet> {
+    async fn read_packet(&mut self, stream: &mut TcpStream) -> Result<Packet, std::io::Error> {
         let mut buf = vec![0; RECEIVE_BUF_SIZE];
         stream.read_exact(&mut buf[0..4]).await?;
 
@@ -111,14 +111,14 @@ impl TcpMaxClient {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
                     stream
-                        .write_all(&packet.to_be_bytes())
+                        .write_all(&packet.buf[0..packet.packet_size])
                         .await
                         .expect("Failed to send local node id to the node");
 
                     // TODO : Modified this log to print correct information
                     info!(
                         "Connected to node {} with TCP MAX.",
-                        self.config.ip_to_node_id(flow_id.src_ip())
+                        self.config.ip_to_node_id(packet.flow_id.src_ip())
                     );
 
                     return stream;
