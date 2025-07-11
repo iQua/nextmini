@@ -108,6 +108,8 @@ async fn handle_connection(
                             Some(_) => false, // ID is present and not 0
                         };
 
+                        // TODO: Now the node ID is assigned starting from 1 with tun/smoltcp
+                        // for external traffic, we could start from 2, as 1 is reserved for the external client
                         let node_id = if assign_new_id {
                             // assigns a new node ID
                             let node_ws_guard = node_ws.read().await;
