@@ -1,0 +1,152 @@
+networks:
+  network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.8.0/24
+
+services:
+  postgres:
+    container_name: postgres
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      network:
+        ipv4_address: 172.16.8.2
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+  controller:
+    container_name: controller
+    hostname: controller
+    image: nextmini_controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.3
+    stdin_open: true
+    volumes:
+      - ./controller-config.toml:/var/nextmini/config.toml
+    depends_on:
+      - postgres
+    ports:
+      - 3000:3000
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+
+  external_client:
+    container_name: external_client
+    hostname: external_client
+    image: nextmini_external_client
+    build:
+      context: ../../
+      dockerfile: ./src/Dockerfile.client
+    networks:
+      network:
+        ipv4_address: 172.16.8.4
+    stdin_open: true
+    privileged: true
+    cap_add:
+    - NET_ADMIN
+    command: /bin/bash -c "sleep 5 && /var/nextmini/src"
+
+  node2:
+    container_name: node2
+    hostname: node2
+    image: nextmini_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.5
+    stdin_open: true
+    privileged: true
+    # environment:
+    #   - RUST_LOG=debug
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../tools/:/var/nextmini/tools
+    depends_on:
+      - controller
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+  node3:
+    container_name: node3
+    hostname: node3
+    image: nextmini_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.6
+    stdin_open: true
+    privileged: true
+    # environment:
+    #   - RUST_LOG=debug
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../tools/:/var/nextmini/tools
+    depends_on:
+      - controller
+      - node2
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 8 && /var/nextmini/nextmini ws://controller:3000"
+
+  node4:
+    container_name: node4
+    hostname: node4
+    image: nextmini_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.7
+    stdin_open: true
+    privileged: true
+    # environment:
+    #   - RUST_LOG=debug
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../tools/:/var/nextmini/tools
+    depends_on:
+      - controller
+      - node3
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 9 && /var/nextmini/nextmini ws://controller:3000"
+
+  external_server:
+    container_name: external_server
+    hostname: external_server
+    image: nextmini_external_server
+    build:
+      context: ../../
+      dockerfile: ./src/Dockerfile.server
+    networks:
+      network:
+        ipv4_address: 172.16.8.8
+    stdin_open: true
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 10 && /var/nextmini/src"
