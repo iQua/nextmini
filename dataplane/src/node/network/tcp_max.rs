@@ -1,4 +1,5 @@
-use std::io::Cursor;
+use std::io::{self, Cursor, ErrorKind, Error};
+use std::net::IpAddr;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,7 +11,7 @@ use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::{FlowIdExt, NodeId, FlowId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
@@ -22,7 +23,7 @@ impl TcpMaxServer {
         Self { config, processors }
     }
 
-    /// accepts incoming tcp connections and receives the first packet.
+    /// accepts incoming tcp connections.
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -32,7 +33,7 @@ impl TcpMaxServer {
             }
         };
 
-        let mut flow_id_buf: [u8; 16] = [0; 16];
+        let mut first_byte = [0u8; 1];
 
         loop {
             let mut stream = match listener.accept().await {
@@ -46,29 +47,144 @@ impl TcpMaxServer {
                 }
             };
 
-            if let Err(e) = stream.read_exact(&mut flow_id_buf).await {
-                error!("Failed to read flow ID: {}", e);
+            // reads the first byte to determine the protocol.
+            if let Err(e) = stream.read_exact(&mut first_byte).await {
+                error!("Failed to read first byte: {}", e);
                 continue;
             }
 
-            let mut cursor = Cursor::new(&flow_id_buf);
-
-            let flow_id: FlowId = match cursor.read_u128().await {
-                Ok(id) => id,
-                Err(e) => {
-                    error!("Failed to parse flow ID: {}", e);
+            // handles the connection based on protocol
+            let flow_id = match first_byte[0] {
+                0x05 => self.handle_socks5_request(&mut stream).await,
+                0x06 => self.handle_tcp_max_request(&mut stream).await,
+                _ => {
+                    error!("Unsupported protocol");
                     continue;
                 }
             };
 
-            let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
+            match flow_id {
+                Ok(flow_id) => {
+                    let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
+                    info!("Incoming connection from node {}...", remote_node_id);
 
-            info!("Incoming connection from node {}...", remote_node_id);
+                    // Tell the processor to splice the upstream
+                    self.processors.inbound_max_request(flow_id, stream).await;
 
-            // Tell the processor to splice the upstream
-            self.processors.inbound_max_request(flow_id, stream).await;
+                    info!("Connected to node {}.", remote_node_id);
+                }
+                Err(e) => {
+                    error!("Failed to handle request: {}", e);
+                    continue;
+                }
+            }
+        }
+    }
 
-            info!("Connected to node {}.", remote_node_id);
+    /// handles connection request from an external client using socks5 protocol.
+    async fn handle_socks5_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
+        // reads the number of verfication methods supported.
+        let mut nmethods = [0u8; 1];
+        stream.read_exact(&mut nmethods).await?;
+
+        // only supports no authentication for now
+        let methods = vec![0u8; nmethods[0] as usize];
+        if !methods.contains(&0) {
+            stream.write_all(&[0x05, 0xff]).await?;
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                "No supported authentication method",
+            ));
+        }
+        stream.write_all(&[0x05, 0x00]).await?;
+
+        // reads the request header
+        let mut request_header = [0u8; 4];
+        stream.read_exact(&mut request_header).await?;
+
+        if request_header[0] != 0x05 {
+            stream.write_all(&[0x05, 0xff]).await?;
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                "Not a socks5 request",
+            ));
+        }
+
+        // only supports connect requests
+        if request_header[1] != 0x01 {
+            let response = [0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+            stream.write_all(&response).await?;
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                "Unsupported request type",
+            ));
+        }
+
+        // only supports tcp requests
+        match request_header[3] {
+            0x01 => {
+                // read the server address and port
+                let mut server_address_buf = [0u8; 4];
+                stream.read_exact(&mut server_address_buf).await?;
+                let mut server_port_buf = [0u8; 2];
+                stream.read_exact(&mut server_port_buf).await?;
+
+                let server_ip = u32::from_be_bytes(server_address_buf);
+                let server_port = u16::from_be_bytes(server_port_buf);
+
+                // get the client address and port
+                let client_addr = stream.peer_addr()?;
+                let client_port = client_addr.port();
+                let client_ip = match client_addr.ip() {
+                    IpAddr::V4(ipv4) => u32::from(ipv4),
+                    IpAddr::V6(_) => {
+                        return Err(Error::new(
+                            ErrorKind::Unsupported,
+                            "IPv6 not supported",
+                        ));
+                    }
+                };
+
+                let flow_id = ((client_ip as u128) << 96)
+                    | ((server_ip as u128) << 64)
+                    | ((client_port as u128) << 48)
+                    | ((server_port as u128) << 32);
+
+                // send the success response
+                let response = [0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+                stream.write_all(&response).await?;
+
+                Ok(flow_id)
+            }
+
+            _ => {
+                stream.write_all(&[0x05, 0xff]).await?;
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    "Unsupported request type",
+                ));
+            }
+        }
+    }
+
+    /// handles connection request from a tcp max client.
+    async fn handle_tcp_max_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
+        let mut flow_id_buf = [0u8; 16];
+
+        if let Err(e) = stream.read_exact(&mut flow_id_buf).await {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Failed to read flow ID: {}", e),
+            ));
+        }
+
+        let mut cursor = Cursor::new(&flow_id_buf);
+        match cursor.read_u128().await {
+            Ok(id) => Ok(id),
+            Err(e) => Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Failed to parse flow ID: {}", e),
+            )),
         }
     }
 }
@@ -102,6 +218,11 @@ impl TcpMaxClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
+                    stream
+                        .write_all(&[0x06])
+                        .await
+                        .expect("Failed to send max client identifier to the node");
+
                     stream
                         .write_all(&flow_id.to_be_bytes())
                         .await
