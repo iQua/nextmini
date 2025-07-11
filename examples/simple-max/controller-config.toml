@@ -1,0 +1,9 @@
+protocol = "tcp"
+
+[topology]
+type = "full_mesh"
+n_nodes = 3
+
+[[nodes]]
+node_id = 1
+operating_mode = "max"
