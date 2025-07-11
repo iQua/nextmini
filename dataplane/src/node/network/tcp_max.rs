@@ -36,10 +36,10 @@ impl TcpMaxServer {
         let mut first_byte = [0u8; 1];
 
         loop {
-            let mut stream = match listener.accept().await {
+            let (mut stream, socket_addr) = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
                     info!("Connection accepted from {:?}.", socket_addr);
-                    stream
+                    (stream, socket_addr)
                 }
                 Err(_) => {
                     error!("Failed to accept TCP connection");
@@ -65,13 +65,10 @@ impl TcpMaxServer {
 
             match flow_id {
                 Ok(flow_id) => {
-                    let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
-                    info!("Incoming connection from node {}...", remote_node_id);
-
                     // Tell the processor to splice the upstream
                     self.processors.inbound_max_request(flow_id, stream).await;
 
-                    info!("Connected to node {}.", remote_node_id);
+                    info!("Connected to {:?}.", socket_addr);
                 }
                 Err(e) => {
                     error!("Failed to handle request: {}", e);
@@ -229,8 +226,8 @@ impl TcpMaxClient {
                         .expect("Failed to send local node id to the node");
 
                     info!(
-                        "Connected to node {} with TCP MAX.",
-                        self.config.ip_to_node_id(flow_id.src_ip())
+                        "Connected to {} with TCP MAX.",
+                        remote_addr
                     );
 
                     return stream;
