@@ -67,7 +67,7 @@ pub struct Config {
     pub user_space_base_addr: Ipv4Addr,
 
     /// The base ipv4 address for external network
-    #[serde(default = "default_user_space_base_addr")]
+    #[serde(default = "default_external_base_addr")]
     pub external_base_addr: Ipv4Addr,
 
     /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
