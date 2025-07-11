@@ -63,6 +63,7 @@ impl TcpMaxServer {
                 }
             };
 
+            // gets flow_id from socks5 or tcp max request
             match flow_id {
                 Ok(flow_id) => {
                     // Tell the processor to splice the upstream
@@ -119,6 +120,7 @@ impl TcpMaxServer {
 
         // only supports tcp requests
         match request_header[3] {
+            // ipv4 protocol
             0x01 => {
                 // read the server address and port
                 let mut server_address_buf = [0u8; 4];
@@ -142,6 +144,7 @@ impl TcpMaxServer {
                     }
                 };
 
+                // gets flow_id from the client address and port
                 let flow_id = ((client_ip as u128) << 96)
                     | ((server_ip as u128) << 64)
                     | ((client_port as u128) << 48)
@@ -215,11 +218,13 @@ impl TcpMaxClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
+                    // represents the tcp max client
                     stream
                         .write_all(&[0x06])
                         .await
                         .expect("Failed to send max client identifier to the node");
 
+                    // sends the flow_id to the node
                     stream
                         .write_all(&flow_id.to_be_bytes())
                         .await
