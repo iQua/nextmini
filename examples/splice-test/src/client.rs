@@ -4,7 +4,8 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> std::io::Result<()> {
-    // SOCKS5 proxy address
+    thread::sleep(Duration::from_secs(15)); // Initial delay to ensure environment is ready
+                                            // SOCKS5 proxy address
     let proxy_addr = "172.16.8.5:8081";
 
     // target server address
@@ -15,8 +16,14 @@ fn main() -> std::io::Result<()> {
 
     let mut stream = TcpStream::connect(proxy_addr)?;
 
+    // Try to disable Nagle's algorithm to avoid buffering issues
+    stream.set_nodelay(true)?;
+
+    // Step 1: Authentication handshake
+    println!("Sending auth request");
     let auth_request = [0x05, 0x01, 0x00]; // version 5, 1 method, no authentication
     stream.write_all(&auth_request)?;
+    stream.flush()?; // Make sure request is sent immediately
 
     // reads server response
     let mut auth_response = [0u8; 2];
@@ -32,53 +39,158 @@ fn main() -> std::io::Result<()> {
 
     println!("Authentication successful");
 
-    let mut connect_request = vec![
+    // Add delay between authentication and connection request
+    thread::sleep(Duration::from_millis(100));
+
+    // Step 2: Connection request
+    // Try sending request in parts to avoid any potential buffering issues
+    println!("Sending connection request header");
+
+    // First send the header
+    let header = [
         0x05, // VER: SOCKS5
         0x01, // CMD: CONNECT
-        0x00, // RSV: Reserved, must be 0x00
-        0x01, // ATYP: IPv4 address
+        0x00, // RSV: Reserved
+        0x01, // ATYP: IPv4
     ];
+    stream.write_all(&header)?;
+    stream.flush()?;
 
-    // adds IPv4 address (4 bytes)
-    connect_request.extend_from_slice(&target_ip.octets());
+    // Small delay between parts
+    thread::sleep(Duration::from_millis(50));
 
-    // adds port (2 bytes, big endian)
-    connect_request.push((target_port >> 8) as u8);
-    connect_request.push((target_port & 0xff) as u8);
+    // Then send the address
+    println!("Sending target address: {}", target_ip);
+    stream.write_all(&target_ip.octets())?;
+    stream.flush()?;
 
-    println!("Sending SOCKS5 connect request: {:02X?}", connect_request);
-    stream.write_all(&connect_request)?;
+    // Small delay between parts
+    thread::sleep(Duration::from_millis(50));
 
-    println!("Sent connection request to {}:{}", target_ip, target_port);
+    // Finally send the port
+    println!("Sending target port: {}", target_port);
+    let port_bytes = [(target_port >> 8) as u8, (target_port & 0xff) as u8];
+    stream.write_all(&port_bytes)?;
+    stream.flush()?;
 
-    // reads connection response - at least 10 bytes according to RFC 1928
-    // [VER(1)] [REP(1)] [RSV(1)] [ATYP(1)] [BND.ADDR(variable)] [BND.PORT(2)]
+    println!(
+        "Full connection request sent to target: {}:{}",
+        target_ip, target_port
+    );
+
+    // reads connection response
     let mut connect_response = [0u8; 10]; // minimum response length
-    stream.read_exact(&mut connect_response)?;
 
-    println!("Received SOCKS5 response: {:02X?}", &connect_response[..10]);
+    // Add timeout to read to avoid hanging
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
 
-    if connect_response[0] != 0x05 {
-        panic!("Invalid SOCKS version in response: {}", connect_response[0]);
-    }
+    match stream.read(&mut connect_response) {
+        Ok(n) if n >= 2 => {
+            println!(
+                "Received response of {} bytes: {:02X?}",
+                n,
+                &connect_response[..n]
+            );
 
-    match connect_response[1] {
-        0x00 => println!("Connection successful!"),
-        0x01 => panic!("General SOCKS server failure"),
-        0x02 => panic!("Connection not allowed by ruleset"),
-        0x03 => panic!("Network unreachable"),
-        0x04 => panic!("Host unreachable"),
-        0x05 => panic!("Connection refused"),
-        0x06 => panic!("TTL expired"),
-        0x07 => panic!("Command not supported"),
-        0x08 => panic!("Address type not supported"),
-        code => panic!("Unknown error code: {}", code),
+            if connect_response[0] != 0x05 {
+                println!("Invalid SOCKS version in response: {}", connect_response[0]);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "Invalid SOCKS version",
+                ));
+            }
+
+            match connect_response[1] {
+                0x00 => println!("Connection successful!"),
+                0x01 => {
+                    println!("General SOCKS server failure");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "General SOCKS server failure",
+                    ));
+                }
+                0x02 => {
+                    println!("Connection not allowed by ruleset");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Connection not allowed",
+                    ));
+                }
+                0x03 => {
+                    println!("Network unreachable");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Network unreachable",
+                    ));
+                }
+                0x04 => {
+                    println!("Host unreachable");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Host unreachable",
+                    ));
+                }
+                0x05 => {
+                    println!("Connection refused");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Connection refused",
+                    ));
+                }
+                0x06 => {
+                    println!("TTL expired");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "TTL expired",
+                    ));
+                }
+                0x07 => {
+                    println!("Command not supported");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Command not supported",
+                    ));
+                }
+                0x08 => {
+                    println!("Address type not supported");
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Address type not supported",
+                    ));
+                }
+                code => {
+                    println!("Unknown error code: {}", code);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Unknown error {}", code),
+                    ));
+                }
+            }
+        }
+        Ok(n) => {
+            println!(
+                "Received incomplete response: {} bytes: {:02X?}",
+                n,
+                &connect_response[..n]
+            );
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Incomplete response",
+            ));
+        }
+        Err(e) => {
+            println!("Failed to read response: {}", e);
+            return Err(e);
+        }
     }
 
     println!(
         "SOCKS5 tunnel established successfully to {}:{}",
         target_ip, target_port
     );
+
+    // Reset timeout for data transfer
+    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
 
     // continuously sends data packets through the proxy
     let payload = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A]; // sample fixed payload
@@ -89,11 +201,20 @@ fn main() -> std::io::Result<()> {
     // Sleep briefly to ensure connection is fully established
     thread::sleep(Duration::from_millis(500));
 
-    loop {
+    // Set a counter for attempts
+    let mut attempts = 0;
+    let max_attempts = 10;
+
+    while attempts < max_attempts {
+        attempts += 1;
+
         // just sends the raw payload
-        println!("Sending packet: {:02X?}", payload);
+        println!("Sending packet #{}: {:02X?}", attempts, payload);
         match stream.write_all(&payload) {
-            Ok(_) => {}
+            Ok(_) => {
+                stream.flush()?;
+                println!("Packet sent successfully");
+            }
             Err(e) => {
                 eprintln!("Error sending packet: {}", e);
                 break;
@@ -110,15 +231,22 @@ fn main() -> std::io::Result<()> {
                 break;
             }
             Err(e) => {
-                eprintln!("Error reading from server: {}", e);
-                break;
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut
+                {
+                    println!("No response received (timeout)");
+                } else {
+                    eprintln!("Error reading from server: {}", e);
+                    break;
+                }
             }
             _ => {}
         }
 
         // Sleep briefly between sends to avoid flooding
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(1000));
     }
 
+    println!("Test completed after {} attempts", attempts);
     Ok(())
 }
