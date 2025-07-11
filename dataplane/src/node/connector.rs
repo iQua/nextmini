@@ -154,23 +154,26 @@ impl Connector {
                 Some(addr) => addr.clone(),
                 None => {
                     // to do obtain external server address from config
-                    "127.0.0.1:8080".to_string()
+                    error!("No address found for node {}", next_hop_id);
+                    return;
                 }
             };
 
             let mut outbound_stream = tcp_max_client.request_remote(flow_id, &next_hop_addr).await;
 
-            match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
-                Ok((upstream_bytes, downstream_bytes)) => {
-                    info!(
-                        "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
-                        flow_id, next_hop_addr, upstream_bytes, downstream_bytes
-                    );
+            tokio::spawn(async move {         
+                match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+                    Ok((upstream_bytes, downstream_bytes)) => {
+                        info!(
+                            "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
+                            flow_id, next_hop_addr, upstream_bytes, downstream_bytes
+                        );
+                    }
+                    Err(e) => {
+                        error!("Error during splicing for flow {}: {}.", flow_id, e);
+                    }
                 }
-                Err(e) => {
-                    error!("Error during splicing for flow {}: {}.", flow_id, e);
-                }
-            }
+            });
         }
     }
 }
