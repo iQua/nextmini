@@ -1,4 +1,4 @@
-use std::io::{self, Cursor, ErrorKind, Error};
+use std::io::{self, Cursor, Error, ErrorKind};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -11,9 +11,10 @@ use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::{FlowId, FlowIdExt, NodeId};
+use crate::node::{FlowId, NodeId};
 
 pub struct TcpMaxServer {
+    #[allow(dead_code)]
     config: LocalConfig,
     processors: ProcessorHandle,
 }
@@ -102,20 +103,14 @@ impl TcpMaxServer {
 
         if request_header[0] != 0x05 {
             stream.write_all(&[0x05, 0xff]).await?;
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                "Not a socks5 request",
-            ));
+            return Err(Error::new(ErrorKind::NotFound, "Not a socks5 request"));
         }
 
         // only supports connect requests
         if request_header[1] != 0x01 {
             let response = [0x05, 0x07, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
             stream.write_all(&response).await?;
-            return Err(Error::new(
-                ErrorKind::NotFound,
-                "Unsupported request type",
-            ));
+            return Err(Error::new(ErrorKind::NotFound, "Unsupported request type"));
         }
 
         // only supports tcp requests
@@ -137,10 +132,7 @@ impl TcpMaxServer {
                 let client_ip = match client_addr.ip() {
                     IpAddr::V4(ipv4) => u32::from(ipv4),
                     IpAddr::V6(_) => {
-                        return Err(Error::new(
-                            ErrorKind::Unsupported,
-                            "IPv6 not supported",
-                        ));
+                        return Err(Error::new(ErrorKind::Unsupported, "IPv6 not supported"));
                     }
                 };
 
@@ -159,10 +151,7 @@ impl TcpMaxServer {
 
             _ => {
                 stream.write_all(&[0x05, 0xff]).await?;
-                return Err(Error::new(
-                    ErrorKind::NotFound,
-                    "Unsupported request type",
-                ));
+                return Err(Error::new(ErrorKind::NotFound, "Unsupported request type"));
             }
         }
     }
@@ -230,10 +219,7 @@ impl TcpMaxClient {
                         .await
                         .expect("Failed to send local node id to the node");
 
-                    info!(
-                        "Connected to {} with TCP MAX.",
-                        remote_addr
-                    );
+                    info!("Connected to {} with TCP MAX.", remote_addr);
 
                     return stream;
                 }
