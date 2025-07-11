@@ -1,17 +1,16 @@
+use std::io::Cursor;
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info};
 
-use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
-use crate::node::{FlowIdExt, NodeId};
+use crate::node::{FlowIdExt, NodeId, FlowId};
 
 pub struct TcpMaxServer {
     config: LocalConfig,
@@ -33,6 +32,8 @@ impl TcpMaxServer {
             }
         };
 
+        let mut flow_id_buf: [u8; 16] = [0; 16];
+
         loop {
             let mut stream = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
@@ -45,41 +46,30 @@ impl TcpMaxServer {
                 }
             };
 
-            // reads the first packet from the stream
-            let first_packet = match self.read_packet(&mut stream).await {
-                Ok(packet) => packet,
+            if let Err(e) = stream.read_exact(&mut flow_id_buf).await {
+                error!("Failed to read flow ID: {}", e);
+                continue;
+            }
+
+            let mut cursor = Cursor::new(&flow_id_buf);
+
+            let flow_id: FlowId = match cursor.read_u128().await {
+                Ok(id) => id,
                 Err(e) => {
-                    error!("Failed to read first packet: {}", e);
+                    error!("Failed to parse flow ID: {}", e);
                     continue;
                 }
             };
 
-            // TODO: Change the logging to print correct information
-            // gets the next hop's node ID from the first packet's flow ID for logging
-            let remote_node_id = self.config.ip_to_node_id(first_packet.flow_id.src_ip());
+            let remote_node_id = self.config.ip_to_node_id(flow_id.src_ip());
 
-            // TODO: Corrected logs below
-            // info!("Incoming connection from node {}...", remote_node_id);
+            info!("Incoming connection from node {}...", remote_node_id);
 
-            // tells the processor to splice the upstream
-            self.processors
-                .inbound_max_request(first_packet, stream)
-                .await;
+            // Tell the processor to splice the upstream
+            self.processors.inbound_max_request(flow_id, stream).await;
 
-            // TODO: Corrected logs below
             info!("Connected to node {}.", remote_node_id);
         }
-    }
-
-    /// Reads a single packet from the TCP connection.
-    async fn read_packet(&mut self, stream: &mut TcpStream) -> Result<Packet, std::io::Error> {
-        let mut buf = vec![0; RECEIVE_BUF_SIZE];
-        stream.read_exact(&mut buf[0..4]).await?;
-
-        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-        stream.read_exact(&mut buf[4..msg_len]).await?;
-
-        Ok(Packet::new(msg_len, buf))
     }
 }
 
@@ -104,7 +94,7 @@ impl TcpMaxClient {
     }
 
     /// Requests a tcp connection and writes the first packet.
-    pub async fn request_remote(&self, packet: Packet, remote_addr: &str) -> TcpStream {
+    pub async fn request_remote(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);
@@ -113,14 +103,13 @@ impl TcpMaxClient {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
                     stream
-                        .write_all(&packet.buf[0..packet.packet_size])
+                        .write_all(&flow_id.to_be_bytes())
                         .await
                         .expect("Failed to send local node id to the node");
 
-                    // TODO : Modified this log to print correct information
                     info!(
                         "Connected to node {} with TCP MAX.",
-                        self.config.ip_to_node_id(packet.flow_id.src_ip())
+                        self.config.ip_to_node_id(flow_id.src_ip())
                     );
 
                     return stream;

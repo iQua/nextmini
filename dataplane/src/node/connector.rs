@@ -1,6 +1,5 @@
 use ahash::AHashMap;
 use tokio;
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_splice::zero_copy_bidirectional;
@@ -20,7 +19,7 @@ pub enum ConnectorMessage {
     AddNodeAddress(NodeId, String),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     ConnectTcpMaxClient(TcpMaxClient),
-    InboundMaxRequest(Packet, TcpStream),
+    InboundMaxRequest(FlowId, TcpStream),
 }
 
 pub struct Connector {
@@ -94,8 +93,8 @@ impl Connector {
             ConnectorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
-            ConnectorMessage::InboundMaxRequest(packet, stream) => {
-                self.handle_inbound_request(packet, stream).await;
+            ConnectorMessage::InboundMaxRequest(flow_id, stream) => {
+                self.handle_inbound_request(flow_id, stream).await;
             }
         }
     }
@@ -116,11 +115,16 @@ impl Connector {
 
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
             // requests a remote stream for the flow
-            let stream = tcp_max_client.request_remote(packet, &remote_addr).await;
+            let stream = tcp_max_client
+                .request_remote(packet.flow_id, &remote_addr)
+                .await;
             // initializes a scheduler with network interface for the flow
             let scheduler = tcp_max_client
                 .initialize_scheduler(stream, next_hop_id)
                 .await;
+
+            // sends the packet
+            scheduler.send(packet);
 
             // maps the flow id to the scheduler for following packets
             self.schedulers.insert(flow_id, scheduler);
@@ -128,13 +132,7 @@ impl Connector {
     }
 
     // Handles inbound requests as relay nodes.
-    async fn handle_inbound_request(
-        &mut self,
-        first_packet: Packet,
-        mut inbound_stream: TcpStream,
-    ) {
-        let flow_id = first_packet.flow_id;
-
+    async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
         let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
         let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
@@ -142,14 +140,6 @@ impl Connector {
         // creates a scheduler for response packets, if at the dst node.
         // requests and splices the connection to the next hop, if at the relay node.
         if next_hop_id == self.routing_table.local_id {
-            // Writes the first packet
-            if let Err(_) = inbound_stream
-                .write_all(&first_packet.buf[0..first_packet.packet_size])
-                .await
-            {
-                error!("Failed to write first packet");
-            }
-
             let scheduler = tcp_max_client
                 .initialize_scheduler(inbound_stream, next_hop_id)
                 .await;
@@ -157,16 +147,10 @@ impl Connector {
             // inserts reversed flow id.
             self.schedulers.insert(flow_id.reverse(), scheduler);
         } else {
-            // calculates external server's IPv4 address if not in node_addresses
-            let next_hop_addr = match self.node_addresses.get(&next_hop_id) {
-                Some(addr) => addr.clone(),
-                None => {
-                    self.config.local_address; // subjected to changes according to the LocalConfig
-                }
-            };
-            let mut outbound_stream = tcp_max_client
-                .request_remote(first_packet, &next_hop_addr)
-                .await;
+            // todo: calculates external server's IPv4 address if not in node_addresses
+            let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
+
+            let mut outbound_stream = tcp_max_client.request_remote(flow_id, &next_hop_addr).await;
 
             match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                 Ok((upstream_bytes, downstream_bytes)) => {
