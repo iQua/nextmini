@@ -1,0 +1,11 @@
+protocol = "tcp"
+
+[topology]
+n_nodes = 3
+
+[[nodes]]
+node_id = 1
+operating_mode = "max"
+
+[[routes]]
+route = [0, 1, 2, 3, 4, 5]
