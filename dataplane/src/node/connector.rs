@@ -114,10 +114,12 @@ impl Connector {
             let remote_addr = self.node_addresses[&next_hop_id].clone();
 
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
+
             // requests a remote stream for the flow
             let stream = tcp_max_client
                 .request_remote(packet.flow_id, &remote_addr)
                 .await;
+
             // initializes a scheduler with network interface for the flow
             let scheduler = tcp_max_client
                 .initialize_scheduler(stream, next_hop_id)
@@ -147,7 +149,7 @@ impl Connector {
             // inserts reversed flow id.
             self.schedulers.insert(flow_id.reverse(), scheduler);
         } else {
-            // todo: calculates external server's IPv4 address if not in node_addresses
+            // TODO: calculates external server's IPv4 address if not in node_addresses
             let next_hop_addr = self.node_addresses.get(&next_hop_id).cloned().unwrap();
 
             let mut outbound_stream = tcp_max_client.request_remote(flow_id, &next_hop_addr).await;
