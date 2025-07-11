@@ -53,7 +53,7 @@ services:
     hostname: external_client
     image: nextmini_external_client
     build:
-      context: ../../
+      context: ./
       dockerfile: ./src/Dockerfile.client
     networks:
       network:
@@ -140,13 +140,15 @@ services:
     hostname: external_server
     image: nextmini_external_server
     build:
-      context: ../../
+      context: ./
       dockerfile: ./src/Dockerfile.server
     networks:
       network:
         ipv4_address: 172.16.8.8
     stdin_open: true
     privileged: true
+    ports:
+      - "8080:8080"
     cap_add:
       - NET_ADMIN
     command: /bin/bash -c "sleep 10 && /var/nextmini/src"

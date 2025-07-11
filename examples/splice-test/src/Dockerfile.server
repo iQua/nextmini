@@ -1,0 +1,22 @@
+FROM rust:latest
+
+WORKDIR /app
+
+# Copy source code
+COPY src/server.rs .
+
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build the server
+RUN rustc -O server.rs -o /usr/local/bin/server
+
+# Create directory for symlink
+RUN mkdir -p /var/nextmini
+
+# Create a symlink to the binary
+RUN ln -s /usr/local/bin/server /var/nextmini/src
+
+CMD ["/usr/local/bin/server"] 
