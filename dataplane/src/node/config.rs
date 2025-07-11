@@ -266,7 +266,7 @@ fn default_user_space_base_addr() -> Ipv4Addr {
 
 // The external base address for default external client.
 fn default_external_base_address() -> Ipv4Addr {
-    Ipv4Addr::new(172, 16, 8, 5)
+    Ipv4Addr::new(172, 16, 8, 4)
 }
 
 // The external base address for external traffic.
