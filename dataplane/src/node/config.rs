@@ -425,7 +425,7 @@ impl LocalConfig {
                         // calculates the local, user space and external addresses for the node
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
-                        self.external_address = node_id.ip_addr(external_base_addr, net_mask);
+                        // self.external_address = node_id.ip_addr(external_base_addr, net_mask);
                         self.max_server_port = max_server_port;
                         self.scheduler_type = scheduler_type;
                         self.operating_mode = node_spec.operating_mode;
