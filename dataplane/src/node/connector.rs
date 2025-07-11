@@ -149,13 +149,13 @@ impl Connector {
             // inserts reversed flow id.
             self.schedulers.insert(flow_id.reverse(), scheduler);
         } else {
-            // redirects to the external server if the next hop is not a regularly registered node
+            // redirects to the external server if the next hop is not a registered node
             let next_hop_addr = match self.node_addresses.get(&next_hop_id) {
                 Some(addr) => addr.clone(),
                 None => {
-                    // to do obtain external server address from config
-                    error!("No address found for node {}", next_hop_id);
-                    return;
+                    let external_server_addr = format!("{}:{}", flow_id.dst_ip(), flow_id.dst_port());
+                    info!("Retrieving external server address {}", external_server_addr);
+                    external_server_addr
                 }
             };
 
