@@ -1,5 +1,5 @@
-use std::io::{self, Ipv4Addr, Ipv6Addr, Read, Shutdown, TcpStream, Write};
-use std::net::TcpListener;
+use std::io::{self, Read, Write};
+use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream};
 use std::thread;
 
 fn main() -> io::Result<()> {
@@ -39,12 +39,12 @@ fn handle_client(mut client: TcpStream) -> io::Result<()> {
     let mut req_header = [0u8; 4];
     client.read_exact(&mut req_header)?;
     if req_header[0] != 5 {
-        return Err(io::new(io::ErrorKind::InvalidData, "Not SOCKS5 request"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Not SOCKS5 request"));
     }
     let cmd = req_header[1];
     if cmd != 1 {
         // Only support CONNECT
-        let mut reply = [5u8, 7, 0, 1, 0, 0, 0, 0, 0, 0];
+        let reply = [5u8, 7, 0, 1, 0, 0, 0, 0, 0, 0];
         client.write_all(&reply)?;
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -63,7 +63,7 @@ fn handle_client(mut client: TcpStream) -> io::Result<()> {
             let mut port_bytes = [0u8; 2];
             client.read_exact(&mut port_bytes)?;
             let port = u16::from_be_bytes(port_bytes);
-            target = format!("{}:}", ip, port);
+            target = format!("{}:{}", ip, port);
         }
         3 => {
             // Domain
@@ -90,7 +90,7 @@ fn handle_client(mut client: TcpStream) -> io::Result<()> {
             target = format!("[{}]:{}", ip, port);
         }
         _ => {
-            let mut reply = [5u8, 8, 0, 0, 0, 0, 0, 0, 0, 0];
+            let reply = [5u8, 8, 0, 0, 0, 0, 0, 0, 0, 0];
             client.write_all(&reply)?;
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
