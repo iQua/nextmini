@@ -38,4 +38,21 @@ To define routes, you can first choose the topology, where we define two types: 
 
 For link rates, you can also specify the link rates between two nodes, which will be used to determine the maximum bandwidth available for that link.
 
+Note that the rate and bucket size are specified in bits per second and bytes, respectively. You need to adjust these values accordingly for setup.
+
+```toml
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 2
+rate = 1000_000_000
+bucket_size = 3000
+
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 1
+rate = 100_000_000
+bucket_size = 1800
+```
+
+
 For flows, you only need to specify the source and destination node IDs and the flow specific parameters like `flow_len`, `flow_rate`, and `flow_weight`.
