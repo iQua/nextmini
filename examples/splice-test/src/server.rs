@@ -1,6 +1,6 @@
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,57 +34,14 @@ fn main() -> std::io::Result<()> {
 fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     // sets read timeout to prevent blocking indefinitely
     stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-
     let mut buffer = [0u8; 655350];
     let mut first_packet_received = false;
-    let start_time = Instant::now();
 
-    // shared counters for stats
-    let total_bytes = Arc::new(AtomicUsize::new(0));
-    let total_packets = Arc::new(AtomicUsize::new(0));
-
-    // clones the counters for the stats thread
-    let stats_bytes = Arc::clone(&total_bytes);
-    let stats_packets = Arc::clone(&total_packets);
-
-    // spawns a thread to print stats every second
-    let stats_thread = thread::spawn(move || {
-        let mut last_bytes = 0;
-        let mut last_time = Instant::now();
-
-        loop {
-            thread::sleep(Duration::from_secs(1));
-
-            let current_bytes = stats_bytes.load(Ordering::Relaxed);
-            let current_packets = stats_packets.load(Ordering::Relaxed);
-            let current_time = Instant::now();
-
-            let bytes_delta = current_bytes - last_bytes;
-            let time_delta = current_time.duration_since(last_time).as_secs_f64();
-
-            // calculate throughput in MB/s
-            let throughput = if time_delta > 0.0 {
-                (bytes_delta as f64) / (1024.0 * 1024.0) / time_delta
-            } else {
-                0.0
-            };
-
-            println!(
-                "Throughput: {:.2} MB/s, Total received: {:.2} MB ({} packets)",
-                throughput,
-                (current_bytes as f64) / (1024.0 * 1024.0),
-                current_packets
-            );
-
-            last_bytes = current_bytes;
-            last_time = current_time;
-
-            // exits if no new data for 5 seconds
-            if bytes_delta == 0 && current_time.duration_since(start_time).as_secs() > 5 {
-                println!("No data received for 5 seconds, closing stats thread");
-                break;
-            }
-        }
+    let bytes_received = Arc::new(AtomicU64::new(0));
+    // spawns a thread to print the stats
+    let stats_counter = Arc::clone(&bytes_received);
+    thread::spawn(move || {
+        print_stats(stats_counter);
     });
 
     // main loop to receive data packets
@@ -92,8 +49,7 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
         match stream.read(&mut buffer) {
             Ok(n) if n > 0 => {
                 // updates counters
-                total_bytes.fetch_add(n, Ordering::Relaxed);
-                total_packets.fetch_add(1, Ordering::Relaxed);
+                bytes_received.fetch_add(n as u64, Ordering::Relaxed);
 
                 if !first_packet_received {
                     println!("First packet received! Starting throughput measurement...");
@@ -118,27 +74,30 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
         }
     }
 
-    // waits for stats thread to finish
-    if let Err(e) = stats_thread.join() {
-        eprintln!("Stats thread panicked: {:?}", e);
-    }
-
-    let elapsed = start_time.elapsed();
-    let total = total_bytes.load(Ordering::Relaxed);
-    let packets = total_packets.load(Ordering::Relaxed);
-
-    // prints final statistics
-    println!("Session summary:");
-    println!(
-        "Total received: {:.2} GB in {} packets",
-        (total as f64) / (1024.0 * 1024.0 * 1024.0),
-        packets
-    );
-    println!(
-        "Average throughput: {:.2} GB/s",
-        (total as f64) / (1024.0 * 1024.0 * 1024.0) / elapsed.as_secs_f64()
-    );
-    println!("Time elapsed: {:.2} seconds", elapsed.as_secs_f64());
-
     Ok(())
+}
+fn print_stats(bytes_received: Arc<AtomicU64>) {
+    let mut last_bytes = 0u64;
+    let mut last_time = Instant::now();
+
+    loop {
+        // log every second
+        thread::sleep(Duration::from_secs(1));
+
+        let current_bytes = bytes_received.load(Ordering::Relaxed);
+        let current_time = Instant::now();
+
+        let elapsed = current_time.duration_since(last_time).as_secs_f64();
+        let bytes_diff = current_bytes - last_bytes;
+        let throughput_gbps = (bytes_diff as f64 * 8.0) / (elapsed * 1024.0 * 1024.0 * 1024.0);
+
+        println!(
+            "Throughput: {:.2} Gbps, Total received: {:.2} GB",
+            throughput_gbps,
+            current_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+
+        last_bytes = current_bytes;
+        last_time = current_time;
+    }
 }
