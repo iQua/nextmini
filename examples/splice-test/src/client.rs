@@ -230,12 +230,12 @@ fn print_stats(bytes_sent: Arc<AtomicU64>) {
 
         let elapsed = current_time.duration_since(last_time).as_secs_f64();
         let bytes_diff = current_bytes - last_bytes;
-        let throughput_gbps = (bytes_diff as f64 * 8.0) / (elapsed * 1024.0 * 1024.0 * 1024.0);
+        let throughput_gbps = (bytes_diff as f64 * 8.0) / (elapsed * 1000.0 * 1000.0 * 1000.0);
 
         println!(
             "Send Throughput: {:.2} Gbps, Total sent: {:.2} GB",
             throughput_gbps,
-            current_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            current_bytes as f64 / (1000.0 * 1000.0 * 1000.0)
         );
 
         last_bytes = current_bytes;
