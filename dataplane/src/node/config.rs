@@ -271,7 +271,7 @@ fn default_external_base_address() -> Ipv4Addr {
 
 // The external base address for external traffic.
 fn default_external_base_addr() -> Ipv4Addr {
-    Ipv4Addr::new(172, 16, 8, 0)
+    Ipv4Addr::new(172, 16, 8, 4)
 }
 
 fn default_netmask() -> Ipv4Addr {

@@ -61,12 +61,12 @@ services:
     stdin_open: true
     privileged: true
     cap_add:
-    - NET_ADMIN
+      - NET_ADMIN
     command: /bin/bash -c "sleep 5 && /var/nextmini/src"
 
-  node2:
-    container_name: node2
-    hostname: node2
+  node1:
+    container_name: node1
+    hostname: node1
     image: nextmini_datapath
     build:
       context: ../../
@@ -77,7 +77,7 @@ services:
     stdin_open: true
     privileged: true
     # environment:
-    #   - RUST_LOG=debug
+    #     - RUST_LOG=debug
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
@@ -87,9 +87,9 @@ services:
       - NET_ADMIN
     command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
-  node3:
-    container_name: node3
-    hostname: node3
+  node2:
+    container_name: node2
+    hostname: node2
     image: nextmini_datapath
     build:
       context: ../../
@@ -100,20 +100,20 @@ services:
     stdin_open: true
     privileged: true
     # environment:
-    #   - RUST_LOG=debug
+    #     - RUST_LOG=debug
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
-      - node2
+      - node1
     cap_add:
       - NET_ADMIN
     command: /bin/bash -c "sleep 8 && /var/nextmini/nextmini ws://controller:3000"
 
-  node4:
-    container_name: node4
-    hostname: node4
+  node3:
+    container_name: node3
+    hostname: node3
     image: nextmini_datapath
     build:
       context: ../../
@@ -124,13 +124,13 @@ services:
     stdin_open: true
     privileged: true
     # environment:
-    #   - RUST_LOG=debug
+    #     - RUST_LOG=debug
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
-      - node3
+      - node2
     cap_add:
       - NET_ADMIN
     command: /bin/bash -c "sleep 9 && /var/nextmini/nextmini ws://controller:3000"

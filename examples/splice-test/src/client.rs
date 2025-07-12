@@ -189,64 +189,18 @@ fn main() -> std::io::Result<()> {
         target_ip, target_port
     );
 
-    // Reset timeout for data transfer
-    stream.set_read_timeout(Some(Duration::from_millis(500)))?;
-
-    // continuously sends data packets through the proxy
-    let payload = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A]; // sample fixed payload
-    let mut buffer = [0u8; 1024];
-
-    println!("Starting to send data packets in a loop...");
-
-    // Sleep briefly to ensure connection is fully established
-    thread::sleep(Duration::from_millis(500));
-
-    // Set a counter for attempts
-    let mut attempts = 0;
-    let max_attempts = 10;
-
-    while attempts < max_attempts {
-        attempts += 1;
-
-        // just sends the raw payload
-        println!("Sending packet #{}: {:02X?}", attempts, payload);
-        match stream.write_all(&payload) {
-            Ok(_) => {
-                stream.flush()?;
-                println!("Packet sent successfully");
+    let mut buffer = vec![0xAA; 655350];
+    loop {
+        match stream.write_all(&buffer) {
+            Ok(()) => {
+                // println!("Sent {} bytes", buffer.len());
             }
             Err(e) => {
-                eprintln!("Error sending packet: {}", e);
+                println!("Failed to write to stream: {}", e);
                 break;
             }
-        }
-
-        // reads any responses
-        match stream.read(&mut buffer) {
-            Ok(n) if n > 0 => {
-                println!("Received {} bytes: {:02X?}", n, &buffer[..n]);
-            }
-            Ok(0) => {
-                println!("Connection closed by server");
-                break;
-            }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut
-                {
-                    println!("No response received (timeout)");
-                } else {
-                    eprintln!("Error reading from server: {}", e);
-                    break;
-                }
-            }
-            _ => {}
-        }
-
-        // Sleep briefly between sends to avoid flooding
-        thread::sleep(Duration::from_millis(1000));
+        };
     }
 
-    println!("Test completed after {} attempts", attempts);
     Ok(())
 }
