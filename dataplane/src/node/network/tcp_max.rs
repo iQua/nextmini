@@ -87,7 +87,7 @@ impl TcpMaxServer {
         stream.read_exact(&mut nmethods).await?;
 
         // only supports no authentication for now
-        let methods = vec![0u8; nmethods[0] as usize];
+        let mut methods = vec![0u8; nmethods[0] as usize];
         stream.read_exact(&mut methods).await?;
 
         if !methods.contains(&0) {

@@ -2,6 +2,9 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::thread;
 use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
 
 fn main() -> std::io::Result<()> {
     thread::sleep(Duration::from_secs(15)); // Initial delay to ensure environment is ready
@@ -189,18 +192,54 @@ fn main() -> std::io::Result<()> {
         target_ip, target_port
     );
 
-    let mut buffer = vec![0xAA; 655350];
+    let bytes_sent = Arc::new(AtomicU64::new(0));
+    let stats_counter = Arc::clone(&bytes_sent);
+    thread::spawn(move || {
+        print_stats(stats_counter);
+    });
+
+    let data = vec![0xAA; 65536]; // 64KB buffer
+    let mut total_sent = 0u64;
+
     loop {
-        match stream.write_all(&buffer) {
+        match stream.write_all(&data) {
             Ok(()) => {
-                // println!("Sent {} bytes", buffer.len());
+                total_sent += data.len() as u64;
+                bytes_sent.store(total_sent, Ordering::Relaxed);
             }
             Err(e) => {
-                println!("Failed to write to stream: {}", e);
+                eprintln!("error sending data: {}", e);
                 break;
             }
-        };
+        }
     }
 
     Ok(())
 }
+
+fn print_stats(bytes_sent: Arc<AtomicU64>) {
+    let mut last_bytes = 0u64;
+    let mut last_time = Instant::now();
+
+    loop {
+        // Log every second
+        thread::sleep(Duration::from_secs(1));
+
+        let current_bytes = bytes_sent.load(Ordering::Relaxed);
+        let current_time = Instant::now();
+
+        let elapsed = current_time.duration_since(last_time).as_secs_f64();
+        let bytes_diff = current_bytes - last_bytes;
+        let throughput_gbps = (bytes_diff as f64 * 8.0) / (elapsed * 1024.0 * 1024.0 * 1024.0);
+
+        println!(
+            "Send Throughput: {:.2} Gbps, Total sent: {:.2} GB",
+            throughput_gbps,
+            current_bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
+
+        last_bytes = current_bytes;
+        last_time = current_time;
+    }
+}
+

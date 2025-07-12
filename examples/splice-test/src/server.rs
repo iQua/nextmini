@@ -130,13 +130,13 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     // prints final statistics
     println!("Session summary:");
     println!(
-        "Total received: {:.2} MB in {} packets",
-        (total as f64) / (1024.0 * 1024.0),
+        "Total received: {:.2} GB in {} packets",
+        (total as f64) / (1024.0 * 1024.0 * 1024.0),
         packets
     );
     println!(
-        "Average throughput: {:.2} MB/s",
-        (total as f64) / (1024.0 * 1024.0) / elapsed.as_secs_f64()
+        "Average throughput: {:.2} GB/s",
+        (total as f64) / (1024.0 * 1024.0 * 1024.0) / elapsed.as_secs_f64()
     );
     println!("Time elapsed: {:.2} seconds", elapsed.as_secs_f64());
 
