@@ -580,28 +580,9 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        // selects the route ID for a new flow
-        if let Some(route_id) = self.routing_table.select_route_for_flow(packet_flow_id) {
-            if route_id == 0 {
-                // No route can be possible as the flow ID is not valid (represented as a value of 0)
-                // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
-                error!("No route can be selected.");
-            }
-
-            // routes the packet to its next hop
-            if let Some(next_hop_id) = self.routing_table.get_next_hop_by_route(route_id) {
-                self.send_packet(packet, next_hop_id).await;
-            } else {
-                error!(
-                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
-                    route_id, packet_flow_id
-                );
-            }
-        } else {
-            error!(
-                "No route is found for flow {}: the routing table may be misconfigured.",
-                packet_flow_id
-            );
+        match self.routing_table.get_next_hop_by_flow(packet_flow_id) {
+            Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
+            Err(e) => error!("Error getting the next hop: {}", e),
         }
     }
 

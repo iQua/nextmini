@@ -107,11 +107,22 @@ impl Connector {
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             scheduler.send(packet);
         } else {
-            let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
-            let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+            let next_hop_id = match self.routing_table.get_next_hop_by_flow(flow_id) {
+                Ok(next_hop_id) => next_hop_id,
+                Err(e) => {
+                    error!("Error getting the next hop: {}", e);
+                    return;
+                }
+            };
 
             // initiates tcp max connections as the src node
-            let remote_addr = self.node_addresses[&next_hop_id].clone();
+            let remote_addr = match self.node_addresses.get(&next_hop_id) {
+                Some(addr) => addr.clone(),
+                None => {
+                    error!("No remote address found for node id: {}", next_hop_id);
+                    return;
+                }
+            };
 
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
 
@@ -135,8 +146,13 @@ impl Connector {
 
     // Handles inbound requests as relay nodes.
     async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
-        let route_id = self.routing_table.select_route_for_flow(flow_id).unwrap();
-        let next_hop_id = self.routing_table.get_next_hop_by_route(route_id).unwrap();
+        let next_hop_id = match self.routing_table.get_next_hop_by_flow(flow_id) {
+            Ok(next_hop_id) => next_hop_id,
+            Err(e) => {
+                error!("Error getting the next hop: {}", e);
+                return;
+            }
+        };
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
 
         // creates a scheduler for response packets, if at the dst node.
@@ -153,15 +169,20 @@ impl Connector {
             let next_hop_addr = match self.node_addresses.get(&next_hop_id) {
                 Some(addr) => addr.clone(),
                 None => {
-                    let external_server_addr = format!("{}:{}", flow_id.dst_ip(), flow_id.dst_port());
-                    info!("Retrieving external server address {}", external_server_addr);
+                    let external_server_addr =
+                        format!("{}:{}", flow_id.dst_ip(), flow_id.dst_port());
+
+                    info!(
+                        "No remote address found for node id: {}, redirecting to external server: {}",
+                        next_hop_id, external_server_addr
+                    );
                     external_server_addr
                 }
             };
 
             let mut outbound_stream = tcp_max_client.request_remote(flow_id, &next_hop_addr).await;
 
-            tokio::spawn(async move {         
+            tokio::spawn(async move {
                 match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                     Ok((upstream_bytes, downstream_bytes)) => {
                         info!(
