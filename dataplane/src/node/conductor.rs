@@ -82,11 +82,11 @@ impl Conductor {
 
         match self.config.protocol {
             Protocol::Tcp => {
-                // uses TcpMaxServer to handle the connections for max operating mode.
+                // uses TcpMaxServer to handle the connections for max operating mode
                 let mut tcp_max_server =
                     TcpMaxServer::new(self.config.clone(), self.processors.clone());
 
-                // uses TcpServer to handle the connections for normal operating mode.
+                // uses TcpServer to handle the connections for normal operating mode
                 if public_port == private_port {
                     let mut tcp_server = TcpServer::new(
                         self.config.clone(),

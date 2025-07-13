@@ -83,7 +83,7 @@ impl ControllerReporter {
     }
 
     pub async fn run(&mut self) {
-        // Transmit metrics every 5 seconds
+        // transmits metrics every 5 seconds
         let mut metrics_tick = interval(Duration::from_secs(5));
 
         loop {
@@ -108,7 +108,7 @@ impl ControllerReporter {
                         }
                     }
                 }
-                // timer tick: calculate flow rates and transmit to the controller
+                // timer tick: calculates flow rates and transmits to the controller
                 _ = metrics_tick.tick() => {
                     if !self.flow_metrics.is_empty() {
                         let now = Utc::now();

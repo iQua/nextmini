@@ -30,7 +30,7 @@ pub enum LocalInterfaceMessage {
     WritePacket(Packet), // the processor sends a packet to the application via the local interface
 }
 
-/// Handle for Processors to interact with LocalInterface.
+/// Handles for Processors to interact with LocalInterface.
 #[derive(Clone, Debug)]
 pub struct LocalInterfaceHandle {
     shutdown_sender: broadcast::Sender<ShutdownMessage>,

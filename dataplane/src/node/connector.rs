@@ -141,7 +141,7 @@ impl Connector {
             // sends the first packet of the flow with the new scheduler
             scheduler.send(packet);
 
-            // stores the flow id to the scheduler into hashmap for sending subsequent packets.
+            // stores the flow id to the scheduler into hashmap for sending subsequent packets
             self.schedulers.insert(flow_id, scheduler);
         }
     }
@@ -157,7 +157,7 @@ impl Connector {
         };
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
 
-        // Handles flows where this node is the final destination.
+        // handles flows where this node is the final destination
         if next_hop_id == self.routing_table.local_id {
             // creates a scheduler for response packets
             let scheduler = tcp_max_client
@@ -165,16 +165,16 @@ impl Connector {
                 .await;
 
             // reverses the flow ID to use it as a key in the scheduler hashmap, stores the reversed flow id to the
-            // scheduler into the hashmap for sending response packets from the destination node to the source node.
+            // scheduler into the hashmap for sending response packets from the destination node to the source node
             self.schedulers.insert(flow_id.reverse(), scheduler);
         } else {
-            // Handles flows that need to be forwarded to the next hop as a relay node
+            // handles flows that need to be forwarded to the next hop as a relay node
 
             // obtains the next hop addr from the hashmap of node addresses
             // the node addresses are only stored for dataplane nodes
             let next_hop_addr = match self.node_addresses.get(&next_hop_id) {
                 Some(addr) => addr.clone(),
-                // redirects to the external server if the next hop is not a registered node if sending external traffic.
+                // redirects to the external server if the next hop is not a registered node if sending external traffic
                 None => {
                     let external_server_addr =
                         format!("{}:{}", flow_id.dst_ip(), flow_id.dst_port());
@@ -190,7 +190,7 @@ impl Connector {
             // obtains the [0x06] + flow_id stream to next hop
             let mut outbound_stream = tcp_max_client.connect(flow_id, &next_hop_addr).await;
 
-            // spawns a task to perform zero-copy bidirectional splicing between inbound and outbound streams.
+            // spawns a task to perform zero-copy bidirectional splicing between inbound and outbound streams
             tokio::spawn(async move {
                 match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                     Ok((upstream_bytes, downstream_bytes)) => {

@@ -38,7 +38,7 @@ impl ControllerInterfaceHandle {
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
-        // Initialize the controller sender and receiver
+        // initializes the controller sender and receiver
         let mut controller_sender = DataplaneToControllerSender {
             sender_stream,
             northbridge_receiver,
@@ -55,7 +55,7 @@ impl ControllerInterfaceHandle {
         let user_space_client =
             UserSpaceClientHandle::new(config.clone(), processors.clone(), reporter.clone());
 
-        // creates the server handle for the processor to use.
+        // creates the server handle for the processor to use
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
 
@@ -226,7 +226,7 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
-                // creates new persistent tcp connection to the remote node.
+                // creates new persistent tcp connection to the remote node
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
@@ -274,11 +274,11 @@ impl ControllerToDataplaneReceiver {
 
                 for flow in &flows {
                     if flow.dst_node_id == self.config.node_id {
-                        // this node is the server for this flow.
+                        // this node is the server for this flow
                         self.user_space_server.store_flow_spec(flow.clone());
                     }
                     if flow.src_node_id == self.config.node_id {
-                        // this node is the client for this flow.
+                        // this node is the client for this flow
                         client_flows.push(flow.clone());
                     }
                 }

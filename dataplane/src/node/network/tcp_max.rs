@@ -213,7 +213,7 @@ impl TcpMaxClient {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
                     // after requesting a remote connection, it writes the first byte 0x06 into the stream
-                    // which indicates that it is a TCP MAX connection.
+                    // which indicates that it is a TCP MAX connection
                     stream
                         .write_all(&[0x06])
                         .await
