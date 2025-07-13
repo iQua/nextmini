@@ -49,13 +49,13 @@ impl TcpMaxServer {
                 }
             };
 
-            // reads the first byte to determine the protocol.
+            // reads the first byte to determine the protocol
             if let Err(e) = stream.read_exact(&mut first_byte).await {
                 error!("Failed to read first byte: {}", e);
                 continue;
             }
 
-            // handles the connection based on protocol.
+            // handles the connection based on protocol
             let flow_id = match first_byte[0] {
                 // indicates a SOCKS5 protocol request, typically from an external client.
                 0x05 => self.handle_socks5_request(&mut stream).await,
@@ -67,7 +67,7 @@ impl TcpMaxServer {
                 }
             };
 
-            // gets flow_id from socks5 or tcp max request
+            // extracts the flow ID from the SOCKS5 protocol or tcp max request
             match flow_id {
                 Ok(flow_id) => {
                     // Tell the processor to splice the upstream
@@ -83,7 +83,7 @@ impl TcpMaxServer {
         }
     }
 
-    /// Handles connection request from an external client using socks5 protocol.
+    /// Handles connection request from an external client using the SOCKS5 protocol.
     async fn handle_socks5_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
         // reads the number of verfication methods supported.
         let mut nmethods = [0u8; 1];
@@ -108,7 +108,7 @@ impl TcpMaxServer {
 
         if request_header[0] != 0x05 {
             stream.write_all(&[0x05, 0xff]).await?;
-            return Err(Error::new(ErrorKind::NotFound, "Not a socks5 request"));
+            return Err(Error::new(ErrorKind::NotFound, "Not a SOCKS5 request"));
         }
 
         // only supports connect requests
@@ -203,8 +203,8 @@ impl TcpMaxClient {
         }
     }
 
-    /// Requests a tcp connection and writes the first packet.
-    pub async fn request_remote(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
+    /// Connects to a TCP max server and sends the first packet.
+    pub async fn connect(&self, flow_id: FlowId, remote_addr: &str) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);

@@ -100,7 +100,7 @@ impl ProcessorHandle {
         };
     }
 
-    // connects the client handle to the processor
+    /// Connects the client handle to the processor.
     pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
         if let Err(e) = self
             .broadcast_sender()
@@ -113,8 +113,8 @@ impl ProcessorHandle {
         };
     }
 
-    // Disconnects the user-space packet sender from the processor's hashmap of senders.
-    // This is needed when a user-space TCP flow finishes.
+    /// Disconnects the user-space packet sender from the processor's hashmap of senders.
+    /// This is needed when a user-space TCP flow finishes.
     pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
         if let Err(e) = self
             .broadcast_sender()
@@ -128,7 +128,7 @@ impl ProcessorHandle {
     }
 
     pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
-        // broadcast to all processors
+        // broadcasts to all processors
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::UpdateRoutingTable(routes.clone()))
@@ -139,7 +139,7 @@ impl ProcessorHandle {
             );
         };
 
-        // send to the connector
+        // sends to the connector
         if let Err(e) = self
             .connector_message_sender()
             .send(ConnectorMessage::UpdateRoutingTable(routes))
@@ -164,7 +164,6 @@ impl ProcessorHandle {
         };
     }
 
-    // processes a packet called by the local reader actor
     pub fn process_packet(&self, packet: Packet) {
         match self {
             ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
@@ -251,7 +250,7 @@ impl SequentialProcHandle {
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
         for _ in 0..config.num_packet_processors {
-            // for each Processor, creates one MPSC channel
+            // creates an mpsc channel for each processor
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
@@ -266,13 +265,15 @@ impl SequentialProcHandle {
             });
         }
 
-        // create a packet channel for the connector
+        // creates a packet channel for the connector
         let (connector_packet_sender, connector_packet_receiver) =
             mpsc::channel(config.channel_capacity);
-        // create a message channel for the connector
+
+        // creates a message channel for the connector
         let (connector_message_sender, connector_message_receiver) =
             mpsc::channel(config.channel_capacity);
-        // create a new connector
+
+        // creates a new connector
         let mut connector = Connector::new(
             connector_packet_receiver,
             connector_message_receiver,
