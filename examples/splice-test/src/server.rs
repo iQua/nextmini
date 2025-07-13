@@ -8,22 +8,22 @@ use std::time::{Duration, Instant};
 fn main() -> std::io::Result<()> {
     // listens on all interfaces on port 8080
     let listener = TcpListener::bind("0.0.0.0:8080")?;
-    println!("Server listening on port 8080");
+    println!("Server listening on port 8080.");
 
     // accepts connections and process them serially
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                println!("New connection from: {}", stream.peer_addr()?);
+                println!("New connection from: {}.", stream.peer_addr()?);
                 // handles each connection in a new thread
                 thread::spawn(move || {
                     if let Err(e) = handle_client(stream) {
-                        eprintln!("Error handling client: {}", e);
+                        eprintln!("Error handling client: {}.", e);
                     }
                 });
             }
             Err(e) => {
-                eprintln!("Connection failed: {}", e);
+                eprintln!("Connection failed: {}.", e);
             }
         }
     }
@@ -68,7 +68,7 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
                     // timeout occurred, checks if we should continue
                     continue;
                 }
-                eprintln!("Error reading from client: {}", e);
+                eprintln!("Error reading from client: {}.", e);
                 break;
             }
         }
@@ -92,7 +92,7 @@ fn print_stats(bytes_received: Arc<AtomicU64>) {
         let throughput_gbps = (bytes_diff as f64 * 8.0) / (elapsed * 1000.0 * 1000.0 * 1000.0);
 
         println!(
-            "Throughput: {:.2} Gbps, Total received: {:.2} GB",
+            "Throughput: {:.2} Gbps, Total received: {:.2} GB.",
             throughput_gbps,
             current_bytes as f64 / (1000.0 * 1000.0 * 1000.0)
         );

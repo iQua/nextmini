@@ -15,7 +15,7 @@ fn main() -> std::io::Result<()> {
     let target_ip = Ipv4Addr::new(172, 16, 8, 8);
     let target_port = 8080u16;
 
-    println!("Connecting to SOCKS5 proxy: {}", proxy_addr);
+    println!("Connecting to SOCKS5 proxy: {}.", proxy_addr);
 
     let mut stream = TcpStream::connect(proxy_addr)?;
 
@@ -23,7 +23,7 @@ fn main() -> std::io::Result<()> {
     stream.set_nodelay(true)?;
 
     // Step 1: Authentication handshake
-    println!("Sending auth request");
+    println!("Sending auth request.");
     let auth_request = [0x05, 0x01, 0x00]; // version 5, 1 method, no authentication
     stream.write_all(&auth_request)?;
     stream.flush()?; // Make sure request is sent immediately
@@ -33,21 +33,21 @@ fn main() -> std::io::Result<()> {
     stream.read_exact(&mut auth_response)?;
 
     if auth_response[0] != 0x05 {
-        panic!("Invalid SOCKS version response: {}", auth_response[0]);
+        panic!("Invalid SOCKS version response: {}.", auth_response[0]);
     }
 
     if auth_response[1] != 0x00 {
-        panic!("Authentication failed, method: {}", auth_response[1]);
+        panic!("Authentication failed, method: {}.", auth_response[1]);
     }
 
-    println!("Authentication successful");
+    println!("Authentication successful.");
 
     // Add delay between authentication and connection request
     thread::sleep(Duration::from_millis(100));
 
     // Step 2: Connection request
     // Try sending request in parts to avoid any potential buffering issues
-    println!("Sending connection request header");
+    println!("Sending connection request header.");
 
     // First send the header
     let header = [
@@ -63,7 +63,7 @@ fn main() -> std::io::Result<()> {
     thread::sleep(Duration::from_millis(50));
 
     // Then send the address
-    println!("Sending target address: {}", target_ip);
+    println!("Sending target address: {}.", target_ip);
     stream.write_all(&target_ip.octets())?;
     stream.flush()?;
 
@@ -71,13 +71,13 @@ fn main() -> std::io::Result<()> {
     thread::sleep(Duration::from_millis(50));
 
     // Finally send the port
-    println!("Sending target port: {}", target_port);
+    println!("Sending target port: {}.", target_port);
     let port_bytes = [(target_port >> 8) as u8, (target_port & 0xff) as u8];
     stream.write_all(&port_bytes)?;
     stream.flush()?;
 
     println!(
-        "Full connection request sent to target: {}:{}",
+        "Full connection request sent to target: {}:{}.",
         target_ip, target_port
     );
 
@@ -90,105 +90,105 @@ fn main() -> std::io::Result<()> {
     match stream.read(&mut connect_response) {
         Ok(n) if n >= 2 => {
             println!(
-                "Received response of {} bytes: {:02X?}",
+                "Received response of {} bytes: {:02X?}.",
                 n,
                 &connect_response[..n]
             );
 
             if connect_response[0] != 0x05 {
-                println!("Invalid SOCKS version in response: {}", connect_response[0]);
+                println!("Invalid SOCKS version in response: {}.", connect_response[0]);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
-                    "Invalid SOCKS version",
+                    "Invalid SOCKS version.",
                 ));
             }
 
             match connect_response[1] {
                 0x00 => println!("Connection successful!"),
                 0x01 => {
-                    println!("General SOCKS server failure");
+                    println!("General SOCKS server failure.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "General SOCKS server failure",
+                        "General SOCKS server failure.",
                     ));
                 }
                 0x02 => {
-                    println!("Connection not allowed by ruleset");
+                    println!("Connection not allowed by ruleset.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "Connection not allowed",
+                        "Connection not allowed.",
                     ));
                 }
                 0x03 => {
-                    println!("Network unreachable");
+                    println!("Network unreachable.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "Network unreachable",
+                        "Network unreachable.",
                     ));
                 }
                 0x04 => {
-                    println!("Host unreachable");
+                    println!("Host unreachable.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "Host unreachable",
+                        "Host unreachable.",
                     ));
                 }
                 0x05 => {
-                    println!("Connection refused");
+                    println!("Connection refused.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "Connection refused",
+                        "Connection refused.",
                     ));
                 }
                 0x06 => {
-                    println!("TTL expired");
+                    println!("TTL expired.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "TTL expired",
+                        "TTL expired.",
                     ));
                 }
                 0x07 => {
-                    println!("Command not supported");
+                    println!("Command not supported.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "Command not supported",
+                        "Command not supported.",
                     ));
                 }
                 0x08 => {
-                    println!("Address type not supported");
+                    println!("Address type not supported.");
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        "Address type not supported",
+                        "Address type not supported.",
                     ));
                 }
                 code => {
-                    println!("Unknown error code: {}", code);
+                    println!("Unknown error code: {}.", code);
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
-                        format!("Unknown error {}", code),
+                        format!("Unknown error {}.", code),
                     ));
                 }
             }
         }
         Ok(n) => {
             println!(
-                "Received incomplete response: {} bytes: {:02X?}",
+                "Received incomplete response: {} bytes: {:02X?}.",
                 n,
                 &connect_response[..n]
             );
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "Incomplete response",
+                "Incomplete response.",
             ));
         }
         Err(e) => {
-            println!("Failed to read response: {}", e);
+            println!("Failed to read response: {}.", e);
             return Err(e);
         }
     }
 
     println!(
-        "SOCKS5 tunnel established successfully to {}:{}",
+        "SOCKS5 tunnel established successfully to {}:{}.",
         target_ip, target_port
     );
 
@@ -208,7 +208,7 @@ fn main() -> std::io::Result<()> {
                 bytes_sent.store(total_sent, Ordering::Relaxed);
             }
             Err(e) => {
-                eprintln!("error sending data: {}", e);
+                eprintln!("error sending data: {}.", e);
                 break;
             }
         }
@@ -222,7 +222,7 @@ fn print_stats(bytes_sent: Arc<AtomicU64>) {
     let mut last_time = Instant::now();
 
     loop {
-        // Log every second
+        // logs every second
         thread::sleep(Duration::from_secs(1));
 
         let current_bytes = bytes_sent.load(Ordering::Relaxed);
@@ -233,7 +233,7 @@ fn print_stats(bytes_sent: Arc<AtomicU64>) {
         let throughput_gbps = (bytes_diff as f64 * 8.0) / (elapsed * 1000.0 * 1000.0 * 1000.0);
 
         println!(
-            "Send Throughput: {:.2} Gbps, Total sent: {:.2} GB",
+            "Send Throughput: {:.2} Gbps, Total sent: {:.2} GB.",
             throughput_gbps,
             current_bytes as f64 / (1000.0 * 1000.0 * 1000.0)
         );
