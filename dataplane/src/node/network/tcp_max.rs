@@ -19,12 +19,13 @@ pub struct TcpMaxServer {
     processors: ProcessorHandle,
 }
 
+/// TcpMaxServer supports both SOCKS5 proxy requests and direct TCP MAX connections.
 impl TcpMaxServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self { config, processors }
     }
 
-    /// accepts incoming tcp connections.
+    /// Accepts incoming tcp connections.
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -54,9 +55,11 @@ impl TcpMaxServer {
                 continue;
             }
 
-            // handles the connection based on protocol
+            // handles the connection based on protocol.
             let flow_id = match first_byte[0] {
+                // indicates a SOCKS5 protocol request, typically from an external client.
                 0x05 => self.handle_socks5_request(&mut stream).await,
+                // indicates a TCP MAX protocol request
                 0x06 => self.handle_tcp_max_request(&mut stream).await,
                 _ => {
                     error!("Unsupported protocol");
@@ -80,7 +83,7 @@ impl TcpMaxServer {
         }
     }
 
-    /// handles connection request from an external client using socks5 protocol.
+    /// Handles connection request from an external client using socks5 protocol.
     async fn handle_socks5_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
         // reads the number of verfication methods supported.
         let mut nmethods = [0u8; 1];
@@ -144,7 +147,7 @@ impl TcpMaxServer {
                     | ((client_port as u128) << 48)
                     | ((server_port as u128) << 32);
 
-                // send the success response
+                // sends the success response
                 let response = [0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
                 stream.write_all(&response).await?;
 
@@ -158,7 +161,7 @@ impl TcpMaxServer {
         }
     }
 
-    /// handles connection request from a tcp max client.
+    /// Handles connection request from a tcp max client.
     async fn handle_tcp_max_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
         let mut flow_id_buf = [0u8; 16];
 
@@ -209,7 +212,8 @@ impl TcpMaxClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
-                    // represents the tcp max client
+                    // after requesting a remote connection, it writes the first byte 0x06 into the stream
+                    // which indicates that it is a TCP MAX connection.
                     stream
                         .write_all(&[0x06])
                         .await
@@ -217,7 +221,7 @@ impl TcpMaxClient {
 
                     // sends the flow_id to the node
                     stream
-                        .write_all(&flow_id.to_be_bytes())
+                        .write_all(&flow_id.to_be_bytes()) // writes the flow_id as a 16-byte big-endian integer
                         .await
                         .expect("Failed to send local node id to the node");
 
