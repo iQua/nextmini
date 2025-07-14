@@ -1,9 +1,9 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
-use std::thread;
-use std::time::Duration;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 fn main() -> std::io::Result<()> {
@@ -96,7 +96,10 @@ fn main() -> std::io::Result<()> {
             );
 
             if connect_response[0] != 0x05 {
-                println!("Invalid SOCKS version in response: {}.", connect_response[0]);
+                println!(
+                    "Invalid SOCKS version in response: {}.",
+                    connect_response[0]
+                );
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "Invalid SOCKS version.",
@@ -104,7 +107,7 @@ fn main() -> std::io::Result<()> {
             }
 
             match connect_response[1] {
-                0x00 => println!("Connection successful!"),
+                0x00 => println!("Connection successful."),
                 0x01 => {
                     println!("General SOCKS server failure.");
                     return Err(std::io::Error::new(
@@ -242,4 +245,3 @@ fn print_stats(bytes_sent: Arc<AtomicU64>) {
         last_time = current_time;
     }
 }
-

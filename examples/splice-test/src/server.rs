@@ -52,7 +52,7 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
                 bytes_received.fetch_add(n as u64, Ordering::Relaxed);
 
                 if !first_packet_received {
-                    println!("First packet received! Starting throughput measurement...");
+                    println!("First packet has been received. Starting throughput measurement...");
                     first_packet_received = true;
                 }
             }
