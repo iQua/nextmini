@@ -293,6 +293,7 @@ impl LocalConfig {
             subnet if subnet == (user_space_base & netmask) => {
                 (ip_addr - user_space_base) as NodeId
             }
+            // binds the external client/server address to the node ID
             subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
             _ => {
                 panic!("Detected unknown IP {}.", ip);
