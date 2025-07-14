@@ -266,12 +266,12 @@ fn default_user_space_base_addr() -> Ipv4Addr {
 
 // The external base address for default external client.
 fn default_external_base_address() -> Ipv4Addr {
-    Ipv4Addr::new(172, 16, 8, 4)
+    Ipv4Addr::new(172, 16, 8, 3)
 }
 
 // The external base address for external traffic.
 fn default_external_base_addr() -> Ipv4Addr {
-    Ipv4Addr::new(172, 16, 8, 4)
+    Ipv4Addr::new(172, 16, 8, 3)
 }
 
 fn default_netmask() -> Ipv4Addr {
@@ -353,7 +353,29 @@ impl LocalConfig {
                 }
             }
 
+            // obtains the ipv4 address of the dataplane node
             cfgs.private_network_addr = ipv4addr;
+
+            // computes the node_id from private_network_addr using external_base_addr
+            if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
+                let ip = u32::from(real_ip);
+                // external_base_addr is used to compute the node_id
+                // as it has the same prefix with the private_network_addr
+                let base = u32::from(cfgs.external_base_addr);
+                let computed_node_id = (ip - base) as NodeId;
+                if computed_node_id != 0 {
+                    cfgs.node_id = computed_node_id;
+                    info!(
+                        "From real IP {} using external_base_addr, node_id is: {}.",
+                        cfgs.private_network_addr, cfgs.node_id
+                    );
+                }
+            } else {
+                error!(
+                    "Failed to parse private_network_addr as Ipv4Addr: {}.",
+                    cfgs.private_network_addr
+                );
+            }
         }
 
         // sets the ipv4 address of the network interface for the public network

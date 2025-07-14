@@ -102,35 +102,16 @@ async fn handle_connection(
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
 
-                        let assign_new_id = match maybe_node_id {
-                            Some(0) => true,  // ID is present but is 0
-                            None => true,     // ID is not present
-                            Some(_) => false, // ID is present and not 0
-                        };
-
-                        let node_id = if assign_new_id {
-                            // assigns a new node ID
-                            let node_ws_guard = node_ws.read().await;
-                            let new_id = if node_ws_guard.is_empty() {
-                                1
-                            } else {
-                                *node_ws_guard.keys().max().unwrap_or(&0) + 1
-                            };
-
-                            info!("Assigning a new node ID: {}.", new_id);
-
-                            new_id
-                        } else {
-                            // ID was Some(id) and id was not 0
-                            maybe_node_id.unwrap()
-                        };
+                        // assigns a node ID as the dataplane node requests
+                        let node_id = maybe_node_id.unwrap();
 
                         // checks if the node ID is already used
                         if node_ws.read().await.contains_key(&node_id) {
-                            warn!("Node ID {} is already used.", node_id);
+                            error!("Node ID {} is already used.", node_id);
                             continue;
                         }
 
+                        // checks if the node ID is correct
                         info!(
                             "Registered new node {} with private address {} and public address {}.",
                             node_id, private_network_addr, public_network_addr,
