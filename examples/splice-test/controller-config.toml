@@ -3,11 +3,24 @@ protocol = "tcp"
 [topology]
 n_nodes = 3
 
+# if you wish to test ping and iperf, you can uncomment the following lines
 # [[nodes]]
 # node_id = 1
+# operating_mode = "max"
+
+# [[nodes]]
+# node_id = 3
 # operating_mode = "max"
 
 [[routes]]
 # node 0 represents the external client
 # node 4 represents the internal server
 route = [0, 1, 2, 3, 4]
+
+
+# if you wish to test ping and iperf, you can uncomment the following lines
+# [[routes]]
+# route = [1, 2, 3]
+
+# [[routes]]
+# route = [3, 2, 1]
