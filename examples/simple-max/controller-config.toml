@@ -1,9 +1,23 @@
 protocol = "tcp"
 
 [topology]
-type = "full_mesh"
 n_nodes = 3
+
+[[flows]]
+src_node_id = 1
+dst_node_id = 3
+flow_spec = { flow_len = { Bytes = 1_000_000_000 }}
 
 [[nodes]]
 node_id = 1
 operating_mode = "max"
+
+# [[nodes]]
+# node_id = 3
+# operating_mode = "max"
+
+[[routes]]
+route = [1,2,3]
+
+[[routes]]
+route = [3,2,1]
