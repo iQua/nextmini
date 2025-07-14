@@ -64,9 +64,9 @@ services:
       - NET_ADMIN
     command: /bin/bash -c "sleep 5 && /var/nextmini/src"
 
-  node1:
-    container_name: node1
-    hostname: node1
+  node2:
+    container_name: node2
+    hostname: node2
     image: nextmini_datapath
     build:
       context: ../../
@@ -87,9 +87,9 @@ services:
       - NET_ADMIN
     command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
-  node2:
-    container_name: node2
-    hostname: node2
+  node3:
+    container_name: node3
+    hostname: node3
     image: nextmini_datapath
     build:
       context: ../../
@@ -106,14 +106,14 @@ services:
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
-      - node1
+      - node2
     cap_add:
       - NET_ADMIN
     command: /bin/bash -c "sleep 8 && /var/nextmini/nextmini ws://controller:3000"
 
-  node3:
-    container_name: node3
-    hostname: node3
+  node4:
+    container_name: node4
+    hostname: node4
     image: nextmini_datapath
     build:
       context: ../../
@@ -130,7 +130,7 @@ services:
       - ../../tools/:/var/nextmini/tools
     depends_on:
       - controller
-      - node2
+      - node3
     cap_add:
       - NET_ADMIN
     command: /bin/bash -c "sleep 9 && /var/nextmini/nextmini ws://controller:3000"
