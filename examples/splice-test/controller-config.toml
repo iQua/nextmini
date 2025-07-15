@@ -1,8 +1,13 @@
 protocol = "tcp"
 
-# Three nodes in the topology
+# Three Netxmini dataplane nodes in the topology
 [topology]
 n_nodes = 3
+
+[[routes]]
+# node 1 represents the external client
+# node 5 represents the internal server
+route = [1, 2, 3, 4, 5]
 
 # if you wish to test ping and iperf, you can uncomment the following lines
 # [[nodes]]
@@ -13,11 +18,11 @@ n_nodes = 3
 # node_id = 4
 # operating_mode = "max"
 
-[[routes]]
-# node 1 represents the external client
-# node 5 represents the internal server
-route = [1, 2, 3, 4, 5]
-
+# if you wish to test the smoltcp as well, you can uncomment the following lines
+# [[flows]]
+# src_node_id = 2
+# dst_node_id = 4
+# flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_weight = 1 }
 
 # if you wish to test ping and iperf, you can uncomment the following lines
 # [[routes]]
