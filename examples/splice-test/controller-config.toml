@@ -1,7 +1,6 @@
 protocol = "tcp"
 
 # Three nodes in the topology
-[[nodes]]
 [topology]
 n_nodes = 3
 
