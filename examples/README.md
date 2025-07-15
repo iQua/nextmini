@@ -166,6 +166,42 @@ PING 10.0.0.4 (10.0.0.4) 56(84) bytes of data.
 64 bytes from 10.0.0.4: icmp_seq=2 ttl=64 time=1.60 ms
 ```
 
+#### Test with smoltcp stack
+
+If you also uncomment the `smoltcp` section in the config file, you can test with the smoltcp stack and use Nextmini as the proxy at the same time.
+
+```text
+# uncomment below:
+[[flows]]
+src_node_id = 2
+dst_node_id = 4
+flow_spec = { flow_len = { Bytes = 10_000_000_000_000 }, flow_weight = 1 }
+```
+
+```text
+external_client  | Send Throughput: 54.28 Gbps, Total sent: 76.47 GB.
+external_server  | Throughput: 54.17 Gbps, Total received: 76.46 GB.
+node2            | 2025-07-15T00:30:49.647843Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 5.097 Gbps (637096272 bytes in 1.000s)
+external_client  | Send Throughput: 55.50 Gbps, Total sent: 83.40 GB.
+external_server  | Throughput: 55.45 Gbps, Total received: 83.39 GB.
+node2            | 2025-07-15T00:30:50.647882Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 5.204 Gbps (650571344 bytes in 1.000s)
+external_client  | Send Throughput: 55.05 Gbps, Total sent: 90.28 GB.
+external_server  | Throughput: 55.04 Gbps, Total received: 90.27 GB.
+node2            | 2025-07-15T00:30:51.647915Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 4.389 Gbps (548673168 bytes in 1.000s)
+external_client  | Send Throughput: 58.96 Gbps, Total sent: 97.66 GB.
+external_server  | Throughput: 58.92 Gbps, Total received: 97.63 GB.
+node2            | 2025-07-15T00:30:52.647959Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 5.267 Gbps (658346608 bytes in 1.000s)
+external_client  | Send Throughput: 55.60 Gbps, Total sent: 104.61 GB.
+external_server  | Throughput: 55.72 Gbps, Total received: 104.60 GB.
+node2            | 2025-07-15T00:30:53.648018Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 5.225 Gbps (653171712 bytes in 1.000s)
+external_client  | Send Throughput: 55.94 Gbps, Total sent: 111.60 GB.
+external_server  | Throughput: 55.80 Gbps, Total received: 111.57 GB.
+node2            | 2025-07-15T00:30:54.648115Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 5.307 Gbps (663403136 bytes in 1.000s)
+external_client  | Send Throughput: 54.62 Gbps, Total sent: 118.43 GB.
+external_server  | Throughput: 54.73 Gbps, Total received: 118.41 GB.
+node2            | 2025-07-15T00:30:55.648248Z  INFO nextmini::node::flow::state: Throughput from node 2 to node 4: 5.558 Gbps (694864528 bytes in 1.000s)
+```
+
 ### What is in the docker-compose file?
 
 The docker-compose.yaml defines services like `external_client` and `external_server` for external endpoints, connected via SOCKS5. Internal Nextmini dataplane nodes (e.g., `node2`, `node3`, `node4`) run the datapath.
@@ -184,8 +220,8 @@ The external client/server IPs can be customized, but ensure they match the pref
   subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
 ```
 
-The above code is used to bind the external client/server address to a node ID. Notice that this node ID can't conflict with the node IDs that the controller 
-allocates to the Nextmini dataplane nodes, which are `2`, `3`, and `4` in this example. Thus the real IP address of `external_client/server` should not 
+The above code is used to bind the external client/server address to a node ID. Notice that this node ID can't conflict with the node IDs that the controller
+allocates to the Nextmini dataplane nodes, which are `2`, `3`, and `4` in this example. Thus the real IP address of `external_client/server` should not
 conflict with the IP addresses of the internal nodes.
 
 This binds external addresses to node IDs without conflicting with internal nodes (e.g., 2, 3, 4). External IPs must share the same prefix as `external_base_addr` and avoid conflicts with controller-assigned IDs requested from Nextmini dataplane node.
