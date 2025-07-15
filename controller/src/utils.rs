@@ -1,19 +1,22 @@
 /// Implements utility functions for the controller.
+use std::net::Ipv4Addr;
+
+use tracing::debug;
+
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, NodeSpec, OperatingMode, Protocol,
     RoutingTableEntry, SchedulingDiscipline,
 };
 
 use crate::models::{DbFlow, Route};
-use tracing::debug;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
     node_id: usize,
-    net_mask: std::net::Ipv4Addr,
-    virtual_base_addr: std::net::Ipv4Addr,
-    user_space_base_addr: std::net::Ipv4Addr,
-    external_base_addr: std::net::Ipv4Addr,
+    net_mask: Ipv4Addr,
+    virtual_base_addr: Ipv4Addr,
+    user_space_base_addr: Ipv4Addr,
+    external_base_addr: Ipv4Addr,
     max_server_port: u16,
     protocol: Protocol,
     scheduler_type: SchedulingDiscipline,
