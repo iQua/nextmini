@@ -220,6 +220,14 @@ The external client/server IPs can be customized, but ensure they match the pref
   subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
 ```
 
+When running, you could see logs like:
+
+```text
+node2            | 2025-07-15T04:14:32.037033Z  INFO nextmini::node::config: From real IP 172.16.8.5 using external_base_addr, node_id is: 2.
+node3            | 2025-07-15T04:14:33.252688Z  INFO nextmini::node::config: From real IP 172.16.8.6 using external_base_addr, node_id is: 3.
+node4            | 2025-07-15T04:14:34.440636Z  INFO nextmini::node::config: From real IP 172.16.8.7 using external_base_addr, node_id is: 4.
+```
+
 The above code is used to bind the external client/server address to a node ID. Notice that this node ID can't conflict with the node IDs that the controller
 allocates to the Nextmini dataplane nodes, which are `2`, `3`, and `4` in this example. Thus the real IP address of `external_client/server` should not
 conflict with the IP addresses of the internal nodes.
