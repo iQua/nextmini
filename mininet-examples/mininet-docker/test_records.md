@@ -430,3 +430,59 @@ h1 h2 h3 h4 h5 h6 h7 h8 h9 h10 h11 h12 h13 h14 h15 h16 h17 h18 h19 h20 h21 h22 h
 Open vSwitch kernel: 0% packet loss
 ```
 
+## nat.py
+
+firstly run:
+```
+python3 nat.py
+```
+
+Then, after you see `mininet>`
+
+Once in the Mininet CLI, test internet connectivity from any host:
+```bash
+mininet> h1 ping -c 3 google.com
+```
+
+Try other internet-requiring commands:
+```bash
+mininet> h3 curl icanhazip.com
+```
+
+```text
+root@1902a4da3fdc:/opt/mininet-examples# python3 nat.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4
+*** Adding switches:
+s1
+*** Adding links:
+(s1, h1) (s1, h2) (s1, h3) (s1, h4)
+*** Configuring hosts
+h1 h2 h3 h4
+*** Adding "iface nat0-eth0 inet manual" to /etc/network/interfaces
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+*** Hosts are running and should have internet connectivity
+*** Type 'exit' or control-D to shut down network
+*** Starting CLI:
+mininet> h1 ping -c 3 google.com
+PING google.com (142.251.41.46) 56(84) bytes of data.
+64 bytes from yyz12s08-in-f14.1e100.net (142.251.41.46): icmp_seq=1 ttl=115 time=3.98 ms
+64 bytes from yyz12s08-in-f14.1e100.net (142.251.41.46): icmp_seq=2 ttl=115 time=2.55 ms
+64 bytes from yyz12s08-in-f14.1e100.net (142.251.41.46): icmp_seq=3 ttl=115 time=2.67 ms
+
+--- google.com ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2003ms
+rtt min/avg/max/mdev = 2.551/3.066/3.976/0.645 ms
+
+mininet> h3 curl icanhazip.com
+142.150.238.6
+
+```
