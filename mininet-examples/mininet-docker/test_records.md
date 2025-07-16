@@ -498,39 +498,39 @@ ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 controlnet.py
 * Creating Control Network
 *** Creating network
 *** Adding hosts:
-c0 c1 c2 c3 root 
+c0 c1 c2 c3 root
 *** Adding switches:
-cs0 
+cs0
 *** Adding links:
-(c0, cs0) (c1, cs0) (c2, cs0) (c3, cs0) (root, cs0) 
+(c0, cs0) (c1, cs0) (c2, cs0) (c3, cs0) (root, cs0)
 *** Configuring hosts
-c0 c1 c2 c3 root 
+c0 c1 c2 c3 root
 * Adding Control Network Controller
 * Starting Control Network
 *** Starting controller
-cc0 
+cc0
 *** Starting 1 switches
 cs0 ...
 *** Waiting for switches to connect
-cs0 
+cs0
 * Creating Data Network
 *** Creating network
 *** Adding hosts:
-h1 h2 h3 h4 
+h1 h2 h3 h4
 *** Adding switches:
-s1 s2 s3 
+s1 s2 s3
 *** Adding links:
-(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4) 
+(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4)
 *** Configuring hosts
-h1 h2 h3 h4 
+h1 h2 h3 h4
 * Adding Controllers to Data Network
 * Starting Data Network
 *** Starting controller
-c0 c1 c2 c3 
+c0 c1 c2 c3
 *** Starting 3 switches
-s1 s2 s3 
+s1 s2 s3
 *** Waiting for switches to connect
-s1 s2 s3 
+s1 s2 s3
 *** Starting CLI:
 mininet> h1 ping h2
 PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
