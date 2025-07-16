@@ -56,11 +56,11 @@ bucket_size = 1800
 
 For flows, you only need to specify the source and destination node IDs and the flow specific parameters like `flow_len`, `flow_rate`, and `flow_weight`.
 
-# Example of test:
+# Examples
 
 ## splice-test
 
-### Run the splice-test example
+### Running the splice-test example
 
 To run the splice-test example, you can use the following command:
 
