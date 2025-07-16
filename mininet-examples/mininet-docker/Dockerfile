@@ -6,6 +6,7 @@ WORKDIR /root
 COPY ENTRYPOINT.sh /
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    sudo \
     curl \
     dnsutils \
     ifupdown \
