@@ -486,3 +486,62 @@ mininet> h3 curl icanhazip.com
 142.150.238.6
 
 ```
+
+## Controlnet.py
+
+```bash
+python3 controlnet.py
+```
+
+```text
+ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 controlnet.py
+* Creating Control Network
+*** Creating network
+*** Adding hosts:
+c0 c1 c2 c3 root 
+*** Adding switches:
+cs0 
+*** Adding links:
+(c0, cs0) (c1, cs0) (c2, cs0) (c3, cs0) (root, cs0) 
+*** Configuring hosts
+c0 c1 c2 c3 root 
+* Adding Control Network Controller
+* Starting Control Network
+*** Starting controller
+cc0 
+*** Starting 1 switches
+cs0 ...
+*** Waiting for switches to connect
+cs0 
+* Creating Data Network
+*** Creating network
+*** Adding hosts:
+h1 h2 h3 h4 
+*** Adding switches:
+s1 s2 s3 
+*** Adding links:
+(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4) 
+*** Configuring hosts
+h1 h2 h3 h4 
+* Adding Controllers to Data Network
+* Starting Data Network
+*** Starting controller
+c0 c1 c2 c3 
+*** Starting 3 switches
+s1 s2 s3 
+*** Waiting for switches to connect
+s1 s2 s3 
+*** Starting CLI:
+mininet> h1 ping h2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=1.35 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.577 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.079 ms
+64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.062 ms
+64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.061 ms
+^C
+--- 10.0.0.2 ping statistics ---
+5 packets transmitted, 5 received, 0% packet loss, time 4074ms
+rtt min/avg/max/mdev = 0.061/0.426/1.352/0.503 ms
+
+```
