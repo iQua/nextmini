@@ -269,3 +269,40 @@ h1 h2 h3 h4 h5 h6 h7 h8 h9 h10 h11 h12 h13 h14 h15 h16 h17 h18 h19 h20
 ```
 ## simpleperf.py
 
+Changed the CPULimitedHost to Host, then the test result is as below:
+
+```text
+root@f8d908c037ea:/opt/mininet-examples# python3 simpleperf.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4
+*** Adding switches:
+s1
+*** Adding links:
+(10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss) (h1, s1) (10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss) (h2, s1) (10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss) (h3, s1) (10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss) (h4, s1)
+*** Configuring hosts
+h1 h2 h3 h4
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...(10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss) (10.00Mbit 5ms delay 10.00000% loss)
+Dumping host connections
+h1 h1-eth0:s1-eth1
+h2 h2-eth0:s1-eth2
+h3 h3-eth0:s1-eth3
+h4 h4-eth0:s1-eth4
+Testing bandwidth between h1 and h4 (lossy=True)
+*** Iperf: testing UDP bandwidth between h1 and h4
+*** Results: ['10M', '8.57 Mbits/sec', '8.57 Mbits/sec']
+*** Stopping 1 controllers
+c0
+*** Stopping 4 links
+....
+*** Stopping 1 switches
+s1
+*** Stopping 4 hosts
+h1 h2 h3 h4
+*** Done
+```
