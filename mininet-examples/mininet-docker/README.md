@@ -306,3 +306,58 @@ s1
 h1 h2 h3 h4
 *** Done
 ```
+
+## Simple.py
+
+```text
+root@f8d908c037ea:/opt/mininet-examples# python3 simple.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3
+*** Adding switches:
+s1
+*** Adding links:
+(h1, s1) (h2, s1) (h3, s1)
+*** Configuring hosts
+h1 h2 h3
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Testing network connectivity
+*** Ping: testing ping reachability
+h1 -> h2 h3
+h2 -> h1 h3
+h3 -> h1 h2
+*** Results: 0% dropped (6/6 received)
+*** Dumping host connections
+h1 h1-eth0:s1-eth1
+h2 h2-eth0:s1-eth2
+h3 h3-eth0:s1-eth3
+------------------------------------------------------------
+Client connecting to 10.0.0.3, TCP port 5001
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.1 port 49600 connected with 10.0.0.3 port 5001
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-1.0000 sec  10.4 GBytes  89.7 Gbits/sec
+[  1] 1.0000-2.0000 sec  10.7 GBytes  92.3 Gbits/sec
+[  1] 2.0000-3.0000 sec  10.6 GBytes  91.4 Gbits/sec
+[  1] 3.0000-4.0000 sec  10.9 GBytes  93.7 Gbits/sec
+[  1] 4.0000-5.0000 sec  11.1 GBytes  95.3 Gbits/sec
+[  1] 0.0000-5.0109 sec  53.8 GBytes  92.3 Gbits/sec
+*** Stopping 1 controllers
+c0
+*** Stopping 3 links
+...
+*** Stopping 1 switches
+s1
+*** Stopping 3 hosts
+h1 h2 h3
+*** Done
+
+```
+
+Tested with simple test in Boston, the speed is around 90Gbits/sec.
