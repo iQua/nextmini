@@ -1,13 +1,10 @@
-Firsly, we need to clone mininet repo from GitHub:
+## Test mininet examples with docker
+
+**Step 1 : Start the docker environment**
+
+Firstly, run the following commands :
 
 ```bash
-git clone https://github.com/mininet/mininet
-```
-
-Then,
-
-```bash
-cd mininet
 docker compose build; docker compose up
 ```
 
@@ -18,15 +15,41 @@ docker exec -it mininet-container /bin/bash
 ```
 
 Then run the following command to test the basic Mininet functionality:
+
 ```bash
 sudo mn --switch ovsbr --test pingall
 ```
+**Step 2 : Run examples**
 
-For testing the examples:
+By running the following commands, you will see all examples presented for running.
 
 ```bash
-cd /opt/mininet-examples
+cd /opt/mininet-examples; ls
 ```
+
+To run an example:
+
+```bash
+python3 multiping.py
+```
+
+You can change `multiping.py` to any python scripts presented in the `/opt/mininet-examples` folder.
+
+## Complementary Information
+
+If you would like to run more examples, you can clone the official mininet repository in a new terminal by: 
+
+```bash
+git clone https://github.com/mininet/mininet
+```
+
+Then, go to the examples folder provided for extra use cases. 
+
+```bash
+cd mininet/examples
+```
+
+By moving any examples  to the `./nextmini/mininet-examples/mininet-docker/examples`, you may repeat the above _Step 1_ and _Step 2_ to test newly added examples inside docker environment.
 
 ## multiping.py
 
