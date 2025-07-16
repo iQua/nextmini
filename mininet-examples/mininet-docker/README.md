@@ -1,0 +1,271 @@
+Firsly, we need to clone mininet repo from GitHub:
+
+```bash
+git clone https://github.com/mininet/mininet
+```
+
+Then,
+
+```bash
+cd mininet
+docker compose build; docker compose up
+```
+
+Open another terminal:
+
+```bash
+docker exec -it mininet-container /bin/bash
+```
+
+Then run the following command to test the basic Mininet functionality:
+```bash
+sudo mn --switch ovsbr --test pingall
+```
+
+For testing the examples:
+
+```bash
+cd /opt/mininet-examples
+```
+
+## multiping.py
+
+To run this example:
+
+```bash
+python3 multiping.py
+```
+
+Then you can see the result.
+
+```text
+root@38883c844472:/opt/mininet-examples# python3 multiping.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4 h5 h6 h7 h8 h9 h10 h11 h12 h13 h14 h15 h16 h17 h18 h19 h20 
+*** Adding switches:
+s1 
+*** Adding links:
+(h1, s1) (h2, s1) (h3, s1) (h4, s1) (h5, s1) (h6, s1) (h7, s1) (h8, s1) (h9, s1) (h10, s1) (h11, s1) (h12, s1) (h13, s1) (h14, s1) (h15, s1) (h16, s1) (h17, s1) (h18, s1) (h19, s1) (h20, s1) 
+*** Configuring hosts
+h1 h2 h3 h4 h5 h6 h7 h8 h9 h10 h11 h12 h13 h14 h15 h16 h17 h18 h19 h20 
+*** Starting controller
+c0 
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1 
+*** Host h1 (10.0.0.1) will be pinging ips: 10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.200
+*** Host h2 (10.0.0.2) will be pinging ips: 10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.200
+*** Host h3 (10.0.0.3) will be pinging ips: 10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.200
+*** Host h4 (10.0.0.4) will be pinging ips: 10.0.0.1 10.0.0.2 10.0.0.3 10.0.0.4 10.0.0.200
+*** Host h5 (10.0.0.5) will be pinging ips: 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8 10.0.0.200
+*** Host h6 (10.0.0.6) will be pinging ips: 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8 10.0.0.200
+*** Host h7 (10.0.0.7) will be pinging ips: 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8 10.0.0.200
+*** Host h8 (10.0.0.8) will be pinging ips: 10.0.0.5 10.0.0.6 10.0.0.7 10.0.0.8 10.0.0.200
+*** Host h9 (10.0.0.9) will be pinging ips: 10.0.0.9 10.0.0.10 10.0.0.11 10.0.0.12 10.0.0.200
+*** Host h10 (10.0.0.10) will be pinging ips: 10.0.0.9 10.0.0.10 10.0.0.11 10.0.0.12 10.0.0.200
+*** Host h11 (10.0.0.11) will be pinging ips: 10.0.0.9 10.0.0.10 10.0.0.11 10.0.0.12 10.0.0.200
+*** Host h12 (10.0.0.12) will be pinging ips: 10.0.0.9 10.0.0.10 10.0.0.11 10.0.0.12 10.0.0.200
+*** Host h13 (10.0.0.13) will be pinging ips: 10.0.0.13 10.0.0.14 10.0.0.15 10.0.0.16 10.0.0.200
+*** Host h14 (10.0.0.14) will be pinging ips: 10.0.0.13 10.0.0.14 10.0.0.15 10.0.0.16 10.0.0.200
+*** Host h15 (10.0.0.15) will be pinging ips: 10.0.0.13 10.0.0.14 10.0.0.15 10.0.0.16 10.0.0.200
+*** Host h16 (10.0.0.16) will be pinging ips: 10.0.0.13 10.0.0.14 10.0.0.15 10.0.0.16 10.0.0.200
+*** Host h17 (10.0.0.17) will be pinging ips: 10.0.0.17 10.0.0.18 10.0.0.19 10.0.0.20 10.0.0.200
+*** Host h18 (10.0.0.18) will be pinging ips: 10.0.0.17 10.0.0.18 10.0.0.19 10.0.0.20 10.0.0.200
+*** Host h19 (10.0.0.19) will be pinging ips: 10.0.0.17 10.0.0.18 10.0.0.19 10.0.0.20 10.0.0.200
+*** Host h20 (10.0.0.20) will be pinging ips: 10.0.0.17 10.0.0.18 10.0.0.19 10.0.0.20 10.0.0.200
+h1: 10.0.0.1 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.200 1 packets transmitted, 0 received, 100% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.5 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.13 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.17 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.1 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.9 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.14 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.18 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.2 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.10 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.6 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.11 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.7 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.15 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.19 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.3 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h5: 10.0.0.5 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h6: 10.0.0.6 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h3: 10.0.0.3 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h19: 10.0.0.19 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h14: 10.0.0.14 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h20: 10.0.0.20 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h12: 10.0.0.12 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h9: 10.0.0.9 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h18: 10.0.0.18 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h2: 10.0.0.2 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h8: 10.0.0.8 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h1: 10.0.0.1 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h7: 10.0.0.7 -> 10.0.0.8 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h10: 10.0.0.10 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h4: 10.0.0.4 -> 10.0.0.4 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h13: 10.0.0.13 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h16: 10.0.0.16 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h17: 10.0.0.17 -> 10.0.0.20 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h15: 10.0.0.15 -> 10.0.0.16 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+h11: 10.0.0.11 -> 10.0.0.12 1 packets transmitted, 1 received, 0% packet loss, time 0ms 
+*** Stopping 1 controllers
+c0 
+*** Stopping 20 links
+....................
+*** Stopping 1 switches
+s1 
+*** Stopping 20 hosts
+h1 h2 h3 h4 h5 h6 h7 h8 h9 h10 h11 h12 h13 h14 h15 h16 h17 h18 h19 h20 
+*** Done
+```
+## simpleperf.py
+
