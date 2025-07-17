@@ -92,4 +92,10 @@ This node joined a swarm as a worker.
 
 Repeat this step for all other non-manager instances.
 
-## Step 6:
+## Step 6: Run the example
+
+First, you should go to the example directory in your **Manager Instance**:
+
+```bash
+cd nextmini/docker-swarm/simple
+```
