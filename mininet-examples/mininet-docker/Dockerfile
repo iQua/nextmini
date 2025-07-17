@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openvswitch-common \
     python3-pip \
     python3-setuptools \
+    openssh-server \
     tcpdump \
     vim \
     x11-xserver-utils \
@@ -41,8 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ./configure \
     && make \
     && make install \
-    && cd / && rm -rf openflow
+    && cd / && rm -rf openflow \
+    && mkdir -p /var/run/sshd \
+    && echo 'root:root' | chpasswd \
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-EXPOSE 6633 6653 6640
+EXPOSE 6633 6653 6640 22
 
 ENTRYPOINT ["/ENTRYPOINT.sh"]

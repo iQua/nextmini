@@ -917,7 +917,9 @@ rtt min/avg/max/mdev = 1.063/1.063/1.063/0.000 ms
 
 ## scratchnetuser.py
 
-Failed on Boston but ran successfully on EC2.
+Updated info:
+
+Successfully on both Boston and EC2 after updating the Dockerfile to install Open vSwitch.
 
 ```text
 (base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/scratchnetuser.py
@@ -966,4 +968,105 @@ PING 192.168.123.2 (192.168.123.2) 56(84) bytes of data.
 rtt min/avg/max/mdev = 1049.808/1049.808/1049.808/0.000 ms
 *** Stopping network
 ...
+```
+
+## sshd.py
+
+```text
+Boston:
+
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/sshd.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4
+*** Adding switches:
+s1
+*** Adding links:
+(s1, h1) (s1, h2) (s1, h3) (s1, h4)
+*** Configuring hosts
+h1 h2 h3 h4
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+*** Waiting for ssh daemons to start
+..........could not connect to h1 on port 22
+..........could not connect to h2 on port 22
+..........could not connect to h3 on port 22
+..........could not connect to h4 on port 22
+
+*** Hosts are running sshd at the following addresses:
+h1 10.0.0.1
+h2 10.0.0.2
+h3 10.0.0.3
+h4 10.0.0.4
+
+*** Type 'exit' or control-D to shut down network
+*** Starting CLI:
+mininet> nodes
+available nodes are:
+c0 h1 h2 h3 h4 s1
+mininet> h1 ping s
+bash: /usr/sbin/sshd: No such file or directory
+ping: s: Temporary failure in name resolution
+mininet> h1 ping s1
+PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.070 ms
+64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.048 ms
+64 bytes from 127.0.0.1: icmp_seq=3 ttl=64 time=0.065 ms
+^C
+--- 127.0.0.1 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2050ms
+rtt min/avg/max/mdev = 0.048/0.061/0.070/0.009 ms
+```
+
+After adding `openssh-server \`, I could successfully run with docker.
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/sshd.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4
+*** Adding switches:
+s1
+*** Adding links:
+(s1, h1) (s1, h2) (s1, h3) (s1, h4)
+*** Configuring hosts
+h1 h2 h3 h4
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+*** Waiting for ssh daemons to start
+.
+*** Hosts are running sshd at the following addresses:
+h1 10.0.0.1
+h2 10.0.0.2
+h3 10.0.0.3
+h4 10.0.0.4
+
+*** Type 'exit' or control-D to shut down network
+*** Starting CLI:
+mininet> h1 iperf -s
+------------------------------------------------------------
+Server listening on TCP port 5001
+TCP window size:  128 KByte (default)
+------------------------------------------------------------
+^Cmininet> h1 iperf -s &
+mininet> h4 iperf -c h1
+------------------------------------------------------------
+Client connecting to 10.0.0.1, TCP port 5001
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.4 port 56726 connected with 10.0.0.1 port 5001
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-10.0073 sec   108 GBytes  92.8 Gbits/sec
 ```
