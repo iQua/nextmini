@@ -99,3 +99,53 @@ First, you should go to the example directory in your **Manager Instance**:
 ```bash
 cd nextmini/docker-swarm/simple
 ```
+
+Deploy the example to all nodes with the following command:
+
+```bash
+sudo docker stack deploy -c docker-compose.yml nextmini
+```
+
+Run the example:
+
+```bash
+ sudo docker stack services nextmini
+```
+
+Logs similar to the following should be seen in the console:
+
+```bash
+ID             NAME                  MODE         REPLICAS   IMAGE                        PORTS
+ftvp45rh511e   nextmini_controller   replicated   1/1        nextmini_controller:latest   *:3000->3000/tcp
+o827k6poabm1   nextmini_node1        replicated   1/1        nextmini_datapath:latest
+isucaltq9mao   nextmini_node2        replicated   1/1        nextmini_datapath:latest
+3obvrx7zyxli   nextmini_node3        replicated   1/1        nextmini_datapath:latest
+zkbmyv7u6h2h   nextmini_postgres     replicated   0/1        postgres:alpine              *:5432->5432/tcp
+```
+
+## Step 7: Run the Iperf3 test
+
+First, we need to get the container name by the following command:
+
+```bash
+sudo docker ps --filter "name=<nextmini_node1>"
+```
+
+Note : <nextmini_node1> should be replaced to the any other names logged out in `step 6`. Importantly, this command should be run on the correspondance instance where the <nextmini_node1> is running.
+
+You should see something similar to the followinng:
+
+```bash
+CONTAINER ID   IMAGE                      COMMAND                  CREATED          STATUS          PORTS     NAMES
+b6d3e0f533b4   nextmini_datapath:latest   "/bin/bash -c 'sleep…"   51 minutes ago   Up 51 minutes             nextmini_node1.1.oicwpz896u5rr5ibtsk2ahs8r
+```
+
+The docker container name is `nextmini_node1.1.oicwpz896u5rr5ibtsk2ahs8r` in this case. You should obtain the docker continaer name of other nodes on other instances as well. With the container name, you can docker execute into them by:
+
+```bash
+docker exec -it <container name> /bin/bash
+```
+
+# Remaining Issue
+
+One urgent issue now is the pg database cannot be connected successfully by the controller. When using docker swarm, the IP address canot be assigned manually. In other words, the IP address of all containers are assigned at runtime dynamically. This nature has made it difficult to set the `host` field inside `controller-config.toml` file. One potential solution now is to make the host an environment variable and let controller access it while running.
