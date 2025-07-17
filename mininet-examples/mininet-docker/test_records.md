@@ -1742,3 +1742,80 @@ h3 -> h1 h2 h4
 h4 -> h1 h2 h3 
 *** Results: 0% dropped (12/12 received)
 ```
+
+## multilink.py
+
+```bash
+root@7f899bffa658:/opt/extra_examples# sudo python3 multilink.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 
+*** Adding switches:
+s1 
+*** Adding links:
+(s1, h1) (s1, h1) (s1, h2) (s1, h2) 
+*** Configuring hosts
+h1 h2 
+*** Starting controller
+c0 
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1 
+*** Starting CLI:
+mininet> h1 iperf -s &
+mininet> h2 iperf -c h1
+------------------------------------------------------------
+Client connecting to 10.0.0.1, TCP port 5001
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.2 port 42158 connected with 10.0.0.1 port 5001
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-10.0098 sec   112 GBytes  96.0 Gbits/sec
+```
+
+## multipoll.py
+
+```bash
+root@7f899bffa658:/opt/extra_examples# sudo python3 multipoll.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 
+*** Adding switches:
+s1 
+*** Adding links:
+(h1, s1) (h2, s1) (h3, s1) 
+*** Configuring hosts
+h1 h2 h3 
+*** Starting controller
+c0 
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1 
+Starting test...
+*** h1 : ('ping', '10.0.0.1', '>', '/tmp/h1.out', '2>', '/tmp/h1.err', '&')
+*** h2 : ('ping', '10.0.0.1', '>', '/tmp/h2.out', '2>', '/tmp/h2.err', '&')
+*** h3 : ('ping', '10.0.0.1', '>', '/tmp/h3.out', '2>', '/tmp/h3.err', '&')
+[1] 493
+Monitoring output for 3 seconds
+h1: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+h2: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+h3: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+h1: 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.052 ms
+h1: 64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.019 ms
+h1: 64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.058 ms
+*** Stopping 1 controllers
+c0 
+*** Stopping 3 links
+...
+*** Stopping 1 switches
+s1 
+*** Stopping 3 hosts
+h1 h2 h3 
+*** Done
+```

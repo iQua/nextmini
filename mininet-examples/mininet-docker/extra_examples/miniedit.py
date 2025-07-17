@@ -26,7 +26,8 @@ from sys import exit  # pylint: disable=redefined-builtin
 from mininet.log import info, debug, warn, setLogLevel
 from mininet.net import Mininet, VERSION
 from mininet.util import (netParse, ipAdd, quietRun,
-                          buildTopo, custom, customClass, StrictVersion )
+                          buildTopo, custom, customClass)
+from distutils.version import StrictVersion 
 from mininet.term import makeTerm, cleanUpScreens
 from mininet.node import (Controller, RemoteController, NOX, OVSController,
                           CPULimitedHost, Host, Node,
