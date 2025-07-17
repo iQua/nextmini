@@ -1070,3 +1070,611 @@ TCP window size: 85.0 KByte (default)
 [ ID] Interval       Transfer     Bandwidth
 [  1] 0.0000-10.0073 sec   108 GBytes  92.8 Gbits/sec
 ```
+
+## bind.py
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/bind.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4 h5 h6 h7 h8 h9 h10
+*** Adding switches:
+s1
+*** Adding links:
+(h1, s1) (h2, s1) (h3, s1) (h4, s1) (h5, s1) (h6, s1) (h7, s1) (h8, s1) (h9, s1) (h10, s1)
+*** Configuring hosts
+h1 h2 h3 h4 h5 h6 h7 h8 h9 h10
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+Private Directories: ['/var/log', '/var/run', '/var/mn']
+*** Starting CLI:
+mininet> h1 ping h10
+PING 10.0.0.10 (10.0.0.10) 56(84) bytes of data.
+64 bytes from 10.0.0.10: icmp_seq=1 ttl=64 time=6.01 ms
+64 bytes from 10.0.0.10: icmp_seq=2 ttl=64 time=0.861 ms
+64 bytes from 10.0.0.10: icmp_seq=3 ttl=64 time=0.081 ms
+^C
+--- 10.0.0.10 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2002ms
+rtt min/avg/max/mdev = 0.081/2.316/6.008/2.629 ms
+```
+
+## cluster.py
+
+Since the remoteServer is set to be ubuntu2, which doesn't exist in our environment, I could see the following result.
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/cluster.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1
+```
+
+## emptynet.py
+
+Tested result on EC2.
+
+```text
+ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 emptynet.py
+*** Adding controller
+*** Adding hosts
+*** Adding switch
+*** Creating links
+*** Starting network
+*** Configuring hosts
+h1 h2 
+*** Starting controller
+c0 
+*** Starting 1 switches
+s3 ...
+*** Waiting for switches to connect
+s3 
+*** Running CLI
+*** Starting CLI:
+mininet> pingall
+*** Ping: testing ping reachability
+h1 -> h2 
+h2 -> h1 
+*** Results: 0% dropped (2/2 received)
+mininet> h1 ifconfig
+h1-eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.1  netmask 255.0.0.0  broadcast 10.255.255.255
+        inet6 fe80::60d6:3cff:fe31:64d1  prefixlen 64  scopeid 0x20<link>
+        ether 62:d6:3c:31:64:d1  txqueuelen 1000  (Ethernet)
+        RX packets 25  bytes 1922 (1.9 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 14  bytes 1076 (1.0 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+mininet> h2 ifconfig
+h2-eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.2  netmask 255.0.0.0  broadcast 10.255.255.255
+        inet6 fe80::acfa:dff:fe8f:fc7c  prefixlen 64  scopeid 0x20<link>
+        ether ae:fa:0d:8f:fc:7c  txqueuelen 1000  (Ethernet)
+        RX packets 24  bytes 1852 (1.8 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 15  bytes 1146 (1.1 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+```
+
+Tested result on Boston.
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/emptynet.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Adding controller
+*** Adding hosts
+*** Adding switch
+*** Creating links
+*** Starting network
+*** Configuring hosts
+h1 h2
+*** Starting controller
+c0
+*** Starting 1 switches
+s3 ...
+*** Waiting for switches to connect
+s3
+*** Running CLI
+*** Starting CLI:
+mininet> pingall
+*** Ping: testing ping reachability
+h1 -> h2
+h2 -> h1
+*** Results: 0% dropped (2/2 received)
+```
+
+## hwintf.py
+
+```bash
+docker exec -it mininet-container python3 /opt/mininet-examples/hwintf.py eth0
+```
+
+```text
+*** Connecting to hw intf: eth0*** Checking eth0
+Error: eth0 has an IP address,and is probably in use!
+```
+
+```bash
+docker exec -it mininet-container ip link add veth0 type dummy
+docker exec -it mininet-container ip link set veth0 up
+docker exec -it mininet-container python3 /opt/mininet-examples/hwintf.py veth0
+```
+
+```
+*** Connecting to hw intf: veth0*** Checking veth0
+*** Creating network
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2
+*** Adding switches:
+s1
+*** Adding links:
+(s1, h1) (s1, h2)
+*** Configuring hosts
+h1 h2
+*** Adding hardware interface veth0 to switch s1
+*** Note: you may need to reconfigure the interfaces for the Mininet hosts:
+ [<Host h1: h1-eth0:10.0.0.1 pid=1278> , <Host h2: h2-eth0:10.0.0.2 pid=1280> ]
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+*** Starting CLI:
+mininet> nodes
+available nodes are:
+c0 h1 h2 s1
+mininet> pingall
+*** Ping: testing ping reachability
+h1 -> h2
+h2 -> h1
+*** Results: 0% dropped (2/2 received)
+```
+
+After running the experiment, you could clean up the `veth0`.
+
+```bash
+docker exec -it mininet-container ip link delete veth0
+```
+
+## intfoptions.py
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/intfoptions.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Configuring hosts
+h1 h2
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+*** Ping: testing ping reachability
+h1 -> h2
+h2 -> h1
+*** Results: 0% dropped (2/2 received)
+
+*** Configuring one intf with bandwidth of 10 Mb
+(10.00Mbit)
+*** Running iperf to test
+*** Iperf: testing TCP bandwidth between h1 and h2
+*** Results: ['9.59 Mbits/sec', '9.58 Mbits/sec']
+
+*** Configuring one intf with loss of 50%
+(50.00000% loss)
+*** Iperf: testing UDP bandwidth between h1 and h2
+*** Results: ['10M', '5.20 Mbits/sec', '5.20 Mbits/sec']
+
+*** Configuring one intf with delay of 15ms
+(15ms delay)
+*** Run a ping to confirm delay
+h1 -> h2
+h2 -> h1
+*** Results:
+ h1->h2: 1/1, rtt min/avg/max/mdev 15.167/15.167/15.167/0.000 ms
+ h2->h1: 1/1, rtt min/avg/max/mdev 15.169/15.169/15.169/0.000 ms
+
+*** Done testing
+*** Stopping 1 controllers
+c0
+*** Stopping 2 links
+..
+*** Stopping 1 switches
+s1
+*** Stopping 2 hosts
+h1 h2
+*** Done
+```
+
+## linearbandwidth.py
+ 
+Description from python file:
+
+```
+Test bandwidth (using iperf) on linear networks of varying size,
+using both kernel and user datapaths.
+
+We construct a network of N hosts and N-1 switches, connected as follows:
+
+h1 <-> s1 <-> s2 .. sN-1
+       |       |    |
+       h2      h3   hN
+
+WARNING: by default, the reference controller only supports 16
+switches, so this test WILL NOT WORK unless you have recompiled
+your controller to support 100 switches (or more.)
+
+In addition to testing the bandwidth across varying numbers
+of switches, this example demonstrates:
+
+- creating a custom topology, LinearTestTopo
+- using the ping() and iperf() tests from Mininet()
+- testing both the kernel and user switches
+```
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/linearbandwidth.py
+*** Running linearBandwidthTest [1, 2, 3, 4]
+*** testing Open vSwitch kernel datapath
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4 h5
+*** Adding switches:
+s1 s2 s3 s4
+*** Adding links:
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(h1, s1) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(h2, s1) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(h3, s2) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(h4, s3) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(h5, s4) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(s1, s2) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(s2, s3) (100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(s3, s4)
+*** Configuring hosts
+h1 h2 h3 h4 h5
+*** Starting controller
+c0
+*** Starting 4 switches
+s1 s2 s3 s4 ...(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+(100.00Mbit 30ms delay) *** Error: Warning: sch_htb: quantum of class 50001 is big. Consider r2q change.
+
+*** Waiting for switches to connect
+s1 s2 s3 s4
+*** testing basic connectivity
+h1 -> h2
+h2 -> h1
+*** Results: 0% dropped (2/2 received)
+h1 -> h3
+h3 -> h1
+*** Results: 0% dropped (2/2 received)
+h1 -> h4
+h4 -> h1
+*** Results: 0% dropped (2/2 received)
+h1 -> h5
+h5 -> h1
+*** Results: 0% dropped (2/2 received)
+*** testing bandwidth
+testing h1 <-> h2
+*** Iperf: testing TCP bandwidth between h1 and h2
+*** Results: ['83.0 Mbits/sec', '81.0 Mbits/sec']
+83.0 Mbits/sec
+testing h1 <-> h3
+*** Iperf: testing TCP bandwidth between h1 and h3
+*** Results: ['71.7 Mbits/sec', '69.2 Mbits/sec']
+71.7 Mbits/sec
+testing h1 <-> h4
+*** Iperf: testing TCP bandwidth between h1 and h4
+*** Results: ['52.0 Mbits/sec', '49.6 Mbits/sec']
+52.0 Mbits/sec
+testing h1 <-> h5
+*** Iperf: testing TCP bandwidth between h1 and h5
+*** Results: ['36.0 Mbits/sec', '34.0 Mbits/sec']
+36.0 Mbits/sec
+*** Stopping 1 controllers
+c0
+*** Stopping 8 links
+........
+*** Stopping 4 switches
+s1 s2 s3 s4
+*** Stopping 5 hosts
+h1 h2 h3 h4 h5
+*** Done
+
+*** Linear network results for Open vSwitch kernel datapath:
+SwitchCount	iperf Results
+1 		83.0 Mbits/sec
+2 		71.7 Mbits/sec
+3 		52.0 Mbits/sec
+4 		36.0 Mbits/sec
+```
+
+## linuxrouter.py
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/linuxrouter.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 r0
+*** Adding switches:
+s1 s2 s3
+*** Adding links:
+(h1, s1) (h2, s2) (h3, s3) (s1, r0) (s2, r0) (s3, r0)
+*** Configuring hosts
+h1 h2 h3 r0
+*** Starting controller
+c0
+*** Starting 3 switches
+s1 s2 s3 ...
+*** Waiting for switches to connect
+s1 s2 s3
+*** Routing Table on Router:
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+10.0.0.0        0.0.0.0         255.0.0.0       U     0      0        0 r0-eth3
+172.16.0.0      0.0.0.0         255.240.0.0     U     0      0        0 r0-eth2
+192.168.1.0     0.0.0.0         255.255.255.0   U     0      0        0 r0-eth1
+*** Starting CLI:
+mininet> pingall
+*** Ping: testing ping reachability
+h1 -> h2 h3 r0
+h2 -> h1 h3 r0
+h3 -> h1 h2 r0
+r0 -> h1 h2 h3
+*** Results: 0% dropped (12/12 received)
+mininet> net
+h1 h1-eth0:s1-eth2
+h2 h2-eth0:s2-eth2
+h3 h3-eth0:s3-eth2
+r0 r0-eth1:s1-eth1 r0-eth2:s2-eth1 r0-eth3:s3-eth1
+s1 lo:  s1-eth1:r0-eth1 s1-eth2:h1-eth0
+s2 lo:  s2-eth1:r0-eth2 s2-eth2:h2-eth0
+s3 lo:  s3-eth1:r0-eth3 s3-eth2:h3-eth0
+c0
+mininet> dump
+<Host h1: h1-eth0:192.168.1.100 pid=2114>
+<Host h2: h2-eth0:172.16.0.100 pid=2116>
+<Host h3: h3-eth0:10.0.0.100 pid=2118>
+<LinuxRouter r0: r0-eth1:192.168.1.1,r0-eth2:172.16.0.1,r0-eth3:10.0.0.1 pid=2122>
+<OVSSwitch s1: lo:127.0.0.1,s1-eth1:None,s1-eth2:None pid=2127>
+<OVSSwitch s2: lo:127.0.0.1,s2-eth1:None,s2-eth2:None pid=2130>
+<OVSSwitch s3: lo:127.0.0.1,s3-eth1:None,s3-eth2:None pid=2133>
+<Controller c0: 127.0.0.1:6653 pid=2107>
+mininet> s1 ifconfig -a
+eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 172.17.0.2  netmask 255.255.0.0  broadcast 172.17.255.255
+        ether 32:9d:98:15:0b:04  txqueuelen 0  (Ethernet)
+        RX packets 84  bytes 11003 (11.0 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 69  bytes 4998 (4.9 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 5955  bytes 735592 (735.5 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 5955  bytes 735592 (735.5 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+ovs-system: flags=4098<BROADCAST,MULTICAST>  mtu 1500
+        ether 92:20:88:64:d3:05  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s1: flags=4098<BROADCAST,MULTICAST>  mtu 1500
+        ether 72:fd:d4:9b:6e:49  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s2: flags=4098<BROADCAST,MULTICAST>  mtu 1500
+        ether 0a:4e:33:63:b1:4d  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s3: flags=4098<BROADCAST,MULTICAST>  mtu 1500
+        ether 36:77:2f:77:30:4f  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s1-eth1: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::a8f8:33ff:fef3:a2db  prefixlen 64  scopeid 0x20<link>
+        ether aa:f8:33:f3:a2:db  txqueuelen 1000  (Ethernet)
+        RX packets 20  bytes 1608 (1.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 31  bytes 2454 (2.4 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s1-eth2: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::c0c8:8aff:fed5:cfed  prefixlen 64  scopeid 0x20<link>
+        ether c2:c8:8a:d5:cf:ed  txqueuelen 1000  (Ethernet)
+        RX packets 20  bytes 1608 (1.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 31  bytes 2454 (2.4 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s2-eth1: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::78d0:a2ff:fe26:975  prefixlen 64  scopeid 0x20<link>
+        ether 7a:d0:a2:26:09:75  txqueuelen 1000  (Ethernet)
+        RX packets 20  bytes 1608 (1.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 30  bytes 2368 (2.3 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s2-eth2: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::8857:f5ff:fe5d:1b46  prefixlen 64  scopeid 0x20<link>
+        ether 8a:57:f5:5d:1b:46  txqueuelen 1000  (Ethernet)
+        RX packets 20  bytes 1608 (1.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 31  bytes 2454 (2.4 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s3-eth1: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::a828:c4ff:fe49:eafa  prefixlen 64  scopeid 0x20<link>
+        ether aa:28:c4:49:ea:fa  txqueuelen 1000  (Ethernet)
+        RX packets 20  bytes 1608 (1.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 30  bytes 2364 (2.3 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+s3-eth2: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::644e:4eff:fec2:45f1  prefixlen 64  scopeid 0x20<link>
+        ether 66:4e:4e:c2:45:f1  txqueuelen 1000  (Ethernet)
+        RX packets 20  bytes 1608 (1.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 31  bytes 2454 (2.4 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+veth0: flags=195<UP,BROADCAST,RUNNING,NOARP>  mtu 1500
+        inet6 fe80::acfb:f4ff:fe5a:9f49  prefixlen 64  scopeid 0x20<link>
+        ether ae:fb:f4:5a:9f:49  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 29  bytes 2138 (2.1 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+```
+
+
+## mobility.py
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/mobility.py
+* Simple mobility test
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3
+*** Adding switches:
+s1 s2 s3
+*** Adding links:
+(h1, s1) (h2, s2) (h3, s3) (s2, s1) (s3, s2)
+*** Configuring hosts
+h1 h2 h3
+* Starting network:
+*** Starting controller
+c0
+*** Starting 3 switches
+s1 s2 s3 ...
+*** Waiting for switches to connect
+s1 s2 s3
+s1: h1(1) s2(2)
+s2: h2(1) s1(2) s3(3)
+s3: h3(1) s2(2)
+* Testing network
+*** Ping: testing ping reachability
+h1 -> h2 h3
+h2 -> h1 h3
+h3 -> h1 h2
+*** Results: 0% dropped (6/6 received)
+* Identifying switch interface for h1
+* Moving h1 from s1 to s2 port 17
+* h1-eth0 is now connected to s2-eth17
+* Clearing out old flows
+* New network:
+s1: s2(2)
+s2: h2(1) s1(2) s3(3) h1(17)
+s3: h3(1) s2(2)
+* Testing connectivity:
+*** Ping: testing ping reachability
+h1 -> h2 h3
+h2 -> h1 h3
+h3 -> h1 h2
+*** Results: 0% dropped (6/6 received)
+* Moving h1 from s2 to s3 port 12
+* h1-eth0 is now connected to s3-eth12
+* Clearing out old flows
+* New network:
+s1: s2(2)
+s2: h2(1) s1(2) s3(3)
+s3: h3(1) s2(2) h1(12)
+* Testing connectivity:
+*** Ping: testing ping reachability
+h1 -> h2 h3
+h2 -> h1 h3
+h3 -> h1 h2
+*** Results: 0% dropped (6/6 received)
+* Moving h1 from s3 to s1 port 17
+* h1-eth0 is now connected to s1-eth17
+* Clearing out old flows
+* New network:
+s1: s2(2) h1(17)
+s2: h2(1) s1(2) s3(3)
+s3: h3(1) s2(2)
+* Testing connectivity:
+*** Ping: testing ping reachability
+h1 -> h2 h3
+h2 -> h1 h3
+h3 -> h1 h2
+*** Results: 0% dropped (6/6 received)
+*** Stopping 1 controllers
+c0
+*** Stopping 5 links
+.....
+*** Stopping 3 switches
+s1 s2 s3
+*** Stopping 3 hosts
+h1 h2 h3
+*** Done
+```

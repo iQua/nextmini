@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     tcpdump \
     vim \
+    wget \
     x11-xserver-utils \
     xterm \
     git \
