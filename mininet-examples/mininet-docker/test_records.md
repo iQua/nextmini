@@ -1819,3 +1819,124 @@ s1
 h1 h2 h3 
 *** Done
 ```
+
+## multitest.py
+
+```bash
+wesley@boston:~$ docker exec -it mininet-container /bin/bash
+root@7f899bffa658:~# cd /opt/extra_examples
+root@7f899bffa658:/opt/extra_examples# sudo python3 multitest.py
+*** Initializing Mininet and kernel modules
+*** Creating network
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4 
+*** Adding switches:
+s1 s2 s3 
+*** Adding links:
+(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4) 
+*** Configuring hosts
+h1 h2 h3 h4 
+*** Starting network
+*** Starting controller
+c0 
+*** Starting 3 switches
+s1 s2 s3 ...
+*** Waiting for switches to connect
+s1 s2 s3 
+*** Running ping test
+*** Ping: testing ping reachability
+h1 -> h2 h3 h4 
+h2 -> h1 h3 h4 
+h3 -> h1 h2 h4 
+h4 -> h1 h2 h3 
+*** Results: 0% dropped (12/12 received)
+*** Running ifconfig test
+h1-eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.1  netmask 255.0.0.0  broadcast 10.255.255.255
+        inet6 fe80::a448:f6ff:feea:f677  prefixlen 64  scopeid 0x20<link>
+        ether a6:48:f6:ea:f6:77  txqueuelen 1000  (Ethernet)
+        RX packets 47  bytes 3766 (3.7 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 15  bytes 1230 (1.2 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+h2-eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.2  netmask 255.0.0.0  broadcast 10.255.255.255
+        inet6 fe80::b484:75ff:fecc:d524  prefixlen 64  scopeid 0x20<link>
+        ether b6:84:75:cc:d5:24  txqueuelen 1000  (Ethernet)
+        RX packets 45  bytes 3626 (3.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 16  bytes 1300 (1.3 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+h3-eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.3  netmask 255.0.0.0  broadcast 10.255.255.255
+        inet6 fe80::90f3:74ff:feb2:2c00  prefixlen 64  scopeid 0x20<link>
+        ether 92:f3:74:b2:2c:00  txqueuelen 1000  (Ethernet)
+        RX packets 46  bytes 3696 (3.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 16  bytes 1300 (1.3 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+h4-eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.0.0.4  netmask 255.0.0.0  broadcast 10.255.255.255
+        inet6 fe80::708e:91ff:fe25:a933  prefixlen 64  scopeid 0x20<link>
+        ether 72:8e:91:25:a9:33  txqueuelen 1000  (Ethernet)
+        RX packets 46  bytes 3696 (3.6 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 16  bytes 1300 (1.3 KB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+*** Starting CLI (type 'exit' to exit)
+*** Starting CLI:
+mininet> 
+*** Stopping network
+*** Stopping 1 controllers
+c0 
+*** Stopping 6 links
+......
+*** Stopping 3 switches
+s1 s2 s3 
+*** Stopping 4 hosts
+h1 h2 h3 h4 
+*** Done
+```
