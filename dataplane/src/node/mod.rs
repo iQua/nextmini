@@ -10,8 +10,9 @@ pub mod processor;
 pub mod route;
 pub mod scheduler;
 
-use jumphash::JumpHasher;
 use std::net::Ipv4Addr;
+
+use jumphash::JumpHasher;
 
 /// The node ID.
 pub type NodeId = usize;
@@ -61,8 +62,8 @@ type PacketBuf = Vec<u8>;
 pub type FlowId = u128;
 
 pub trait FlowIdExt {
-    fn src_ip(&self) -> std::net::Ipv4Addr;
-    fn dst_ip(&self) -> std::net::Ipv4Addr;
+    fn src_ip(&self) -> Ipv4Addr;
+    fn dst_ip(&self) -> Ipv4Addr;
     fn src_port(&self) -> u16;
     fn dst_port(&self) -> u16;
     fn reverse(&self) -> FlowId;
@@ -71,15 +72,15 @@ pub trait FlowIdExt {
 
 impl FlowIdExt for FlowId {
     /// Extracts the source IP
-    fn src_ip(&self) -> std::net::Ipv4Addr {
+    fn src_ip(&self) -> Ipv4Addr {
         let src_u32 = (self >> 96) as u32;
-        std::net::Ipv4Addr::from(src_u32)
+        Ipv4Addr::from(src_u32)
     }
 
     /// Extracts the destination IP
-    fn dst_ip(&self) -> std::net::Ipv4Addr {
+    fn dst_ip(&self) -> Ipv4Addr {
         let dst_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
-        std::net::Ipv4Addr::from(dst_u32)
+        Ipv4Addr::from(dst_u32)
     }
 
     /// Extracts the source port

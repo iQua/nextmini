@@ -59,7 +59,7 @@ impl ControllerInterfaceHandle {
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
 
-        // connects the tcp max client
+        // creates the tcp max client for the processor to use
         let tcp_max_client =
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;

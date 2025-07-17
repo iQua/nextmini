@@ -55,11 +55,11 @@ impl TcpMaxServer {
                 continue;
             }
 
-            // handles the connection based on protocol
+            // handles an inbound connection based on its protocol
             let flow_id = match first_byte[0] {
-                // indicates a SOCKS5 protocol request, typically from an external client.
+                // indicates a SOCKS5 protocol request, typically from an external client
                 0x05 => self.handle_socks5_request(&mut stream).await,
-                // indicates a TCP MAX protocol request
+                // indicates a TCP max protocol request from within Nextmini nodes
                 0x06 => self.handle_tcp_max_request(&mut stream).await,
                 _ => {
                     error!("Unsupported protocol");
@@ -67,10 +67,10 @@ impl TcpMaxServer {
                 }
             };
 
-            // extracts the flow ID from the SOCKS5 protocol or tcp max request
+            // extracts the flow ID from the SOCKS5 protocol or TCP max request
             match flow_id {
                 Ok(flow_id) => {
-                    // Tell the processor to splice the upstream
+                    // asks the processor to splice the upstream
                     self.processors.inbound_max_request(flow_id, stream).await;
 
                     info!("Connected to {:?}.", socket_addr);
@@ -85,7 +85,7 @@ impl TcpMaxServer {
 
     /// Handles connection request from an external client using the SOCKS5 protocol.
     async fn handle_socks5_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
-        // reads the number of verfication methods supported.
+        // reads the number of verfication methods supported
         let mut nmethods = [0u8; 1];
         stream.read_exact(&mut nmethods).await?;
 
