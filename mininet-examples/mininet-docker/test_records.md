@@ -1678,3 +1678,67 @@ s1 s2 s3
 h1 h2 h3
 *** Done
 ```
+
+## controlnet.py
+
+In this example, there are three controllers with a central controller (cc). Even when one of the controllers is exited purposedly, the network is still connecting to each other successfully.
+
+```bash
+root@52c6f5b14219:/opt/extra_examples# sudo python3 controlnet.py
+* Creating Control Network
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding hosts:
+c0 c1 c2 c3 root 
+*** Adding switches:
+cs0 
+*** Adding links:
+(c0, cs0) (c1, cs0) (c2, cs0) (c3, cs0) (root, cs0) 
+*** Configuring hosts
+c0 c1 c2 c3 root 
+* Adding Control Network Controller
+* Starting Control Network
+*** Starting controller
+cc0 
+*** Starting 1 switches
+cs0 ...
+*** Waiting for switches to connect
+cs0 
+* Creating Data Network
+*** Creating network
+*** Adding hosts:
+h1 h2 h3 h4 
+*** Adding switches:
+s1 s2 s3 
+*** Adding links:
+(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4) 
+*** Configuring hosts
+h1 h2 h3 h4 
+* Adding Controllers to Data Network
+* Starting Data Network
+*** Starting controller
+c0 c1 c2 c3 
+*** Starting 3 switches
+s1 s2 s3 
+*** Waiting for switches to connect
+s1 s2 s3 
+*** Starting CLI:
+mininet> nodes
+available nodes are: 
+c0 c0 c1 c1 c2 c2 c3 c3 cc0 cs0 h1 h2 h3 h4 root s1 s2 s3
+mininet> pingall
+*** Ping: testing ping reachability
+h1 -> h2 h3 h4 
+h2 -> h1 h3 h4 
+h3 -> h1 h2 h4 
+h4 -> h1 h2 h3 
+*** Results: 0% dropped (12/12 received)
+mininet> py net['cnet'].get('c0').stop()
+.mininet> pingall
+*** Ping: testing ping reachability
+h1 -> h2 h3 h4 
+h2 -> h1 h3 h4 
+h3 -> h1 h2 h4 
+h4 -> h1 h2 h3 
+*** Results: 0% dropped (12/12 received)
+```

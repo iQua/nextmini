@@ -17,6 +17,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /lib/modules:/lib/modules:ro
       - ./examples:/opt/mininet-examples:ro
+      - ./extra_examples:/opt/extra_examples:ro
     ports:
       - "6633:6633"
       - "6653:6653"
