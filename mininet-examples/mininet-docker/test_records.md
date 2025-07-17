@@ -935,10 +935,11 @@ h1
 *** Running test
 *** h0 : ('ping -c1 192.168.123.2',)
 PING 192.168.123.2 (192.168.123.2) 56(84) bytes of data.
+64 bytes from 192.168.123.2: icmp_seq=1 ttl=64 time=1038 ms
 
 --- 192.168.123.2 ping statistics ---
-1 packets transmitted, 0 received, 100% packet loss, time 0ms
-
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 1037.527/1037.527/1037.527/0.000 ms
 *** Stopping network
 ...
 ```
