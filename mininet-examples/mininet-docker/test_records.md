@@ -725,3 +725,244 @@ TCP window size: 85.0 KByte (default)
 [ ID] Interval       Transfer     Bandwidth
 [  1] 0.0000-10.0116 sec   106 GBytes  90.6 Gbits/sec
 ```
+
+## popen.py
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/popen.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3 h4 h5
+*** Adding switches:
+s1
+*** Adding links:
+(h1, s1) (h2, s1) (h3, s1) (h4, s1) (h5, s1)
+*** Configuring hosts
+h1 h2 h3 h4 h5
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+<h2>: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.853 ms
+<h3>: PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+<h3>: 64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=0.602 ms
+<h1>: PING 10.0.0.5 (10.0.0.5) 56(84) bytes of data.
+<h1>: 64 bytes from 10.0.0.5: icmp_seq=1 ttl=64 time=1.31 ms
+<h5>: PING 10.0.0.4 (10.0.0.4) 56(84) bytes of data.
+<h5>: 64 bytes from 10.0.0.4: icmp_seq=1 ttl=64 time=1.23 ms
+<h4>: PING 10.0.0.3 (10.0.0.3) 56(84) bytes of data.
+<h4>: 64 bytes from 10.0.0.3: icmp_seq=1 ttl=64 time=1.25 ms
+<h1>: 64 bytes from 10.0.0.5: icmp_seq=2 ttl=64 time=0.246 ms
+<h4>: 64 bytes from 10.0.0.3: icmp_seq=2 ttl=64 time=0.206 ms
+<h5>: 64 bytes from 10.0.0.4: icmp_seq=2 ttl=64 time=0.194 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.174 ms
+<h3>: 64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.190 ms
+<h1>: 64 bytes from 10.0.0.5: icmp_seq=3 ttl=64 time=0.015 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.027 ms
+<h3>: 64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.025 ms
+<h4>: 64 bytes from 10.0.0.3: icmp_seq=3 ttl=64 time=0.026 ms
+<h5>: 64 bytes from 10.0.0.4: icmp_seq=3 ttl=64 time=0.027 ms
+<h1>: 64 bytes from 10.0.0.5: icmp_seq=4 ttl=64 time=0.026 ms
+<h3>: 64 bytes from 10.0.0.2: icmp_seq=4 ttl=64 time=0.025 ms
+<h4>: 64 bytes from 10.0.0.3: icmp_seq=4 ttl=64 time=0.027 ms
+<h5>: 64 bytes from 10.0.0.4: icmp_seq=4 ttl=64 time=0.021 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=4 ttl=64 time=0.097 ms
+<h1>: 64 bytes from 10.0.0.5: icmp_seq=5 ttl=64 time=0.018 ms
+<h1>:
+<h1>: --- 10.0.0.5 ping statistics ---
+<h1>: 5 packets transmitted, 5 received, 0% packet loss, time 4081ms
+<h1>: rtt min/avg/max/mdev = 0.015/0.322/1.306/0.499 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=5 ttl=64 time=0.023 ms
+<h2>:
+<h2>: --- 10.0.0.1 ping statistics ---
+<h2>: 5 packets transmitted, 5 received, 0% packet loss, time 4081ms
+<h2>: rtt min/avg/max/mdev = 0.023/0.234/0.853/0.313 ms
+<h3>: 64 bytes from 10.0.0.2: icmp_seq=5 ttl=64 time=0.024 ms
+<h3>:
+<h3>: --- 10.0.0.2 ping statistics ---
+<h3>: 5 packets transmitted, 5 received, 0% packet loss, time 4081ms
+<h3>: rtt min/avg/max/mdev = 0.024/0.173/0.602/0.223 ms
+<h4>: 64 bytes from 10.0.0.3: icmp_seq=5 ttl=64 time=0.026 ms
+<h4>:
+<h4>: --- 10.0.0.3 ping statistics ---
+<h4>: 5 packets transmitted, 5 received, 0% packet loss, time 4080ms
+<h4>: rtt min/avg/max/mdev = 0.026/0.307/1.251/0.477 ms
+<h5>: 64 bytes from 10.0.0.4: icmp_seq=5 ttl=64 time=0.017 ms
+<h5>:
+<h5>: --- 10.0.0.4 ping statistics ---
+<h5>: 5 packets transmitted, 5 received, 0% packet loss, time 4081ms
+<h5>: rtt min/avg/max/mdev = 0.017/0.296/1.225/0.468 ms
+*** Stopping 1 controllers
+c0
+*** Stopping 5 links
+.....
+*** Stopping 1 switches
+s1
+*** Stopping 5 hosts
+h1 h2 h3 h4 h5
+*** Done
+```
+
+## popenpoll.py
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/popenpoll.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding controller
+*** Adding hosts:
+h1 h2 h3
+*** Adding switches:
+s1
+*** Adding links:
+(h1, s1) (h2, s1) (h3, s1)
+*** Configuring hosts
+h1 h2 h3
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+Starting test...
+Monitoring output for 10 seconds
+<h1>: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=0.021 ms
+<h2>: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=1.25 ms
+<h3>: PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time=1.02 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.195 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.229 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=2 ttl=64 time=0.012 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.018 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.027 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=3 ttl=64 time=0.025 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=4 ttl=64 time=0.015 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=4 ttl=64 time=0.038 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=4 ttl=64 time=0.024 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=5 ttl=64 time=0.018 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=5 ttl=64 time=0.064 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=5 ttl=64 time=0.017 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=6 ttl=64 time=0.012 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=6 ttl=64 time=0.020 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=6 ttl=64 time=0.022 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=7 ttl=64 time=0.018 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=7 ttl=64 time=0.023 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=7 ttl=64 time=0.023 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=8 ttl=64 time=0.014 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=8 ttl=64 time=0.024 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=8 ttl=64 time=0.025 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=9 ttl=64 time=0.013 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=9 ttl=64 time=0.024 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=9 ttl=64 time=0.024 ms
+<h1>: 64 bytes from 10.0.0.1: icmp_seq=10 ttl=64 time=0.013 ms
+<h2>: 64 bytes from 10.0.0.1: icmp_seq=10 ttl=64 time=0.018 ms
+<h3>: 64 bytes from 10.0.0.1: icmp_seq=10 ttl=64 time=0.022 ms
+<h1>:
+<h1>: --- 10.0.0.1 ping statistics ---
+<h1>: 10 packets transmitted, 10 received, 0% packet loss, time 9204ms
+<h1>: rtt min/avg/max/mdev = 0.012/0.015/0.021/0.003 ms
+<h2>:
+<h2>: --- 10.0.0.1 ping statistics ---
+<h2>: 10 packets transmitted, 10 received, 0% packet loss, time 9204ms
+<h2>: rtt min/avg/max/mdev = 0.017/0.163/1.250/0.365 ms
+<h3>:
+<h3>: --- 10.0.0.1 ping statistics ---
+<h3>: 10 packets transmitted, 10 received, 0% packet loss, time 9204ms
+<h3>: rtt min/avg/max/mdev = 0.022/0.147/1.016/0.295 ms
+*** Stopping 1 controllers
+c0
+*** Stopping 3 links
+...
+*** Stopping 1 switches
+s1
+*** Stopping 3 hosts
+h1 h2 h3
+*** Done
+```
+
+
+## scratchnet.py
+
+This script creates a straightforward network topology consisting of a controller, an OpenFlow switch, and two hosts. It assigns specific IP addresses to the hosts (192.168.123.1/24 and 192.168.123.2/24), establishes the connections between hosts and the switch, and configures the Open vSwitch through direct command execution.
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/scratchnet.py
+*** Scratch network demo (kernel datapath)
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating nodes
+*** Creating links
+*** Configuring hosts
+h0
+h1
+*** Starting network using Open vSwitch
+*** Waiting for switch to connect to controller.....
+*** Running test
+*** h0 : ('ping -c1 192.168.123.2',)
+PING 192.168.123.2 (192.168.123.2) 56(84) bytes of data.
+64 bytes from 192.168.123.2: icmp_seq=1 ttl=64 time=1.06 ms
+
+--- 192.168.123.2 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 1.063/1.063/1.063/0.000 ms
+*** Stopping network
+..
+```
+
+## scratchnetuser.py
+
+Failed on Boston but ran successfully on EC2.
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/scratchnetuser.py
+*** Scratch network demo (user datapath)
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating Network
+*** Configuring control network
+*** Configuring hosts
+*** Network state:
+c0
+s0
+h0
+h1
+*** Starting controller and user datapath
+*** Running test
+*** h0 : ('ping -c1 192.168.123.2',)
+PING 192.168.123.2 (192.168.123.2) 56(84) bytes of data.
+
+--- 192.168.123.2 ping statistics ---
+1 packets transmitted, 0 received, 100% packet loss, time 0ms
+
+*** Stopping network
+...
+```
+
+```text
+ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 scratchnetuser.py
+*** Scratch network demo (user datapath)
+*** Creating Network
+*** Configuring control network
+*** Configuring hosts
+*** Network state:
+c0
+s0
+h0
+h1
+*** Starting controller and user datapath
+*** Running test
+*** h0 : ('ping -c1 192.168.123.2',)
+PING 192.168.123.2 (192.168.123.2) 56(84) bytes of data.
+64 bytes from 192.168.123.2: icmp_seq=1 ttl=64 time=1050 ms
+
+--- 192.168.123.2 ping statistics ---
+1 packets transmitted, 1 received, 0% packet loss, time 0ms
+rtt min/avg/max/mdev = 1049.808/1049.808/1049.808/0.000 ms
+*** Stopping network
+...
+```
