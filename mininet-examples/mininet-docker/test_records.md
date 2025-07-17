@@ -432,6 +432,8 @@ Open vSwitch kernel: 0% packet loss
 
 ## nat.py
 
+It sets up an internet segment with a host and switch, plus two private networks each protected by NAT devices. Each private network has its own address space (192.168.1.0/24 and 192.168.2.0/24), with a local switch and host.
+
 firstly run:
 ```
 python3 nat.py
@@ -594,5 +596,67 @@ s1
 *** Stopping 5 hosts
 h1 h2 h3 h4 h5
 *** Done
+
+```
+
+
+## controllers.py on EC2
+
+Demonstrates connecting different switches to different controllers within a single network. Creates a custom MultiSwitch class that maps each switch to a specific controller (two local controllers and one "remote" controller).
+
+```text
+ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 controllers.py
+Unable to contact the remote controller at 127.0.0.1:6633
+*** Creating network
+*** Adding hosts:
+h1 h2 h3 h4
+*** Adding switches:
+s1 s2 s3
+*** Adding links:
+(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4)
+*** Configuring hosts
+h1 h2 h3 h4
+*** Starting controller
+c0 c1
+*** Starting 3 switches
+s1 s2 s3 ...
+*** Waiting for switches to connect
+s1 s2 s3
+*** Starting CLI:
+mininet> nodes
+available nodes are:
+c0 c1 h1 h2 h3 h4 s1 s2 s3
+mininet> h1 ping h2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=3.09 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.271 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.055 ms
+^C
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2037ms
+rtt min/avg/max/mdev = 0.055/1.137/3.085/1.380 ms
+```
+
+## controller2.py on EC2
+
+```text
+ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 controllers2.py
+*** Creating (reference) controllers
+*** Creating switches
+*** Creating hosts
+*** Creating links
+*** Starting network
+*** Configuring hosts
+h3 h4 h5 h6
+*** Testing network
+*** Ping: testing ping reachability
+h3 -> h4 h5 h6
+h4 -> h3 h5 h6
+h5 -> h3 h4 h6
+h6 -> h3 h4 h5
+*** Results: 0% dropped (12/12 received)
+*** Running CLI
+*** Starting CLI:
+mininet>
 
 ```
