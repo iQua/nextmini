@@ -637,6 +637,46 @@ PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.055/1.137/3.085/1.380 ms
 ```
 
+## controllers.py on Boston
+
+```text
+(base) xindan@boston:~$ docker exec -it mininet-container python3 /opt/mininet-examples/controllers.py
+*** Error setting resource limits. Mininet's performance may be affected.
+*** Creating network
+*** Adding hosts:
+h1 h2 h3 h4
+*** Adding switches:
+s1 s2 s3
+*** Adding links:
+(s1, s2) (s1, s3) (s2, h1) (s2, h2) (s3, h3) (s3, h4)
+*** Configuring hosts
+h1 h2 h3 h4
+*** Starting controller
+c1 c2
+*** Starting 3 switches
+s1 s2 s3 ...
+*** Waiting for switches to connect
+s1 s2 s3
+*** Starting CLI:
+mininet> h1 ping h2
+PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
+64 bytes from 10.0.0.2: icmp_seq=1 ttl=64 time=5.95 ms
+64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.762 ms
+64 bytes from 10.0.0.2: icmp_seq=3 ttl=64 time=0.088 ms
+^C
+--- 10.0.0.2 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 2060ms
+rtt min/avg/max/mdev = 0.088/2.267/5.953/2.620 ms
+mininet> h1 ping s2
+PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.
+64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.066 ms
+64 bytes from 127.0.0.1: icmp_seq=2 ttl=64 time=0.106 ms
+^C
+--- 127.0.0.1 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1052ms
+rtt min/avg/max/mdev = 0.066/0.086/0.106/0.020 ms
+```
+
 ## controller2.py on EC2
 
 ```text
@@ -659,4 +699,29 @@ h6 -> h3 h4 h5
 *** Starting CLI:
 mininet>
 
+```
+
+## controllers2.py tested on Boston
+
+Then enter:
+
+```bash
+h3 iperf -s &
+```
+
+and 
+```bash
+h6 iperf -c h3
+```
+
+```
+mininet> h3 iperf -s &
+mininet> h6 iperf -c h3
+------------------------------------------------------------
+Client connecting to 10.0.0.1, TCP port 5001
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.4 port 53734 connected with 10.0.0.1 port 5001
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-10.0116 sec   106 GBytes  90.6 Gbits/sec
 ```
