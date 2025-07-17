@@ -545,3 +545,54 @@ PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 rtt min/avg/max/mdev = 0.061/0.426/1.352/0.503 ms
 
 ```
+
+## numberedport.py on EC2
+
+```text
+ubuntu@ip-172-31-21-32:~/mininet/examples$ sudo python3 numberedports.py
+*** Adding controller
+*** Adding hosts
+*** Adding switch
+*** Creating links
+*** Starting network
+*** Configuring hosts
+h1 h2 h3 h4 h5
+*** Starting controller
+c0
+*** Starting 1 switches
+s1 ...
+*** Waiting for switches to connect
+s1
+
+*** printing and validating the ports running on each interface
+s1-eth1 :  1
+Validating that s1-eth1 is actually on port 1 ... Validated.
+s1-eth2 :  2
+Validating that s1-eth2 is actually on port 2 ... Validated.
+s1-eth3 :  3
+Validating that s1-eth3 is actually on port 3 ... Validated.
+s1-eth4 :  4
+Validating that s1-eth4 is actually on port 4 ... Validated.
+s1-eth9 :  9
+Validating that s1-eth9 is actually on port 9 ... Validated.
+
+*** Ping: testing ping reachability
+h1 -> h2 h3 h4 h5
+h2 -> h1 h3 h4 h5
+h3 -> h1 h2 h4 h5
+h4 -> h1 h2 h3 h5
+h5 -> h1 h2 h3 h4
+*** Results: 0% dropped (20/20 received)
+
+*** Stopping network
+*** Stopping 1 controllers
+c0
+*** Stopping 5 links
+.....
+*** Stopping 1 switches
+s1
+*** Stopping 5 hosts
+h1 h2 h3 h4 h5
+*** Done
+
+```
