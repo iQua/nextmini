@@ -74,7 +74,6 @@ impl SchedulerWriter {
                     "SchedulerWriter: Error sending batch of {} packets: {}",
                     packet_count, e
                 );
-                return;
             }
         }
     }

@@ -16,6 +16,7 @@ use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::scheduler::SchedulerHandle;
 
@@ -37,7 +38,7 @@ impl ControllerInterfaceHandle {
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
-        // Initialize the controller sender and receiver
+        // initializes the controller sender and receiver
         let mut controller_sender = DataplaneToControllerSender {
             sender_stream,
             northbridge_receiver,
@@ -54,9 +55,14 @@ impl ControllerInterfaceHandle {
         let user_space_client =
             UserSpaceClientHandle::new(config.clone(), processors.clone(), reporter.clone());
 
-        // creates the server handle for the processor to use.
+        // creates the server handle for the processor to use
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
+
+        // creates a TCP max client for the processor to use
+        let tcp_max_client =
+            TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
+        processors.connect_tcp_max_client(tcp_max_client).await;
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
@@ -220,6 +226,7 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
+                // creates a new persistent TCP connection to the remote node
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
@@ -231,12 +238,16 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
-                    error!(
-                        "Failed to add node {} with address {}: {}.",
-                        remote_node_id, remote_addr, e
-                    );
-                }
+                let _ = self.processors.add_node(remote_node_id, scheduler);
+            }
+
+            ControllerToDataplane::AddNodeAddress {
+                remote_node_id,
+                remote_max_server_addr,
+            } => {
+                self.processors
+                    .add_node_address(remote_node_id, remote_max_server_addr)
+                    .await;
             }
 
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
@@ -255,7 +266,7 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
 
-                self.processors.update_routing_table(routes);
+                self.processors.update_routing_table(routes).await;
             }
 
             ControllerToDataplane::AddFlows { flows } => {
@@ -263,11 +274,11 @@ impl ControllerToDataplaneReceiver {
 
                 for flow in &flows {
                     if flow.dst_node_id == self.config.node_id {
-                        // this node is the server for this flow.
+                        // this node is the server for this flow
                         self.user_space_server.store_flow_spec(flow.clone());
                     }
                     if flow.src_node_id == self.config.node_id {
-                        // this node is the client for this flow.
+                        // this node is the client for this flow
                         client_flows.push(flow.clone());
                     }
                 }

@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, Protocol, SchedulingDiscipline,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, SchedulingDiscipline,
 };
 
 use crate::node::NodeId;
@@ -91,6 +91,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_port: String,
 
+    /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
+    #[default(8081)]
+    #[arg(skip)]
+    pub max_server_port: u16,
+
     #[default(0)]
     #[arg(long)]
     pub node_id: NodeId,
@@ -168,6 +173,16 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub user_space_base_addr: Ipv4Addr,
 
+    // The external network address.
+    #[default(default_external_base_address())]
+    #[arg(skip)]
+    pub external_base_address: Ipv4Addr,
+
+    // The external base network address.
+    #[default(default_external_base_addr())]
+    #[arg(skip)]
+    pub external_base_addr: Ipv4Addr,
+
     // The local network mask
     #[default(default_netmask())]
     #[arg(skip)]
@@ -197,6 +212,11 @@ pub struct LocalConfig {
     #[default(Feature::Sequential)]
     #[arg(long, value_enum)]
     pub feature: Feature,
+
+    // The operating mode
+    #[default(OperatingMode::Normal)]
+    #[arg(skip)]
+    pub operating_mode: OperatingMode,
 
     // Reorder tolerance for the multipath mode
     #[default(4)]
@@ -244,6 +264,16 @@ fn default_user_space_base_addr() -> Ipv4Addr {
     Ipv4Addr::new(192, 168, 0, 0)
 }
 
+// The external base address for default external client.
+fn default_external_base_address() -> Ipv4Addr {
+    Ipv4Addr::new(172, 16, 8, 3)
+}
+
+// The external base address for external traffic.
+fn default_external_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(172, 16, 8, 3)
+}
+
 fn default_netmask() -> Ipv4Addr {
     Ipv4Addr::new(255, 255, 255, 0)
 }
@@ -256,12 +286,15 @@ impl LocalConfig {
 
         let tun_base = u32::from(self.virtual_base_addr);
         let user_space_base = u32::from(self.user_space_base_addr);
+        let external_base = u32::from(self.external_base_addr);
 
         match ip_addr & netmask {
             subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
             subnet if subnet == (user_space_base & netmask) => {
                 (ip_addr - user_space_base) as NodeId
             }
+            // binds the external client/server address to the node ID
+            subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
             _ => {
                 panic!("Detected unknown IP {}.", ip);
             }
@@ -320,7 +353,29 @@ impl LocalConfig {
                 }
             }
 
+            // obtains the ipv4 address of the dataplane node
             cfgs.private_network_addr = ipv4addr;
+
+            // computes the node_id from private_network_addr using external_base_addr
+            if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
+                let ip = u32::from(real_ip);
+                // external_base_addr is used to compute the node_id
+                // as it has the same prefix with the private_network_addr
+                let base = u32::from(cfgs.external_base_addr);
+                let computed_node_id = (ip - base) as NodeId;
+                if computed_node_id != 0 {
+                    cfgs.node_id = computed_node_id;
+                    info!(
+                        "From real IP {} using external_base_addr, node_id is: {}.",
+                        cfgs.private_network_addr, cfgs.node_id
+                    );
+                }
+            } else {
+                error!(
+                    "Failed to parse private_network_addr as Ipv4Addr: {}.",
+                    cfgs.private_network_addr
+                );
+            }
         }
 
         // sets the ipv4 address of the network interface for the public network
@@ -377,20 +432,29 @@ impl LocalConfig {
                         net_mask,
                         virtual_base_addr,
                         user_space_base_addr,
+                        external_base_addr,
+                        max_server_port,
                         protocol,
                         scheduler_type,
+                        node_spec,
                     } => {
                         self.node_id = node_id;
                         self.protocol = protocol;
                         self.local_netmask = net_mask;
+                        // sets three base addresses for the node
                         self.virtual_base_addr = virtual_base_addr;
                         self.user_space_base_addr = user_space_base_addr;
+                        self.external_base_addr = external_base_addr;
+                        // calculates the local, user space and external addresses for the node
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
+                        // self.external_address = node_id.ip_addr(external_base_addr, net_mask);
+                        self.max_server_port = max_server_port;
                         self.scheduler_type = scheduler_type;
+                        self.operating_mode = node_spec.operating_mode;
                     }
 
-                    // Adding flows message.
+                    // Adds flows message.
                     ControllerToDataplane::AddFlows { flows } => {
                         self.flow = flows;
                     }

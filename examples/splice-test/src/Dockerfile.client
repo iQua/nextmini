@@ -1,0 +1,23 @@
+FROM rust:latest
+
+WORKDIR /app
+
+# Copy source code
+COPY src/client.rs .
+
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build the client
+RUN rustc -O client.rs -o /usr/local/bin/client
+
+# Create directory for symlink
+RUN mkdir -p /var/nextmini
+
+# Create a symlink to the binary
+RUN ln -s /usr/local/bin/client /var/nextmini/src
+
+# Make sure the client keeps running even if connection fails
+CMD ["/usr/local/bin/client"] 

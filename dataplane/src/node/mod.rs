@@ -1,5 +1,6 @@
 pub mod conductor;
 pub mod config;
+pub mod connector;
 pub mod controller;
 pub mod flow;
 pub mod local;
@@ -9,8 +10,9 @@ pub mod processor;
 pub mod route;
 pub mod scheduler;
 
-use jumphash::JumpHasher;
 use std::net::Ipv4Addr;
+
+use jumphash::JumpHasher;
 
 /// The node ID.
 pub type NodeId = usize;
@@ -60,24 +62,25 @@ type PacketBuf = Vec<u8>;
 pub type FlowId = u128;
 
 pub trait FlowIdExt {
-    fn src_ip(&self) -> std::net::Ipv4Addr;
-    fn dst_ip(&self) -> std::net::Ipv4Addr;
+    fn src_ip(&self) -> Ipv4Addr;
+    fn dst_ip(&self) -> Ipv4Addr;
     fn src_port(&self) -> u16;
     fn dst_port(&self) -> u16;
+    fn reverse(&self) -> FlowId;
     fn hash(&self, capacity: usize) -> usize;
 }
 
 impl FlowIdExt for FlowId {
     /// Extracts the source IP
-    fn src_ip(&self) -> std::net::Ipv4Addr {
+    fn src_ip(&self) -> Ipv4Addr {
         let src_u32 = (self >> 96) as u32;
-        std::net::Ipv4Addr::from(src_u32)
+        Ipv4Addr::from(src_u32)
     }
 
     /// Extracts the destination IP
-    fn dst_ip(&self) -> std::net::Ipv4Addr {
+    fn dst_ip(&self) -> Ipv4Addr {
         let dst_u32 = ((self >> 64) & 0xFFFFFFFF) as u32;
-        std::net::Ipv4Addr::from(dst_u32)
+        Ipv4Addr::from(dst_u32)
     }
 
     /// Extracts the source port
@@ -88,6 +91,20 @@ impl FlowIdExt for FlowId {
     /// Extracts the destination port
     fn dst_port(&self) -> u16 {
         ((self >> 32) & 0xFFFF) as u16
+    }
+
+    fn reverse(&self) -> FlowId {
+        let src_ip = self.src_ip();
+        let dst_ip = self.dst_ip();
+        let src_port = self.src_port();
+        let dst_port = self.dst_port();
+
+        let new_src_ip = u32::from(dst_ip) as u128;
+        let new_dst_ip = u32::from(src_ip) as u128;
+        let new_src_port = dst_port as u128;
+        let new_dst_port = src_port as u128;
+
+        (new_src_ip << 96) | (new_dst_ip << 64) | (new_src_port << 48) | (new_dst_port << 32)
     }
 
     /// Computes the hash value using Jump Hash, a consistent hash function

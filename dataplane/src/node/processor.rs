@@ -6,19 +6,22 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use flume;
 use tokio;
+use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::{RoutingTableEntry, TokenBucketSpec};
+use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 
 use crate::node::config::{Feature, LocalConfig};
+use crate::node::connector::Connector;
+use crate::node::connector::ConnectorMessage;
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
+use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::scheduler::SchedulerHandle;
@@ -34,12 +37,12 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
+    ConnectServerHandle(UserSpaceServerHandle),
     ConnectUserSpaceSender {
         flow_id: FlowId,
         sender: UserSpaceSender,
     },
     DisconnectUserSpaceSender(FlowId),
-    ConnectServerHandle(UserSpaceServerHandle),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
 }
@@ -62,6 +65,13 @@ impl ProcessorHandle {
         match self {
             ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
             ProcessorHandle::Concurrent(handle) => &handle.broadcast_sender,
+        }
+    }
+
+    pub fn connector_message_sender(&self) -> &mpsc::Sender<ConnectorMessage> {
+        match self {
+            ProcessorHandle::Sequential(handle) => &handle.connector_message_sender,
+            ProcessorHandle::Concurrent(handle) => &handle.connector_message_sender,
         }
     }
 
@@ -90,7 +100,7 @@ impl ProcessorHandle {
         };
     }
 
-    // connects the client handle to the processor
+    /// Connects the client handle to the processor.
     pub fn connect_user_space_sender(&self, flow_id: FlowId, sender: UserSpaceSender) {
         if let Err(e) = self
             .broadcast_sender()
@@ -103,8 +113,8 @@ impl ProcessorHandle {
         };
     }
 
-    // Disconnects the user-space packet sender from the processor's hashmap of senders.
-    // This is needed when a user-space TCP flow finishes.
+    /// Disconnects the user-space packet sender from the processor's hashmap of senders.
+    /// This is needed when a user-space TCP flow finishes.
     pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
         if let Err(e) = self
             .broadcast_sender()
@@ -117,16 +127,29 @@ impl ProcessorHandle {
         }
     }
 
-    pub fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+    pub async fn update_routing_table(&self, routes: Vec<RoutingTableEntry>) {
+        // broadcasts to all processors
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::UpdateRoutingTable(routes))
+            .send(ProcessorMessage::UpdateRoutingTable(routes.clone()))
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the processors: {}",
                 e
             );
         };
+
+        // sends to the connector
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::UpdateRoutingTable(routes))
+            .await
+        {
+            error!(
+                "Error sending the UpdateRoutingTable message to the connector: {}",
+                e
+            );
+        }
     }
 
     pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
@@ -171,12 +194,54 @@ impl ProcessorHandle {
             );
         };
     }
+
+    pub async fn add_node_address(&self, node_id: NodeId, remote_addr: String) {
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::AddNodeAddress(node_id, remote_addr))
+            .await
+        {
+            error!(
+                "Error sending the AddNodeAddress message to the connector: {}",
+                e
+            );
+        }
+    }
+
+    pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client))
+            .await
+        {
+            error!(
+                "Error sending the ConnectTcpMaxClient message to the connector: {}",
+                e
+            );
+        }
+    }
+
+    pub async fn inbound_max_request(&self, flow_id: FlowId, stream: TcpStream) {
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::InboundMaxRequest(flow_id, stream))
+            .await
+        {
+            error!(
+                "Error sending the InboundMaxRequest message to the connector: {}",
+                e
+            );
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct SequentialProcHandle {
+    config: LocalConfig,
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
+    connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    connector_message_sender: mpsc::Sender<ConnectorMessage>,
 }
 
 impl SequentialProcHandle {
@@ -185,7 +250,7 @@ impl SequentialProcHandle {
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
         for _ in 0..config.num_packet_processors {
-            // for each Processor, creates one MPSC channel
+            // creates an mpsc channel for each processor
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
             packet_senders.push(packet_sender);
 
@@ -200,9 +265,32 @@ impl SequentialProcHandle {
             });
         }
 
+        // creates a packet channel for the connector
+        let (connector_packet_sender, connector_packet_receiver) =
+            mpsc::channel(config.channel_capacity);
+
+        // creates a message channel for the connector
+        let (connector_message_sender, connector_message_receiver) =
+            mpsc::channel(config.channel_capacity);
+
+        // creates a new connector
+        let mut connector = Connector::new(
+            connector_packet_receiver,
+            connector_message_receiver,
+            config.clone(),
+        );
+
+        // spawns a single connector task
+        tokio::spawn(async move {
+            connector.run().await;
+        });
+
         Self {
+            config,
             broadcast_sender,
             packet_senders,
+            connector_packet_sender,
+            connector_message_sender,
         }
     }
 
@@ -210,19 +298,51 @@ impl SequentialProcHandle {
         let idx = packet.flow_id.hash(self.packet_senders.len());
         let sender = &self.packet_senders[idx];
 
-        if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
-            warn!(
-                "SequentialProcHandle: Error sending a packet to the processor: {}.",
-                e
-            );
+        let packet_flow_id = packet.flow_id;
+        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                warn!(
+                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                    e
+                );
+            }
+        } else {
+            // sends according to the operating mode at src node
+            match self.config.operating_mode {
+                OperatingMode::Normal => {
+                    if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            e
+                        );
+                    }
+                }
+                OperatingMode::Max => {
+                    if let Err(e) = self
+                        .connector_packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                            e
+                        );
+                    }
+                }
+            }
         }
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct ConcurrentProcHandle {
+    config: LocalConfig,
     broadcast_sender: broadcast::Sender<ProcessorMessage>,
     packet_sender: flume::Sender<ProcessorPacket>,
+    connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    connector_message_sender: mpsc::Sender<ConnectorMessage>,
 }
 
 impl ConcurrentProcHandle {
@@ -242,21 +362,71 @@ impl ConcurrentProcHandle {
             });
         }
 
+        // create a new connector
+        let (connector_packet_sender, connector_packet_receiver) =
+            mpsc::channel(config.channel_capacity);
+        let (connector_message_sender, connector_message_receiver) =
+            mpsc::channel(config.channel_capacity);
+        let mut connector = Connector::new(
+            connector_packet_receiver,
+            connector_message_receiver,
+            config.clone(),
+        );
+
+        tokio::spawn(async move {
+            connector.run().await;
+        });
+
         Self {
+            config,
             broadcast_sender,
             packet_sender,
+            connector_packet_sender,
+            connector_message_sender,
         }
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        if let Err(e) = self
-            .packet_sender
-            .try_send(ProcessorPacket::ProcessPacket(packet))
-        {
-            warn!(
-                "ConcurrentProcHandle: Error sending a packet to the processor: {}",
-                e
-            );
+        let packet_flow_id = packet.flow_id;
+        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            if let Err(e) = self
+                .packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet))
+            {
+                warn!(
+                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                    e
+                );
+            }
+        } else {
+            // sends according to the operating mode at src node
+            match self.config.operating_mode {
+                OperatingMode::Normal => {
+                    if let Err(e) = self
+                        .packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            e
+                        );
+                    }
+                }
+                OperatingMode::Max => {
+                    if let Err(e) = self
+                        .connector_packet_sender
+                        .try_send(ProcessorPacket::ProcessPacket(packet))
+                    {
+                        warn!(
+                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                            e
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -279,7 +449,7 @@ impl Display for PacketTryRecvError {
                 write!(f, "Error receiving from a flume mpmc channel: {}", err)
             }
             PacketTryRecvError::MpscRecvError(err) => {
-                write!(f, "Error receiving from a mpsc channel: {}", err)
+                write!(f, "Error receiving from an MPSC channel: {}", err)
             }
         }
     }
@@ -327,7 +497,7 @@ struct Processor {
     // the routing table
     routing_table: RoutingTable,
 
-    // the schedulers (for upstream packets)
+    // a unified hashmap for schedulers in normal mode
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
 
@@ -357,11 +527,11 @@ impl Processor {
                     match msg {
                         ProcessorPacket::ProcessPacket(first_packet) => {
                             // starts a batch with the first packet
-                            self.process_packet(first_packet);
+                            self.process_packet(first_packet).await;
 
                             // starts processing packets in batches
                             while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
-                                self.process_packet(packet);
+                                self.process_packet(packet).await;
                             }
                         }
                     }
@@ -379,7 +549,6 @@ impl Processor {
                 self.routing_table.install_routes(routes);
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
-                // updates the scheduler for a given node ID
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
@@ -408,32 +577,13 @@ impl Processor {
         }
     }
 
-    /// Process inbound packets for outbound delivery
-    fn process_packet(&mut self, packet: Packet) {
+    /// Processes inbound packets for outbound delivery
+    async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        // selects the route ID for a new flow
-        if let Some(route_id) = self.routing_table.select_route_for_flow(packet_flow_id) {
-            if route_id == 0 {
-                // No route can be possible as the flow ID is not valid (represented as a value of 0)
-                // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
-                error!("No route can be selected.");
-            }
-
-            // routes the packet to its next hop
-            if let Some(next_hop_id) = self.routing_table.get_next_hop_by_route(route_id) {
-                self.send_packet(packet, next_hop_id);
-            } else {
-                error!(
-                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
-                    route_id, packet_flow_id
-                );
-            }
-        } else {
-            error!(
-                "No route is found for flow {}: the routing table may be misconfigured.",
-                packet_flow_id
-            );
+        match self.routing_table.get_next_hop_by_flow(packet_flow_id) {
+            Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
+            Err(e) => error!("Error getting the next hop: {}", e),
         }
     }
 
@@ -460,7 +610,8 @@ impl Processor {
 
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
-    fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+    async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+        // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers

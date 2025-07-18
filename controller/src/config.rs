@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::{Flow, Protocol, SchedulingDiscipline};
+use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Route {
@@ -49,7 +49,7 @@ pub struct LinkRate {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
-    /// The port to listen on
+    /// The port for the persistent TCP/QUIC server operating in normal mode to listen on
     #[serde(default = "default_port")]
     pub port: u16,
 
@@ -65,6 +65,14 @@ pub struct Config {
     /// The base ipv4 address for user-space smoltcp network
     #[serde(default = "default_user_space_base_addr")]
     pub user_space_base_addr: Ipv4Addr,
+
+    /// The base ipv4 address for external network
+    #[serde(default = "default_external_base_addr")]
+    pub external_base_addr: Ipv4Addr,
+
+    /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
+    #[serde(default = "default_max_server_port")]
+    pub max_server_port: u16,
 
     /// The transport protocol: TCP or QUIC.
     #[serde(default = "default_protocol")]
@@ -97,9 +105,18 @@ pub struct Config {
     /// The database configuration.
     #[serde(default = "default_db_config")]
     pub db: DBConfig,
+
+    /// The operating mode.
+    #[serde(default)]
+    pub nodes: Vec<NodeSpec>,
 }
 
 // Default values if they are missing from the configuration file
+
+/// The default port for the TCP server operating in max mode to listen on
+fn default_max_server_port() -> u16 {
+    8081
+}
 
 /// The default port number to listen on
 fn default_port() -> u16 {
@@ -120,6 +137,11 @@ fn default_net_mask() -> Ipv4Addr {
 /// The default base ipv4 address for user-space smoltcp network
 fn default_user_space_base_addr() -> Ipv4Addr {
     Ipv4Addr::new(192, 168, 0, 0)
+}
+
+/// The default base ipv4 address for external network
+fn default_external_base_addr() -> Ipv4Addr {
+    Ipv4Addr::new(172, 16, 8, 3)
 }
 
 /// The default transport protocol: QUIC
@@ -185,6 +207,8 @@ impl Default for Config {
             base_addr: default_base_addr(),
             net_mask: default_net_mask(),
             user_space_base_addr: default_user_space_base_addr(),
+            external_base_addr: default_external_base_addr(),
+            max_server_port: default_max_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
             flows: Vec::new(),
@@ -192,6 +216,7 @@ impl Default for Config {
             topology: Topology::default(),
             scheduler_type: default_scheduler_type(),
             db: default_db_config(),
+            nodes: Vec::new(),
         }
     }
 }

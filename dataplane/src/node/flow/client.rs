@@ -12,7 +12,7 @@ use tracing::{error, info};
 
 use nextmini_messages::{Flow, FlowLen};
 
-use crate::node::NodeIdExt;
+use crate::node::{NodeIdExt, FlowId, FlowIdExt};
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::SOCKET_BUFFER_SIZE;
@@ -74,12 +74,9 @@ impl UserSpaceClientHandle {
             self.processors
                 .connect_user_space_sender(flow_id, packet_sender);
 
-            // sets flow weights for this flow
+            // sets flow weights for this flow, where the client is the source and the server is the destination
             if let Some(weight) = flow.flow_spec.flow_weight {
-                let flow_id = ((u32::from(client_ip) as u128) << 96)
-                    | ((u32::from(server_ip) as u128) << 64)
-                    | ((client_port as u128) << 48)
-                    | ((server_port as u128) << 32);
+                let flow_id = flow_id.reverse();
 
                 info!(
                     "Set flow weight {} for a user space TCP flow from node {} (port {}) to node {} (port {}).",
@@ -204,7 +201,7 @@ impl UserSpaceClient {
                 let client_port = self.client_port;
                 let server_port = self.config.user_space_server_port;
 
-                let flow_id = ((u32::from(server_ip) as u128) << 96)
+                let flow_id: FlowId = ((u32::from(server_ip) as u128) << 96)
                     | ((u32::from(client_ip) as u128) << 64)
                     | ((server_port as u128) << 48)
                     | ((client_port as u128) << 32);

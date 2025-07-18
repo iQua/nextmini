@@ -102,35 +102,16 @@ async fn handle_connection(
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
 
-                        let assign_new_id = match maybe_node_id {
-                            Some(0) => true,  // ID is present but is 0
-                            None => true,     // ID is not present
-                            Some(_) => false, // ID is present and not 0
-                        };
-
-                        let node_id = if assign_new_id {
-                            // assigns a new node ID
-                            let node_ws_guard = node_ws.read().await;
-                            let new_id = if node_ws_guard.is_empty() {
-                                1
-                            } else {
-                                *node_ws_guard.keys().max().unwrap_or(&0) + 1
-                            };
-
-                            info!("Assigning a new node ID: {}.", new_id);
-
-                            new_id
-                        } else {
-                            // ID was Some(id) and id was not 0
-                            maybe_node_id.unwrap()
-                        };
+                        // assigns a node ID as the dataplane node requests
+                        let node_id = maybe_node_id.unwrap();
 
                         // checks if the node ID is already used
                         if node_ws.read().await.contains_key(&node_id) {
-                            warn!("Node ID {} is already used.", node_id);
+                            error!("Node ID {} is already used.", node_id);
                             continue;
                         }
 
+                        // checks if the node ID is correct
                         info!(
                             "Registered new node {} with private address {} and public address {}.",
                             node_id, private_network_addr, public_network_addr,
@@ -167,14 +148,24 @@ async fn handle_connection(
                             }
                         }
 
+                        // Finds the node specification for the current node
+                        let node_spec = config
+                            .nodes
+                            .iter()
+                            .find(|node| node.node_id == node_id)
+                            .cloned();
+
                         // sends the startup response
                         let response = build_startup_response(
                             node_id,
                             config.net_mask,
                             config.base_addr,
                             config.user_space_base_addr,
+                            config.external_base_addr,
+                            config.max_server_port,
                             config.protocol.clone(),
-                            config.scheduler_type.clone(),
+                            config.scheduler_type,
+                            node_spec,
                         );
 
                         match write_arc
@@ -246,7 +237,7 @@ async fn handle_connection(
                                 remote_addr: addr,
                             };
 
-                            // informs the existing nodes about the new node by updating their connections
+                            // informs the new node to connect to the existing node
                             match write_arc
                                 .lock()
                                 .await
@@ -304,10 +295,20 @@ async fn handle_connection(
                                 tokio::time::sleep(Duration::from_secs(1)).await;
 
                                 info!(
-                                    "All {} nodes connected, sending flows and link rates to all nodes.",
+                                    "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
                                     expected_node_count
                                 );
 
+                                // updates remote node addresses for the connector
+                                send_node_addresses(
+                                    config.clone(),
+                                    node_ws.clone(),
+                                    db_pool.clone(),
+                                )
+                                .await;
+
+                                // waits for all nodes to receive the AddNode messages
+                                tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_link_rates(config.clone(), node_ws.clone()).await;
 
                                 // waits for all link rates to be set before sending the flows
@@ -323,7 +324,7 @@ async fn handle_connection(
                     }
 
                     DataplaneToController::Metrics { metrics } => {
-                        if let Some(_) = current_node_id {
+                        if current_node_id.is_some() {
                             for metric in metrics {
                                 if metric.bytes == 0 {
                                     continue;
@@ -468,7 +469,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
             .cloned()
             .collect();
 
-        if link_rates.len() > 0 {
+        if !link_rates.is_empty() {
             info!("Setting link rates for node {}.", node_id);
         }
 
@@ -491,6 +492,74 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
                 Err(e) => error!(
                     "Failed to send the SetLinkRate message to node {}: {}.",
                     link_rate.src_node_id, e
+                ),
+            }
+        }
+    }
+}
+
+async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
+    let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
+        .fetch_all(&*db_pool)
+        .await
+    {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            error!("Failed to fetch nodes from database: {}", e);
+            return;
+        }
+    };
+
+    let node_ws_guard = node_ws.read().await;
+
+    info!(
+        "Sending AddNodeAddress messages to {} nodes.",
+        node_ws_guard.len()
+    );
+
+    for (node_id, writer) in node_ws_guard.iter() {
+        let current_node = match nodes.iter().find(|n| n.id == *node_id as i32) {
+            Some(node) => node,
+            None => {
+                warn!(
+                    "Node {} is in the writer map but not in the database. Skipping.",
+                    node_id
+                );
+                continue;
+            }
+        };
+
+        let remote_nodes: Vec<_> = nodes
+            .iter()
+            .filter(|node| node.id != *node_id as i32)
+            .collect();
+
+        for node in remote_nodes {
+            let remote_addr = if node.private_network_name == current_node.private_network_name {
+                node.private_network_addr.clone()
+            } else {
+                node.public_network_addr.clone()
+            };
+
+            // replace the port with the Tcp max server port
+            let remote_ip = remote_addr.split(':').next().unwrap();
+            let remote_addr = format!("{}:{}", remote_ip, config.max_server_port);
+
+            let msg = ControllerToDataplane::AddNodeAddress {
+                remote_node_id: node.id as usize,
+                remote_max_server_addr: remote_addr,
+            };
+
+            match writer
+                .lock()
+                .await
+                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .await
+            {
+                Ok(_) => {}
+                Err(e) => error!(
+                    "Failed to send an AddNodeAddress message to node {}: {}.",
+                    node.id, e
                 ),
             }
         }

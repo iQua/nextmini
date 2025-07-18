@@ -49,6 +49,24 @@ pub enum SchedulingDiscipline {
     Wrr,
 }
 
+/// The operating mode of a dataplane node.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OperatingMode {
+    #[default]
+    Normal,
+    Max,
+}
+
+/// The node specification for a dataplane node.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub struct NodeSpec {
+    pub node_id: usize,
+    #[serde(default)]
+    pub operating_mode: OperatingMode,
+}
+
 /// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
@@ -102,12 +120,20 @@ pub enum ControllerToDataplane {
         virtual_base_addr: Ipv4Addr,
         #[serde(with = "ip_ser")]
         user_space_base_addr: Ipv4Addr,
+        #[serde(with = "ip_ser")]
+        external_base_addr: Ipv4Addr,
+        max_server_port: u16,
         protocol: Protocol,
         scheduler_type: SchedulingDiscipline,
+        node_spec: NodeSpec,
     },
     AddNode {
         remote_node_id: usize,
         remote_addr: String,
+    },
+    AddNodeAddress {
+        remote_node_id: usize,
+        remote_max_server_addr: String,
     },
     InstallRoutes {
         routes: Vec<RoutingTableEntry>,

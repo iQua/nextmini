@@ -283,7 +283,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                     }
                 }
 
-                // Add ring closure: connect last node back to first node
+                // adds ring closure: connects the last node back to the first node
                 let route_path = vec![n_nodes as i32, 1];
 
                 let result = sqlx::query(
@@ -321,12 +321,12 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             continue;
         }
 
-        // Auto-infer src_node_id and dst_node_id from route path
+        // auto-infers src_node_id and dst_node_id from the route path
         let src_node_id = route.route[0] as i32;
         let dst_node_id = route.route[route.route.len() - 1] as i32;
         let route_path = route.route.iter().map(|&x| x as i32).collect::<Vec<_>>();
 
-        // Insert route with auto-generated route_id
+        // inserts route with an auto-generated route_id
         let result = sqlx::query(
             r#"
             INSERT INTO routes (src_node_id, dst_node_id, route)
@@ -363,13 +363,13 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         let src_node_id = flow.src_node_id as i32;
         let dst_node_id = flow.dst_node_id as i32;
 
-        // Convert FlowLen to database format
+        // converts the FlowLen to the database format
         let (flow_len_type, flow_len_bytes, flow_len_duration) = match flow.flow_spec.flow_len {
             nextmini_messages::FlowLen::Bytes(bytes) => ("bytes", Some(bytes as i64), None),
             nextmini_messages::FlowLen::Duration(duration) => ("duration", None, Some(duration)),
         };
 
-        // Insert flow with auto-generated id
+        // inserts the flow with an auto-generated id
         let result = sqlx::query(
             r#"
             INSERT INTO flows (src_node_id, dst_node_id, flow_len_type, flow_len_bytes, flow_len_duration, flow_rate, flow_weight, is_finished)
@@ -600,7 +600,7 @@ pub async fn setup_flow_notification(
                         let payload = notif.payload();
                         info!("Received flow notification: {}", payload);
 
-                        // Parse and get a newly inserted flow ID
+                        // parses and gets a newly inserted flow ID
                         match serde_json::from_str::<serde_json::Value>(payload) {
                             Ok(json) => {
                                 if let Some(id) = json
@@ -628,7 +628,7 @@ pub async fn setup_flow_notification(
                                             let src_node_id = flow.src_node_id as usize;
                                             let dst_node_id = flow.dst_node_id as usize;
 
-                                            // Send to source node
+                                            // sends to source node
                                             if let Some(ws_arc) = node_ws_guard.get(&src_node_id) {
                                                 match ws_arc
                                                     .lock()
@@ -647,7 +647,7 @@ pub async fn setup_flow_notification(
                                                 }
                                             }
 
-                                            // Send to destination node
+                                            // sends to destination node
                                             if let Some(ws_arc) = node_ws_guard.get(&dst_node_id) {
                                                 match ws_arc
                                                     .lock()
