@@ -449,7 +449,7 @@ impl Display for PacketTryRecvError {
                 write!(f, "Error receiving from a flume mpmc channel: {}", err)
             }
             PacketTryRecvError::MpscRecvError(err) => {
-                write!(f, "Error receiving from a mpsc channel: {}", err)
+                write!(f, "Error receiving from an MPSC channel: {}", err)
             }
         }
     }

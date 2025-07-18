@@ -40,7 +40,7 @@ impl RoutingTable {
         }
     }
 
-    /// Install all the routes received from the controller.
+    /// Installs all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         // clears existing data
         self.route_next_hop.clear();
@@ -129,7 +129,7 @@ impl RoutingTable {
         Some(selected_route_id)
     }
 
-    /// Obtains the next hop by flow ID.
+    /// Obtains the next hop by the flow ID.
     pub fn get_next_hop_by_flow(&mut self, flow_id: FlowId) -> Result<NodeId, String> {
         // selects the route ID for a new flow
         if let Some(route_id) = self.select_route_for_flow(flow_id) {
