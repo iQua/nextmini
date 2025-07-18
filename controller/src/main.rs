@@ -295,12 +295,12 @@ async fn handle_connection(
                                 tokio::time::sleep(Duration::from_secs(1)).await;
 
                                 info!(
-                                    "All {} nodes connected, sending node addresses,link rates and flows to all nodes.",
+                                    "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
                                     expected_node_count
                                 );
 
-                                // updates remote nodes addresses for the connector
-                                send_nodes_addresses(
+                                // updates remote node addresses for the connector
+                                send_node_addresses(
                                     config.clone(),
                                     node_ws.clone(),
                                     db_pool.clone(),
@@ -498,11 +498,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
     }
 }
 
-async fn send_nodes_addresses(
-    config: Config,
-    node_ws: NodeWriterMap,
-    db_pool: Arc<Pool<Postgres>>,
-) {
+async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
     let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
         .fetch_all(&*db_pool)
         .await
@@ -517,7 +513,7 @@ async fn send_nodes_addresses(
     let node_ws_guard = node_ws.read().await;
 
     info!(
-        "Sending AddNodeAddress messages for {} nodes.",
+        "Sending AddNodeAddress messages to {} nodes.",
         node_ws_guard.len()
     );
 
@@ -526,7 +522,7 @@ async fn send_nodes_addresses(
             Some(node) => node,
             None => {
                 warn!(
-                    "Node {} is in the writer map but not in the database, skipping.",
+                    "Node {} is in the writer map but not in the database. Skipping.",
                     node_id
                 );
                 continue;
