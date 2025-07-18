@@ -6,8 +6,6 @@ _Note :This test is done with [Mininet](https://mininet.org/download/) installed
 
 ## Instruction
 
-Before download mininet, please use the new ./install.sh script in simple folder to substitute the current one.
-
 First test if Mininet is installed by the following commands:
 
 ```bash

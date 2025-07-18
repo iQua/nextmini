@@ -1,6 +1,6 @@
 ## How to install mininet
 
-This guide is done with Ubuntu 22.04.
+This guide is done on Ubuntu 22.04.
 
 **Step 1**
 
@@ -10,7 +10,7 @@ Clone the git repository of Mininet:
 git clone https://github.com/mininet/mininet
 ```
 
-Checkout to the recommended latest version:
+Checkout to the recommended version:
 
 ```bash
 cd mininet; git checkout -b mininet-2.3.0 2.3.0；cd ..
@@ -24,7 +24,7 @@ Install all dependencies with:
 mininet/util/install.sh -a
 ```
 
-If installation failed with the original shell script, you can switch to the one provided by us in this `/mininet-installation-guide` folder.
+If installation failed with the original shell script, you can switch to the `install.sh` provided by in this `/mininet-installation-guide` folder.
 
 **Step 3**
 
