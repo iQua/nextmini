@@ -40,7 +40,7 @@ impl RoutingTable {
         }
     }
 
-    /// Install all the routes received from the controller.
+    /// Installs all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         // clears existing data
         self.route_next_hop.clear();
@@ -129,10 +129,31 @@ impl RoutingTable {
         Some(selected_route_id)
     }
 
-    #[allow(dead_code)]
-    /// Get next_hop by route ID, reserved for future use maybe
-    pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
-        self.route_next_hop.get(&route_id).copied()
+    /// Obtains the next hop by the flow ID.
+    pub fn get_next_hop_by_flow(&mut self, flow_id: FlowId) -> Result<NodeId, String> {
+        // selects the route ID for a new flow
+        if let Some(route_id) = self.select_route_for_flow(flow_id) {
+            if route_id == 0 {
+                // No route can be possible as the flow ID is not valid (represented as a value of 0)
+                // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
+                return Err("No route can be selected.".to_string());
+            }
+
+            // gets the next hop by route ID
+            if let Some(next_hop_id) = self.route_next_hop.get(&route_id).copied() {
+                return Ok(next_hop_id);
+            } else {
+                return Err(format!(
+                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
+                    route_id, flow_id
+                ));
+            }
+        } else {
+            return Err(format!(
+                "No route is found for flow {}: the routing table may be misconfigured.",
+                flow_id
+            ));
+        }
     }
 
     /// Get next_hop by flow ID
