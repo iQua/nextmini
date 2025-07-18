@@ -24,6 +24,7 @@ Then, build the base images used for controller and dataplane. This step might t
 cd nextmini
 sudo docker build -t nextmini_controller -f controller/Dockerfile .
 sudo docker build -t nextmini_datapath -f dataplane/Dockerfile .
+docker pull postgres:alpine
 ```
 
 You can test with the following command:
@@ -109,7 +110,7 @@ sudo docker stack deploy -c docker-compose.yml nextmini
 Run the example:
 
 ```bash
- sudo docker stack services nextmini
+docker stack services nextmini
 ```
 
 Logs similar to the following should be seen in the console:
@@ -120,7 +121,7 @@ ftvp45rh511e   nextmini_controller   replicated   1/1        nextmini_controller
 o827k6poabm1   nextmini_node1        replicated   1/1        nextmini_datapath:latest
 isucaltq9mao   nextmini_node2        replicated   1/1        nextmini_datapath:latest
 3obvrx7zyxli   nextmini_node3        replicated   1/1        nextmini_datapath:latest
-zkbmyv7u6h2h   nextmini_postgres     replicated   0/1        postgres:alpine              *:5432->5432/tcp
+zkbmyv7u6h2h   nextmini_postgres     replicated   1/1        postgres:alpine              *:5432->5432/tcp
 ```
 
 ## Step 7: Run the Iperf3 test
@@ -128,24 +129,42 @@ zkbmyv7u6h2h   nextmini_postgres     replicated   0/1        postgres:alpine    
 First, we need to get the container name by the following command:
 
 ```bash
-sudo docker ps --filter "name=<nextmini_node1>"
+sudo docker ps -a"
 ```
-
-Note : <nextmini_node1> should be replaced to the any other names logged out in `step 6`. Importantly, this command should be run on the correspondance instance where the <nextmini_node1> is running.
 
 You should see something similar to the followinng:
 
 ```bash
-CONTAINER ID   IMAGE                      COMMAND                  CREATED          STATUS          PORTS     NAMES
-b6d3e0f533b4   nextmini_datapath:latest   "/bin/bash -c 'sleep…"   51 minutes ago   Up 51 minutes             nextmini_node1.1.oicwpz896u5rr5ibtsk2ahs8r
+ubuntu@nextmini:~/nextmini/examples/simple$ docker ps -a
+CONTAINER ID   IMAGE                        COMMAND                  CREATED              STATUS                            PORTS      NAMES
+277d0e508ec8   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   6 seconds ago        Up 2 seconds                                 nextmini_node1.1.gh96ocrsuryribkmn54stdkid
+e1e6a96b6000   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   19 seconds ago       Exited (0) 7 seconds ago                     nextmini_node1.1.z0bh07o2pwwywvmyofiqam0l2
+5f0ac705ba43   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   31 seconds ago       Exited (0) 20 seconds ago                    nextmini_node1.1.npat5xeeyz7yyhctl88nj2ydu
+ce3a5c7117a6   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   44 seconds ago       Exited (0) 32 seconds ago                    nextmini_node1.1.l3u8kz9b1ws6s0otfzdzrsrcj
+d9e1b5af57a7   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   57 seconds ago       Exited (0) 45 seconds ago                    nextmini_node1.1.v4of847akb29aq7altbpnsz4o
+db65272d746a   nextmini_controller:latest   "/bin/bash -c 'sleep…"   About a minute ago   Up About a minute                 3000/tcp   nextmini_controller.1.uc45n3qxzuf61t0v0ujnmi5wi
+9cc75306a1bc   postgres:alpine              "docker-entrypoint.s…"   About a minute ago   Up About a minute (healthy)       5432/tcp   nextmini_postgres.1.z2bkxfvc1v14e24tz2e9ai9qj
+8173a99c7e25   nextmini_controller:latest   "/bin/bash -c 'sleep…"   About a minute ago   Exited (101) About a minute ago              nextmini_controller.1.ip8pnftnmuvelgyna9nzq3ngn
+116413d6a5ef   postgres:alpine              "docker-entrypoint.s…"   About a minute ago   Exited (3) About a minute ago                nextmini_postgres.1.rjf6m35s49ok9kb4rf4oq3l2i
 ```
 
-The docker container name is `nextmini_node1.1.oicwpz896u5rr5ibtsk2ahs8r` in this case. You should obtain the docker continaer name of other nodes on other instances as well. With the container name, you can docker execute into them by:
+The docker container ID is `277d0e508ec8` in this case. You should obtain the docker continaer ID of other nodes on other instances as well. You can enter into the bash of containers with:
 
 ```bash
-docker exec -it <container name> /bin/bash
+docker exec -it <container_ID> /bin/bash
 ```
 
 # Remaining Issue
 
-One urgent issue now is the pg database cannot be connected successfully by the controller. When using docker swarm, the IP address canot be assigned manually. In other words, the IP address of all containers are assigned at runtime dynamically. This nature has made it difficult to set the `host` field inside `controller-config.toml` file. One potential solution now is to make the host an environment variable and let controller access it while running.
+One urgent issue now is the pg database cannot be connected successfully by the controller. When using docker swarm, the IP address canot be assigned manually. In other words, the IP address of all containers are assigned at runtime dynamically. This nature has made it difficult to set the `host` field inside `controller-config.toml` file. One potential solution now is to make the host an environment variable and let controller access it while running. It is also important to clean up the docker history when deploying services.
+
+## Other useful commands
+
+```bash
+sudo docker swarm leave
+sudo docker ps -a
+docker ps --filter "name=node3"
+sudo docker node ls
+sudo docker service ls
+docker volume rm nextmini_postgres_data
+```

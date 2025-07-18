@@ -5,36 +5,42 @@ networks:
     driver: overlay
     attachable: true
 
+volumes:
+  postgres_data:
+
 services:
   postgres:
     image: postgres:alpine
+    hostname: postgres
     environment:
       POSTGRES_USER: pgusr
       POSTGRES_PASSWORD: pgpwrd
       POSTGRES_DB: nextmini
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - nextmini-network
     ports:
       - "5432:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-    networks:
-      - nextmini-network
-    volumes:
-      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     deploy:
       placement:
         constraints:
           - node.role == manager
+      replicas: 1
       restart_policy:
-        condition: any
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
 
   controller:
     image: nextmini_controller
-    build:
-      context: ../../
-      dockerfile: ./controller/Dockerfile
     networks:
       - nextmini-network
     stdin_open: true
@@ -44,17 +50,15 @@ services:
       - postgres
     ports:
       - 3000:3000
-    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
     deploy:
       placement:
         constraints:
           - node.role == manager
+      replicas: 1
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
 
   node1:
     image: nextmini_datapath
-    build:
-      context: ../../
-      dockerfile: ./dataplane/Dockerfile
     networks:
       - nextmini-network
     stdin_open: true
@@ -66,17 +70,14 @@ services:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
     deploy:
       placement:
         constraints:
           - node.role == manager
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node2:
     image: nextmini_datapath
-    build:
-      context: ../../
-      dockerfile: ./dataplane/Dockerfile
     networks:
       - nextmini-network
     stdin_open: true
@@ -89,17 +90,14 @@ services:
       - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
     deploy:
       placement:
         constraints:
           - node.hostname == nextmini-snapshot
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node3:
     image: nextmini_datapath
-    build:
-      context: ../../
-      dockerfile: ./dataplane/Dockerfile
     networks:
       - nextmini-network
     stdin_open: true
@@ -112,8 +110,8 @@ services:
       - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
     deploy:
       placement:
         constraints:
           - node.hostname == nextmini-snapshot-2
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
