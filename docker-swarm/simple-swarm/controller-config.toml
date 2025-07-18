@@ -1,0 +1,13 @@
+protocol = "tcp"
+# external_base_addr = "172.16.8.5"
+
+[topology]
+type = "full_mesh"
+n_nodes = 3
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "postgres"  
+database = "nextmini"
+port = "5432"
