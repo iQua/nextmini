@@ -104,7 +104,7 @@ sudo docker stack deploy -c docker-compose.yml nextmini
 Run the example:
 
 ```bash
-docker stack services nextmini
+sudo docker stack services nextmini
 ```
 
 Logs similar to the following should be seen in the console:
