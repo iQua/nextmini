@@ -129,13 +129,7 @@ impl RoutingTable {
         Some(selected_route_id)
     }
 
-    #[allow(dead_code)]
-    /// Get next_hop by route ID, reserved for future use maybe
-    pub fn get_next_hop_by_route(&self, route_id: usize) -> Option<NodeId> {
-        self.route_next_hop.get(&route_id).copied()
-    }
-
-    /// Get next_hop by flow ID
+    /// Obtains the next hop by flow ID.
     pub fn get_next_hop_by_flow(&mut self, flow_id: FlowId) -> Result<NodeId, String> {
         // selects the route ID for a new flow
         if let Some(route_id) = self.select_route_for_flow(flow_id) {
