@@ -29,7 +29,7 @@ pub struct Connector {
     /// receives messages from the processor handle
     message_receiver: mpsc::Receiver<ConnectorMessage>,
 
-    /// the tcp max client
+    /// the TCP max client
     tcp_max_client: Option<TcpMaxClient>,
 
     /// the routing table
@@ -99,13 +99,13 @@ impl Connector {
         }
     }
 
-    /// Processes packets at the src node.
+    /// Processes packets at the source node.
     async fn process_packet(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
 
-        // sends directly when the tcp max connection is established or initiates a new connection
+        // sends directly when the TCP max connection is already established, or initiates a new connection
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
-            // if the scheduler is already initialized at the src node, sends the packet to the next hop directly
+            // if the scheduler is already initialized at the source node, sends the packet to the next hop directly
             scheduler.send(packet);
         } else {
             // if the scheduler is not initialized, initiates a new connection for the first packet of the flow
@@ -130,7 +130,7 @@ impl Connector {
 
             let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
 
-            // establishes a tcp max connection to the next hop node
+            // establishes a TCP max connection to the next-hop node
             let stream = tcp_max_client.connect(packet.flow_id, &remote_addr).await;
 
             // initializes a scheduler which is then stored and used for all subsequent packets in that flow
@@ -146,7 +146,7 @@ impl Connector {
         }
     }
 
-    /// Handles inbound requests as dst node and relay nodes.
+    /// Handles an inbound request as the destination node or as a relay node.
     async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
         let next_hop_id = match self.routing_table.get_next_hop_by_flow(flow_id) {
             Ok(next_hop_id) => next_hop_id,
@@ -155,26 +155,26 @@ impl Connector {
                 return;
             }
         };
+
         let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
 
         // handles flows where this node is the final destination
         if next_hop_id == self.routing_table.local_id {
-            // creates a scheduler for response packets
+            // creates a new scheduler for response packets
             let scheduler = tcp_max_client
                 .initialize_scheduler(inbound_stream, next_hop_id)
                 .await;
 
-            // reverses the flow ID to use it as a key in the scheduler hashmap, stores the reversed flow id to the
-            // scheduler into the hashmap for sending response packets from the destination node to the source node
+            // reverses the flow ID and stores it in a hashmap from flow IDs to schedulers. This is for sending
+            // response packets from the destination node to the source node
             self.schedulers.insert(flow_id.reverse(), scheduler);
         } else {
             // handles flows that need to be forwarded to the next hop as a relay node
 
-            // obtains the next hop addr from the hashmap of node addresses
-            // the node addresses are only stored for dataplane nodes
+            // obtains the next hop address from the hashmap of node addresses (only stored for dataplane nodes)
             let next_hop_addr = match self.node_addresses.get(&next_hop_id) {
                 Some(addr) => addr.clone(),
-                // redirects to the external server if the next hop is not a registered node if sending external traffic
+                // redirects to the external server if the next hop is not a registered node (for sending external traffic)
                 None => {
                     let external_server_addr =
                         format!("{}:{}", flow_id.dst_ip(), flow_id.dst_port());
@@ -183,11 +183,12 @@ impl Connector {
                         "No remote address found for node id: {}, redirecting to external server: {}",
                         next_hop_id, external_server_addr
                     );
+
                     external_server_addr
                 }
             };
 
-            // obtains the [0x06] + flow_id stream to next hop
+            // obtains the [0x06] + flow_id stream to the next hop
             let mut outbound_stream = tcp_max_client.connect(flow_id, &next_hop_addr).await;
 
             // spawns a task to perform zero-copy bidirectional splicing between inbound and outbound streams

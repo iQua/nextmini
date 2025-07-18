@@ -19,13 +19,13 @@ pub struct TcpMaxServer {
     processors: ProcessorHandle,
 }
 
-/// TcpMaxServer supports both SOCKS5 proxy requests and direct TCP MAX connections.
+/// TcpMaxServer supports both SOCKS5 proxy requests and direct TCP max connections.
 impl TcpMaxServer {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
         Self { config, processors }
     }
 
-    /// Accepts incoming tcp connections.
+    /// Accepts incoming TCP connections.
     pub async fn start_listening(&mut self, addr: &String) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
@@ -118,11 +118,11 @@ impl TcpMaxServer {
             return Err(Error::new(ErrorKind::NotFound, "Unsupported request type"));
         }
 
-        // only supports tcp requests
+        // only supports TCP requests
         match request_header[3] {
             // ipv4 protocol
             0x01 => {
-                // read the server address and port
+                // reads the server address and port number
                 let mut server_address_buf = [0u8; 4];
                 stream.read_exact(&mut server_address_buf).await?;
                 let mut server_port_buf = [0u8; 2];
@@ -131,9 +131,10 @@ impl TcpMaxServer {
                 let server_ip = u32::from_be_bytes(server_address_buf);
                 let server_port = u16::from_be_bytes(server_port_buf);
 
-                // get the client address and port
+                // obtains the client address and port number
                 let client_addr = stream.peer_addr()?;
                 let client_port = client_addr.port();
+
                 let client_ip = match client_addr.ip() {
                     IpAddr::V4(ipv4) => u32::from(ipv4),
                     IpAddr::V6(_) => {
@@ -141,13 +142,13 @@ impl TcpMaxServer {
                     }
                 };
 
-                // gets flow_id from the client address and port
+                // obtains the flow ID from the client address and port number
                 let flow_id = ((client_ip as u128) << 96)
                     | ((server_ip as u128) << 64)
                     | ((client_port as u128) << 48)
                     | ((server_port as u128) << 32);
 
-                // sends the success response
+                // sends a response indicating success
                 let response = [0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
                 stream.write_all(&response).await?;
 
@@ -161,7 +162,7 @@ impl TcpMaxServer {
         }
     }
 
-    /// Handles connection request from a tcp max client.
+    /// Handles connection request from a TCP max client.
     async fn handle_tcp_max_request(&self, stream: &mut TcpStream) -> io::Result<FlowId> {
         let mut flow_id_buf = [0u8; 16];
 
@@ -212,20 +213,20 @@ impl TcpMaxClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
-                    // after requesting a remote connection, it writes the first byte 0x06 into the stream
-                    // which indicates that it is a TCP MAX connection
+                    // after requesting a remote connection, it writes the first byte 0x06 into the stream,
+                    // which indicates that it is a TCP max connection
                     stream
                         .write_all(&[0x06])
                         .await
                         .expect("Failed to send max client identifier to the node");
 
-                    // sends the flow_id to the node
+                    // sends the flow ID to the node
                     stream
                         .write_all(&flow_id.to_be_bytes()) // writes the flow_id as a 16-byte big-endian integer
                         .await
-                        .expect("Failed to send local node id to the node");
+                        .expect("Failed to send flow ID to the node");
 
-                    info!("Connected to {} with TCP MAX.", remote_addr);
+                    info!("Connected to {} with TCP max.", remote_addr);
 
                     return stream;
                 }
@@ -240,7 +241,9 @@ impl TcpMaxClient {
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRY {
-                        panic!("Maximum retry reached for TCP MAX connection to {remote_addr}");
+                        panic!(
+                            "Maximum retry reached for establishing a TCP max connection to {remote_addr}."
+                        );
                     }
 
                     delay = delay.mul_f32(1.5); // Exponential backoff
@@ -249,8 +252,8 @@ impl TcpMaxClient {
         }
     }
 
-    /// Initializes a scheduler with a network interface for src node and dst node
-    /// Used by dst node only when dst node is in max mode.
+    /// Initializes a scheduler with a network interface for the source and destination node.
+    /// Used by the destination node only when it is operating in max mode.
     pub async fn initialize_scheduler(
         &self,
         stream: TcpStream,

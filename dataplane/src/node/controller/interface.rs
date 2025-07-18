@@ -59,7 +59,7 @@ impl ControllerInterfaceHandle {
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
         processors.connect_server(user_space_server.clone());
 
-        // creates the tcp max client for the processor to use
+        // creates a TCP max client for the processor to use
         let tcp_max_client =
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
@@ -226,7 +226,7 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
-                // creates new persistent tcp connection to the remote node
+                // creates a new persistent TCP connection to the remote node
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
