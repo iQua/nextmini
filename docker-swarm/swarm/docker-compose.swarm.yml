@@ -1,0 +1,111 @@
+version: '3.8'
+
+networks:
+  nextmini:
+    driver: overlay
+    attachable: true
+
+volumes:
+  postgres_data:
+
+services:
+  postgres:
+    image: postgres:alpine
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - nextmini
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  controller:
+    image: nextmini_controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    ports:
+      - "3000:3000"
+    configs:
+      - source: controller_config
+        target: /var/nextmini/config.toml
+    networks:
+      - nextmini
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:3000/health", "||", "exit", "1"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 60s
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    command: /bin/bash -c "sleep 10 && /var/nextmini/controller"
+
+  dataplane-node:
+    image: nextmini_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    configs:
+      - source: dataplane_config
+        target: /var/nextmini/config.toml
+    volumes:
+      - ../../tools/:/var/nextmini/tools
+    networks:
+      - nextmini
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - RUST_LOG=info
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "nextmini", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 6
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: on-failure
+        delay: 15s
+        max_attempts: 3
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+    command: /bin/bash -c "sleep 15 && /var/nextmini/nextmini ws://controller:3000"
+
+configs:
+  controller_config:
+    file: ./controller-config.toml
+  dataplane_config:
+    file: ./config.toml 
