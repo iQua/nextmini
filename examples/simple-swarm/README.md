@@ -63,7 +63,7 @@ docker swarm join --token <worker-token> <manager-ip>:2377
 
 ```
 
-This should be copied and will be used to join work instances into the docker netwrk. You should now repeat `Step 1` and `Step 2` for all instances before proceeding to the next step.
+This shall be copied to join worker instances into the docker swarm overlay netwrk. At this time, you should repeat `Step 1` and `Step 2` for all instances before proceeding to the next step.
 
 **On Worker Instance**:
 
@@ -75,7 +75,7 @@ docker swarm join --token <worker-token> <manager-ip>:2377
 
 ## Step 3. Deploy the service
 
-By runnning the following command, docker will automatically deploy the services to all work instances. This depolyment may take serveral minutes.
+By runnning the following command on the **Manager Instance**, docker will automatically deploy the services to all worker instances. This depolyment may take serveral minutes.
 
 ```bash
 docker stack deploy -c docker-compose.swarm.yml nextmini
@@ -89,13 +89,13 @@ docker stack services nextmini
 
 ## Step 4. Run tests
 
-You need to get the container ID running on target test instances:
+You need to get the container ID first on **target test instances**:
 
 ```bash
 docker ps -a
 ```
 
-You should see something similar as below logged out:
+You would see something similar as below logged out:
 
 ```bash
 CONTAINER ID   IMAGE                      COMMAND                   CREATED          STATUS          PORTS     NAMES
