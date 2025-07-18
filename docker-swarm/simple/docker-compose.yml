@@ -4,9 +4,9 @@ networks:
   nextmini-network:
     driver: overlay
     attachable: true
-
-volumes:
-  postgres_data:
+    ipam:
+      config:
+        - subnet: 172.16.8.0/24
 
 services:
   postgres:
@@ -20,7 +20,8 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - nextmini-network
+      nextmini-network:
+        ipv4_address: 172.16.8.2
     ports:
       - "5432:5432"
     healthcheck:
@@ -41,8 +42,10 @@ services:
 
   controller:
     image: nextmini_controller
+    hostname: controller
     networks:
-      - nextmini-network
+      nextmini-network:
+        ipv4_address: 172.16.8.3
     stdin_open: true
     volumes:
       - ./controller-config.toml:/var/nextmini/config.toml
@@ -59,13 +62,15 @@ services:
 
   node1:
     image: nextmini_datapath
+    hostname: node1
     networks:
-      - nextmini-network
+      nextmini-network:
+        ipv4_address: 172.16.8.4
     stdin_open: true
-    privileged: true
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
+      - /dev/net/tun:/dev/net/tun
     depends_on:
       - controller
     cap_add:
@@ -78,13 +83,15 @@ services:
 
   node2:
     image: nextmini_datapath
+    hostname: node2
     networks:
-      - nextmini-network
+      nextmini-network:
+        ipv4_address: 172.16.8.5
     stdin_open: true
-    privileged: true
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
+      - /dev/net/tun:/dev/net/tun
     depends_on:
       - controller
       - node1
@@ -98,13 +105,15 @@ services:
 
   node3:
     image: nextmini_datapath
+    hostname: node3
     networks:
-      - nextmini-network
+      nextmini-network:
+        ipv4_address: 172.16.8.6
     stdin_open: true
-    privileged: true
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
+      - /dev/net/tun:/dev/net/tun
     depends_on:
       - controller
       - node2
@@ -115,3 +124,6 @@ services:
         constraints:
           - node.hostname == nextmini-snapshot-2
     command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+volumes:
+  postgres_data:
