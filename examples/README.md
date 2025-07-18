@@ -60,7 +60,7 @@ For flows, you only need to specify the source and destination node IDs and the 
 
 ## splice-test
 
-### Running the splice-test example
+### Running the `splice-test` example
 
 To run the splice-test example, you can use the following command:
 
@@ -133,7 +133,7 @@ route = [4, 3, 2]
 
 The additional routes support testing ping and iperf between node 2` and `node 4`.
 
-If without commented lines, firstly use the `docker exec -it node4 /bin/bash`.
+If without commented lines, first use the `docker exec -it node4 /bin/bash`.
 
 Then `iperf3 -c 10.0.0.2`.
 
@@ -166,9 +166,9 @@ PING 10.0.0.4 (10.0.0.4) 56(84) bytes of data.
 64 bytes from 10.0.0.4: icmp_seq=2 ttl=64 time=1.60 ms
 ```
 
-#### Test with smoltcp stack
+#### Testing with smoltcp stack
 
-If you also uncomment the `smoltcp` section in the config file, you can test with the smoltcp stack and use Nextmini as the proxy at the same time.
+If you also uncomment the `smoltcp` section in the config file, you can test with the smoltcp stack and use Nextmini as a proxy at the same time.
 
 ```text
 # uncomment below:
@@ -204,7 +204,7 @@ node2            | 2025-07-15T00:30:55.648248Z  INFO nextmini::node::flow::state
 
 ### What is in the docker-compose file?
 
-The docker-compose.yaml defines services like `external_client` and `external_server` for external endpoints, connected via SOCKS5. Internal Nextmini dataplane nodes (e.g., `node2`, `node3`, `node4`) run the datapath.
+`docker-compose.yml` defines services like `external_client` and `external_server` for external endpoints, connected via SOCKS5. Internal Nextmini dataplane nodes (e.g., `node2`, `node3`, `node4`) run the datapath.
 
 Example IP assignments:
 - `external_client`: 172.16.8.4
@@ -213,7 +213,7 @@ Example IP assignments:
 - `node4`: 172.16.8.7
 - `external_server`: 172.16.8.8
 
-The external client/server IPs can be customized, but ensure they match the prefix of `external_base_addr` (default: 172.16.8.3) for proper node_id computation. In this setup, external_client gets node_id=1 (172.16.8.4 - 172.16.8.3 = 1), and external_server gets node_id=5 (172.16.8.8 - 172.16.8.3 = 5).
+The external client/server IPs can be customized, but ensure they match the prefix of `external_base_addr` (default: 172.16.8.3) for proper node_id computation. In this setup, `external_client` gets `node_id = 1 (172.16.8.4 - 172.16.8.3 = 1)`, and `external_server` gets `node_id = 5 (172.16.8.8 - 172.16.8.3 = 5)`.
 
 ```rust
   // binds the external client/server address to the node ID
@@ -228,8 +228,6 @@ node3            | 2025-07-15T04:14:33.252688Z  INFO nextmini::node::config: Fro
 node4            | 2025-07-15T04:14:34.440636Z  INFO nextmini::node::config: From real IP 172.16.8.7 using external_base_addr, node_id is: 4.
 ```
 
-The above code is used to bind the external client/server address to a node ID. Notice that this node ID can't conflict with the node IDs that the controller
-allocates to the Nextmini dataplane nodes, which are `2`, `3`, and `4` in this example. Thus the real IP address of `external_client/server` should not
-conflict with the IP addresses of the internal nodes.
+The code above is used to convert the external client/server address to a node ID. Notice that this node ID cannot be in conflict with the node IDs that of the Nextmini dataplane nodes, which are `2`, `3`, and `4` in this example. Thus the real IP address of `external_client/server` should not be in conflict with the IP addresses of the internal nodes.
 
-This binds external addresses to node IDs without conflicting with internal nodes (e.g., 2, 3, 4). External IPs must share the same prefix as `external_base_addr` and avoid conflicts with controller-assigned IDs requested from Nextmini dataplane node.
+This binds external addresses to node IDs without conflicting with internal nodes (e.g., 2, 3, 4). External IPs must share the same prefix as `external_base_addr` and avoid conflicts with the node IDs of Nextmini dataplane nodes.
