@@ -6,7 +6,7 @@ This is a guide for setting up a large scale Strato network on the Compute Canad
 
 Follow through `step 1` and `step 2` in the `./examples/arbutus/readme.md` to set up an instance in arbutus.
 
-## Step 2: Cloning and building nextmini
+## Step 2: Cloning nextmini
 
 Clone the nextmini repository from github by:
 
@@ -17,16 +17,16 @@ git clone git@github.com:iQua/nextmini.git
 Then, build the base images used for controller and dataplane. This step might take a long time.
 
 ```bash
-cd nextmini
-sudo docker build -t nextmini_controller -f controller/Dockerfile .
-sudo docker build -t nextmini_datapath -f dataplane/Dockerfile .
-sudo docker pull postgres:alpine
+cd nextmini/examples/simple-swarm
+docker build -t nextmini_controller -f ../../controller/Dockerfile ../../
+docker build -t nextmini_datapath -f ../../dataplane/Dockerfile ../../
+docker pull postgres:alpine
 ```
 
 You can test with the following command:
 
 ```bash
-sudo docker images
+docker images
 ```
 
 Logs similar to the following should appear in the console:
@@ -44,18 +44,25 @@ postgres              alpine    deedec4d7fe4   5 weeks ago      279MB
 
 Follow the `step 7` in the `./examples/arbutus/readme.md`. This time, create snapshot for your nextmini instance in `step 1` and ignore all `_Starto_` related guides.
 
+Then, run the following commands to build the dataplane base image on each snapshot:
+
+```bash
+cd nextmini/examples/simple-swarm
+docker build -t nextmini_datapath -f ../../dataplane/Dockerfile ../../
+```
+
 ## Step 4: Set up docker swarm manager
 
 First, initialize the swarm at one of the instance. This instance will be set as manager for the swarm. The private network IP shall be used as the `MANAGER-IP` in the following command:
 
 ```bash
-sudo docker swarm init --advertise-addr <MANAGER-IP>
+docker swarm init --advertise-addr <MANAGER-IP>
 ```
 
 You should see logs in the console similar to the following one:
 
 ```bash
-sudo docker swarm init --advertise-addr 192.168.99.100
+docker swarm init --advertise-addr 192.168.99.100
 Swarm initialized: current node (dxn1zf6l61qsb1josjja83ngz) is now a manager.
 
 To add a worker to this swarm, run the following command:
@@ -89,34 +96,20 @@ Repeat this step for all other non-manager instances.
 
 ## Step 6: Run the example
 
-First, you should go to the example directory in your **Manager Instance**:
+Deploy and run the example to all nodes with the following command:
 
 ```bash
-cd nextmini/docker-swarm/simple
+cd nextmini/examples/simple-swarm
+docker stack deploy -c docker-compose.swarm.yml nextmini
 ```
 
-Deploy the example to all nodes with the following command:
+This by default creates three replicas for the dataplane nodes. You can update the service with ideal number of replicas (5 here) with the following command:
 
 ```bash
-sudo docker stack deploy -c docker-compose.yml nextmini
+docker service update --replicas 5 nextmini_dataplane
 ```
 
-Run the example:
-
-```bash
-sudo docker stack services nextmini
-```
-
-Logs similar to the following should be seen in the console:
-
-```bash
-ID             NAME                  MODE         REPLICAS   IMAGE                        PORTS
-ftvp45rh511e   nextmini_controller   replicated   1/1        nextmini_controller:latest   *:3000->3000/tcp
-o827k6poabm1   nextmini_node1        replicated   1/1        nextmini_datapath:latest
-isucaltq9mao   nextmini_node2        replicated   1/1        nextmini_datapath:latest
-3obvrx7zyxli   nextmini_node3        replicated   1/1        nextmini_datapath:latest
-zkbmyv7u6h2h   nextmini_postgres     replicated   1/1        postgres:alpine              *:5432->5432/tcp
-```
+In this case, docker will automatically put dataplane nodes into different work instances.
 
 ## Step 7: Retrieve container ID for logs and tests
 
@@ -162,7 +155,3 @@ docker system prune --volumes -f
 # Verify cleanup
 docker network ls
 ```
-
-# Remaining Issue
-
-Even with the ip addresses set in the `docker-compose.yml` file, the ip address used by the nextmini nodes are not as assigned. This leads to incorrect node_id.
