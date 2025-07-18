@@ -2,10 +2,6 @@
 
 This is a guide for setting up a large scale Strato network on the Compute Canada Arbutus Cloud.
 
-## Overview
-
-Setting up Strato over the Arbutus Cloud can be generally divided into setting up the controller and the data plane. The core strategy is to first set up the controller, then set up _one_ data plane node on a single VM. Afterwards, clone image of the VM to get more nodes.
-
 ## Step 1: Launching an Arbutus instance
 
 Follow through `step 1` and `step 2` in the `./examples/arbutus/readme.md` to set up an instance in arbutus.
@@ -24,7 +20,7 @@ Then, build the base images used for controller and dataplane. This step might t
 cd nextmini
 sudo docker build -t nextmini_controller -f controller/Dockerfile .
 sudo docker build -t nextmini_datapath -f dataplane/Dockerfile .
-docker pull postgres:alpine
+sudo docker pull postgres:alpine
 ```
 
 You can test with the following command:
@@ -36,14 +32,12 @@ sudo docker images
 Logs similar to the following should appear in the console:
 
 ```bash
-ubuntu@nextmini:~/nextmini$ sudo docker images
 REPOSITORY            TAG       IMAGE ID       CREATED          SIZE
-nextmini_datapath     latest    00e6cda8837c   25 seconds ago   326MB
-<none>                <none>    1c8a57e96426   48 seconds ago   2.13GB
-nextmini_controller   latest    1ca91083b403   5 minutes ago    320MB
-<none>                <none>    8837413ac609   6 minutes ago    1.75GB
+nextmini_controller   latest    3e2a09dc26e3   34 minutes ago   320MB
+nextmini_datapath     latest    70969d365d22   3 hours ago      326MB
 alpine                latest    9234e8fb04c4   2 days ago       8.31MB
 rust                  alpine    4558dce739eb   3 weeks ago      968MB
+postgres              alpine    deedec4d7fe4   5 weeks ago      279MB
 ```
 
 ## Step 3: Create instance-snapshot on Arbutus
@@ -124,9 +118,9 @@ isucaltq9mao   nextmini_node2        replicated   1/1        nextmini_datapath:l
 zkbmyv7u6h2h   nextmini_postgres     replicated   1/1        postgres:alpine              *:5432->5432/tcp
 ```
 
-## Step 7: Run the Iperf3 test
+## Step 7: Retrieve container ID for logs and tests
 
-First, we need to get the container name by the following command:
+First, we need to get all containers by the following command:
 
 ```bash
 sudo docker ps -a"
@@ -136,35 +130,39 @@ You should see something similar to the followinng:
 
 ```bash
 ubuntu@nextmini:~/nextmini/examples/simple$ docker ps -a
-CONTAINER ID   IMAGE                        COMMAND                  CREATED              STATUS                            PORTS      NAMES
-277d0e508ec8   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   6 seconds ago        Up 2 seconds                                 nextmini_node1.1.gh96ocrsuryribkmn54stdkid
-e1e6a96b6000   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   19 seconds ago       Exited (0) 7 seconds ago                     nextmini_node1.1.z0bh07o2pwwywvmyofiqam0l2
-5f0ac705ba43   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   31 seconds ago       Exited (0) 20 seconds ago                    nextmini_node1.1.npat5xeeyz7yyhctl88nj2ydu
-ce3a5c7117a6   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   44 seconds ago       Exited (0) 32 seconds ago                    nextmini_node1.1.l3u8kz9b1ws6s0otfzdzrsrcj
-d9e1b5af57a7   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   57 seconds ago       Exited (0) 45 seconds ago                    nextmini_node1.1.v4of847akb29aq7altbpnsz4o
-db65272d746a   nextmini_controller:latest   "/bin/bash -c 'sleep…"   About a minute ago   Up About a minute                 3000/tcp   nextmini_controller.1.uc45n3qxzuf61t0v0ujnmi5wi
-9cc75306a1bc   postgres:alpine              "docker-entrypoint.s…"   About a minute ago   Up About a minute (healthy)       5432/tcp   nextmini_postgres.1.z2bkxfvc1v14e24tz2e9ai9qj
-8173a99c7e25   nextmini_controller:latest   "/bin/bash -c 'sleep…"   About a minute ago   Exited (101) About a minute ago              nextmini_controller.1.ip8pnftnmuvelgyna9nzq3ngn
-116413d6a5ef   postgres:alpine              "docker-entrypoint.s…"   About a minute ago   Exited (3) About a minute ago                nextmini_postgres.1.rjf6m35s49ok9kb4rf4oq3l2i
+CONTAINER ID   IMAGE                        COMMAND                  CREATED          STATUS                    PORTS      NAMES
+e51b0571ae9a   nextmini_datapath:latest     "/bin/bash -c 'sleep…"   17 seconds ago   Up 16 seconds                        nextmini_node1.1.6vgtu20657noc5i0thxkhu412
+c3f921458a3c   nextmini_controller:latest   "/bin/bash -c 'sleep…"   18 seconds ago   Up 17 seconds             3000/tcp   nextmini_controller.1.mylyvt3c40dhmgi5p5rp6fbmg
+9c605d5dd6bb   postgres:alpine              "docker-entrypoint.s…"   20 seconds ago   Up 19 seconds (healthy)   5432/tcp   nextmini_postgres.1.40qozl97ls0kbmvqbbol0tq7u
 ```
 
-The docker container ID is `277d0e508ec8` in this case. You should obtain the docker continaer ID of other nodes on other instances as well. You can enter into the bash of containers with:
+The docker container ID for node1 is `277d0e508ec8` in this case. You should obtain the docker continaer ID of other nodes on **other instances**.
+
+With the container ID, you can see the container logs by
+
+```bash
+docker logs <container_ID>
+```
+
+you can enter the container bash by:
 
 ```bash
 docker exec -it <container_ID> /bin/bash
 ```
 
-# Remaining Issue
-
-One urgent issue now is the pg database cannot be connected successfully by the controller. When using docker swarm, the IP address canot be assigned manually. In other words, the IP address of all containers are assigned at runtime dynamically. This nature has made it difficult to set the `host` field inside `controller-config.toml` file. One potential solution now is to make the host an environment variable and let controller access it while running. It is also important to clean up the docker history when deploying services.
-
-## Other useful commands
+## Step 8: Clean up the docker
 
 ```bash
-sudo docker swarm leave
-sudo docker ps -a
-docker ps --filter "name=node3"
-sudo docker node ls
-sudo docker service ls
-docker volume rm nextmini_postgres_data
+# Remove the NextMini stack (removes services and networks)
+docker stack rm nextmini
+
+# Wait for around 10s and Clean up
+docker system prune --volumes -f
+
+# Verify cleanup
+docker network ls
 ```
+
+# Remaining Issue
+
+Even with the ip addresses set in the `docker-compose.yml` file, the ip address used by the nextmini nodes are not as assigned. This leads to incorrect node_id.
