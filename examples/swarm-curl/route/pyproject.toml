@@ -1,0 +1,10 @@
+[project]
+name = "route-insertion"
+version = "0.1.0"
+description = "Detect and insert route for external client and server"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "docker",
+    "psycopg2-binary"
+]
