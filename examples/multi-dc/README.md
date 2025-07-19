@@ -75,6 +75,11 @@ to see if controller and postgres are created successfully.
 
 # Set up the dataplane nodes in manager and worker instance
 
+In each of the dataplane nodes' instance, you should follow the steps to set up the dataplane nodes.
+```bash
+docker build -t nextmini_datapath -f ../../dataplane/Dockerfile ../../
+```
+
 ## Step 2.1: To start the docker swarm
 
 Then, take the Atlantic DC VM instance (public IP = 129.212.176.245) as the worker nodes for docker swarm.
@@ -90,6 +95,12 @@ docker swarm join --token SWMTKN-1-xxxx <SWARM_MANAGER_IP>:2377
 ```
 
 Then you don't need to do anything in the worker instances until the instances were deployed.
+
+In the manager instance, you can check the status of the nodes by:
+
+```bash
+docker node ls
+```
 
 In Altantic VM instance, open a new terminal, and run:
 
