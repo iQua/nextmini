@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   client:
-    image: swarm-splice-client:latest
+    image: curl-client
     build:
       context: .
       dockerfile: src/Dockerfile.client

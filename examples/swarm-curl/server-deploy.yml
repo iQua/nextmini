@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   server:
-    image: swarm-splice-server:latest
+    image: curl-server
     build:
       context: .
       dockerfile: src/Dockerfile.server

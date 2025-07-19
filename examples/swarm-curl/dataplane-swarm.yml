@@ -1,0 +1,48 @@
+version: "3.8"
+
+networks:
+  nextmini-net:
+    driver: overlay
+    attachable: true
+
+services:
+  dataplane:
+    image: nextmini_datapath
+    hostname: "node{{.Task.Slot}}"
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      - nextmini-net
+    privileged: true
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ../../tools/:/var/nextmini/tools
+      - /dev/net/tun:/dev/net/tun
+      - ../swarm-curl/route/:/var/nextmini/tools/route
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      replicas: 5
+      restart_policy:
+        condition: on-failure
+    environment:
+      - CONTROLLER_HOST=REPLACE_WITH_MANAGER_IP
+    command: |
+      /bin/bash -c "
+        echo \"Current hostname: $$(hostname)\"
+        NODE_ID=$$(hostname | sed 's/node//')
+        echo \"Extracted NODE_ID: $$NODE_ID\"
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml
+        echo \"\" >> /var/nextmini/config.toml
+        echo \"node_id = $$NODE_ID\" >> /var/nextmini/config.toml
+        echo \"Generated config file:\"
+        cat /var/nextmini/config.toml
+        echo \"Waiting for controller at $$CONTROLLER_HOST:3000 to be ready...\"
+        while ! timeout 1 bash -c \"</dev/tcp/$$CONTROLLER_HOST/3000\"; do
+          echo \"Controller not ready, waiting 2 seconds...\"
+          sleep 2
+        done
+        echo \"Controller is ready, starting dataplane...\"
+        /var/nextmini/nextmini ws://$$CONTROLLER_HOST:3000
+      "
