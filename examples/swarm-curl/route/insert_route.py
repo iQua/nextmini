@@ -43,12 +43,23 @@ class RouteManager:
         return service_ips
 
     def ip_to_node_id(self, service_name: str) -> Optional[int]:
-        """Convert service name to node ID"""
-        ip_mapping = {
-            'client': 10,
-            'server': 20,
-        }
-        return ip_mapping.get(service_name)
+        """Convert service IP to node ID by extracting from IP address"""
+        # Get the actual IP for the service
+        service_ip = self.get_service_ip(service_name)
+        if not service_ip:
+            return None
+            
+        # Extract node ID from IP (assuming 172.16.8.X format)
+        # The node ID is the last octet of the IP
+        try:
+            ip_parts = service_ip.split('.')
+            if len(ip_parts) == 4 and ip_parts[0] == '172' and ip_parts[1] == '16' and ip_parts[2] == '8':
+                node_id = int(ip_parts[3])
+                return node_id
+        except (ValueError, IndexError):
+            pass
+            
+        return None
 
     def insert_route(self, src_node_id: int, dst_node_id: int, route_path: List[int]):
         """Insert a route into the database"""
