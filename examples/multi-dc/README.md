@@ -108,6 +108,10 @@ In Altantic VM instance, open a new terminal, and run:
 # Edit dataplane-swarm.yml to replace IP placeholder, where 167.99.205.149 is the real ip addr of our London DC.
 sed 's/REPLACE_WITH_MANAGER_IP/167.99.205.149/g' dataplane-swarm.yml > dataplane-deploy.yml
 
+# sed 's/REPLACE_WITH_MANAGER_IP/206.12.91.13/g' dataplane-swarm.yml > dataplane-deploy.yml
+# where 206.12.91.13 is the public IP of the Arbutus instance.
+
+
 # Verify the replacement worked
 grep CONTROLLER_HOST dataplane-deploy.yml
 ```
@@ -170,3 +174,59 @@ docker service update \
   --constraint-add 'node.hostname==<ubuntu-atl>' \
  nextmini_dataplane
  ```
+
+### iperf test
+
+Tested on two DCs in the same region between node4 and node15, the iperf test result is as follows:
+
+```text
+Accepted connection from 10.0.0.15, port 50602
+[  5] local 10.0.0.4 port 5201 connected to 10.0.0.15 port 50606
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-1.01   sec  16.1 MBytes   134 Mbits/sec
+[  5]   1.01-2.00   sec  27.0 MBytes   228 Mbits/sec
+[  5]   2.00-3.00   sec  25.5 MBytes   214 Mbits/sec
+[  5]   3.00-4.00   sec  22.4 MBytes   188 Mbits/sec
+[  5]   4.00-5.00   sec  34.8 MBytes   290 Mbits/sec
+[  5]   5.00-6.00   sec  21.4 MBytes   180 Mbits/sec
+[  5]   6.00-7.00   sec  29.8 MBytes   249 Mbits/sec
+[  5]   7.00-8.01   sec  19.1 MBytes   160 Mbits/sec
+[  5]   8.01-9.00   sec  17.0 MBytes   144 Mbits/sec
+[  5]   9.00-10.01  sec  21.6 MBytes   179 Mbits/sec
+[  5]  10.01-11.00  sec  17.2 MBytes   147 Mbits/sec
+[  5]  11.00-12.00  sec  20.9 MBytes   175 Mbits/sec
+[  5]  12.00-13.00  sec  19.9 MBytes   167 Mbits/sec
+[  5]  13.00-14.00  sec  29.9 MBytes   251 Mbits/sec
+[  5]  14.00-15.00  sec  29.6 MBytes   249 Mbits/sec
+[  5]  15.00-16.01  sec  23.8 MBytes   197 Mbits/sec
+[  5]  16.01-17.02  sec  20.0 MBytes   165 Mbits/sec
+[  5]  17.02-18.00  sec  21.9 MBytes   188 Mbits/sec
+[  5]  18.00-19.00  sec  20.0 MBytes   168 Mbits/sec
+[  5]  19.00-20.03  sec  17.2 MBytes   141 Mbits/sec
+[  5]  19.00-20.03  sec  17.2 MBytes   141 Mbits/sec
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate
+[  5]   0.00-20.03  sec   478 MBytes   200 Mbits/sec                  receiver
+iperf3: the client has terminated
+```
+
+```text
+node15:/var/nextmini# iperf3 -c 10.0.0.4
+Connecting to host 10.0.0.4, port 5201
+[  5] local 10.0.0.15 port 52432 connected to 10.0.0.4 port 5201
+[ ID] Interval           Transfer     Bitrate         Retr  Cwnd
+[  5]   0.00-1.00   sec  19.9 MBytes   167 Mbits/sec    0    933 KBytes
+[  5]   1.00-2.00   sec  19.6 MBytes   165 Mbits/sec    0   1.87 MBytes
+[  5]   2.00-3.00   sec  19.6 MBytes   165 Mbits/sec    0   2.80 MBytes
+[  5]   3.00-4.00   sec  21.0 MBytes   176 Mbits/sec    0   3.84 MBytes
+[  5]   4.00-5.00   sec  21.6 MBytes   182 Mbits/sec    0   3.84 MBytes
+[  5]   5.00-6.00   sec  25.0 MBytes   210 Mbits/sec    0   3.84 MBytes
+[  5]   6.00-7.00   sec  24.5 MBytes   206 Mbits/sec    0   3.84 MBytes
+[  5]   7.00-8.00   sec  31.9 MBytes   267 Mbits/sec    1   3.84 MBytes
+[  5]   8.00-9.00   sec  22.6 MBytes   190 Mbits/sec    0   3.84 MBytes
+[  5]   9.00-10.00  sec  28.2 MBytes   237 Mbits/sec    0   3.84 MBytes
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec   234 MBytes   196 Mbits/sec    1            sender
+[  5]   0.00-10.08  sec   230 MBytes   192 Mbits/sec                  receiver
+```
