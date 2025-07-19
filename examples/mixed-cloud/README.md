@@ -10,6 +10,12 @@ Firstly install docker compose use the following command:
 COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4) && DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker} && mkdir -p $DOCKER_CONFIG/cli-plugins && curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o $DOCKER_CONFIG/cli-plugins/docker-compose && chmod +x $DOCKER_CONFIG/cli-plugins/docker-compose
 ```
 
+If you are on Arbutus instance, you should refer to `./arbutus/readme.md` for complete set up guide. Note, you will need to use `docker-compose` instead of 'docker compose' in Arbutus instead. Shortly, you can set up with the following commands:
+
+```bash
+sudo apt install docker.io -y; sudo usermod -aG docker $USER
+```
+
 Checked if the docker compose is installed successfully, use the following command:
 
 ```bash
@@ -35,16 +41,17 @@ cd nextmini/examples/mixed-cloud； curl -s ifconfig.me
 
 You can get your public IP with the above command. This should be copied for later use.
 
-## Step 1.2: Build Controller Image
+## Step 1.2: Build Controller and Postgres Image
 
 ```bash
 docker build -t nextmini_controller -f ../../controller/Dockerfile ../../
+docker pull postgres:alpine
 ```
 
 ## Step 1.3: Start Controller and PostgreSQL
 
 ```bash
-docker compose -f controller-standalone.yml up -d
+docker compose -f controller-standalone.yml up
 ```
 
 Then use
