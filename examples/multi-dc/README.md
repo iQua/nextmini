@@ -13,6 +13,8 @@ COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/l
 If you are on Arbutus instance, you should refer to `./arbutus/readme.md` for complete set up guide. Note, you will need to use `docker-compose` instead of 'docker compose' in Arbutus instead. Shortly, you can set up with the following commands:
 
 ```bash
+sudo apt update
+
 sudo apt install docker.io -y; sudo usermod -aG docker $USER
 ```
 
