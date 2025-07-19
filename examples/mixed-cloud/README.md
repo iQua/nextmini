@@ -123,3 +123,25 @@ To clean up the controller & db VM instance, use the command:
 ```bash
 docker compose -f controller-standalone.yml down
 ```
+
+## Scaling
+
+Add more dataplane nodes:
+```bash
+docker service update --replicas 7 nextmini_dataplane
+```
+
+Update controller config:
+```toml
+[topology]
+n_nodes = 7
+```
+
+To add more dataplane nodes in specific host:
+
+```bash
+docker service update \
+  --replicas 4 \
+  --constraint-add 'node.hostname==<ubuntu-atl>' \
+ nextmini_dataplane
+ ```
