@@ -1,8 +1,8 @@
-## Test mininet examples with docker
+## Testing Mininet Examples with Docker
 
-**Step 1 : Start the docker environment**
+**Step 1: Starting the Docker environment**
 
-Firstly, run the following commands :
+Run the following command within the `mininet-docker/` directory:
 
 ```bash
 docker compose build; docker compose up
@@ -20,9 +20,9 @@ Then run the following command to test the basic Mininet functionality:
 sudo mn --switch ovsbr --test pingall
 ```
 
-**Step 2 : Run examples**
+**Step 2: Runing the examples**
 
-By running the following commands, you will see all examples presented for running.
+All the examples are in the `/opt/mininet-examples` directory within the Docker container:
 
 ```bash
 cd /opt/mininet-examples; ls
@@ -34,22 +34,18 @@ To run an example:
 python3 multiping.py
 ```
 
-You can change `multiping.py` to any python scripts presented in the `/opt/mininet-examples` folder.
+You can change `multiping.py` to any python scripts included in the `/opt/mininet-examples` directory.
 
-In addition, examples being outdated, unrelated to _Nextmini_ benchmark or failed to run are put inside the `/opt/extra_examples` folder.
-
-## Complementary Information
-
-If you would like to run more examples, you can clone the official mininet repository in a new terminal by:
+In addition, examples that are outdated, unrelated to _Nextmini_, or failed to run are placed inside the `/opt/extra_examples` directory. If you would like to run more examples, you can clone the official Mininet repository by:
 
 ```bash
 git clone https://github.com/mininet/mininet
 ```
 
-Then, go to the examples folder for extra use cases:
+Then, go to the `examples` directory to access additional examples:
 
 ```bash
 cd mininet/examples
 ```
 
-By moving any python scripts to the `./nextmini/mininet-examples/mininet-docker/examples`, you may repeat the above _Step 1_ and _Step 2_ to test newly added examples inside docker environment.
+By copying any of the Python scripts to `./nextmini/mininet-examples/mininet-docker/examples`, you may can test newly added examples inside a Docker container.
