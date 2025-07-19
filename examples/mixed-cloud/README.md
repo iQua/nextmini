@@ -127,10 +127,13 @@ To clean up the dataplane worker nodes: use the command below:
 docker stack rm nextmini
 ```
 
-To clean up the controller & db VM instance, use the command:
+To clean up the controller & db VM instance in DigitalOcean, use the command:
 
 ```bash
 docker compose -f controller-standalone.yml down
+
+# in Arbutus, use the command below:
+sudo docker-compose -f controller-standalone.yml down
 ```
 
 ## Scaling
