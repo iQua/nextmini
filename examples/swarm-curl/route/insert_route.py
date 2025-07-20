@@ -10,7 +10,7 @@ from typing import Dict, Optional, List
 
 # Constants
 INTERMEDIATE_HOPS = [1, 2, 3]
-SERVICE_NAMES = ['client', 'server']
+SERVICE_NAMES = ['curl-client', 'curl-server']
 
 class RouteManager:
     def __init__(self):
@@ -25,13 +25,28 @@ class RouteManager:
         self.db_connection.autocommit = True
 
     def get_service_ip(self, service_name: str) -> Optional[str]:
-        """Get virtual IP for a specific service"""
-        service = self.docker_client.services.get(service_name)
-        virtual_ips = service.attrs.get('Endpoint', {}).get('VirtualIPs', [])
-        
-        if virtual_ips:
-            return virtual_ips[0].get('Addr', '').split('/')[0]
-        return None
+        """Get virtual IP for a specific service on the 'nextmini_nextmini-net' network."""
+        try:
+            # First, get the network object to know its ID
+            network = self.docker_client.networks.get('nextmini_nextmini-net')
+            target_network_id = network.id
+
+            service = self.docker_client.services.get(service_name)
+            virtual_ips = service.attrs.get('Endpoint', {}).get('VirtualIPs', [])
+            
+            # Iterate through all IPs and find the one on our target network
+            for vip in virtual_ips:
+                if vip.get('NetworkID') == target_network_id:
+                    ip_with_mask = vip.get('Addr', '')
+                    # Return only the IP, without the subnet mask (e.g., '/24')
+                    return ip_with_mask.split('/')[0]
+            
+            # If no IP on the target network is found
+            return None
+
+        except (docker.errors.NotFound, docker.errors.APIError) as e:
+            print(f"Error while fetching service or network details: {e}")
+            return None
 
     def get_all_service_ips(self) -> Dict[str, str]:
         """Get IPs for all required services"""
@@ -46,7 +61,10 @@ class RouteManager:
         """Convert service IP to node ID by extracting from IP address"""
         # Get the actual IP for the service
         service_ip = self.get_service_ip(service_name)
+        print(f"DEBUG: Attempting to process service '{service_name}' with IP: {service_ip}")
+
         if not service_ip:
+            print(f"ERROR: Could not find an IP address for service '{service_name}'.")
             return None
             
         # Extract node ID from IP (assuming 172.16.8.X format)
@@ -55,10 +73,12 @@ class RouteManager:
             ip_parts = service_ip.split('.')
             if len(ip_parts) == 4 and ip_parts[0] == '172' and ip_parts[1] == '16' and ip_parts[2] == '8':
                 node_id = int(ip_parts[3])
+                print(f"SUCCESS: Extracted node_id '{node_id}' from IP '{service_ip}'.")
                 return node_id
         except (ValueError, IndexError):
             pass
             
+        print(f"ERROR: IP '{service_ip}' for service '{service_name}' is not in the expected format '172.16.8.X'. Cannot extract node ID.")
         return None
 
     def insert_route(self, src_node_id: int, dst_node_id: int, route_path: List[int]):
@@ -74,8 +94,12 @@ class RouteManager:
 
     def create_routes(self, service_ips: Dict[str, str]):
         """Create routes between client and server services"""
-        client_node_id = self.ip_to_node_id('client')
-        server_node_id = self.ip_to_node_id('server')
+        client_node_id = self.ip_to_node_id('curl-client')
+        server_node_id = self.ip_to_node_id('curl-server')
+
+        if client_node_id is None or server_node_id is None:
+            print("FATAL: Could not determine node IDs for client and/or server. Aborting route insertion.")
+            return
 
         # Route from client to server: [client, 1, 2, 3, server]
         client_to_server_path = [client_node_id] + INTERMEDIATE_HOPS + [server_node_id]

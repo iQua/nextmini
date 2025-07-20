@@ -182,6 +182,7 @@ After server and client are successfully built in German and London instance,
 
 enter the below command in syd instance:
 ```bash
+cd examples/multi-dc
 docker stack deploy -c dataplane-deploy.yml nextmini
 ``` 
 
@@ -224,6 +225,13 @@ docker service create \
   curl-client:latest
 ```
 
+
+Then we could use:
+```bash
+docker service logs curl-client 
+docker service logs curl-server
+```
+in Sydney DC to see if it's successful.
 To clean up,
 
 ```bash

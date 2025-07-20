@@ -5,7 +5,7 @@ echo "Starting client..."
 while true; do
     echo "Sending request through SOCKS5 proxy..."
     
-    response=$(curl --socks5 node1:8081 http://server:8080/)
+    response=$(curl --socks5 node1:8081 http://curl-server:8080/)
     
     if [ $? -eq 0 ]; then
         echo "Response: $response"

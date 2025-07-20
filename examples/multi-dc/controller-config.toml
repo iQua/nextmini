@@ -2,7 +2,7 @@ protocol = "tcp"
 
 [topology]
 type = "full_mesh"
-n_nodes = 15
+n_nodes = 3
 
 [db]
 user = "pgusr"
@@ -11,10 +11,10 @@ host = "postgres"
 database = "nextmini"
 port = "5432"
 
-[[flows]]
-src_node_id = 1
-dst_node_id = 15
-flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_rate = 1_000_000 }
+# [[flows]]
+# src_node_id = 1
+# dst_node_id = 3
+# flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_rate = 1_000_000 }
 
 [[nodes]]
 node_id = 1
