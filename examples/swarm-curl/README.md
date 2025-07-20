@@ -93,7 +93,7 @@ docker pull postgres:alpine
 
 Then start controller to listen on 3000 and 5432 ports:
 ```bash
-docker compose -f controller-standalone.yml up
+docker-compose -f controller-standalone.yml up
 ```
 
 Then ssh into ubuntu-syd instance in Sydney, and we take this as a manager instance with docker swarm.
@@ -245,3 +245,11 @@ To clean up,
 docker service rm curl-client curl-server; docker stack rm nextmini
 ```
 
+```bash
+docker service logs curl-client
+docker service logs curl-server
+docker service logs nextmini_dataplane
+```
+```bash
+docker service update --args "/bin/sh -c 'sleep 30; exec curl http://curl-server:8080/'" curl-client
+```

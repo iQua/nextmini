@@ -1,22 +1,20 @@
+# Use the official Rust image, which includes Rust, Cargo, and a Debian-based OS.
 FROM rust:latest
 
+# Set the working directory.
 WORKDIR /app
 
-# Copy source code
-COPY src/server.rs .
+# Copy the Cargo configuration files.
+# Copying lock file is a best practice for reproducible builds.
+COPY Cargo.toml ./
 
-# Install necessary packages
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+# Copy the source code.
+COPY src ./src
 
-# Build the server
-RUN rustc -O server.rs -o /usr/local/bin/server
+# Build the server binary using Cargo.
+# This will handle dependencies like tokio and tracing automatically.
+RUN cargo build --release --bin server
 
-# Create directory for symlink
-RUN mkdir -p /var/nextmini
-
-# Create a symlink to the binary
-RUN ln -s /usr/local/bin/server /var/nextmini/src
-
-CMD ["/usr/local/bin/server"] 
+# Set the command to run when the container starts.
+# The binary is located in the target/release directory.
+CMD ["/app/target/release/server"] 
