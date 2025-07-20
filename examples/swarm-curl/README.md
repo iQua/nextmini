@@ -225,6 +225,12 @@ docker service create \
   curl-client:latest
 ```
 
+Only other three DCs should serve as dataplane node.
+```bash
+docker node update --label-add type=dataplane ubuntu-atl
+docker node update --label-add type=dataplane ubuntu-atl-02
+docker node update --label-add type=dataplane ubuntu-syd
+```
 
 Then we could use:
 ```bash
