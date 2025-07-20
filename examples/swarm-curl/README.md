@@ -1,6 +1,6 @@
 # External client and server guide
 
-You should first follow the `./multi-dc/README.md` to deploy basic `Nextmini` across multiple instances. Importantly, you need to replace the `dataplane-swarm.yml` file in `multi-dc` file with the one in current folder.
+You should first follow the `./multi-dc/README.md` to deploy basic `Nextmini` across multiple instances.
 
 After that you should enter `swarm-curl` directory with:
 
@@ -59,9 +59,9 @@ docker service create \
 
 ## Insert Route
 
-After deploying the services, you should cd into a dataplane node on the manager instance and insert routes into the database:
+After deploying the services, you should insert routes into the database:
 
 ```bash
-cd /var/nextmini/tools/route
+cd route
 uv run insert_route.py
 ```
