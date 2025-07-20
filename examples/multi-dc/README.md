@@ -38,7 +38,7 @@ At Arbutus VM(for controller and database),
 ## Step 1.1: Gets the ip addr
 
 ```bash
-cd nextmini/examples/mixed-cloud； curl -s ifconfig.me
+cd nextmini/examples/multi-dc； curl -s ifconfig.me
 ```
 
 You can get your public IP with the above command. This should be copied for later use.
