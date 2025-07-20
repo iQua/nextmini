@@ -57,7 +57,7 @@ If in arbutus, you should use the following commands:
 ```bash
 sudo mv /home/ubuntu/.docker/cli-plugins/docker-compose /usr/local/bin/docker-compose
 sudo docker-compose -f controller-standalone.yml build
-sudo docker-compose -f controller-standalone.yml up -d
+sudo docker-compose -f controller-standalone.yml up
 ```
 
 If in DigitalOcean, simply use:
