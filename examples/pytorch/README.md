@@ -62,13 +62,21 @@ docker exec -it <continaerID> /bin/bash
 Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
 
 ```bash
-mpirun --allow-run-as-root -np 4 echo hello world
+mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 echo hello world
 ```
 
 We can also run a Python script using `uv`:
 
 ```bash
 mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by slot uv run test.py
+```
+
+We should see four `Hello World!` printed after the Python packages are downloaded and installed.
+
+Finally, we can start distributed training with PyTorch:
+
+```bash
+sh train.sh
 ```
 
 ## Clean up

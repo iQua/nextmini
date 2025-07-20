@@ -10,7 +10,7 @@ networks:
 services:
   node1:
     image: nextmini_datapath_pytorch
-    hostname: "node{{.Task.Slot}}"
+    hostname: "node1"
     networks:
       - nextmini-net
     stdin_open: true
@@ -64,7 +64,7 @@ services:
 
   node2:
     image: nextmini_datapath_pytorch
-    hostname: "node{{.Task.Slot}}"
+    hostname: "node2"
     networks:
       - nextmini-net
     stdin_open: true
@@ -112,7 +112,7 @@ services:
 
   node3:
     image: nextmini_datapath_pytorch
-    hostname: "node{{.Task.Slot}}"
+    hostname: "node3"
     networks:
       - nextmini-net
     stdin_open: true
@@ -160,7 +160,7 @@ services:
 
   node4:
     image: nextmini_datapath_pytorch
-    hostname: "node{{.Task.Slot}}"
+    hostname: "node4"
     networks:
       - nextmini-net
     stdin_open: true
