@@ -20,12 +20,15 @@ fn main() -> std::io::Result<()> {
 }
 
 fn handle_client(mut stream: TcpStream) {
-    let mut buffer = [0u8; 1024];
-
-    if let Ok(n) = stream.read(&mut buffer) {
-        if n > 0 {
-            let response = "HTTP/1.1 200 OK\r\n\r\nHello World";
-            let _ = stream.write_all(response.as_bytes());
-        }
+    println!("Client connected, sending response...");
+    let response = "HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nHello World";
+    
+    if let Err(e) = stream.write_all(response.as_bytes()) {
+        eprintln!("Failed to write to stream: {}", e);
     }
+    
+    if let Err(e) = stream.flush() {
+        eprintln!("Failed to flush stream: {}", e);
+    }
+    println!("Response sent and stream flushed.");
 }

@@ -1,13 +1,22 @@
-FROM ubuntu:24.04
+# Use the official Rust image, which includes Rust, Cargo, and a Debian-based OS.
+FROM rust:1.87
 
-# Install curl
+# Install the curl command-line tool, which our Rust program will execute.
 RUN apt-get update && apt-get install -y curl
 
-# Copy the client script
-COPY src/client.sh /client.sh
+# Set the working directory.
+WORKDIR /app
 
-# Make the script executable
-RUN chmod +x /client.sh
+# Copy the Cargo configuration file.
+COPY Cargo.toml .
 
-# Sleep for several seconds before running the script to ensure services are ready
-CMD ["/bin/bash", "-c", "sleep 60 && /client.sh"]
+# Copy the source code.
+COPY src ./src
+
+# Build the client application using Cargo.
+# This will handle dependencies like tokio and tokio-splice automatically.
+RUN cargo build --release --bin client
+
+# Set the command to run when the container starts.
+# The binary is located in the target/release directory.
+CMD ["/app/target/release/client"]
