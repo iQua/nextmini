@@ -223,3 +223,10 @@ docker service create \
   --restart-max-attempts 5 \
   curl-client:latest
 ```
+
+To clean up,
+
+```bash
+docker service rm curl-client curl-server; docker stack rm nextmini
+```
+
