@@ -363,11 +363,16 @@ impl LocalConfig {
                 // as it has the same prefix with the private_network_addr
                 let base = u32::from(cfgs.external_base_addr);
                 let computed_node_id = (ip - base) as NodeId;
-                if computed_node_id != 0 {
+                if computed_node_id != 0 && cfgs.node_id == 0 {
                     cfgs.node_id = computed_node_id;
                     info!(
                         "From real IP {} using external_base_addr, node_id is: {}.",
                         cfgs.private_network_addr, cfgs.node_id
+                    );
+                } else if cfgs.node_id != 0 {
+                    info!(
+                        "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
+                        cfgs.node_id, computed_node_id, cfgs.private_network_addr
                     );
                 }
             } else {

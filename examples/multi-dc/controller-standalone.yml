@@ -1,0 +1,40 @@
+version: '3.8'
+
+volumes:
+  postgres-data:
+
+services:
+  postgres:
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "0.0.0.0:5432:5432"  # Binds to all interfaces for external access.
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: always
+
+  controller:
+    image: nextmini_controller
+    hostname: controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    ports:
+      - "0.0.0.0:3000:3000"  # Binds to all interfaces for external access.
+    volumes:
+      - ./controller-config.toml:/var/nextmini/config.toml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"

@@ -54,9 +54,13 @@ async fn main() {
 
         info!("New connection from {}", peer);
 
-        let ws_stream = accept_async(stream)
-            .await
-            .expect("Failed to accept WebSocket connection");
+        let ws_stream = match accept_async(stream).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                error!("Failed to accept WebSocket connection from {}: {}. Skipping.", peer, e);
+                continue;
+            }
+        };
         let (write, read) = ws_stream.split();
 
         tokio::spawn(handle_connection(
