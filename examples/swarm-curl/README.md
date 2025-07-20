@@ -30,6 +30,8 @@ You can change the `constraint` to your target nodes in this step.
 
 Deploy the server service first.
 
+You could enter the following command in manager instance.
+
 ```bash
 docker service create \
   --name swarm-splice-server \

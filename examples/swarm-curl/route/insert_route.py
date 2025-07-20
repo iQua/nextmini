@@ -18,7 +18,7 @@ class RouteManager:
         self.db_connection = psycopg2.connect(
             user="pgusr",
             password="pgpwrd",
-            host="postgres",
+            host="206.12.91.13", # TODO: change to the controller/database instance IP.
             port="5432",
             database="nextmini"
         )
