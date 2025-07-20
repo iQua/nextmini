@@ -9,7 +9,7 @@ networks:
 
 services:
   node1:
-    image: nextmini_datapath
+    image: nextmini_datapath_pytorch
     hostname: "node{{.Task.Slot}}"
     networks:
       - nextmini-net
@@ -17,32 +17,53 @@ services:
     privileged: true
     volumes:
       - ./ssh:/var/nextmini/.ssh
-      - ./config.toml:/var/nextmini/config.toml
+      - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
       - ./train.sh:/var/nextmini/train.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
+      - /dev/net/tun:/dev/net/tun
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
-      /usr/sbin/sshd -p 22 &
-      sleep 8 &&
-      /var/nextmini/nextmini ws://controller:3000 &
-      echo \"Node 1 is now running.\" &&
-      sleep 15 &&
-      ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts &&
-      ssh-keyscan -H 10.0.0.3 >> /root/.ssh/known_hosts &&
-      ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts &&
-      sleep infinity"
+    command: |
+      /bin/bash -c "
+        cp -r /var/nextmini/.ssh /root &&
+        chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+        /usr/sbin/sshd -p 22 &
+        sleep 8 &&
+        echo \"Current hostname: \$$(hostname)\" &&
+        NODE_ID=\$$(hostname | sed 's/node//') &&
+        echo \"Extracted NODE_ID: \$$NODE_ID\" &&
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo \"\" >> /var/nextmini/config.toml &&
+        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+        echo \"Generated config file:\" &&
+        cat /var/nextmini/config.toml &&
+        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+          echo \"Controller not ready, waiting 2 seconds...\"
+          sleep 2
+        done &&
+        echo \"Controller is ready, starting dataplane...\" &&
+        /var/nextmini/nextmini ws://206.12.89.23:3000 &
+        echo \"Node 1 is now running.\" &&
+        sleep 15 &&
+        ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts &&
+        ssh-keyscan -H 10.0.0.3 >> /root/.ssh/known_hosts &&
+        ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts &&
+        sleep infinity
+      "
     deploy:
       replicas: 1
       restart_policy:
         condition: on-failure
         delay: 10s
+      placement:
+        constraints:
+          - "node.role == manager"
 
-  dataplane:
-    image: nextmini_datapath
+  node2:
+    image: nextmini_datapath_pytorch
     hostname: "node{{.Task.Slot}}"
     networks:
       - nextmini-net
@@ -50,20 +71,137 @@ services:
     privileged: true
     volumes:
       - ./ssh:/var/nextmini/.ssh
-      - ./config.toml:/var/nextmini/config.toml
+      - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
+      - /dev/net/tun:/dev/net/tun
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "cp -r /var/nextmini/.ssh /root &&
-      chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
-      /usr/sbin/sshd -p 22 &
-      sleep 11 &&
-      echo \"Node is now running.\" &&
-      /var/nextmini/nextmini ws://controller:3000"
+    command: |
+      /bin/bash -c "
+        cp -r /var/nextmini/.ssh /root &&
+        chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+        /usr/sbin/sshd -p 22 &
+        sleep 11 &&
+        echo \"Current hostname: \$$(hostname)\" &&
+        NODE_ID=\$$(hostname | sed 's/node//') &&
+        echo \"Extracted NODE_ID: \$$NODE_ID\" &&
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo \"\" >> /var/nextmini/config.toml &&
+        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+        echo \"Generated config file:\" &&
+        cat /var/nextmini/config.toml &&
+        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+          echo \"Controller not ready, waiting 2 seconds...\"
+          sleep 2
+        done &&
+        echo \"Controller is ready, starting dataplane...\" &&
+        echo \"Node is now running.\" &&
+        /var/nextmini/nextmini ws://206.12.89.23:3000
+      "
     deploy:
-      replicas: 3
+      replicas: 1
       restart_policy:
         condition: on-failure
         delay: 10s
+      placement:
+        constraints:
+          - "node.labels.type == dataplane"
+
+  node3:
+    image: nextmini_datapath_pytorch
+    hostname: "node{{.Task.Slot}}"
+    networks:
+      - nextmini-net
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/var/nextmini/.ssh
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    command: |
+      /bin/bash -c "
+        cp -r /var/nextmini/.ssh /root &&
+        chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+        /usr/sbin/sshd -p 22 &
+        sleep 11 &&
+        echo \"Current hostname: \$$(hostname)\" &&
+        NODE_ID=\$$(hostname | sed 's/node//') &&
+        echo \"Extracted NODE_ID: \$$NODE_ID\" &&
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo \"\" >> /var/nextmini/config.toml &&
+        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+        echo \"Generated config file:\" &&
+        cat /var/nextmini/config.toml &&
+        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+          echo \"Controller not ready, waiting 2 seconds...\"
+          sleep 2
+        done &&
+        echo \"Controller is ready, starting dataplane...\" &&
+        echo \"Node is now running.\" &&
+        /var/nextmini/nextmini ws://206.12.89.23:3000
+      "
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      placement:
+        constraints:
+          - "node.labels.type == dataplane"
+
+  node4:
+    image: nextmini_datapath_pytorch
+    hostname: "node{{.Task.Slot}}"
+    networks:
+      - nextmini-net
+    stdin_open: true
+    privileged: true
+    volumes:
+      - ./ssh:/var/nextmini/.ssh
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./test.py:/var/nextmini/test.py
+      - ./pyproject.toml:/var/nextmini/pyproject.toml
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+    command: |
+      /bin/bash -c "
+        cp -r /var/nextmini/.ssh /root &&
+        chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+        /usr/sbin/sshd -p 22 &
+        sleep 11 &&
+        echo \"Current hostname: \$$(hostname)\" &&
+        NODE_ID=\$$(hostname | sed 's/node//') &&
+        echo \"Extracted NODE_ID: \$$NODE_ID\" &&
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo \"\" >> /var/nextmini/config.toml &&
+        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+        echo \"Generated config file:\" &&
+        cat /var/nextmini/config.toml &&
+        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+          echo \"Controller not ready, waiting 2 seconds...\"
+          sleep 2
+        done &&
+        echo \"Controller is ready, starting dataplane...\" &&
+        echo \"Node is now running.\" &&
+        /var/nextmini/nextmini ws://206.12.89.23:3000
+      "
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+      placement:
+        constraints:
+          - "node.labels.type == dataplane"

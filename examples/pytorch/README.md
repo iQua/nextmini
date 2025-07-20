@@ -6,11 +6,17 @@ Controller and postgres should be deployed according to the `multi-dc/README.md`
 
 ## Step 2
 
-Build the datapath base image on all the instances :
+Build the pytorch base image on all the instances :
 
 ```bash
-cd nextmini/examples/pytorch
-docker build -t nextmini_datapath -f ../../dataplane/Dockerfile ../../
+cd nextmini/
+docker build -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
+```
+
+Label the worker instances to dataplane:
+
+```bash
+docker node update --label-add type=dataplane <host name>
 ```
 
 ## Step 3
@@ -38,13 +44,31 @@ docker node ls
 After all workers has joined the swarm, deploy services on the manager instance by:
 
 ```bash
-docker stack deploy -c dataplane-deploy.yml nextmini
+docker stack deploy -c dataplane-swarm.yml nextmini
 ```
 
-After this, you could see the logging info by:
+## Step 5
+
+On manager instance, find the container ID for node1 by:
 
 ```bash
-docker service logs nextmini_dataplane
+docker ps -a
+```
+
+```bash
+docker exec -it <continaerID> /bin/bash
+```
+
+Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
+
+```bash
+mpirun --allow-run-as-root -np 4 echo hello world
+```
+
+We can also run a Python script using `uv`:
+
+```bash
+mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by slot uv run test.py
 ```
 
 ## Clean up
