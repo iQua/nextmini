@@ -27,6 +27,9 @@ services:
       - NET_ADMIN
     deploy:
       replicas: 3
+      placement:
+        constraints:
+          - "node.labels.type == dataplane"
       restart_policy:
         condition: on-failure
     environment:
