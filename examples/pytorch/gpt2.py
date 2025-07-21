@@ -17,7 +17,6 @@ import sys
 
 import torch
 from torch.utils.data import DataLoader
-import wandb
 import tqdm
 import datasets
 from transformers import (
@@ -140,22 +139,6 @@ def main():
     LOGGER.info(f"Creating experiment root directory")
     exp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initializing [wandb](https://wandb.ai/) – only enable logging on rank 0.
-    wandb.init(
-        project="distributed-training-guide",
-        dir=exp_dir,
-        name=args.experiment_name,
-        id=args.experiment_name,
-        resume="must" if resumed else None,
-        save_code=True,
-        mode="disabled" if rank != 0 else "online",
-        config={
-            "args": vars(args),
-            "training_data_size": len(train_data),
-            "num_batches": len(dataloader),
-        },
-    )
-
     # will be using to understand breakdown of speed
     timers = {k: LocalTimer(device) for k in ["data", "forward", "backward", "update"]}
 
@@ -222,7 +205,6 @@ def main():
 
                 if rank == 0:
                     LOGGER.info(info)
-                    wandb.log(info, step=state["global_step"])
 
                 if device.type == "cuda":
                     torch.cuda.reset_peak_memory_stats(device)

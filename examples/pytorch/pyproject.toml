@@ -1,5 +1,5 @@
 [project]
-name = "pytorch-lenet5-mpi"
+name = "pytorch-mpi"
 version = "0.1.0"
 description = "A simple dashboard for monitoring nextmini throughput at runtime."
 readme = "README.md"
@@ -9,7 +9,5 @@ dependencies = [
     "torchvision",
     "transformers",
     "datasets",
-    "tqdm",
-    "wandb",
-    "sentencepiece", # for some tokenizers
+    "tqdm"
 ]
