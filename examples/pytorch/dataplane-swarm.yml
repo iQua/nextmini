@@ -19,6 +19,7 @@ services:
       - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./gpt2.py:/var/nextmini/gpt2.py
       - ./test.py:/var/nextmini/test.py
       - ./train.sh:/var/nextmini/train.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
@@ -73,6 +74,7 @@ services:
       - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./gpt2.py:/var/nextmini/gpt2.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
@@ -121,6 +123,7 @@ services:
       - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./gpt2.py:/var/nextmini/gpt2.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
@@ -169,6 +172,7 @@ services:
       - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./gpt2.py:/var/nextmini/gpt2.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
