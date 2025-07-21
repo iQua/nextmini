@@ -65,10 +65,21 @@ docker pull postgres:alpine
 docker compose -f controller-swarm.yml build
 ```
 
+Then, add the following to the `controller-config.toml` to ensure successful connection to controller:
+
+```toml
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "postgres"
+database = "nextmini"
+port = "5432"
+```
+
 Controller and postgres services can be started by:
 
 ```bash
-docker compose -f controller-standalone.yml up
+docker compose -f controller-swarm.yml up
 ```
 
 On the manager instance, the controller IP in the `dataplane-swarm.yml` should be altered accordingly.
