@@ -62,7 +62,6 @@ On the controller instance, build controller and postgres image:
 cd nextmini/examples/pytorch
 docker build -t nextmini_controller_pytorch -f ../../controller/Dockerfile ../../
 docker pull postgres:alpine
-docker compose -f controller-swarm.yml build
 ```
 
 Then, add the following to the `controller-config.toml` to ensure successful connection to controller:
@@ -79,7 +78,7 @@ port = "5432"
 Controller and postgres services can be started by:
 
 ```bash
-docker compose -f controller-swarm.yml up
+docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
 ```
 
 On the manager instance, the controller IP in the `dataplane-swarm.yml` should be altered accordingly.
@@ -111,12 +110,6 @@ On the manager instance, you can check the status of nodes by:
 
 ```bash
 docker node ls
-```
-
-Then, label all worker nodes to dataplane for training:
-
-```bash
-docker node update --label-add type=dataplane <host name>
 ```
 
 ## Step 4

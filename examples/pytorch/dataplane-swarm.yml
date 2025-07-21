@@ -110,7 +110,7 @@ services:
         delay: 10s
       placement:
         constraints:
-          - "node.labels.type == dataplane"
+          - "node.role == worker"
 
   node3:
     image: nextmini_datapath_pytorch
@@ -159,7 +159,7 @@ services:
         delay: 10s
       placement:
         constraints:
-          - "node.labels.type == dataplane"
+          - "node.role == worker"
 
   node4:
     image: nextmini_datapath_pytorch
@@ -208,4 +208,4 @@ services:
         delay: 10s
       placement:
         constraints:
-          - "node.labels.type == dataplane"
+          - "node.role == worker"
