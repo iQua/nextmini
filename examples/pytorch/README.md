@@ -1,22 +1,31 @@
-# Guide run PyTorch example across datacenters
+# How to run PyTorch example across datacenters
 
 ## Step 1
 
-Controller and postgres should be deployed according to the `multi-dc/README.md` in this step. The controller IP in the `pytorch/dataplane-swarm.yml` should be altered accordingly on the manager instance.
+First, build controller and postgres image:
+
+```bash
+cd nextmini/examples/pytorch
+docker build -t nextmini_controller_pytorch -f ../../controller/Dockerfile ../../
+docker pull postgres:alpine
+sudo docker-compose -f controller-swarm.yml build
+```
+
+Controller and postgres services can be started by:
+
+```bash
+sudo docker-compose -f controller-standalone.yml up
+```
+
+On the manager instance, the controller IP in the `dataplane-swarm.yml` should be altered according to the actual controller ip.
 
 ## Step 2
 
-Build the pytorch base image on all the instances :
+On another terminal, build the pytorch base image on **all** instances :
 
 ```bash
 cd nextmini/
 docker build -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
-```
-
-Label the worker instances to dataplane:
-
-```bash
-docker node update --label-add type=dataplane <host name>
 ```
 
 ## Step 3
@@ -33,10 +42,16 @@ On all worker instances, join into the swarm network with the swarm token logged
 docker swarm join --token SWMTKN-1-xxxx <SWARM_MANAGER_IP>:<port>
 ```
 
-In the manager instance, you can check the status of the nodes by:
+On the manager instance, you can check the status of nodes by:
 
 ```bash
 docker node ls
+```
+
+Then, label all worker nodes to dataplane for training:
+
+```bash
+docker node update --label-add type=dataplane <host name>
 ```
 
 ## Step 4
@@ -44,6 +59,7 @@ docker node ls
 After all workers has joined the swarm, deploy services on the manager instance by:
 
 ```bash
+cd examples/pytorch
 docker stack deploy -c dataplane-swarm.yml nextmini
 ```
 
@@ -59,7 +75,7 @@ docker ps -a
 docker exec -it <continaerID> /bin/bash
 ```
 
-Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
+Once logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
 
 ```bash
 mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 echo hello world
@@ -90,8 +106,8 @@ docker stack rm nextmini
 To clean up the controller & db VM instance in DigitalOcean, use the command:
 
 ```bash
-docker compose -f controller-standalone.yml down
+docker compose -f controller-swarm.yml down
 
 # in Arbutus, use the command below:
-sudo docker-compose -f controller-standalone.yml down
+sudo docker-compose -f controller-swarm.yml down
 ```
