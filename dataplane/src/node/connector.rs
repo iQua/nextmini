@@ -188,8 +188,14 @@ impl Connector {
                 }
             };
 
-            // obtains the [0x06] + flow_id stream to the next hop
-            let mut outbound_stream = tcp_max_client.connect(flow_id, &next_hop_addr).await;
+            // connect to next hop. For external servers, skip sending max header.
+            let mut outbound_stream = if self.node_addresses.contains_key(&next_hop_id) {
+                // obtains the [0x06] + flow_id stream to the next hop
+                tcp_max_client.connect(flow_id, &next_hop_addr).await
+            } else {
+                // for external servers, skip sending max header and flow id
+                tcp_max_client.connect_without_header(&next_hop_addr).await
+            };
 
             // spawns a task to perform zero-copy bidirectional splicing between inbound and outbound streams
             tokio::spawn(async move {
