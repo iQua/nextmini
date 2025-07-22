@@ -41,13 +41,13 @@ services:
         echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
         echo \"Generated config file:\" &&
         cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+        echo \"Waiting for controller at <CONTROLLER_IP>:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/<CONTROLLER_IP>/3000\"; do
           echo \"Controller not ready, waiting 2 seconds...\"
           sleep 2
         done &&
         echo \"Controller is ready, starting dataplane...\" &&
-        /var/nextmini/nextmini ws://206.12.89.23:3000 &
+        /var/nextmini/nextmini ws://<CONTROLLER_IP>:3000 &
         echo \"Node 1 is now running.\" &&
         sleep 15 &&
         ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts &&
@@ -95,14 +95,14 @@ services:
         echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
         echo \"Generated config file:\" &&
         cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+        echo \"Waiting for controller at <CONTROLLER_IP>:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/<CONTROLLER_IP>/3000\"; do
           echo \"Controller not ready, waiting 2 seconds...\"
           sleep 2
         done &&
         echo \"Controller is ready, starting dataplane...\" &&
         echo \"Node is now running.\" &&
-        /var/nextmini/nextmini ws://206.12.89.23:3000
+        /var/nextmini/nextmini ws://<CONTROLLER_IP>:3000
       "
     deploy:
       replicas: 1
@@ -144,14 +144,14 @@ services:
         echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
         echo \"Generated config file:\" &&
         cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+        echo \"Waiting for controller at <CONTROLLER_IP>:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/<CONTROLLER_IP>/3000\"; do
           echo \"Controller not ready, waiting 2 seconds...\"
           sleep 2
         done &&
         echo \"Controller is ready, starting dataplane...\" &&
         echo \"Node is now running.\" &&
-        /var/nextmini/nextmini ws://206.12.89.23:3000
+        /var/nextmini/nextmini ws://<CONTROLLER_IP>:3000
       "
     deploy:
       replicas: 1
@@ -193,14 +193,14 @@ services:
         echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
         echo \"Generated config file:\" &&
         cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.23:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.23/3000\"; do
+        echo \"Waiting for controller at <CONTROLLER_IP>:3000 to be ready...\" &&
+        while ! timeout 1 bash -c \"</dev/tcp/<CONTROLLER_IP>/3000\"; do
           echo \"Controller not ready, waiting 2 seconds...\"
           sleep 2
         done &&
         echo \"Controller is ready, starting dataplane...\" &&
         echo \"Node is now running.\" &&
-        /var/nextmini/nextmini ws://206.12.89.23:3000
+        /var/nextmini/nextmini ws://<CONTROLLER_IP>:3000
       "
     deploy:
       replicas: 1

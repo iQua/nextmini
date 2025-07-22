@@ -81,7 +81,7 @@ Controller and postgres services can be started by:
 docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
 ```
 
-On the manager instance, the controller IP in the `dataplane-swarm.yml` should be altered accordingly.
+On the manager instance, the <CONTROLLER_IP> in the `dataplane-swarm.yml` should be altered accordingly.
 
 ## Step 2
 
