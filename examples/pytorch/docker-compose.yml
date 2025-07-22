@@ -65,7 +65,7 @@ services:
       - ./config.toml:/var/nextmini/config.toml
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./test.py:/var/nextmini/test.py
-      - ./train.sh:/var/nextmini/train.sh
+      - ./train_lenet5.sh:/var/nextmini/train.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
     depends_on:
       - controller
