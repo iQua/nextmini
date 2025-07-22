@@ -270,4 +270,37 @@ impl TcpMaxClient {
 
         SchedulerHandle::new(self.config.clone(), network_interface)
     }
+
+    pub async fn connect_without_header(&self, remote_addr: &str) -> TcpStream {
+        let mut retry_count = 0;
+        const MAX_RETRY: usize = 10;
+        let mut delay = Duration::from_secs(1);
+
+        loop {
+            match TcpStream::connect(remote_addr).await {
+                Ok(stream) => {
+                    info!("Connected to {} without max header.", remote_addr);
+                    return stream;
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to connect to node address {} with error: {}, retrying in {}s.",
+                        remote_addr,
+                        e,
+                        delay.as_secs()
+                    );
+                    tokio::time::sleep(delay).await;
+                    retry_count += 1;
+
+                    if retry_count >= MAX_RETRY {
+                        panic!(
+                            "Maximum retry reached for establishing a TCP connection to {remote_addr}."
+                        );
+                    }
+
+                    delay = delay.mul_f32(1.5); // Exponential backoff
+                }
+            }
+        }
+    }
 }

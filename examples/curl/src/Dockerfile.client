@@ -1,0 +1,12 @@
+FROM alpine:latest
+
+RUN apk add --no-cache curl
+
+WORKDIR /app
+
+COPY src/client.sh /usr/local/bin/client.sh
+RUN chmod +x /usr/local/bin/client.sh \
+  && mkdir -p /var/nextmini \
+  && ln -s /usr/local/bin/client.sh /var/nextmini/src
+
+CMD ["/usr/local/bin/client.sh"]
