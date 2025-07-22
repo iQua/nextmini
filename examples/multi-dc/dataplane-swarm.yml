@@ -1,13 +1,9 @@
-version: '3.8'
+version: "3.8"
 
 networks:
   nextmini-net:
     driver: overlay
     attachable: true
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.16.8.0/24
 
 services:
   dataplane:
@@ -26,10 +22,7 @@ services:
     cap_add:
       - NET_ADMIN
     deploy:
-      replicas: 3
-      placement:
-        constraints:
-          - "node.labels.type == dataplane"
+      replicas: 5
       restart_policy:
         condition: on-failure
     environment:
