@@ -150,7 +150,11 @@ We should see four `Hello World!` printed after the Python packages are download
 Finally, we can start distributed training with PyTorch:
 
 ```bash
-sh train.sh
+# Train Lenet5 with
+sh train_lenet5.sh
+
+# Train GPT2 with
+sh train_gpt2.sh
 ```
 
 ## Clean up
