@@ -1,5 +1,7 @@
 Test record:
 
+The following log shows a client successfully downloading a file from an external server through the Nextmini network.
+
 ```text
 external_client  | Starting wget client via SOCKS5 proxy 172.16.8.5:8081 -> http://172.16.8.8:8080/file.txt
 external_client  | [22:54:36] Downloading http://172.16.8.8:8080/file.txt to /downloads/file.txt
