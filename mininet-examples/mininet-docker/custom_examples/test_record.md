@@ -1,3 +1,4 @@
+## Tested on Macbook pro M3
 ```text
 root@3153d62fa9a9:/opt/mininet-examples# python3 linear.py
 *** Error setting resource limits. Mininet's performance may be affected.
@@ -57,6 +58,8 @@ s1 s2 s3 s4
 h1 h2 h3 h4 h5
 *** Done
 ```
+
+## Tested on Macbook pro M3
 
 ```text
 root@3153d62fa9a9:/opt/mininet-examples# python3 simple.py
@@ -121,4 +124,40 @@ TCP window size: 85.0 KByte (default)
 [  1] 3.0000-4.0000 sec  15.8 GBytes   136 Gbits/sec
 [  1] 4.0000-5.0000 sec  16.5 GBytes   142 Gbits/sec
 [  1] 0.0000-5.0157 sec  80.1 GBytes   137 Gbits/sec
+```
+
+## Tested simple.py on Boston:
+```text
+------------------------------------------------------------
+Client connecting to 10.0.0.3, TCP port 5001
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.1 port 37856 connected with 10.0.0.3 port 5001
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-1.0000 sec  11.0 GBytes  94.4 Gbits/sec
+[  1] 1.0000-2.0000 sec  11.1 GBytes  95.5 Gbits/sec
+[  1] 2.0000-3.0000 sec  11.1 GBytes  95.3 Gbits/sec
+[  1] 3.0000-4.0000 sec  11.2 GBytes  96.2 Gbits/sec
+[  1] 4.0000-5.0000 sec  10.9 GBytes  94.0 Gbits/sec
+[  1] 0.0000-5.0042 sec  55.4 GBytes  95.0 Gbits/sec
+```
+
+## Tested linear.py on Boston:
+```text
+Client connecting to 10.0.0.5, TCP port 5001
+TCP window size: 85.0 KByte (default)
+------------------------------------------------------------
+[  1] local 10.0.0.1 port 36908 connected with 10.0.0.5 port 5001
+[ ID] Interval       Transfer     Bandwidth
+[  1] 0.0000-1.0000 sec  9.67 GBytes  83.1 Gbits/sec
+[  1] 1.0000-2.0000 sec  9.73 GBytes  83.6 Gbits/sec
+[  1] 2.0000-3.0000 sec  9.80 GBytes  84.2 Gbits/sec
+[  1] 3.0000-4.0000 sec  9.78 GBytes  84.0 Gbits/sec
+[  1] 4.0000-5.0000 sec  9.68 GBytes  83.1 Gbits/sec
+[  1] 5.0000-6.0000 sec  9.70 GBytes  83.3 Gbits/sec
+[  1] 6.0000-7.0000 sec  9.56 GBytes  82.1 Gbits/sec
+[  1] 7.0000-8.0000 sec  9.42 GBytes  81.0 Gbits/sec
+[  1] 8.0000-9.0000 sec  9.73 GBytes  83.6 Gbits/sec
+[  1] 9.0000-10.0000 sec  9.75 GBytes  83.7 Gbits/sec
+[  1] 0.0000-10.0111 sec  96.8 GBytes  83.1 Gbits/sec
 ```
