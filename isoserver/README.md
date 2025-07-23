@@ -54,7 +54,8 @@ Values
 * TCP Echo Server
 
 ```bash
-sudo RUST_LOG=info ./isoserver --server-addr "0.0.0.0:8080" --bridge-name bridge8 --bridge-ip 172.21.0.1 --subnet 16 --ns-ip 172.21.0.2
+# RUN at nextmini/ directory
+sudo env "RUST_LOG=info" ./target/release/isoserver      --server-addr 0.0.0.0:8080      --ns-ip       172.18.0.2           --bridge-ip   172.18.0.1           --subnet      16
 ```
 
 This runs a TCP echo server.
