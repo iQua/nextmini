@@ -9,6 +9,7 @@ import re
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 DOCKER_COMPOSE_FILE = os.path.join(SCRIPT_DIR, "docker-compose.yml")
 CONTROLLER_CONFIG_FILE = os.path.join(SCRIPT_DIR, "controller-config.toml")
+CLIENT_FILE = os.path.join(SCRIPT_DIR, "src", "client.rs")
 
 def generate_node_service(node_id):
     """Generates the YAML configuration for a single node service."""
@@ -112,6 +113,33 @@ def update_controller_config(num_nodes):
         print(f"Error writing to {CONTROLLER_CONFIG_FILE}: {e}")
         return False
 
+def update_client_rs(num_nodes):
+    """Updates the client.rs file with the correct target server IP address."""
+    try:
+        with open(CLIENT_FILE, 'r') as f:
+            content = f.read()
+    except FileNotFoundError:
+        print(f"Error: {CLIENT_FILE} not found.")
+        return False
+
+    # Calculate server IP: 172.16.8.{3 + last_node_id + 1}
+    # last_node_id = num_nodes + 1, so server IP = 172.16.8.{3 + num_nodes + 1 + 1} = 172.16.8.{num_nodes + 5}
+    server_ip_last_octet = num_nodes + 5
+
+    # Update the target_ip line
+    old_pattern = r'let target_ip = Ipv4Addr::new\(172, 16, 8, \d+\);'
+    new_line = f'let target_ip = Ipv4Addr::new(172, 16, 8, {server_ip_last_octet});'
+
+    content = re.sub(old_pattern, new_line, content)
+
+    try:
+        with open(CLIENT_FILE, 'w') as f:
+            f.write(content)
+        return True
+    except IOError as e:
+        print(f"Error writing to {CLIENT_FILE}: {e}")
+        return False
+
 def main():
     """
     Overwrites the docker-compose.yml to generate configurations for a specified number of dataplane nodes.
@@ -166,6 +194,13 @@ def main():
             print(f"Route: [1, 2, ..., {last_node_id}, {last_node_id + 1}] (client -> dataplane nodes -> server)")
         else:
             print(f"Warning: Failed to update {CONTROLLER_CONFIG_FILE}")
+
+        # Update client.rs
+        if update_client_rs(num_nodes):
+            server_ip = f"172.16.8.{num_nodes + 5}"
+            print(f"Successfully updated {CLIENT_FILE} with target server IP: {server_ip}")
+        else:
+            print(f"Warning: Failed to update {CLIENT_FILE}")
 
     except IOError as e:
         print(f"Error writing to {DOCKER_COMPOSE_FILE}: {e}")
