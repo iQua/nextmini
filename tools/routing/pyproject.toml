@@ -5,6 +5,6 @@ description = "A simple waterfilling algorithm for adjusting routes in Strato at
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "psycopg2",
+    "psycopg2-binary",
     "numpy"
 ]
