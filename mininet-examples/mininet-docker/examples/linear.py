@@ -8,7 +8,7 @@ Each test creates a linear topology with the specified number of hops.
 
 from mininet.topo import Topo
 from mininet.net import Mininet
-from mininet.node import CPULimitedHost, OVSController, OVSBridge
+from mininet.node import CPULimitedHost, OVSBridge, OVSController
 from mininet.link import TCLink
 from mininet.util import dumpNodeConnections
 from mininet.log import setLogLevel, info
@@ -44,9 +44,10 @@ def run_perf_test(hops):
     """Create network with specified hops and run TCP performance test"""
     info("*** Creating topology with %d hops\n" % hops)
     topo = MultiHopTopo(hops=hops)
+
     net = Mininet(topo=topo,
                   controller=OVSController,
-                  # switch=OVSBridge,
+                  # switch=OVSBridge, # OVSKernelSwitch is the default and works well for this topology
                   link=TCLink,
                   autoStaticArp=True)
     net.start()
@@ -80,13 +81,16 @@ def run_perf_test(hops):
     # Give server time to start
     time.sleep(1)
 
-    # Start iperf client on h1
-    output = h1.cmd('iperf -c %s -t 10 -i 1' % h2.IP())
-    info("*** Results for %d hops:\n" % hops)
-    info(output)
+    # Start iperf client on h1, which will print its own output
+    info("*** iperf Client Results (%d hops):\n" % hops)
+    client_output = h1.cmd('iperf -c %s -t 10 -i 1' % h2.IP())
+    info(client_output)
 
-    # Clean up
-    h2.cmd('pkill iperf')
+    # Stop the server and capture its output
+    server_output = h2.cmd('pkill iperf 2>&1')
+    info("*** iperf Server Results (%d hops):\n" % hops)
+    info(server_output)
+
     net.stop()
 
     # Wait between tests
