@@ -481,7 +481,7 @@ impl LocalConfig {
     }
 
     /// initialize the config for the namespace nodes
-    pub fn new_for_namespace(config_path: &str, controller_addr: &str) -> LocalConfig {
+    pub fn new_for_namespace(config_path: &str, controller_addr: &str, ns_addr: &str) -> LocalConfig {
         // Reads the TOML configuration file (or falls back to defaults).
         let mut cfgs = match std::fs::read_to_string(config_path) {
             Ok(content) => match toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
@@ -499,66 +499,29 @@ impl LocalConfig {
             }
         };
 
+        // manually set set namespace node's ip addresses
+        cfgs.private_network_addr = ns_addr.to_string();
+        cfgs.public_network_addr = ns_addr.to_string();
+
+        // calculate the node_id
+        if let Ok(real_ip) = ns_addr.parse::<Ipv4Addr>() {
+            let ip = u32::from(real_ip);
+            let base = u32::from(cfgs.external_base_addr);
+            let computed_node_id = (ip - base) as NodeId;
+
+            if computed_node_id != 0 {
+                cfgs.node_id = computed_node_id;
+            } else {
+                info!(
+                    "Computed node_id is 0 from ns_addr {ns_addr}; keeping the default value."
+                );
+            }
+        } else {
+            error!("Failed to parse ns_addr '{ns_addr}' as IPv4");
+        }
+
         // Placeholder – caller (e.g. isoserver) should overwrite this.
         cfgs.controller_addr = controller_addr.to_string();
-
-        if cfgs.private_network_addr.is_empty() {
-            let itf_name = cfgs.private_network_interface.clone();
-            if let Ok(network_interfaces) = NetworkInterface::show() {
-                let mut ipv4addr = String::new();
-                for itf in network_interfaces.iter() {
-                    if itf.name == itf_name {
-                        for addr in itf.addr.iter() {
-                            if let Addr::V4(ipv4) = addr {
-                                ipv4addr = ipv4.ip.to_string();
-                            }
-                        }
-                    }
-                }
-                cfgs.private_network_addr = ipv4addr;
-
-                // Derive node-id from private address (if possible)
-                if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
-                    let ip = u32::from(real_ip);
-                    let base = u32::from(cfgs.external_base_addr);
-                    let computed_node_id = (ip - base) as NodeId;
-                    if computed_node_id != 0 && cfgs.node_id == 0 {
-                        cfgs.node_id = computed_node_id;
-                        info!(
-                            "From real IP {} using external_base_addr, node_id is: {}.",
-                            cfgs.private_network_addr, cfgs.node_id
-                        );
-                    } else if cfgs.node_id != 0 {
-                        info!(
-                            "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
-                            cfgs.node_id, computed_node_id, cfgs.private_network_addr
-                        );
-                    }
-                } else {
-                    error!(
-                        "Failed to parse private_network_addr as Ipv4Addr: {}.",
-                        cfgs.private_network_addr
-                    );
-                }
-            }
-        }
-
-        if cfgs.public_network_addr.is_empty() {
-            let itf_name = cfgs.public_network_interface.clone();
-            if let Ok(network_interfaces) = NetworkInterface::show() {
-                let mut ipv4addr = String::new();
-                for itf in network_interfaces.iter() {
-                    if itf.name == itf_name {
-                        for addr in itf.addr.iter() {
-                            if let Addr::V4(ipv4) = addr {
-                                ipv4addr = ipv4.ip.to_string();
-                            }
-                        }
-                    }
-                }
-                cfgs.public_network_addr = ipv4addr;
-            }
-        }
 
         if cfgs.num_packet_processors == 0 {
             cfgs.num_packet_processors = num_cpus::get();

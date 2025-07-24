@@ -21,7 +21,8 @@ const STACK_SIZE: usize = 1024 * 1024;
 // (tokio block_on and tokio main conflict, main should not be async)
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt::fmt() 
+        .init();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
@@ -38,7 +39,7 @@ fn main() {
     // pending optimization
     // obtain the private network interface here
     let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
-    let node_cfg = LocalConfig::new_for_namespace(node_config_path, &controller_addr);
+    let node_cfg = LocalConfig::new_for_namespace(node_config_path, &controller_addr, &cfg.bridge_ip);
     let private_network_interface = node_cfg.private_network_interface.clone();
 
     // Pre-compute namespace IPs (inlined)
@@ -140,7 +141,7 @@ fn c_process(
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet, if_name).await?;
-        execute(&controller_addr).await
+        execute(&controller_addr, ns_ip).await
     });
 
     if let Err(e) = process {
@@ -152,10 +153,10 @@ fn c_process(
     0
 }
 
-pub async fn execute(controller_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn execute(controller_addr: &str, ns_ip: String) -> Result<(), Box<dyn std::error::Error>> {
     // read config file
     let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
-    let config = LocalConfig::new_for_namespace(config_path, &controller_addr);
+    let config = LocalConfig::new_for_namespace(config_path, &controller_addr, &ns_ip);
 
     // start the conductor
     let conductor = Conductor::new_for_namespace(config).await;
