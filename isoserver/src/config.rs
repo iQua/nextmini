@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use log::warn;
+use tracing::warn;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {

@@ -51,24 +51,20 @@ fn main() {
 
     // Keep child pids and stacks alive while children run
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
-    let mut veth_idxs = Vec::new();
     let mut bid = 37;
 
     for ns_ip in ns_ips {
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
-        let (bridge_idx, veth_idx, veth2_idx) = rt
+        let (bridge_idx, _veth_idx, veth2_idx) = rt
             .block_on(prepare_net(
                 cfg.bridge_name.clone(),
-                private_network_interface.clone(),
                 &cfg.bridge_ip,
                 cfg.subnet,
+                private_network_interface.clone(),
             ))
             .expect("Failed to prepare network");
 
         bid = bridge_idx;
-
-        // stores the namespace index for cleanup
-        veth_idxs.push(veth_idx);
 
         // prepare child process
         let cb = Box::new(|| {
@@ -77,6 +73,7 @@ fn main() {
                 cfg.subnet,
                 veth2_idx,
                 controller_addr.clone(),
+                private_network_interface.clone(),
             )
         });
 
@@ -120,14 +117,20 @@ fn main() {
 
     // cleans up the namespaces
     rt.block_on(async {
-        if let Err(e) = delete_namespace(bid, veth_idxs).await {
+        if let Err(e) = delete_namespace(bid).await {
             error!("{}", e);
         }
     });
 }
 
 // the child process to be executed within main
-fn c_process(ns_ip: String, subnet: u8, veth_peer_idx: u32, controller_addr: String) -> isize {
+fn c_process(
+    ns_ip: String,
+    subnet: u8,
+    veth_peer_idx: u32,
+    controller_addr: String,
+    if_name: String,
+) -> isize {
     info!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
     let ns_hostname = format!("isoserver-{}", string_helpers::random_suffix(5));
@@ -136,7 +139,7 @@ fn c_process(ns_ip: String, subnet: u8, veth_peer_idx: u32, controller_addr: Str
     // Spawn a new blocking task on the current runtime
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
-        setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
+        setup_veth_peer(veth_peer_idx, &ns_ip, subnet, if_name).await?;
         execute(&controller_addr).await
     });
 
