@@ -47,6 +47,7 @@ impl From<std::io::Error> for NetworkError {
 
 pub async fn prepare_net(
     bridge_name: String,
+    ns_if_name: String,
     bridge_ip: &str,
     subnet: u8,
 ) -> Result<(u32, u32, u32), NetworkError> {
@@ -64,7 +65,7 @@ pub async fn prepare_net(
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
     };
 
-    let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx).await?;
+    let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx, ns_if_name).await?;
     Ok((bridge_idx, veth_idx, veth2_idx))
 }
 
@@ -140,13 +141,13 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
     Ok(bridge_idx)
 }
 
-async fn create_veth_pair(bridge_idx: u32) -> Result<(u32, u32), NetworkError> {
+async fn create_veth_pair(bridge_idx: u32, ns_if_name: String) -> Result<(u32, u32), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
     // create veth interfaces
     let veth: String = format!("veth{}", random_suffix(4));
-    let veth_2: String = format!("{}_peer", veth.clone());
+    let veth_2: String = ns_if_name;
 
     handle
         .link()

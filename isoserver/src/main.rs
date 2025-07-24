@@ -1,24 +1,24 @@
+mod config;
 mod handler;
 mod net;
 mod string_helpers;
-mod config;
 
+use crate::config::Config;
 use crate::handler::execute;
 use crate::net::{join_veth_to_ns, prepare_net, setup_veth_peer};
-use crate::config::Config;
 use log::{error, info, warn};
+use nextmini::node::config::LocalConfig;
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use std::{thread, time};
-use nextmini::node::config::LocalConfig;
 
 const STACK_SIZE: usize = 1024 * 1024;
 
 // BUGS/OPTIMIZATIONS:
 // The bug is revolving how to shutdown the child processes gracefully and clean up the resources
 // 1. Now the bridge name and ip are not dropped, and they exist even after the program exits
-// 2. The child processes monitor logic can be optimized 
+// 2. The child processes monitor logic can be optimized
 // (tokio block_on and tokio main conflict, main should not be async)
 
 fn main() {
@@ -41,8 +41,8 @@ fn main() {
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
     // Pre-compute namespace IPs
-    let ns_ips = generate_ns_ips(&cfg.bridge_ip, cfg.n_nodes)
-        .expect("Failed to generate namespace IPs");
+    let ns_ips =
+        generate_ns_ips(&cfg.bridge_ip, cfg.n_nodes).expect("Failed to generate namespace IPs");
 
     // Keep child pids and stacks alive while children run
     let mut child_pids = Vec::new();
@@ -53,23 +53,17 @@ fn main() {
         let (_, _, veth2_idx) = rt
             .block_on(prepare_net(
                 cfg.bridge_name.clone(),
+                node_cfg.private_network_interface.clone(),
                 &cfg.bridge_ip,
                 cfg.subnet,
             ))
             .expect("Failed to prepare network");
-        
+
         // set the node id
         node_cfg.node_id = i;
 
         // prepare child process
-        let cb = Box::new(|| {
-            c_process(
-                node_cfg.clone(),
-                ns_ip.clone(),
-                cfg.subnet,
-                veth2_idx
-            )
-        });
+        let cb = Box::new(|| c_process(node_cfg.clone(), ns_ip.clone(), cfg.subnet, veth2_idx));
 
         let mut tmp_stack: Box<[u8; STACK_SIZE]> = Box::new([0; STACK_SIZE]);
         let child_pid = unsafe {
@@ -147,6 +141,6 @@ fn generate_ns_ips(base_ip: &str, n: u32) -> Result<Vec<String>, std::net::AddrP
     let base: Ipv4Addr = base_ip.parse()?;
     let base_u32: u32 = base.into();
     Ok((1..=n)
-        .map(|offset| Ipv4Addr::from(base_u32 + offset+2).to_string())
+        .map(|offset| Ipv4Addr::from(base_u32 + offset + 2).to_string())
         .collect())
 }
