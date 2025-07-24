@@ -1,9 +1,9 @@
-mod handlers;
+mod handler;
 mod net;
 mod string_helpers;
 mod config;
 
-use crate::handlers::execute;
+use crate::handler::execute;
 use crate::net::{join_veth_to_ns, prepare_net, setup_veth_peer};
 use crate::config::Config;
 use log::{error, info, warn};
@@ -11,11 +11,18 @@ use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
 use std::{thread, time};
+use nextmini::node::config::LocalConfig;
 
 const STACK_SIZE: usize = 1024 * 1024;
 
 fn main() {
     env_logger::init();
+
+    // load the config for the namespace nodes
+    let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
+    let node_cfg = LocalConfig::new_for_namespace(config_path);
+    info!("Loaded node configuration: {:?}", node_cfg);
+
     let cfg = Config::new();
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 

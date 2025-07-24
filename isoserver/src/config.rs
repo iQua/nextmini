@@ -1,12 +1,6 @@
 use serde::Deserialize;
 use log::warn;
 
-/// Configuration options for the iso-server.
-///
-/// Values are loaded from the `net-config.toml` file that must sit next to the
-/// `Cargo.toml` (crate root) of `isoserver`.  Every field has a reasonable
-/// default so the binary can still start even if the file is missing or only
-/// partially specified.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Socket address on which the echo server (inside each net-ns) will listen.
@@ -35,31 +29,37 @@ pub struct Config {
     pub n_nodes: u32,
 }
 
-// ---------------------------------------------------------------------------
-// Default helpers (must be `fn() -> T` so they can be referenced from serde).
-// ---------------------------------------------------------------------------
+/// the default configua for the server
 fn default_server_addr() -> String {
     "0.0.0.0:8080".to_string()
 }
+
+/// the default handler for the server
 fn default_handler() -> String {
     "tcp-echo".to_string()
 }
+
+/// the default bridge name
 fn default_bridge_name() -> String {
     "isobr0".to_string()
 }
+
+/// the default bridge ip
 fn default_bridge_ip() -> String {
     "172.18.0.1".to_string()
 }
+
+/// the default subnet
 fn default_subnet() -> u8 {
     16
 }
+
+/// the default number of nodes(namespaces)
 fn default_n_nodes() -> u32 {
     2
 }
 
-// ---------------------------------------------------------------------------
-// Implement `Default` so we can recover gracefully if the TOML file is absent.
-// ---------------------------------------------------------------------------
+/// the default configuration for namespaces
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -74,17 +74,16 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load configuration from `net-config.toml` placed at the crate root.  Any
-    /// missing or malformed fields fall back to their default values.
     pub fn new() -> Self {
-        // Path resolved at **compile time**; independent of current working dir.
-        let cfg_path = String::from("net-config.toml");
+        // load config from net-config.toml
+        let cfg_path = concat!(env!("CARGO_MANIFEST_DIR"), "/net-config.toml");
+
         match std::fs::read_to_string(&cfg_path) {
             Ok(contents) => match toml::from_str::<Config>(&contents) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     warn!(
-                        "Failed to parse config file {} ({}) – falling back to defaults",
+                        "Failed to parse config file {} (with error: {}), using default values",
                         cfg_path, e
                     );
                     Config::default()
@@ -92,7 +91,7 @@ impl Config {
             },
             Err(e) => {
                 warn!(
-                    "Failed to read config file {} ({}) – falling back to defaults",
+                    "Failed to read config file {} (with error: {}), using default values",
                     cfg_path, e
                 );
                 Config::default()
