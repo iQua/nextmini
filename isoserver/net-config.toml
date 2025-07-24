@@ -1,6 +1,4 @@
-server_addr = "0.0.0.0:8080"
-handler     = "tcp-echo"
-bridge_name = "isobr0"
-bridge_ip   = "172.18.0.1"
+bridge_name = "isobr1"
+bridge_ip   = "170.16.8.1"
 subnet      = 16
 n_nodes     = 3

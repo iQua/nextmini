@@ -15,15 +15,29 @@ use nextmini::node::config::LocalConfig;
 
 const STACK_SIZE: usize = 1024 * 1024;
 
+// BUGS/OPTIMIZATIONS:
+// The bug is revolving how to shutdown the child processes gracefully and clean up the resources
+// 1. Now the bridge name and ip are not dropped, and they exist even after the program exits
+// 2. The child processes monitor logic can be optimized 
+// (tokio block_on and tokio main conflict, main should not be async)
+
 fn main() {
     env_logger::init();
 
     // load the config for the namespace nodes
-    let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
-    let node_cfg = LocalConfig::new_for_namespace(config_path);
-    info!("Loaded node configuration: {:?}", node_cfg);
-
     let cfg = Config::new();
+
+    let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
+    let mut node_cfg = LocalConfig::new_for_namespace(node_config_path);
+
+    // Set the controller address to the bridge IP if it's running on the host
+    if cfg.controller_addr == "127.0.0.1:3000" {
+        node_cfg.controller_addr = format!("ws://{}:3000", cfg.bridge_ip);
+    } else {
+        node_cfg.controller_addr = format!("ws://{}", cfg.controller_addr);
+    }
+    info!("Controller address set to {}", node_cfg.controller_addr);
+
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
     // Pre-compute namespace IPs
@@ -34,7 +48,7 @@ fn main() {
     let mut child_pids = Vec::new();
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
 
-    for ns_ip in ns_ips {
+    for (i, ns_ip) in ns_ips.iter().enumerate() {
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
         let (_, _, veth2_idx) = rt
             .block_on(prepare_net(
@@ -44,11 +58,13 @@ fn main() {
             ))
             .expect("Failed to prepare network");
         
+        // set the node id
+        node_cfg.node_id = i;
+
         // prepare child process
         let cb = Box::new(|| {
             c_process(
-                cfg.handler.clone(),
-                cfg.server_addr.clone(), 
+                node_cfg.clone(),
                 ns_ip.clone(),
                 cfg.subnet,
                 veth2_idx
@@ -104,7 +120,7 @@ fn main() {
     }
 }
 
-fn c_process(handler: String, server_addr: String, ns_ip: String, subnet: u8, veth_peer_idx: u32) -> isize {
+fn c_process(node_cfg: LocalConfig, ns_ip: String, subnet: u8, veth_peer_idx: u32) -> isize {
     info!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
     let ns_hostname = format!("isoserver-{}", string_helpers::random_suffix(5));
@@ -114,7 +130,7 @@ fn c_process(handler: String, server_addr: String, ns_ip: String, subnet: u8, ve
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
-        execute(handler, server_addr).await
+        execute(node_cfg).await
     });
 
     if let Err(e) = process {
@@ -131,6 +147,6 @@ fn generate_ns_ips(base_ip: &str, n: u32) -> Result<Vec<String>, std::net::AddrP
     let base: Ipv4Addr = base_ip.parse()?;
     let base_u32: u32 = base.into();
     Ok((1..=n)
-        .map(|offset| Ipv4Addr::from(base_u32 + offset).to_string())
+        .map(|offset| Ipv4Addr::from(base_u32 + offset+2).to_string())
         .collect())
 }

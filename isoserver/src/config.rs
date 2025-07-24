@@ -4,13 +4,8 @@ use log::warn;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Socket address on which the echo server (inside each net-ns) will listen.
-    #[serde(default = "default_server_addr")]
-    pub server_addr: String,
-
-    /// Which handler to spawn inside each namespace.  Supported values:
-    /// "tcp-echo", "udp-echo", "http".
-    #[serde(default = "default_handler")]
-    pub handler: String,
+    #[serde(default = "default_controller_addr")]
+    pub controller_addr: String,
 
     /// Linux bridge to create (or reuse).
     #[serde(default = "default_bridge_name")]
@@ -29,14 +24,9 @@ pub struct Config {
     pub n_nodes: u32,
 }
 
-/// the default configua for the server
-fn default_server_addr() -> String {
-    "0.0.0.0:8080".to_string()
-}
-
-/// the default handler for the server
-fn default_handler() -> String {
-    "tcp-echo".to_string()
+/// the default controller address running on the host
+fn default_controller_addr() -> String {
+    "127.0.0.1:3000".to_string()
 }
 
 /// the default bridge name
@@ -63,8 +53,7 @@ fn default_n_nodes() -> u32 {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            server_addr: default_server_addr(),
-            handler: default_handler(),
+            controller_addr: default_controller_addr(),
             bridge_name: default_bridge_name(),
             bridge_ip: default_bridge_ip(),
             subnet: default_subnet(),
