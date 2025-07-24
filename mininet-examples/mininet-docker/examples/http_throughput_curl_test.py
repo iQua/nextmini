@@ -75,42 +75,40 @@ def run_throughput_test(client_host, server_ip: str, test_duration: int = 30):
     Run a throughput test by downloading for a specified duration, then stopping.
     This allows curl to run at maximum speed without artificial --max-time constraints.
     """
-    info(f'*** Starting unlimited throughput test (will run for ~{test_duration} seconds)...\n')
+    # ------------------------------------------------------------
+    # Let curl download the *entire* 50G file and exit
+    # normally so that it prints built-in performance stats.
+    # ------------------------------------------------------------
 
-    # Run curl in background and capture its PID
+    info('*** Starting full-file throughput test (no forced kill; curl will exit when the 50-GB file is fully received)...\n')
+
+    # Curl will download the whole file, discard the payload, and
+    # print both the average download speed and total duration.
     cmd = (
         f'curl -s -S -o /dev/null '
-        f'-w "speed_bytes=%{{speed_download}}" '
+        f'-w "speed_bytes=%{{speed_download}},time_total=%{{time_total}}" '
         f'http://{server_ip}/large_test.dat'
     )
 
-    # Start curl in background
-    client_host.cmd(f'{cmd} > /tmp/curl_result.txt 2>&1 &')
-    curl_pid = client_host.cmd('echo $!').strip()
+    # Run curl synchronously and capture its stdout.
+    output = client_host.cmd(cmd).strip()
 
-    info(f'*** curl started with PID {curl_pid}, letting it run for {test_duration} seconds...\n')
+    # Example output: "speed_bytes=123456.78,time_total=42.13"
 
-    # Let it run for the specified duration
-    time.sleep(test_duration)
-
-    # Stop curl gracefully
-    client_host.cmd(f'kill -TERM {curl_pid}')
-    time.sleep(1)  # Give it time to finish
-
-    # Read the result
-    output = client_host.cmd('cat /tmp/curl_result.txt').strip()
-
-    # The output will be "speed_bytes=12345.67"
     if 'speed_bytes=' in output:
         try:
-            speed_bps_str = output.split('=')[1]
-            speed_bps = float(speed_bps_str)
+            # Split key=value pairs by comma then '='
+            metrics = dict(pair.split('=', 1) for pair in output.split(','))
+
+            speed_bps = float(metrics.get('speed_bytes', 0))
+            duration_s = float(metrics.get('time_total', 0))
 
             speed_kbps = speed_bps / 1024
             speed_mbps = speed_bps / 1048576
-            speed_gbps = (speed_bps * 8) / 10**9 # Use standard Gbps (10^9)
+            speed_gbps = (speed_bps * 8) / 1e9  # 10^9 bits per second
 
-            info('=== Throughput Test Results (curl built-in, unlimited) ===\n')
+            info('=== Throughput Test Results (curl full-file download) ===\n')
+            info(f'Total Time  : {duration_s:.2f} s\n')
             info(f'Average Speed: {speed_bps:,.2f} bytes/sec\n')
             info(f'Average Speed: {speed_kbps:,.2f} KB/s\n')
             info(f'Average Speed: {speed_mbps:,.2f} MB/s\n')
@@ -127,7 +125,7 @@ def run_throughput_test(client_host, server_ip: str, test_duration: int = 30):
 def main():
     setLogLevel('info')
 
-    hop_counts = [2, 6, 10]
+    hop_counts = [4, 6, 10, 15, 20, 25, 30, 40]
     # Use a longer duration for a more stable measurement
     duration = 30  # seconds per test
 
