@@ -298,7 +298,7 @@ pub async fn setup_veth_peer(
     Ok(())
 }
 
-pub async fn delete_namespace(bridge_idx: u32, veth_idx: u32) -> Result<(), NetworkError> {
+pub async fn delete_namespace(bridge_idx: u32, veth_idxs: Vec<u32>) -> Result<(), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
@@ -308,10 +308,11 @@ pub async fn delete_namespace(bridge_idx: u32, veth_idx: u32) -> Result<(), Netw
             bridge_idx, e
         ))
     })?;
-
-    handle.link().del(veth_idx).execute().await.map_err(|e| {
-        NetworkError::OperationError(format!("delet veth with idx {} failed: {}", veth_idx, e))
-    })?;
+    for veth_idx in veth_idxs {
+        handle.link().del(veth_idx).execute().await.map_err(|e| {
+            NetworkError::OperationError(format!("delet veth with idx {} failed: {}", veth_idx, e))
+        })?;
+    }
 
     Ok(())
 }
