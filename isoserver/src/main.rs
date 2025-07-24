@@ -52,7 +52,7 @@ fn main() {
     // Keep child pids and stacks alive while children run
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
     let mut veth_idxs = Vec::new();
-    let mut bridge_idx = 37;
+    let mut bid = 37;
 
     for ns_ip in ns_ips {
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
@@ -64,6 +64,8 @@ fn main() {
                 cfg.subnet,
             ))
             .expect("Failed to prepare network");
+
+        bid = bridge_idx;
 
         // stores the namespace index for cleanup
         veth_idxs.push(veth_idx);
@@ -117,7 +119,11 @@ fn main() {
     });
 
     // cleans up the namespaces
-    rt.block_on(async { delete_namespace(bridge_idx, veth_idxs) })
+    rt.block_on(async {
+        if let Err(e) = delete_namespace(bid, veth_idxs).await {
+            error!("{}", e);
+        }
+    });
 }
 
 // the child process to be executed within main
