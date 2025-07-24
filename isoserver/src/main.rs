@@ -6,12 +6,11 @@ use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
 
 use crate::config::Config;
-use crate::net::{join_veth_to_ns, prepare_net, setup_veth_peer};
+use crate::net::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer};
 use log::{error, info, warn};
 use nix::sched::*;
 use nix::sys::signal::Signal;
-use nix::sys::wait::{waitpid, WaitStatus};
-use std::{thread, time};
+use std::{net::Ipv4Addr, thread, time};
 
 const STACK_SIZE: usize = 1024 * 1024;
 
@@ -42,20 +41,19 @@ fn main() {
 
     // Pre-compute namespace IPs (inlined)
     let ns_ips: Vec<String> = {
-        use std::net::Ipv4Addr;
-        let base: Ipv4Addr = cfg.bridge_ip.parse().expect("Failed to parse bridge IP");
-        let base_u32: u32 = base.into();
-        (1..=cfg.n_nodes)
-            .map(|offset| Ipv4Addr::from(base_u32 + offset + 2).to_string())
+        let base: u32 = cfg.bridge_ip.parse().unwrap().into();
+        (3..=cfg.n_nodes + 2)
+            .map(|offset| Ipv4Addr::from(base + offset).to_string())
             .collect()
     };
 
     // Keep child pids and stacks alive while children run
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
+    let mut ns_idx = Vec::new();
 
-    for (i, ns_ip) in ns_ips.iter().enumerate() {
+    for ns_ip in ns_ips {
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
-        let (_, _, veth2_idx) = rt
+        let (bridge_idx, veth_idx, veth2_idx) = rt
             .block_on(prepare_net(
                 cfg.bridge_name.clone(),
                 node_cfg.private_network_interface.clone(),
@@ -64,8 +62,8 @@ fn main() {
             ))
             .expect("Failed to prepare network");
 
-        // set the node id
-        node_cfg.node_id = i;
+        // stores the namespace index for cleanup
+        ns_idx.push((bridge_idx, veth_idx));
 
         // prepare child process
         let cb = Box::new(|| c_process(node_cfg.clone(), ns_ip.clone(), cfg.subnet, veth2_idx));
@@ -96,12 +94,24 @@ fn main() {
         thread::sleep(time::Duration::from_millis(200));
     }
 
-    // keeps the main thread alive until manually killed.
+    // keeps the main thread alive.
     rt.block_on(async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for Ctrl+C");
+        match tokio::signal::ctrl_c().await {
+            Ok(_) => {
+                info!("Ctrl+C received, shutting down...");
+            }
+            Err(e) => {
+                error!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
     });
+
+    // cleans up the namespaces
+    for (bridge_idx, veth_idx) in ns_idx {
+        rt.block_on(async {
+            delete_namespace(bridge_idx, veth_idx).await;
+        });
+    }
 }
 
 // the child process to be executed within main

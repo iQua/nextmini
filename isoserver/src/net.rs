@@ -2,8 +2,7 @@ use crate::string_helpers::random_suffix;
 use futures::TryStreamExt;
 use log::info;
 use rtnetlink::{new_connection, AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth};
-use std::fmt;
-use std::{net::Ipv4Addr, str::FromStr};
+use std::{fmt, net::Ipv4Addr, str::FromStr};
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -295,6 +294,24 @@ pub async fn setup_veth_peer(
                 lo_idx, e
             ))
         })?;
+
+    Ok(())
+}
+
+pub async fn delete_namespace(bridge_idx: u32, veth_idx: u32) -> Result<(), NetworkError> {
+    let (connection, handle, _) = new_connection()?;
+    tokio::spawn(connection);
+
+    handle.link().del(bridge_idx).execute().await.map_err(|e| {
+        NetworkError::OperationError(format!(
+            "delet bridge with idx {} failed: {}",
+            bridge_idx, e
+        ))
+    })?;
+
+    handle.link().del(veth_idx).execute().await.map_err(|e| {
+        NetworkError::OperationError(format!("delet veth with idx {} failed: {}", veth_idx, e))
+    })?;
 
     Ok(())
 }
