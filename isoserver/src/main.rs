@@ -14,12 +14,6 @@ use std::{net::Ipv4Addr, thread, time};
 
 const STACK_SIZE: usize = 1024 * 1024;
 
-// BUGS/OPTIMIZATIONS:
-// The bug is revolving how to shutdown the child processes gracefully and clean up the resources
-// 1. Now the bridge name and ip are not dropped, and they exist even after the program exits
-// 2. The child processes monitor logic can be optimized
-// (tokio block_on and tokio main conflict, main should not be async)
-
 fn main() {
     tracing_subscriber::fmt::fmt() 
         .init();
@@ -35,12 +29,6 @@ fn main() {
         _ => format!("ws://{}", cfg.controller_addr),
     };
     info!("Controller address set to {}", controller_addr);
-
-    // pending optimization
-    // obtain the private network interface here
-    let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
-    let node_cfg = LocalConfig::new_for_namespace(node_config_path, &controller_addr, &cfg.bridge_ip);
-    let private_network_interface = node_cfg.private_network_interface.clone();
 
     // Pre-compute namespace IPs (inlined)
     let ns_ips: Vec<String> = {
@@ -61,7 +49,6 @@ fn main() {
                 cfg.bridge_name.clone(),
                 &cfg.bridge_ip,
                 cfg.subnet,
-                private_network_interface.clone(),
             ))
             .expect("Failed to prepare network");
 
@@ -74,7 +61,6 @@ fn main() {
                 cfg.subnet,
                 veth2_idx,
                 controller_addr.clone(),
-                private_network_interface.clone(),
             )
         });
 
@@ -130,7 +116,6 @@ fn c_process(
     subnet: u8,
     veth_peer_idx: u32,
     controller_addr: String,
-    if_name: String,
 ) -> isize {
     info!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
@@ -140,7 +125,7 @@ fn c_process(
     // Spawn a new blocking task on the current runtime
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
-        setup_veth_peer(veth_peer_idx, &ns_ip, subnet, if_name).await?;
+        setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
         execute(&controller_addr, ns_ip).await
     });
 

@@ -48,7 +48,6 @@ pub async fn prepare_net(
     bridge_name: String,
     bridge_ip: &str,
     subnet: u8,
-    if_name: String,
 ) -> Result<(u32, u32, u32), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
@@ -64,7 +63,7 @@ pub async fn prepare_net(
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
     };
 
-    let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx, if_name).await?;
+    let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx).await?;
     Ok((bridge_idx, veth_idx, veth2_idx))
 }
 
@@ -140,13 +139,13 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
     Ok(bridge_idx)
 }
 
-async fn create_veth_pair(bridge_idx: u32, if_name: String) -> Result<(u32, u32), NetworkError> {
+async fn create_veth_pair(bridge_idx: u32) -> Result<(u32, u32), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
     // create veth interfaces
     let veth: String = format!("veth{}", random_suffix(4));
-    let veth_2: String = if_name;
+    let veth_2: String = format!("veth{}", random_suffix(4));
 
     handle
         .link()
@@ -243,7 +242,6 @@ pub async fn setup_veth_peer(
     veth_idx: u32,
     ns_ip: &String,
     subnet: u8,
-    if_name: String,
 ) -> Result<(), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
@@ -293,30 +291,6 @@ pub async fn setup_veth_peer(
             NetworkError::OperationError(format!(
                 "set lo interface with idx {} to up failed: {}",
                 lo_idx, e
-            ))
-        })?;
-    
-    // set net interface to up
-    let net_idx = handle
-        .link()
-        .get()
-        .match_name(if_name)
-        .execute()
-        .try_next()
-        .await?
-        .ok_or_else(|| NetworkError::OperationError("failed to get net index".to_string()))?
-        .header
-        .index;
-
-    handle
-        .link()
-        .set(LinkUnspec::new_with_index(net_idx).up().build())
-        .execute()
-        .await
-        .map_err(|e| {
-            NetworkError::OperationError(format!(
-                "set net interface with idx {} to up failed: {}",
-                net_idx, e
             ))
         })?;
 
