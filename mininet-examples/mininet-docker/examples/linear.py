@@ -8,7 +8,7 @@ Each test creates a linear topology with the specified number of hops.
 
 from mininet.topo import Topo
 from mininet.net import Mininet
-from mininet.node import CPULimitedHost, OVSBridge, OVSController
+from mininet.node import CPULimitedHost, OVSBridge, OVSController, UserSwitch
 from mininet.link import TCLink
 from mininet.util import dumpNodeConnections
 from mininet.log import setLogLevel, info
@@ -100,7 +100,7 @@ def run_perf_test(hops):
 def multi_hop_performance_test():
     """Run performance tests across multiple hop counts"""
     # Test different hop counts: 1, 4, 7, 10, 13, 16, 19, 21
-    hop_counts = [1, 4, 7, 10, 13, 16, 19, 21]
+    hop_counts = [2, 3, 4, 7, 10, 13, 16, 19, 21]
 
     info("*** Starting multi-hop performance testing\n")
     info("*** Testing hop counts: %s\n" % str(hop_counts))
