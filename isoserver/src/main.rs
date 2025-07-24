@@ -1,13 +1,13 @@
 mod config;
-mod handler;
 mod net;
 mod string_helpers;
 
+use nextmini::node::conductor::Conductor;
+use nextmini::node::config::LocalConfig;
+
 use crate::config::Config;
-use crate::handler::execute;
 use crate::net::{join_veth_to_ns, prepare_net, setup_veth_peer};
 use log::{error, info, warn};
-use nextmini::node::config::LocalConfig;
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::sys::wait::{waitpid, WaitStatus};
@@ -24,7 +24,9 @@ const STACK_SIZE: usize = 1024 * 1024;
 fn main() {
     env_logger::init();
 
-    // load the config for the namespace nodes
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+
+    // load node and net configs
     let cfg = Config::new();
 
     let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
@@ -38,14 +40,17 @@ fn main() {
     }
     info!("Controller address set to {}", node_cfg.controller_addr);
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-
-    // Pre-compute namespace IPs
-    let ns_ips =
-        generate_ns_ips(&cfg.bridge_ip, cfg.n_nodes).expect("Failed to generate namespace IPs");
+    // Pre-compute namespace IPs (inlined)
+    let ns_ips: Vec<String> = {
+        use std::net::Ipv4Addr;
+        let base: Ipv4Addr = cfg.bridge_ip.parse().expect("Failed to parse bridge IP");
+        let base_u32: u32 = base.into();
+        (1..=cfg.n_nodes)
+            .map(|offset| Ipv4Addr::from(base_u32 + offset + 2).to_string())
+            .collect()
+    };
 
     // Keep child pids and stacks alive while children run
-    let mut child_pids = Vec::new();
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
 
     for (i, ns_ip) in ns_ips.iter().enumerate() {
@@ -89,31 +94,17 @@ fn main() {
         });
 
         thread::sleep(time::Duration::from_millis(200));
-
-        child_pids.push(child_pid);
     }
 
-    // Wait for every child
-    for pid in child_pids {
-        match waitpid(pid, None) {
-            Ok(WaitStatus::Exited(cpid, status)) => {
-                warn!(
-                    "Child process (PID: {}) exited with status: {}",
-                    cpid, status
-                );
-            }
-            Ok(WaitStatus::Signaled(cpid, signal, _)) => {
-                warn!(
-                    "Child process (PID: {}) was killed by signal: {:?}",
-                    cpid, signal
-                );
-            }
-            Err(e) => error!("waitpid failed: {}", e),
-            _ => error!("Error: Unexpected waitpid result"),
-        }
-    }
+    // keeps the main thread alive until manually killed.
+    rt.block_on(async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl+C");
+    });
 }
 
+// the child process to be executed within main
 fn c_process(node_cfg: LocalConfig, ns_ip: String, subnet: u8, veth_peer_idx: u32) -> isize {
     info!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
@@ -124,7 +115,11 @@ fn c_process(node_cfg: LocalConfig, ns_ip: String, subnet: u8, veth_peer_idx: u3
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
-        execute(node_cfg).await
+
+        // start the conductor
+        let conductor = Conductor::new_for_namespace(node_cfg).await;
+        conductor.run().await;
+        Ok(())
     });
 
     if let Err(e) = process {
@@ -134,13 +129,4 @@ fn c_process(node_cfg: LocalConfig, ns_ip: String, subnet: u8, veth_peer_idx: u3
 
     info!("Child process finished??");
     0
-}
-
-fn generate_ns_ips(base_ip: &str, n: u32) -> Result<Vec<String>, std::net::AddrParseError> {
-    use std::net::Ipv4Addr;
-    let base: Ipv4Addr = base_ip.parse()?;
-    let base_u32: u32 = base.into();
-    Ok((1..=n)
-        .map(|offset| Ipv4Addr::from(base_u32 + offset + 2).to_string())
-        .collect())
 }
