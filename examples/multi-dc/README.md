@@ -61,6 +61,7 @@ sudo docker-compose -f controller-standalone.yml up -d
 ```
 
 If in DigitalOcean, simply use:
+
 ```bash
 docker compose -f controller-standalone.yml up
 ```
@@ -76,6 +77,7 @@ to see if controller and postgres are created successfully.
 # Set up the dataplane nodes in manager and worker instance
 
 In each of the dataplane nodes' instance, you should follow the steps to set up the dataplane nodes.
+
 ```bash
 docker build -t nextmini_datapath -f ../../dataplane/Dockerfile ../../
 ```
@@ -89,6 +91,7 @@ docker swarm init --advertise-addr 129.212.176.245
 ```
 
 This command can be used to see the token for joining the worker nodes:
+
 ```bash
 docker swarm join-token worker
 ```
@@ -157,11 +160,13 @@ sudo docker-compose -f controller-standalone.yml down
 ## Scaling
 
 Add more dataplane nodes:
+
 ```bash
 docker service update --replicas 7 nextmini_dataplane
 ```
 
 Update controller config:
+
 ```toml
 [topology]
 n_nodes = 7
@@ -174,7 +179,7 @@ docker service update \
   --replicas 4 \
   --constraint-add 'node.hostname==<ubuntu-atl>' \
  nextmini_dataplane
- ```
+```
 
 ### iperf test
 

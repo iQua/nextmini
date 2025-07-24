@@ -1,0 +1,20 @@
+# Use the official Rust image, which includes Rust, Cargo, and a Debian-based OS.
+FROM rust:latest
+
+# Set the working directory.
+WORKDIR /app
+
+# Copy the Cargo configuration files.
+# Copying lock file is a best practice for reproducible builds.
+COPY Cargo.toml ./
+
+# Copy the source code.
+COPY src ./src
+
+# Build the server binary using Cargo.
+# This will handle dependencies like tokio and tracing automatically.
+RUN cargo build --release --bin server
+
+# Set the command to run when the container starts.
+# The binary is located in the target/release directory.
+CMD ["/app/target/release/server"] 
