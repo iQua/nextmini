@@ -481,15 +481,13 @@ impl LocalConfig {
     }
 
     /// initialize the config for the namespace nodes
-    pub fn new_for_namespace(config_path: &str) -> LocalConfig {
+    pub fn new_for_namespace(config_path: &str, controller_addr: &str) -> LocalConfig {
         // Reads the TOML configuration file (or falls back to defaults).
         let mut cfgs = match std::fs::read_to_string(config_path) {
             Ok(content) => match toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
                 Ok(opts) => LocalConfig::from(opts),
                 Err(e) => {
-                    info!(
-                        "Failed to parse config file (with error: {e}), using default values."
-                    );
+                    info!("Failed to parse config file (with error: {e}), using default values.");
                     LocalConfig::from(<LocalConfig as ClapSerde>::Opt::default())
                 }
             },
@@ -502,7 +500,7 @@ impl LocalConfig {
         };
 
         // Placeholder – caller (e.g. isoserver) should overwrite this.
-        cfgs.controller_addr = "UNASSIGNED".to_string();
+        cfgs.controller_addr = controller_addr.to_string();
 
         if cfgs.private_network_addr.is_empty() {
             let itf_name = cfgs.private_network_interface.clone();

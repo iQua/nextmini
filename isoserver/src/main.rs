@@ -28,16 +28,18 @@ fn main() {
     // load node and net configs
     let cfg = Config::new();
 
-    let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
-    let mut node_cfg = LocalConfig::new_for_namespace(node_config_path);
-
     // Set the controller address to the bridge IP if it's running on the host
-    if cfg.controller_addr == "127.0.0.1:3000" {
-        node_cfg.controller_addr = format!("ws://{}:3000", cfg.bridge_ip);
-    } else {
-        node_cfg.controller_addr = format!("ws://{}", cfg.controller_addr);
-    }
-    info!("Controller address set to {}", node_cfg.controller_addr);
+    let controller_addr: String = match cfg.controller_addr {
+        "127.0.0.1:3000" => format!("ws://{}:3000", cfg.bridge_ip),
+        _ => format!("ws://{}", cfg.controller_addr),
+    };
+    info!("Controller address set to {}", controller_addr);
+
+    // pending optimization
+    // obtain the private network interface here
+    let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
+    let node_cfg = LocalConfig::new_for_namespace(node_config_path, controller_addr);
+    let private_network_interface = node_cfg.private_network_interface.clone();
 
     // Pre-compute namespace IPs (inlined)
     let ns_ips: Vec<String> = {
@@ -56,7 +58,7 @@ fn main() {
         let (bridge_idx, veth_idx, veth2_idx) = rt
             .block_on(prepare_net(
                 cfg.bridge_name.clone(),
-                node_cfg.private_network_interface.clone(),
+                private_network_interface,
                 &cfg.bridge_ip,
                 cfg.subnet,
             ))
@@ -66,7 +68,7 @@ fn main() {
         ns_idx.push((bridge_idx, veth_idx));
 
         // prepare child process
-        let cb = Box::new(|| c_process(node_cfg.clone(), ns_ip.clone(), cfg.subnet, veth2_idx));
+        let cb = Box::new(|| c_process(ns_ip.clone(), cfg.subnet, veth2_idx, controller_addr));
 
         let mut tmp_stack: Box<[u8; STACK_SIZE]> = Box::new([0; STACK_SIZE]);
         let child_pid = unsafe {
@@ -115,7 +117,7 @@ fn main() {
 }
 
 // the child process to be executed within main
-fn c_process(node_cfg: LocalConfig, ns_ip: String, subnet: u8, veth_peer_idx: u32) -> isize {
+fn c_process(ns_ip: String, subnet: u8, veth_peer_idx: u32, controller_addr: String) -> isize {
     info!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
     let ns_hostname = format!("isoserver-{}", string_helpers::random_suffix(5));
@@ -125,6 +127,10 @@ fn c_process(node_cfg: LocalConfig, ns_ip: String, subnet: u8, veth_peer_idx: u3
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
+
+        // read config file
+        let node_config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
+        let node_cfg = LocalConfig::new_for_namespace(node_config_path, controller_addr);
 
         // start the conductor
         let conductor = Conductor::new_for_namespace(node_cfg).await;
