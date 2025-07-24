@@ -7,7 +7,7 @@ use nextmini::node::config::LocalConfig;
 
 use crate::config::Config;
 use crate::net::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer};
-use log::{error, info};
+use tracing::{error, info};
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use std::{net::Ipv4Addr, thread, time};
@@ -21,7 +21,7 @@ const STACK_SIZE: usize = 1024 * 1024;
 // (tokio block_on and tokio main conflict, main should not be async)
 
 fn main() {
-    env_logger::init();
+    tracing_subscriber::fmt::init();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 

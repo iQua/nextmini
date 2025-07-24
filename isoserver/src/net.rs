@@ -1,6 +1,6 @@
 use crate::string_helpers::random_suffix;
 use futures::TryStreamExt;
-use log::info;
+use tracing::info;
 use rtnetlink::{new_connection, AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth};
 use std::{fmt, net::Ipv4Addr, str::FromStr};
 
