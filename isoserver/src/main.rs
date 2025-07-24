@@ -52,7 +52,7 @@ fn main() {
     // Keep child pids and stacks alive while children run
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
     let mut veth_idxs = Vec::new();
-    let mut brdige_idx = 37;
+    let mut bridge_idx = 37;
 
     for ns_ip in ns_ips {
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
@@ -117,7 +117,7 @@ fn main() {
     });
 
     // cleans up the namespaces
-    rt.blocj_on(async { delete_namespace(bridge_idx, veth_idxs) })
+    rt.block_on(async { delete_namespace(bridge_idx, veth_idxs) })
 }
 
 // the child process to be executed within main
