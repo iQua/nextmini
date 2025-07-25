@@ -5,8 +5,6 @@ node_id = 2
 public_network_interface = "eth0"
 
 
-# public_network_port = "9090"
-
 public_network_addr = "165.232.149.19"
 
 private_network_name = "vm2-private"
@@ -18,3 +16,17 @@ num_packet_processors = 1
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
+
+
+# The config which could be used in Arbutus.
+
+# node_id = 2
+# public_network_interface = "ens3"
+# private_network_name = "vm2-private"
+# private_network_interface = "ens3"
+
+# num_tun_queues = 1
+# num_packet_processors = 1
+# channel_capacity = 4000
+# queue_capacity = 3000
+# feature = "concurrent"
