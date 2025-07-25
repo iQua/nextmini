@@ -1,7 +1,6 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
-use tokio::sync::mpsc;
 use tracing::info;
 
 use nextmini_messages::Protocol;
@@ -26,13 +25,10 @@ pub struct Conductor {
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
-
-    /// used by the main tokio task to shutdown the conductor
-    main_shutdown_recv: Option<mpsc::UnboundedReceiver<()>>,
 }
 
 impl Conductor {
-    pub async fn new(main_shutdown_recv: mpsc::UnboundedReceiver<()>) -> Self {
+    pub async fn new() -> Self {
         let mut config = LocalConfig::new();
 
         // connects the processors with its downstream local interface writers to send packets out
@@ -50,22 +46,36 @@ impl Conductor {
             local_interface,
             processors,
             reporter,
-            main_shutdown_recv: Some(main_shutdown_recv),
         }
     }
 
-    pub async fn run(&mut self) {
-        let mut main_shutdown_recv = self.main_shutdown_recv.take().unwrap();
+    pub async fn new_for_namespace(config: LocalConfig) -> Self {
+        // connects the processors with its downstream local interface writers to send packets out
+        let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
 
-        tokio::select! {
-            _ = self.start() => {
-                // At this point, the conductor actor has finished normally
-            }
-            _ = main_shutdown_recv.recv() => {
-                // handles the shutdown signal from the main tokio task
-                self.shutdown().await;
-            },
+        let config = controller_interface.config.clone();
+        let processors = controller_interface.processors.clone();
+
+        let local_interface: LocalInterfaceHandle =
+            LocalInterfaceHandle::new(config.clone(), processors.clone());
+        processors.connect_local_interface(local_interface.clone());
+
+        Conductor {
+            config,
+            local_interface,
+            processors,
+            reporter,
         }
+    }
+
+    pub async fn run(&self) {
+        self.start().await;
+
+        // At this point, the conductor actor has finished normally
+        info!("Nextmini is shutting down...");
+
+        // handle the shutdown logic
+        self.local_interface.shutdown().await;
     }
 
     /// Starts the server and, if needed, listens for incoming connections.
@@ -156,11 +166,5 @@ impl Conductor {
                 }
             }
         }
-    }
-
-    pub async fn shutdown(&self) {
-        info!("Nextmini is shutting down...");
-
-        self.local_interface.shutdown().await;
     }
 }

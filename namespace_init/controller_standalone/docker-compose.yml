@@ -1,0 +1,49 @@
+networks:
+  network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 170.16.8.0/24
+
+services:
+  postgres:
+    container_name: postgres
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      network:
+        ipv4_address: 170.16.8.2
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+  controller:
+    container_name: controller
+    hostname: controller
+    image: nextmini_controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    networks:
+      network:
+        ipv4_address: 170.16.8.3
+    stdin_open: true
+    volumes:
+      - ./controller-config.toml:/var/nextmini/config.toml
+    depends_on:
+      - postgres
+    ports:
+      - 3000:3000
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
