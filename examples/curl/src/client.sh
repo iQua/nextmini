@@ -3,7 +3,7 @@
 sleep 30
 
 SOCKS_PROXY=172.16.8.5:8081
-TARGET=http://172.16.8.15:8080/large_test.dat
+TARGET=http://172.16.8.10:8080/large_test.dat
 
 echo "Starting curl throughput test (unlimited duration)..."
 echo "Target: $TARGET"

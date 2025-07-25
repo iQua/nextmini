@@ -2,17 +2,17 @@ protocol = "tcp"
 
 # Three Netxmini dataplane nodes in the topology
 [topology]
-n_nodes = 3
+n_nodes = 5
 
 [[routes]]
 # node 1 represents the external client
 # node 5 represents the internal server
-route = [1, 2, 3, 4, 5]
+route = [1, 2, 3, 4, 5, 6, 7]
 
 [[routes]]
 # node 1 represents the external client
 # node 5 represents the internal server
-route = [5, 4, 3, 2, 1]
+route = [1, 2, 3, 4, 5, 6, 7]
 
 # if you wish to test ping and iperf, you can uncomment the following lines
 # [[nodes]]
@@ -31,7 +31,7 @@ route = [5, 4, 3, 2, 1]
 
 # if you wish to test ping and iperf, you can uncomment the following lines
 # [[routes]]
-# route = [2, 3, 4]
+# route = [1, 2, 3, 4, 5, 6, 7]
 
 # [[routes]]
-# route = [4, 3, 2]
+# route = [1, 2, 3, 4, 5, 6, 7]

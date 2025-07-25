@@ -1,8 +1,8 @@
-# Example: Curl Command
+# How to test
 
 To run this example which only uses the single machine,
 
-enter the follwowing commands:
+enter the follwowing commands first:
 ```bash
 cd examples/curl
 
@@ -10,6 +10,16 @@ docker compose build; docker compose up
 ```
 
 Then wait for 30s to see the output of the curl command.
+
+However, before using the `docker` command, you should use `nodes.py` to generate the correct `docker-compose.yml`,  `client.sh`, and `controller-config.toml` file.
+
+For example, if you want to use four hops, you could enter:
+
+```bash
+python nodes.py -n 3
+```
+
+which would generate 4 nodes between the external client and server.
 
 ### Logs
 
