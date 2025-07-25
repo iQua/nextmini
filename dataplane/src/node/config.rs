@@ -479,4 +479,54 @@ impl LocalConfig {
             }
         }
     }
+
+    /// initialize the config for the namespace nodes
+    pub fn new_for_namespace(config_path: &str, controller_addr: &str, ns_addr: &str) -> LocalConfig {
+        // Reads the TOML configuration file (or falls back to defaults).
+        let mut cfgs = match std::fs::read_to_string(config_path) {
+            Ok(content) => match toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
+                Ok(opts) => LocalConfig::from(opts),
+                Err(e) => {
+                    info!("Failed to parse config file (with error: {e}), using default values.");
+                    LocalConfig::from(<LocalConfig as ClapSerde>::Opt::default())
+                }
+            },
+            Err(e) => {
+                info!(
+                    "Failed to read the config file '{config_path}' (with error: {e}), using default values."
+                );
+                LocalConfig::from(<LocalConfig as ClapSerde>::Opt::default())
+            }
+        };
+
+        // manually set set namespace node's ip addresses
+        cfgs.private_network_addr = ns_addr.to_string();
+        cfgs.public_network_addr = ns_addr.to_string();
+
+        // calculate the node_id
+        if let Ok(real_ip) = ns_addr.parse::<Ipv4Addr>() {
+            let ip = u32::from(real_ip);
+            let base = u32::from(cfgs.external_base_addr);
+            let computed_node_id = (ip - base) as NodeId;
+
+            if computed_node_id != 0 {
+                cfgs.node_id = computed_node_id;
+            } else {
+                info!(
+                    "Computed node_id is 0 from ns_addr {ns_addr}; keeping the default value."
+                );
+            }
+        } else {
+            error!("Failed to parse ns_addr '{ns_addr}' as IPv4");
+        }
+
+        // Placeholder – caller (e.g. isoserver) should overwrite this.
+        cfgs.controller_addr = controller_addr.to_string();
+
+        if cfgs.num_packet_processors == 0 {
+            cfgs.num_packet_processors = num_cpus::get();
+        }
+
+        cfgs
+    }
 }

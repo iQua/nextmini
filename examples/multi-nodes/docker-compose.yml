@@ -1,0 +1,2449 @@
+networks:
+    network:
+        driver: bridge
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.16.8.0/24
+
+services:
+    postgres:
+        container_name: postgres
+        image: postgres:alpine
+        hostname: postgres
+        environment:
+            POSTGRES_USER: pgusr
+            POSTGRES_PASSWORD: pgpwrd
+            POSTGRES_DB: nextmini
+        ports:
+            - "5432:5432"
+        healthcheck:
+            test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+            interval: 5s
+            timeout: 3s
+            retries: 30
+        networks:
+            network:
+                ipv4_address: 172.16.8.2
+        volumes:
+            - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+        restart: unless-stopped
+
+    controller:
+        container_name: controller
+        hostname: controller
+        image: nextmini_controller
+        build:
+            context: ../../
+            dockerfile: ./controller/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.3
+        stdin_open: true
+        volumes:
+            - ./controller-config.toml:/var/nextmini/config.toml
+        depends_on:
+            - postgres
+        ports:
+            - 3000:3000
+        command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+
+
+    node1:
+        container_name: node1
+        hostname: node1
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.4
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node2:
+        container_name: node2
+        hostname: node2
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.5
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node1
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node3:
+        container_name: node3
+        hostname: node3
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.6
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node2
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node4:
+        container_name: node4
+        hostname: node4
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.7
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node3
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node5:
+        container_name: node5
+        hostname: node5
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.8
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node4
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node6:
+        container_name: node6
+        hostname: node6
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.9
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node5
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node7:
+        container_name: node7
+        hostname: node7
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.10
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node6
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node8:
+        container_name: node8
+        hostname: node8
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.11
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node7
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node9:
+        container_name: node9
+        hostname: node9
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.12
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node8
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node10:
+        container_name: node10
+        hostname: node10
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.13
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node9
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node11:
+        container_name: node11
+        hostname: node11
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.14
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node10
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node12:
+        container_name: node12
+        hostname: node12
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.15
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node11
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node13:
+        container_name: node13
+        hostname: node13
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.16
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node12
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node14:
+        container_name: node14
+        hostname: node14
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.17
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node13
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node15:
+        container_name: node15
+        hostname: node15
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.18
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node14
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node16:
+        container_name: node16
+        hostname: node16
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.19
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node15
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node17:
+        container_name: node17
+        hostname: node17
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.20
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node16
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node18:
+        container_name: node18
+        hostname: node18
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.21
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node17
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node19:
+        container_name: node19
+        hostname: node19
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.22
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node18
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node20:
+        container_name: node20
+        hostname: node20
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.23
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node19
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node21:
+        container_name: node21
+        hostname: node21
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.24
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node20
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node22:
+        container_name: node22
+        hostname: node22
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.25
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node21
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node23:
+        container_name: node23
+        hostname: node23
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.26
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node22
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node24:
+        container_name: node24
+        hostname: node24
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.27
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node23
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node25:
+        container_name: node25
+        hostname: node25
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.28
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node24
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node26:
+        container_name: node26
+        hostname: node26
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.29
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node25
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node27:
+        container_name: node27
+        hostname: node27
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.30
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node26
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node28:
+        container_name: node28
+        hostname: node28
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.31
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node27
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node29:
+        container_name: node29
+        hostname: node29
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.32
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node28
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node30:
+        container_name: node30
+        hostname: node30
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.33
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node29
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node31:
+        container_name: node31
+        hostname: node31
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.34
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node30
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node32:
+        container_name: node32
+        hostname: node32
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.35
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node31
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node33:
+        container_name: node33
+        hostname: node33
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.36
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node32
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node34:
+        container_name: node34
+        hostname: node34
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.37
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node33
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node35:
+        container_name: node35
+        hostname: node35
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.38
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node34
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node36:
+        container_name: node36
+        hostname: node36
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.39
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node35
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node37:
+        container_name: node37
+        hostname: node37
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.40
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node36
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node38:
+        container_name: node38
+        hostname: node38
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.41
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node37
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node39:
+        container_name: node39
+        hostname: node39
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.42
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node38
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node40:
+        container_name: node40
+        hostname: node40
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.43
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node39
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node41:
+        container_name: node41
+        hostname: node41
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.44
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node40
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node42:
+        container_name: node42
+        hostname: node42
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.45
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node41
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node43:
+        container_name: node43
+        hostname: node43
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.46
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node42
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node44:
+        container_name: node44
+        hostname: node44
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.47
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node43
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node45:
+        container_name: node45
+        hostname: node45
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.48
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node44
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node46:
+        container_name: node46
+        hostname: node46
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.49
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node45
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node47:
+        container_name: node47
+        hostname: node47
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.50
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node46
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node48:
+        container_name: node48
+        hostname: node48
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.51
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node47
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node49:
+        container_name: node49
+        hostname: node49
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.52
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node48
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node50:
+        container_name: node50
+        hostname: node50
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.53
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node49
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node51:
+        container_name: node51
+        hostname: node51
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.54
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node50
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node52:
+        container_name: node52
+        hostname: node52
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.55
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node51
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node53:
+        container_name: node53
+        hostname: node53
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.56
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node52
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node54:
+        container_name: node54
+        hostname: node54
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.57
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node53
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node55:
+        container_name: node55
+        hostname: node55
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.58
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node54
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node56:
+        container_name: node56
+        hostname: node56
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.59
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node55
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node57:
+        container_name: node57
+        hostname: node57
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.60
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node56
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node58:
+        container_name: node58
+        hostname: node58
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.61
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node57
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node59:
+        container_name: node59
+        hostname: node59
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.62
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node58
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node60:
+        container_name: node60
+        hostname: node60
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.63
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node59
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node61:
+        container_name: node61
+        hostname: node61
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.64
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node60
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node62:
+        container_name: node62
+        hostname: node62
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.65
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node61
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node63:
+        container_name: node63
+        hostname: node63
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.66
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node62
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node64:
+        container_name: node64
+        hostname: node64
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.67
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node63
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node65:
+        container_name: node65
+        hostname: node65
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.68
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node64
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node66:
+        container_name: node66
+        hostname: node66
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.69
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node65
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node67:
+        container_name: node67
+        hostname: node67
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.70
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node66
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node68:
+        container_name: node68
+        hostname: node68
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.71
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node67
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node69:
+        container_name: node69
+        hostname: node69
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.72
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node68
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node70:
+        container_name: node70
+        hostname: node70
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.73
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node69
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node71:
+        container_name: node71
+        hostname: node71
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.74
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node70
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node72:
+        container_name: node72
+        hostname: node72
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.75
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node71
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node73:
+        container_name: node73
+        hostname: node73
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.76
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node72
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node74:
+        container_name: node74
+        hostname: node74
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.77
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node73
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node75:
+        container_name: node75
+        hostname: node75
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.78
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node74
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node76:
+        container_name: node76
+        hostname: node76
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.79
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node75
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node77:
+        container_name: node77
+        hostname: node77
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.80
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node76
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node78:
+        container_name: node78
+        hostname: node78
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.81
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node77
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node79:
+        container_name: node79
+        hostname: node79
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.82
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node78
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node80:
+        container_name: node80
+        hostname: node80
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.83
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node79
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node81:
+        container_name: node81
+        hostname: node81
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.84
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node80
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node82:
+        container_name: node82
+        hostname: node82
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.85
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node81
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node83:
+        container_name: node83
+        hostname: node83
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.86
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node82
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node84:
+        container_name: node84
+        hostname: node84
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.87
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node83
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node85:
+        container_name: node85
+        hostname: node85
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.88
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node84
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node86:
+        container_name: node86
+        hostname: node86
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.89
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node85
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node87:
+        container_name: node87
+        hostname: node87
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.90
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node86
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node88:
+        container_name: node88
+        hostname: node88
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.91
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node87
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node89:
+        container_name: node89
+        hostname: node89
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.92
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node88
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node90:
+        container_name: node90
+        hostname: node90
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.93
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node89
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node91:
+        container_name: node91
+        hostname: node91
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.94
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node90
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node92:
+        container_name: node92
+        hostname: node92
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.95
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node91
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node93:
+        container_name: node93
+        hostname: node93
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.96
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node92
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node94:
+        container_name: node94
+        hostname: node94
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.97
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node93
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node95:
+        container_name: node95
+        hostname: node95
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.98
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node94
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node96:
+        container_name: node96
+        hostname: node96
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.99
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node95
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node97:
+        container_name: node97
+        hostname: node97
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.100
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node96
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node98:
+        container_name: node98
+        hostname: node98
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.101
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node97
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node99:
+        container_name: node99
+        hostname: node99
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.102
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node98
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+
+    node100:
+        container_name: node100
+        hostname: node100
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.103
+        stdin_open: true
+        privileged: true
+        # environment:
+        #   - RUST_LOG=debug
+        volumes:
+            - ./config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        depends_on:
+            - controller
+            - node99
+        cap_add:
+            - NET_ADMIN
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"

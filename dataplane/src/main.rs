@@ -11,7 +11,6 @@ mod tests;
 use std::error::Error;
 
 use tokio::signal;
-use tokio::sync::mpsc;
 use tokio_util::task::task_tracker::TaskTracker;
 
 use tracing::info;
@@ -22,15 +21,12 @@ use node::conductor::Conductor;
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
-    // A channel for the main tokio task to signal a shutdown signal to the Conductor actor.
-    let (shutdown_sender, shutdown_receiver) = mpsc::unbounded_channel();
-
     // creates a TaskTracker to manage graceful shutdowns
     let tracker = TaskTracker::new();
 
     // Spawn the Conductor task with the receiver
     tracker.spawn(async move {
-        let mut conductor = Conductor::new(shutdown_receiver).await;
+        let conductor = Conductor::new().await;
         conductor.run().await;
     });
 
@@ -42,7 +38,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         _ = signal::ctrl_c() => {
             info!("Received Ctrl + C. Shutting down Nextmini gracefully...");
-            shutdown_sender.send(()).expect("Failed to send shutdown signal to the conductor.");
             tracker.wait().await;
         },
     }

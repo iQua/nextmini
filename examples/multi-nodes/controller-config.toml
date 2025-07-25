@@ -1,0 +1,5 @@
+protocol = "tcp"
+
+[topology]
+type = "full_mesh"
+n_nodes = 100
