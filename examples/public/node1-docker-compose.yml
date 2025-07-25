@@ -1,6 +1,6 @@
 services:
-    node2:
-        container_name: node2
+    node1:
+        container_name: node1
         # Use the host network mode.
         network_mode: host
         image: nextmini_datapath
@@ -11,7 +11,7 @@ services:
         privileged: true
         volumes:
 
-            - ./node2-config.toml:/var/nextmini/config.toml
+            - ./node1-config.toml:/var/nextmini/config.toml
             - ../../tools/:/var/nextmini/tools
         cap_add:
             - NET_ADMIN
