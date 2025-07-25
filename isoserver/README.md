@@ -9,6 +9,8 @@
 
 **Step 1 : Build the Project**
 
+You need to ensure `isoserver` is added as a member in the workspace before proceeding.
+
 ```bash
 cd nextmini/isoserver; cargo build --release
 ```
