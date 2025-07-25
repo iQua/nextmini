@@ -31,13 +31,15 @@ cd nextmini/isoserver/controller_standalone; docker compose up --build
 
 ## Running Tests
 
-To run network tests such as `iperf3`, you can enter into namespace's terminal with:
+You can enter into namespace's terminal by running:
 
 ```bash
 nsenter -t <child_PID> -n bash
 ```
 
 where <child_PID> is the process ID, provided at the start of the terminal logs, of the target node.
+
+Then, you can conduct network tests such as `iperf3`.
 
 ## Cleanup
 
