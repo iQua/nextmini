@@ -64,6 +64,7 @@ services:
       - NET_ADMIN
     command: /bin/sh -c "sleep 5 && /var/nextmini/src"
 
+
   node2:
     container_name: node2
     hostname: node2
@@ -76,6 +77,8 @@ services:
         ipv4_address: 172.16.8.5
     stdin_open: true
     privileged: true
+    # environment:
+    #   - RUST_LOG=debug
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
@@ -97,6 +100,8 @@ services:
         ipv4_address: 172.16.8.6
     stdin_open: true
     privileged: true
+    # environment:
+    #   - RUST_LOG=debug
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
@@ -119,6 +124,8 @@ services:
         ipv4_address: 172.16.8.7
     stdin_open: true
     privileged: true
+    # environment:
+    #   - RUST_LOG=debug
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
@@ -129,6 +136,54 @@ services:
       - NET_ADMIN
     command: /bin/bash -c "sleep 9 && /var/nextmini/nextmini ws://controller:3000"
 
+  node5:
+    container_name: node5
+    hostname: node5
+    image: nextmini_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.8
+    stdin_open: true
+    privileged: true
+    # environment:
+    #   - RUST_LOG=debug
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../tools/:/var/nextmini/tools
+    depends_on:
+      - controller
+      - node4
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 10 && /var/nextmini/nextmini ws://controller:3000"
+
+  node6:
+    container_name: node6
+    hostname: node6
+    image: nextmini_datapath
+    build:
+      context: ../../
+      dockerfile: ./dataplane/Dockerfile
+    networks:
+      network:
+        ipv4_address: 172.16.8.9
+    stdin_open: true
+    privileged: true
+    # environment:
+    #   - RUST_LOG=debug
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml
+      - ../../tools/:/var/nextmini/tools
+    depends_on:
+      - controller
+      - node5
+    cap_add:
+      - NET_ADMIN
+    command: /bin/bash -c "sleep 11 && /var/nextmini/nextmini ws://controller:3000"
+
   external_server:
     container_name: external_server
     hostname: external_server
@@ -138,11 +193,11 @@ services:
       dockerfile: ./src/Dockerfile.server
     networks:
       network:
-        ipv4_address: 172.16.8.8
+        ipv4_address: 172.16.8.10
     stdin_open: true
     privileged: true
     ports:
       - "8080:8080"
     cap_add:
       - NET_ADMIN
-    command: /bin/sh -c "sleep 10 && /var/nextmini/src"
+    command: /bin/sh -c "sleep 12 && /var/nextmini/src"
