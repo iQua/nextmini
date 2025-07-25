@@ -1,0 +1,12 @@
+protocol = "tcp"
+
+[topology]
+type = "full_mesh"
+n_nodes = 3
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "170.16.8.2"
+database = "nextmini"
+port = "5432"

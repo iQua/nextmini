@@ -1,70 +1,42 @@
-# Isolated Network Namespace for Echo Servers in Rust
+# How to Run Nextmini node with Isolated Network Namespace
 
-This repository hosts a simple Rust-based proof of concept (PoC) for implementing TCP and UDP echo servers, running in its own isolated network namespace. It's a exploration into advanced networking concepts in Rust, leveraging the power of network namespaces for process isolation and the Tokio runtime for asynchronous operations.
+## Prerequisites
 
-I wrote a tiny article about this project [here](https://www.kungfudev.com/blog/2023/12/21/simplified-networking-crafting-isolated-echo-server-in-rust).
+- Ubuntu 24.04
+- Rust, Cargo and other test tools (iperf3, ifconfig ...) pre-installed
 
 ## Getting Started
 
-### Prerequisites
-
-Before you begin, ensure you have the following installed:
-
-* Rust programming language: Install Rust
-* Cargo, Rust's package manager (usually comes with Rust)
-
-### Installation
-
-1. Clone the Repository
-
-First, clone the repository to your local machine using Git:
+**Step 1 : Build the Project**
 
 ```bash
-git clone [repository-url]
-cd [repository-name]
+cd nextmini/isoserver; cargo build --release
 ```
 
-2. Build the Project
-Compile the project using Cargo:
+**Step 2 : Run Dataplane Nodes in Namespaces**
 
 ```bash
-cargo build --release
+cd .. ; sudo env "RUST_LOG=info" ./target/release/isoserver
 ```
 
-### Running the Server
+**Step 3 : Start Controller and Database**
 
-Run the server using the command below. The arguments have default values, so you can omit them if the defaults work for your setup.
+In a new terminal, start controller and database with the following:
 
 ```bash
-sudo RUST_LOG=info ./isoserver--server-addr [server address] --handler [handler] \
-  --bridge-name [bridge name] --bridge-ip [bridge IP] --subnet [subnet mask] \
-  --ns-ip [namespace IP]
+cd nextmini/isoserver/controller_standalone; docker compose up --build
 ```
 
-Values
-* --server-addr: No default value, must be specified (e.g., "0.0.0.0:8080").
-* --handler: Default is "tcp-echo". Options are "tcp-echo", "http" or "udp-echo".
-* --bridge-name: Default is "isobr0".
-* --bridge-ip: Default is "172.18.0.1".
-* --subnet: Default is "16".
-* --ns-ip: No default value, must be specified (e.g., "172.18.0.2").
+## Running Tests
 
-**Examples**
-
-* TCP Echo Server
+To run network tests such as `iperf3`, you can enter into namespace's terminal with:
 
 ```bash
-# RUN at nextmini/ directory
-sudo env "RUST_LOG=info" ./target/release/isoserver      --server-addr 0.0.0.0:8080      --ns-ip       172.18.0.2           --bridge-ip   172.18.0.1           --subnet      16
+nsenter -t <child_PID> -n bash
 ```
 
-This runs a TCP echo server.
+where <child_PID> is the process ID, provided at the start of the terminal logs, of the target node.
 
-* UDP Echo Server
+## Cleanup
 
-```bash
-sudo RUST_LOG=info ./isoserver --server-addr "0.0.0.0:8081" --handler udp-echo \
-  --ns-ip 172.18.0.3
-```
-
-This starts a UDP echo server, also using default network settings, but with a different namespace IP.
+To stop the dataplane nodes, simply press `CTRL_C` in Step2's terminal. It takes quite amount of time to clear up all the `veths` created. You can check the status with `ifconfig`.
