@@ -9,16 +9,16 @@
 
 **Step 1 : Build the Project**
 
-You need to ensure `isoserver` is added as a member in the workspace before proceeding.
+You need to ensure `namespace_init` is added as a member in the workspace before proceeding.
 
 ```bash
-cd nextmini/isoserver; cargo build --release
+cd nextmini/namespace_init; cargo build --release
 ```
 
 **Step 2 : Run Dataplane Nodes in Namespaces**
 
 ```bash
-cd .. ; sudo env "RUST_LOG=info" ./target/release/isoserver
+cd .. ; sudo env "RUST_LOG=info" ./target/release/namespace_init
 ```
 
 **Step 3 : Start Controller and Database**
@@ -26,7 +26,7 @@ cd .. ; sudo env "RUST_LOG=info" ./target/release/isoserver
 In a new terminal, start controller and database with the following:
 
 ```bash
-cd nextmini/isoserver/controller_standalone; docker compose up --build
+cd nextmini/namespace_init/controller_standalone; docker compose up --build
 ```
 
 ## Running Tests
