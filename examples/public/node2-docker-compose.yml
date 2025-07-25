@@ -1,0 +1,37 @@
+networks:
+    network:
+        driver: bridge
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.16.8.0/24
+services:
+    node2:
+        container_name: node2
+        hostname: node2
+        image: nextmini_datapath
+        # This assumes the Docker build context is correct relative to this file.
+        # You will need the full project source code on VM2 to build this image.
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        networks:
+            network:
+                ipv4_address: 172.16.8.5
+        ports:
+            - "8080:8080"
+            - "8081:8081"
+        stdin_open: true
+        privileged: true
+        volumes:
+            # Mount the specific config file for node2.
+            # Ensure node2-config.toml is in the same directory as this docker-compose file on VM2.
+            - ./node2-config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        cap_add:
+            - NET_ADMIN
+        # The command starts the dataplane, connecting to the controller on VM1.
+        # It uses the PUBLIC IP of VM1.
+        # It MUST be a full URL with the 'ws://' scheme.
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://209.38.72.97:3000"
+        restart: unless-stopped 
