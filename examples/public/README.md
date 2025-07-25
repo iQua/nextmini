@@ -29,3 +29,12 @@ In the second VM, open a new terminal:
 cd examples/public
 docker compose build; docker compose up
 ```
+
+# Arbutus
+
+To test on arbutus,
+
+```bash
+sudo apt update && sudo apt install docker.io -y && sudo apt install docker-compose -y
+```
+
