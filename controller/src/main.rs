@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::Duration;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use tracing::{error, info, warn, Level};
+use tracing::{Level, error, info, warn};
 use tracing_subscriber;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucketSpec};
@@ -39,7 +39,7 @@ async fn main() {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
         .expect("Failed to bind to port");
-    info!("The controller is now listening on port {}.", config.port);
+    warn!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
