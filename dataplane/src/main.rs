@@ -13,13 +13,13 @@ use std::error::Error;
 use tokio::signal;
 use tokio_util::task::task_tracker::TaskTracker;
 
-use tracing::info;
+use tracing::{info, Level};
 
 use node::conductor::Conductor;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_max_level(Level::WARN).init();
 
     // creates a TaskTracker to manage graceful shutdowns
     let tracker = TaskTracker::new();
