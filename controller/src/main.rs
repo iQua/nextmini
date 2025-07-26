@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use sqlx::{Pool, Postgres};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
@@ -85,6 +85,8 @@ async fn handle_connection(
 ) {
     let write_arc = Arc::new(Mutex::new(write));
     let mut current_node_id = None;
+
+    let start_time = Instant::now();
 
     while let Some(msg) = read.next().await {
         match msg {
@@ -208,17 +210,17 @@ async fn handle_connection(
 
                         // asks the new node to connect to other nodes in the topology
 
-                        // first fetches all nodes from the database
-                        let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
-                            .fetch_all(&*db_pool)
-                            .await
-                        {
-                            Ok(nodes) => nodes,
-                            Err(e) => {
-                                error!("Failed to fetch nodes: {}", e);
-                                continue;
-                            }
-                        };
+                        // //first fetches all nodes from the database
+                        // let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
+                        //     .fetch_all(&*db_pool)
+                        //     .await
+                        // {
+                        //     Ok(nodes) => nodes,
+                        //     Err(e) => {
+                        //         error!("Failed to fetch nodes: {}", e);
+                        //         continue;
+                        //     }
+                        // };
 
                         // // establishes connections between all pairs of nodes by sending AddNode messages
                         // for node in nodes {
@@ -321,8 +323,14 @@ async fn handle_connection(
                                 // waits for all link rates to be set before sending the flows
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_flows(node_ws.clone(), db_pool.clone()).await;
+
+                                let elapsed_time = start_time.elapsed().as_secs_f32();
+                                info!(
+                                    "Time taken to send flows and link rates: {:?} seconds.",
+                                    elapsed_time
+                                );
                             } else {
-                                warn!(
+                                info!(
                                     "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
                                     connected_node_count, expected_node_count
                                 );

@@ -43,17 +43,28 @@ fn main() {
     let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
     let mut bid = 37;
 
-    for ns_ip in ns_ips {
-        // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
-        let (bridge_idx, _veth_idx, veth2_idx) = rt
-            .block_on(prepare_net(
-                cfg.bridge_name.clone(),
-                &cfg.bridge_ip,
-                cfg.subnet,
-            ))
-            .expect("Failed to prepare network");
+    let mut idx = 0;
+    loop {
+        if idx >= ns_ips.len() {
+            break;
+        }
 
-        bid = bridge_idx;
+        let ns_ip = ns_ips[idx].clone();
+
+        // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
+        match rt.block_on(prepare_net(
+            cfg.bridge_name.clone(),
+            &cfg.bridge_ip,
+            cfg.subnet,
+        )) {
+            Ok((bridge_idx, _veth_idx, veth2_idx)) => {
+                bid = bridge_idx;
+            }
+            Err(e) => {
+                warn!("Failed to prepare network: {}. Retrying...", e);
+                continue;
+            }
+        }
 
         // prepare child process
         let cb = Box::new(|| {
@@ -89,13 +100,14 @@ fn main() {
         });
 
         thread::sleep(time::Duration::from_millis(200));
+        idx += 1;
     }
 
     // keeps the main thread alive.
     rt.block_on(async {
         match tokio::signal::ctrl_c().await {
             Ok(_) => {
-                info!("Ctrl+C received, shutting down...");
+                warn!("Ctrl+C received, shutting down...");
             }
             Err(e) => {
                 error!("Failed to listen for Ctrl+C: {}", e);
@@ -113,7 +125,7 @@ fn main() {
 
 // the child process to be executed within main
 fn c_process(ns_ip: String, subnet: u8, veth_peer_idx: u32, controller_addr: String) -> isize {
-    warn!("Child process (PID: {}) started", nix::unistd::getpid());
+    info!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
     let ns_hostname = format!("isoserver-{}", string_helpers::random_suffix(5));
     nix::unistd::sethostname(ns_hostname).expect("Failed to set hostname");
