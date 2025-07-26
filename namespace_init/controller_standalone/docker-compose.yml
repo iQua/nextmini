@@ -40,6 +40,8 @@ services:
       network:
         ipv4_address: 170.16.8.3
     stdin_open: true
+    environment:
+      - RUST_LOG=warn
     volumes:
       - ./controller-config.toml:/var/nextmini/config.toml
     depends_on:
