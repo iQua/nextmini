@@ -7,15 +7,16 @@ use nextmini::node::config::LocalConfig;
 
 use crate::config::Config;
 use crate::net::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer};
-use tracing::{error, info};
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use std::{net::Ipv4Addr, thread, time};
+use tracing::{error, info, warn, Level};
 
 const STACK_SIZE: usize = 1024 * 1024;
 
 fn main() {
-    tracing_subscriber::fmt::fmt() 
+    tracing_subscriber::fmt::fmt()
+        .with_max_level(Level::Warn)
         .init();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
@@ -111,13 +112,8 @@ fn main() {
 }
 
 // the child process to be executed within main
-fn c_process(
-    ns_ip: String,
-    subnet: u8,
-    veth_peer_idx: u32,
-    controller_addr: String,
-) -> isize {
-    info!("Child process (PID: {}) started", nix::unistd::getpid());
+fn c_process(ns_ip: String, subnet: u8, veth_peer_idx: u32, controller_addr: String) -> isize {
+    warn!("Child process (PID: {}) started", nix::unistd::getpid());
     // Set the hostname of the new process
     let ns_hostname = format!("isoserver-{}", string_helpers::random_suffix(5));
     nix::unistd::sethostname(ns_hostname).expect("Failed to set hostname");
@@ -138,7 +134,10 @@ fn c_process(
     0
 }
 
-pub async fn execute(controller_addr: &str, ns_ip: String) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn execute(
+    controller_addr: &str,
+    ns_ip: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     // read config file
     let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml");
     let config = LocalConfig::new_for_namespace(config_path, &controller_addr, &ns_ip);
