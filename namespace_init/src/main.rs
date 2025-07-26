@@ -16,7 +16,7 @@ const STACK_SIZE: usize = 1024 * 1024;
 
 fn main() {
     tracing_subscriber::fmt::fmt()
-        .with_max_level(Level::Warn)
+        .with_max_level(Level::WARN)
         .init();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
