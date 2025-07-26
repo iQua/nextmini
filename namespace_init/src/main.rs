@@ -50,6 +50,7 @@ fn main() {
         }
 
         let ns_ip = ns_ips[idx].clone();
+        let mut veth2_idx = 0;
 
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
         match rt.block_on(prepare_net(
@@ -57,8 +58,9 @@ fn main() {
             &cfg.bridge_ip,
             cfg.subnet,
         )) {
-            Ok((bridge_idx, _veth_idx, veth2_idx)) => {
-                bid = bridge_idx;
+            Ok((brdige_idx, _veth_idx, veth2_index)) => {
+                bid = brdige_idx;
+                veth2_idx = veth2_index;
             }
             Err(e) => {
                 warn!("Failed to prepare network: {}. Retrying...", e);
