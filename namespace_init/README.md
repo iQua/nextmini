@@ -18,7 +18,8 @@ cd nextmini/namespace_init; cargo build --release
 **Step 2 : Run Dataplane Nodes in Namespaces**
 
 ```bash
-cd .. ; sudo env "RUST_LOG=info" ./target/release/namespace_init
+cd ..
+sudo RUST_LOG=warn ./target/release/namespace_init
 ```
 
 **Step 3 : Start Controller and Database**

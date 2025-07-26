@@ -57,7 +57,10 @@ async fn main() {
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
             Err(e) => {
-                error!("Failed to accept WebSocket connection from {}: {}. Skipping.", peer, e);
+                error!(
+                    "Failed to accept WebSocket connection from {}: {}. Skipping.",
+                    peer, e
+                );
                 continue;
             }
         };
@@ -298,7 +301,7 @@ async fn handle_connection(
                                 // waits for all links to be established
                                 tokio::time::sleep(Duration::from_secs(1)).await;
 
-                                info!(
+                                warn!(
                                     "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
                                     expected_node_count
                                 );
@@ -319,7 +322,7 @@ async fn handle_connection(
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_flows(node_ws.clone(), db_pool.clone()).await;
                             } else {
-                                info!(
+                                warn!(
                                     "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
                                     connected_node_count, expected_node_count
                                 );
