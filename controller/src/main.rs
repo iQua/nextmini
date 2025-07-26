@@ -220,47 +220,47 @@ async fn handle_connection(
                             }
                         };
 
-                        // establishes connections between all pairs of nodes by sending AddNode messages
-                        for node in nodes {
-                            if node.id == node_id as i32 {
-                                continue;
-                            }
+                        // // establishes connections between all pairs of nodes by sending AddNode messages
+                        // for node in nodes {
+                        //     if node.id == node_id as i32 {
+                        //         continue;
+                        //     }
 
-                            // determines the address to use (private or public)
-                            // if two nodes share the same private network name, then we use the private
-                            // network address for this connection; otherwise, we use the public network
-                            // address.
-                            let addr = if node.private_network_name
-                                == Some(private_network_name.clone())
-                            {
-                                node.private_network_addr
-                            } else {
-                                node.public_network_addr
-                            };
+                        //     // determines the address to use (private or public)
+                        //     // if two nodes share the same private network name, then we use the private
+                        //     // network address for this connection; otherwise, we use the public network
+                        //     // address.
+                        //     let addr = if node.private_network_name
+                        //         == Some(private_network_name.clone())
+                        //     {
+                        //         node.private_network_addr
+                        //     } else {
+                        //         node.public_network_addr
+                        //     };
 
-                            // sends an AddNode message to the new node
-                            let msg = ControllerToDataplane::AddNode {
-                                remote_node_id: node.id as usize,
-                                remote_addr: addr,
-                            };
+                        //     // sends an AddNode message to the new node
+                        //     let msg = ControllerToDataplane::AddNode {
+                        //         remote_node_id: node.id as usize,
+                        //         remote_addr: addr,
+                        //     };
 
-                            // informs the new node to connect to the existing node
-                            match write_arc
-                                .lock()
-                                .await
-                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                                .await
-                            {
-                                Ok(_) => info!(
-                                    "Sent an AddNode message for node {} to node {}.",
-                                    node.id, node_id
-                                ),
-                                Err(e) => error!(
-                                    "Failed to send an AddNode message to node {}: {}.",
-                                    node_id, e
-                                ),
-                            }
-                        }
+                        //     // informs the new node to connect to the existing node
+                        //     match write_arc
+                        //         .lock()
+                        //         .await
+                        //         .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                        //         .await
+                        //     {
+                        //         Ok(_) => info!(
+                        //             "Sent an AddNode message for node {} to node {}.",
+                        //             node.id, node_id
+                        //         ),
+                        //         Err(e) => error!(
+                        //             "Failed to send an AddNode message to node {}: {}.",
+                        //             node_id, e
+                        //         ),
+                        //     }
+                        // }
 
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
