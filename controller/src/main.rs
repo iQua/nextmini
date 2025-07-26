@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -39,7 +40,7 @@ async fn main() {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
         .expect("Failed to bind to port");
-    warn!("The controller is now listening on port {}.", config.port);
+    info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
@@ -85,6 +86,10 @@ async fn handle_connection(
 ) {
     let write_arc = Arc::new(Mutex::new(write));
     let mut current_node_id = None;
+
+    // start the timer
+    warn!("Controller started");
+    let start_time = Instant::now();
 
     while let Some(msg) = read.next().await {
         match msg {
@@ -301,7 +306,7 @@ async fn handle_connection(
                                 // waits for all links to be established
                                 tokio::time::sleep(Duration::from_secs(1)).await;
 
-                                warn!(
+                                info!(
                                     "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
                                     expected_node_count
                                 );
@@ -321,8 +326,12 @@ async fn handle_connection(
                                 // waits for all link rates to be set before sending the flows
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_flows(node_ws.clone(), db_pool.clone()).await;
+
+                                // calculate the time taken to connect to all nodes
+                                let duration = start_time.elapsed().as_secs_f32();
+                                warn!("Controller connected to all nodes in {} seconds", duration);
                             } else {
-                                warn!(
+                                info!(
                                     "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
                                     connected_node_count, expected_node_count
                                 );
