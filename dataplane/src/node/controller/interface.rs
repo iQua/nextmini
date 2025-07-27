@@ -7,7 +7,7 @@ use tokio_tungstenite::{
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use rand::{Rng, thread_rng};
+use rand;
 use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
@@ -95,7 +95,7 @@ impl ControllerInterfaceHandle {
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
 
         // introduces a random delay (1–100 ms).
-        let random_delay_ms = thread_rng().gen_range(1..=100u64);
+        let random_delay_ms = rand::random_range(1..=100u64);
         tokio::time::sleep(Duration::from_millis(random_delay_ms)).await;
 
         loop {
