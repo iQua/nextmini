@@ -95,11 +95,12 @@ fn main() {
         info!("Spawned child pid: {}", child_pid);
 
         // Move veth peer into child's netns
-        rt.block_on(async {
-            join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32)
-                .await
-                .expect("Failed to join veth to namespace");
-        });
+        if let Err(e) =
+            rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
+        {
+            warn!("Failed to join veth to namespace: {}. Retrying...", e);
+            continue;
+        }
 
         thread::sleep(time::Duration::from_millis(200));
         idx += 1;
