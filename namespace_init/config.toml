@@ -6,4 +6,4 @@ channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
 n_nodes = 5000
-controller_service_rate = 6
+controller_service_rate = 100
