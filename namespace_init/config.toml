@@ -5,5 +5,5 @@ num_packet_processors = 1
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
-n_nodes = 1024
-controller_service_rate = 20
+n_nodes = 256
+controller_service_rate = 8
