@@ -1,8 +1,7 @@
 protocol = "tcp"
 
 [topology]
-type = "full_mesh"
-n_nodes = 3
+n_nodes = 5000
 
 [db]
 user = "pgusr"
