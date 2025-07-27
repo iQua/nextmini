@@ -1,7 +1,7 @@
 protocol = "tcp"
 
 [topology]
-n_nodes = 5000
+n_nodes = 1024
 
 [db]
 user = "pgusr"

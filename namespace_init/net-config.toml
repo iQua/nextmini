@@ -1,4 +1,4 @@
 bridge_name = "isobr1"
 bridge_ip   = "172.16.8.1"
 subnet      = 16
-n_nodes     = 5000
+n_nodes     = 1024
