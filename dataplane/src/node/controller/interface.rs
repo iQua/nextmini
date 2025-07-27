@@ -94,9 +94,11 @@ impl ControllerInterfaceHandle {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-        // introduces a random delay (1–100 ms).
-        let jitter = rand::random_range(1..=100u64);
-        tokio::time::sleep(Duration::from_millis(jitter)).await;
+        // introduces a random delay so controller is not overwhelmed.
+        let proc_rate = 6;
+        let upper_bound = config.num_nodes / proc_rate;
+        let jitter = rand::random_range(1..=upper_bound);
+        tokio::time::sleep(Duration::from_secs(jitter)).await;
 
         loop {
             match connect_async(url.as_str()).await {
@@ -107,8 +109,7 @@ impl ControllerInterfaceHandle {
                 }
                 Err(e) => {
                     error!("Failed to connect to the controller: {}. Retrying...", e);
-                    let jitter = rand::random_range(1000..=5000u64);
-                    tokio::time::sleep(Duration::from_millis(jitter)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
         }
