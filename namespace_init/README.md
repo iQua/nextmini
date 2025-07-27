@@ -44,4 +44,12 @@ Then, you can conduct network tests such as `iperf3`.
 
 ## Cleanup
 
-To stop the dataplane nodes, simply press `CTRL_C` in Step2's terminal. It takes quite amount of time to clear up all the `veths` created. You can check the status with `ifconfig`.
+To stop the dataplane nodes, simply press `CTRL_C` in Step2's terminal.
+
+To delete all veths, run:
+
+```bash
+sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'
+```
+
+You can check the status with `ifconfig`.
