@@ -95,10 +95,9 @@ impl ControllerInterfaceHandle {
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
 
         // introduces a random delay so controller is not overwhelmed.
-        let proc_rate = 6;
-        let upper_bound = config.num_nodes / proc_rate;
-        let jitter = rand::random_range(1..=upper_bound);
-        tokio::time::sleep(Duration::from_secs(jitter)).await;
+        let upper_bound = config.n_nodes / config.controller_service_rate + 1;
+        let jitter = rand::random_range(1..=upper_bound) * 1000;
+        tokio::time::sleep(Duration::from_millis(jitter)).await;
 
         loop {
             match connect_async(url.as_str()).await {
