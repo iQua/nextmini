@@ -341,7 +341,7 @@ async fn handle_connection(
                                 if let Some(start) = TIMER.get() {
                                     let elapsed_time = start.elapsed().as_secs_f32();
                                     warn!(
-                                        "Time taken to send flows and link rates: {:?} seconds.",
+                                        "It took {:?} seconds for all nodes to fully connect to the controller.",
                                         elapsed_time
                                     );
                                 }
