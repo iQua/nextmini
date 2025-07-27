@@ -1,5 +1,6 @@
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use once_cell::sync::OnceCell;
 use sqlx::{Pool, Postgres};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,6 +31,9 @@ mod utils;
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
 type NodeWriterMap = Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>;
+
+// Global timer
+static TIMER: OnceCell<Instant> = OnceCell::new();
 
 #[tokio::main]
 async fn main() {
@@ -85,8 +89,6 @@ async fn handle_connection(
 ) {
     let write_arc = Arc::new(Mutex::new(write));
     let mut current_node_id = None;
-
-    let start_time = Instant::now();
 
     while let Some(msg) = read.next().await {
         match msg {
@@ -193,6 +195,12 @@ async fn handle_connection(
                         // registers the WebSocket connection and associate it with the new node ID
                         {
                             let mut node_ws_guard = node_ws.write().await;
+
+                            // initializes the global timer.
+                            if node_ws_guard.is_empty() {
+                                let _ = TIMER.set(Instant::now());
+                            }
+
                             node_ws_guard.insert(node_id, write_arc.clone());
                         }
 
@@ -324,11 +332,14 @@ async fn handle_connection(
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 send_flows(node_ws.clone(), db_pool.clone()).await;
 
-                                let elapsed_time = start_time.elapsed().as_secs_f32();
-                                info!(
-                                    "Time taken to send flows and link rates: {:?} seconds.",
-                                    elapsed_time
-                                );
+                                // prints the time taken to send flows and link rates
+                                if let Some(start) = TIMER.get() {
+                                    let elapsed_time = start.elapsed().as_secs_f32();
+                                    warn!(
+                                        "Time taken to send flows and link rates: {:?} seconds.",
+                                        elapsed_time
+                                    );
+                                }
                             } else {
                                 info!(
                                     "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
