@@ -212,7 +212,7 @@ async fn handle_connection(
                         let connected_node_count = node_ws.read().await.len();
 
                         if let Some(expected_node_count) = config.topology.n_nodes {
-                            info!(
+                            warn!(
                                 "Connected nodes: {}/{}.",
                                 connected_node_count, expected_node_count
                             );
@@ -307,7 +307,7 @@ async fn handle_connection(
                                 ),
                             }
                         } else {
-                            error!("No routes to install for node {}.", node_id);
+                            info!("No routes to install for node {}.", node_id);
                         }
 
                         // sends flows and link rates when all nodes are connected
