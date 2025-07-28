@@ -17,6 +17,7 @@ use nextmini_messages::{Flow, FlowSpec};
 use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::{SOCKET_BUFFER_SIZE, UserSpaceSender};
+use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::{FlowId, FlowIdExt, NodeIdExt};
@@ -105,6 +106,7 @@ struct UserSpaceServer {
     flow_rate: Option<usize>,
     processors: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
+    state: ConnectionState,
 }
 
 impl UserSpaceServer {
@@ -117,12 +119,20 @@ impl UserSpaceServer {
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
 
+        let state = ConnectionState {
+            start_time: std::time::Instant::now(),
+            time_last_updated: std::time::Instant::now(),
+            bytes_last_updated: 0,
+            bytes_total: 0,
+        };
+
         Self {
             config,
             flow_id,
             flow_rate,
             processors,
             packet_receiver: Some(packet_receiver),
+            state,
         }
     }
 
@@ -206,9 +216,15 @@ impl UserSpaceServer {
 
     fn recv(&mut self, socket: &mut tcp::Socket) {
         if socket.can_recv() {
-
-            if let Err(e) = socket.recv(|buf| (buf.len(), buf.len())) {
-                error!("Error receiving from a user-space TCP client: {:?}", e);
+            match socket.recv(|buf| (buf.len(), buf.len())) {
+                Ok(received) if received > 0 => {
+                    let src_node_id = self.config.ip_to_node_id(self.flow_id.src_ip());
+                    self.state.update(self.config.node_id, src_node_id, received as u64);
+                }
+                Err(e) => {
+                    error!("Error receiving from a user-space TCP client: {:?}", e);
+                }
+                Ok(_) => {}
             }
         }
     }
