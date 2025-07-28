@@ -53,7 +53,7 @@ def generate_node_service(node_id):
     return service
 
 def update_controller_config(num_nodes):
-    """Updates only the n_nodes and routes in controller-config.toml file."""
+    """Updates the n_nodes, dst_node_id and routes in controller-config.toml file."""
     try:
         with open(CONTROLLER_CONFIG_FILE, 'r') as f:
             content = f.read()
@@ -63,6 +63,9 @@ def update_controller_config(num_nodes):
 
     # Update n_nodes value
     content = re.sub(r'n_nodes = \d+', f'n_nodes = {num_nodes}', content)
+
+    # Update dst_node_id in flows section
+    content = re.sub(r'dst_node_id = \d+', f'dst_node_id = {num_nodes}', content)
 
     # Generate new routes: forward route [1, 2, 3, ..., num_nodes] and reverse route [num_nodes, ..., 3, 2, 1]
     forward_route = list(range(1, num_nodes + 1))
