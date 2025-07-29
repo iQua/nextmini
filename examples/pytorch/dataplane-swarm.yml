@@ -20,9 +20,11 @@ services:
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
+      - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py
       - ./train_lenet5.sh:/var/nextmini/train_lenet5.sh
       - ./train_gpt2.sh:/var/nextmini/train_gpt2.sh
+      - ./train_resnet.sh:/var/nextmini/train_resnet.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
     cap_add:
@@ -76,6 +78,7 @@ services:
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
+      - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
@@ -125,6 +128,7 @@ services:
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
+      - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
@@ -174,6 +178,7 @@ services:
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
+      - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun

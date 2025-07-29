@@ -155,7 +155,12 @@ sh train_lenet5.sh
 
 # Train GPT2 with
 sh train_gpt2.sh
+
+# Train Resnet with
+sh train_resnet.sh
 ```
+
+To train different variants of resnet, simply simply change the `--type` command line argument in `train_resnet.sh` on the manager instance.
 
 ## Clean up
 
