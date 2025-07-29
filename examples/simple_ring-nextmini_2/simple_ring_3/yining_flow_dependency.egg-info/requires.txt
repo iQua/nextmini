@@ -1,0 +1,12 @@
+matplotlib==3.9.4
+numpy==2.0.2
+cvxpy==1.6.5
+networkx==3.2.1
+PuLP==3.2.1
+scs==3.2.7.post2
+osqp==1.0.4
+clarabel==0.10.0
+Mosek==11.0.20
+transformers==4.52.4
+psycopg2-binary==2.9.9
+rich

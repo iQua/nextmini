@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: yining-flow-dependency
+Version: 0.1.0
+Summary: Flow Dependency Experiments
+Requires-Python: <3.13,>=3.9
+Requires-Dist: matplotlib==3.9.4
+Requires-Dist: numpy==2.0.2
+Requires-Dist: cvxpy==1.6.5
+Requires-Dist: networkx==3.2.1
+Requires-Dist: PuLP==3.2.1
+Requires-Dist: scs==3.2.7.post2
+Requires-Dist: osqp==1.0.4
+Requires-Dist: clarabel==0.10.0
+Requires-Dist: Mosek==11.0.20
+Requires-Dist: transformers==4.52.4
+Requires-Dist: psycopg2-binary==2.9.9
+Requires-Dist: rich
