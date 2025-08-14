@@ -14,6 +14,11 @@ pub struct Route {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct DAG {
+    pub edges: Vec<(u32, u32)>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
     pub user: String,
     pub password: String,
@@ -85,6 +90,10 @@ pub struct Config {
     /// For example: route = [1, 2, 3, 4] means a path from node 1 to node 4 via nodes 2 and 3
     #[serde(default)]
     pub routes: Vec<Route>,
+
+    /// A vector of directed acyclic graphs.
+    #[serde(default)]
+    pub graphs: Vec<DAG>,
 
     /// A vector of link rates.
     #[serde(default)]
@@ -211,6 +220,7 @@ impl Default for Config {
             max_server_port: default_max_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
+            graphs: Vec::new(),
             flows: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),
@@ -590,5 +600,30 @@ mod tests {
         info!("  - 2 custom routes should be deduplicated (skipped)");
         info!("  - 2 unique custom routes should be added");
         info!("  - Total expected routes: 12 + 2 = 14 routes");
+    }
+
+    #[test]
+    fn test_graph_parsing_and_digraph_build() {
+        // Test parsing of graphs (DAGs) and building a DiGraph using petgraph
+        let toml_content = r#"
+        protocol = "tcp"
+
+        [[graphs]]
+        edges = [[1, 2], [2, 3], [3, 4]]
+        "#;
+
+        let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
+
+        // Verify edges of the first graph
+        assert_eq!(config.graphs[0].edges, vec![(1, 2), (2, 3), (3, 4)]);
+
+        // Build a DiGraph
+        use petgraph::graph::DiGraph;
+        let dag = DiGraph::<u32, ()>::from_edges(&config.graphs[0].edges);
+        println!("dag: {:?}", dag);
+        // Verify the number of nodes and edges in the DiGraphs
+        // Petagraph starts indexing from 0, so the largest node index + 1 is the number of nodes
+        assert_eq!(dag.node_count(), 5);
+        assert_eq!(dag.edge_count(), 3);
     }
 }
