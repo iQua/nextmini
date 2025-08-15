@@ -2,8 +2,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use petgraph::graph::DiGraph;
-
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
