@@ -2,10 +2,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use petgraph::graph::DiGraph;
+
 use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
 use futures_util::{SinkExt, StreamExt};
+use serde_json;
 use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
@@ -86,6 +89,19 @@ async fn create_db(pool: &Pool<Postgres>) {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS graphs (
+            graph_id SERIAL PRIMARY KEY,
+            directed BOOLEAN NOT NULL,
+            edges JSONB NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to create graphs table");
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS metrics (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL,
@@ -113,6 +129,11 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .execute(pool)
         .await
         .expect("Failed to drop flows table");
+
+    sqlx::query("DROP TABLE IF EXISTS graphs")
+        .execute(pool)
+        .await
+        .expect("Failed to drop graphs table");
 
     sqlx::query("DROP TABLE IF EXISTS routes")
         .execute(pool)
@@ -172,6 +193,19 @@ async fn reset_db(pool: &Pool<Postgres>) {
     .execute(pool)
     .await
     .expect("Failed to recreate flows table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE graphs (
+            graph_id SERIAL PRIMARY KEY,
+            directed BOOLEAN NOT NULL,
+            edges JSONB NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to recreate graphs table");
 
     sqlx::query(
         r#"
@@ -309,6 +343,41 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                     );
                 }
             }
+        }
+    }
+
+    info!("Adding custom DAGs from the configuration file.");
+    for dag in config.graphs.clone() {
+        if dag.edges.is_empty() {
+            warn!("Skipping empty DAG");
+            continue;
+        }
+
+        // converts edges into JSON.
+        let edges_json: serde_json::Value =
+            serde_json::to_value(&dag.edges).expect("Failed to convert edges to JSON");
+        let directed = true;
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO graphs (directed, edges)
+            VALUES ($1, $2)
+            RETURNING graph_id
+            "#,
+        )
+        .bind(directed)
+        .bind(edges_json)
+        .fetch_optional(&pool)
+        .await
+        .expect("Failed to insert graph");
+
+        if let Some(row) = result {
+            let graph_id: i32 = row.get("graph_id");
+            info!(
+                "Created graph_id {} with {} edges.",
+                graph_id,
+                dag.edges.len()
+            );
         }
     }
 
