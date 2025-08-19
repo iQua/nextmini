@@ -30,8 +30,19 @@ pub struct DBConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum PresetTopology {
-    FullMesh,
-    Ring,
+    FatTree,
+    Torus,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct FatTreeConfig {
+    pub k: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct TorusConfig {
+    pub dim: usize,
+    pub n: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -40,8 +51,15 @@ pub struct Topology {
     #[serde(alias = "topology")]
     #[serde(rename = "type")]
     pub topology_type: Option<PresetTopology>,
+
     #[serde(default)]
     pub n_nodes: Option<usize>,
+
+    #[serde(default)]
+    pub fat_tree_config: Option<FatTreeConfig>,
+
+    #[serde(default)]
+    pub torus_config: Option<TorusConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -299,20 +317,15 @@ mod tests {
     }
 
     #[test]
-    fn test_preset_topology_config_parsing() {
+    fn test_fat_tree_topology_config_parsing() {
         // Test preset topology configuration parsing
         let config_content = r#"
         protocol = "quic"
 
         [topology]
-        type = "full_mesh"
+        type = "fat_tree"
         n_nodes = 3
-
-        [[routes]]
-        route = [1, 2, 3]
-
-        [[routes]]
-        route = [3, 2, 1]
+        fat_tree_config = { k = 2 }
         "#;
 
         let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
@@ -320,16 +333,44 @@ mod tests {
         // Verify preset topology configuration
         assert!(config.topology.topology_type.is_some());
         match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::FullMesh => {
+            PresetTopology::FatTree => {
                 assert_eq!(config.topology.n_nodes, Some(3));
+                assert_eq!(
+                    config.topology.fat_tree_config,
+                    Some(FatTreeConfig { k: 2 })
+                );
             }
-            _ => panic!("Expected FullMesh topology"),
-        }
 
-        // Verify custom routes are present
-        assert_eq!(config.routes.len(), 2);
-        assert_eq!(config.routes[0].route, vec![1, 2, 3]);
-        assert_eq!(config.routes[1].route, vec![3, 2, 1]);
+            _ => panic!("Expected FatTree topology"),
+        }
+    }
+
+    #[test]
+    fn test_torus_topology_config_parsing() {
+        // Test preset topology configuration parsing
+        let config_content = r#"
+        protocol = "quic"
+
+        [topology]
+        type = "torus"
+        n_nodes = 4
+        torus_config = { dim = 2, n = 2 }
+        "#;
+
+        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
+
+        // Verify preset topology configuration
+        assert!(config.topology.topology_type.is_some());
+        match config.topology.topology_type.as_ref().unwrap() {
+            PresetTopology::Torus => {
+                assert_eq!(config.topology.n_nodes, Some(4));
+                assert_eq!(
+                    config.topology.torus_config,
+                    Some(TorusConfig { dim: 2, n: 2 })
+                );
+            }
+            _ => panic!("Expected Torus topology"),
+        }
     }
 
     #[test]
@@ -339,7 +380,7 @@ mod tests {
         protocol = "quic"
 
         [topology]
-        type = "ring"
+        type = "torus"
         n_nodes = 4
 
         [[routes]]
@@ -351,10 +392,10 @@ mod tests {
         // Verify preset topology configuration
         assert!(config.topology.topology_type.is_some());
         match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::Ring => {
+            PresetTopology::Torus => {
                 assert_eq!(config.topology.n_nodes, Some(4));
             }
-            _ => panic!("Expected Ring topology"),
+            _ => panic!("Expected Torus topology"),
         }
 
         // Verify custom routes are present
@@ -391,86 +432,6 @@ mod tests {
 
         info!("✓ Only custom routes configuration parsed correctly");
         info!("  - Custom routes should get route_id: 0, 1, 2");
-    }
-
-    #[test]
-    fn test_route_id_assignment_with_full_mesh() {
-        // Test route_id assignment with full mesh preset + custom routes
-        let config_content = r#"
-        protocol = "quic"
-
-        [topology]
-        type = "full_mesh"
-        n_nodes = 3
-
-        [[routes]]
-        route = [1, 2, 3]
-
-        [[routes]]
-        route = [3, 1, 2]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify preset topology
-        assert!(config.topology.topology_type.is_some());
-        match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::FullMesh => {
-                assert_eq!(config.topology.n_nodes, Some(3));
-            }
-            _ => panic!("Expected FullMesh topology"),
-        }
-
-        // Verify custom routes
-        assert_eq!(config.routes.len(), 2);
-        assert_eq!(config.routes[0].route, vec![1, 2, 3]);
-        assert_eq!(config.routes[1].route, vec![3, 1, 2]);
-
-        info!("✓ Full mesh + custom routes configuration parsed correctly");
-        info!("  - Full mesh (3 nodes) should generate route_id: 0, 1, 2, 3, 4, 5");
-        info!("  - Custom routes should get route_id: 6, 7");
-    }
-
-    #[test]
-    fn test_route_id_assignment_with_ring() {
-        // Test route_id assignment with ring preset + custom routes
-        let config_content = r#"
-        protocol = "quic"
-
-        [topology]
-        type = "ring"
-        n_nodes = 4
-
-        [[routes]]
-        route = [1, 3, 4]
-
-        [[routes]]
-        route = [4, 2, 1]
-
-        [[routes]]
-        route = [2, 4, 3, 1]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify preset topology
-        assert!(config.topology.topology_type.is_some());
-        match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::Ring => {
-                assert_eq!(config.topology.n_nodes, Some(4));
-            }
-            _ => panic!("Expected Ring topology"),
-        }
-
-        // Verify custom routes
-        assert_eq!(config.routes.len(), 3);
-        assert_eq!(config.routes[0].route, vec![1, 3, 4]);
-        assert_eq!(config.routes[1].route, vec![4, 2, 1]);
-        assert_eq!(config.routes[2].route, vec![2, 4, 3, 1]);
-
-        info!("✓ Ring + custom routes configuration parsed correctly");
-        info!("  - Ring (4 nodes) should generate route_id: 0, 1, 2, 3");
-        info!("  - Custom routes should get route_id: 4, 5, 6");
     }
 
     #[test]
@@ -550,56 +511,6 @@ mod tests {
         assert!(config.topology.topology_type.is_none());
 
         info!("✓ Empty routes configuration handled correctly");
-    }
-
-    #[test]
-    fn test_route_deduplication_scenario() {
-        // Test route deduplication with preset topology + duplicate custom routes
-        let config_content = r#"
-        protocol = "quic"
-
-        [topology]
-        type = "full_mesh"
-        n_nodes = 4
-
-        # These routes duplicate some of the preset routes
-        [[routes]]
-        route = [1, 2]  # This will duplicate preset route
-
-        [[routes]]
-        route = [2, 1]  # This will duplicate preset route
-
-        # These are unique multi-hop routes
-        [[routes]]
-        route = [1, 2, 3, 4]
-
-        [[routes]]
-        route = [4, 3, 2, 1]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify preset topology
-        assert!(config.topology.topology_type.is_some());
-        match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::FullMesh => {
-                assert_eq!(config.topology.n_nodes, Some(4));
-            }
-            _ => panic!("Expected FullMesh topology"),
-        }
-
-        // Verify custom routes (including duplicates)
-        assert_eq!(config.routes.len(), 4);
-        assert_eq!(config.routes[0].route, vec![1, 2]); // Will be duplicate
-        assert_eq!(config.routes[1].route, vec![2, 1]); // Will be duplicate
-        assert_eq!(config.routes[2].route, vec![1, 2, 3, 4]); // Unique
-        assert_eq!(config.routes[3].route, vec![4, 3, 2, 1]); // Unique
-
-        info!("✓ Route deduplication scenario configuration parsed correctly");
-        info!("  - Full mesh (4 nodes) should generate 12 preset routes");
-        info!("  - 2 custom routes should be deduplicated (skipped)");
-        info!("  - 2 unique custom routes should be added");
-        info!("  - Total expected routes: 12 + 2 = 14 routes");
     }
 
     #[test]
