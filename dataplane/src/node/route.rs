@@ -17,8 +17,8 @@ pub struct RoutingTable {
     /// Source-destination node ID pair -> available route IDs
     available_routes: AHashMap<(NodeId, NodeId), Vec<usize>>,
 
-    /// Route ID -> next hop
-    route_next_hop: AHashMap<usize, NodeId>,
+    /// Route ID -> candidate next hops
+    route_next_hop: AHashMap<usize, Vec<NodeId>>,
 
     /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
@@ -49,8 +49,8 @@ impl RoutingTable {
 
         // builds the routing table from routes
         for route in routes {
-            // route ID → next hop
-            self.route_next_hop.insert(route.route_id, route.next_hop);
+            // route ID → next hops 
+            self.route_next_hop.insert(route.route_id, route.next_hops.clone());
 
             // installs route based on node IDs for both TUN and user space
             let node_id_pair = (route.src_node_id, route.dst_node_id);
@@ -61,8 +61,8 @@ impl RoutingTable {
                 .push(route.route_id);
 
             debug!(
-                "RoutingTable: Installed route {} (node {} → node {}), next hop is node {}.",
-                route.route_id, route.src_node_id, route.dst_node_id, route.next_hop
+                "RoutingTable: Installed route {} (node {} → node {}), next hops: {:?}.",
+                route.route_id, route.src_node_id, route.dst_node_id, route.next_hops
             );
         }
     }
@@ -140,8 +140,9 @@ impl RoutingTable {
             }
 
             // gets the next hop by route ID
-            if let Some(next_hop_id) = self.route_next_hop.get(&route_id).copied() {
-                return Ok(next_hop_id);
+            // picks the first candidate next hop for now
+            if let Some(next_hops) = self.route_next_hop.get(&route_id) {
+                return Ok(next_hops[0]);
             } else {
                 return Err(format!(
                     "No next hop is found for route id {} on flow {}: routing inconsistency detected.",

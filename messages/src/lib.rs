@@ -151,7 +151,7 @@ pub enum ControllerToDataplane {
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct RoutingTableEntry {
     pub route_id: usize,
-    pub next_hop: usize,
+    pub next_hops: Vec<usize>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
 }
