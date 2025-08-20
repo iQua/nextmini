@@ -8,11 +8,6 @@ use tracing::{error, info};
 
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Route {
-    pub route: Vec<usize>,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DAG {
     pub edges: Vec<(u32, u32)>,
@@ -101,17 +96,9 @@ pub struct Config {
     #[serde(default = "default_protocol")]
     pub protocol: Protocol,
 
-    /// Whether the controller should automatically synchronize with the dataplane.
-    /// if true, the controller will automatically synchronize routes in its database with the dataplane routing tables.
-
-    /// A list of routes. Each route is defined as a path of node IDs.
-    /// For example: route = [1, 2, 3, 4] means a path from node 1 to node 4 via nodes 2 and 3
-    #[serde(default)]
-    pub routes: Vec<Route>,
-
     /// A vector of directed acyclic graphs.
     #[serde(default)]
-    pub graphs: Vec<DAG>,
+    pub routes: Vec<DAG>,
 
     /// A vector of link rates.
     #[serde(default)]
@@ -238,7 +225,6 @@ impl Default for Config {
             max_server_port: default_max_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),
-            graphs: Vec::new(),
             flows: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),

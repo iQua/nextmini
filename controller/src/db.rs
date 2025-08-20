@@ -13,7 +13,7 @@ use sqlx::{Pool, Postgres, Row};
 
 use crate::WebSocketWriter;
 use crate::config;
-use crate::models::{DbFlow, Route};
+use crate::models::{DbFlow, DbRoute, Route};
 use crate::topo::TopologyBuilder;
 use crate::utils::{build_flows_for_node, build_routes_for_node};
 use tracing::{error, info, warn};
@@ -38,25 +38,6 @@ async fn create_db(pool: &Pool<Postgres>) {
     .execute(pool)
     .await
     .expect("Failed to create nodes table");
-
-    // route_id: Unique identifier for the route, automatically assigned by controller.
-    // route: all hops in the route, as an array of node IDs. e.g. [1, 2, 3]
-    // src_node_id: Source node ID in the route.
-    // dst_node_id: Destination node ID in the route.
-    sqlx::query(
-        r#"
-        CREATE TABLE IF NOT EXISTS routes (
-            route_id SERIAL PRIMARY KEY,
-            src_node_id INTEGER NOT NULL,
-            dst_node_id INTEGER NOT NULL,
-            route INTEGER[] NOT NULL,
-            UNIQUE (src_node_id, dst_node_id, route)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to create routes table");
 
     // id: Unique identifier for the flow, automatically assigned by controller.
     // src_node_id: Source node ID for the flow.
@@ -86,10 +67,13 @@ async fn create_db(pool: &Pool<Postgres>) {
     .await
     .expect("Failed to create flows table");
 
+    // route_id: Unique identifier for the route, automatically assigned by controller.
+    // directed: Whether the route is directed.
+    // edges: All edges in the route, as an array of node IDs. e.g. [[1, 2], [2, 3]]
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS graphs (
-            graph_id SERIAL PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS routes (
+            route_id SERIAL PRIMARY KEY,
             directed BOOLEAN NOT NULL,
             edges JSONB NOT NULL
         )
@@ -97,7 +81,7 @@ async fn create_db(pool: &Pool<Postgres>) {
     )
     .execute(pool)
     .await
-    .expect("Failed to create graphs table");
+    .expect("Failed to create routes table");
 
     sqlx::query(
         r#"
@@ -129,11 +113,6 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .await
         .expect("Failed to drop flows table");
 
-    sqlx::query("DROP TABLE IF EXISTS graphs")
-        .execute(pool)
-        .await
-        .expect("Failed to drop graphs table");
-
     sqlx::query("DROP TABLE IF EXISTS routes")
         .execute(pool)
         .await
@@ -161,21 +140,6 @@ async fn reset_db(pool: &Pool<Postgres>) {
 
     sqlx::query(
         r#"
-        CREATE TABLE routes (
-            src_node_id INTEGER NOT NULL,
-            dst_node_id INTEGER NOT NULL,
-            route_id SERIAL PRIMARY KEY,
-            route INTEGER[] NOT NULL,
-            UNIQUE (src_node_id, dst_node_id, route)
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to recreate routes table");
-
-    sqlx::query(
-        r#"
         CREATE TABLE flows (
             id SERIAL PRIMARY KEY,
             src_node_id INTEGER NOT NULL,
@@ -195,8 +159,8 @@ async fn reset_db(pool: &Pool<Postgres>) {
 
     sqlx::query(
         r#"
-        CREATE TABLE graphs (
-            graph_id SERIAL PRIMARY KEY,
+        CREATE TABLE routes (
+            route_id SERIAL PRIMARY KEY,
             directed BOOLEAN NOT NULL,
             edges JSONB NOT NULL
         )
@@ -204,7 +168,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
     )
     .execute(pool)
     .await
-    .expect("Failed to recreate graphs table");
+    .expect("Failed to recreate routes table");
 
     sqlx::query(
         r#"
@@ -259,13 +223,13 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         let edges: serde_json::Value =
                             serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
                             
-                        let result = sqlx::query(
+                        let _result = sqlx::query(
                             r#"
-                            INSERT INTO graphs (directed, edges)
+                            INSERT INTO routes (directed, edges)
                             VALUES ($1, $2)
                             "#,
                         )
-                        .bind(true)
+                        .bind(false)
                         .bind(edges)
                         .fetch_optional(&pool)
                         .await
@@ -284,13 +248,13 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         let edges: serde_json::Value =
                             serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
                     
-                        let result = sqlx::query(
+                        let _result = sqlx::query(
                             r#"
-                            INSERT INTO graphs (directed, edges)    
+                            INSERT INTO routes (directed, edges)    
                             VALUES ($1, $2)
                             "#,
                         )
-                        .bind(true)
+                        .bind(false)
                         .bind(edges)
                         .fetch_optional(&pool)  
                         .await
@@ -305,10 +269,11 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         }
     }
 
-    info!("Adding custom DAGs from the configuration file.");
-    for dag in config.graphs.clone() {
+    info!("Adding custom routes from the configuration file.");
+
+    for dag in config.routes.clone() {
         if dag.edges.is_empty() {
-            warn!("Skipping empty DAG");
+            warn!("Skipping empty route");
             continue;
         }
 
@@ -319,9 +284,9 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
         let result = sqlx::query(
             r#"
-            INSERT INTO graphs (directed, edges)
+            INSERT INTO routes (directed, edges)
             VALUES ($1, $2)
-            RETURNING graph_id
+            RETURNING route_id
             "#,
         )
         .bind(directed)
@@ -331,55 +296,11 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         .expect("Failed to insert graph");
 
         if let Some(row) = result {
-            let graph_id: i32 = row.get("graph_id");
-            info!(
-                "Created graph_id {} with {} edges.",
-                graph_id,
-                dag.edges.len()
-            );
-        }
-    }
-
-    // adds custom routes from the configuration file
-    info!("Adding custom routes from the configuration file.");
-
-    for route in config.routes.clone() {
-        if route.route.is_empty() {
-            warn!("Skipping empty route");
-            continue;
-        }
-
-        // auto-infers src_node_id and dst_node_id from the route path
-        let src_node_id = route.route[0] as i32;
-        let dst_node_id = route.route[route.route.len() - 1] as i32;
-        let route_path = route.route.iter().map(|&x| x as i32).collect::<Vec<_>>();
-
-        // inserts route with an auto-generated route_id
-        let result = sqlx::query(
-            r#"
-            INSERT INTO routes (src_node_id, dst_node_id, route)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
-            RETURNING route_id
-            "#,
-        )
-        .bind(src_node_id)
-        .bind(dst_node_id)
-        .bind(&route_path)
-        .fetch_optional(&pool)
-        .await
-        .expect("Failed to insert custom route");
-
-        if let Some(row) = result {
             let route_id: i32 = row.get("route_id");
             info!(
-                "Auto-assigned route_id {} to custom route from node {} to node {} with path {:?}",
-                route_id, src_node_id, dst_node_id, route.route
-            );
-        } else {
-            info!(
-                "Skipped duplicate route from node {} to node {} with path {:?}",
-                src_node_id, dst_node_id, route.route
+                "Created route_id {} with {} edges.",
+                route_id,
+                dag.edges.len()
             );
         }
     }
@@ -442,7 +363,7 @@ pub async fn setup_route_notification(
         CREATE OR REPLACE FUNCTION notify_trigger_function()
         RETURNS TRIGGER AS $$
         BEGIN
-            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '","route_id":"'|| NEW.route_id || '","route":"' || array_to_string(NEW.route, ',') || '"}');
+            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","route_id":"' || NEW.route_id || '"}');
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
@@ -516,17 +437,35 @@ pub async fn setup_route_notification(
                         // all routes from the database and re-install them all
                         info!("Installing route updates into the dataplane.");
 
-                        let routes: Vec<Route> = sqlx::query_as("SELECT * FROM routes")
+                        let routes_db: Vec<DbRoute> = sqlx::query_as::<_, DbRoute>("SELECT * FROM routes")
                             .fetch_all(&*db_pool)
                             .await
                             .expect("Failed to fetch routes");
+
+                        let routes: Vec<Route> = routes_db
+                            .iter()
+                            .map(|r| {
+                                let edges_i32: Vec<(i32, i32)> = serde_json::from_value(r.edges.clone())
+                                    .unwrap_or_default();
+                                let edges: Vec<(u32, u32)> = edges_i32
+                                    .into_iter()
+                                    .map(|(a, b)| (a as u32, b as u32))
+                                    .collect();
+
+                                Route {
+                                    route_id: r.route_id as usize,
+                                    directed: r.directed,
+                                    edges,
+                                }
+                            })
+                            .collect();
 
                         // sends install routes message to all nodes
                         let node_ws_guard = node_ws.read().await;
 
                         for (node_id, ws_arc) in node_ws_guard.iter() {
                             if let Some(msg) =
-                                build_routes_for_node(routes.clone(), *node_id as i32)
+                                build_routes_for_node(routes.clone(), *node_id as u32)
                             {
                                 let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
