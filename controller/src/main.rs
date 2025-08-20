@@ -17,8 +17,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucke
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
-use crate::models::DbFlow;
-use crate::models::{Node, Route};
+use crate::models::{DbFlow, DbRoute, Node, Route};
 use crate::utils::build_flows_for_node;
 use crate::utils::{build_routes_for_node, build_startup_response};
 
@@ -263,18 +262,37 @@ async fn handle_connection(
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
 
-                        let routes: Vec<Route> = match sqlx::query_as("SELECT * FROM routes")
+                        let routes = match sqlx::query_as(
+                            r#"SELECT route_id, directed, edges FROM routes"#,
+                        )
                             .fetch_all(&*db_pool)
                             .await
                         {
-                            Ok(routes) => routes,
+                            Ok(rows) => rows
+                                .into_iter()
+                                .map(|row: DbRoute| {
+                                    // converts i32 to u32 edges
+                                    let edges: Vec<(i32, i32)> = serde_json::from_value(row.edges.clone())
+                                        .unwrap_or_default();
+                                    let edges: Vec<(u32, u32)> = edges
+                                        .into_iter()
+                                        .map(|(a, b)| (a as u32, b as u32))
+                                        .collect();
+
+                                    Route {
+                                        route_id: row.route_id as usize,
+                                        directed: row.directed,
+                                        edges,
+                                    }
+                                })
+                                .collect::<Vec<_>>(),
                             Err(e) => {
                                 error!("Failed to fetch routes: {}", e);
                                 continue;
                             }
                         };
 
-                        if let Some(msg) = build_routes_for_node(routes, node_id as i32) {
+                        if let Some(msg) = build_routes_for_node(routes, node_id as u32) {
                             match write_arc
                                 .lock()
                                 .await

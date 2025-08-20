@@ -2,6 +2,8 @@
 use std::net::Ipv4Addr;
 
 use tracing::debug;
+use petgraph::Direction;
+use petgraph::graph::DiGraph;
 
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, NodeSpec, OperatingMode, Protocol,
@@ -75,7 +77,7 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
 }
 
 /// Builds route-level next-hop information for a specific node.
-pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<ControllerToDataplane> {
+pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<ControllerToDataplane> {
     let mut route_entries: Vec<RoutingTableEntry> = Vec::new();
 
     debug!(
@@ -85,57 +87,76 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
     );
 
     for route in routes {
+        let route_id = route.route_id;
+        let directed = route.directed;
+        let mut edges = route.edges;
+
+        // adds the reverse edges for undirected routes
+        if !directed{
+            for (a, b) in edges.clone(){
+                edges.push((b, a));
+            }
+        }
+
         debug!(
-            "Processing route_id: {}, path: {:?}, src_node_id: {}, dst_node_id: {}",
-            route.route_id, route.route, route.src_node_id, route.dst_node_id
+            "Processing route_id: {}, directed: {}, edges: {:?}, node_id: {}",
+            route_id, directed, edges, node_id
         );
 
-        // finds the position of this node in the route path
-        let idx = route.route.iter().position(|&x| x == node_id);
+        // converts edges to u32
+        let edges: Vec<(u32, u32)> = edges.into_iter().map(|(a, b)| (a as u32, b as u32)).collect();
+        
+        // builds the DiGraph
+        let graph = DiGraph::<u32, ()>::from_edges(edges);
 
-        let next_hop = if let Some(idx) = idx {
-            if idx == route.route.len() - 1 {
-                // The node is the destination - next hop is itself (local delivery)
-                route.route[idx] as usize
-            } else {
-                // The node is in the middle of the path - next hop is the next node
-                route.route[idx + 1] as usize
+        // Locate the current node within the graph.
+        let current_node_index = match graph
+            .node_indices()
+            .find(|&idx| graph[idx] == node_id)
+        {
+            Some(idx) => idx,
+            None => {
+                debug!("Node {} not found in graph, skipping route", node_id);
+                continue;
             }
-        } else {
-            // Node not in route path — set next_hop to 0
-            debug!(
-                "Node {} is not in route {:?}, setting next_hop to 0.",
-                node_id, route.route
-            );
-
-            0
         };
 
-        debug!(
-            "Node {} is found in the route {:?}, setting the next_hop to {}.",
-            node_id, route.route, next_hop
-        );
+        // determines the source and destination nodes.
+        // assumes single-source, single-destination routes.
+        let src_node_index = graph
+            .node_indices()
+            .find(|&idx| graph.neighbors_directed(idx, Direction::Incoming).count() == 0)
+            .expect("Route must have a source node");
+        let src_node_id = graph[src_node_index] as usize;
 
-        // sends route endpoints for dataplane's direction indexing
-        let src_node_id = route.route[0] as usize; // Route source
-        let dst_node_id = route.route[route.route.len() - 1] as usize; // Route destination
+        let dst_node_index = graph
+            .node_indices()
+            .find(|&idx| graph.neighbors_directed(idx, Direction::Outgoing).count() == 0)
+            .expect("Route must have a destination node");
+        let dst_node_id = graph[dst_node_index] as usize;
+
+        // finds the next hops for the current node
+        let mut next_hops: Vec<usize> = graph
+            .neighbors(current_node_index)
+            .map(|idx| graph[idx] as usize)
+            .collect();
+
+        // accounts if at destination node
+        if next_hops.is_empty() {
+            next_hops.push(node_id as usize);
+        }
 
         debug!(
-            "Using src_node_id: {} (first hop), dst_node_id: {} (last hop)",
-            src_node_id, dst_node_id
+            "Added route entry: route_id={}, next_hops={:?}, src_node_id={}, dst_node_id={}",
+            route_id, next_hops, src_node_id, dst_node_id
         );
 
         route_entries.push(RoutingTableEntry {
-            route_id: route.route_id as usize,
-            next_hop,
+            route_id,
+            next_hops,
             src_node_id,
             dst_node_id,
         });
-
-        debug!(
-            "Added route entry: route_id={}, next_hop={}, src_node_id={}, dst_node_id={}",
-            route.route_id, next_hop, src_node_id, dst_node_id
-        );
     }
 
     debug!(
@@ -148,8 +169,6 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: i32) -> Option<Control
         debug!("No routes for node {}", node_id);
         None
     } else {
-        Some(ControllerToDataplane::InstallRoutes {
-            routes: route_entries,
-        })
+        Some(ControllerToDataplane::InstallRoutes { routes: route_entries })
     }
 }

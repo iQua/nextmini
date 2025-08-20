@@ -159,12 +159,6 @@ fn calculate_total_nodes(dimension: u32, nodes_per_dim: u32) -> Result<usize> {
         .map_err(|_| TopologyError::NumericOverflow("Total node count overflow".into()))
 }
 
-fn create_host_list(count: u32) -> Result<Vec<usize>> {
-    let count_usize = usize::try_from(count)
-        .map_err(|_| TopologyError::NumericOverflow("Host count overflow".into()))?;
-    Ok((0..count_usize).collect())
-}
-
 fn build_torus_edges(dimension: u32, nodes_per_dim: u32) -> Result<Vec<(u32, u32)>> {
     // Create empty undirected graph
     let mut graph = UnGraph::<(), ()>::default();
