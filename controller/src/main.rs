@@ -25,6 +25,7 @@ use crate::utils::{build_routes_for_node, build_startup_response};
 mod config;
 mod db;
 mod models;
+mod topo;
 mod utils;
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;

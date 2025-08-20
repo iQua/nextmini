@@ -14,6 +14,7 @@ use sqlx::{Pool, Postgres, Row};
 use crate::WebSocketWriter;
 use crate::config;
 use crate::models::{DbFlow, Route};
+use crate::topo::TopologyBuilder;
 use crate::utils::{build_flows_for_node, build_routes_for_node};
 use tracing::{error, info, warn};
 
@@ -251,95 +252,55 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         );
 
         match preset_topology {
-            config::PresetTopology::FullMesh => {
-                for src_node in 1..=n_nodes {
-                    for dest_node in 1..=n_nodes {
-                        if src_node == dest_node {
-                            continue; // skips loopback routes
-                        }
-
-                        let route_path = vec![src_node as i32, dest_node as i32];
-
+            config::PresetTopology::FatTree => {
+                match &config.topology.fat_tree_config {
+                    Some(fat_tree_config) => {
+                        let edges = fat_tree_config.build().unwrap();
+                        let edges: serde_json::Value =
+                            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+                            
                         let result = sqlx::query(
                             r#"
-                            INSERT INTO routes (src_node_id, dst_node_id, route)
-                            VALUES ($1, $2, $3)
-                            ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
-                            RETURNING route_id
+                            INSERT INTO graphs (directed, edges)
+                            VALUES ($1, $2)
                             "#,
                         )
-                        .bind(src_node as i32)
-                        .bind(dest_node as i32)
-                        .bind(&route_path)
+                        .bind(true)
+                        .bind(edges)
                         .fetch_optional(&pool)
                         .await
-                        .expect("Failed to insert full mesh route");
-
-                        if let Some(row) = result {
-                            let route_id: i32 = row.get("route_id");
-                            info!(
-                                "Created full mesh route ID {} from node {} to node {}",
-                                route_id, src_node, dest_node
-                            );
-                        }
+                        .expect("Failed to insert fat tree graph");
+                    }
+                    None => {
+                        error!("Fat tree configuration is not provided.");
                     }
                 }
+
             }
-            config::PresetTopology::Ring => {
-                // adds links between neighbouring nodes on the ring
-                for src_node in 1..n_nodes {
-                    let dest_node = src_node + 1;
-                    let route_path = vec![src_node as i32, dest_node as i32];
-
-                    let result = sqlx::query(
-                        r#"
-                        INSERT INTO routes (src_node_id, dst_node_id, route)
-                        VALUES ($1, $2, $3)
-                        ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
-                        RETURNING route_id
-                        "#,
-                    )
-                    .bind(src_node as i32)
-                    .bind(dest_node as i32)
-                    .bind(&route_path)
-                    .fetch_optional(&pool)
-                    .await
-                    .expect("Failed to insert ring route");
-
-                    if let Some(row) = result {
-                        let route_id: i32 = row.get("route_id");
-                        info!(
-                            "Created ring route ID {} from node {} to node {}",
-                            route_id, src_node, dest_node
-                        );
+            config::PresetTopology::Torus => {
+                match &config.topology.torus_config {
+                    Some(torus_config) => {
+                        let edges = torus_config.build().unwrap();
+                        let edges: serde_json::Value =
+                            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+                    
+                        let result = sqlx::query(
+                            r#"
+                            INSERT INTO graphs (directed, edges)    
+                            VALUES ($1, $2)
+                            "#,
+                        )
+                        .bind(true)
+                        .bind(edges)
+                        .fetch_optional(&pool)  
+                        .await
+                        .expect("Failed to insert torus graph");
+                    }
+                    None => {
+                        error!("Torus configuration is not provided.");
                     }
                 }
 
-                // adds ring closure: connects the last node back to the first node
-                let route_path = vec![n_nodes as i32, 1];
-
-                let result = sqlx::query(
-                    r#"
-                    INSERT INTO routes (src_node_id, dst_node_id, route)
-                    VALUES ($1, $2, $3)
-                    ON CONFLICT (src_node_id, dst_node_id, route) DO NOTHING
-                    RETURNING route_id
-                    "#,
-                )
-                .bind(n_nodes as i32)
-                .bind(1)
-                .bind(&route_path)
-                .fetch_optional(&pool)
-                .await
-                .expect("Failed to insert ring closure route");
-
-                if let Some(row) = result {
-                    let route_id: i32 = row.get("route_id");
-                    info!(
-                        "Created ring closure route_id {} from node {} to node 1",
-                        route_id, n_nodes
-                    );
-                }
             }
         }
     }

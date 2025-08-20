@@ -1,7 +1,6 @@
-use tracing::{debug, info};
+use tracing::info;
 
 use petgraph::graph::{NodeIndex, UnGraph};
-use serde::Deserialize;
 use thiserror::Error;
 
 use crate::config::{FatTreeConfig, TorusConfig};
@@ -26,7 +25,7 @@ pub enum TopologyError {
 
 pub type Result<T> = std::result::Result<T, TopologyError>;
 
-trait TopologyBuilder {
+pub trait TopologyBuilder {
     fn build(&self) -> Result<Vec<(u32,u32)>>;
 }
 
