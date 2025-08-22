@@ -25,6 +25,7 @@ pub struct DBConfig {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum PresetTopology {
+    FullMesh,
     FatTree,
     Torus,
 }

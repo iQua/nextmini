@@ -216,7 +216,32 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         );
 
         match preset_topology {
+            config::PresetTopology::FullMesh => {
+                let mut edges = Vec::new();
+                for src_node_id in 0..n_nodes {
+                    for dst_node_id in src_node_id + 1..n_nodes {
+                        edges.push(vec![src_node_id, dst_node_id]);
+                    }
+                }
+
+                let edges: serde_json::Value =
+                    serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+
+                let _result = sqlx::query(
+                    r#"
+                    INSERT INTO routes (directed, edges)
+                    VALUES ($1, $2)
+                    "#,
+                )
+                .bind(false)
+                .bind(edges)
+                .fetch_optional(&pool)
+                .await
+                .expect("Failed to insert full mesh graph");
+            }
             config::PresetTopology::FatTree => {
+                error!("FatTree topology is not supported yet.");
+
                 match &config.topology.fat_tree_config {
                     Some(fat_tree_config) => {
                         let edges = fat_tree_config.build().unwrap();
@@ -242,6 +267,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
             }
             config::PresetTopology::Torus => {
+                error!("Torus topology is not supported yet.");
+                
                 match &config.topology.torus_config {
                     Some(torus_config) => {
                         let edges = torus_config.build().unwrap();
