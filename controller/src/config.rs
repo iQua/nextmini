@@ -238,266 +238,9 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_example_config_parsing() {
-        let toml_content = r#"
-        protocol = "quic"
-
-        [[routes]]
-        route = [1, 2, 3, 4]
-
-        [[routes]]
-        route = [1, 3, 2, 4]
-
-        [[routes]]
-        route = [1, 3, 4]
-        "#;
-
-        let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
-
-        // Test basic config values
-        assert_eq!(config.protocol, Protocol::Quic);
-
-        // Test that we have 3 routes
-        assert_eq!(config.routes.len(), 3);
-
-        // Verify route parsing
-        assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
-        assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
-        assert_eq!(config.routes[2].route, vec![1, 3, 4]);
-    }
-
-    #[test]
-    fn test_route_processing_logic() {
-        // Test the route processing logic that happens in get_config
-        let config_content = r#"
-        protocol = "quic"
-        base_addr = [10, 0, 0, 0]
-        net_mask = [255, 255, 255, 0]
-
-        [[routes]]
-        route = [1, 2, 3, 4]
-
-        [[routes]]
-        route = [1, 3, 2, 4]
-
-        [[routes]]
-        route = [1, 3, 4]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify basic configuration
-        assert_eq!(config.protocol, Protocol::Quic);
-        assert_eq!(config.base_addr, Ipv4Addr::new(10, 0, 0, 0));
-        assert_eq!(config.net_mask, Ipv4Addr::new(255, 255, 255, 0));
-
-        // Verify routes were processed correctly
-        assert_eq!(config.routes.len(), 3);
-
-        // Verify specific route paths
-        assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
-        assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
-        assert_eq!(config.routes[2].route, vec![1, 3, 4]);
-    }
-
-    #[test]
-    fn test_fat_tree_topology_config_parsing() {
-        // Test preset topology configuration parsing
-        let config_content = r#"
-        protocol = "quic"
-
-        [topology]
-        type = "fat_tree"
-        n_nodes = 3
-        fat_tree_config = { k = 2 }
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify preset topology configuration
-        assert!(config.topology.topology_type.is_some());
-        match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::FatTree => {
-                assert_eq!(config.topology.n_nodes, Some(3));
-                assert_eq!(
-                    config.topology.fat_tree_config,
-                    Some(FatTreeConfig { k: 2 })
-                );
-            }
-
-            _ => panic!("Expected FatTree topology"),
-        }
-    }
-
-    #[test]
-    fn test_torus_topology_config_parsing() {
-        // Test preset topology configuration parsing
-        let config_content = r#"
-        protocol = "quic"
-
-        [topology]
-        type = "torus"
-        n_nodes = 4
-        torus_config = { dim = 2, n = 2 }
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify preset topology configuration
-        assert!(config.topology.topology_type.is_some());
-        match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::Torus => {
-                assert_eq!(config.topology.n_nodes, Some(4));
-                assert_eq!(
-                    config.topology.torus_config,
-                    Some(TorusConfig { dim: 2, n: 2 })
-                );
-            }
-            _ => panic!("Expected Torus topology"),
-        }
-    }
-
-    #[test]
-    fn test_ring_topology_config_parsing() {
-        // Test ring topology configuration parsing
-        let config_content = r#"
-        protocol = "quic"
-
-        [topology]
-        type = "torus"
-        n_nodes = 4
-
-        [[routes]]
-        route = [1, 3, 4]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify preset topology configuration
-        assert!(config.topology.topology_type.is_some());
-        match config.topology.topology_type.as_ref().unwrap() {
-            PresetTopology::Torus => {
-                assert_eq!(config.topology.n_nodes, Some(4));
-            }
-            _ => panic!("Expected Torus topology"),
-        }
-
-        // Verify custom routes are present
-        assert_eq!(config.routes.len(), 1);
-        assert_eq!(config.routes[0].route, vec![1, 3, 4]);
-    }
-
-    #[test]
-    fn test_route_id_assignment_only_custom_routes() {
-        // Test route_id assignment for only custom routes (no preset topology)
-        let config_content = r#"
-        protocol = "quic"
-
-        [[routes]]
-        route = [1, 2, 3]
-
-        [[routes]]
-        route = [3, 2, 1]
-
-        [[routes]]
-        route = [1, 4, 2]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify no preset topology
-        assert!(config.topology.topology_type.is_none());
-
-        // Verify custom routes
-        assert_eq!(config.routes.len(), 3);
-        assert_eq!(config.routes[0].route, vec![1, 2, 3]);
-        assert_eq!(config.routes[1].route, vec![3, 2, 1]);
-        assert_eq!(config.routes[2].route, vec![1, 4, 2]);
-
-        info!("✓ Only custom routes configuration parsed correctly");
-        info!("  - Custom routes should get route_id: 0, 1, 2");
-    }
-
-    #[test]
-    fn test_controller_config_toml_format() {
-        // Test the exact format used in controller-config.toml
-        let config_content = r#"
-        protocol = "quic"
-
-        # Forward routes: Node 1 to Node 4
-        [[routes]]
-        route = [1, 2, 3, 4]
-
-        [[routes]]
-        route = [1, 3, 2, 4]
-
-        [[routes]]
-        route = [1, 3, 4]
-
-        # Reverse routes: Node 4 to Node 1
-        [[routes]]
-        route = [4, 3, 2, 1]
-
-        [[routes]]
-        route = [4, 2, 3, 1]
-
-        [[routes]]
-        route = [4, 3, 1]
-
-        # Node 1 to Node 2
-        [[routes]]
-        route = [1, 2]
-
-        # Node 2 to Node 1
-        [[routes]]
-        route = [2, 1]
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify basic settings
-        assert_eq!(config.protocol, Protocol::Quic);
-
-        // Verify no preset topology
-        assert!(config.topology.topology_type.is_none());
-
-        // Verify all 8 routes are parsed correctly
-        assert_eq!(config.routes.len(), 8);
-
-        // Verify specific routes
-        assert_eq!(config.routes[0].route, vec![1, 2, 3, 4]);
-        assert_eq!(config.routes[1].route, vec![1, 3, 2, 4]);
-        assert_eq!(config.routes[2].route, vec![1, 3, 4]);
-        assert_eq!(config.routes[3].route, vec![4, 3, 2, 1]);
-        assert_eq!(config.routes[4].route, vec![4, 2, 3, 1]);
-        assert_eq!(config.routes[5].route, vec![4, 3, 1]);
-        assert_eq!(config.routes[6].route, vec![1, 2]);
-        assert_eq!(config.routes[7].route, vec![2, 1]);
-
-        info!("✓ Controller-config.toml format parsed correctly");
-        info!("  - 8 custom routes should get route_id: 0, 1, 2, 3, 4, 5, 6, 7");
-    }
-
-    #[test]
-    fn test_empty_routes_handling() {
-        // Test handling of configuration with no routes
-        let config_content = r#"
-        protocol = "quic"
-        "#;
-
-        let config: Config = toml::from_str(config_content).expect("Failed to parse TOML");
-
-        // Verify basic settings
-        assert_eq!(config.protocol, Protocol::Quic);
-
-        // Verify no routes
-        assert_eq!(config.routes.len(), 0);
-        assert!(config.topology.topology_type.is_none());
-
-        info!("✓ Empty routes configuration handled correctly");
-    }
+    use petgraph::Direction;
+    use petgraph::graph::{DiGraph, NodeIndex};
+    use petgraph::graphmap::DiGraphMap;
 
     #[test]
     fn test_graph_parsing_and_digraph_build() {
@@ -505,22 +248,39 @@ mod tests {
         let toml_content = r#"
         protocol = "tcp"
 
-        [[graphs]]
-        edges = [[1, 2], [2, 3], [3, 4]]
+        [[routes]]
+        edges = [[7,2],[2, 5], [2, 3], [3, 4], [4, 5]]
         "#;
 
         let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
+        let edges = config.routes[0].edges.clone();
 
         // Verify edges of the first graph
-        assert_eq!(config.graphs[0].edges, vec![(1, 2), (2, 3), (3, 4)]);
+        assert_eq!(edges, vec![(7, 2), (2, 5), (2, 3), (3, 4), (4, 5)]);
 
-        // Build a DiGraph
-        use petgraph::graph::DiGraph;
-        let dag = DiGraph::<u32, ()>::from_edges(&config.graphs[0].edges);
-        println!("dag: {:?}", dag);
-        // Verify the number of nodes and edges in the DiGraphs
-        // Petagraph starts indexing from 0, so the largest node index + 1 is the number of nodes
-        assert_eq!(dag.node_count(), 5);
-        assert_eq!(dag.edge_count(), 3);
+        // Build a DiGraphMap from the edges
+        let route = DiGraphMap::<u32, ()>::from_edges(&edges);
+
+        // Verify the number of nodes and edges in the DiGraphMap
+        assert_eq!(route.node_count(), 5);
+        assert_eq!(route.edge_count(), 5);
+
+        // Verify the neighbors of node 2
+        let neighbors = route.neighbors(2).collect::<Vec<u32>>();
+        assert_eq!(neighbors, vec![5, 3]);
+        
+        // Verify dst node
+        let dst_node_id = route.nodes().find(|id| route.neighbors_directed(*id, Direction::Outgoing).count() == 0).unwrap();
+        assert_eq!(dst_node_id, 5);
+
+        // Finds neighbors with DiGraph approach
+        let graph = DiGraph::<u32, ()>::from_edges(&edges);
+        let current_node = 2;
+        let neighbors = graph.neighbors(current_node.into()).map(|idx| NodeIndex::index(idx)).collect::<Vec<_>>();
+        assert_eq!(neighbors, vec![3, 5]);
+
+        // IMPORTANT: petgraph will always start from 0 even if this node is not in the edges
+        let nodes = graph.node_indices().map(|idx| NodeIndex::index(idx)).collect::<Vec<_>>();
+        assert_ne!(nodes, vec![2,3,4,5,7]);
     }
 }
