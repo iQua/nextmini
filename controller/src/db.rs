@@ -218,8 +218,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         match preset_topology {
             config::PresetTopology::FullMesh => {
                 let mut edges = Vec::new();
-                for src_node_id in 0..n_nodes {
-                    for dst_node_id in src_node_id + 1..n_nodes {
+                for src_node_id in 1..=n_nodes {
+                    for dst_node_id in src_node_id + 1..=n_nodes {
                         edges.push(vec![src_node_id, dst_node_id]);
                     }
                 }
@@ -240,8 +240,6 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 .expect("Failed to insert full mesh graph");
             }
             config::PresetTopology::FatTree => {
-                error!("FatTree topology is not supported yet.");
-
                 match &config.topology.fat_tree_config {
                     Some(fat_tree_config) => {
                         let edges = fat_tree_config.build().unwrap();
@@ -264,11 +262,8 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         error!("Fat tree configuration is not provided.");
                     }
                 }
-
             }
             config::PresetTopology::Torus => {
-                error!("Torus topology is not supported yet.");
-                
                 match &config.topology.torus_config {
                     Some(torus_config) => {
                         let edges = torus_config.build().unwrap();
@@ -291,7 +286,6 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                         error!("Torus configuration is not provided.");
                     }
                 }
-
             }
         }
     }
