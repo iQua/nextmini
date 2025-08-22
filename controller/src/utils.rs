@@ -2,8 +2,8 @@
 use std::net::Ipv4Addr;
 
 use tracing::debug;
-use petgraph::Direction;
-use petgraph::graph::DiGraph;
+use petgraph::Direction::{Outgoing, Incoming};
+use petgraph::graphmap::DiGraphMap;
 
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, NodeSpec, OperatingMode, Protocol,
@@ -87,88 +87,72 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     );
 
     for route in routes {
-        let route_id = route.route_id;
-        let directed = route.directed;
-        let mut edges = route.edges;
+        match route.directed {
+            true => {
+                // DiGraph is not used because it will always start NodeIndex from 0 no matter if it is in the edges.
+                // If multicast is needed in the future, DiGraphMap can be switched to DiGraph easily so as to 
+                // leverage petgraph::algo instead of current src_node, dst_node, next_hops search pattern.
+                let graph = DiGraphMap::<u32, ()>::from_edges(&route.edges);
 
-        // adds the reverse edges for undirected routes
-        if !directed{
-            for (a, b) in edges.clone(){
-                edges.push((b, a));
+                // assumes single-source, single-destination routes
+                let dst_node_id = graph.nodes().find(|id| graph.neighbors_directed(*id, Outgoing).count() == 0).unwrap();
+                let src_node_id = graph.nodes().find(|id| graph.neighbors_directed(*id, Incoming).count() == 0).unwrap();
+                
+                debug!(
+                    "Using src_node_id: {} (first hop), dst_node_id: {} (last hop)",
+                    src_node_id, dst_node_id
+                );
+                
+                // finds next hops
+                let next_hops = if graph.contains_node(node_id) {
+                    if graph.neighbors_directed(node_id, Outgoing).count() == 0 {
+                        // The node is the destination - next hop is itself (local delivery)
+                        vec![node_id as usize]
+                    } else {
+                        // The node is in the middle of the route - next hops are the neighbors
+                        graph.neighbors(node_id).map(|id| id as usize).collect::<Vec<_>>()
+                    }
+                } else {
+                    // The node is not in the route - setting next_hop to 0
+                    debug!(
+                        "Node {} is not in DAG {:?}, setting next_hop to 0.",
+                        node_id, graph
+                    );
+
+                    vec![0]
+                };
+
+                debug!(
+                    "Added customized route entry: route_id={}, next_hops={:?}, src_node_id={}, dst_node_id={}.",
+                    route.route_id, next_hops, src_node_id, dst_node_id
+                );
+
+                route_entries.push(RoutingTableEntry {
+                    route_id: route.route_id,
+                    next_hops,
+                    src_node_id: src_node_id as usize,
+                    dst_node_id: dst_node_id as usize,
+                });
+
+            }
+            false => {
+                // handles topology-based routes with UnGraph
             }
         }
-
-        debug!(
-            "Processing route_id: {}, directed: {}, edges: {:?}, node_id: {}",
-            route_id, directed, edges, node_id
-        );
-
-        // converts edges to u32
-        let edges: Vec<(u32, u32)> = edges.into_iter().map(|(a, b)| (a as u32, b as u32)).collect();
-        
-        // builds the DiGraph
-        let graph = DiGraph::<u32, ()>::from_edges(edges);
-
-        // Locate the current node within the graph.
-        let current_node_index = match graph
-            .node_indices()
-            .find(|&idx| graph[idx] == node_id)
-        {
-            Some(idx) => idx,
-            None => {
-                debug!("Node {} not found in graph, skipping route", node_id);
-                continue;
-            }
-        };
-
-        // determines the source and destination nodes.
-        // assumes single-source, single-destination routes.
-        let src_node_index = graph
-            .node_indices()
-            .find(|&idx| graph.neighbors_directed(idx, Direction::Incoming).count() == 0)
-            .expect("Route must have a source node");
-        let src_node_id = graph[src_node_index] as usize;
-
-        let dst_node_index = graph
-            .node_indices()
-            .find(|&idx| graph.neighbors_directed(idx, Direction::Outgoing).count() == 0)
-            .expect("Route must have a destination node");
-        let dst_node_id = graph[dst_node_index] as usize;
-
-        // finds the next hops for the current node
-        let mut next_hops: Vec<usize> = graph
-            .neighbors(current_node_index)
-            .map(|idx| graph[idx] as usize)
-            .collect();
-
-        // accounts if at destination node
-        if next_hops.is_empty() {
-            next_hops.push(node_id as usize);
-        }
-
-        debug!(
-            "Added route entry: route_id={}, next_hops={:?}, src_node_id={}, dst_node_id={}",
-            route_id, next_hops, src_node_id, dst_node_id
-        );
-
-        route_entries.push(RoutingTableEntry {
-            route_id,
-            next_hops,
-            src_node_id,
-            dst_node_id,
-        });
     }
 
-    debug!(
-        "Finished building routes for node {}, total route entries: {}",
-        node_id,
-        route_entries.len()
-    );
-
+    
     if route_entries.is_empty() {
         debug!("No routes for node {}", node_id);
+
         None
     } else {
+        debug!(
+            "Finished building routes for node {}, total route entries: {}",
+            node_id,
+            route_entries.len()
+        );
+
         Some(ControllerToDataplane::InstallRoutes { routes: route_entries })
     }
 }
