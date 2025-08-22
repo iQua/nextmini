@@ -25,6 +25,7 @@ mod config;
 mod db;
 mod models;
 mod topo;
+mod route;
 mod utils;
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
