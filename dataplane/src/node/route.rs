@@ -2,6 +2,7 @@ use ahash::AHashMap;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, info};
+use fastrand;
 
 use crate::node::config::LocalConfig;
 use crate::node::{FlowId, FlowIdExt, NodeId};
@@ -142,7 +143,12 @@ impl RoutingTable {
             // gets the next hop by route ID
             // picks the first candidate next hop for now
             if let Some(next_hops) = self.route_next_hop.get(&route_id) {
-                return Ok(next_hops[0]);
+                if next_hops.len() > 1{
+                    let idx = fastrand::usize(..next_hops.len());
+                    return Ok(next_hops[idx]);
+                } else {
+                    return Ok(next_hops[0]);
+                }
             } else {
                 return Err(format!(
                     "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
