@@ -122,7 +122,7 @@ fn build_edge_to_aggregation_connections(
         let pod_id = edge_id / layer_switches_per_pod;
         let agg_start = num_layer_switches + pod_id * layer_switches_per_pod;
         edges.extend(
-            (agg_start..agg_start + layer_switches_per_pod).map(|agg_id| (edge_id, agg_id)),
+            (agg_start..agg_start + layer_switches_per_pod).map(|agg_id| (edge_id + 1, agg_id + 1)),
         );
     }
 }
@@ -137,7 +137,7 @@ fn build_aggregation_to_core_connections(
         let core_group = agg_id % layer_switches_per_pod;
         let core_start = 2 * num_layer_switches + core_group * core_switches_per_agg;
         edges.extend(
-            (core_start..core_start + core_switches_per_agg).map(|core_id| (agg_id, core_id)),
+            (core_start..core_start + core_switches_per_agg).map(|core_id| (agg_id + 1, core_id + 1)),
         );
     }
 }
@@ -182,7 +182,7 @@ fn build_torus_edges(dimension: u32, nodes_per_dim: u32) -> Result<Vec<(u32, u32
         .edge_indices()
         .map(|e| {
             let (a, b) = graph.edge_endpoints(e).unwrap();
-            (a.index() as u32, b.index() as u32)
+            (a.index() as u32 + 1, b.index() as u32 + 1)
         })
         .collect();
 
