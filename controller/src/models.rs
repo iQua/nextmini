@@ -22,7 +22,6 @@ pub struct DbRoute {
     pub edges: serde_json::Value,
 }
 
-
 #[derive(Clone, FromRow, Debug)]
 pub struct DbFlow {
     pub id: i32,

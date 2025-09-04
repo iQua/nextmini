@@ -1,12 +1,12 @@
+use std::collections::hash_map::RandomState;
 /// Implements utility functions for the controller.
 use std::net::Ipv4Addr;
-use std::collections::hash_map::RandomState;
 
-use tracing::{debug, info};
-use petgraph::graphmap::DiGraphMap;
-use petgraph::graph::{UnGraph, NodeIndex};
-use petgraph::Direction::{Outgoing, Incoming};
+use petgraph::Direction::{Incoming, Outgoing};
 use petgraph::algo::simple_paths::all_simple_paths;
+use petgraph::graph::{NodeIndex, UnGraph};
+use petgraph::graphmap::DiGraphMap;
+use tracing::{debug, info};
 
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, NodeSpec, OperatingMode, Protocol,
@@ -14,7 +14,7 @@ use nextmini_messages::{
 };
 
 use crate::models::{DbFlow, Route};
-use crate::route::{ShortestPath, RoutingProtocol};
+use crate::route::{RoutingProtocol, ShortestPath};
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
@@ -94,19 +94,25 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         match route.directed {
             true => {
                 // DiGraph is not used because it will always start NodeIndex from 0 no matter if it is in the edges.
-                // If multicast is needed in the future, DiGraphMap can be switched to DiGraph easily so as to 
+                // If multicast is needed in the future, DiGraphMap can be switched to DiGraph easily so as to
                 // leverage petgraph::algo instead of current src_node, dst_node, next_hops search pattern.
                 let graph = DiGraphMap::<u32, ()>::from_edges(&route.edges);
 
                 // assumes single-source, single-destination routes
-                let dst_node_id = graph.nodes().find(|id| graph.neighbors_directed(*id, Outgoing).count() == 0).unwrap();
-                let src_node_id = graph.nodes().find(|id| graph.neighbors_directed(*id, Incoming).count() == 0).unwrap();
-                
+                let dst_node_id = graph
+                    .nodes()
+                    .find(|id| graph.neighbors_directed(*id, Outgoing).count() == 0)
+                    .unwrap();
+                let src_node_id = graph
+                    .nodes()
+                    .find(|id| graph.neighbors_directed(*id, Incoming).count() == 0)
+                    .unwrap();
+
                 debug!(
                     "Using src_node_id: {} (first hop), dst_node_id: {} (last hop)",
                     src_node_id, dst_node_id
                 );
-                
+
                 // finds next hops
                 let next_hops = if graph.contains_node(node_id) {
                     if graph.neighbors_directed(node_id, Outgoing).count() == 0 {
@@ -114,7 +120,10 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
                         vec![node_id as usize]
                     } else {
                         // The node is in the middle of the route - next hops are the neighbors
-                        graph.neighbors(node_id).map(|id| id as usize).collect::<Vec<_>>()
+                        graph
+                            .neighbors(node_id)
+                            .map(|id| id as usize)
+                            .collect::<Vec<_>>()
                     }
                 } else {
                     // The node is not in the route - setting next_hop to 0
@@ -137,7 +146,6 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
                     src_node_id: src_node_id as usize,
                     dst_node_id: dst_node_id as usize,
                 });
-
             }
             false => {
                 let current_node = NodeIndex::from(node_id);
@@ -156,11 +164,16 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
 
                         // increments the route_id
                         route_id += 1;
-                        
-                        let path = shortest_path.compute_route(NodeIndex::from(src_node_id as u32), NodeIndex::from(dst_node_id as u32));
+
+                        let path = shortest_path.compute_route(
+                            NodeIndex::from(src_node_id as u32),
+                            NodeIndex::from(dst_node_id as u32),
+                        );
 
                         // finds next hop for current node in the path
-                        let next_hop = if let Some(idx) = path.iter().position(|idx| idx == &current_node) {
+                        let next_hop = if let Some(idx) =
+                            path.iter().position(|idx| idx == &current_node)
+                        {
                             if idx == path.len() - 1 {
                                 // The node is the destination – next hop is itself (local delivery)
                                 path[idx].index() as usize
@@ -206,7 +219,9 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             route_entries.len()
         );
 
-        Some(ControllerToDataplane::InstallRoutes { routes: route_entries })
+        Some(ControllerToDataplane::InstallRoutes {
+            routes: route_entries,
+        })
     }
 }
 

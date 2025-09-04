@@ -269,19 +269,28 @@ mod tests {
         // Verify the neighbors of node 2
         let neighbors = route.neighbors(2).collect::<Vec<u32>>();
         assert_eq!(neighbors, vec![5, 3]);
-        
+
         // Verify dst node
-        let dst_node_id = route.nodes().find(|id| route.neighbors_directed(*id, Direction::Outgoing).count() == 0).unwrap();
+        let dst_node_id = route
+            .nodes()
+            .find(|id| route.neighbors_directed(*id, Direction::Outgoing).count() == 0)
+            .unwrap();
         assert_eq!(dst_node_id, 5);
 
         // Finds neighbors with DiGraph approach
         let graph = DiGraph::<u32, ()>::from_edges(&edges);
         let current_node = 2;
-        let neighbors = graph.neighbors(current_node.into()).map(|idx| NodeIndex::index(idx)).collect::<Vec<_>>();
+        let neighbors = graph
+            .neighbors(current_node.into())
+            .map(|idx| NodeIndex::index(idx))
+            .collect::<Vec<_>>();
         assert_eq!(neighbors, vec![3, 5]);
 
         // IMPORTANT: petgraph will always start from 0 even if this node is not in the edges
-        let nodes = graph.node_indices().map(|idx| NodeIndex::index(idx)).collect::<Vec<_>>();
-        assert_ne!(nodes, vec![2,3,4,5,7]);
+        let nodes = graph
+            .node_indices()
+            .map(|idx| NodeIndex::index(idx))
+            .collect::<Vec<_>>();
+        assert_ne!(nodes, vec![2, 3, 4, 5, 7]);
     }
 }

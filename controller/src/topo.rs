@@ -26,7 +26,7 @@ pub enum TopologyError {
 pub type Result<T> = std::result::Result<T, TopologyError>;
 
 pub trait TopologyBuilder {
-    fn build(&self) -> Result<Vec<(u32,u32)>>;
+    fn build(&self) -> Result<Vec<(u32, u32)>>;
 }
 
 impl TopologyBuilder for FatTreeConfig {
