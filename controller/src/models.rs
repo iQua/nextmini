@@ -15,6 +15,7 @@ pub struct Route {
     pub directed: bool,
     pub edges: Vec<(u32, u32)>,
 }
+
 #[derive(Clone, FromRow, Debug)]
 pub struct DbRoute {
     pub route_id: i32,

@@ -1,8 +1,8 @@
 use ahash::AHashMap;
+use fastrand;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, info};
-use fastrand;
 
 use crate::node::config::LocalConfig;
 use crate::node::{FlowId, FlowIdExt, NodeId};
@@ -50,8 +50,9 @@ impl RoutingTable {
 
         // builds the routing table from routes
         for route in routes {
-            // route ID → next hops 
-            self.route_next_hop.insert(route.route_id, route.next_hops.clone());
+            // route ID → next hops
+            self.route_next_hop
+                .insert(route.route_id, route.next_hops.clone());
 
             // installs route based on node IDs for both TUN and user space
             let node_id_pair = (route.src_node_id, route.dst_node_id);
@@ -143,7 +144,7 @@ impl RoutingTable {
             // gets the next hop by route ID
             // picks the first candidate next hop for now
             if let Some(next_hops) = self.route_next_hop.get(&route_id) {
-                if next_hops.len() > 1{
+                if next_hops.len() > 1 {
                     let idx = fastrand::usize(..next_hops.len());
                     return Ok(next_hops[idx]);
                 } else {
