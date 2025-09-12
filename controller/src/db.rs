@@ -239,54 +239,50 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 .await
                 .expect("Failed to insert full mesh graph");
             }
-            config::PresetTopology::FatTree => {
-                match &config.topology.fat_tree_config {
-                    Some(fat_tree_config) => {
-                        let edges = fat_tree_config.build().unwrap();
-                        let edges: serde_json::Value =
-                            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
-                            
-                        let _result = sqlx::query(
-                            r#"
+            config::PresetTopology::FatTree => match &config.topology.fat_tree_config {
+                Some(fat_tree_config) => {
+                    let edges = fat_tree_config.build().unwrap();
+                    let edges: serde_json::Value =
+                        serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+
+                    let _result = sqlx::query(
+                        r#"
                             INSERT INTO routes (directed, edges)
                             VALUES ($1, $2)
                             "#,
-                        )
-                        .bind(false)
-                        .bind(edges)
-                        .fetch_optional(&pool)
-                        .await
-                        .expect("Failed to insert fat tree graph");
-                    }
-                    None => {
-                        error!("Fat tree configuration is not provided.");
-                    }
+                    )
+                    .bind(false)
+                    .bind(edges)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("Failed to insert fat tree graph");
                 }
-            }
-            config::PresetTopology::Torus => {
-                match &config.topology.torus_config {
-                    Some(torus_config) => {
-                        let edges = torus_config.build().unwrap();
-                        let edges: serde_json::Value =
-                            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
-                    
-                        let _result = sqlx::query(
-                            r#"
-                            INSERT INTO routes (directed, edges)    
+                None => {
+                    error!("Fat tree configuration is not provided.");
+                }
+            },
+            config::PresetTopology::Torus => match &config.topology.torus_config {
+                Some(torus_config) => {
+                    let edges = torus_config.build().unwrap();
+                    let edges: serde_json::Value =
+                        serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+
+                    let _result = sqlx::query(
+                        r#"
+                            INSERT INTO routes (directed, edges)
                             VALUES ($1, $2)
                             "#,
-                        )
-                        .bind(false)
-                        .bind(edges)
-                        .fetch_optional(&pool)  
-                        .await
-                        .expect("Failed to insert torus graph");
-                    }
-                    None => {
-                        error!("Torus configuration is not provided.");
-                    }
+                    )
+                    .bind(false)
+                    .bind(edges)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("Failed to insert torus graph");
                 }
-            }
+                None => {
+                    error!("Torus configuration is not provided.");
+                }
+            },
         }
     }
 
@@ -458,16 +454,17 @@ pub async fn setup_route_notification(
                         // all routes from the database and re-install them all
                         info!("Installing route updates into the dataplane.");
 
-                        let routes_db: Vec<DbRoute> = sqlx::query_as::<_, DbRoute>("SELECT * FROM routes")
-                            .fetch_all(&*db_pool)
-                            .await
-                            .expect("Failed to fetch routes");
+                        let routes_db: Vec<DbRoute> =
+                            sqlx::query_as::<_, DbRoute>("SELECT * FROM routes")
+                                .fetch_all(&*db_pool)
+                                .await
+                                .expect("Failed to fetch routes");
 
                         let routes: Vec<Route> = routes_db
                             .iter()
                             .map(|r| {
-                                let edges_i32: Vec<(i32, i32)> = serde_json::from_value(r.edges.clone())
-                                    .unwrap_or_default();
+                                let edges_i32: Vec<(i32, i32)> =
+                                    serde_json::from_value(r.edges.clone()).unwrap_or_default();
                                 let edges: Vec<(u32, u32)> = edges_i32
                                     .into_iter()
                                     .map(|(a, b)| (a as u32, b as u32))
