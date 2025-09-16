@@ -289,7 +289,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         // if there is no preset topo specified
         // treats provided edges in topology sectionas an undirected topology(bidirectional)
         info!("Adding custom topology from the configuration file.");
-        
+
         if let Some(topo_edge) = &config.topology.edges {
             if !topo_edge.is_empty() {
                 let edges: serde_json::Value = serde_json::to_value(topo_edge)
@@ -308,23 +308,22 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 .expect("Failed to insert custom topology");
 
                 info!("Inserted custom undirected topology from edges.");
-            } 
+            }
         }
     }
 
-
-    // adds custom(predefined) routes(DAGs) from the configuration file
+    // adds custom(predefined) routes from the configuration file
     info!("Adding custom routes from the configuration file.");
 
-    for dag in config.routes.clone() {
-        if dag.edges.is_empty() {
+    for route in config.routes.clone() {
+        if route.edges.is_empty() {
             warn!("Skipping empty route");
             continue;
         }
 
         // converts edges into JSON.
         let edges_json: serde_json::Value =
-            serde_json::to_value(&dag.edges).expect("Failed to convert edges to JSON");
+            serde_json::to_value(&route.edges).expect("Failed to convert edges to JSON");
         let directed = true;
 
         let result = sqlx::query(
@@ -345,7 +344,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             info!(
                 "Created route_id {} with {} edges.",
                 route_id,
-                dag.edges.len()
+                route.edges.len()
             );
         }
     }

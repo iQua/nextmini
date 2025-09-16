@@ -128,7 +128,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
                 } else {
                     // The node is not in the route - setting next_hop to 0
                     debug!(
-                        "Node {} is not in DAG {:?}, setting next_hop to 0.",
+                        "Node {} is not in Route {:?}, setting next_hop to 0.",
                         node_id, graph
                     );
 

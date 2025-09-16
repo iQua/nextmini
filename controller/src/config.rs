@@ -9,7 +9,7 @@ use tracing::{error, info};
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct DAG {
+pub struct Route {
     pub edges: Vec<(u32, u32)>,
 }
 
@@ -102,7 +102,7 @@ pub struct Config {
 
     /// A vector of directed acyclic graphs.
     #[serde(default)]
-    pub routes: Vec<DAG>,
+    pub routes: Vec<Route>,
 
     /// A vector of link rates.
     #[serde(default)]
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn test_graph_parsing_and_digraph_build() {
-        // Test parsing of graphs (DAGs) and building a DiGraph using petgraph
+        // Test parsing of graphs (Routes) and building a DiGraph using petgraph
         let toml_content = r#"
         protocol = "tcp"
 
