@@ -8,10 +8,6 @@ use tracing::{error, info};
 
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct Route {
-    pub edges: Vec<(u32, u32)>,
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
@@ -61,6 +57,21 @@ pub struct Topology {
     pub edges: Option<Vec<(u32, u32)>>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingProtocol {
+    ShortestPath,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct Route {
+    #[serde(default)]
+    pub route: Vec<(u32, u32)>,
+
+    #[serde(default)]
+    pub protocol: Option<RoutingProtocol>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LinkRate {
     pub src_node_id: usize,
@@ -100,9 +111,9 @@ pub struct Config {
     #[serde(default = "default_protocol")]
     pub protocol: Protocol,
 
-    /// A vector of directed acyclic graphs.
+    /// The routes configuration
     #[serde(default)]
-    pub routes: Vec<Route>,
+    pub routes: Route,
 
     /// A vector of link rates.
     #[serde(default)]
@@ -236,64 +247,5 @@ impl Default for Config {
             db: default_db_config(),
             nodes: Vec::new(),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use petgraph::Direction;
-    use petgraph::graph::{DiGraph, NodeIndex};
-    use petgraph::graphmap::DiGraphMap;
-
-    #[test]
-    fn test_graph_parsing_and_digraph_build() {
-        // Test parsing of graphs (Routes) and building a DiGraph using petgraph
-        let toml_content = r#"
-        protocol = "tcp"
-
-        [[routes]]
-        edges = [[7,2],[2, 5], [2, 3], [3, 4], [4, 5]]
-        "#;
-
-        let config: Config = toml::from_str(toml_content).expect("Failed to parse TOML");
-        let edges = config.routes[0].edges.clone();
-
-        // Verify edges of the first graph
-        assert_eq!(edges, vec![(7, 2), (2, 5), (2, 3), (3, 4), (4, 5)]);
-
-        // Build a DiGraphMap from the edges
-        let route = DiGraphMap::<u32, ()>::from_edges(&edges);
-
-        // Verify the number of nodes and edges in the DiGraphMap
-        assert_eq!(route.node_count(), 5);
-        assert_eq!(route.edge_count(), 5);
-
-        // Verify the neighbors of node 2
-        let neighbors = route.neighbors(2).collect::<Vec<u32>>();
-        assert_eq!(neighbors, vec![5, 3]);
-
-        // Verify dst node
-        let dst_node_id = route
-            .nodes()
-            .find(|id| route.neighbors_directed(*id, Direction::Outgoing).count() == 0)
-            .unwrap();
-        assert_eq!(dst_node_id, 5);
-
-        // Finds neighbors with DiGraph approach
-        let graph = DiGraph::<u32, ()>::from_edges(&edges);
-        let current_node = 2;
-        let neighbors = graph
-            .neighbors(current_node.into())
-            .map(|idx| NodeIndex::index(idx))
-            .collect::<Vec<_>>();
-        assert_eq!(neighbors, vec![3, 5]);
-
-        // IMPORTANT: petgraph will always start from 0 even if this node is not in the edges
-        let nodes = graph
-            .node_indices()
-            .map(|idx| NodeIndex::index(idx))
-            .collect::<Vec<_>>();
-        assert_ne!(nodes, vec![2, 3, 4, 5, 7]);
     }
 }
