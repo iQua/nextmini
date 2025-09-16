@@ -119,9 +119,9 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
                         // The node is the destination - next hop is itself (local delivery)
                         vec![node_id as usize]
                     } else {
-                        // The node is in the middle of the route - next hops are the neighbors
+                        // The node is in the middle of the route - next hops are the outgoing neighbors
                         graph
-                            .neighbors(node_id)
+                            .neighbors_directed(node_id, Outgoing)
                             .map(|id| id as usize)
                             .collect::<Vec<_>>()
                     }
