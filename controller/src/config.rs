@@ -56,6 +56,9 @@ pub struct Topology {
 
     #[serde(default)]
     pub torus_config: Option<TorusConfig>,
+
+    #[serde(default)]
+    pub edges: Option<Vec<(u32, u32)>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

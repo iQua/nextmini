@@ -208,6 +208,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     reset_db(&pool).await;
 
     // adds the topology and direct links between neighbouring nodes as initial routes
+    // if has the preset topology field, uses the preset topology
     if let Some(preset_topology) = &config.topology.topology_type {
         let n_nodes = config.topology.n_nodes.unwrap_or(0);
         info!(
@@ -284,8 +285,35 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 }
             },
         }
+    } else {
+        // if there is no preset topo specified
+        // treats provided edges in topology sectionas an undirected topology(bidirectional)
+        info!("Adding custom topology from the configuration file.");
+        
+        if let Some(topo_edge) = &config.topology.edges {
+            if !topo_edge.is_empty() {
+                let edges: serde_json::Value = serde_json::to_value(topo_edge)
+                    .expect("Failed to convert custom edges to JSON");
+
+                let _result = sqlx::query(
+                    r#"
+                    INSERT INTO routes (directed, edges)
+                    VALUES ($1, $2)
+                    "#,
+                )
+                .bind(false)
+                .bind(edges)
+                .fetch_optional(&pool)
+                .await
+                .expect("Failed to insert custom topology");
+
+                info!("Inserted custom undirected topology from edges.");
+            } 
+        }
     }
 
+
+    // adds custom(predefined) routes(DAGs) from the configuration file
     info!("Adding custom routes from the configuration file.");
 
     for dag in config.routes.clone() {
