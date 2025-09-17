@@ -12,14 +12,12 @@ pub struct Node {
 #[derive(Clone, Debug)]
 pub struct Route {
     pub route_id: usize,
-    pub directed: bool,
     pub edges: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, FromRow, Debug)]
 pub struct DbRoute {
     pub route_id: i32,
-    pub directed: bool,
     pub edges: serde_json::Value,
 }
 

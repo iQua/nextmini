@@ -113,7 +113,7 @@ pub struct Config {
 
     /// The routes configuration
     #[serde(default)]
-    pub routes: Route,
+    pub routes: Vec<Route>,
 
     /// A vector of link rates.
     #[serde(default)]
