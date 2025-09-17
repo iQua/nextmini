@@ -24,8 +24,8 @@ use crate::utils::{build_routes_for_node, build_startup_response};
 mod config;
 mod db;
 mod models;
-mod topo;
 mod route;
+mod topo;
 mod utils;
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
@@ -58,7 +58,10 @@ async fn main() {
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
             Err(e) => {
-                error!("Failed to accept WebSocket connection from {}: {}. Skipping.", peer, e);
+                error!(
+                    "Failed to accept WebSocket connection from {}: {}. Skipping.",
+                    peer, e
+                );
                 continue;
             }
         };
@@ -263,9 +266,7 @@ async fn handle_connection(
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
 
-                        let routes = match sqlx::query_as(
-                            r#"SELECT route_id, directed, edges FROM routes"#,
-                        )
+                        let routes = match sqlx::query_as(r#"SELECT route_id, edges FROM routes"#)
                             .fetch_all(&*db_pool)
                             .await
                         {
@@ -273,8 +274,9 @@ async fn handle_connection(
                                 .into_iter()
                                 .map(|row: DbRoute| {
                                     // converts i32 to u32 edges
-                                    let edges: Vec<(i32, i32)> = serde_json::from_value(row.edges.clone())
-                                        .unwrap_or_default();
+                                    let edges: Vec<(i32, i32)> =
+                                        serde_json::from_value(row.edges.clone())
+                                            .unwrap_or_default();
                                     let edges: Vec<(u32, u32)> = edges
                                         .into_iter()
                                         .map(|(a, b)| (a as u32, b as u32))
@@ -282,7 +284,6 @@ async fn handle_connection(
 
                                     Route {
                                         route_id: row.route_id as usize,
-                                        directed: row.directed,
                                         edges,
                                     }
                                 })
@@ -293,7 +294,12 @@ async fn handle_connection(
                             }
                         };
 
-                        if let Some(msg) = build_routes_for_node(routes, node_id as u32) {
+                        // builds topology edges from the config
+                        let topology_edges = topo::build_topology_edges_from_config(&config);
+
+                        if let Some(msg) =
+                            build_routes_for_node(routes, node_id as u32, topology_edges)
+                        {
                             match write_arc
                                 .lock()
                                 .await
