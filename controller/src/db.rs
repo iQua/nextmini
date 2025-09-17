@@ -14,7 +14,6 @@ use sqlx::{Pool, Postgres, Row};
 use crate::WebSocketWriter;
 use crate::config;
 use crate::models::{DbFlow, DbRoute, Route};
-use crate::topo::TopologyBuilder;
 use crate::utils::{build_flows_for_node, build_routes_for_node};
 use tracing::{error, info, warn};
 
@@ -68,13 +67,11 @@ async fn create_db(pool: &Pool<Postgres>) {
     .expect("Failed to create flows table");
 
     // route_id: Unique identifier for the route, automatically assigned by controller.
-    // directed: Whether the route is directed.
     // edges: All edges in the route, as an array of node IDs. e.g. [[1, 2], [2, 3]]
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS routes (
             route_id SERIAL PRIMARY KEY,
-            directed BOOLEAN NOT NULL,
             edges JSONB NOT NULL
         )
         "#,
@@ -161,7 +158,6 @@ async fn reset_db(pool: &Pool<Postgres>) {
         r#"
         CREATE TABLE routes (
             route_id SERIAL PRIMARY KEY,
-            directed BOOLEAN NOT NULL,
             edges JSONB NOT NULL
         )
         "#,
@@ -207,144 +203,37 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     create_db(&pool).await;
     reset_db(&pool).await;
 
-    // adds the topology and direct links between neighbouring nodes as initial routes
-    // if has the preset topology field, uses the preset topology
-    if let Some(preset_topology) = &config.topology.topology_type {
-        let n_nodes = config.topology.n_nodes.unwrap_or(0);
-        info!(
-            "Adding the {:?} topology with {} nodes.",
-            preset_topology, n_nodes
-        );
-
-        match preset_topology {
-            config::PresetTopology::FullMesh => {
-                let mut edges = Vec::new();
-                for src_node_id in 1..=n_nodes {
-                    for dst_node_id in src_node_id + 1..=n_nodes {
-                        edges.push(vec![src_node_id, dst_node_id]);
-                    }
-                }
-
-                let edges: serde_json::Value =
-                    serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
-
-                let _result = sqlx::query(
-                    r#"
-                    INSERT INTO routes (directed, edges)
-                    VALUES ($1, $2)
-                    "#,
-                )
-                .bind(false)
-                .bind(edges)
-                .fetch_optional(&pool)
-                .await
-                .expect("Failed to insert full mesh graph");
-            }
-            config::PresetTopology::FatTree => match &config.topology.fat_tree_config {
-                Some(fat_tree_config) => {
-                    let edges = fat_tree_config.build().unwrap();
-                    let edges: serde_json::Value =
-                        serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
-
-                    let _result = sqlx::query(
-                        r#"
-                            INSERT INTO routes (directed, edges)
-                            VALUES ($1, $2)
-                            "#,
-                    )
-                    .bind(false)
-                    .bind(edges)
-                    .fetch_optional(&pool)
-                    .await
-                    .expect("Failed to insert fat tree graph");
-                }
-                None => {
-                    error!("Fat tree configuration is not provided.");
-                }
-            },
-            config::PresetTopology::Torus => match &config.topology.torus_config {
-                Some(torus_config) => {
-                    let edges = torus_config.build().unwrap();
-                    let edges: serde_json::Value =
-                        serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
-
-                    let _result = sqlx::query(
-                        r#"
-                            INSERT INTO routes (directed, edges)
-                            VALUES ($1, $2)
-                            "#,
-                    )
-                    .bind(false)
-                    .bind(edges)
-                    .fetch_optional(&pool)
-                    .await
-                    .expect("Failed to insert torus graph");
-                }
-                None => {
-                    error!("Torus configuration is not provided.");
-                }
-            },
-        }
-    } else {
-        // if there is no preset topo specified
-        // treats provided edges in topology sectionas an undirected topology(bidirectional)
-        info!("Adding custom topology from the configuration file.");
-
-        if let Some(topo_edge) = &config.topology.edges {
-            if !topo_edge.is_empty() {
-                let edges: serde_json::Value = serde_json::to_value(topo_edge)
-                    .expect("Failed to convert custom edges to JSON");
-
-                let _result = sqlx::query(
-                    r#"
-                    INSERT INTO routes (directed, edges)
-                    VALUES ($1, $2)
-                    "#,
-                )
-                .bind(false)
-                .bind(edges)
-                .fetch_optional(&pool)
-                .await
-                .expect("Failed to insert custom topology");
-
-                info!("Inserted custom undirected topology from edges.");
-            }
-        }
-    }
-
-    // adds custom(predefined) routes from the configuration file
+    // adds custom routes from the configuration file
     info!("Adding custom routes from the configuration file.");
 
     for route in config.routes.clone() {
-        if route.edges.is_empty() {
+        if route.route.is_empty() {
             warn!("Skipping empty route");
             continue;
         }
 
         // converts edges into JSON.
         let edges_json: serde_json::Value =
-            serde_json::to_value(&route.edges).expect("Failed to convert edges to JSON");
-        let directed = true;
+            serde_json::to_value(&route.route).expect("Failed to convert edges to JSON");
 
         let result = sqlx::query(
             r#"
-            INSERT INTO routes (directed, edges)
-            VALUES ($1, $2)
+            INSERT INTO routes (edges)
+            VALUES ($1)
             RETURNING route_id
             "#,
         )
-        .bind(directed)
         .bind(edges_json)
         .fetch_optional(&pool)
         .await
-        .expect("Failed to insert graph");
+        .expect("Failed to insert custom route");
 
         if let Some(row) = result {
             let route_id: i32 = row.get("route_id");
             info!(
                 "Created route_id {} with {} edges.",
                 route_id,
-                route.edges.len()
+                route.route.len()
             );
         }
     }
@@ -499,7 +388,6 @@ pub async fn setup_route_notification(
 
                                 Route {
                                     route_id: r.route_id as usize,
-                                    directed: r.directed,
                                     edges,
                                 }
                             })
@@ -510,7 +398,7 @@ pub async fn setup_route_notification(
 
                         for (node_id, ws_arc) in node_ws_guard.iter() {
                             if let Some(msg) =
-                                build_routes_for_node(routes.clone(), *node_id as u32)
+                                build_routes_for_node(routes.clone(), *node_id as u32, None)
                             {
                                 let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
