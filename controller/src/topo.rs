@@ -3,7 +3,8 @@ use tracing::info;
 use petgraph::graph::{NodeIndex, UnGraph};
 use thiserror::Error;
 
-use crate::config::{FatTreeConfig, TorusConfig};
+use crate::config;
+use crate::config::{FatTreeConfig, PresetTopology, TorusConfig};
 
 #[derive(Error, Debug)]
 pub enum TopologyError {
@@ -137,7 +138,8 @@ fn build_aggregation_to_core_connections(
         let core_group = agg_id % layer_switches_per_pod;
         let core_start = 2 * num_layer_switches + core_group * core_switches_per_agg;
         edges.extend(
-            (core_start..core_start + core_switches_per_agg).map(|core_id| (agg_id + 1, core_id + 1)),
+            (core_start..core_start + core_switches_per_agg)
+                .map(|core_id| (agg_id + 1, core_id + 1)),
         );
     }
 }
@@ -244,5 +246,27 @@ fn build_3d_torus_edges(graph: &mut UnGraph<(), ()>, nodes_per_dim: u32) {
                 graph.add_edge(current_idx, next_k_idx, ());
             }
         }
+    }
+}
+
+// builds preset topology edges from config
+pub fn build_topology_edges_from_config(config: &config::Config) -> Option<Vec<(u32, u32)>> {
+    if let Some(preset) = &config.topology.topology_type {
+        match preset {
+            PresetTopology::FullMesh => {
+                let n = config.topology.n_nodes? as u32;
+                let mut edges = Vec::new();
+                for src in 1..=n {
+                    for dst in (src + 1)..=n {
+                        edges.push((src, dst));
+                    }
+                }
+                Some(edges)
+            }
+            PresetTopology::FatTree => config.topology.fat_tree_config.as_ref()?.build().ok(),
+            PresetTopology::Torus => config.topology.torus_config.as_ref()?.build().ok(),
+        }
+    } else {
+        config.topology.edges.clone()
     }
 }
