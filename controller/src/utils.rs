@@ -1,4 +1,3 @@
-use std::collections::hash_map::RandomState;
 /// Implements utility functions for the controller.
 use std::net::Ipv4Addr;
 
