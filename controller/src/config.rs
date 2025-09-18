@@ -67,7 +67,10 @@ pub enum RoutingProtocol {
 pub struct Route {
     #[serde(default)]
     pub route: Vec<(u32, u32)>,
+}
 
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct Routing {
     #[serde(default)]
     pub protocol: Option<RoutingProtocol>,
 }
@@ -114,6 +117,10 @@ pub struct Config {
     /// The routes configuration
     #[serde(default)]
     pub routes: Vec<Route>,
+
+    /// Routing protocol configuration for generated routes from topology.
+    #[serde(default)]
+    pub routing: Routing,
 
     /// A vector of link rates.
     #[serde(default)]
@@ -243,6 +250,7 @@ impl Default for Config {
             flows: Vec::new(),
             link_rates: Vec::new(),
             topology: Topology::default(),
+            routing: Routing::default(),
             scheduler_type: default_scheduler_type(),
             db: default_db_config(),
             nodes: Vec::new(),
