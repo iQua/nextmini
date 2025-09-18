@@ -266,7 +266,7 @@ async fn handle_connection(
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
 
-                        let routes = match sqlx::query_as(r#"SELECT route_id, edges FROM routes"#)
+                        let routes = match sqlx::query_as(r#"SELECT route_id, src_node_id, dst_node_id, edges FROM routes"#)
                             .fetch_all(&*db_pool)
                             .await
                         {
@@ -284,6 +284,8 @@ async fn handle_connection(
 
                                     Route {
                                         route_id: row.route_id as usize,
+                                        src_node_id: row.src_node_id as u32,
+                                        dst_node_id: row.dst_node_id as u32,
                                         edges,
                                     }
                                 })
@@ -294,12 +296,7 @@ async fn handle_connection(
                             }
                         };
 
-                        // builds topology edges from the config
-                        let topology_edges = topo::build_topology_edges_from_config(&config);
-
-                        if let Some(msg) =
-                            build_routes_for_node(routes, node_id as u32, topology_edges)
-                        {
+                        if let Some(msg) = build_routes_for_node(routes, node_id as u32) {
                             match write_arc
                                 .lock()
                                 .await
