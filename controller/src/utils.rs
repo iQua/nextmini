@@ -229,22 +229,29 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
 
     for route in &routes {
         // finds next hop for current node in the path
-        let next_hops = route
+        let mut next_hops: Vec<usize> = Vec::new();
+        for &(_, dst) in route
             .edges
             .iter()
-            .find(|&&(src, _)| src == node_id)
-            .map(|&(_, dst)| vec![dst as usize])
-            .unwrap_or_else(|| {
-                if route.dst_node_id == node_id {
-                    vec![node_id as usize] // local delivery
-                } else {
-                    info!(
-                        "Node {} is not in route {}, setting next_hop to 0.",
-                        node_id, route.route_id
-                    );
-                    vec![0]
-                }
-            });
+            .filter(|&&(src, _)| src == node_id)
+        {
+            let hop = dst as usize;
+            if !next_hops.contains(&hop) {
+                next_hops.push(hop);
+            }
+        }
+
+        if next_hops.is_empty() {
+            if route.dst_node_id == node_id {
+                next_hops = vec![node_id as usize]; // local delivery
+            } else {
+                info!(
+                    "Node {} is not in route {}, setting next_hop to 0.",
+                    node_id, route.route_id
+                );
+                next_hops = vec![0];
+            }
+        }
 
         route_entries.push(RoutingTableEntry {
             route_id: route.route_id,
