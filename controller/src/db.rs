@@ -14,7 +14,6 @@ use sqlx::{Pool, Postgres, Row};
 use crate::WebSocketWriter;
 use crate::config;
 use crate::models::{DbFlow, DbRoute, Route};
-use crate::topo;
 use crate::utils::{build_flows_for_node, build_routes_for_node, merge_all_routes};
 use tracing::{error, info};
 

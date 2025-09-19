@@ -9,8 +9,8 @@ use nextmini_messages::{
 };
 
 use crate::models::{DbFlow, Route};
-use crate::route::RoutingProtocol;
-use crate::{config, route, topo};
+use crate::routing::RoutingProtocol;
+use crate::{config, routing, topo};
 
 use petgraph::graph::DiGraph;
 
@@ -91,7 +91,7 @@ pub fn build_routes_from_topology(
 
             // builds graph as we only need the paths
             let graph = petgraph::graph::UnGraph::<u32, ()>::from_edges(edges);
-            let mut shortest_path = route::ShortestPath::new(graph.clone());
+            let mut shortest_path = routing::ShortestPath::new(graph.clone());
             let mut routes = Vec::new();
 
             // generates shortest path for every (src, dst) pair

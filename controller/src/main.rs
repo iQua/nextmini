@@ -24,8 +24,8 @@ use crate::utils::{build_routes_for_node, build_startup_response};
 mod config;
 mod db;
 mod models;
-mod route;
 mod route_ser;
+mod routing;
 mod topo;
 mod utils;
 
