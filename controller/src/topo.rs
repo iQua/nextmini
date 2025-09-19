@@ -1,10 +1,11 @@
+use std::collections::HashSet;
+
 use tracing::info;
 
 use petgraph::graph::{NodeIndex, UnGraph};
 use thiserror::Error;
 
-use crate::config;
-use crate::config::{FatTreeConfig, PresetTopology, TorusConfig};
+use crate::config::{self, FatTreeConfig, PresetTopology, TorusConfig};
 
 #[derive(Error, Debug)]
 pub enum TopologyError {
@@ -249,24 +250,51 @@ fn build_3d_torus_edges(graph: &mut UnGraph<(), ()>, nodes_per_dim: u32) {
     }
 }
 
-// builds preset topology edges from config
+// Build all topology edges from config by merging preset topology and custom edges.
 pub fn build_topology_edges_from_config(config: &config::Config) -> Option<Vec<(u32, u32)>> {
+    // for deduplication of preset topology and custom edges
+    let mut edge_set: HashSet<(u32, u32)> = HashSet::new();
+
+    // adds preset topology edges
     if let Some(preset) = &config.topology.topology_type {
-        match preset {
+        let preset_edges = match preset {
             PresetTopology::FullMesh => {
                 let n = config.topology.n_nodes? as u32;
-                let mut edges = Vec::new();
+                let mut preset_edges = Vec::new();
                 for src in 1..=n {
                     for dst in (src + 1)..=n {
-                        edges.push((src, dst));
+                        preset_edges.push((src, dst));
                     }
                 }
-                Some(edges)
+                Some(preset_edges)
             }
             PresetTopology::FatTree => config.topology.fat_tree_config.as_ref()?.build().ok(),
             PresetTopology::Torus => config.topology.torus_config.as_ref()?.build().ok(),
+        };
+
+        // This could be redundant if the preset topology doesn't need to be normalized.
+        if let Some(preset_edges) = preset_edges {
+            for (a, b) in preset_edges {
+                edge_set.insert(if a <= b { (a, b) } else { (b, a) });
+            }
+            info!("Added preset topology edges");
         }
+    }
+
+    // adds custom topology edges from [topology] section
+    if let Some(custom_edges) = &config.topology.edges {
+        for &(a, b) in custom_edges {
+            edge_set.insert(if a <= b { (a, b) } else { (b, a) });
+        }
+        info!("Added custom topology edges");
+    }
+
+    if edge_set.is_empty() {
+        None
     } else {
-        config.topology.edges.clone()
+        info!("Total merged topology edges: {}", edge_set.len());
+        Some(edge_set.into_iter().collect())
     }
 }
+
+
