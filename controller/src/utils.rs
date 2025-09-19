@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 /// Implements utility functions for the controller.
 use std::net::Ipv4Addr;
 
@@ -12,7 +13,7 @@ use crate::models::{DbFlow, Route};
 use crate::routing::RoutingProtocol;
 use crate::{config, routing, topo};
 
-use petgraph::graph::DiGraph;
+use petgraph::graph::{DiGraph, UnGraph};
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
@@ -78,50 +79,66 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
     }
 }
 
-/// Builds routes from topology edges using the specified routing protocol
+/// Build routes from topology edges using the specified routing protocol.
 pub fn build_routes_from_topology(
     edges: &[(u32, u32)],
     protocol: &config::RoutingProtocol,
 ) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
     match protocol {
         config::RoutingProtocol::ShortestPath => {
-            let mut nodes: Vec<u32> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
-            nodes.sort_unstable();
-            nodes.dedup();
+            // only collects existing node IDs and sorts them
+            // ensures we NEVER create extra nodes like from_edges would
+            let mut all_nodes = HashSet::new();
+            for &(a, b) in edges {
+                all_nodes.insert(a);
+                all_nodes.insert(b);
+            }
+            let mut node_ids: Vec<u32> = all_nodes.into_iter().collect();
+            node_ids.sort();
 
-            // builds graph as we only need the paths
-            let graph = petgraph::graph::UnGraph::<u32, ()>::from_edges(edges);
+            // creates graph manually to ensure NodeIndex order matches our sorted node_ids
+            let mut graph = UnGraph::<u32, ()>::new_undirected();
+            let mut node_map = HashMap::new();
+
+            // adds nodes in sorted order
+            for &node_id in &node_ids {
+                let node_idx = graph.add_node(node_id);
+                node_map.insert(node_id, node_idx);
+            }
+
+            // adds edges
+            for &(a, b) in edges {
+                let a_idx = node_map[&a];
+                let b_idx = node_map[&b];
+                graph.add_edge(a_idx, b_idx, ());
+            }
+
             let mut shortest_path = routing::ShortestPath::new(graph.clone());
             let mut routes = Vec::new();
 
-            // generates shortest path for every (src, dst) pair
-            for &src_node_id in &nodes {
-                for &dst_node_id in &nodes {
-                    if src_node_id == dst_node_id {
+            // generates shortest path for every node pair
+            for src_idx in graph.node_indices() {
+                for dst_idx in graph.node_indices() {
+                    if src_idx == dst_idx {
                         continue;
                     }
 
-                    // finds node indices in the graph
-                    let src_idx = graph
-                        .node_indices()
-                        .find(|&i| graph[i] == src_node_id)
-                        .expect("Src node should exist in graph");
-                    let dst_idx = graph
-                        .node_indices()
-                        .find(|&i| graph[i] == dst_node_id)
-                        .expect("Dst node should exist in graph");
-
                     let path = shortest_path.compute_route(src_idx, dst_idx);
                     if path.len() >= 2 {
-                        // converts path to edges
+                        // uses node_idx.index() directly as array index
                         let path_edges = path
                             .windows(2)
-                            .map(|win| (graph[win[0]], graph[win[1]]))
+                            .map(|win| {
+                                let src_id = node_ids[win[0].index()];
+                                let dst_id = node_ids[win[1].index()];
+                                (src_id, dst_id)
+                            })
                             .collect::<Vec<_>>();
 
-                        // returns (src_node_id, dst_node_id, edges)
-                        // since we the db now needs to know the src and dst node ids(struct Route in model.rs)
-                        routes.push((src_node_id, dst_node_id, path_edges));
+                        // uses node_idx.index() for source and destination
+                        let src_id = node_ids[src_idx.index()];
+                        let dst_id = node_ids[dst_idx.index()];
+                        routes.push((src_id, dst_id, path_edges));
                     }
                 }
             }
@@ -131,27 +148,55 @@ pub fn build_routes_from_topology(
     }
 }
 
-/// Merges all routes from configuration (both custom and topology-generated).
+/// Merge all routes from configuration (both custom and topology-generated).
 pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
     let mut routes = Vec::new();
 
-    // adds custom routes
+    // adds custom routes from config
     for route in &config.routes {
         if !route.route.is_empty() {
             let graph = DiGraph::<u32, ()>::from_edges(&route.route);
-            let dst_node_id = graph
+
+            // finds nodes with no outgoing edges but with incoming edges (destinations)
+            let dst_nodes: Vec<usize> = graph
                 .node_indices()
-                .find(|&id| graph.neighbors_directed(id, petgraph::Outgoing).count() == 0)
-                .unwrap();
-            let src_node_id = graph
+                .filter(|&node_idx| {
+                    graph
+                        .neighbors_directed(node_idx, petgraph::Outgoing)
+                        .count()
+                        == 0
+                        && graph
+                            .neighbors_directed(node_idx, petgraph::Incoming)
+                            .count()
+                            != 0
+                })
+                .map(|node_idx| node_idx.index())
+                .collect();
+
+            // finds nodes with no incoming edges but with outgoing edges (sources)
+            let src_nodes: Vec<usize> = graph
                 .node_indices()
-                .find(|&id| graph.neighbors_directed(id, petgraph::Incoming).count() == 0)
-                .unwrap();
-            routes.push((graph[src_node_id], graph[dst_node_id], route.route.clone()));
+                .filter(|&node_idx| {
+                    graph
+                        .neighbors_directed(node_idx, petgraph::Incoming)
+                        .count()
+                        == 0
+                        && graph
+                            .neighbors_directed(node_idx, petgraph::Outgoing)
+                            .count()
+                            != 0
+                })
+                .map(|node_idx| node_idx.index())
+                .collect();
+
+            if let (Some(&src_idx), Some(&dst_idx)) = (src_nodes.first(), dst_nodes.first()) {
+                routes.push((src_idx as u32, dst_idx as u32, route.route.clone()));
+            }
         }
     }
 
-    // adds topology routes
+    // adds topology routes after implementing (shortest path) routing protocol
+    // build_topology_edges_from_config: obtains all the edges from preset topology and custom edges
     if let Some(edges) = topo::build_topology_edges_from_config(config) {
         let protocol = config
             .routing
@@ -159,6 +204,7 @@ pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32
             .clone()
             .unwrap_or(config::RoutingProtocol::ShortestPath);
 
+        // build_routes_from_topology: builds routes from all topology edges using the specified routing protocol
         let topology_routes = build_routes_from_topology(&edges, &protocol);
         for (src_node_id, dst_node_id, route_edges) in topology_routes {
             if !route_edges.is_empty() {
