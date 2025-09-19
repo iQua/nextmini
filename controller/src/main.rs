@@ -208,7 +208,7 @@ async fn handle_connection(
                             );
                         }
 
-                        // asks the new node to connect to other nodes in the topology
+                        // asks the new node to connect to other nodes in the route
 
                         // first fetches all nodes from the database
                         let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
