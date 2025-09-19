@@ -296,5 +296,3 @@ pub fn build_topology_edges_from_config(config: &config::Config) -> Option<Vec<(
         Some(edge_set.into_iter().collect())
     }
 }
-
-
