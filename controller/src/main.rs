@@ -25,6 +25,7 @@ mod config;
 mod db;
 mod models;
 mod route;
+mod route_ser;
 mod topo;
 mod utils;
 

@@ -8,6 +8,8 @@ use tracing::{error, info};
 
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
+use crate::route_ser::deserialize_route_edges;
+
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
@@ -65,7 +67,7 @@ pub enum RoutingProtocol {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Route {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_route_edges")]
     pub route: Vec<(u32, u32)>,
 }
 
