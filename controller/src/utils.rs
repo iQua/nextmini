@@ -1,9 +1,6 @@
 /// Implements utility functions for the controller.
 use std::net::Ipv4Addr;
 
-use petgraph::Direction::{Incoming, Outgoing};
-use petgraph::graph::{NodeIndex, UnGraph};
-use petgraph::graphmap::DiGraphMap;
 use tracing::{debug, info};
 
 use nextmini_messages::{
@@ -12,7 +9,10 @@ use nextmini_messages::{
 };
 
 use crate::models::{DbFlow, Route};
-use crate::route::{RoutingProtocol, ShortestPath};
+use crate::route::RoutingProtocol;
+use crate::{config, route, topo};
+
+use petgraph::graph::DiGraph;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
@@ -78,127 +78,137 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
     }
 }
 
-/// Builds route-level next-hop information for a specific node.
-pub fn build_routes_for_node(
-    routes: Vec<Route>,
-    node_id: u32,
-    topology_edges: Option<Vec<(u32, u32)>>,
-) -> Option<ControllerToDataplane> {
-    let mut route_entries: Vec<RoutingTableEntry> = Vec::new();
+/// Builds routes from topology edges using the specified routing protocol
+pub fn build_routes_from_topology(
+    edges: &[(u32, u32)],
+    protocol: &config::RoutingProtocol,
+) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
+    match protocol {
+        config::RoutingProtocol::ShortestPath => {
+            let mut nodes: Vec<u32> = edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
+            nodes.sort_unstable();
+            nodes.dedup();
 
-    info!(
-        "Building routes for node {}, total custom routes: {}, topo_edges: {}",
-        node_id,
-        routes.len(),
-        topology_edges.as_ref().map(|v| v.len()).unwrap_or(0)
-    );
+            // builds graph as we only need the paths
+            let graph = petgraph::graph::UnGraph::<u32, ()>::from_edges(edges);
+            let mut shortest_path = route::ShortestPath::new(graph.clone());
+            let mut routes = Vec::new();
 
-    // for creating route entries from custom routes
-    for route in &routes {
-        // directed graph path
-        let graph = DiGraphMap::<u32, ()>::from_edges(&route.edges);
+            // generates shortest path for every (src, dst) pair
+            for &src_node_id in &nodes {
+                for &dst_node_id in &nodes {
+                    if src_node_id == dst_node_id {
+                        continue;
+                    }
 
-        // assumes single-source, single-destination routes
-        let dst_node_id = graph
-            .nodes()
-            .find(|id| graph.neighbors_directed(*id, Outgoing).count() == 0)
-            .unwrap_or(node_id);
-        let src_node_id = graph
-            .nodes()
-            .find(|id| graph.neighbors_directed(*id, Incoming).count() == 0)
-            .unwrap_or(node_id);
+                    // finds node indices in the graph
+                    let src_idx = graph
+                        .node_indices()
+                        .find(|&i| graph[i] == src_node_id)
+                        .expect("Src node should exist in graph");
+                    let dst_idx = graph
+                        .node_indices()
+                        .find(|&i| graph[i] == dst_node_id)
+                        .expect("Dst node should exist in graph");
 
-        info!(
-            "Custom route {}: src_node_id={}, dst_node_id={}",
-            route.route_id, src_node_id, dst_node_id
-        );
+                    let path = shortest_path.compute_route(src_idx, dst_idx);
+                    if path.len() >= 2 {
+                        // converts path to edges
+                        let path_edges = path
+                            .windows(2)
+                            .map(|win| (graph[win[0]], graph[win[1]]))
+                            .collect::<Vec<_>>();
 
-        // finds next hops for current node
-        let next_hops = if graph.contains_node(node_id) {
-            if graph.neighbors_directed(node_id, Outgoing).count() == 0 {
-                // If the node is the destination - next hop is itself (local delivery).
-                vec![node_id as usize]
-            } else {
-                // If the node is in the middle of the route - next hops are the outgoing neighbors.
-                graph
-                    .neighbors_directed(node_id, Outgoing)
-                    .map(|id| id as usize)
-                    .collect::<Vec<_>>()
+                        // returns (src_node_id, dst_node_id, edges)
+                        // since we the db now needs to know the src and dst node ids(struct Route in model.rs)
+                        routes.push((src_node_id, dst_node_id, path_edges));
+                    }
+                }
             }
-        } else {
-            // The node is not in the route - setting next_hop to 0.
-            info!(
-                "Node {} is not in custom Route {:?}, setting next_hop to 0.",
-                node_id, graph
-            );
 
-            vec![0]
-        };
+            routes
+        }
+    }
+}
 
-        route_entries.push(RoutingTableEntry {
-            route_id: route.route_id,
-            next_hops,
-            src_node_id: src_node_id as usize,
-            dst_node_id: dst_node_id as usize,
-        });
+/// Merges all routes from configuration (both custom and topology-generated).
+pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
+    let mut routes = Vec::new();
+
+    // adds custom routes (infer src/dst from DiGraph)
+    for route in &config.routes {
+        if !route.route.is_empty() {
+            let graph = DiGraph::<u32, ()>::from_edges(&route.route);
+            let dst_node_id = graph
+                .node_indices()
+                .find(|&id| graph.neighbors_directed(id, petgraph::Outgoing).count() == 0)
+                .unwrap();
+            let src_node_id = graph
+                .node_indices()
+                .find(|&id| graph.neighbors_directed(id, petgraph::Incoming).count() == 0)
+                .unwrap();
+            routes.push((graph[src_node_id], graph[dst_node_id], route.route.clone()));
+        }
     }
 
-    // for creating route entries from shortest-path topology
-    if let Some(edges) = topology_edges {
-        let current_node = NodeIndex::from(node_id);
-        let graph = UnGraph::<u32, ()>::from_edges(&edges);
-        let mut shortest_path = ShortestPath::new(graph.clone());
+    // adds topology routes (with explicit src/dst)
+    if let Some(edges) = topo::build_topology_edges_from_config(config) {
+        let protocol = config
+            .routing
+            .protocol
+            .clone()
+            .unwrap_or(config::RoutingProtocol::ShortestPath);
 
-        // assumes there is only one topology, the route_id for topologies starts after the last route
-        let mut route_id = routes.len();
-
-        // finds the next hop in the shortest path for each (src_node_id, dst_node_id) pair
-        for src_node_id in 1..graph.node_count() {
-            for dst_node_id in 1..graph.node_count() {
-                if src_node_id == dst_node_id {
-                    continue;
-                }
-
-                // increments the route_id
-                route_id += 1;
-
-                let path = shortest_path.compute_route(
-                    NodeIndex::from(src_node_id as u32),
-                    NodeIndex::from(dst_node_id as u32),
-                );
-
-                // finds next hop for current node in the path
-                let next_hop = if let Some(idx) = path.iter().position(|idx| idx == &current_node) {
-                    if idx == path.len() - 1 {
-                        // The node is the destination – next hop is itself (local delivery).
-                        path[idx].index() as usize
-                    } else {
-                        // The node is in the middle of the path – next hop is the next node.
-                        path[idx + 1].index() as usize
-                    }
-                } else {
-                    // The node is not in the path - setting next_hop to 0.
-                    info!(
-                        "Node {} is not in the shortest path {:?} from {} to {}, setting next_hop to 0.",
-                        node_id, path, src_node_id, dst_node_id
-                    );
-
-                    0
-                };
-
-                route_entries.push(RoutingTableEntry {
-                    route_id,
-                    next_hops: vec![next_hop],
-                    src_node_id,
-                    dst_node_id,
-                });
+        let topology_routes = build_routes_from_topology(&edges, &protocol);
+        for (src_node_id, dst_node_id, route_edges) in topology_routes {
+            if !route_edges.is_empty() {
+                routes.push((src_node_id, dst_node_id, route_edges));
             }
         }
     }
 
+    routes
+}
+
+/// Builds route-level next-hop information for a specific node.
+pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<ControllerToDataplane> {
+    let mut route_entries: Vec<RoutingTableEntry> = Vec::new();
+
+    info!(
+        "Building routes for node {}, total routes: {}",
+        node_id,
+        routes.len()
+    );
+
+    for route in &routes {
+        // finds next hop for current node in the path
+        let next_hops = route
+            .edges
+            .iter()
+            .find(|&&(src, _)| src == node_id)
+            .map(|&(_, dst)| vec![dst as usize])
+            .unwrap_or_else(|| {
+                if route.dst_node_id == node_id {
+                    vec![node_id as usize] // local delivery
+                } else {
+                    info!(
+                        "Node {} is not in route {}, setting next_hop to 0.",
+                        node_id, route.route_id
+                    );
+                    vec![0]
+                }
+            });
+
+        route_entries.push(RoutingTableEntry {
+            route_id: route.route_id,
+            next_hops,
+            src_node_id: route.src_node_id as usize,
+            dst_node_id: route.dst_node_id as usize,
+        });
+    }
+
     if route_entries.is_empty() {
         info!("No routes for node {}", node_id);
-
         None
     } else {
         info!(
@@ -206,7 +216,6 @@ pub fn build_routes_for_node(
             node_id,
             route_entries.len()
         );
-
         Some(ControllerToDataplane::InstallRoutes {
             routes: route_entries,
         })
