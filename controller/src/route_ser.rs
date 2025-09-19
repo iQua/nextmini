@@ -1,7 +1,7 @@
+use serde::Deserialize;
 /// Route serialization and deserialization utilities
 use serde::de::Deserializer;
 use serde::de::Error;
-use serde::Deserialize;
 
 /// Deserializes route edges from various input formats
 pub fn deserialize_route_edges<'de, D>(deserializer: D) -> Result<Vec<(u32, u32)>, D::Error>
@@ -24,9 +24,7 @@ where
             let mut edges = Vec::with_capacity(edge_pairs.len());
             for pair in edge_pairs {
                 if pair.len() != 2 {
-                    return Err(Error::custom(
-                        "Each edge must have exactly two nodes.",
-                    ));
+                    return Err(Error::custom("Each edge must have exactly two nodes."));
                 }
                 edges.push((pair[0], pair[1]));
             }
@@ -35,9 +33,7 @@ where
         // for route = [1, 2, 3, 4] in controller config
         RouteRepr::NodeSequence(nodes) => {
             if nodes.len() < 2 {
-                return Err(Error::custom(
-                    "Route must have at least two nodes.",
-                ));
+                return Err(Error::custom("Route must have at least two nodes."));
             }
             let mut edges = Vec::with_capacity(nodes.len().saturating_sub(1));
             for window in nodes.windows(2) {

@@ -267,9 +267,11 @@ async fn handle_connection(
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
 
-                        let routes = match sqlx::query_as(r#"SELECT route_id, src_node_id, dst_node_id, edges FROM routes"#)
-                            .fetch_all(&*db_pool)
-                            .await
+                        let routes = match sqlx::query_as(
+                            r#"SELECT route_id, src_node_id, dst_node_id, edges FROM routes"#,
+                        )
+                        .fetch_all(&*db_pool)
+                        .await
                         {
                             Ok(rows) => rows
                                 .into_iter()

@@ -18,7 +18,6 @@ use crate::topo;
 use crate::utils::{build_flows_for_node, build_routes_for_node, merge_all_routes};
 use tracing::{error, info};
 
-
 /// Creates the tables in the database, if they do not exist yet.
 async fn create_db(pool: &Pool<Postgres>) {
     // private_network_name: Used to identify which private network (cluster) the node belongs to.
@@ -235,7 +234,13 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
         if let Some(row) = result {
             let route_id: i32 = row.get("route_id");
-            info!("Created route_id {} from {}→{} with {} edges.", route_id, src_node_id, dst_node_id, edges.len());
+            info!(
+                "Created route_id {} from {}→{} with {} edges.",
+                route_id,
+                src_node_id,
+                dst_node_id,
+                edges.len()
+            );
         }
     }
 
