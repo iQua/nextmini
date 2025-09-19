@@ -10,7 +10,6 @@ use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 use crate::route_ser::deserialize_route_edges;
 
-
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
     pub user: String,
