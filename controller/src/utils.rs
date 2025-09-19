@@ -263,6 +263,13 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             node_id,
             route_entries.len()
         );
+        // logs each routing table entry for visibility
+        for e in &route_entries {
+            info!(
+                "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?}",
+                node_id, e.route_id, e.src_node_id, e.dst_node_id, e.next_hops
+            );
+        }
         Some(ControllerToDataplane::InstallRoutes {
             routes: route_entries,
         })
