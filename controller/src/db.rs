@@ -14,8 +14,10 @@ use sqlx::{Pool, Postgres, Row};
 use crate::WebSocketWriter;
 use crate::config;
 use crate::models::{DbFlow, DbRoute, Route};
-use crate::utils::{build_flows_for_node, build_routes_for_node};
-use tracing::{error, info, warn};
+use crate::topo;
+use crate::utils::{build_flows_for_node, build_routes_for_node, merge_all_routes};
+use tracing::{error, info};
+
 
 /// Creates the tables in the database, if they do not exist yet.
 async fn create_db(pool: &Pool<Postgres>) {
@@ -67,11 +69,15 @@ async fn create_db(pool: &Pool<Postgres>) {
     .expect("Failed to create flows table");
 
     // route_id: Unique identifier for the route, automatically assigned by controller.
+    // src_node_id: Source node ID for the route.
+    // dst_node_id: Destination node ID for the route.
     // edges: All edges in the route, as an array of node IDs. e.g. [[1, 2], [2, 3]]
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS routes (
             route_id SERIAL PRIMARY KEY,
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
             edges JSONB NOT NULL
         )
         "#,
@@ -158,6 +164,8 @@ async fn reset_db(pool: &Pool<Postgres>) {
         r#"
         CREATE TABLE routes (
             route_id SERIAL PRIMARY KEY,
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
             edges JSONB NOT NULL
         )
         "#,
@@ -203,38 +211,31 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     create_db(&pool).await;
     reset_db(&pool).await;
 
-    // adds custom routes from the configuration file
-    info!("Adding custom routes from the configuration file.");
+    // adds routes derived from both custom routes and topology to the database
+    let all_routes = merge_all_routes(config);
+    info!("Adding all {} routes to the database.", all_routes.len());
 
-    for route in config.routes.clone() {
-        if route.route.is_empty() {
-            warn!("Skipping empty route");
-            continue;
-        }
-
-        // converts edges into JSON.
+    for (src_node_id, dst_node_id, edges) in all_routes {
         let edges_json: serde_json::Value =
-            serde_json::to_value(&route.route).expect("Failed to convert edges to JSON");
+            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
 
         let result = sqlx::query(
             r#"
-            INSERT INTO routes (edges)
-            VALUES ($1)
+            INSERT INTO routes (src_node_id, dst_node_id, edges)
+            VALUES ($1, $2, $3)
             RETURNING route_id
             "#,
         )
+        .bind(src_node_id as i32)
+        .bind(dst_node_id as i32)
         .bind(edges_json)
         .fetch_optional(&pool)
         .await
-        .expect("Failed to insert custom route");
+        .expect("Failed to insert route");
 
         if let Some(row) = result {
             let route_id: i32 = row.get("route_id");
-            info!(
-                "Created route_id {} with {} edges.",
-                route_id,
-                route.route.len()
-            );
+            info!("Created route_id {} from {}→{} with {} edges.", route_id, src, dst, edges.len());
         }
     }
 
@@ -388,6 +389,8 @@ pub async fn setup_route_notification(
 
                                 Route {
                                     route_id: r.route_id as usize,
+                                    src_node_id: r.src_node_id as u32,
+                                    dst_node_id: r.dst_node_id as u32,
                                     edges,
                                 }
                             })
@@ -398,7 +401,7 @@ pub async fn setup_route_notification(
 
                         for (node_id, ws_arc) in node_ws_guard.iter() {
                             if let Some(msg) =
-                                build_routes_for_node(routes.clone(), *node_id as u32, None)
+                                build_routes_for_node(routes.clone(), *node_id as u32)
                             {
                                 let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
