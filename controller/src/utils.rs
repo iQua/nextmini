@@ -135,7 +135,7 @@ pub fn build_routes_from_topology(
 pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
     let mut routes = Vec::new();
 
-    // adds custom routes (infer src/dst from DiGraph)
+    // adds custom routes
     for route in &config.routes {
         if !route.route.is_empty() {
             let graph = DiGraph::<u32, ()>::from_edges(&route.route);
@@ -151,7 +151,7 @@ pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32
         }
     }
 
-    // adds topology routes (with explicit src/dst)
+    // adds topology routes
     if let Some(edges) = topo::build_topology_edges_from_config(config) {
         let protocol = config
             .routing
