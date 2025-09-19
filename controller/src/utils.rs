@@ -135,7 +135,8 @@ pub fn build_routes_from_topology(
                             })
                             .collect::<Vec<_>>();
 
-                        // uses node_idx.index() for source and destination
+                        // returns (src_node_id, dst_node_id, edges)
+                        // since we the db now needs to know the src and dst node ids(struct Route in model.rs)
                         let src_id = node_ids[src_idx.index()];
                         let dst_id = node_ids[dst_idx.index()];
                         routes.push((src_id, dst_id, path_edges));
