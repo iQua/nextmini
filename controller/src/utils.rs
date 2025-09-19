@@ -270,7 +270,8 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             node_id,
             route_entries.len()
         );
-        // logs each routing table entry for visibility
+        // logs each routing table entry
+        // TODO: removes this after debugging
         for e in &route_entries {
             info!(
                 "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?}",
