@@ -2,7 +2,7 @@
 
 ## Core Concept
 
-The system uses **source-selected routing** where:
+The system uses **source routing** where:
 - **Source nodes** select route IDs using consistent hashing
 - **Intermediate nodes** perform O(1) lookups using the route ID
 - **Route IDs** are embedded in packet headers for stateless forwarding
