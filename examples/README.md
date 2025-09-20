@@ -4,7 +4,8 @@ Nextmini includes several introductory examples. To run an example, navigate to 
 
 ```bash
 cd examples/<folder-name>;
-docker compose up --build
+docker compose build
+docker compose up
 ```
 
 Replace `<folder-name>` with one of the following:
