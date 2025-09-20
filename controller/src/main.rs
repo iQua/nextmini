@@ -1,4 +1,12 @@
-use std::collections::HashMap;
+mod config;
+mod db;
+mod models;
+mod route_ser;
+mod routing;
+mod topo;
+mod utils;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::stream::{SplitSink, SplitStream};
@@ -18,16 +26,7 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucke
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
 use crate::models::{DbFlow, DbRoute, Node, Route};
-use crate::utils::build_flows_for_node;
-use crate::utils::{build_routes_for_node, build_startup_response};
-
-mod config;
-mod db;
-mod models;
-mod route_ser;
-mod routing;
-mod topo;
-mod utils;
+use crate::utils::{build_flows_for_node, build_routes_for_node, build_startup_response};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -212,10 +211,25 @@ async fn handle_connection(
                                 continue;
                             }
                         };
-
-                        // establishes connections between all pairs of nodes by sending AddNode messages
+                        // Get topology edges
+                        let topology_edges =
+                            topo::build_topology_edges_from_config(&config).unwrap_or_default();
+                        // Collect neighbors of the new node
+                        let mut neighbors: HashSet<i32> = HashSet::new();
+                        for &(a, b) in &topology_edges {
+                            if a == node_id as u32 {
+                                neighbors.insert(b as i32);
+                            } else if b == node_id as u32 {
+                                neighbors.insert(a as i32);
+                            }
+                        }
+                        // establishes connections between the new node and its neighbors by sending AddNode messages
                         for node in nodes {
                             if node.id == node_id as i32 {
+                                continue;
+                            }
+
+                            if !neighbors.contains(&node.id) {
                                 continue;
                             }
 

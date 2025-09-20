@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
 /// Implements utility functions for the controller.
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 
+use petgraph::graph::{DiGraph, UnGraph};
 use tracing::{debug, info};
 
 use nextmini_messages::{
@@ -9,11 +10,11 @@ use nextmini_messages::{
     RoutingTableEntry, SchedulingDiscipline,
 };
 
+use crate::config;
 use crate::models::{DbFlow, Route};
+use crate::routing;
 use crate::routing::RoutingProtocol;
-use crate::{config, routing, topo};
-
-use petgraph::graph::{DiGraph, UnGraph};
+use crate::topo;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
@@ -79,7 +80,7 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
     }
 }
 
-/// Build routes from topology edges using the specified routing protocol.
+/// Builds routes from topology edges using the specified routing protocol.
 pub fn build_routes_from_topology(
     edges: &[(u32, u32)],
     protocol: &config::RoutingProtocol,
@@ -197,7 +198,7 @@ pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32
     }
 
     // adds topology routes after implementing (shortest path) routing protocol
-    // build_topology_edges_from_config: obtains all the edges from preset topology and custom edges
+    // obtains all the edges from preset topology and custom edges
     if let Some(edges) = topo::build_topology_edges_from_config(config) {
         let protocol = config
             .routing
@@ -205,7 +206,7 @@ pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32
             .clone()
             .unwrap_or(config::RoutingProtocol::ShortestPath);
 
-        // build_routes_from_topology: builds routes from all topology edges using the specified routing protocol
+        // builds routes from all topology edges using the specified routing protocol
         let topology_routes = build_routes_from_topology(&edges, &protocol);
         for (src_node_id, dst_node_id, route_edges) in topology_routes {
             if !route_edges.is_empty() {
@@ -230,11 +231,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     for route in &routes {
         // finds next hop for current node in the path
         let mut next_hops: Vec<usize> = Vec::new();
-        for &(_, dst) in route
-            .edges
-            .iter()
-            .filter(|&&(src, _)| src == node_id)
-        {
+        for &(_, dst) in route.edges.iter().filter(|&&(src, _)| src == node_id) {
             let hop = dst as usize;
             if !next_hops.contains(&hop) {
                 next_hops.push(hop);
