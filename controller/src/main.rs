@@ -66,6 +66,7 @@ async fn main() {
                 continue;
             }
         };
+
         let (write, read) = ws_stream.split();
 
         tokio::spawn(handle_connection(
@@ -198,10 +199,6 @@ async fn handle_connection(
 
                         current_node_id = Some(node_id);
 
-                        // checks if all expected nodes are connected before sending flows to the new node
-                        let connected_node_count = node_ws.read().await.len();
-                        info!("Number of nodes connected: {}.", connected_node_count);
-
                         // asks the new node to connect to other nodes in the route
 
                         // first fetches all nodes from the database
@@ -313,7 +310,10 @@ async fn handle_connection(
                         }
 
                         // sends flows and link rates when all nodes are connected
-                        if let Some(expected_node_count) = config.topology.n_nodes {
+                        if let Some(expected_node_count) = config.topology.compute_node_count() {
+                            // checks if all expected nodes are connected before sending flows to the new node
+                            let connected_node_count = node_ws.read().await.len();
+
                             if connected_node_count == expected_node_count {
                                 // waits for all links to be established
                                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -340,10 +340,12 @@ async fn handle_connection(
                                 send_flows(node_ws.clone(), db_pool.clone()).await;
                             } else {
                                 info!(
-                                    "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
+                                    "Number of nodes connected: {} (out of a total of {}).",
                                     connected_node_count, expected_node_count
                                 );
                             }
+                        } else {
+                            panic!("Unable to compute the total number of nodes.");
                         }
                     }
 
@@ -380,6 +382,7 @@ async fn handle_connection(
                     }
                     DataplaneToController::FlowFinished { controller_id } => {
                         info!("Received FlowFinished message for flow {}.", controller_id);
+
                         match sqlx::query(
                             r#"
                             UPDATE flows

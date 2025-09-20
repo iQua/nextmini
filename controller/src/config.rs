@@ -68,6 +68,30 @@ pub struct Topology {
     pub edges: Option<Vec<(u32, u32)>>,
 }
 
+impl Topology {
+    pub fn compute_node_count(&self) -> Option<usize> {
+        match &self.topology_type {
+            Some(PresetTopology::FullMesh) => self.full_mesh_config.as_ref().map(|c| c.n_nodes),
+            Some(PresetTopology::FatTree) => self.fat_tree_config.as_ref().map(|c| {
+                // FatTree-k has k^3 / 4 nodes (servers) and (5 k^2) / 4 switches
+                let k = c.k as u64;
+
+                ((k * k * k) / 4 + (5 * k * k) / 4) as usize
+            }),
+            Some(PresetTopology::Torus) => self.torus_config.as_ref().map(|c| {
+                // a Torus topology with a dimension of 'dim' and number of nodes 'n' in each dimension
+                // has n^dim nodes in total
+                let n = c.n as u64;
+                let dim = c.dim as u32;
+
+                n.pow(dim) as usize
+            }),
+            // if there is no preset topology, the total number of nodes needs to be explicitly specified
+            None => self.n_nodes,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingProtocol {
