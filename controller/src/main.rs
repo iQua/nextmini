@@ -200,13 +200,7 @@ async fn handle_connection(
 
                         // checks if all expected nodes are connected before sending flows to the new node
                         let connected_node_count = node_ws.read().await.len();
-
-                        if let Some(expected_node_count) = config.topology.n_nodes {
-                            info!(
-                                "Connected nodes: {}/{}.",
-                                connected_node_count, expected_node_count
-                            );
-                        }
+                        info!("Number of nodes connected: {}.", connected_node_count);
 
                         // asks the new node to connect to other nodes in the route
 

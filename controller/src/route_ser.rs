@@ -1,5 +1,5 @@
+/// Utilities for serializing and deseriazing routes, which can be directed acyclic graphs
 use serde::Deserialize;
-/// Route serialization and deserialization utilities
 use serde::de::Deserializer;
 use serde::de::Error;
 
@@ -15,11 +15,11 @@ where
         NodeSequence(Vec<u32>),
     }
 
-    // deserializes the route from the input format
+    // deserializes the route from two alternative input formats
     let format = RouteRepr::deserialize(deserializer)?;
 
     match format {
-        //  for route = [[1, 2], [2, 3], [3, 4]] in controller config
+        //  for format `route = [[1, 2], [2, 3], [3, 4]]` in the controller configuration
         RouteRepr::EdgePairs(edge_pairs) => {
             let mut edges = Vec::with_capacity(edge_pairs.len());
             for pair in edge_pairs {
@@ -30,7 +30,7 @@ where
             }
             Ok(edges)
         }
-        // for route = [1, 2, 3, 4] in controller config
+        // for format `route = [1, 2, 3, 4]` in the controller configuration
         RouteRepr::NodeSequence(nodes) => {
             if nodes.len() < 2 {
                 return Err(Error::custom("Route must have at least two nodes."));

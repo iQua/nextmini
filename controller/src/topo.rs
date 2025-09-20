@@ -5,7 +5,8 @@ use tracing::info;
 use petgraph::graph::{NodeIndex, UnGraph};
 use thiserror::Error;
 
-use crate::config::{self, FatTreeConfig, PresetTopology, TorusConfig};
+use crate::config;
+use crate::config::{FatTreeConfig, FullMeshConfig, PresetTopology, TorusConfig};
 
 #[derive(Error, Debug)]
 pub enum TopologyError {
@@ -29,6 +30,22 @@ pub type Result<T> = std::result::Result<T, TopologyError>;
 
 pub trait TopologyBuilder {
     fn build(&self) -> Result<Vec<(u32, u32)>>;
+}
+
+impl TopologyBuilder for FullMeshConfig {
+    fn build(&self) -> Result<Vec<(u32, u32)>> {
+        info!("Building a full mesh topology with {} nodes.", self.n_nodes);
+        let n_nodes = self.n_nodes as u32;
+        let mut preset_edges = Vec::new();
+
+        for src in 1..=n_nodes {
+            for dst in (src + 1)..=n_nodes {
+                preset_edges.push((src, dst));
+            }
+        }
+
+        Ok(preset_edges)
+    }
 }
 
 impl TopologyBuilder for FatTreeConfig {
@@ -258,16 +275,7 @@ pub fn build_topology_edges_from_config(config: &config::Config) -> Option<Vec<(
     // adds preset topology edges
     if let Some(preset) = &config.topology.topology_type {
         let preset_edges = match preset {
-            PresetTopology::FullMesh => {
-                let n = config.topology.n_nodes? as u32;
-                let mut preset_edges = Vec::new();
-                for src in 1..=n {
-                    for dst in (src + 1)..=n {
-                        preset_edges.push((src, dst));
-                    }
-                }
-                Some(preset_edges)
-            }
+            PresetTopology::FullMesh => config.topology.full_mesh_config.as_ref()?.build().ok(),
             PresetTopology::FatTree => config.topology.fat_tree_config.as_ref()?.build().ok(),
             PresetTopology::Torus => config.topology.torus_config.as_ref()?.build().ok(),
         };

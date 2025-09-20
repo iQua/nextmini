@@ -11,7 +11,10 @@ route = [[4, 1]]
 
 # [topology]
 # type = "fat_tree"
-# n_nodes = 4
 # fat_tree_config = { k = 2 }
+
+# [topology]
+# type = "full_mesh"
+# full_mesh_config = { n_nodes = 4 }
 
 # edges = [[4, 1]]

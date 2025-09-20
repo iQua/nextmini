@@ -28,6 +28,11 @@ pub enum PresetTopology {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct FullMeshConfig {
+    pub n_nodes: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct FatTreeConfig {
     pub k: usize,
 }
@@ -45,8 +50,13 @@ pub struct Topology {
     #[serde(rename = "type")]
     pub topology_type: Option<PresetTopology>,
 
+    // To Do: the total number of nodes will need to be computed, rather than specified in the configuration file
+    // explicitly
     #[serde(default)]
     pub n_nodes: Option<usize>,
+
+    #[serde(default)]
+    pub full_mesh_config: Option<FullMeshConfig>,
 
     #[serde(default)]
     pub fat_tree_config: Option<FatTreeConfig>,

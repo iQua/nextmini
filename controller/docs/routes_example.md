@@ -4,8 +4,8 @@
 protocol = "quic"
 
 [topology]
-type = "full_mesh"  # or "ring"
-n_nodes = 4
+type = "full_mesh"
+full_mesh_config = { n_nodes = 4 }
 
 # Custom routes
 [[routes]]
