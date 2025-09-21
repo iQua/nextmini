@@ -1,3 +1,4 @@
+// Initiates and builds the network topology.
 use std::collections::HashSet;
 
 use tracing::info;
@@ -267,7 +268,7 @@ fn build_3d_torus_edges(graph: &mut UnGraph<(), ()>, nodes_per_dim: u32) {
     }
 }
 
-// Build all topology edges from config by merging preset topology and custom edges.
+// Builds all topology edges from the configuration file, including both the preset topology and custom edges.
 pub fn build_topology_edges_from_config(config: &config::Config) -> Option<Vec<(u32, u32)>> {
     // for deduplication of preset topology and custom edges
     let mut edge_set: HashSet<(u32, u32)> = HashSet::new();
@@ -285,22 +286,20 @@ pub fn build_topology_edges_from_config(config: &config::Config) -> Option<Vec<(
             for (a, b) in preset_edges {
                 edge_set.insert(if a <= b { (a, b) } else { (b, a) });
             }
-            info!("Added preset topology edges");
         }
     }
 
-    // adds custom topology edges from [topology] section
+    // adds custom topology edges from the [topology] section in the configuration file
     if let Some(custom_edges) = &config.topology.edges {
         for &(a, b) in custom_edges {
             edge_set.insert(if a <= b { (a, b) } else { (b, a) });
         }
-        info!("Added custom topology edges");
     }
 
     if edge_set.is_empty() {
         None
     } else {
-        info!("Total merged topology edges: {}", edge_set.len());
+        info!("Total number of edges in the topology: {}", edge_set.len());
         Some(edge_set.into_iter().collect())
     }
 }

@@ -1,4 +1,4 @@
-/// Utilities for serializing and deseriazing routes, which can be directed acyclic graphs
+/// Utilities for serializing and deseriazing routes, which can be directed acyclic graphs.
 use serde::Deserialize;
 use serde::de::Deserializer;
 use serde::de::Error;
