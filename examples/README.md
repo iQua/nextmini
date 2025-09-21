@@ -92,7 +92,8 @@ The config file with comments removed looks like this:
 protocol = "tcp"
 
 [topology]
-n_nodes = 3
+type = "full_mesh"
+full_mesh_config = { n_nodes = 5 }
 
 [[routes]]
 # node 1 represents the external client

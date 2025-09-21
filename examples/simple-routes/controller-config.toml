@@ -1,5 +1,14 @@
 protocol = "tcp"
 
+# [topology]
+# type = "fat_tree"
+# fat_tree_config = { k = 2 }
+
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 4 }
+# edges = [[4, 1]]
+
 [[routes]]
 route = [[1, 2], [2, 4], [1, 3], [3, 4]]
 
@@ -8,13 +17,3 @@ route = [[1, 4]]
 
 [[routes]]
 route = [[4, 1]]
-
-# [topology]
-# type = "fat_tree"
-# fat_tree_config = { k = 2 }
-
-# [topology]
-# type = "full_mesh"
-# full_mesh_config = { n_nodes = 4 }
-
-# edges = [[4, 1]]
