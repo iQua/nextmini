@@ -76,7 +76,8 @@ async fn create_db(pool: &Pool<Postgres>) {
             route_id SERIAL PRIMARY KEY,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            edges JSONB NOT NULL
+            edges JSONB NOT NULL,
+            UNIQUE (src_node_id, dst_node_id, edges)
         )
         "#,
     )
@@ -164,7 +165,8 @@ async fn reset_db(pool: &Pool<Postgres>) {
             route_id SERIAL PRIMARY KEY,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            edges JSONB NOT NULL
+            edges JSONB NOT NULL,
+            UNIQUE (src_node_id, dst_node_id, edges)
         )
         "#,
     )
@@ -214,13 +216,17 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     info!("Adding all {} routes to the database.", all_routes.len());
 
     for (src_node_id, dst_node_id, edges) in all_routes {
+        let mut edges_sorted = edges.clone();
+        edges_sorted.sort();
+
         let edges_json: serde_json::Value =
-            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+            serde_json::to_value(&edges_sorted).expect("Failed to convert edges to JSON");
 
         let result = sqlx::query(
             r#"
             INSERT INTO routes (src_node_id, dst_node_id, edges)
             VALUES ($1, $2, $3)
+            ON CONFLICT (src_node_id, dst_node_id, edges) DO NOTHING
             RETURNING route_id
             "#,
         )
@@ -238,7 +244,14 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
                 route_id,
                 src_node_id,
                 dst_node_id,
-                edges.len()
+                edges_sorted.len()
+            );
+        } else {
+            info!(
+                "Skipped duplicate route from {}→{} with {} edges (already exists).",
+                src_node_id,
+                dst_node_id,
+                edges_sorted.len()
             );
         }
     }
@@ -442,7 +455,7 @@ pub async fn setup_flow_notification(
         CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
         RETURNS TRIGGER AS $$
         BEGIN
-            PERFORM pg_notify('auto_sync_flows', '{"newly_inserted_id":"'|| NEW.id || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '"}');
+            PERFORM pg_notify('auto_sync_flows', '{"newly_inserted_id":"'|| NEW.id ||'","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '"}');
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
