@@ -83,10 +83,11 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
 /// Builds routes from topology edges using the specified routing protocol.
 pub fn build_routes_from_topology(
     edges: &[(u32, u32)],
-    protocol: &config::RoutingProtocol,
+    protocol: &Option<config::RoutingProtocol>,
 ) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
     match protocol {
-        config::RoutingProtocol::ShortestPath => {
+        None => Vec::new(),
+        Some(config::RoutingProtocol::ShortestPath) => {
             // only collects existing node IDs and sorts them
             // ensures we NEVER create extra nodes like from_edges would
             let mut all_nodes = HashSet::new();
@@ -200,14 +201,9 @@ pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32
     // adds topology routes after implementing (shortest path) routing protocol
     // obtains all the edges from preset topology and custom edges
     if let Some(edges) = topo::build_topology_edges_from_config(config) {
-        let protocol = config
-            .routing
-            .protocol
-            .clone()
-            .unwrap_or(config::RoutingProtocol::ShortestPath);
-
         // builds routes from all topology edges using the specified routing protocol
-        let topology_routes = build_routes_from_topology(&edges, &protocol);
+        let topology_routes = build_routes_from_topology(&edges, &config.routing.protocol);
+
         for (src_node_id, dst_node_id, route_edges) in topology_routes {
             if !route_edges.is_empty() {
                 routes.push((src_node_id, dst_node_id, route_edges));
