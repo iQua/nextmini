@@ -213,7 +213,7 @@ async fn handle_connection(
                         };
                         // Get topology edges
                         let topology_edges =
-                            topo::build_topology_edges_from_config(&config).unwrap_or_default();
+                            topo::topo::build_topology(&config).unwrap_or_default();
                         // Collect neighbors of the new node
                         let mut neighbors: HashSet<i32> = HashSet::new();
                         for &(a, b) in &topology_edges {

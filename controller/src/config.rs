@@ -9,6 +9,7 @@ use tracing::{error, info};
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 use crate::route_ser::deserialize_route_edges;
+use crate::topo::{FatTreeConfig, FullMeshConfig, TorusConfig};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
@@ -25,22 +26,6 @@ pub enum PresetTopology {
     FullMesh,
     FatTree,
     Torus,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
-pub struct FullMeshConfig {
-    pub n_nodes: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
-pub struct FatTreeConfig {
-    pub k: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
-pub struct TorusConfig {
-    pub dim: usize,
-    pub n: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

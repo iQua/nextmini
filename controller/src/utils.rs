@@ -14,7 +14,7 @@ use crate::config;
 use crate::models::{DbFlow, Route};
 use crate::routing;
 use crate::routing::RoutingProtocol;
-use crate::topo;
+use crate::topo::topo;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
@@ -200,7 +200,7 @@ pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32
 
     // adds topology routes after implementing (shortest path) routing protocol
     // obtains all the edges from preset topology and custom edges
-    if let Some(edges) = topo::build_topology_edges_from_config(config) {
+    if let Some(edges) = topo::build_topology(config) {
         // builds routes from all topology edges using the specified routing protocol
         let topology_routes = build_routes_from_topology(&edges, &config.routing.protocol);
 
