@@ -224,12 +224,19 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     );
 
     for route in &routes {
-        // finds next hop for current node in the path
+        // finds next hops for the current node using PetGraph
         let mut next_hops: Vec<usize> = Vec::new();
-        for &(_, dst) in route.edges.iter().filter(|&&(src, _)| src == node_id) {
-            let hop = dst as usize;
-            if !next_hops.contains(&hop) {
-                next_hops.push(hop);
+
+        let graph = DiGraph::<u32, ()>::from_edges(&route.edges);
+
+        if let Some(node_idx) = graph.node_indices().find(|&idx| graph[idx] == node_id) {
+            for neighbor_idx in graph.neighbors_directed(node_idx, Direction::Outgoing) {
+                let neighbor_node_id = graph[neighbor_idx];
+                let hop = neighbor_node_id as usize;
+
+                if !next_hops.contains(&hop) {
+                    next_hops.push(hop);
+                }
             }
         }
 
