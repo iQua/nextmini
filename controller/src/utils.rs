@@ -2,6 +2,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 
+use petgraph::Direction;
 use petgraph::graph::{DiGraph, UnGraph};
 use tracing::{debug, info};
 
@@ -50,7 +51,7 @@ pub fn build_startup_response(
 
 /// Builds an AddFlow message for flows.
 pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
-    let message_flows: Vec<Flow> = flows
+    let flows: Vec<Flow> = flows
         .into_iter()
         .map(|flow| {
             debug!("Building an AddFlow message for flow id {}", flow.id);
@@ -75,9 +76,7 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
         })
         .collect();
 
-    ControllerToDataplane::AddFlows {
-        flows: message_flows,
-    }
+    ControllerToDataplane::AddFlows { flows }
 }
 
 /// Builds routes from topology edges using the specified routing protocol.
@@ -238,11 +237,9 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             if route.dst_node_id == node_id {
                 next_hops = vec![node_id as usize]; // local delivery
             } else {
-                info!(
-                    "Node {} is not in route {}, setting next_hop to 0.",
-                    node_id, route.route_id
-                );
-                next_hops = vec![0];
+                // this node does not belong to this route at all, moving on to the next route
+                // without adding a routing table entry
+                continue;
             }
         }
 
