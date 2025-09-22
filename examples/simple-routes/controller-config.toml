@@ -9,6 +9,10 @@ type = "full_mesh"
 full_mesh_config = { n_nodes = 4 }
 # edges = [[4, 1]]
 
+# Set the routing protocol to "shortest_path" if the routes from the topology are needed.
+# [routing]
+# protocol = "shortest_path"
+
 [[routes]]
 route = [[1, 2], [2, 4], [1, 3], [3, 4]]
 

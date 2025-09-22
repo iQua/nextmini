@@ -6,7 +6,10 @@ scheduler_type = "fifo"
 # creates a full mesh topology with 4 nodes
 [topology]
 type = "full_mesh"
-n_nodes = 4
+full_mesh_config = { n_nodes = 4 }
+
+[routing]
+protocol = "shortest_path"
 
 [[link_rates]]
 src_node_id = 1
