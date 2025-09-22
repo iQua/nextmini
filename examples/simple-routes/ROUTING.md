@@ -2,153 +2,70 @@
 
 ## Core Concept
 
-The system uses **source routing** where:
-- **Source nodes** select route IDs using consistent hashing
-- **Intermediate nodes** perform O(1) lookups using the route ID
-- **Route IDs** are embedded in packet headers for stateless forwarding
+- Route installation pipeline:
+  1) Controller loads `controller-config.toml`.
+  2) Merges custom `[[routes]]` and (if enabled) topology-generated routes.
+  3) Writes routes into Postgres `routes(route_id SERIAL, src_node_id, dst_node_id, edges JSONB)`. Here (src_node_id, dst_node_id, edges) the three parts are inserted into DB. `route_id` is auto-generated (SERIAL); `edges` is stored as a JSONB array of directed edges (e.g., `[[1,2],[2,4],[1,3],[3,4]]`). 
+  
+  4) Broadcasts `InstallRoutes { routes: Vec<RoutingTableEntry> }` to all dataplane nodes.
+- Per-node route selection:
+  - Each node selects a `route_id` per flow using jump consistent hash over the available `route_id`s for `(src_node_id, dst_node_id)`, then caches the mapping.
+- AddNode vs routes:
+  - AddNode connections are built from `[topology]` edges (preset or custom), not from `[[routes]]`, which means the default topology edges cover all next hops that your routes require.
 
-## Packet Journey
+## Route Configuration in controller-config.toml
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Packet Journey                              │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  1. Packet arrives at SOURCE node without route_id                  │
-│     ┌─────────────────────────────────────────────┐                 │
-│     │ Packet { flow_id: 0x..., route_id: None }  │                 │
-│     └─────────────────────────────────────────────┘                 │
-│                           │                                         │
-│                           ▼                                         │
-│  2. Source node selects route using jump hash                       │
-│     ┌─────────────────────────────────────────────┐                 │
-│     │ available_routes = [12, 13, 14]            │                 │
-│     │ hash_result = jump_hash(flow_id, 3)        │                 │
-│     │ selected_route_id = available_routes[hash]  │                 │
-│     └─────────────────────────────────────────────┘                 │
-│                           │                                         │
-│                           ▼                                         │
-│  3. Source adds route_id to packet                                  │
-│     ┌─────────────────────────────────────────────┐                 │
-│     │ Packet { flow_id: 0x..., route_id: Some(12)}│                │
-│     └─────────────────────────────────────────────┘                 │
-│                           │                                         │
-│                           ▼                                         │
-│  4. Intermediate nodes use route_id for lookup                      │
-│     ┌─────────────────────────────────────────────┐                 │
-│     │ next_hop = route_table[route_id]            │                 │
-│     │ // No recalculation needed!                 │                 │
-│     └─────────────────────────────────────────────┘                 │
-└─────────────────────────────────────────────────────────────────────┘
-```
+- Sequence (single path):
 
-## Visual Flow Example: Route 12 [1→2→3→4]
+  ```toml
+  [[routes]]
+  route = [1, 2, 3, 4]
+  ```
 
-```
-┌─────────┐    route_id=12     ┌─────────┐    route_id=12     ┌─────────┐    route_id=12     ┌─────────┐
-│ Node 1  │ ─────────────────→ │ Node 2  │ ─────────────────→ │ Node 3  │ ─────────────────→ │ Node 4  │
-│ (SRC)   │                    │ (FWD)   │                    │ (FWD)   │                    │ (DST)   │
-└─────────┘                    └─────────┘                    └─────────┘                    └─────────┘
-     │                              │                              │                              │
-     ▼                              ▼                              ▼                              ▼
-SELECT route_id              USE route_id               USE route_id                    DELIVER
-from available               for O(1) lookup            for O(1) lookup                 locally
-routes [12,13,14]           next_hop = 3               next_hop = 4
-jump_hash(flow_id,3)
-→ route_id = 12
-```
+- Directed Acyclic Graph (multiple branches for one source → one destination):
 
-## Decision Flow
+  ```toml
+  [[routes]]
+  route = [[1, 2], [2, 4], [1, 3], [3, 4]]
+  ```
+
+The controller infers `src_node_id` as the node with outgoing but no incoming edges, and `dst_node_id` as the node with incoming but no outgoing edges.
+
+## Topology-Generated Routes
+
+- Topology edges are built from `[topology]` preset or `[topology].edges`.
+- End-to-end routes are generated from topology only when you set:
+
+  ```toml
+  [routing]
+  protocol = "shortest_path"
+  ```
+- If omitted, `protocol=None` and no topology routes are generated; only your custom `[[routes]]` are inserted into the database.
+
+## Packet Processing (no header rewrite)
 
 ```
-                    📦 Packet Arrives
-                           │
-                      ┌────▼─────┐
-                      │ Has      │
-                      │route_id? │◄─── Check IP Options field
-                      └────┬─────┘
-                      YES  │  NO
-                   ┌───────┘  └───────┐
-                   ▼                  ▼
-            ┌─────────────┐    ┌─────────────┐
-            │ USE existing│    │ This is     │
-            │ route_id    │    │ SOURCE node │
-            │             │    │             │
-            │ O(1) lookup │    │ SELECT      │
-            │ next_hop =  │    │ route_id    │
-            │ table[id]   │    │ using       │
-            └─────────────┘    │ jump_hash   │
-                   │           └─────────────┘
-                   │                  │
-                   │                  ▼
-                   │           ┌─────────────┐
-                   │           │ EMBED       │
-                   │           │ route_id    │
-                   │           │ in packet   │
-                   │           │ options     │
-                   │           └─────────────┘
-                   │                  │
-                   └──────────────────┼─────────── Forward to next_hop
+Flow arrives at node N
+  └─ Extract (src_node_id, dst_node_id) from IPs
+     └─ available = available_routes[(src_node_id, dst_node_id)]
+        └─ if cache miss: route_id = jump_hash(flow_id, len(available))
+           cache[flow_id] = route_id
+           next_hops = route_next_hop[route_id]
+           pick one next_hop (random if multiple) // now using fastrand crate
+           forward or deliver locally
 ```
 
-## Multi-Path Load Balancing
+- Mapping is deterministic per-flow on each node (jump hash + cache).
+- Nodes pick the same route_id when the available route ordering is identical across nodes.
+- `available_routes` and `route_next_hop` are built from `InstallRoutes` entries at node boot.
 
-### Case 1: Few Flows (Flows ≤ Routes)
-```
-Direction: Node A → Node D
-Available Routes: [Route 12, Route 13, Route 14]
+## Bidirectional TCP
 
-Flow 1 ──┐
-Flow 2 ──┼─→ jump_hash() ──┐
-Flow 3 ──┘                │
-                          ▼
-         ┌─────────────────────────────────┐
-         │  Route Selection Distribution   │
-         │                                 │
-         │  Flow 1 → Route 12 (A→B→D)     │
-         │  Flow 2 → Route 13 (A→C→D)     │
-         │  Flow 3 → Route 14 (A→E→D)     │
-         └─────────────────────────────────┘
-```
+- TCP is bidirectional. You need to provision both directions for each communicating pair:
+  - A → B, and B → A.
+- If you only install A → B, B → A will have no `route_id`, leading to "No route is found for flow xxxxxx" errors on the reverse path.
 
-### Case 2: Many Flows (Flows > Routes)
-```
-Direction: Node A → Node D
-Available Routes: [Route 12, Route 13, Route 14]
 
-Flow 1 ──┐
-Flow 2 ──┤
-Flow 3 ──┤
-Flow 4 ──┼─→ jump_hash() ──┐
-Flow 5 ──┤                │
-Flow 6 ──┤                │
-Flow 7 ──┘                ▼
-         ┌─────────────────────────────────────────┐
-         │     Consistent Hash Distribution        │
-         │                                         │
-         │  Flow 1, 4 → Route 12 (A→B→D)         │
-         │  Flow 2, 6 → Route 13 (A→C→D)         │
-         │  Flow 3, 5, 7 → Route 14 (A→E→D)      │
-         │                                         │
-         │  Same flow_id always → same route_id   │
-         └─────────────────────────────────────────┘
+## Notes
 
-Key: Jump hash ensures consistent mapping even with many flows
-```
-
-## Performance Benefits
-
-| Feature | Source Node | Intermediate Node |
-|---------|-------------|-------------------|
-| Route Calculation | O(1) after cache | **None needed** |
-| Table Lookup | O(1) | **O(1)** |
-| State Tracking | Flow cache only | **Stateless** |
-| Load Balancing | Jump hash | **N/A** |
-
-## Key Advantages
-
-1. **O(1) Forwarding**: Intermediate nodes perform constant-time lookups
-2. **Consistent Routing**: Same flow always uses same route via jump hash
-3. **Stateless Design**: No per-flow state at intermediate nodes
-4. **Load Balancing**: Automatic distribution across multiple paths
-5. **Simple Protocol**: Route ID embedded in standard IP options
+- AddNode neighbors are derived from `[topology]` edges.
