@@ -2,6 +2,7 @@ protocol = "tcp"
 
 # Three Netxmini dataplane nodes in the topology
 [topology]
+type = "full_mesh"
 full_mesh_config = { n_nodes = 5 }
 
 # [routing]
