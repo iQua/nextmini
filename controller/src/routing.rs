@@ -1,6 +1,6 @@
 // Determines routes by implementing the routing protocols.
 use petgraph::algo::astar;
-use petgraph::graph::{NodeIndex, UnGraph};
+use petgraph::graph::{DiGraph, NodeIndex};
 
 /// Defines the interface for all routing protocols.
 pub trait RoutingProtocol {
@@ -9,11 +9,11 @@ pub trait RoutingProtocol {
 
 #[derive(Debug, Clone)]
 pub struct ShortestPath {
-    graph: UnGraph<u32, ()>,
+    graph: DiGraph<u32, ()>,
 }
 
 impl ShortestPath {
-    pub fn new(graph: UnGraph<u32, ()>) -> ShortestPath {
+    pub fn new(graph: DiGraph<u32, ()>) -> ShortestPath {
         ShortestPath { graph }
     }
 }

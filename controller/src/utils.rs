@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 
 use petgraph::Direction;
-use petgraph::graph::{DiGraph, UnGraph};
+use petgraph::graph::DiGraph;
 use tracing::{debug, info};
 
 use nextmini_messages::{
@@ -79,6 +79,45 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
     ControllerToDataplane::AddFlows { flows }
 }
 
+/// Creates a DiGraph with proper node mapping from edges, preserving the relationship
+/// between original node IDs and internal graph indices.
+/// Returns (node_ids_vec, node_map, graph) where node_ids_vec[idx.index()] gives the original node_id.
+fn create_graph_with_mapping(
+    edges: &[(u32, u32)],
+) -> (
+    Vec<u32>,
+    HashMap<u32, petgraph::graph::NodeIndex>,
+    DiGraph<u32, ()>,
+) {
+    // Collect all unique node IDs and sort them
+    let mut all_nodes = HashSet::new();
+    for &(a, b) in edges {
+        all_nodes.insert(a);
+        all_nodes.insert(b);
+    }
+    let mut node_ids: Vec<u32> = all_nodes.into_iter().collect();
+    node_ids.sort();
+
+    // Create graph manually to ensure NodeIndex order matches our sorted node_ids
+    let mut graph = DiGraph::<u32, ()>::new();
+    let mut node_map = HashMap::new();
+
+    // Add nodes in sorted order
+    for &node_id in &node_ids {
+        let node_idx = graph.add_node(node_id);
+        node_map.insert(node_id, node_idx);
+    }
+
+    // Add edges
+    for &(a, b) in edges {
+        let a_idx = node_map[&a];
+        let b_idx = node_map[&b];
+        graph.add_edge(a_idx, b_idx, ());
+    }
+
+    (node_ids, node_map, graph)
+}
+
 /// Builds routes from topology edges using the specified routing protocol.
 pub fn build_routes_from_topology(
     edges: &[(u32, u32)],
@@ -87,32 +126,14 @@ pub fn build_routes_from_topology(
     match protocol {
         None => Vec::new(),
         Some(config::RoutingProtocol::ShortestPath) => {
-            // only collects existing node IDs and sorts them
-            // ensures we NEVER create extra nodes like from_edges would
-            let mut all_nodes = HashSet::new();
+            // Convert undirected edges to bidirectional directed edges
+            let mut bidirectional_edges = Vec::new();
             for &(a, b) in edges {
-                all_nodes.insert(a);
-                all_nodes.insert(b);
-            }
-            let mut node_ids: Vec<u32> = all_nodes.into_iter().collect();
-            node_ids.sort();
-
-            // creates graph manually to ensure NodeIndex order matches our sorted node_ids
-            let mut graph = UnGraph::<u32, ()>::new_undirected();
-            let mut node_map = HashMap::new();
-
-            // adds nodes in sorted order
-            for &node_id in &node_ids {
-                let node_idx = graph.add_node(node_id);
-                node_map.insert(node_id, node_idx);
+                bidirectional_edges.push((a, b));
+                bidirectional_edges.push((b, a));
             }
 
-            // adds edges
-            for &(a, b) in edges {
-                let a_idx = node_map[&a];
-                let b_idx = node_map[&b];
-                graph.add_edge(a_idx, b_idx, ());
-            }
+            let (node_ids, _node_map, graph) = create_graph_with_mapping(&bidirectional_edges);
 
             let mut shortest_path = routing::ShortestPath::new(graph.clone());
             let mut routes = Vec::new();
@@ -218,21 +239,26 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     let mut route_entries: Vec<RoutingTableEntry> = Vec::new();
 
     info!(
-        "Building routes for node {}, total routes: {}",
-        node_id,
-        routes.len()
+        "Computing next hops for all routes going through node {}.",
+        node_id
     );
 
     for route in &routes {
         // finds next hops for the current node using PetGraph
         let mut next_hops: Vec<usize> = Vec::new();
 
-        let graph = DiGraph::<u32, ()>::from_edges(&route.edges);
+        // creates proper node mapping like in build_routes_from_topology
+        let (_node_ids, node_map, graph) = create_graph_with_mapping(&route.edges);
 
-        if let Some(node_idx) = graph.node_indices().find(|&idx| graph[idx] == node_id) {
+        info!("Graph: {:?}.", graph);
+        info!("node_indices(): {:?}", graph.node_indices());
+
+        if let Some(&node_idx) = node_map.get(&node_id) {
+            info!("node_idx = {:?} (node_id = {})", node_idx, node_id);
             for neighbor_idx in graph.neighbors_directed(node_idx, Direction::Outgoing) {
                 let neighbor_node_id = graph[neighbor_idx];
                 let hop = neighbor_node_id as usize;
+                info!("neighbor_idx = {:?}, next hop = {}.", neighbor_idx, hop);
 
                 if !next_hops.contains(&hop) {
                     next_hops.push(hop);
@@ -259,7 +285,6 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     }
 
     if route_entries.is_empty() {
-        info!("No routes for node {}", node_id);
         None
     } else {
         info!(
