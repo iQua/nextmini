@@ -250,15 +250,10 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         // creates proper node mapping like in build_routes_from_topology
         let (_node_ids, node_map, graph) = create_graph_with_mapping(&route.edges);
 
-        info!("Graph: {:?}.", graph);
-        info!("node_indices(): {:?}", graph.node_indices());
-
         if let Some(&node_idx) = node_map.get(&node_id) {
-            info!("node_idx = {:?} (node_id = {})", node_idx, node_id);
             for neighbor_idx in graph.neighbors_directed(node_idx, Direction::Outgoing) {
                 let neighbor_node_id = graph[neighbor_idx];
                 let hop = neighbor_node_id as usize;
-                info!("neighbor_idx = {:?}, next hop = {}.", neighbor_idx, hop);
 
                 if !next_hops.contains(&hop) {
                     next_hops.push(hop);
@@ -288,18 +283,11 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         None
     } else {
         info!(
-            "Finished building routes for node {}, total route entries: {}",
+            "Finished building routes for node {}. Total routing table entries: {}.",
             node_id,
             route_entries.len()
         );
-        // logs each routing table entry
-        // TODO: removes this after debugging
-        for e in &route_entries {
-            info!(
-                "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?}",
-                node_id, e.route_id, e.src_node_id, e.dst_node_id, e.next_hops
-            );
-        }
+
         Some(ControllerToDataplane::InstallRoutes {
             routes: route_entries,
         })
