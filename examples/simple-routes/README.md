@@ -102,3 +102,4 @@ Actual numbers may differ but there will be exactly 12 such entries.
 Note on topology and connections:
 - The controller uses `[topology]` edges (preset or `edges`) to decide which nodes should connect. It sends `AddNode` only to those neighbors.
 - Custom `[[routes]]` do not create connections.
+- If you do set your routing protocol, do not include custom routes.
