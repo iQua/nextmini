@@ -1,5 +1,5 @@
 use ahash::AHashMap;
-use fastrand;
+use rand::Rng;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
 use tracing::{debug, info};
@@ -145,7 +145,7 @@ impl RoutingTable {
             // picks the first candidate next hop for now
             if let Some(next_hops) = self.route_next_hop.get(&route_id) {
                 if next_hops.len() > 1 {
-                    let idx = fastrand::usize(..next_hops.len());
+                    let idx = rand::thread_rng().gen_range(0..next_hops.len());
                     return Ok(next_hops[idx]);
                 } else {
                     return Ok(next_hops[0]);
