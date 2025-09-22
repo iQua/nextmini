@@ -67,3 +67,38 @@ route = [[1, 2], [2, 4], [1, 3], [3, 4]]
 [[routes]]
 route = [[4, 1]]
 ```
+
+And the simplest way to generate a "full_mesh" routes is to set as follows:
+
+```toml
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 4 }
+
+[routing]
+protocol = "shortest_path"
+```
+
+This combination lets the controller create **all 4 × 3 = 12 directed one-hop routes** automatically:
+
+| route_id* | src | dst | edges |
+|-----------|-----|-----|-------|
+| 0 | 1 | 2 | [[1,2]] |
+| 1 | 1 | 3 | [[1,3]] |
+| 2 | 1 | 4 | [[1,4]] |
+| 3 | 2 | 1 | [[2,1]] |
+| 4 | 2 | 3 | [[2,3]] |
+| 5 | 2 | 4 | [[2,4]] |
+| 6 | 3 | 1 | [[3,1]] |
+| 7 | 3 | 2 | [[3,2]] |
+| 8 | 3 | 4 | [[3,4]] |
+| 9 | 4 | 1 | [[4,1]] |
+| 10| 4 | 2 | [[4,2]] |
+| 11| 4 | 3 | [[4,3]] |
+
+\*`route_id` is assigned by the database `SERIAL`.
+Actual numbers may differ but there will be exactly 12 such entries.
+
+Note on topology and connections:
+- The controller uses `[topology]` edges (preset or `edges`) to decide which nodes should connect. It sends `AddNode` only to those neighbors.
+- Custom `[[routes]]` do not create connections.
