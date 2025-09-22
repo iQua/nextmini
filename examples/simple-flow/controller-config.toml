@@ -8,9 +8,6 @@ scheduler_type = "fifo"
 type = "full_mesh"
 full_mesh_config = { n_nodes = 4 }
 
-# [routing]
-# protocol = "shortest_path"
-
 [[link_rates]]
 src_node_id = 1
 dst_node_id = 2
