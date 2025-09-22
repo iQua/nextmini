@@ -69,3 +69,4 @@ Flow arrives at node N
 ## Notes
 
 - AddNode neighbors are derived from `[topology]` edges.
+- Topology acts as the connection substrate: the controller collects neighbors for each node from `[topology]` edges and sends `AddNode { remote_node_id, remote_addr }` only to those neighbors. The dataplane then creates a network interface and a scheduler per neighbor. Custom `[[routes]]` do not trigger connections.

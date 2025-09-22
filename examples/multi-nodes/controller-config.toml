@@ -2,4 +2,7 @@ protocol = "tcp"
 
 [topology]
 type = "full_mesh"
-n_nodes = 100
+full_mesh_config = { n_nodes = 100 }
+
+[routing]
+protocol = "shortest_path"
