@@ -12,7 +12,6 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-import torch.distributed as dist
 
 def set_random_seeds(random_seed=0):
     torch.manual_seed(random_seed)
@@ -59,8 +58,8 @@ class LeNet5(nn.Module):
 
 
 def main():
-    num_epochs_default = 3
-    batch_size_default = 1024
+    num_epochs_default = 10
+    batch_size_default = 128
     learning_rate_default = 0.001
     random_seed_default = 0
 
@@ -156,43 +155,19 @@ def main():
 
         ddp_model.train()
 
-        total_bytes = 0
-        total_sync_time = 0.0
-
         for data in train_loader:
+            start_time = time.time()
             inputs, labels = data[0].to(device), data[1].to(device)
             optimizer.zero_grad()
             outputs = ddp_model(inputs)
             loss = criterion(outputs, labels)
-            
-            with ddp_model.no_sync():
-                start_local = time.time()
-                loss.backward()
-                local_time = time.time() - start_local
-            
-            start_sync = time.time()
-            for param in ddp_model.parameters():
-                if param.grad is not None:
-                    dist.all_reduce(param.grad)
-                    
-            sync_time = time.time() - start_sync
-
-            bytes_this_iter = sum(
-                p.grad.numel() * p.grad.element_size()
-                for p in ddp_model.parameters() if p.grad is not None
-            )
-            mbps = bytes_this_iter / sync_time / 1e6 if sync_time > 0 else 0.0
-            
-            total_bytes += bytes_this_iter
-            total_sync_time += sync_time
-
+            loss.backward()
             optimizer.step()
+            end_time = time.time()
+            print(f"Time taken: {end_time - start_time} seconds")
+            break
+                
 
-    if local_rank == 0 and total_sync_time > 0:
-        print("=" * 75)
-        avg_mbps = total_bytes / total_sync_time / 1e6
-        print(f"Average gradient sync throughput: {avg_mbps:.1f} MB/s over {num_epochs} epochs")
-        print("=" * 75)
-        
+
 if __name__ == "__main__":
     main()

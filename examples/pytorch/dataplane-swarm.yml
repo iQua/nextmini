@@ -21,10 +21,12 @@ services:
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
       - ./resnet.py:/var/nextmini/resnet.py
+      - ./vgg16.py:/var/nextmini/vgg16.py
       - ./test.py:/var/nextmini/test.py
       - ./train_lenet5.sh:/var/nextmini/train_lenet5.sh
       - ./train_gpt2.sh:/var/nextmini/train_gpt2.sh
       - ./train_resnet.sh:/var/nextmini/train_resnet.sh
+      - ./train_vgg16.sh:/var/nextmini/train_vgg16.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
     cap_add:
@@ -78,6 +80,7 @@ services:
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
+      - ./vgg16.py:/var/nextmini/vgg16.py
       - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
@@ -128,6 +131,7 @@ services:
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
       - ./gpt2.py:/var/nextmini/gpt2.py
+      - ./vgg16.py:/var/nextmini/vgg16.py
       - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py
       - ./pyproject.toml:/var/nextmini/pyproject.toml
@@ -177,6 +181,7 @@ services:
       - ./ssh:/var/nextmini/.ssh
       - ./config.toml:/var/nextmini/config.toml.template
       - ./lenet5.py:/var/nextmini/lenet5.py
+      - ./vgg16.py:/var/nextmini/vgg16.py
       - ./gpt2.py:/var/nextmini/gpt2.py
       - ./resnet.py:/var/nextmini/resnet.py
       - ./test.py:/var/nextmini/test.py

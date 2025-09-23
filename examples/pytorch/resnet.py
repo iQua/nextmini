@@ -132,11 +132,7 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(ddp_model.parameters(), lr=learning_rate, momentum=0.9, weight_decay=1e-5)
-
-    # Statistics for average throughput across the whole training run
-    total_bytes = 0
-    total_sync_time = 0.0
-
+    
     # Loop over the dataset multiple times
     for epoch in range(num_epochs):
 
@@ -151,40 +147,17 @@ def main():
         ddp_model.train()
 
         for data in train_loader:
+            start_time = time.time()
             inputs, labels = data[0].to(device), data[1].to(device)
             optimizer.zero_grad()
             outputs = ddp_model(inputs)
             loss = criterion(outputs, labels)
-
-            with ddp_model.no_sync():
-                start_local = time.time()
-                loss.backward()
-                local_time = time.time() - start_local
-
-            start_sync = time.time()
-            for param in ddp_model.parameters():
-                if param.grad is not None:
-                    dist.all_reduce(param.grad)
-            sync_time = time.time() - start_sync
-
-            bytes_this_iter = sum(
-                p.grad.numel() * p.grad.element_size()
-                for p in ddp_model.parameters() if p.grad is not None
-            )
-            mbps = bytes_this_iter / sync_time / 1e6 if sync_time > 0 else 0.0
-
-            # accumulate for average throughput computation
-            total_bytes += bytes_this_iter
-            total_sync_time += sync_time
-
+            loss.backward()
             optimizer.step()
+            end_time = time.time()
+            print(f"Time taken: {end_time - start_time} seconds")
+            break
 
-    # report average throughput after training completes
-    if local_rank == 0 and total_sync_time > 0:
-        print("=" * 75)
-        avg_mbps = total_bytes / total_sync_time / 1e6
-        print(f"Average gradient sync throughput: {avg_mbps:.1f} MB/s over {num_epochs} epochs")
-        print("=" * 75)
 
 if __name__ == "__main__":
     
