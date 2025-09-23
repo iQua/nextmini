@@ -1,5 +1,6 @@
 use byteorder::{BigEndian, ByteOrder};
 
+use crate::node::flow;
 use crate::node::{FlowId, PacketBuf};
 
 #[derive(Debug)]
@@ -53,7 +54,7 @@ impl Packet {
             let src_dst_port = BigEndian::read_u32(&buf[20..24]);
             (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
         } else {
-            0
+            flow::INVALID_FLOW_ID
         }
     }
 

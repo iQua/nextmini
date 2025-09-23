@@ -97,7 +97,7 @@ ControllerToDataplane::InstallRoutes {
    - Default routes in the topology are direct one-hop links, and they are assigned before custom route IDs
    - If the current node is the destination: next_hop = own node ID (local delivery)
    - If current node is in the middle of the path: next_hop = next node ID in the path
-   - If current node is not in the path: next_hop = INVALID_NEXT_HOP (invalid route)
+   - If current node is not in the path: next_hop = INVALID (invalid route)
    - Duplicate routes are automatically skipped without assigning new route_id
    - Uses MessagePack binary format for serialization
    - Sent to dataplane nodes via WebSocket

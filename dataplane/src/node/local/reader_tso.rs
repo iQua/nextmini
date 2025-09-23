@@ -4,6 +4,9 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
+use nextmini_messages::RoutingTableEntry;
+
+use crate::node::flow;
 use crate::node::local::interface::ShutdownMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -64,15 +67,15 @@ impl LocalReader {
                         let packet_size = self.packet_sizes[i];
                         // skips empty packets
                         if packet_size == 0 {
-                            warn!("LocalReader received an empty packet."); //keeps the original design
+                            warn!("LocalReader received an empty packet.");
                             continue;
                         }
 
                         // uses slice to avoid copying
                         let packet = Packet::from_slice(packet_size, &self.packet_buffers[i]);
 
-                        // checks if packet creation was successful (non-zero flow_id indicates valid packet)
-                        if packet.flow_id == 0 {
+                        // checks if packet creation was successful
+                        if packet.flow_id == flow::INVALID_FLOW_ID {
                             continue;
                         }
 
