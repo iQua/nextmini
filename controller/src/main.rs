@@ -45,7 +45,7 @@ async fn main() {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
         .expect("Failed to bind to port");
-    warn!("The controller is now listening on port {}.", config.port);
+    info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
@@ -212,7 +212,7 @@ async fn handle_connection(
                         let connected_node_count = node_ws.read().await.len();
 
                         if let Some(expected_node_count) = config.topology.n_nodes {
-                            warn!(
+                            info!(
                                 "Connected nodes: {}/{}.",
                                 connected_node_count, expected_node_count
                             );
@@ -220,7 +220,7 @@ async fn handle_connection(
 
                         // asks the new node to connect to other nodes in the topology
 
-                        //first fetches all nodes from the database
+                        // first fetches all nodes from the database
                         let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
                             .fetch_all(&*db_pool)
                             .await
@@ -316,7 +316,7 @@ async fn handle_connection(
                                 // waits for all links to be established
                                 tokio::time::sleep(Duration::from_secs(1)).await;
 
-                                warn!(
+                                info!(
                                     "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
                                     expected_node_count
                                 );
