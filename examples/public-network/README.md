@@ -67,7 +67,14 @@ In node config file, the network mode must be set to host.
 network_mode: host
 ```
 
-This is very critical.
+This is very critical. Because compose uses network_mode: host, the container sees the host’s real interfaces/IPs, so detection returns the host VM’s IP. If you used bridge mode, this would detect a Docker-internal IP, which is wrong.
+
+
+# Quick checklist for this example
+- Ensure node1 and node2 use different `private_network_name`s to force public addressing.
+- Provide the controller public IP in node*-docker-compose.yml (ws://<controller_public_ip>:3000).
+- Open firewall ports: controller 3000/tcp; node peer ports 8080/tcp and 8081/tcp.
+- On Arbutus: if ens3 is 192.168.x.x and that network is reachable between VMs, you can set public_network_interface = "ens3" and rely on auto-detect; otherwise set public_network_addr explicitly.
 
 # Arbutus
 
