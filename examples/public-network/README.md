@@ -15,11 +15,32 @@ On the controller VM, only the following files are needed:
 
 On `node1`, only `examples/public-network/node1-config.toml` and `examples/public-network/node1-docker-compose.yml` are needed. Do the same for `node2` on its VM.
 
+It is worth noting that, in node[idx]-config.toml, we are using the public address and different private_network_name.
+
+From controller/src/main.rs,
+
+```rust
+// determines the address to use (private or public)
+// if two nodes share the same private network name, then we use the private
+// network address for this connection; otherwise, we use the public network
+// address.
+let addr = if node.private_network_name
+    == Some(private_network_name.clone())
+{
+    node.private_network_addr
+} else {
+    node.public_network_addr
+};
+```
+
+we can see that, if two nodes share the same private_network_name, use the private address. Otherwise, use public network addr. That's the reason why private network name is used.
+
+
 It is best to keep only the required files.
 
-First, use `ifconfig` to find the controller VM's IP address; this will be the controller's public address. 
+First, use `ifconfig` to find the controller VM's IP address; this will be the controller's public address.
 
-In node[idx]-docker-compose.yml file, substitute 
+In node[idx]-docker-compose.yml file, substitute
 
 ```
 command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://<controller_public_ip>:3000"
@@ -54,7 +75,7 @@ In arbutus, "ens3" is the network_interface for private network `192.168.x.x`.
 
 To test on arbutus,
 
-## Install docker 
+## Install docker
 
 Firstly, we need to install docker in a new VM in arbutus.
 
@@ -112,4 +133,3 @@ sudo usermod -aG docker $USER
 ```
 
 Log out and log back in to apply the changes.
-

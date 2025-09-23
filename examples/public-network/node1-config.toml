@@ -1,4 +1,5 @@
-# This node's ID.
+# This node's ID. The node id can be assigned here as whatever you want.
+# From dataplane/local/interface.rs, the node_id can be read in dataplane.config.
 node_id = 1
 
 # --- Public Network ---
