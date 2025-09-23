@@ -481,6 +481,7 @@ impl LocalConfig {
     }
 
     /// initialize the config for the namespace nodes
+    #[allow(unused)]
     pub fn new_for_namespace(config_path: &str, controller_addr: &str, ns_addr: &str) -> LocalConfig {
         // Reads the TOML configuration file (or falls back to defaults).
         let mut cfgs = match std::fs::read_to_string(config_path) {

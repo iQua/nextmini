@@ -1,5 +1,7 @@
 # How to test
 
+Always use "docker compose build" before running this example.
+
 To run this example which only uses the single machine,
 
 enter the follwowing commands first:

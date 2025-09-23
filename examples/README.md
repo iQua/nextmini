@@ -4,7 +4,8 @@ Nextmini includes several introductory examples. To run an example, navigate to 
 
 ```bash
 cd examples/<folder-name>;
-docker compose up --build
+docker compose build
+docker compose up
 ```
 
 Replace `<folder-name>` with one of the following:
@@ -91,7 +92,8 @@ The config file with comments removed looks like this:
 protocol = "tcp"
 
 [topology]
-n_nodes = 3
+type = "full_mesh"
+full_mesh_config = { n_nodes = 5 }
 
 [[routes]]
 # node 1 represents the external client

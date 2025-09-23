@@ -2,7 +2,11 @@ protocol = "tcp"
 
 [topology]
 type = "full_mesh"
-n_nodes = 15
+full_mesh_config = { n_nodes = 15 }
+
+[routing]
+protocol = "shortest_path"
+
 
 [db]
 user = "pgusr"

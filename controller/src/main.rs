@@ -1,4 +1,12 @@
-use std::collections::HashMap;
+mod config;
+mod db;
+mod models;
+mod route_ser;
+mod routing;
+mod topo;
+mod utils;
+
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::stream::{SplitSink, SplitStream};
@@ -17,15 +25,8 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucke
 
 use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
-use crate::models::DbFlow;
-use crate::models::{Node, Route};
-use crate::utils::build_flows_for_node;
-use crate::utils::{build_routes_for_node, build_startup_response};
-
-mod config;
-mod db;
-mod models;
-mod utils;
+use crate::models::{DbFlow, DbRoute, Node, Route};
+use crate::utils::{build_flows_for_node, build_routes_for_node, build_startup_response};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -57,10 +58,14 @@ async fn main() {
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
             Err(e) => {
-                error!("Failed to accept WebSocket connection from {}: {}. Skipping.", peer, e);
+                error!(
+                    "Failed to accept WebSocket connection from {}: {}. Skipping.",
+                    peer, e
+                );
                 continue;
             }
         };
+
         let (write, read) = ws_stream.split();
 
         tokio::spawn(handle_connection(
@@ -193,17 +198,7 @@ async fn handle_connection(
 
                         current_node_id = Some(node_id);
 
-                        // checks if all expected nodes are connected before sending flows to the new node
-                        let connected_node_count = node_ws.read().await.len();
-
-                        if let Some(expected_node_count) = config.topology.n_nodes {
-                            info!(
-                                "Connected nodes: {}/{}.",
-                                connected_node_count, expected_node_count
-                            );
-                        }
-
-                        // asks the new node to connect to other nodes in the topology
+                        // asks the new node to connect to other nodes in the route
 
                         // first fetches all nodes from the database
                         let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
@@ -216,10 +211,25 @@ async fn handle_connection(
                                 continue;
                             }
                         };
-
-                        // establishes connections between all pairs of nodes by sending AddNode messages
+                        // Get topology edges
+                        let topology_edges =
+                            topo::topo::build_topology(&config).unwrap_or_default();
+                        // Collect neighbors of the new node
+                        let mut neighbors: HashSet<i32> = HashSet::new();
+                        for &(a, b) in &topology_edges {
+                            if a == node_id as u32 {
+                                neighbors.insert(b as i32);
+                            } else if b == node_id as u32 {
+                                neighbors.insert(a as i32);
+                            }
+                        }
+                        // establishes connections between the new node and its neighbors by sending AddNode messages
                         for node in nodes {
                             if node.id == node_id as i32 {
+                                continue;
+                            }
+
+                            if !neighbors.contains(&node.id) {
                                 continue;
                             }
 
@@ -262,18 +272,39 @@ async fn handle_connection(
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
 
-                        let routes: Vec<Route> = match sqlx::query_as("SELECT * FROM routes")
-                            .fetch_all(&*db_pool)
-                            .await
+                        let routes = match sqlx::query_as(
+                            r#"SELECT route_id, src_node_id, dst_node_id, edges FROM routes"#,
+                        )
+                        .fetch_all(&*db_pool)
+                        .await
                         {
-                            Ok(routes) => routes,
+                            Ok(rows) => rows
+                                .into_iter()
+                                .map(|row: DbRoute| {
+                                    // converts i32 to u32 edges
+                                    let edges: Vec<(i32, i32)> =
+                                        serde_json::from_value(row.edges.clone())
+                                            .unwrap_or_default();
+                                    let edges: Vec<(u32, u32)> = edges
+                                        .into_iter()
+                                        .map(|(a, b)| (a as u32, b as u32))
+                                        .collect();
+
+                                    Route {
+                                        route_id: row.route_id as usize,
+                                        src_node_id: row.src_node_id as u32,
+                                        dst_node_id: row.dst_node_id as u32,
+                                        edges,
+                                    }
+                                })
+                                .collect::<Vec<_>>(),
                             Err(e) => {
                                 error!("Failed to fetch routes: {}", e);
                                 continue;
                             }
                         };
 
-                        if let Some(msg) = build_routes_for_node(routes, node_id as i32) {
+                        if let Some(msg) = build_routes_for_node(routes, node_id as u32) {
                             match write_arc
                                 .lock()
                                 .await
@@ -293,7 +324,10 @@ async fn handle_connection(
                         }
 
                         // sends flows and link rates when all nodes are connected
-                        if let Some(expected_node_count) = config.topology.n_nodes {
+                        if let Some(expected_node_count) = config.topology.compute_node_count() {
+                            // checks if all expected nodes are connected before sending flows to the new node
+                            let connected_node_count = node_ws.read().await.len();
+
                             if connected_node_count == expected_node_count {
                                 // waits for all links to be established
                                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -320,10 +354,12 @@ async fn handle_connection(
                                 send_flows(node_ws.clone(), db_pool.clone()).await;
                             } else {
                                 info!(
-                                    "Waiting for all nodes to connect before sending flows and link rates ({}/{} connected).",
+                                    "Number of nodes connected: {} (out of a total of {}).",
                                     connected_node_count, expected_node_count
                                 );
                             }
+                        } else {
+                            panic!("Unable to compute the total number of nodes.");
                         }
                     }
 
@@ -360,6 +396,7 @@ async fn handle_connection(
                     }
                     DataplaneToController::FlowFinished { controller_id } => {
                         info!("Received FlowFinished message for flow {}.", controller_id);
+
                         match sqlx::query(
                             r#"
                             UPDATE flows

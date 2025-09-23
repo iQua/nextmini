@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 fn main() -> std::io::Result<()> {
-    thread::sleep(Duration::from_secs(15)); // Initial delay to ensure environment is ready
+    thread::sleep(Duration::from_secs(30)); // Initial delay to ensure environment is ready
                                             // SOCKS5 proxy address
     let proxy_addr = "172.16.8.5:8081";
 

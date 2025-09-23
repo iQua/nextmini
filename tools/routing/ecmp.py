@@ -97,7 +97,7 @@ if __name__ == "__main__":
     "routes_preset": {
         "type": "full_mesh",
         "n_nodes": 3,
-        "route_ids": [0,1]
+        "route_ids": [0, 1]
     }
 }
 

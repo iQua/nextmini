@@ -5,6 +5,7 @@ use tracing::{error, info, warn};
 use tun_rs::AsyncDevice;
 
 use crate::node::RECEIVE_BUF_SIZE;
+use crate::node::flow;
 use crate::node::local::interface::ShutdownMessage;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -60,8 +61,8 @@ impl LocalReader {
 
                     let packet = Packet::new(n, buf.to_vec());
 
-                    // checks if packet creation was successful (non-zero flow_id indicates valid packet)
-                    if packet.flow_id == 0 {
+                    // checks if packet creation was successful
+                    if packet.flow_id == flow::INVALID_FLOW_ID {
                         continue;
                     }
 
