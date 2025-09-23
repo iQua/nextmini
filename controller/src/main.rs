@@ -220,62 +220,62 @@ async fn handle_connection(
 
                         // asks the new node to connect to other nodes in the topology
 
-                        // //first fetches all nodes from the database
-                        // let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
-                        //     .fetch_all(&*db_pool)
-                        //     .await
-                        // {
-                        //     Ok(nodes) => nodes,
-                        //     Err(e) => {
-                        //         error!("Failed to fetch nodes: {}", e);
-                        //         continue;
-                        //     }
-                        // };
+                        //first fetches all nodes from the database
+                        let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
+                            .fetch_all(&*db_pool)
+                            .await
+                        {
+                            Ok(nodes) => nodes,
+                            Err(e) => {
+                                error!("Failed to fetch nodes: {}", e);
+                                continue;
+                            }
+                        };
 
-                        // // establishes connections between all pairs of nodes by sending AddNode messages
-                        // for node in nodes {
-                        //     if node.id == node_id as i32 {
-                        //         continue;
-                        //     }
+                        // establishes connections between all pairs of nodes by sending AddNode messages
+                        for node in nodes {
+                            if node.id == node_id as i32 {
+                                continue;
+                            }
 
-                        //     // determines the address to use (private or public)
-                        //     // if two nodes share the same private network name, then we use the private
-                        //     // network address for this connection; otherwise, we use the public network
-                        //     // address.
-                        //     let addr = if node.private_network_name
-                        //         == Some(private_network_name.clone())
-                        //     {
-                        //         node.private_network_addr
-                        //     } else {
-                        //         node.public_network_addr
-                        //     };
+                            // determines the address to use (private or public)
+                            // if two nodes share the same private network name, then we use the private
+                            // network address for this connection; otherwise, we use the public network
+                            // address.
+                            let addr = if node.private_network_name
+                                == Some(private_network_name.clone())
+                            {
+                                node.private_network_addr
+                            } else {
+                                node.public_network_addr
+                            };
 
-                        //     // sends an AddNode message to the new node
-                        //     let msg = ControllerToDataplane::AddNode {
-                        //         remote_node_id: node.id as usize,
-                        //         remote_addr: addr,
-                        //     };
-                        //     // delays (1-100ms) to enable last connection to complete
-                        //     let jitter = rand::random_range(1..=100u64);
-                        //     tokio::time::sleep(Duration::from_millis(jitter)).await;
+                            // sends an AddNode message to the new node
+                            let msg = ControllerToDataplane::AddNode {
+                                remote_node_id: node.id as usize,
+                                remote_addr: addr,
+                            };
+                            // delays (1-100ms) to enable last connection to complete
+                            let jitter = rand::random_range(1..=100u64);
+                            tokio::time::sleep(Duration::from_millis(jitter)).await;
 
-                        //     // informs the new node to connect to the existing node
-                        //     match write_arc
-                        //         .lock()
-                        //         .await
-                        //         .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
-                        //         .await
-                        //     {
-                        //         Ok(_) => info!(
-                        //             "Sent an AddNode message for node {} to node {}.",
-                        //             node.id, node_id
-                        //         ),
-                        //         Err(e) => error!(
-                        //             "Failed to send an AddNode message to node {}: {}.",
-                        //             node_id, e
-                        //         ),
-                        //     }
-                        // }
+                            // informs the new node to connect to the existing node
+                            match write_arc
+                                .lock()
+                                .await
+                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .await
+                            {
+                                Ok(_) => info!(
+                                    "Sent an AddNode message for node {} to node {}.",
+                                    node.id, node_id
+                                ),
+                                Err(e) => error!(
+                                    "Failed to send an AddNode message to node {}: {}.",
+                                    node_id, e
+                                ),
+                            }
+                        }
 
                         // installs routes
                         info!("Installing routes for node {}.", node_id);
