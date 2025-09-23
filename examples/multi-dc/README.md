@@ -168,8 +168,8 @@ docker service update --replicas 7 nextmini_dataplane
 Update controller config:
 
 ```toml
-[topology]
-n_nodes = 7
+type = "full_mesh"
+full_mesh_config = { n_nodes = 7 }
 ```
 
 To add more dataplane nodes in specific host:

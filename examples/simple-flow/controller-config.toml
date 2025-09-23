@@ -3,10 +3,10 @@ protocol = "tcp"
 # scheduler_type can be "fifo" or "wrr"
 scheduler_type = "fifo"
 
-# create a full mesh topology with 4 nodes
+# creates a full mesh topology with 4 nodes
 [topology]
 type = "full_mesh"
-n_nodes = 4
+full_mesh_config = { n_nodes = 4 }
 
 [[link_rates]]
 src_node_id = 1
@@ -14,9 +14,12 @@ dst_node_id = 2
 rate = 100_000_000
 bucket_size = 9000
 
-# Now the routes for node1 and node2 are [1, 3, 4, 2] and [1, 2]
+# the route from node 1 and node 2 is [1, 3, 4, 2]
 [[routes]]
-route = [ 1, 3, 4, 2 ]
+route = [1, 3, 4, 2]
+
+[[routes]]
+route = [2, 4, 3, 1]
 
 [[flows]]
 src_node_id = 1

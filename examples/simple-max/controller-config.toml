@@ -1,7 +1,8 @@
 protocol = "tcp"
 
 [topology]
-n_nodes = 3
+type = "full_mesh"
+full_mesh_config = { n_nodes = 3 }
 
 [[flows]]
 src_node_id = 1

@@ -49,6 +49,7 @@ impl Conductor {
         }
     }
 
+    #[allow(unused)]
     pub async fn new_for_namespace(config: LocalConfig) -> Self {
         // connects the processors with its downstream local interface writers to send packets out
         let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
