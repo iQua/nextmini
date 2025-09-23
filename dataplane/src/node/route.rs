@@ -7,6 +7,9 @@ use tracing::{debug, info};
 use crate::node::config::LocalConfig;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
+/// Special node ID used to indicate that there is no valid next hop.
+const INVALID_NEXT_HOP: usize = usize::MAX;
+
 /// The routing table in the dataplane.
 #[derive(Clone)]
 pub struct RoutingTable {
