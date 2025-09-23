@@ -1,20 +1,17 @@
 protocol = "tcp"
 
-[topology]
+[routes_preset]
 type = "full_mesh"
-n_nodes = 4
+full_mesh_config = { n_nodes = 4 }
 
 [[routes]]
 route = [1, 3, 2]
 
 [[routes]]
-route = [2, 3, 1]
-
-[[routes]]
 route = [1, 4, 2]
 
-[[routes]]
-route = [2, 4, 1]
+[routing]
+protocol = "shortest_path"
 
 [[link_rates]]
 src_node_id = 1

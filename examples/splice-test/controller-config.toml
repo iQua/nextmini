@@ -2,7 +2,12 @@ protocol = "tcp"
 
 # Three Netxmini dataplane nodes in the topology
 [topology]
-n_nodes = 3
+type = "full_mesh"
+full_mesh_config = { n_nodes = 3 }
+
+[routing]
+protocol = "shortest_path"
+
 
 [[routes]]
 # node 1 represents the external client

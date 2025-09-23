@@ -1,12 +1,10 @@
 protocol = "quic"
 scheduler_type = "fifo"
 
-[routes_preset]
-n_nodes = 3
+[topology]
 type = "full_mesh"
+full_mesh_config = { n_nodes = 3 }
 
-[[routes]]
-src_node_id = 1
-dst_node_id = 3
-hops = [1, 2, 3]
-route_id = 0
+[routing]
+protocol = "shortest_path"
+

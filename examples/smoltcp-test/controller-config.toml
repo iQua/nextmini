@@ -3,7 +3,10 @@ scheduler_type = "wrr"
 
 [topology]
 type = "full_mesh"
-n_nodes = 3
+full_mesh_config = { n_nodes = 3 }
+
+[routing]
+protocol = "shortest_path"
 
 [[link_rates]]
 src_node_id = 1
