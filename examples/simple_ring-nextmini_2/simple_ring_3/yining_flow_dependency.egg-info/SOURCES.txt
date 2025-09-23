@@ -1,6 +1,0 @@
-pyproject.toml
-yining_flow_dependency.egg-info/PKG-INFO
-yining_flow_dependency.egg-info/SOURCES.txt
-yining_flow_dependency.egg-info/dependency_links.txt
-yining_flow_dependency.egg-info/requires.txt
-yining_flow_dependency.egg-info/top_level.txt
