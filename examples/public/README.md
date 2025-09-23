@@ -29,12 +29,14 @@ cd examples/public
 docker compose build; docker compose up
 ```
 
-In node config file,
+In node config file, the network mode must be set to host.
 
 ```bash
 network_mode: host
 ```
-This is very 
+
+This is very critical.
+
 # Arbutus
 
 In arbutus, "ens3" is the network_interface for private network `192.168.x.x`.
@@ -43,4 +45,3 @@ To test on arbutus,
 ```bash
 sudo apt update && sudo apt install docker.io -y && sudo apt install docker-compose -y
 ```
-
