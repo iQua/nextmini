@@ -307,7 +307,7 @@ async fn handle_connection(
                                 ),
                             }
                         } else {
-                            info!("No routes to install for node {}.", node_id);
+                            error!("No routes to install for node {}.", node_id);
                         }
 
                         // sends flows and link rates when all nodes are connected
