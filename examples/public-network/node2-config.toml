@@ -19,6 +19,7 @@ feature = "concurrent"
 
 
 # The config which could be used in Arbutus.
+# In arbutus, "ens3" is the network_interface for private network `192.168.x.x`.
 
 # node_id = 2
 # public_network_interface = "ens3"

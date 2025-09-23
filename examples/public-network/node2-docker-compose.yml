@@ -16,5 +16,5 @@ services:
         cap_add:
             - NET_ADMIN
         # Change the ip address to the public ip of the controller.
-        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://209.38.72.97:3000"
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://<controller_public_ip>:3000"
         restart: unless-stopped 
