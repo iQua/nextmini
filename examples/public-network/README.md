@@ -131,7 +131,6 @@ sudo docker info -f '{{.DockerRootDir}}'
 ```
 It should show something like `/mnt/docker`.
 
-![image](./imgs/image14.png)
 
 Having to type `sudo` every time we run a docker command can be annoying. To avoid this, we can add the current user to the docker group with the following command:
 
