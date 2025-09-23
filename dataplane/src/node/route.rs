@@ -1,14 +1,11 @@
 use ahash::AHashMap;
 use jumphash::JumpHasher;
-use nextmini_messages::RoutingTableEntry;
+use nextmini_messages::{INVALID, RoutingTableEntry};
 use rand::Rng;
 use tracing::{debug, info};
 
 use crate::node::config::LocalConfig;
 use crate::node::{FlowId, FlowIdExt, NodeId};
-
-/// Special node ID used to indicate that there is no valid next hop.
-const INVALID_NEXT_HOP: usize = usize::MAX;
 
 /// The routing table in the dataplane.
 #[derive(Clone)]
@@ -104,6 +101,7 @@ impl RoutingTable {
 
         // uses jump hash to select among the available routes
         let selected_route_id = if available_routes.len() == 1 {
+            // if there is only one available route, it will be selected
             available_routes[0]
         } else {
             // applies a deterministic consistent hash function using jump hash for load balancing;
@@ -111,10 +109,12 @@ impl RoutingTable {
             let hash_result = self
                 .jump_hasher
                 .slot(&flow_id, available_routes.len() as u32);
-            info!(
-                "Jump hash selected route ID: {}",
+
+            debug!(
+                "Selected route ID (using consistent hashing): {}",
                 available_routes[hash_result as usize]
             );
+
             available_routes[hash_result as usize]
         };
 
@@ -145,20 +145,23 @@ impl RoutingTable {
             }
 
             // gets the next hop by route ID
-            // picks the first candidate next hop for now
             if let Some(next_hops) = self.route_next_hop.get(&route_id) {
-                // check for invalid next hop during forwarding
-                if next_hops.contains(&INVALID_NEXT_HOP) {
-                    return Err(format!(
-                        "Route {} is not available on this node (next_hop = INVALID)",
+                if next_hops.contains(&INVALID) {
+                    // unless the routing table changes dynamically at runtime, the next hop should
+                    // never be invalid, as the source only sends out packets via valid routes only,
+                    // and the same flow ID always hashes to the same route ID with consistent hashing
+                    panic!(
+                        "Route {} is not available on this node (next_hop = INVALID).",
                         route_id
-                    ));
+                    );
                 }
 
                 if next_hops.len() > 1 {
+                    // randomizes the choice between all possible next hops
                     let idx = rand::rng().random_range(0..next_hops.len());
                     return Ok(next_hops[idx]);
                 } else {
+                    // selects the only choice as the next hop
                     return Ok(next_hops[0]);
                 }
             } else {

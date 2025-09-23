@@ -7,7 +7,7 @@ use petgraph::graph::DiGraph;
 use tracing::{debug, info};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, NodeSpec, OperatingMode, Protocol,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, NodeSpec, OperatingMode, Protocol,
     RoutingTableEntry, SchedulingDiscipline,
 };
 
@@ -16,9 +16,6 @@ use crate::models::{DbFlow, Route};
 use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topo::topo;
-
-/// Special node ID used to indicate that there is no valid next hop.
-const INVALID_NEXT_HOP: usize = usize::MAX;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
@@ -269,10 +266,10 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             if route.dst_node_id == node_id {
                 next_hops = vec![node_id as usize]; // local delivery
             } else {
-                // this node does not belong to this route at all, and we still create
-                // a routing table entry with INVALID_NEXT_HOP to maintain consistent
-                // route table sizes across all nodes
-                next_hops = vec![INVALID_NEXT_HOP];
+                // this node does not belong to this route, but we still need to create
+                // a routing table entry with INVALID to maintain consistency across all
+                // nodes regarding the size of the routing tables
+                next_hops = vec![INVALID];
             }
         }
 
