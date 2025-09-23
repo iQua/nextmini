@@ -1,7 +1,7 @@
 use ahash::AHashMap;
-use rand::Rng;
 use jumphash::JumpHasher;
 use nextmini_messages::RoutingTableEntry;
+use rand::Rng;
 use tracing::{debug, info};
 
 use crate::node::config::LocalConfig;
@@ -144,6 +144,14 @@ impl RoutingTable {
             // gets the next hop by route ID
             // picks the first candidate next hop for now
             if let Some(next_hops) = self.route_next_hop.get(&route_id) {
+                // check for invalid next hop during forwarding
+                if next_hops.contains(&INVALID_NEXT_HOP) {
+                    return Err(format!(
+                        "Route {} is not available on this node (next_hop = INVALID)",
+                        route_id
+                    ));
+                }
+
                 if next_hops.len() > 1 {
                     let idx = rand::rng().random_range(0..next_hops.len());
                     return Ok(next_hops[idx]);

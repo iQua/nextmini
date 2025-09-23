@@ -17,6 +17,9 @@ use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topo::topo;
 
+/// Special node ID used to indicate that there is no valid next hop.
+const INVALID_NEXT_HOP: usize = usize::MAX;
+
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(
     node_id: usize,
@@ -262,12 +265,14 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         }
 
         if next_hops.is_empty() {
+            // if the node is the destination, we add it to the next hops
             if route.dst_node_id == node_id {
                 next_hops = vec![node_id as usize]; // local delivery
             } else {
-                // this node does not belong to this route at all, moving on to the next route
-                // without adding a routing table entry
-                continue;
+                // this node does not belong to this route at all, and we still create
+                // a routing table entry with INVALID_NEXT_HOP to maintain consistent
+                // route table sizes across all nodes
+                next_hops = vec![INVALID_NEXT_HOP];
             }
         }
 
