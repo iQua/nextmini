@@ -1,96 +1,127 @@
-We already have a `multi-dc` example for automatically deploying controller/postgre and dataplane nodes with docker swarm, which can be implemented with a few commands.
+# Public Network Deployment Example
 
-With docker swarm, we don't need to assign public addresses manually or configure toml files for each specific node.
+This example demonstrates how to deploy NextMini across multiple VMs using public IP addresses without Docker Swarm. 
 
-In this example, we use the non-Swarm approach (no Docker Swarm) to connect the controller and dataplane nodes.
+Unlike the `multi-dc` example which uses Docker Swarm for automatic deployment, this approach requires manual configuration.
 
-Use `ifconfig` on each VM to find the public IP used for TCP persistent connections between nodes and for connecting to the controller.
+## Overview
 
-These instructions assume at least three VMs: one for the controller and PostgreSQL database, one for `node1`, and one for `node2`.
+### Architecture Requirements
+- Minimum 3 VMs: 
+  - 1 VM for controller and PostgreSQL database
+  - 1 VM for `node1`
+  - 1 VM for `node2`
 
-On the controller VM, only the following files are needed:
+## How Public/Private Network Selection Works
 
-- controller-config.toml
-- docker-compose.yml
-
-On `node1`, only `examples/public-network/node1-config.toml` and `examples/public-network/node1-docker-compose.yml` are needed. Do the same for `node2` on its VM.
-
-It is worth noting that, in node[idx]-config.toml, we are using the public address and different private_network_name.
-
-From controller/src/main.rs,
+The controller automatically determines whether to use private or public addresses based on the `private_network_name` configuration:
 
 ```rust
-// determines the address to use (private or public)
-// if two nodes share the same private network name, then we use the private
-// network address for this connection; otherwise, we use the public network
-// address.
-let addr = if node.private_network_name
-    == Some(private_network_name.clone())
-{
-    node.private_network_addr
+// From controller/src/main.rs
+let addr = if node.private_network_name == Some(private_network_name.clone()) {
+    node.private_network_addr  // Same private network -> use private IP
 } else {
-    node.public_network_addr
+    node.public_network_addr   // Different networks -> use public IP
 };
 ```
 
-we can see that, if two nodes share the same private_network_name, use the private address. Otherwise, use public network addr. That's the reason why private network name is used.
+**Key Point**: Nodes with different `private_network_name` values will communicate via public IP addresses.
 
+## Prerequisites
 
-It is best to keep only the required files.
+### Required Files by VM
 
-First, use `ifconfig` to find the controller VM's IP address; this will be the controller's public address.
+Controller VM:
+- `controller-config.toml`
+- `controller-docker-compose.yml`
 
-In node[idx]-docker-compose.yml file, substitute
+Node1 VM:
+- `node1-config.toml`
+- `node1-docker-compose.yml`
 
-```
-command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://<controller_public_ip>:3000"
-```
-with the real controller ip addr.
+Node2 VM:
+- `node2-config.toml`
+- `node2-docker-compose.yml`
 
-Open another terminal, and enter:
+### Network Configuration Requirements
 
-```bash
-cd examples/public-network
-docker compose build; docker compose up
-```
+**Host Network Mode**: All node configurations must use `network_mode: host`
 
-In the second VM, open a new terminal:
-
-```bash
-cd examples/public-network
-docker compose build; docker compose up
-```
-
-In node config file, the network mode must be set to host.
-
-```bash
+```yaml
 network_mode: host
 ```
 
-This is very critical. Because compose uses network_mode: host, the container sees the host’s real interfaces/IPs, so detection returns the host VM’s IP. If you used bridge mode, this would detect a Docker-internal IP, which is wrong.
+> **Critical**: This allows containers to see the host's real network interfaces. Bridge mode would expose Docker-internal IPs, causing connection failures.
 
 
-# Quick checklist for this example
-- Ensure node1 and node2 use different `private_network_name`s to force public addressing.
-- Provide the controller public IP in node*-docker-compose.yml (ws://<controller_public_ip>:3000).
-- Open firewall ports: controller 3000/tcp; node peer ports 8080/tcp and 8081/tcp.
-- On Arbutus: if ens3 is 192.168.x.x and that network is reachable between VMs, you can set public_network_interface = "ens3" and rely on auto-detect; otherwise set public_network_addr explicitly.
+## Deployment Steps
 
-# Arbutus
+### Step 1: Prepare VM IP Addresses
 
-In arbutus, "ens3" is the network_interface for private network `192.168.x.x`.
-
-To test on arbutus,
-
-## Install docker
-
-Firstly, we need to install docker in a new VM in arbutus.
-
+On each VM, find the public IP address:
 ```bash
-sudo apt update && sudo apt install docker.io -y && sudo apt install docker-compose -y
+ifconfig
 ```
 
-## Set up arbutus
+### Step 2: Configure Controller Connection
+
+In each `node*-docker-compose.yml` file, update the controller URL:
+```yaml
+command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://<controller_public_ip>:3000"
+```
+
+Replace `<controller_public_ip>` with the actual controller VM's public IP address.
+
+### Step 3: Deploy Services
+
+**On Controller VM:**
+```bash
+cd examples/public-network
+docker compose -f controller-docker-compose.yml build
+docker compose -f controller-docker-compose.yml up
+```
+
+**On Node1 VM:**
+```bash
+cd examples/public-network
+docker compose -f node1-docker-compose.yml build
+docker compose -f node1-docker-compose.yml up
+```
+
+**On Node2 VM:**
+```bash
+cd examples/public-network
+docker compose -f node2-docker-compose.yml build
+docker compose -f node2-docker-compose.yml up
+```
+
+## Arbutus Cloud Specific Setup
+
+### Network Interface Configuration
+
+On Arbutus, the `ens3` interface typically provides access to the `192.168.x.x` private network. Configure as:
+- Set `public_network_interface = "ens3":
+
+```toml
+node_id = 2
+public_network_interface = "ens3"
+private_network_name = "vm2-private"
+private_network_interface = "ens3"
+
+num_tun_queues = 1
+num_packet_processors = 1
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+```
+
+### Docker Installation and Setup on Arbutus
+
+To install Docker:
+```bash
+sudo apt update
+sudo apt install docker.io docker-compose -y
+```
 
 Arbutus instances typically have really small disk space on the root partition. To avoid running out of disk space, we can move the docker root directory to `/mnt`. We need to first stop the docker service with the following:
 
@@ -130,7 +161,6 @@ We can test the root directory has been changed by running `docker info` and che
 sudo docker info -f '{{.DockerRootDir}}'
 ```
 It should show something like `/mnt/docker`.
-
 
 Having to type `sudo` every time we run a docker command can be annoying. To avoid this, we can add the current user to the docker group with the following command:
 
