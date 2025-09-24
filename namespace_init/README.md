@@ -51,5 +51,6 @@ To delete all veths, run:
 ```bash
 sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'; echo "Cleaned up veths successfully"
 ```
+It takes quite amount of time to clear up all the `veths` created.
 
 You can check the status with `ifconfig`.
