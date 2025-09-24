@@ -8,6 +8,7 @@ mod utils;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -47,12 +48,15 @@ async fn main() {
     // Set up a channel for a background task to process the event as a new node connects
     let (new_node_connected_sender, new_node_connected_receiver) = broadcast::channel(100);
 
+    let start_instant = Instant::now();
+
     // Spawn the centralized node connection coordinator
     tokio::spawn(new_node_connected(
         new_node_connected_receiver,
         config.clone(),
         node_ws.clone(),
         db_pool.clone(),
+        start_instant,
     ));
 
     // Set up database notifications
@@ -440,6 +444,7 @@ async fn new_node_connected(
     config: Config,
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
     db_pool: Arc<Pool<Postgres>>,
+    start_instant: Instant,
 ) {
     let mut all_nodes_handled = false;
 
@@ -473,6 +478,12 @@ async fn new_node_connected(
                 // waits for all link rates to be set before sending the flows
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 send_flows(node_ws.clone(), db_pool.clone()).await;
+
+                let duration_secs = start_instant.elapsed().as_secs_f32();
+                info!(
+                    "All the messages have been sent. Controller connected to all nodes in {:.2} seconds",
+                    duration_secs
+                );
             } else {
                 info!(
                     "A new node with ID {} has connected. There are {} nodes already connected, out of a total of {} expected.",
