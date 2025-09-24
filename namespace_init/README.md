@@ -19,7 +19,7 @@ cd nextmini/namespace_init; cargo build --release
 
 ```bash
 cd ..
-sudo env "RUST_LOG=warn" ./target/release/namespace_init
+sudo ./target/release/namespace_init
 ```
 
 **Step 3 : Start Controller and Database**
