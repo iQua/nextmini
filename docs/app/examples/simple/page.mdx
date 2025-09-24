@@ -1,13 +1,15 @@
-## Examples
+## Several Simple Examples as a Starting Point
 
-Though _Nextmini_ runs natively across Linux, macOS, and Windows, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run _Nextmini_.
+Though _Nextmini_ runs natively on Linux, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run _Nextmini_.
 
-## Docker Single Machine Setup: a Simple Example with `iperf3`
+### Docker Single Machine Setup: a Simple Example with `iperf3`
 
-To run _Nextmini_ on a single machine over multiple containers, simply run the following command:
+To run _Nextmini_ on a single machine over multiple containers, you will need a Docker runtime for running Docker. On macOS, [OrbStack](https://orbstack.dev/) is strongly recommended as it offers a simpler and more performant setup than Docker Desktop.
+
+Once the Docker runtime is up and running, use the following commands in the `examples/simple` directory:
 
 ```bash
-cd ./examples/simple && docker compose build && docker compose up
+docker compose build && docker compose up
 ```
 
 This will automatically start two _Nextmini_ nodes and a _Nextmini_ server. The two _Nextmini_ nodes will connect to the _Nextmini_ server via the docker network and establish a tunnel between them.
