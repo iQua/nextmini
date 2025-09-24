@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::Duration;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-use tracing::{Level, error, info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController, TokenBucketSpec};
@@ -39,7 +39,7 @@ static TIMER: OnceCell<Instant> = OnceCell::new();
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_max_level(Level::WARN).init();
+    tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
