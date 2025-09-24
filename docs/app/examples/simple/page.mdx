@@ -1,6 +1,6 @@
-## Docker Single Machine Setup: a Simple Example with `iperf3`
+## A Simple Example Running `iperf3` in Docker Containers
 
-Though _Nextmini_ runs natively on Linux, the easiest way to get started with _Nextmini_ is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies. To run _Nextmini_ on a single machine over multiple containers, you will need a Docker runtime for running Docker. On macOS, [OrbStack](https://orbstack.dev/) is strongly recommended as it offers a simpler and more performant setup than Docker Desktop.
+Though Nextmini runs natively on Linux, the easiest way to get started with Nextmini is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies. To run Nextmini on a single machine over multiple containers, you will need a Docker runtime for running Docker. On macOS, [OrbStack](https://orbstack.dev/) is strongly recommended as it offers a simpler and more performant setup than Docker Desktop.
 
 Once the Docker runtime is up and running, use the following commands in the `examples/simple` directory:
 
@@ -8,7 +8,7 @@ Once the Docker runtime is up and running, use the following commands in the `ex
 docker compose build && docker compose up
 ```
 
-This will automatically start three _Nextmini_ dataplane nodes and the _Nextmini_ controller as a server. The three _Nextmini_ dataplane nodes are connected with each other in a *full mesh* topology, running the shortest path protocol. These dataplane nodes will connect to the _Nextmini_ controller via the docker network, and connect to one another as required by the *full mesh* topology.
+This will automatically start three Nextmini dataplane nodes and the Nextmini controller as a server. The three Nextmini dataplane nodes are connected with each other in a *full mesh* topology, running the shortest path protocol. These dataplane nodes will connect to the Nextmini controller via the docker network, and connect to one another as required by the *full mesh* topology.
 
 In case you run into the following error:
 
@@ -30,13 +30,13 @@ We can attach to `node1` container with the following command, in a different te
 docker exec -it node1 /bin/bash
 ```
 
-_Nextmini_ leverages TUN/TAP interfaces to facilitate internode communication. To check the available _Nextmini_ interfaces on node1, simply type:
+Nextmini leverages TUN/TAP interfaces to facilitate internode communication. To check the available Nextmini interfaces on node1, simply type:
 
 ```bash
 ifconfig
 ```
 
-This will display all available network interfaces, including those created by _Nextmini_, shown as `utun`:
+This will display all available network interfaces, including those created by Nextmini, shown as `utun`:
 
 ```
 utun: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
@@ -49,9 +49,9 @@ utun: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
 ```
 
-We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, _Nextmini_ uses the subnet `10.0.0.0/24` for the _Nextmini_ data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
+We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, Nextmini uses the subnet `10.0.0.0/24` for the Nextmini data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
 
-To confirm that connection is successful, we can ping `node2` and `node3` by their _Nextmini_ IP addresses:
+To confirm that connection is successful, we can ping `node2` and `node3` by their Nextmini IP addresses:
 
 ```bash
 ping 10.0.0.2
@@ -67,7 +67,7 @@ PING 10.0.0.2 (10.0.0.2) 56(84) bytes of data.
 64 bytes from 10.0.0.2: icmp_seq=2 ttl=64 time=0.585 ms
 ```
 
-The _Nextmini_ docker image comes pre-installed with the `iperf3` tool for network bandwidth testing. We can test the bandwidth between `node1` and `node2` by starting an `iperf3` server on `node1` with
+The Nextmini docker image comes pre-installed with the `iperf3` tool for network bandwidth testing. We can test the bandwidth between `node1` and `node2` by starting an `iperf3` server on `node1` with
 
 ```bash
 iperf3 -s
