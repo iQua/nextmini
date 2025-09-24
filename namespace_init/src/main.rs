@@ -10,14 +10,12 @@ use crate::net::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use std::{net::Ipv4Addr, thread, time};
-use tracing::{error, info, warn, Level};
+use tracing::{error, info};
 
 const STACK_SIZE: usize = 1024 * 1024;
 
 fn main() {
-    tracing_subscriber::fmt::fmt()
-        .with_max_level(Level::WARN)
-        .init();
+    tracing_subscriber::fmt::fmt();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
@@ -63,7 +61,7 @@ fn main() {
                 veth2_idx = veth2_index;
             }
             Err(e) => {
-                warn!("Failed to prepare network: {}. Retrying...", e);
+                error!("Failed to prepare network: {}. Retrying...", e);
                 continue;
             }
         }
@@ -98,7 +96,7 @@ fn main() {
         if let Err(e) =
             rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
         {
-            warn!("Failed to join veth to namespace: {}. Retrying...", e);
+            error!("Failed to join veth to namespace: {}. Retrying...", e);
             continue;
         }
 
