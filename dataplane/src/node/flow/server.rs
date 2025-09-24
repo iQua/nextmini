@@ -206,7 +206,6 @@ impl UserSpaceServer {
 
     fn recv(&mut self, socket: &mut tcp::Socket) {
         if socket.can_recv() {
-
             if let Err(e) = socket.recv(|buf| (buf.len(), buf.len())) {
                 error!("Error receiving from a user-space TCP client: {:?}", e);
             }

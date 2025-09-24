@@ -5,5 +5,5 @@ mpirun --allow-run-as-root \
   -x MASTER_PORT=1234 \
   -x PATH \
   -bind-to none \
-  -map-by :OVERSUBSCRIBE \
-  sh -c 'export RANK=$OMPI_COMM_WORLD_RANK; export WORLD_SIZE=$OMPI_COMM_WORLD_SIZE; uv run lenet5.py'
+  -map-by slot \
+  sh -c 'export RANK=$OMPI_COMM_WORLD_RANK; export WORLD_SIZE=$OMPI_COMM_WORLD_SIZE; uv run resnet.py --type resnet34'

@@ -1,0 +1,1 @@
+This example is for generate multiple container based dataplane nodes with `simple` example.

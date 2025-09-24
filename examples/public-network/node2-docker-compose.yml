@@ -1,0 +1,20 @@
+services:
+    node2:
+        container_name: node2
+        # Use the host network mode.
+        network_mode: host
+        image: nextmini_datapath
+        build:
+            context: ../../
+            dockerfile: ./dataplane/Dockerfile
+        stdin_open: true
+        privileged: true
+        volumes:
+
+            - ./node2-config.toml:/var/nextmini/config.toml
+            - ../../tools/:/var/nextmini/tools
+        cap_add:
+            - NET_ADMIN
+        # Change the ip address to the public ip of the controller.
+        command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://<controller_public_ip>:3000"
+        restart: unless-stopped 

@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+import time
 
 import numpy as np
 import torch
@@ -155,12 +156,17 @@ def main():
         ddp_model.train()
 
         for data in train_loader:
+            start_time = time.time()
             inputs, labels = data[0].to(device), data[1].to(device)
             optimizer.zero_grad()
             outputs = ddp_model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
+            end_time = time.time()
+            print(f"Time taken: {end_time - start_time} seconds")
+            break
+                
 
 
 if __name__ == "__main__":

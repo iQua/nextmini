@@ -8,17 +8,13 @@ mod utils;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
-use once_cell::sync::OnceCell;
-use rand;
 use sqlx::{Pool, Postgres};
-
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::time::Duration;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -36,9 +32,6 @@ type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
 type NodeWriterMap = Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>;
 
-// Global timer
-static TIMER: OnceCell<Instant> = OnceCell::new();
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
@@ -50,6 +43,17 @@ async fn main() {
     info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
+
+    // Set up a channel for a background task to process the event as a new node connects
+    let (new_node_connected_sender, new_node_connected_receiver) = broadcast::channel(100);
+
+    // Spawn the centralized node connection coordinator
+    tokio::spawn(new_node_connected(
+        new_node_connected_receiver,
+        config.clone(),
+        node_ws.clone(),
+        db_pool.clone(),
+    ));
 
     // Set up database notifications
     setup_route_notification(db_pool.clone(), node_ws.clone()).await;
@@ -81,6 +85,7 @@ async fn main() {
             Arc::clone(&db_pool),
             config.clone(),
             Arc::clone(&node_ws),
+            new_node_connected_sender.clone(),
         ));
     }
 }
@@ -91,6 +96,7 @@ async fn handle_connection(
     db_pool: Arc<Pool<Postgres>>,
     config: Config,
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    new_node_connected_sender: broadcast::Sender<NodeConnectedEvent>,
 ) {
     let write_arc = Arc::new(Mutex::new(write));
     let mut current_node_id = None;
@@ -200,12 +206,6 @@ async fn handle_connection(
                         // registers the WebSocket connection and associate it with the new node ID
                         {
                             let mut node_ws_guard = node_ws.write().await;
-
-                            // initializes the global timer.
-                            if node_ws_guard.is_empty() {
-                                let _ = TIMER.set(Instant::now());
-                            }
-
                             node_ws_guard.insert(node_id, write_arc.clone());
                         }
 
@@ -263,9 +263,6 @@ async fn handle_connection(
                                 remote_node_id: node.id as usize,
                                 remote_addr: addr,
                             };
-                            // delays (1-100ms) to enable last connection to complete
-                            let jitter = rand::random_range(1..=100u64);
-                            tokio::time::sleep(Duration::from_millis(jitter)).await;
 
                             // informs the new node to connect to the existing node
                             match write_arc
@@ -339,53 +336,8 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
-                        // sends flows and link rates when all nodes are connected
-                        if let Some(expected_node_count) = config.topology.compute_node_count() {
-                            // checks if all expected nodes are connected before sending flows to the new node
-                            let connected_node_count = node_ws.read().await.len();
-
-                            if connected_node_count == expected_node_count {
-                                // waits for all links to be established
-                                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                                info!(
-                                    "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
-                                    expected_node_count
-                                );
-
-                                // updates remote node addresses for the connector
-                                send_node_addresses(
-                                    config.clone(),
-                                    node_ws.clone(),
-                                    db_pool.clone(),
-                                )
-                                .await;
-
-                                // waits for all nodes to receive the AddNode messages
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                                send_link_rates(config.clone(), node_ws.clone()).await;
-
-                                // waits for all link rates to be set before sending the flows
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                                send_flows(node_ws.clone(), db_pool.clone()).await;
-
-                                // prints the time taken to send flows and link rates
-                                if let Some(start) = TIMER.get() {
-                                    let elapsed_time = start.elapsed().as_secs_f32();
-                                    warn!(
-                                        "It took {:?} seconds for all nodes to fully connect to the controller.",
-                                        elapsed_time
-                                    );
-                                }
-                            } else {
-                                info!(
-                                    "Number of nodes connected: {} (out of a total of {}).",
-                                    connected_node_count, expected_node_count
-                                );
-                            }
-                        } else {
-                            panic!("Unable to compute the total number of nodes.");
-                        }
+                        // As a new node connects, checks if all the expected nodes are now connected
+                        let _ = new_node_connected_sender.send(NodeConnectedEvent { node_id });
                     }
 
                     DataplaneToController::Metrics { metrics } => {
@@ -473,6 +425,61 @@ async fn handle_connection(
     if let Some(node_id) = current_node_id {
         info!("Connection closed for node {}.", node_id);
         node_ws.write().await.remove(&node_id);
+    }
+}
+
+// Event for node connection coordination
+#[derive(Debug, Clone)]
+struct NodeConnectedEvent {
+    node_id: usize,
+}
+
+/// A background task that checks if all the expected nodes have already connected.
+async fn new_node_connected(
+    mut event_receiver: broadcast::Receiver<NodeConnectedEvent>,
+    config: Config,
+    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    db_pool: Arc<Pool<Postgres>>,
+) {
+    let mut all_nodes_handled = false;
+
+    while let Ok(event) = event_receiver.recv().await {
+        if all_nodes_handled {
+            continue; // already handled all the work after all nodes connected
+        }
+
+        // sends flows and link rates when all nodes are connected
+        if let Some(expected_node_count) = config.topology.compute_node_count() {
+            let connected_node_count = node_ws.read().await.len();
+
+            if connected_node_count == expected_node_count {
+                all_nodes_handled = true;
+
+                // waits for all links to be established
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                info!(
+                    "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
+                    expected_node_count
+                );
+
+                // updates remote node addresses for the connector
+                send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
+
+                // waits for all nodes to receive the AddNode messages
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                send_link_rates(config.clone(), node_ws.clone()).await;
+
+                // waits for all link rates to be set before sending the flows
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                send_flows(node_ws.clone(), db_pool.clone()).await;
+            } else {
+                info!(
+                    "A new node with ID {} has connected. There are {} nodes already connected, out of a total of {} expected.",
+                    event.node_id, connected_node_count, expected_node_count
+                );
+            }
+        }
     }
 }
 

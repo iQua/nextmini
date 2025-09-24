@@ -1,7 +1,7 @@
 import { Geist_Mono, Inter, JetBrains_Mono } from "next/font/google";
-import { Footer, Layout, Navbar } from "nextra-theme-docs";
 import { Head, Search } from "nextra/components";
 import { getPageMap } from "nextra/page-map";
+import { Footer, Layout, Navbar } from "nextra-theme-docs";
 import "nextra-theme-docs/style.css";
 import TitleFixer from "../components/TitleFixer";
 import "./globals.css";
@@ -29,7 +29,7 @@ export const metadata = {
 
 const navbar = (
 	<Navbar
-		logo={<b>Strato</b>}
+		logo={<b>Nextmini Documentation</b>}
 		// ... Your additional navbar options
 	/>
 );
@@ -63,19 +63,19 @@ export default async function RootLayout({ children }) {
 				}}
 			>
 				<title>
-					Strato Documentation &middot; iQua Group &middot; University of
+					Nextmini Documentation &middot; iQua Group &middot; University of
 					Toronto
 				</title>
 				<meta
 					name="description"
-					content="Strato Documentation &middot; iQua Group &middot; University of Toronto"
+					content="Nextmini Documentation &middot; iQua Group &middot; University of Toronto"
 				/>
 			</Head>
 			<body>
 				<Layout
 					navbar={navbar}
 					pageMap={await getPageMap()}
-					docsRepositoryBase="https://github.com/iqua/strato-docs"
+					docsRepositoryBase="https://github.com/iqua/nextmini"
 					footer={footer}
 					editLink={null}
 					feedback={{ content: null }}
