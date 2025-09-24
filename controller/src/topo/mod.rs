@@ -1,10 +1,10 @@
 pub mod fat_tree;
 pub mod full_mesh;
+pub mod ring;
 pub mod topo;
 pub mod torus;
-pub mod ring;
 
 pub use fat_tree::FatTreeConfig;
 pub use full_mesh::FullMeshConfig;
-pub use torus::TorusConfig;
 pub use ring::RingConfig;
+pub use torus::TorusConfig;
