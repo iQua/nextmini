@@ -492,6 +492,7 @@ impl LocalConfig {
     }
 
     /// initialize the config for the namespace nodes
+    #[allow(unused)]
     pub fn new_for_namespace(
         config_path: &str,
         controller_addr: &str,
