@@ -108,7 +108,7 @@ fn main() {
     rt.block_on(async {
         match tokio::signal::ctrl_c().await {
             Ok(_) => {
-                warn!("Ctrl+C received, shutting down...");
+                info!("Ctrl+C received, shutting down...");
             }
             Err(e) => {
                 error!("Failed to listen for Ctrl+C: {}", e);
