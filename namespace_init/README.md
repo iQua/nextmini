@@ -1,56 +1,77 @@
-# How to Run Nextmini node with Isolated Network Namespace
+# Description
 
-## Prerequisites
+This example aims to test the starting time and memory usage when spawning different number of nodes via the namespace feature of Nextmini.
 
-- Ubuntu 24.04
-- Rust, Cargo and other test tools (iperf3, ifconfig ...) pre-installed
+## How to run
 
-## Getting Started
+**Step 0 : Change the number of nodes**
 
-**Step 1 : Build the Project**
+To change the number of nodes, you need to update three config files.
 
-You need to ensure `namespace_init` is added as a member in the workspace before proceeding.
+First, change the `n_nodes` field in `net-config.toml` by:
+
+```bash
+cd nextmini/namespace_init; vi net-config.toml
+```
+
+Then, change the `n_nodes` field in the `controller-config.toml` by:
+
+```bash
+cd nextmini/namespace_init/controller_standalone; vi controller-config.toml
+```
+
+Finally, change the `n_nodes` field in the `config.toml` by:
+
+```bash
+cd nextmini/namespace_init; vi config.toml
+```
+
+If the number of nodes is greated than 500, it is recommended that the `controller_service_rate` field in the `config.toml` is set to a smaller value, such as 6, so that nodes requests towards the controller can be spread out over time.
+
+**Step 1 : Start Controller and Database**
+
+Start controller and database with the following:
+
+```bash
+cd nextmini/namespace_init/controller_standalone; docker compose up --build
+```
+
+**Step 2 : Build the Project**
+
+You need to ensure `namespace_init` is added as a member in the workspace before proceeding. Run the following in a new terminal to build the project.
 
 ```bash
 cd nextmini/namespace_init; cargo build --release
 ```
 
-**Step 2 : Run Dataplane Nodes in Namespaces**
+**Step 3 : Run Dataplane Nodes in Namespaces**
 
 ```bash
 cd ..
 sudo ./target/release/namespace_init
 ```
 
-**Step 3 : Start Controller and Database**
+**Step 4 : Observe the Results**
 
-In a new terminal, start controller and database with the following:
-
-```bash
-cd nextmini/namespace_init/controller_standalone; docker compose up --build
-```
-
-## Running Tests
-
-You can enter into namespace's terminal by running:
+You can see results similar to the following logged out at the terminal running the controller:
 
 ```bash
-nsenter -t <child_PID> -n bash
+controller  | 2025-07-27T17:21:16.925666Z  WARN controller: All 128 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
+controller  | 2025-07-27T17:21:17.299502Z  WARN controller: It took 38.181973 seconds for all nodes to fully connect to the controller.
 ```
 
-where <child_PID> is the process ID, provided at the start of the terminal logs, of the target node.
+Now, in a new terminal, you can use `free -h` to check the memory usage.
 
-Then, you can conduct network tests such as `iperf3`.
+**Step 5 : Cleanup**
 
-## Cleanup
-
-To stop the dataplane nodes, simply press `CTRL_C` in Step2's terminal.
-
-To delete all veths, run:
+To cleanup, simply press `CTRL_C` at the two terminals in Step 1 and Step 2. Then, in the terminal running `namespace_init` run the following command to clear the created veths.
 
 ```bash
 sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'; echo "Cleaned up veths successfully"
 ```
-It takes quite amount of time to clear up all the `veths` created.
 
-You can check the status with `ifconfig`.
+## No persistent tcp connections and no routes
+
+Tested on arbutus c16-180-576.
+
+You can change the `n_nodes` field to the number to test. Also, remove the `[routing]` section since we are testing pure start up speed and memory usage of nodes.
