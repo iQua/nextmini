@@ -1,4 +1,8 @@
-## A Distributed PyTorch Trainer with OpenMPI
+import { Callout } from 'nextra/components'
+
+# Distributed PyTorch Trainers
+
+## Running a Distributed PyTorch Trainer with OpenMPI on a Single Machine
 
 `Nextmini` is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or macOS).
 
@@ -48,13 +52,15 @@ sh train_lenet5.sh
 
 This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes for 10 epochs, each running in its own Docker container.
 
-# Running a Simple Distributed PyTorch Trainer with Docker-Swarm: Multiple Machines Setup
+## Running a Distributed PyTorch Trainer across Multiple Machines
 
-## Step 0
+<Callout type="warning" emoji="⚠️">
+The following instructions have not been verified to work correctly.
+</Callout>
 
-At least three linux machines (1 controller instance, 1 manager, >= 1worker instances) need to be set up with Ubuntu 24.04. Docker needs to be pre-installed with sudo right. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
 
-## Step 1
+### Step 1
 
 On the controller instance, build controller and postgres image:
 
@@ -81,9 +87,9 @@ Controller and postgres services can be started by:
 docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
 ```
 
-On the manager instance, the <CONTROLLER_IP> in the `dataplane-swarm.yml` should be altered accordingly.
+On the manager instance, `<CONTROLLER_IP>` in `dataplane-swarm.yml` should be altered accordingly.
 
-## Step 2
+### Step 2
 
 Build the pytorch base image on all manager and work instances :
 
@@ -92,7 +98,7 @@ cd nextmini/
 docker build -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
 ```
 
-## Step 3
+### Step 3
 
 On the manager instance, start the docker swarm:
 
@@ -112,7 +118,7 @@ On the manager instance, you can check the status of nodes by:
 docker node ls
 ```
 
-## Step 4
+### Step 4
 
 After all workers has joined the swarm, deploy services on the manager instance by:
 
@@ -121,7 +127,7 @@ cd examples/pytorch
 docker stack deploy -c dataplane-swarm.yml nextmini
 ```
 
-## Step 5
+### Step 5
 
 On the manager instance, find the container ID for node1 by:
 
@@ -165,7 +171,7 @@ sh train_vgg16.sh
 
 To train different variants of resnet, simply simply change the `--type` command line argument in `train_resnet.sh` on the manager instance.
 
-## Clean up
+### Clean up
 
 To clean up the dataplane worker nodes: use the command below:
 
