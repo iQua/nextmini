@@ -1,3 +1,4 @@
+# To test ring topology, run: `cp ring-controller-config.toml controller-config.toml`
 protocol = "tcp"
 
 [topology]
