@@ -36,7 +36,7 @@ python3 multiping.py
 
 You can change `multiping.py` to any python scripts included in the `/opt/mininet-examples` directory.
 
-In addition, examples that are outdated, unrelated to _Nextmini_, or failed to run are placed inside the `/opt/extra_examples` directory. If you would like to run more examples, you can clone the official Mininet repository by:
+In addition, examples that are outdated, unrelated to Nextmini, or failed to run are placed inside the `/opt/extra_examples` directory. If you would like to run more examples, you can clone the official Mininet repository by:
 
 ```bash
 git clone https://github.com/mininet/mininet

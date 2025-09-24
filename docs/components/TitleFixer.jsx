@@ -1,11 +1,9 @@
 "use client";
 
-import { usePathname } from "next/navigation";
 import { useEffect } from "react";
 
 export default function TitleFixer() {
-	const pathname = usePathname(); // Get the current route
-	const targetTitle = "Strato Documentation";
+	const targetTitle = "Nextmini Documentation";
 
 	useEffect(() => {
 		// Function to set the title
