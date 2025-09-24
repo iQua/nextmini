@@ -15,7 +15,7 @@ use tracing::{error, info};
 const STACK_SIZE: usize = 1024 * 1024;
 
 fn main() {
-    tracing_subscriber::fmt::fmt();
+    tracing_subscriber::fmt::fmt().init();
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
 
