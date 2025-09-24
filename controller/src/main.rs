@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use once_cell::sync::OnceCell;
 use rand;
 use sqlx::{Pool, Postgres};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Instant;
 
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
