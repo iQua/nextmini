@@ -11,19 +11,19 @@ To change the number of nodes, you need to update three config files.
 First, change the `n_nodes` field in `net-config.toml` by:
 
 ```bash
-cd nextmini/namespace_init; vi net-config.toml
+cd nextmini/namespace_init/net-config.toml
 ```
 
 Then, change the `n_nodes` field in the `controller-config.toml` by:
 
 ```bash
-cd nextmini/namespace_init/controller_standalone; vi controller-config.toml
+cd nextmini/namespace_init/controller_standalone/controller-config.toml
 ```
 
 Finally, change the `n_nodes` field in the `config.toml` by:
 
 ```bash
-cd nextmini/namespace_init; vi config.toml
+cd nextmini/namespace_init/config.toml
 ```
 
 If the number of nodes is greated than 500, it is recommended that the `controller_service_rate` field in the `config.toml` is set to a smaller value, such as 6, so that nodes requests towards the controller can be spread out over time.
@@ -72,6 +72,6 @@ sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link
 
 ## No persistent tcp connections and no routes
 
-Tested on arbutus c16-180-576.
+The namespace example can be tested with arbutus c16-180-576.
 
 You can change the `n_nodes` field to the number to test. Also, remove the `[routing]` section since we are testing pure start up speed and memory usage of nodes.
