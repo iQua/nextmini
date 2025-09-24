@@ -1,3 +1,9 @@
+# Nextmini Documentation
+
+This directory contains the latest documentation for the Nextmini project.
+
+# Building the website
+
 To install Nextra and Next.js after installing [Bun](https://bun.sh/docs/installation), run:
 
 ```shell
