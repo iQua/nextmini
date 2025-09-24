@@ -1,6 +1,6 @@
 protocol = "tcp"
 
-[routes_preset]
+[topology]
 type = "full_mesh"
 full_mesh_config = { n_nodes = 4 }
 
