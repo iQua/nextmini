@@ -452,13 +452,13 @@ async fn new_node_connected(
     db_pool: Arc<Pool<Postgres>>,
 ) {
     let mut all_nodes_handled = false;
-    let mut start_instant = None;
+    let mut start_time = None;
 
     while let Ok(event) = event_receiver.recv().await {
         match event {
             NodeConnectedEvent::FirstAccept => {
-                if start_instant.is_none() {
-                    start_instant = Some(Instant::now());
+                if start_time.is_none() {
+                    start_time = Some(Instant::now());
                     info!("The first node has connected. Starting the timer.");
                 }
             }
@@ -493,7 +493,7 @@ async fn new_node_connected(
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         send_flows(node_ws.clone(), db_pool.clone()).await;
 
-                        let duration_secs = start_instant.unwrap().elapsed().as_secs_f32();
+                        let duration_secs = start_time.unwrap().elapsed().as_secs_f32();
                         info!(
                             "All dataplane nodes have connected. It takes {:.2} seconds since the first node arrived.",
                             duration_secs
