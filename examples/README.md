@@ -13,7 +13,7 @@ Replace `<folder-name>` with one of the following:
 - simple
 - simple-flow
 - simple-max
-- simple-routes
+- routes
 - simple-scheduler
 - smoltcp-test
 - splice-test
