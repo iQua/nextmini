@@ -18,13 +18,14 @@ use crate::config::Config;
 use crate::models::{DbFlow, Node};
 use crate::utils::build_flows_for_node;
 
-// Event for node connection coordination
+// Event to be sent when a new node has connected to the controller.
 #[derive(Debug, Clone)]
 pub struct NodeConnectedEvent {
     pub node_id: usize,
 }
 
-/// A background task that checks if all the expected nodes have already connected.
+/// A background task that checks if all the expected nodes have connected, and performs additional
+/// processing when this occurs.
 pub async fn new_node_connected(
     mut event_receiver: broadcast::Receiver<NodeConnectedEvent>,
     config: Config,
