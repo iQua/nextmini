@@ -459,7 +459,7 @@ async fn new_node_connected(
             NodeConnectedEvent::FirstAccept => {
                 if start_instant.is_none() {
                     start_instant = Some(Instant::now());
-                    info!("First connection accepted; starting overall connection timer.");
+                    info!("The first node has connected. Starting the timer.");
                 }
             }
             NodeConnectedEvent::Node(node_id) => {
