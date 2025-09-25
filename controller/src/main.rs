@@ -46,9 +46,8 @@ async fn main() {
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
     // Set up a channel for a background task to process the event as a new node connects
-    let (new_node_connected_sender, new_node_connected_receiver) = broadcast::channel(100);
-
-    let start_instant = Instant::now();
+    let (new_node_connected_sender, new_node_connected_receiver) =
+        broadcast::channel::<NodeConnectedEvent>(100);
 
     // Spawn the centralized node connection coordinator
     tokio::spawn(new_node_connected(
@@ -56,12 +55,13 @@ async fn main() {
         config.clone(),
         node_ws.clone(),
         db_pool.clone(),
-        start_instant,
     ));
 
     // Set up database notifications
     setup_route_notification(db_pool.clone(), node_ws.clone()).await;
     setup_flow_notification(db_pool.clone(), node_ws.clone()).await;
+
+    let mut first_accept = true;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
@@ -69,6 +69,11 @@ async fn main() {
             .expect("Connected streams should have a peer address");
 
         info!("New connection from {}", peer);
+
+        if first_accept {
+            first_accept = false;
+            let _ = new_node_connected_sender.send(NodeConnectedEvent::FirstAccept);
+        }
 
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
@@ -341,7 +346,7 @@ async fn handle_connection(
                         }
 
                         // As a new node connects, checks if all the expected nodes are now connected
-                        let _ = new_node_connected_sender.send(NodeConnectedEvent { node_id });
+                        let _ = new_node_connected_sender.send(NodeConnectedEvent::Node(node_id));
                     }
 
                     DataplaneToController::Metrics { metrics } => {
@@ -434,8 +439,9 @@ async fn handle_connection(
 
 // Event for node connection coordination
 #[derive(Debug, Clone)]
-struct NodeConnectedEvent {
-    node_id: usize,
+enum NodeConnectedEvent {
+    Node(usize),
+    FirstAccept,
 }
 
 /// A background task that checks if all the expected nodes have already connected.
@@ -444,51 +450,61 @@ async fn new_node_connected(
     config: Config,
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
     db_pool: Arc<Pool<Postgres>>,
-    start_instant: Instant,
 ) {
     let mut all_nodes_handled = false;
+    let mut start_instant = None;
 
     while let Ok(event) = event_receiver.recv().await {
-        if all_nodes_handled {
-            continue; // already handled all the work after all nodes connected
-        }
+        match event {
+            NodeConnectedEvent::FirstAccept => {
+                if start_instant.is_none() {
+                    start_instant = Some(Instant::now());
+                    info!("First connection accepted; starting overall connection timer.");
+                }
+            }
+            NodeConnectedEvent::Node(node_id) => {
+                if all_nodes_handled {
+                    continue; // already handled all the work after all nodes connected
+                }
 
-        // sends flows and link rates when all nodes are connected
-        if let Some(expected_node_count) = config.topology.compute_node_count() {
-            let connected_node_count = node_ws.read().await.len();
+                // sends flows and link rates when all nodes are connected
+                if let Some(expected_node_count) = config.topology.compute_node_count() {
+                    let connected_node_count = node_ws.read().await.len();
 
-            if connected_node_count == expected_node_count {
-                all_nodes_handled = true;
+                    if connected_node_count == expected_node_count {
+                        all_nodes_handled = true;
 
-                // waits for all links to be established
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                        // waits for all links to be established
+                        tokio::time::sleep(Duration::from_secs(1)).await;
 
-                info!(
-                    "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
-                    expected_node_count
-                );
+                        info!(
+                            "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
+                            expected_node_count
+                        );
 
-                // updates remote node addresses for the connector
-                send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
+                        // updates remote node addresses for the connector
+                        send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
 
-                // waits for all nodes to receive the AddNode messages
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                send_link_rates(config.clone(), node_ws.clone()).await;
+                        // waits for all nodes to receive the AddNode messages
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        send_link_rates(config.clone(), node_ws.clone()).await;
 
-                // waits for all link rates to be set before sending the flows
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                send_flows(node_ws.clone(), db_pool.clone()).await;
+                        // waits for all link rates to be set before sending the flows
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        send_flows(node_ws.clone(), db_pool.clone()).await;
 
-                let duration_secs = start_instant.elapsed().as_secs_f32();
-                info!(
-                    "All the messages have been sent. Controller connected to all nodes in {:.2} seconds",
-                    duration_secs
-                );
-            } else {
-                info!(
-                    "A new node with ID {} has connected. There are {} nodes already connected, out of a total of {} expected.",
-                    event.node_id, connected_node_count, expected_node_count
-                );
+                        let duration_secs = start_instant.unwrap().elapsed().as_secs_f32();
+                        info!(
+                            "All nodes connected in {:.2} seconds from first accept",
+                            duration_secs
+                        );
+                    } else {
+                        info!(
+                            "A new node with ID {} has connected. There are {} nodes already connected, out of a total of {} expected.",
+                            node_id, connected_node_count, expected_node_count
+                        );
+                    }
+                }
             }
         }
     }
