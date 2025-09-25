@@ -9,7 +9,7 @@ use tracing::{error, info};
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 use crate::route_ser::deserialize_route_edges;
-use crate::topo::{FatTreeConfig, FullMeshConfig, TorusConfig, RingConfig};
+use crate::topo::{FatTreeConfig, FullMeshConfig, RingConfig, TorusConfig};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
@@ -24,9 +24,9 @@ pub struct DBConfig {
 #[serde(rename_all = "snake_case")]
 pub enum PresetTopology {
     FullMesh,
+    Ring,
     FatTree,
     Torus,
-    Ring,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
