@@ -495,7 +495,7 @@ async fn new_node_connected(
 
                         let duration_secs = start_instant.unwrap().elapsed().as_secs_f32();
                         info!(
-                            "All nodes connected in {:.2} seconds from first accept.",
+                            "All dataplane nodes have connected. It takes {:.2} seconds since the first node arrived.",
                             duration_secs
                         );
                     } else {
