@@ -1,20 +1,18 @@
 import nextra from "nextra";
 
-/**
- * @type {import('next').NextConfig}
- */
-const nextConfig = {
-  output: "export",
-  // basePath: "/~bli/eecg",
-  images: {
-    unoptimized: true, // mandatory, otherwise won't export
-  },
-  // Optional: Change the output directory `out` -> `dist`
-  // distDir: "build"
-};
-
 const withNextra = nextra({
-  // ... other Nextra config options
+	theme: "nextra-theme-docs",
+	themeConfig: "./theme.config.jsx",
 });
+
+const nextConfig = {
+	output: "export",
+	// basePath: "/~bli/nextmini",
+	images: {
+		unoptimized: true,
+	},
+	reactStrictMode: true,
+	transpilePackages: ["geist"],
+};
 
 export default withNextra(nextConfig);
