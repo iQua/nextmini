@@ -151,7 +151,7 @@ ring_config = { n_nodes = 4 }
 ```toml
 [topology]
 type = "fat_tree"
-fat_tree_config = { k = 2 }
+fat_tree_config = { k = 4 }
 ```
 
 ```toml
@@ -169,7 +169,7 @@ edges = [[1, 2], [2, 4], [1, 3], [3, 4]]
 
 Nextmini's controller uses the network topology to determine which neighbouring node a node should connect with and it joins. The dataplane only establishes TCP or QUIC connections between neighbouring nodes in the network topology.
 
-## Defining the Routing Protocol or Custom Routes
+### Defining the Routing Protocol or Custom Routes
 
 So far, the shortest path routing protocol is supported by Nextmini's controller to compute the routes between any source-destination pair:
 
