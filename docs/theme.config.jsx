@@ -1,21 +1,15 @@
 export default {
 	head: (
 		<>
-			<title>Performance Software Systems with Rust</title>
-			<meta
-				property="og:title"
-				content="Performant Software Systems with Rust"
-			/>
-			<meta
-				property="og:description"
-				content="Performant Software Systems with Rust"
-			/>
+			<title>Nextmini Documentation</title>
+			<meta property="og:title" content="Nextmini Documentation" />
+			<meta property="og:description" content="Nextmini Documentation" />
 		</>
 	),
-	logo: <b>Performant Software Systems with Rust</b>,
-	docsRepositoryBase: "https://github.com/baochunli/ece1724-f25",
+	logo: <b>Nextmini Documentation</b>,
+	docsRepositoryBase: "https://github.com/iqua/nextmini",
 	project: {
-		link: "https://github.com/baochunli/ece1724-f25",
+		link: "https://github.com/iqua/nextmini",
 	},
 	footer: {
 		content: (
