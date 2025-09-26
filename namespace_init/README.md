@@ -47,7 +47,7 @@ cd nextmini/namespace_init; cargo build --release
 **Step 3 : Run Dataplane Nodes in Namespaces**
 
 ```bash
-cd ..
+cd nextmini
 sudo ./target/release/namespace_init
 ```
 
@@ -75,3 +75,55 @@ sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link
 The namespace example can be tested with arbutus c16-180-576.
 
 You can change the `n_nodes` field to the number to test. Also, remove the `[routing]` section since we are testing pure start up speed and memory usage of nodes.
+
+
+---
+
+## Test memory before build controller and postgreSQL
+
+Open a terminal and enter:
+
+```bash
+free -h
+```
+
+
+```text
+ubuntu@ns-test024:~/nextmini/namespace_init/controller_standalone$ free -h
+               total        used        free      shared  buff/cache   available
+Mem:           176Gi       3.3Gi       162Gi       1.2Mi        12Gi       173Gi
+Swap:             0B          0B          0B
+```
+
+## Test memory after building up controller and postgreSQL
+
+Enter the following command:
+```bash
+docker compose build
+docker compose up
+```
+
+Open an another terminal and enter `free -h`:
+```text
+ubuntu@ns-test024:~/nextmini$ free -h
+               total        used        free      shared  buff/cache   available
+Mem:           176Gi       4.1Gi       161Gi        15Mi        12Gi       172Gi
+Swap:             0B          0B          0B
+```
+
+Then 0.4Gi is used for controller and postgreSQL.
+
+## Build namespace related code
+
+Open another terminal and enter:
+```bash
+cd nextmini/namespace_init; cargo build --release
+```
+
+## Run Dataplane Nodes in Namespaces
+
+Open another terminal and enter:
+```bash
+cd nextmini
+sudo ./target/release/namespace_init
+```
