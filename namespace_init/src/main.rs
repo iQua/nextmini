@@ -114,7 +114,13 @@ fn main() {
             n if n <= 100 => 300,
             n if n <= 200 => 400,
             n if n <= 400 => 500,
-            _ => 1000, // For >400 nodes, use 1 second delay
+            n if n <= 500 => 1000,
+            n if n <= 600 => 1500,
+            n if n <= 700 => 2000,
+            n if n <= 800 => 2500,
+            n if n <= 900 => 3000,
+            n if n <= 1000 => 3500,
+            _ => 4000, // For >1000 nodes, use 4 second delay
         };
         thread::sleep(time::Duration::from_millis(sleep_ms));
         idx += 1;
@@ -169,7 +175,13 @@ fn c_process(
             n if n <= 100 => 300u64,
             n if n <= 200 => 400u64,
             n if n <= 400 => 500u64,
-            _ => 1200u64, // For >400 nodes, use 1.2 second base delay
+            n if n <= 500 => 1200u64,
+            n if n <= 600 => 1800u64,
+            n if n <= 700 => 2400u64,
+            n if n <= 800 => 3000u64,
+            n if n <= 900 => 3600u64,
+            n if n <= 1000 => 4200u64,
+            _ => 5000u64, // For >1000 nodes, use 5 second base delay
         };
         let sleep_ms = (idx as u64) * base_sleep_ms;
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
