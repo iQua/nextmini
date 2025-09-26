@@ -3,4 +3,5 @@ export default {
 	pytorch: "PyTorch",
 	waterfilling: "Waterfilling",
 	routes: "Routes",
+	namespace: "Namespace",
 };
