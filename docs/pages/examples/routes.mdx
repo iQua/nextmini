@@ -1,7 +1,51 @@
 ## Running the Routes Example
 
-As described in the simple example page, there are four type of preset topology supported in Nextmini: `full_mesh`, `ring`, `fat_tree`, and `torus`.
+As described on the [simple example page](../examples/simple.mdx), Nextmini supports four types of preset topologies: `full_mesh`, `ring`, `fat_tree`, and `torus`.
 
-### Running ring example
+### Running the Ring Example
 
-After customizing edges or using built-in the preset topology to define network topology,
+To run the ring example:
+```bash
+cd nextmini/examples/routes
+```
+
+Nextmini now supports the shortest path routing protocol to compute routes. You can copy and paste the following lines into the `controller-config.toml` file in the `examples/routes` directory.
+
+```toml
+protocol = "tcp"
+
+[topology]
+type = "ring"
+ring_config = { n_nodes = 4 }
+
+# Set the routing protocol to "shortest_path" if the routes from the topology are needed.
+[routing]
+protocol = "shortest_path"
+```
+
+With the above TOML configuration, Nextmini will create routes such as: `1→2`, `2→3`, `3→4`, `4→1`, and so on.
+
+To view the exact routes created and stored in the database, open a new terminal and run:
+```bash
+docker exec -it postgres psql -U pgusr -d nextmini -c "SELECT * FROM routes ORDER BY src_node_id, dst_node_id;"
+```
+
+Example output you can see in the terminal:
+
+```shell
+ route_id | src_node_id | dst_node_id |      edges
+----------+-------------+-------------+------------------
+        1 |           1 |           2 | [[1, 2]]
+        2 |           1 |           3 | [[1, 2], [2, 3]]
+        3 |           1 |           4 | [[1, 4]]
+        4 |           2 |           1 | [[2, 1]]
+        5 |           2 |           3 | [[2, 3]]
+        6 |           2 |           4 | [[2, 3], [3, 4]]
+        7 |           3 |           1 | [[3, 2], [2, 1]]
+        8 |           3 |           2 | [[3, 2]]
+        9 |           3 |           4 | [[3, 4]]
+       10 |           4 |           1 | [[4, 1]]
+       11 |           4 |           2 | [[4, 1], [1, 2]]
+       12 |           4 |           3 | [[4, 3]]
+(12 rows)
+```
