@@ -70,6 +70,12 @@ To cleanup, simply press `CTRL_C` at the two terminals in Step 1 and Step 2. The
 sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'; echo "Cleaned up veths successfully"
 ```
 
+Check if all veth pairs cleaned up:
+
+```bash
+ip link show | grep veth | wc -l
+```
+
 ## No persistent tcp connections and no routes
 
 The namespace example can be tested with arbutus c16-180-576.
@@ -126,4 +132,19 @@ Open another terminal and enter:
 ```bash
 cd nextmini
 sudo ./target/release/namespace_init
+```
+
+
+## Database limit
+
+### [How to set the max_connections higher](https://stackoverflow.com/questions/2757549/org-postgresql-util-psqlexception-fatal-sorry-too-many-clients-already)
+
+To change the default max_connections 100 to higher, enter the following command in `docker-compose.yml` before creating controller and postgreSQL:
+```bash
+command: postgres -c max_connections=600 -c shared_preload_libraries=pg_stat_statements
+```
+
+Check the max_connections of postgreSQL after creating controller and postgreSQL:
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "SHOW max_connections;"
 ```
