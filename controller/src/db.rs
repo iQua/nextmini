@@ -200,7 +200,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     info!("Connecting to PostgreSQL: {}", db_url);
 
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(100)
         .connect(&db_url)
         .await
         .expect("Failed to connect to database");
