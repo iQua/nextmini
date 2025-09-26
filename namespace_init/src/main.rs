@@ -32,6 +32,8 @@ fn main() {
     // Pre-compute namespace IPs (inlined)
     let ns_ips: Vec<String> = {
         let base: u32 = cfg.bridge_ip.parse::<Ipv4Addr>().unwrap().into();
+        // the last octet of ns ips are ranging from bridge IP's last octet + offset(3 to n_nodes + 2)
+        // one for controller, one for database, and the rest for nodes
         (3..=cfg.n_nodes + 2)
             .map(|offset| Ipv4Addr::from(base + offset).to_string())
             .collect()
