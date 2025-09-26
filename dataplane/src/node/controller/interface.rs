@@ -7,7 +7,6 @@ use tokio_tungstenite::{
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use rand;
 use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
@@ -93,11 +92,6 @@ impl ControllerInterfaceHandle {
     ) {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-        // introduces a random delay so controller is not overwhelmed.
-        let upper_bound = (config.n_nodes / config.controller_service_rate + 1) * 1000;
-        let jitter = rand::random_range(0..=upper_bound) as u64;
-        tokio::time::sleep(Duration::from_millis(jitter)).await;
 
         loop {
             match connect_async(url.as_str()).await {
