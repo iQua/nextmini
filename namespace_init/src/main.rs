@@ -108,20 +108,7 @@ fn main() {
             continue;
         }
 
-        // Dynamic sleep based on total number of nodes to prevent overwhelming the system
-        let sleep_ms = match cfg.n_nodes {
-            n if n <= 50 => 200,
-            n if n <= 100 => 300,
-            n if n <= 200 => 400,
-            n if n <= 400 => 500,
-            n if n <= 500 => 1000,
-            n if n <= 600 => 1500,
-            n if n <= 700 => 2000,
-            n if n <= 800 => 2500,
-            n if n <= 900 => 3000,
-            n if n <= 1000 => 3500,
-            _ => 4000, // For >1000 nodes, use 4 second delay
-        };
+        let sleep_ms = 100;
         thread::sleep(time::Duration::from_millis(sleep_ms));
         idx += 1;
     }
@@ -168,22 +155,8 @@ fn c_process(
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
-        // Sequential sleep based on idx (proxy for node_id) to ensure ordered connections to controller.
-        // Dynamic base sleep time based on total number of nodes
-        let base_sleep_ms = match cfg.n_nodes {
-            n if n <= 50 => 200u64,
-            n if n <= 100 => 300u64,
-            n if n <= 200 => 400u64,
-            n if n <= 400 => 500u64,
-            n if n <= 500 => 1200u64,
-            n if n <= 600 => 1800u64,
-            n if n <= 700 => 2400u64,
-            n if n <= 800 => 3000u64,
-            n if n <= 900 => 3600u64,
-            n if n <= 1000 => 4200u64,
-            _ => 5000u64, // For >1000 nodes, use 5 second base delay
-        };
-        let sleep_ms = (idx as u64) * base_sleep_ms;
+        // 1000ms / 10 nodes = 100ms interval between connections
+        let sleep_ms = (idx as u64) * 100u64;
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
         execute(&controller_addr, ns_ip).await
     });

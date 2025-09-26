@@ -148,3 +148,15 @@ Check the max_connections of postgreSQL after creating controller and postgreSQL
 ```bash
 docker exec postgres psql -U pgusr -d nextmini -c "SHOW max_connections;"
 ```
+
+Check how many idle connections:
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "
+SELECT
+    state,
+    count(*) as connection_count,
+    application_name
+FROM pg_stat_activity
+GROUP BY state, application_name
+ORDER BY connection_count DESC;"
+```
