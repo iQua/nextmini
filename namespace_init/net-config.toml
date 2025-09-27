@@ -2,3 +2,5 @@ bridge_name = "isobr1"
 bridge_ip   = "172.16.8.1"
 subnet      = 16
 n_nodes     = 600
+main_loop_sleep_ms = 200
+child_sleep_multiplier_ms = 200

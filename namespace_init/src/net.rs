@@ -2,7 +2,8 @@ use crate::string_helpers::random_suffix;
 use futures::TryStreamExt;
 use rtnetlink::{new_connection, AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth};
 use std::{fmt, net::Ipv4Addr, str::FromStr};
-use tracing::info;
+use tokio::time::{sleep, Duration};
+use tracing::{error, info};
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -251,13 +252,21 @@ pub async fn setup_veth_peer(
 
     // set veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
-    AddressHandle::new(handle.clone())
-        .add(veth_idx, veth_2_addr, subnet)
-        .execute()
-        .await
-        .map_err(|e| {
-            NetworkError::OperationError(format!("add IP address to veth peer failed: {}", e))
-        })?;
+
+    // Keep retrying until successful
+    loop {
+        match AddressHandle::new(handle.clone())
+            .add(veth_idx, veth_2_addr, subnet)
+            .execute()
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                error!("Retrying in 200ms...{}.", e);
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
 
     handle
         .link()

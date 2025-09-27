@@ -108,8 +108,8 @@ fn main() {
             continue;
         }
 
-        let sleep_ms = 50;
-        thread::sleep(time::Duration::from_millis(sleep_ms));
+        // Sleep between node creation to prevent overwhelming the system
+        thread::sleep(time::Duration::from_millis(cfg.main_loop_sleep_ms));
         idx += 1;
     }
 
@@ -155,8 +155,8 @@ fn c_process(
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
-        // 1000ms / 20 nodes = 50ms interval between connections
-        let sleep_ms = (idx as u64) * 50u64;
+        // Staggered connection: each node waits longer to prevent controller overload
+        let sleep_ms = (idx as u64) * cfg.child_sleep_multiplier_ms;
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
         execute(&controller_addr, ns_ip).await
     });
