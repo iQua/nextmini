@@ -160,3 +160,42 @@ FROM pg_stat_activity
 GROUP BY state, application_name
 ORDER BY connection_count DESC;"
 ```
+
+## 600 nodes
+
+```text
+controller  | 2025-09-26T22:40:24.693768Z  INFO controller::new_node: All dataplane nodes have connected. It takes 412.26 seconds since the first node arrived.
+```
+
+### increase APR
+
+```bash
+sudo sysctl net.ipv4.neigh.default.gc_thresh1=2048
+sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
+sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
+```
+
+###  Watch APR
+
+```bash
+watch -n 1 'echo "=== $(date +%H:%M:%S) ==="; echo "ARP: $(arp -a | wc -l)/$(cat /proc/sys/net/ipv4/neigh/default/gc_thresh1)"; echo "Veth UP: $(ip link show | grep "veth.*state UP" | wc -l)"; echo "Controller CPU: $(docker stats controller --no-stream | grep controller | awk '\''{print $3}'\'')"'
+```
+
+## Check the missing nodes
+
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "
+WITH RECURSIVE expected_nodes AS (
+    SELECT 1 as node_id
+    UNION ALL
+    SELECT node_id + 1
+    FROM expected_nodes
+    WHERE node_id < 600
+)
+SELECT en.node_id as missing_node_id
+FROM expected_nodes en
+LEFT JOIN nodes n ON en.node_id = n.id
+WHERE n.id IS NULL
+ORDER BY en.node_id
+LIMIT 10;"
+```

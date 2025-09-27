@@ -200,7 +200,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     info!("Connecting to PostgreSQL: {}", db_url);
 
     let pool = PgPoolOptions::new()
-        // .max_connections(1000) // Support up to 1000 concurrent connections
+        .max_connections(700) // Support up to 1000 concurrent connections
         .min_connections(600) // Maintain minimum 50 active connections
         .connect(&db_url)
         .await
