@@ -18,7 +18,7 @@ pub enum TopologyError {
     #[error("Invalid topology configuration: {0}")]
     InvalidConfig(String),
 
-    #[error("Unsupported torus dimension: {0}")]
+    #[error("Unsupported Torus dimension: {0}")]
     UnsupportedDimension(u32),
 
     #[error("Numeric overflow in calculation: {0}")]

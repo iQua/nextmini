@@ -1,77 +1,276 @@
 # Description
 
-This example aims to test the starting time and memory usage when spawning different number of nodes via the namespace feature of Nextmini.
+This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
 
-## How to run
+## How to Run
 
-**Step 0 : Change the number of nodes**
+### Step 0: Increase ARP Table Limits
 
-To change the number of nodes, you need to update three config files.
-
-First, change the `n_nodes` field in `net-config.toml` by:
+These commands increase the Linux kernel's ARP (Address Resolution Protocol) neighbor table thresholds to handle a large number of network devices:
 
 ```bash
-vi nextmini/namespace_init/net-config.toml
+sudo sysctl net.ipv4.neigh.default.gc_thresh1=2048
+sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
+sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
 ```
 
-Then, change the `n_nodes` field in the `controller-config.toml` by:
+**ARP Threshold Explanations:**
+- `gc_thresh1` **(2048)**: **Soft minimum threshold** - The minimum number of entries to maintain in the ARP table.
+- `gc_thresh2` **(4096)**: **Soft maximum threshold** - When the ARP table reaches this size, the kernel becomes more aggressive about garbage collection and starts removing stale entries.
+- `gc_thresh3` **(8192)**: **Hard maximum threshold** - The absolute maximum number of ARP entries allowed.
+
+### Step 1: Configure the Number of Nodes
+
+To change the number of nodes, you need to update the `n_nodes` field in three configuration files:
+
+1. **Network configuration:**
+   ```bash
+   vi nextmini/namespace_init/net-config.toml
+   ```
+
+2. **Controller configuration:**
+   ```bash
+   vi nextmini/namespace_init/controller_standalone/controller-config.toml
+   ```
+
+3. **Main configuration:**
+   ```bash
+   vi nextmini/namespace_init/config.toml
+   ```
+
+### Step 2: Start Controller and Database
+
+Start the controller and database services:
 
 ```bash
-vi nextmini/namespace_init/controller_standalone/controller-config.toml
+cd nextmini/namespace_init/controller_standalone
+docker compose up --build
 ```
 
-Finally, change the `n_nodes` field in the `config.toml` by:
+### Step 3: Build the Project
+
+Ensure `namespace_init` is added as a member in the workspace, then build the project in a new terminal:
 
 ```bash
-vi nextmini/namespace_init/config.toml
+cd nextmini/namespace_init
+cargo build --release
 ```
 
-If the number of nodes is greated than 500, it is recommended that the `controller_service_rate` field in the `config.toml` is set to a smaller value, such as 6, so that nodes requests towards the controller can be spread out over time.
+### Step 4: Run Dataplane Nodes in Namespaces
 
-**Step 1 : Start Controller and Database**
-
-Start controller and database with the following:
+Execute the namespace initialization:
 
 ```bash
-cd nextmini/namespace_init/controller_standalone; docker compose up --build
-```
-
-**Step 2 : Build the Project**
-
-You need to ensure `namespace_init` is added as a member in the workspace before proceeding. Run the following in a new terminal to build the project.
-
-```bash
-cd nextmini/namespace_init; cargo build --release
-```
-
-**Step 3 : Run Dataplane Nodes in Namespaces**
-
-```bash
-cd ..
+cd nextmini
 sudo ./target/release/namespace_init
 ```
 
-**Step 4 : Observe the Results**
+### Step 5: Observe the Results
 
-You can see results similar to the following logged out at the terminal running the controller:
+You should see output similar to the following in the controller terminal:
 
 ```bash
-controller  | 2025-07-27T17:21:16.925666Z  WARN controller: All 128 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
-controller  | 2025-07-27T17:21:17.299502Z  WARN controller: It took 38.181973 seconds for all nodes to fully connect to the controller.
+controller  | 2025-09-27T17:13:37.321732Z  INFO controller::new_node: All 600 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
+controller  | 2025-09-27T17:13:37.324119Z  INFO controller::new_node: Sending AddNodeAddress messages to 600 nodes.
+controller  | 2025-09-27T17:13:38.852797Z  INFO controller::new_node: All dataplane nodes have connected. It takes 264.35 seconds since the first node arrived.
 ```
 
-Now, in a new terminal, you can use `free -h` to check the memory usage.
+Monitor memory usage in a new terminal:
 
-**Step 5 : Cleanup**
+```bash
+free -h
+```
 
-To cleanup, simply press `CTRL_C` at the two terminals in Step 1 and Step 2. Then, in the terminal running `namespace_init` run the following command to clear the created veths.
+### Step 6: Cleanup
+
+To clean up the environment:
+
+1. Press `Control+C` in both the controller and namespace_init terminals
+2. Remove created veth interfaces:
 
 ```bash
 sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'; echo "Cleaned up veths successfully"
 ```
 
-## No persistent tcp connections and no routes
+3. Verify cleanup was successful:
 
-The namespace example can be tested with arbutus c16-180-576.
+```bash
+ip link show | grep veth | wc -l
+```
 
-You can change the `n_nodes` field to the number to test. Also, remove the `[routing]` section since we are testing pure start up speed and memory usage of nodes.
+## Testing Configuration
+
+### Environment Requirements
+
+This namespace example can be tested with Arbutus c16-180-576 configuration.
+
+### Simplified Testing
+
+For testing pure startup speed and memory usage:
+- Configure the desired `n_nodes` value with ring preset topology
+- Remove the `[routing]` section from configuration files (no persistent TCP connections and no routes needed)
+
+The following lines could be used in `/nextmini/namespace_init/controller_standalone/controller-config.toml` for test:
+
+```toml
+protocol = "tcp"
+
+[topology]
+type = "ring"
+ring_config = { n_nodes = 600 }
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "170.16.8.2"
+database = "nextmini"
+port = "5432"
+```
+
+
+## Memory Usage Analysis
+
+### Baseline Memory Usage (Before Starting Services)
+
+Check initial memory usage:
+
+```bash
+free -h
+```
+
+Example output:
+```text
+               total        used        free      shared  buff/cache   available
+Mem:           176Gi       3.3Gi       162Gi       1.2Mi        12Gi       173Gi
+Swap:             0B          0B          0B
+```
+
+### Memory Usage After Controller and PostgreSQL
+
+After starting services with:
+```bash
+docker compose build
+docker compose up
+```
+
+Check memory usage again:
+```text
+               total        used        free      shared  buff/cache   available
+Mem:           176Gi       4.1Gi       161Gi        15Mi        12Gi       172Gi
+Swap:             0B          0B          0B
+```
+
+**Result:** Approximately 0.8Gi(4.1-3.3) is used by the controller and PostgreSQL services.
+
+## Database Configuration
+
+### Increasing Connection Limits
+
+To handle more than 100 concurrent connections, modify the PostgreSQL configuration in `docker-compose.yml`:
+
+```yaml
+command: postgres -c max_connections=700 -c shared_preload_libraries=pg_stat_statements
+```
+
+### Database Monitoring Commands
+
+**Check maximum connections:**
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "SHOW max_connections;"
+```
+
+**Monitor active connections:**
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "
+SELECT
+    state,
+    count(*) as connection_count,
+    application_name
+FROM pg_stat_activity
+GROUP BY state, application_name
+ORDER BY connection_count DESC;"
+```
+
+**Count established connections to controller:**
+```bash
+docker exec controller netstat -an | grep :3000 | grep ESTABLISHED | wc -l
+```
+
+## Network Interface Monitoring
+
+### Check Created veth Pairs
+
+**General check:**
+```bash
+ip link show | grep veth | wc -l
+```
+
+**Check specific veth pair:**
+```bash
+ip link show | grep "veth<idx>[ab]"
+```
+
+Example for veth0:
+```bash
+ip link show | grep "veth0[ab]"
+```
+
+### IP Address Assignment Logic
+
+With `bridge_ip = 172.16.8.1`, IP addresses are assigned as:
+- `idx = 0 → offset = 3 → IP = 172.16.8.4`
+- Node ID calculation: `node_id = (ip - base) = ((k+4) - 3) = k + 1`
+- Therefore: `veth0a → node_id 1`
+
+### ARP Monitoring
+
+Real-time monitoring of ARP entries and system status:
+
+```bash
+watch -n 1 'echo "=== $(date +%H:%M:%S) ==="; echo "ARP: $(arp -a | wc -l)/$(cat /proc/sys/net/ipv4/neigh/default/gc_thresh1)"; echo "Veth UP: $(ip link show | grep "veth.*state UP" | wc -l)"; echo "Controller CPU: $(docker stats controller --no-stream | grep controller | awk '\''{print $3}'\'')"'
+```
+
+## Troubleshooting
+
+### Process Monitoring
+
+Check namespace_init processes:
+```bash
+ps aux | grep namespace_init | grep " S+"
+sudo ps -eo pid,ppid,state,cmd | grep namespace_init | grep " S+"
+```
+
+Get process stack trace:
+```bash
+sudo cat /proc/<PID>/stack
+```
+
+### Finding Missing Nodes
+
+Identify nodes that failed to connect (example for 600 nodes):
+
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "
+WITH RECURSIVE expected_nodes AS (
+    SELECT 1 as node_id
+    UNION ALL
+    SELECT node_id + 1
+    FROM expected_nodes
+    WHERE node_id < 600
+)
+SELECT en.node_id as missing_node_id
+FROM expected_nodes en
+LEFT JOIN nodes n ON en.node_id = n.id
+WHERE n.id IS NULL
+ORDER BY en.node_id
+LIMIT 10;"
+```
+
+## Performance Results
+
+### 600 Nodes Test Results
+
+Example output for successful 600-node deployment:
+```text
+All dataplane nodes have connected. It takes 264.35 seconds since the first node arrived.
+```

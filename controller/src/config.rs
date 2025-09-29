@@ -27,6 +27,7 @@ pub enum PresetTopology {
     Ring,
     FatTree,
     Torus,
+    Ring,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

@@ -1,8 +1,9 @@
 use crate::string_helpers::random_suffix;
 use futures::TryStreamExt;
-use tracing::info;
 use rtnetlink::{new_connection, AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth};
 use std::{fmt, net::Ipv4Addr, str::FromStr};
+use tokio::time::{sleep, Duration};
+use tracing::{error, info};
 
 #[derive(Debug)]
 pub enum NetworkError {
@@ -48,6 +49,7 @@ pub async fn prepare_net(
     bridge_name: String,
     bridge_ip: &str,
     subnet: u8,
+    idx: usize,
 ) -> Result<(u32, u32, u32), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
@@ -63,7 +65,7 @@ pub async fn prepare_net(
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
     };
 
-    let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx).await?;
+    let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx, idx).await?;
     Ok((bridge_idx, veth_idx, veth2_idx))
 }
 
@@ -139,13 +141,13 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
     Ok(bridge_idx)
 }
 
-async fn create_veth_pair(bridge_idx: u32) -> Result<(u32, u32), NetworkError> {
+async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // create veth interfaces
-    let veth: String = format!("veth{}", random_suffix(4));
-    let veth_2: String = format!("veth{}", random_suffix(4));
+    // create veth interfaces with unique names based on idx
+    let veth: String = format!("veth{}a", idx);
+    let veth_2: String = format!("veth{}b", idx);
 
     handle
         .link()
@@ -250,13 +252,21 @@ pub async fn setup_veth_peer(
 
     // set veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
-    AddressHandle::new(handle.clone())
-        .add(veth_idx, veth_2_addr, subnet)
-        .execute()
-        .await
-        .map_err(|e| {
-            NetworkError::OperationError(format!("add IP address to veth peer failed: {}", e))
-        })?;
+
+    // Keep retrying until successful
+    loop {
+        match AddressHandle::new(handle.clone())
+            .add(veth_idx, veth_2_addr, subnet)
+            .execute()
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                error!("Retrying in 200ms...{}.", e);
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
 
     handle
         .link()
