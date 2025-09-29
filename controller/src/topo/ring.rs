@@ -22,10 +22,11 @@ impl TopologyBuilder for RingConfig {
         }
 
         info!(
-            "Building Ring topology with {} nodes and {} edges.",
+            "Building a Ring topology with {} nodes and {} edges.",
             self.n_nodes,
             edges.len()
         );
+
         Ok(edges)
     }
 }
