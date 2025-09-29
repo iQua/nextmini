@@ -1,8 +1,14 @@
-use rand::{
-    distributions::{Alphanumeric, DistString},
-    thread_rng,
-};
+use rand::{rng, Rng};
 
 pub fn random_suffix(len: usize) -> String {
-    Alphanumeric.sample_string(&mut thread_rng(), len)
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                             abcdefghijklmnopqrstuvwxyz\
+                             0123456789";
+    let mut rng = rng();
+    (0..len)
+        .map(|_| {
+            let idx = rng.random_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
 }
