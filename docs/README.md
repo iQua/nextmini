@@ -10,25 +10,13 @@ To install Nextra and Next.js after installing [Bun](https://bun.sh/docs/install
 bun add next react react-dom nextra nextra-theme-docs steps geist sharp
 ```
 
-or simply:
-
-```shell
-bun install
-```
-
 To start the development server, run:
 
 ```shell
 bun run dev
 ```
 
-Then point the browser to `http://localhost:3000/~bli/eecg` to view the website, where `~bli/eecg` is the `basepath` of the website specified in `next.config.js`.
-
-In case `pagefind` has not yet been installed, it can be installed with:
-
-```shell
-cargo install pagefind --features extended
-```
+Then point the browser to `http://localhost:3000` to view the website.
 
 To build the static website, run:
 
@@ -36,16 +24,22 @@ To build the static website, run:
 bun run build
 ```
 
-To serve the static website, run:
+To update all the dependencies, run:
 
 ```shell
-bun run start
+bun update
 ```
 
-or:
+To update `bun` itself, run:
+
+```shell
+bun upgrade
+```
+
+To serve the static website, run:
 
 ```shell
 npx serve@latest out
 ```
 
-Before deploying the static website, configure `basepath` in `next.config.js` to match the deployment URL. For example, if the website is deployed at `https://www.eecg.toronto.edu/~bli/eecg`, the `basepath` should be set to `/~bli/eecg`.
+Before deploying the static website, one may optionally configure `basepath` in `next.config.js` to match the deployment URL. For example, if the website is deployed at `https://www.eecg.toronto.edu/~bli/nextmini`, the `basepath` should be set to `/~bli/nextmini`.
