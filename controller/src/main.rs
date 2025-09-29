@@ -9,7 +9,6 @@ mod utils;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -51,15 +50,12 @@ async fn main() {
     let (new_node_connected_sender, new_node_connected_receiver) =
         broadcast::channel::<NodeConnectedEvent>(100);
 
-    let start_instant = Instant::now();
-
     // Spawn the centralized node connection coordinator
     tokio::spawn(new_node_connected(
         new_node_connected_receiver,
         config.clone(),
         node_ws.clone(),
         db_pool.clone(),
-        start_instant,
     ));
 
     // Set up database notifications

@@ -7,7 +7,6 @@ use tokio_tungstenite::{
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use rand;
 use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};

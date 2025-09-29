@@ -24,7 +24,6 @@ pub struct DBConfig {
 #[serde(rename_all = "snake_case")]
 pub enum PresetTopology {
     FullMesh,
-    Ring,
     FatTree,
     Torus,
     Ring,
