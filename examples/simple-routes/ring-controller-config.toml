@@ -1,0 +1,10 @@
+# To test ring topology, run: `cp ring-controller-config.toml controller-config.toml`
+protocol = "tcp"
+
+[topology]
+type = "ring"
+ring_config = { n_nodes = 4 }
+
+# Set the routing protocol to "shortest_path" if the routes from the topology are needed.
+[routing]
+protocol = "shortest_path"

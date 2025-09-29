@@ -106,6 +106,17 @@ pub struct LocalConfig {
     #[arg(long)]
     pub metrics_collection_interval: u64,
 
+    // The total number of dataplane nodes deployed.
+    // This is used with the controller_service_rate to randomise connection start-up delays to avoid overwhelming the controller.
+    #[default(1)]
+    #[arg(long)]
+    pub n_nodes: usize,
+
+    /// The number of requests that the controller is expected to handle per second.
+    #[default(5)]
+    #[arg(long)]
+    pub controller_service_rate: usize,
+
     /// The number of local TUN queues to use to send and receive packets.
     #[default(1)]
     #[arg(long)]
@@ -482,7 +493,11 @@ impl LocalConfig {
 
     /// initialize the config for the namespace nodes
     #[allow(unused)]
-    pub fn new_for_namespace(config_path: &str, controller_addr: &str, ns_addr: &str) -> LocalConfig {
+    pub fn new_for_namespace(
+        config_path: &str,
+        controller_addr: &str,
+        ns_addr: &str,
+    ) -> LocalConfig {
         // Reads the TOML configuration file (or falls back to defaults).
         let mut cfgs = match std::fs::read_to_string(config_path) {
             Ok(content) => match toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
@@ -513,9 +528,7 @@ impl LocalConfig {
             if computed_node_id != 0 {
                 cfgs.node_id = computed_node_id;
             } else {
-                info!(
-                    "Computed node_id is 0 from ns_addr {ns_addr}; keeping the default value."
-                );
+                info!("Computed node_id is 0 from ns_addr {ns_addr}; keeping the default value.");
             }
         } else {
             error!("Failed to parse ns_addr '{ns_addr}' as IPv4");

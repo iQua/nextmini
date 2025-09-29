@@ -92,6 +92,7 @@ impl ControllerInterfaceHandle {
     ) {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
+
         loop {
             match connect_async(url.as_str()).await {
                 Ok((ws, _)) => {
@@ -101,7 +102,7 @@ impl ControllerInterfaceHandle {
                 }
                 Err(e) => {
                     error!("Failed to connect to the controller: {}. Retrying...", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
         }

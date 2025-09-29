@@ -9,7 +9,7 @@ use tracing::{error, info};
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 use crate::route_ser::deserialize_route_edges;
-use crate::topo::{FatTreeConfig, FullMeshConfig, TorusConfig};
+use crate::topo::{FatTreeConfig, FullMeshConfig, TorusConfig, RingConfig};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {
@@ -26,6 +26,7 @@ pub enum PresetTopology {
     FullMesh,
     FatTree,
     Torus,
+    Ring,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -50,6 +51,9 @@ pub struct Topology {
     pub torus_config: Option<TorusConfig>,
 
     #[serde(default)]
+    pub ring_config: Option<RingConfig>,
+
+    #[serde(default)]
     pub edges: Option<Vec<(u32, u32)>>,
 }
 
@@ -71,6 +75,7 @@ impl Topology {
 
                 n.pow(dim) as usize
             }),
+            Some(PresetTopology::Ring) => self.ring_config.as_ref().map(|c| c.n_nodes),
             // if there is no preset topology, the total number of nodes needs to be explicitly specified
             None => self.n_nodes,
         }

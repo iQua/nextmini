@@ -1,8 +1,8 @@
 protocol = "tcp"
 
 [topology]
-type = "full_mesh"
-n_nodes = 3
+type = "ring"
+ring_config = { n_nodes = 600 }
 
 [db]
 user = "pgusr"

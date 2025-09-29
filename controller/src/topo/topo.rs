@@ -18,7 +18,7 @@ pub enum TopologyError {
     #[error("Invalid topology configuration: {0}")]
     InvalidConfig(String),
 
-    #[error("Unsupported torus dimension: {0}")]
+    #[error("Unsupported Torus dimension: {0}")]
     UnsupportedDimension(u32),
 
     #[error("Numeric overflow in calculation: {0}")]
@@ -42,6 +42,7 @@ pub fn build_topology(config: &config::Config) -> Option<Vec<(u32, u32)>> {
             PresetTopology::FullMesh => config.topology.full_mesh_config.as_ref()?.build().ok(),
             PresetTopology::FatTree => config.topology.fat_tree_config.as_ref()?.build().ok(),
             PresetTopology::Torus => config.topology.torus_config.as_ref()?.build().ok(),
+            PresetTopology::Ring => config.topology.ring_config.as_ref()?.build().ok(),
         };
 
         // This could be redundant if the preset topology doesn't need to be normalized.

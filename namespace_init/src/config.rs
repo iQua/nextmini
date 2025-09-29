@@ -22,6 +22,18 @@ pub struct Config {
     /// Number of isolated network namespaces to spawn.
     #[serde(default = "default_n_nodes")]
     pub n_nodes: u32,
+
+    /// Sleep time in milliseconds between spawning each node in the main loop.
+    /// This controls the interval between creating network namespaces and child processes.
+    /// Helps prevent overwhelming the system when creating many nodes at once.
+    #[serde(default = "default_main_loop_sleep_ms")]
+    pub main_loop_sleep_ms: u64,
+
+    /// Sleep multiplier in milliseconds for staggered child process connections.
+    /// Each child process sleeps for (node_index * multiplier) before connecting to controller.
+    /// This prevents all nodes from connecting simultaneously and overwhelming the controller.
+    #[serde(default = "default_child_sleep_multiplier_ms")]
+    pub child_sleep_multiplier_ms: u64,
 }
 
 /// the default controller address running on the host
@@ -49,6 +61,16 @@ fn default_n_nodes() -> u32 {
     2
 }
 
+/// the default sleep time in milliseconds between spawning each node
+fn default_main_loop_sleep_ms() -> u64 {
+    200
+}
+
+/// the default sleep multiplier for child processes
+fn default_child_sleep_multiplier_ms() -> u64 {
+    200
+}
+
 /// the default configuration for namespaces
 impl Default for Config {
     fn default() -> Self {
@@ -58,6 +80,8 @@ impl Default for Config {
             bridge_ip: default_bridge_ip(),
             subnet: default_subnet(),
             n_nodes: default_n_nodes(),
+            main_loop_sleep_ms: default_main_loop_sleep_ms(),
+            child_sleep_multiplier_ms: default_child_sleep_multiplier_ms(),
         }
     }
 }
@@ -87,4 +111,4 @@ impl Config {
             }
         }
     }
-} 
+}
