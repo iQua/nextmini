@@ -1,3 +1,3 @@
 [workspace]
-members = ["messages", "controller", "dataplane", "cert-gen", "namespace_init"]
+members = ["messages", "controller", "dataplane", "cert-gen"]
 resolver = "3"
