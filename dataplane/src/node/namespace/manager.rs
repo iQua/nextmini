@@ -98,6 +98,25 @@ impl NamespaceManager {
             .collect()
     }
 
+
+    // waits for Ctrl+C shutdown signal
+    async fn wait_for_shutdown(&self, bridge_idx: Option<u32>) {
+        match tokio::signal::ctrl_c().await {
+            Ok(_) => {
+                info!("Ctrl+C received, shutting down...");
+            }
+            Err(e) => {
+                error!("Failed to listen for Ctrl+C: {}", e);
+            }
+        }
+
+        // Clean up the bridge
+        if let Some(bridge_idx) = bridge_idx {
+            if let Err(e) = delete_namespace(bridge_idx).await {
+                error!("Failed to delete namespace: {}", e);
+            }
+        }
+    }
 }
 
 /// Child process function executed within the namespace
