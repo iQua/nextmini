@@ -103,7 +103,7 @@ impl NamespaceManager {
     async fn wait_for_shutdown(&self, bridge_idx: Option<u32>) {
         match tokio::signal::ctrl_c().await {
             Ok(_) => {
-                info!("Ctrl+C received, shutting down...");
+                info!("Received Ctrl + C. Shutting down Nextmini gracefully...");
             }
             Err(e) => {
                 error!("Failed to listen for Ctrl+C: {}", e);
