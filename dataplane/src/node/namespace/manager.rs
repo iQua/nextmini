@@ -124,11 +124,11 @@ impl NamespaceManager {
         let child_sleep_multiplier_ms = self.config.child_sleep_multiplier_ms;
         let subnet = self.config.subnet;
         let controller_addr = controller_addr.to_string();
-        let cb = Box::new(move || {
+        let cb = Box::new(|| {
             child_process(
-                ns_ip,
+                ns_ip.clone(),
                 veth2_idx,
-                controller_addr,
+                controller_addr.clone(),
                 idx,
                 subnet,
                 child_sleep_multiplier_ms,
