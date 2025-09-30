@@ -120,6 +120,19 @@ impl NamespaceManager {
 
         *bridge_idx = Some(bid);
 
+        let subnet = self.config.subnet;
+        let controller_addr = controller_addr.to_string();
+        let cb = Box::new(move || {
+            child_process(
+                ns_ip,
+                veth2_idx,
+                controller_addr,
+                idx,
+                subnet,
+                child_sleep_multiplier_ms,
+            )
+        });
+
         // clones the child process into a new namespace
         let mut stack: Box<[u8; STACK_SIZE]> = Box::new([0; STACK_SIZE]);
         let child_pid = unsafe {
