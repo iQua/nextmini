@@ -45,7 +45,7 @@ pub enum Feature {
 #[command(author, version, about)]
 pub struct Args {
     /// The address of the controller to connect to (e.g., 128.100.100.128).
-    pub controller_addr: String,
+    pub controller_addr: Option<String>,
 
     /// The path to the configuration file.
     #[arg(short, long, default_value = "config.toml")]
@@ -61,8 +61,15 @@ pub struct Args {
 pub struct LocalConfig {
     /// The server address.
     #[default("".to_string())]
-    #[arg(skip)]
+    #[arg(long)]
     pub controller_addr: String,
+
+    /// The path of the configuration file.
+    /// This is used to remember which config file produced this configuration so namespace children can reuse it.
+    #[default("".to_string())]
+    #[serde(skip)]
+    #[arg(skip)]
+    pub config_path: String,
 
     /// The name of the private network this node might share with other nodes. This is used to identify
     /// nodes on the same network. Not specifying this field will cause the node to connect to other nodes
@@ -269,12 +276,12 @@ pub struct LocalConfig {
 
     /// The sleep time in milliseconds between spawning each node in the main loop.
     #[default(200)]
-    #[arg(long)]
+    #[arg(skip)]
     pub main_loop_sleep_ms: u64,
 
     /// The sleep multiplier in milliseconds for staggered child process connections.
     #[default(200)]
-    #[arg(long)]
+    #[arg(skip)]
     pub child_sleep_multiplier_ms: u64,
 }
 
@@ -309,6 +316,28 @@ fn default_netmask() -> Ipv4Addr {
 }
 
 impl LocalConfig {
+    /// Reads only n_nodes from config to determine deployment mode (lightweight)
+    pub fn read_n_nodes() -> usize {
+        let args = Args::parse();
+
+        // Check command line argument first (has priority)
+        if let Some(n) = args.args.n_nodes {
+            return n;
+        }
+
+        // Try to read from config file
+        if let Ok(content) = std::fs::read_to_string(&args.config_path) {
+            if let Ok(opts) = toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
+                if let Some(n) = opts.n_nodes {
+                    return n;
+                }
+            }
+        }
+
+        // Default to 1 (single node mode)
+        1
+    }
+
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);
@@ -352,7 +381,13 @@ impl LocalConfig {
             }
         };
 
-        cfgs.controller_addr = args.controller_addr;
+        // overrides controller_addr from command line if provided
+        if let Some(addr) = args.controller_addr {
+            cfgs.controller_addr = addr;
+        }
+
+        // remembers which config file produced this configuration so namespace children can reuse it
+        cfgs.config_path = args.config_path.clone();
 
         // sets the private ipv4 address of the network interface for the private network
         // Defined by RFC 1918, private IP addresses fall within the following ranges:
@@ -405,7 +440,7 @@ impl LocalConfig {
                         cfgs.node_id, computed_node_id, cfgs.private_network_addr
                     );
                 }
-            } else {
+            } else if !cfgs.private_network_addr.is_empty() {
                 error!(
                     "Failed to parse private_network_addr as Ipv4Addr: {}.",
                     cfgs.private_network_addr
@@ -534,11 +569,11 @@ impl LocalConfig {
             }
         };
 
-        // manually set set namespace node's ip addresses
+        // manually sets namespace node's ip addresses
         cfgs.private_network_addr = ns_addr.to_string();
         cfgs.public_network_addr = ns_addr.to_string();
 
-        // calculate the node_id
+        // calculates the node_id
         if let Ok(real_ip) = ns_addr.parse::<Ipv4Addr>() {
             let ip = u32::from(real_ip);
             let base = u32::from(cfgs.external_base_addr);
@@ -559,6 +594,8 @@ impl LocalConfig {
         if cfgs.num_packet_processors == 0 {
             cfgs.num_packet_processors = num_cpus::get();
         }
+
+        cfgs.config_path = config_path.to_string();
 
         cfgs
     }

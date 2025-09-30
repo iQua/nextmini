@@ -84,6 +84,7 @@ impl NamespaceManager {
             let child_sleep_multiplier_ms = self.config.child_sleep_multiplier_ms;
             let subnet = self.config.subnet;
             let controller_addr_clone = controller_addr.clone();
+            let config_path = self.config.config_path.clone();
             let cb = Box::new(|| {
                 child_process(
                     ns_ip.clone(),
@@ -92,6 +93,7 @@ impl NamespaceManager {
                     idx,
                     subnet,
                     child_sleep_multiplier_ms,
+                    config_path.clone(),
                 )
             });
 
@@ -172,6 +174,7 @@ fn child_process(
     idx: usize,
     subnet: u8,
     child_sleep_multiplier_ms: u64,
+    config_path: String,
 ) -> isize {
     info!(
         "Child process (PID: {}) started with idx {}",
@@ -194,8 +197,7 @@ fn child_process(
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
         // Load config using new_for_namespace (handles all namespace-specific settings)
-        let config_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../examples/namespace/config.toml");
-        let config = LocalConfig::new_for_namespace(config_path, &controller_addr, &ns_ip);
+        let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
 
         // Start the conductor
         let conductor = Conductor::new_for_namespace(config).await;
