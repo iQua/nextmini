@@ -16,6 +16,7 @@ use tokio_util::task::task_tracker::TaskTracker;
 use tracing::info;
 
 use node::conductor::Conductor;
+use node::config::LocalConfig;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
