@@ -23,56 +23,50 @@ sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
 
 To change the number of nodes, you need to update the `n_nodes` field in three configuration files:
 
-1. **Network configuration:**
-   ```bash
-   vi nextmini/namespace_init/net-config.toml
-   ```
+- Change the `n_nodes` in controller-config.toml. As before, controller needs the correct configuration.
 
-2. **Controller configuration:**
-   ```bash
-   vi nextmini/namespace_init/controller_standalone/controller-config.toml
-   ```
-
-3. **Main configuration:**
-   ```bash
-   vi nextmini/namespace_init/config.toml
-   ```
 
 ### Step 2: Start Controller and Database
 
 Start the controller and database services:
 
 ```bash
-cd nextmini/namespace_init/controller_standalone
-docker compose up --build
+cd nextmini/examples/namespace
+docker compose build; docker compose up
 ```
 
 ### Step 3: Build the Project
 
-Ensure `namespace_init` is added as a member in the workspace, then build the project in a new terminal:
+Build the project in a new terminal:
+
+** Use command Line**
 
 ```bash
-cd nextmini/namespace_init
+cd ~/nextmini
 cargo build --release
+sudo ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-### Step 4: Run Dataplane Nodes in Namespaces
+** Use configuration file**
 
-Execute the namespace initialization:
+Add for example, `n_nodes = 5` into `examples/namespace/config.toml` also works.
+
+After adding it, use:
 
 ```bash
-cd nextmini
-sudo ./target/release/namespace_init
+cd ~/nextmini
+cargo build --release
+sudo ./target/release/nextmini --config-path examples/namespace/config.toml
 ```
 
-### Step 5: Observe the Results
+### Step 4: Observe the Results
 
 You should see output similar to the following in the controller terminal:
 
 ```bash
-controller  | 2025-09-27T17:13:37.321732Z  INFO controller::new_node: All 600 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
-controller  | 2025-09-27T17:13:37.324119Z  INFO controller::new_node: Sending AddNodeAddress messages to 600 nodes.
-controller  | 2025-09-27T17:13:38.852797Z  INFO controller::new_node: All dataplane nodes have connected. It takes 264.35 seconds since the first node arrived.
+controller  | 2025-09-30T18:06:00.639257Z  INFO controller::new_node: All 5 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
+controller  | 2025-09-30T18:06:00.642056Z  INFO controller::new_node: Sending AddNodeAddress messages to 5 nodes.
+controller  | 2025-09-30T18:06:00.848173Z  INFO controller::new_node: All dataplane nodes have connected. It takes 2.90 seconds since the first node arrived.
 ```
 
 Monitor memory usage in a new terminal:
@@ -81,11 +75,11 @@ Monitor memory usage in a new terminal:
 free -h
 ```
 
-### Step 6: Cleanup
+### Step 5: Cleanup
 
 To clean up the environment:
 
-1. Press `Control+C` in both the controller and namespace_init terminals
+1. Press `Control+C` in both the controller and namespace terminals
 2. Remove created veth interfaces:
 
 ```bash
