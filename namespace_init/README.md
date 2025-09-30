@@ -59,6 +59,14 @@ cargo build --release
 sudo ./target/release/nextmini --config-path examples/namespace/config.toml
 ```
 
+INFO level log can be seen by using:
+
+```bash
+cd ~/nextmini
+cargo build --release
+sudo RUST_LOG=info ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
+```
+
 ### Step 4: Observe the Results
 
 You should see output similar to the following in the controller terminal:
