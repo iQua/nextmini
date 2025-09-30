@@ -45,7 +45,7 @@ pub enum Feature {
 #[command(author, version, about)]
 pub struct Args {
     /// The address of the controller to connect to (e.g., 128.100.100.128).
-    pub controller_addr: Option<String>,
+    pub controller_addr: String,
 
     /// The path to the configuration file.
     #[arg(short, long, default_value = "config.toml")]
@@ -352,9 +352,7 @@ impl LocalConfig {
             }
         };
 
-        if let Some(addr) = args.controller_addr {
-            cfgs.controller_addr = addr;
-        }
+        cfgs.controller_addr = args.controller_addr;
 
         // sets the private ipv4 address of the network interface for the private network
         // Defined by RFC 1918, private IP addresses fall within the following ranges:
@@ -407,7 +405,7 @@ impl LocalConfig {
                         cfgs.node_id, computed_node_id, cfgs.private_network_addr
                     );
                 }
-            } else if !cfgs.private_network_addr.is_empty() {
+            } else {
                 error!(
                     "Failed to parse private_network_addr as Ipv4Addr: {}.",
                     cfgs.private_network_addr
