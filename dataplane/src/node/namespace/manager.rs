@@ -80,8 +80,7 @@ impl NamespaceManager {
                 }
             }
 
-            // prepare child process with idx for ordered sleep
-            let child_sleep_multiplier_ms = self.config.child_sleep_multiplier_ms;
+            // prepare child process
             let subnet = self.config.subnet;
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
@@ -92,7 +91,6 @@ impl NamespaceManager {
                     controller_addr_clone.clone(),
                     idx,
                     subnet,
-                    child_sleep_multiplier_ms,
                     config_path.clone(),
                 )
             });
@@ -122,7 +120,7 @@ impl NamespaceManager {
             }
 
             // Sleep between node creation to prevent overwhelming the system
-            thread::sleep(time::Duration::from_millis(self.config.main_loop_sleep_ms));
+            thread::sleep(time::Duration::from_millis(200));
             idx += 1;
         }
 
@@ -173,7 +171,6 @@ fn child_process(
     controller_addr: String,
     idx: usize,
     subnet: u8,
-    child_sleep_multiplier_ms: u64,
     config_path: String,
 ) -> isize {
     info!(
@@ -193,7 +190,7 @@ fn child_process(
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
         // Staggered connection: each node waits longer to prevent controller overload
-        let sleep_ms = (idx as u64) * child_sleep_multiplier_ms;
+        let sleep_ms = (idx as u64) * 200;
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
         // Load config using new_for_namespace (handles all namespace-specific settings)
