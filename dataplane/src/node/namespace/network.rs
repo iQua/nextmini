@@ -1,7 +1,7 @@
 use futures::TryStreamExt;
-use rtnetlink::{new_connection, AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth};
+use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
 use std::{fmt, net::Ipv4Addr, str::FromStr};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
 #[derive(Debug)]
@@ -15,10 +15,10 @@ pub enum NetworkError {
 impl fmt::Display for NetworkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NetworkError::ConnectionError(e) => write!(f, "Connection error: {}", e),
-            NetworkError::OperationError(msg) => write!(f, "Operation error: {}", msg),
-            NetworkError::AddressParseError(e) => write!(f, "Address parse error: {}", e),
-            NetworkError::Other(e) => write!(f, "IO error: {}", e),
+            NetworkError::ConnectionError(e) => write!(f, "Connection error: {}.", e),
+            NetworkError::OperationError(msg) => write!(f, "Operation error: {}.", msg),
+            NetworkError::AddressParseError(e) => write!(f, "Address parse error: {}.", e),
+            NetworkError::Other(e) => write!(f, "IO error: {}.", e),
         }
     }
 }
@@ -53,18 +53,19 @@ pub async fn prepare_net(
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    info!("Interact with bridge {bridge_name} at cidr {bridge_ip}/{subnet}");
+    info!("Interact with bridge {bridge_name} at cidr {bridge_ip}/{subnet}.");
 
-    // create bridge if not exist
+    // creates bridge if not exist
     let bridge_idx = match get_bridge_idx(&handle, bridge_name.clone()).await {
         Ok(idx) => {
-            info!("bridge {} already exist", bridge_name);
+            info!("The bridge {} already exist.", bridge_name);
             idx
         }
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
     };
 
     let (veth_idx, veth2_idx) = create_veth_pair(bridge_idx, idx).await?;
+
     Ok((bridge_idx, veth_idx, veth2_idx))
 }
 
@@ -77,18 +78,18 @@ async fn get_bridge_idx(handle: &Handle, bridge_name: String) -> Result<u32, Net
         .execute()
         .try_next()
         .await?
-        .ok_or_else(|| NetworkError::OperationError("failed to get bridge index".to_string()))?
+        .ok_or_else(|| NetworkError::OperationError("Failed to get bridge index.".to_string()))?
         .header
         .index;
 
     Ok(bridge_idx)
 }
 
+// Create and bring up a bridge.
 async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32, NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // Create a bridge
     handle
         .link()
         .add(LinkBridge::new(&name).build())
@@ -96,13 +97,12 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "create bridge with name {} failed: {}",
+                "Create bridge with name {} failed: {}.",
                 name.clone(),
                 e
             ))
         })?;
 
-    // Bring up the bridge
     let bridge_idx = handle
         .link()
         .get()
@@ -110,7 +110,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
         .execute()
         .try_next()
         .await?
-        .ok_or_else(|| NetworkError::OperationError("failed to get bridge index".to_string()))?
+        .ok_or_else(|| NetworkError::OperationError("Failed to get bridge index.".to_string()))?
         .header
         .index;
 
@@ -121,7 +121,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
         .execute()
         .await
         .map_err(|e| {
-            NetworkError::OperationError(format!("add IP address to bridge failed: {}", e))
+            NetworkError::OperationError(format!("Add IP address to bridge failed: {}.", e))
         })?;
 
     // set bridge up
@@ -132,7 +132,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "set bridge with idx {} to up failed: {}",
+                "Set bridge with idx {} to up failed: {}.",
                 bridge_idx, e
             ))
         })?;
@@ -155,7 +155,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "create veth pair {} and {} failed: {}",
+                "Create veth pair {} and {} failed: {}.",
                 veth, veth_2, e
             ))
         })?;
@@ -167,7 +167,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .execute()
         .try_next()
         .await?
-        .ok_or_else(|| NetworkError::OperationError("failed to get veth index".to_string()))?
+        .ok_or_else(|| NetworkError::OperationError("Failed to get veth index.".to_string()))?
         .header
         .index;
 
@@ -178,7 +178,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .execute()
         .try_next()
         .await?
-        .ok_or_else(|| NetworkError::OperationError("failed to get veth index".to_string()))?
+        .ok_or_else(|| NetworkError::OperationError("Failed to get veth index.".to_string()))?
         .header
         .index;
 
@@ -190,7 +190,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "set veth with idx {} to up failed: {}",
+                "Set veth with idx {} to up failed: {}.",
                 veth_idx, e
             ))
         })?;
@@ -207,7 +207,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "set veth with idx {} to bridge with idx {} failed: {}",
+                "Set veth with idx {} to bridge with idx {} failed: {}.",
                 veth_idx, bridge_idx, e
             ))
         })?;
@@ -231,7 +231,7 @@ pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "set veth with idx {} to process with pid {} failed: {}",
+                "Set veth with idx {} to process with pid {} failed: {}.",
                 veth_idx, pid, e
             ))
         })?;
@@ -247,7 +247,7 @@ pub async fn setup_veth_peer(
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    info!("setup veth peer with ip: {}/{}", ns_ip, subnet);
+    info!("Setup veth peer with ip: {}/{}.", ns_ip, subnet);
 
     // set veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
@@ -274,7 +274,7 @@ pub async fn setup_veth_peer(
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "set veth with idx {} to up failed: {}",
+                "Set veth with idx {} to up failed: {}.",
                 veth_idx, e
             ))
         })?;
@@ -287,7 +287,7 @@ pub async fn setup_veth_peer(
         .execute()
         .try_next()
         .await?
-        .ok_or_else(|| NetworkError::OperationError("failed to get lo index".to_string()))?
+        .ok_or_else(|| NetworkError::OperationError("Failed to get lo index.".to_string()))?
         .header
         .index;
 
@@ -298,7 +298,7 @@ pub async fn setup_veth_peer(
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "set lo interface with idx {} to up failed: {}",
+                "Set lo interface with idx {} to up failed: {}.",
                 lo_idx, e
             ))
         })?;
@@ -312,7 +312,7 @@ pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
 
     handle.link().del(bridge_idx).execute().await.map_err(|e| {
         NetworkError::OperationError(format!(
-            "delet bridge with idx {} failed: {}",
+            "Delet bridge with idx {} failed: {}.",
             bridge_idx, e
         ))
     })?;
