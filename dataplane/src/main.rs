@@ -1,5 +1,9 @@
 /// The main entry point for the Nextmini dataplane node.
 ///
+/// Supports two deployment modes:
+/// Single-node deployment (n_nodes = 1): Run a traditional single dataplane node with docker containerization.
+/// Namespace deployment (n_nodes > 1): Spawn multiple isolated network namespaces with linux namespaces.
+///
 /// We use TaskTracker in Tokio (https://tokio.rs/tokio/topics/shutdown) to manage graceful
 /// shutdowns, similar to fork/join data parallelism or a structured concurrency model.
 ///
@@ -17,15 +21,37 @@ use tracing::info;
 
 use node::conductor::Conductor;
 use node::config::LocalConfig;
+use node::namespace::manager::NamespaceManager;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
-    // creates a TaskTracker to manage graceful shutdowns
+    let config = LocalConfig::new();
+
+    // checks if we should run in namespace deployment
+    if config.n_nodes > 1 {
+        info!("Starting in namespace deployment with {} nodes.", config.n_nodes);
+        deploy_namespace(config).await;
+    } else {
+        info!("Starting in single node deployment.");
+        deploy_single_node().await;
+    }
+
+    Ok(())
+}
+
+// Spawn multiple isolated network namespaces.
+async fn deploy_namespace(config: LocalConfig) {
+    let mut manager = NamespaceManager::new(config);
+    manager.spawn_all_nodes().await;
+}
+
+// Run a single dataplane node.
+async fn deploy_single_node() {
     let tracker = TaskTracker::new();
 
-    // Spawn the Conductor task with the receiver
+    // spawns the Conductor task with the receiver
     tracker.spawn(async move {
         let conductor = Conductor::new().await;
         conductor.run().await;
@@ -42,6 +68,4 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tracker.wait().await;
         },
     }
-
-    Ok(())
 }
