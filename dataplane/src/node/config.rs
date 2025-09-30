@@ -316,16 +316,16 @@ fn default_netmask() -> Ipv4Addr {
 }
 
 impl LocalConfig {
-    /// Reads only n_nodes from config to determine deployment mode (lightweight)
+    // reads only n_nodes from config to determine deployment mode (lightweight)
     pub fn read_n_nodes() -> usize {
         let args = Args::parse();
 
-        // Check command line argument first (has priority)
+        // checks command line argument first (has priority)
         if let Some(n) = args.args.n_nodes {
             return n;
         }
 
-        // Try to read from config file
+        // tries to read from config file
         if let Ok(content) = std::fs::read_to_string(&args.config_path) {
             if let Ok(opts) = toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
                 if let Some(n) = opts.n_nodes {
@@ -334,7 +334,7 @@ impl LocalConfig {
             }
         }
 
-        // Default to 1 (single node mode)
+        // default to 1 (single node mode)
         1
     }
 

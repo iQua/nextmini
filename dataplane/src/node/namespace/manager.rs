@@ -200,7 +200,7 @@ fn child_process(
         let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
 
         // Start the conductor
-        let conductor = Conductor::new_for_namespace(config).await;
+        let conductor = Conductor::new(config).await;
         conductor.run().await;
 
         Ok::<(), Box<dyn std::error::Error>>(())

@@ -35,10 +35,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         info!("Starting in namespace deployment with {} nodes.", n_nodes);
         // loads full config for namespace mode
         let config = LocalConfig::new();
-        deploy_namespace(config);   
+
+        deploy_namespace(config);
     } else {
         info!("Starting in single node deployment.");
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime.");
+
         rt.block_on(deploy_single_node());
     }
 
@@ -48,6 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 // Spawn multiple isolated network namespaces.
 fn deploy_namespace(config: LocalConfig) {
     let mut manager = NamespaceManager::new(config);
+
     manager.spawn_all_nodes();
 }
 
@@ -57,7 +60,9 @@ async fn deploy_single_node() {
 
     // spawns the Conductor task with the receiver
     tracker.spawn(async move {
-        let conductor = Conductor::new().await;
+        let config = LocalConfig::new();
+        let conductor = Conductor::new(config).await;
+
         conductor.run().await;
     });
 
