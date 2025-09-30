@@ -120,6 +120,8 @@ impl NamespaceManager {
 
         *bridge_idx = Some(bid);
 
+        // prepares child process closure
+        let child_sleep_multiplier_ms = self.config.child_sleep_multiplier_ms;
         let subnet = self.config.subnet;
         let controller_addr = controller_addr.to_string();
         let cb = Box::new(move || {
