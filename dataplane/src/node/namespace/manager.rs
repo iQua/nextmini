@@ -42,7 +42,7 @@ impl NamespaceManager {
     // spawns all namespaces and waits for shutdown
     pub fn spawn_all_nodes(&mut self) {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        // Controller runs on host network, accessible via bridge IP
+        // Directly sets the controller address to the bridge IP without using local controller_addr(127.0.0.1:3000).
         let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
         info!("Controller address set to {}.", controller_addr);
 
@@ -63,7 +63,7 @@ impl NamespaceManager {
             let ns_ip = ns_ips[idx].clone();
             let veth2_idx;
 
-            // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
+            // prepares bridge + a fresh veth pair (bridge creation is idempotent)
             match rt.block_on(prepare_net(
                 self.config.bridge_name.clone(),
                 &self.config.bridge_ip,
