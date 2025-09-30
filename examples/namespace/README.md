@@ -39,7 +39,7 @@ docker compose build; docker compose up
 
 Build the project in a new terminal:
 
-** Use command Line**
+**Use command Line**
 
 ```bash
 cd ~/nextmini
@@ -47,7 +47,7 @@ cargo build --release
 sudo ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-** Use configuration file**
+**Use configuration file**
 
 Add for example, `n_nodes = 5` into `examples/namespace/config.toml` also works.
 
