@@ -17,7 +17,7 @@ toml = "0.9"
 futures = "0.3"
 network-interface = "2"
 tokio = { version = "1", features = ["full", "rt"] }
-tokio-tungstenite = "0.27"
+tokio-tungstenite = "0.28"
 tokio-util = { version = "0.7", features = ["rt"] }
 tun-rs = { version = "2", features = ["async"] }
 url = "2"
@@ -38,3 +38,5 @@ ahash = "0.8"
 flume = "0.11"
 smoltcp = "0.12"
 tokio-splice = "0.2"
+nix = { version = "0.30", features = ["sched", "hostname"] }
+rtnetlink = "0.18"

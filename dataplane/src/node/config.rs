@@ -45,7 +45,7 @@ pub enum Feature {
 #[command(author, version, about)]
 pub struct Args {
     /// The address of the controller to connect to (e.g., 128.100.100.128).
-    pub controller_addr: String,
+    pub controller_addr: Option<String>,
 
     /// The path to the configuration file.
     #[arg(short, long, default_value = "config.toml")]
@@ -59,10 +59,17 @@ pub struct Args {
 /// Configuration options for the dataplane, read from a configuration file or from the command-line.
 #[derive(ClapSerde, Debug, Clone, Deserialize)]
 pub struct LocalConfig {
-    /// The server address
+    /// The server address.
     #[default("".to_string())]
-    #[arg(skip)]
+    #[arg(long)]
     pub controller_addr: String,
+
+    /// The path of the configuration file.
+    /// This is used to remember which config file produced this configuration so namespace children can reuse it.
+    #[default("".to_string())]
+    #[serde(skip)]
+    #[arg(skip)]
+    pub config_path: String,
 
     /// The name of the private network this node might share with other nodes. This is used to identify
     /// nodes on the same network. Not specifying this field will cause the node to connect to other nodes
@@ -100,22 +107,16 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-    /// This is not used in metrics collector
-    /// The interval at which metrics are collected and sent to the controller
+    /// This is not used in metrics collector.
+    /// The interval at which metrics are collected and sent to the controller.
     #[default(5)]
     #[arg(long)]
     pub metrics_collection_interval: u64,
 
-    // The total number of dataplane nodes deployed.
-    // This is used with the controller_service_rate to randomise connection start-up delays to avoid overwhelming the controller.
+    /// The total number of dataplane nodes deployed.
     #[default(1)]
     #[arg(long)]
     pub n_nodes: usize,
-
-    /// The number of requests that the controller is expected to handle per second.
-    #[default(5)]
-    #[arg(long)]
-    pub controller_service_rate: usize,
 
     /// The number of local TUN queues to use to send and receive packets.
     #[default(1)]
@@ -128,7 +129,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub num_packet_processors: usize,
 
-    /// The capacity for all channels between actors
+    /// The capacity for all channels between actors.
     #[default(1000)]
     #[arg(long)]
     pub channel_capacity: usize,
@@ -143,7 +144,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_addr: String,
 
-    /// The name of the local TUN interface
+    /// The name of the local TUN interface.
     #[default("utun".to_string())]
     #[arg(long)]
     pub tun_interface_name: String,
@@ -164,77 +165,77 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub quic_congestion_control: CongestionControl,
 
-    // The local network address
+    /// The local network address.
     #[default(default_local_address())]
     #[arg(skip)]
     pub local_address: Ipv4Addr,
 
-    // The tun virtual base network address from the controller.
+    /// The tun virtual base network address from the controller.
     #[default(default_virtual_base_addr())]
     #[arg(skip)]
     pub virtual_base_addr: Ipv4Addr,
 
-    // The user-space network address.
+    /// The user-space network address.
     #[default(default_user_space_address())]
     #[arg(skip)]
     pub user_space_address: Ipv4Addr,
 
-    // The user-space base network address.
+    /// The user-space base network address.
     #[default(default_user_space_base_addr())]
     #[arg(skip)]
     pub user_space_base_addr: Ipv4Addr,
 
-    // The external network address.
+    /// The external network address.
     #[default(default_external_base_address())]
     #[arg(skip)]
     pub external_base_address: Ipv4Addr,
 
-    // The external base network address.
+    /// The external base network address.
     #[default(default_external_base_addr())]
     #[arg(skip)]
     pub external_base_addr: Ipv4Addr,
 
-    // The local network mask
+    /// The local network mask.
     #[default(default_netmask())]
     #[arg(skip)]
     pub local_netmask: Ipv4Addr,
 
-    // The transport protocol: TCP or QUIC
+    /// The transport protocol: TCP or QUIC.
     #[default(Protocol::Tcp)]
     #[arg(long, value_enum)]
     pub protocol: Protocol,
 
-    // The scheduling discipline
+    /// The scheduling discipline.
     #[default(SchedulingDiscipline::Fifo)]
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 
-    // The capacity of each scheduler queue
+    /// The capacity of each scheduler queue.
     #[default(1000)]
     #[arg(long)]
     pub queue_capacity: usize,
 
-    // The drop strategy for the scheduler
+    /// The drop strategy for the scheduler.
     #[default(DropStrategy::TailDrop)]
     #[arg(long, value_enum)]
     pub scheduler_drop_strategy: DropStrategy,
 
-    // The processing mode for processing packets
+    /// The processing mode for processing packets.
     #[default(Feature::Sequential)]
     #[arg(long, value_enum)]
     pub feature: Feature,
 
-    // The operating mode
+    /// The operating mode.
     #[default(OperatingMode::Normal)]
     #[arg(skip)]
     pub operating_mode: OperatingMode,
 
-    // Reorder tolerance for the multipath mode
+    /// Reorder tolerance for the multipath mode.
     #[default(4)]
     #[arg(long)]
     pub reorder_tolerance: usize,
 
-    // The flow config received from controller
+    /// The flow config received from controller.
     #[default(vec![Flow {
         controller_id: None,
         src_node_id: 0,
@@ -248,15 +249,30 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub flow: Vec<Flow>,
 
-    // The user space client port automatically assigned by dataplane.
+    /// The user space client port automatically assigned by dataplane.
     #[default(45535)]
     #[arg(long)]
     pub user_space_client_port: u16,
 
-    // The user space server port automatically assigned by dataplane.
+    /// The user space server port automatically assigned by dataplane.
     #[default(8888)]
     #[arg(long)]
     pub user_space_server_port: u16,
+
+    /// The linux bridge name for namespace isolation.
+    #[default("isobr0".to_string())]
+    #[arg(skip)]
+    pub bridge_name: String,
+
+    /// The IPv4 address to assign to the bridge.
+    #[default("172.16.8.1".to_string())]
+    #[arg(skip)]
+    pub bridge_ip: String,
+
+    /// The subnet mask length (CIDR) associated with `bridge_ip`.
+    #[default(16)]
+    #[arg(skip)]
+    pub subnet: u8,
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -333,7 +349,13 @@ impl LocalConfig {
             }
         };
 
-        cfgs.controller_addr = args.controller_addr;
+        // overrides controller_addr from command line if provided
+        if let Some(addr) = args.controller_addr {
+            cfgs.controller_addr = addr;
+        }
+
+        // remembers which config file produced this configuration so namespace children can reuse it
+        cfgs.config_path = args.config_path.clone();
 
         // sets the private ipv4 address of the network interface for the private network
         // Defined by RFC 1918, private IP addresses fall within the following ranges:
@@ -386,7 +408,7 @@ impl LocalConfig {
                         cfgs.node_id, computed_node_id, cfgs.private_network_addr
                     );
                 }
-            } else {
+            } else if !cfgs.private_network_addr.is_empty() {
                 error!(
                     "Failed to parse private_network_addr as Ipv4Addr: {}.",
                     cfgs.private_network_addr
@@ -515,11 +537,11 @@ impl LocalConfig {
             }
         };
 
-        // manually set set namespace node's ip addresses
+        // manually sets namespace node's ip addresses
         cfgs.private_network_addr = ns_addr.to_string();
         cfgs.public_network_addr = ns_addr.to_string();
 
-        // calculate the node_id
+        // calculates the node_id
         if let Ok(real_ip) = ns_addr.parse::<Ipv4Addr>() {
             let ip = u32::from(real_ip);
             let base = u32::from(cfgs.external_base_addr);
@@ -540,6 +562,8 @@ impl LocalConfig {
         if cfgs.num_packet_processors == 0 {
             cfgs.num_packet_processors = num_cpus::get();
         }
+
+        cfgs.config_path = config_path.to_string();
 
         cfgs
     }

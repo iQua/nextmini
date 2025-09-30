@@ -4,6 +4,7 @@ pub mod connector;
 pub mod controller;
 pub mod flow;
 pub mod local;
+pub mod namespace;
 pub mod network;
 pub mod packet;
 pub mod processor;

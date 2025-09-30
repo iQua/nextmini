@@ -1,19 +1,34 @@
 mod config;
 mod net;
-mod string_helpers;
+
+use std::{net::Ipv4Addr, thread, time};
+
+use nix::sched::*;
+use nix::sys::signal::Signal;
+use rand::{rng, Rng};
+use tokio::time::Duration;
+use tracing::{error, info};
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
 
 use crate::config::Config;
 use crate::net::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer};
-use nix::sched::*;
-use nix::sys::signal::Signal;
-use std::{net::Ipv4Addr, thread, time};
-use tokio::time::Duration;
-use tracing::{error, info};
 
 const STACK_SIZE: usize = 1024 * 1024;
+
+pub fn random_suffix(len: usize) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+                             abcdefghijklmnopqrstuvwxyz\
+                             0123456789";
+    let mut rng = rng();
+    (0..len)
+        .map(|_| {
+            let idx = rng.random_range(0..CHARSET.len());
+            CHARSET[idx] as char
+        })
+        .collect()
+}
 
 fn main() {
     tracing_subscriber::fmt::fmt()
@@ -53,7 +68,7 @@ fn main() {
         }
 
         let ns_ip = ns_ips[idx].clone();
-        let mut veth2_idx = 0;
+        let veth2_idx;
 
         // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
         match rt.block_on(prepare_net(
@@ -148,7 +163,7 @@ fn c_process(
         idx
     );
     // Set the hostname of the new process
-    let ns_hostname = format!("isoserver-{}", string_helpers::random_suffix(5));
+    let ns_hostname = format!("isoserver-{}", random_suffix(5));
     nix::unistd::sethostname(ns_hostname).expect("Failed to set hostname");
 
     // Spawn a new blocking task on the current runtime

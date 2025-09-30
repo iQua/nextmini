@@ -28,29 +28,7 @@ pub struct Conductor {
 }
 
 impl Conductor {
-    pub async fn new() -> Self {
-        let mut config = LocalConfig::new();
-
-        // connects the processors with its downstream local interface writers to send packets out
-        let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
-
-        config = controller_interface.config.clone();
-        let processors = controller_interface.processors.clone();
-
-        let local_interface: LocalInterfaceHandle =
-            LocalInterfaceHandle::new(config.clone(), processors.clone());
-        processors.connect_local_interface(local_interface.clone());
-
-        Conductor {
-            config,
-            local_interface,
-            processors,
-            reporter,
-        }
-    }
-
-    #[allow(unused)]
-    pub async fn new_for_namespace(config: LocalConfig) -> Self {
+    pub async fn new(config: LocalConfig) -> Self {
         // connects the processors with its downstream local interface writers to send packets out
         let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
 

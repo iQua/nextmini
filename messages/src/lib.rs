@@ -5,9 +5,10 @@ use std::net::Ipv4Addr;
 
 mod ip_ser;
 
-/// Used to indicate that an integer value is invalid
+/// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
 
+/// Types of messages used to communicate from the dataplane to the controller.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum DataplaneToController {
@@ -25,6 +26,7 @@ pub enum DataplaneToController {
     },
 }
 
+/// Performance metrics for a particular flow on a link from a local node to remote node.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Metric {
     pub flow_id: [u8; 16],
@@ -112,6 +114,7 @@ pub struct TokenBucketSpec {
     pub bucket_size: usize,
 }
 
+/// Types of messages from the controller to the dataplane.
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 #[serde(tag = "type")]
 pub enum ControllerToDataplane {

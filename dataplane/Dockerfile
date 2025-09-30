@@ -24,12 +24,8 @@ COPY Cargo.toml /var/nextmini/Cargo.toml
 COPY controller /var/nextmini/controller
 COPY messages /var/nextmini/messages
 COPY cert-gen /var/nextmini/cert-gen
-COPY dataplane /var/nextmini/dataplane
-
-# Create a minimal workspace Cargo.toml for Docker build
-RUN echo '[workspace]' > Cargo.toml && \
-  echo 'members = ["messages", "dataplane", "cert-gen"]' >> Cargo.toml && \
-  echo 'resolver = "3"' >> Cargo.toml
+COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
+COPY dataplane/src /var/nextmini/dataplane/src
 
 # Run the certificate generator first from the root directory
 # This will generate the certificate files in /var/nextmini/
