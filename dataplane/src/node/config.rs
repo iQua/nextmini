@@ -273,16 +273,6 @@ pub struct LocalConfig {
     #[default(16)]
     #[arg(skip)]
     pub subnet: u8,
-
-    /// The sleep time in milliseconds between spawning each node in the main loop.
-    #[default(200)]
-    #[arg(skip)]
-    pub main_loop_sleep_ms: u64,
-
-    /// The sleep multiplier in milliseconds for staggered child process connections.
-    #[default(200)]
-    #[arg(skip)]
-    pub child_sleep_multiplier_ms: u64,
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -316,28 +306,6 @@ fn default_netmask() -> Ipv4Addr {
 }
 
 impl LocalConfig {
-    // reads only n_nodes from config to determine deployment mode (lightweight)
-    pub fn read_n_nodes() -> usize {
-        let args = Args::parse();
-
-        // checks command line argument first (has priority)
-        if let Some(n) = args.args.n_nodes {
-            return n;
-        }
-
-        // tries to read from config file
-        if let Ok(content) = std::fs::read_to_string(&args.config_path) {
-            if let Ok(opts) = toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
-                if let Some(n) = opts.n_nodes {
-                    return n;
-                }
-            }
-        }
-
-        // default to 1 (single node mode)
-        1
-    }
-
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);

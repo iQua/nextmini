@@ -26,22 +26,17 @@ use node::namespace::manager::NamespaceManager;
 fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
-    // reads only n_nodes to determine deployment modes
-    let n_nodes = LocalConfig::read_n_nodes();
-    info!("Set n_nodes = {}.", n_nodes);
+    let config = LocalConfig::new();
+    info!("Set n_nodes = {}.", config.n_nodes);
 
     // checks if we should run in namespace deployment
-    if n_nodes > 1 {
-        info!("Starting in namespace deployment with {} nodes.", n_nodes);
-        // loads full config for namespace mode
-        let config = LocalConfig::new();
-
+    if config.n_nodes > 1 {
+        info!("Starting in namespace deployment with {} nodes.", config.n_nodes);
         deploy_namespace(config);
     } else {
         info!("Starting in single node deployment.");
         let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime.");
-
-        rt.block_on(deploy_single_node());
+        rt.block_on(deploy_single_node(config));
     }
 
     Ok(())
@@ -55,14 +50,12 @@ fn deploy_namespace(config: LocalConfig) {
 }
 
 // Run a single dataplane node.
-async fn deploy_single_node() {
+async fn deploy_single_node(config: LocalConfig) {
     let tracker = TaskTracker::new();
 
     // spawns the Conductor task with the receiver
     tracker.spawn(async move {
-        let config = LocalConfig::new();
         let conductor = Conductor::new(config).await;
-
         conductor.run().await;
     });
 
