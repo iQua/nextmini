@@ -91,8 +91,8 @@ impl NamespaceManager {
             .expect("Invalid bridge IP")
             .into();
 
-        // IP addresses: bridge_ip + 3 to bridge_ip + n_nodes + 2
-        // offsets: 1 for controller, 1 for database, the rest for nodes
+        // IP addresses: bridge_ip + 3 to bridge_ip + n_nodes + 2.
+        // offsets: 1 for controller, 1 for database, the rest for nodes.
         (3..=self.config.n_nodes + 2)
             .map(|offset| Ipv4Addr::from(base + offset as u32).to_string())
             .collect()
