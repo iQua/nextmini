@@ -59,7 +59,7 @@ pub struct Args {
 /// Configuration options for the dataplane, read from a configuration file or from the command-line.
 #[derive(ClapSerde, Debug, Clone, Deserialize)]
 pub struct LocalConfig {
-    /// The server address
+    /// The server address.
     #[default("".to_string())]
     #[arg(skip)]
     pub controller_addr: String,
@@ -122,7 +122,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub num_packet_processors: usize,
 
-    /// The capacity for all channels between actors
+    /// The capacity for all channels between actors.
     #[default(1000)]
     #[arg(long)]
     pub channel_capacity: usize,
@@ -137,7 +137,7 @@ pub struct LocalConfig {
     #[arg(long)]
     pub public_network_addr: String,
 
-    /// The name of the local TUN interface
+    /// The name of the local TUN interface.
     #[default("utun".to_string())]
     #[arg(long)]
     pub tun_interface_name: String,
@@ -158,7 +158,7 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub quic_congestion_control: CongestionControl,
 
-    /// The local network address
+    /// The local network address.
     #[default(default_local_address())]
     #[arg(skip)]
     pub local_address: Ipv4Addr,
@@ -188,47 +188,47 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub external_base_addr: Ipv4Addr,
 
-    /// The local network mask
+    /// The local network mask.
     #[default(default_netmask())]
     #[arg(skip)]
     pub local_netmask: Ipv4Addr,
 
-    /// The transport protocol: TCP or QUIC
+    /// The transport protocol: TCP or QUIC.
     #[default(Protocol::Tcp)]
     #[arg(long, value_enum)]
     pub protocol: Protocol,
 
-    /// The scheduling discipline
+    /// The scheduling discipline.
     #[default(SchedulingDiscipline::Fifo)]
     #[arg(long, value_enum)]
     pub scheduler_type: SchedulingDiscipline,
 
-    /// The capacity of each scheduler queue
+    /// The capacity of each scheduler queue.
     #[default(1000)]
     #[arg(long)]
     pub queue_capacity: usize,
 
-    /// The drop strategy for the scheduler
+    /// The drop strategy for the scheduler.
     #[default(DropStrategy::TailDrop)]
     #[arg(long, value_enum)]
     pub scheduler_drop_strategy: DropStrategy,
 
-    /// The processing mode for processing packets
+    /// The processing mode for processing packets.
     #[default(Feature::Sequential)]
     #[arg(long, value_enum)]
     pub feature: Feature,
 
-    /// The operating mode
+    /// The operating mode.
     #[default(OperatingMode::Normal)]
     #[arg(skip)]
     pub operating_mode: OperatingMode,
 
-    /// Reorder tolerance for the multipath mode
+    /// Reorder tolerance for the multipath mode.
     #[default(4)]
     #[arg(long)]
     pub reorder_tolerance: usize,
 
-    /// The flow config received from controller
+    /// The flow config received from controller.
     #[default(vec![Flow {
         controller_id: None,
         src_node_id: 0,
