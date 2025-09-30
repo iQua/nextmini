@@ -23,28 +23,32 @@ use node::conductor::Conductor;
 use node::config::LocalConfig;
 use node::namespace::manager::NamespaceManager;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
-    let config = LocalConfig::new();
+    // reads only n_nodes to determine deployment modes
+    let n_nodes = LocalConfig::read_n_nodes();
+    info!("Set n_nodes = {}.", n_nodes);
 
     // checks if we should run in namespace deployment
-    if config.n_nodes > 1 {
-        info!("Starting in namespace deployment with {} nodes.", config.n_nodes);
-        deploy_namespace(config).await;
+    if n_nodes > 1 {
+        info!("Starting in namespace deployment with {} nodes.", n_nodes);
+        // loads full config for namespace mode
+        let config = LocalConfig::new();
+        deploy_namespace(config);   
     } else {
         info!("Starting in single node deployment.");
-        deploy_single_node().await;
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime.");
+        rt.block_on(deploy_single_node());
     }
 
     Ok(())
 }
 
 // Spawn multiple isolated network namespaces.
-async fn deploy_namespace(config: LocalConfig) {
+fn deploy_namespace(config: LocalConfig) {
     let mut manager = NamespaceManager::new(config);
-    manager.spawn_all_nodes().await;
+    manager.spawn_all_nodes();
 }
 
 // Run a single dataplane node.
