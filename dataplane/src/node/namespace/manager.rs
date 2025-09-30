@@ -40,11 +40,14 @@ impl NamespaceManager {
     }
 
     // spawns all namespaces and waits for shutdown
-    pub async fn spawn_all_nodes(&mut self) {
+    pub fn spawn_all_nodes(&mut self) {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+
         // Set the controller address to the bridge IP if it's running on the host
         let controller_addr: String = match self.config.controller_addr.as_str() {
-            "127.0.0.1:3000" => format!("ws://{}:3000", self.config.bridge_ip),
-            _ => format!("ws://{}", self.config.controller_addr),
+            "127.0.0.1:3000" | "ws://127.0.0.1:3000" => format!("ws://{}:3000", self.config.bridge_ip),
+            addr if addr.starts_with("ws://") => addr.to_string(),
+            addr => format!("ws://{}", addr),
         };
         info!("Controller address set to {}.", controller_addr);
 
@@ -53,33 +56,81 @@ impl NamespaceManager {
 
         // keeps child stacks alive while children run
         let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
-        let mut bridge_idx: Option<u32> = None;
+        let mut bid = 37;
 
         // spawns each namespace
         let mut idx = 0;
-        while idx < ns_ips.len() {
-            let ns_ip = &ns_ips[idx];
-            
-            match self
-                .spawn_one(idx, ns_ip, &controller_addr, &mut stacks, &mut bridge_idx)
-                .await
-            {
-                Ok(_) => {
-                    info!("Successfully spawned namespace {}.", idx);
-                    idx += 1;  // only increments on success
-                    
-                    // sleeps between node creation to prevent overwhelming the system
-                    thread::sleep(time::Duration::from_millis(self.config.main_loop_sleep_ms));
+        loop {
+            if idx >= ns_ips.len() {
+                break;
+            }
+
+            let ns_ip = ns_ips[idx].clone();
+            let veth2_idx;
+
+            // Prepare bridge + a fresh veth pair (bridge creation is idempotent)
+            match rt.block_on(prepare_net(
+                self.config.bridge_name.clone(),
+                &self.config.bridge_ip,
+                self.config.subnet,
+                idx,
+            )) {
+                Ok((bridge_idx, _veth_idx, veth2_index)) => {
+                    bid = bridge_idx;
+                    veth2_idx = veth2_index;
                 }
                 Err(e) => {
-                    error!("Failed to spawn namespace {}: {}. Retrying...", idx, e);
-                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    error!("Failed to prepare network: {}. Retrying...", e);
+                    continue;
                 }
             }
+
+            // prepare child process with idx for ordered sleep
+            let child_sleep_multiplier_ms = self.config.child_sleep_multiplier_ms;
+            let subnet = self.config.subnet;
+            let controller_addr_clone = controller_addr.clone();
+            let cb = Box::new(|| {
+                child_process(
+                    ns_ip.clone(),
+                    veth2_idx,
+                    controller_addr_clone.clone(),
+                    idx,
+                    subnet,
+                    child_sleep_multiplier_ms,
+                )
+            });
+
+            let mut tmp_stack: Box<[u8; STACK_SIZE]> = Box::new([0; STACK_SIZE]);
+            let child_pid = unsafe {
+                clone(
+                    cb,
+                    tmp_stack.as_mut(),
+                    CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
+                    Some(Signal::SIGCHLD as i32),
+                )
+            }
+            .expect("Clone failed");
+
+            // Keep stack memory alive
+            stacks.push(tmp_stack);
+
+            info!("Spawned child pid: {}", child_pid);
+
+            // Move veth peer into child's netns
+            if let Err(e) =
+                rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
+            {
+                error!("Failed to join veth to namespace: {}. Retrying...", e);
+                continue;
+            }
+
+            // Sleep between node creation to prevent overwhelming the system
+            thread::sleep(time::Duration::from_millis(self.config.main_loop_sleep_ms));
+            idx += 1;
         }
 
         // waits for shutdown signal
-        self.wait_for_shutdown(bridge_idx).await;
+        rt.block_on(self.wait_for_shutdown(Some(bid)));
     }
 
     // computes the namespace IP addresses
@@ -96,65 +147,6 @@ impl NamespaceManager {
         (3..=self.config.n_nodes + 2)
             .map(|offset| Ipv4Addr::from(base + offset as u32).to_string())
             .collect()
-    }
-
-    // spawns one namespace
-    async fn spawn_one(
-        &mut self,
-        idx: usize,
-        ns_ip: &str,
-        controller_addr: &str,
-        stacks: &mut Vec<Box<[u8; STACK_SIZE]>>,
-        bridge_idx: &mut Option<u32>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let ns_ip = ns_ip.to_string();
-
-        // prepares bridge + a fresh veth pair
-        let (bid, _veth_idx, veth2_idx) = prepare_net(
-            self.config.bridge_name.clone(),
-            &self.config.bridge_ip,
-            self.config.subnet,
-            idx,
-        )
-        .await?;
-
-        *bridge_idx = Some(bid);
-
-        // prepares child process closure
-        let child_sleep_multiplier_ms = self.config.child_sleep_multiplier_ms;
-        let subnet = self.config.subnet;
-        let controller_addr = controller_addr.to_string();
-        let cb = Box::new(|| {
-            child_process(
-                ns_ip.clone(),
-                veth2_idx,
-                controller_addr.clone(),
-                idx,
-                subnet,
-                child_sleep_multiplier_ms,
-            )
-        });
-
-        // clones the child process into a new namespace
-        let mut stack: Box<[u8; STACK_SIZE]> = Box::new([0; STACK_SIZE]);
-        let child_pid = unsafe {
-            clone(
-                cb,
-                stack.as_mut(),
-                CloneFlags::CLONE_NEWNET | CloneFlags::CLONE_NEWUTS,
-                Some(Signal::SIGCHLD as i32),
-            )
-        }
-        .expect("Clone failed.");
-
-        // keeps stack memory alive
-        stacks.push(stack);
-        info!("Spawned child pid: {}.", child_pid);
-
-        // moves veth peer into child's namespace
-        join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await?;
-
-        Ok(())
     }
 
     // waits for Ctrl+C shutdown signal
