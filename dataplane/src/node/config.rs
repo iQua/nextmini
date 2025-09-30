@@ -254,17 +254,17 @@ pub struct LocalConfig {
 
     /// The linux bridge name for namespace isolation.
     #[default("isobr0".to_string())]
-    #[arg(long)]
+    #[arg(skip)]
     pub bridge_name: String,
 
     /// The IPv4 address to assign to the bridge.
-    #[default("172.18.0.1".to_string())]
-    #[arg(long)]
+    #[default("172.16.8.1".to_string())]
+    #[arg(skip)]
     pub bridge_ip: String,
 
     /// The subnet mask length (CIDR) associated with `bridge_ip`.
     #[default(16)]
-    #[arg(long)]
+    #[arg(skip)]
     pub subnet: u8,
 
     /// The sleep time in milliseconds between spawning each node in the main loop.
