@@ -70,7 +70,7 @@ pub async fn prepare_net(
 }
 
 async fn get_bridge_idx(handle: &Handle, bridge_name: String) -> Result<u32, NetworkError> {
-    // retrieve bridge index
+    // retrieves bridge index
     let bridge_idx = handle
         .link()
         .get()
@@ -114,7 +114,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
         .header
         .index;
 
-    // add ip address to bridge
+    // adds ip address to bridge
     let bridge_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(bridge_ip)?);
     AddressHandle::new(handle.clone())
         .add(bridge_idx, bridge_addr, subnet)
@@ -124,7 +124,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
             NetworkError::OperationError(format!("Add IP address to bridge failed: {}.", e))
         })?;
 
-    // set bridge up
+    // sets bridge up
     handle
         .link()
         .set(LinkUnspec::new_with_index(bridge_idx).up().build())
@@ -182,7 +182,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .header
         .index;
 
-    // set master veth up
+    // sets master veth up
     handle
         .link()
         .set(LinkUnspec::new_with_index(veth_idx).up().build())
@@ -195,7 +195,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
             ))
         })?;
 
-    // set master veth to bridge
+    // sets master veth to bridge
     handle
         .link()
         .set(
@@ -219,7 +219,7 @@ pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // set veth to the process network namespace
+    // sets veth to the process network namespace
     handle
         .link()
         .set(
@@ -249,10 +249,10 @@ pub async fn setup_veth_peer(
 
     info!("Setup veth peer with ip: {}/{}.", ns_ip, subnet);
 
-    // set veth peer address
+    // sets veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
 
-    // Keep retrying until successful
+    // keeps retrying until successful
     loop {
         match AddressHandle::new(handle.clone())
             .add(veth_idx, veth_2_addr, subnet)
@@ -279,7 +279,7 @@ pub async fn setup_veth_peer(
             ))
         })?;
 
-    // set lo interface to up
+    // sets lo interface to up
     let lo_idx = handle
         .link()
         .get()
