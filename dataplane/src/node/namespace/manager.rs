@@ -54,13 +54,7 @@ impl NamespaceManager {
         let mut bridge_idx: Option<u32> = None;
 
         // spawns each namespace
-        let mut idx = 0;
-        loop {
-            if idx >= ns_ips.len() {
-                break;
-            }
-
-            let ns_ip = ns_ips[idx].clone();
+        for (idx, ns_ip) in ns_ips.iter().enumerate() {
             let veth2_idx;
 
             // prepares bridge + a fresh veth pair (bridge creation is idempotent)
@@ -121,7 +115,6 @@ impl NamespaceManager {
 
             // Sleep between node creation to prevent overwhelming the system
             thread::sleep(time::Duration::from_millis(200));
-            idx += 1;
         }
 
         // waits for shutdown signal
@@ -155,7 +148,7 @@ impl NamespaceManager {
             }
         }
 
-        // Clean up the bridge
+        // cleans up the bridge
         if let Some(bridge_idx) = bridge_idx {
             if let Err(e) = delete_namespace(bridge_idx).await {
                 error!("Failed to delete namespace: {}", e);
@@ -179,24 +172,24 @@ fn child_process(
         idx
     );
 
-    // Set hostname for this namespace
+    // sets hostname for this namespace
     let ns_hostname = format!("nextmini-{}", random_suffix(5));
     unistd::sethostname(&ns_hostname).expect("Failed to set hostname");
 
-    // Create runtime and execute
+    // creates runtime and executes
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
-        // Setup veth interface
+        // sets up veth interface
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
-        // Staggered connection: each node waits longer to prevent controller overload
+        // staggered connection: each node waits longer to prevent controller overload
         let sleep_ms = (idx as u64) * 200;
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
-        // Load config using new_for_namespace (handles all namespace-specific settings)
+        // loads config using new_for_namespace (handles all namespace-specific settings)
         let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
 
-        // Start the conductor
+        // starts the conductor
         let conductor = Conductor::new(config).await;
         conductor.run().await;
 
