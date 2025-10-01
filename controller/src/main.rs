@@ -130,10 +130,30 @@ async fn handle_connection(
                         // assigns a node ID as the dataplane node requests
                         let node_id = maybe_node_id.unwrap();
 
-                        // checks if the node ID is already used
-                        if node_ws.read().await.contains_key(&node_id) {
-                            error!("Node ID {} is already used.", node_id);
-                            continue;
+                        // checks if the node ID is already used and registers immediately to prevent TOCTOU race
+                        let connected_node_count = {
+                            let mut node_ws_guard = node_ws.write().await;
+                            if node_ws_guard.contains_key(&node_id) {
+                                error!("Node ID {} is already used.", node_id);
+                                continue;
+                            }
+                            // Insert immediately after check to reserve this node_id
+                            node_ws_guard.insert(node_id, write_arc.clone());
+                            node_ws_guard.len()
+                        };
+
+                        // Helper macro to cleanup node_ws on error
+                        macro_rules! cleanup_and_continue {
+                            ($msg:expr) => {{
+                                error!($msg);
+                                node_ws.write().await.remove(&node_id);
+                                continue;
+                            }};
+                            ($fmt:expr, $($arg:tt)*) => {{
+                                error!($fmt, $($arg)*);
+                                node_ws.write().await.remove(&node_id);
+                                continue;
+                            }};
                         }
 
                         // checks if the node ID is correct
@@ -168,8 +188,7 @@ async fn handle_connection(
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
                             Err(e) => {
-                                error!("Failed to insert node into database: {}", e);
-                                continue;
+                                cleanup_and_continue!("Failed to insert node into database: {}", e);
                             }
                         }
 
@@ -201,16 +220,11 @@ async fn handle_connection(
                         {
                             Ok(_) => info!("Sent StartUp response to node {}", node_id),
                             Err(e) => {
-                                error!("Failed to send StartUp response: {}", e);
-                                continue;
+                                cleanup_and_continue!("Failed to send StartUp response: {}", e);
                             }
                         }
 
-                        // registers the WebSocket connection and associate it with the new node ID
-                        {
-                            let mut node_ws_guard = node_ws.write().await;
-                            node_ws_guard.insert(node_id, write_arc.clone());
-                        }
+                        // Node already registered in node_ws above to prevent TOCTOU race
 
                         current_node_id = Some(node_id);
 
@@ -223,8 +237,7 @@ async fn handle_connection(
                         {
                             Ok(nodes) => nodes,
                             Err(e) => {
-                                error!("Failed to fetch nodes: {}", e);
-                                continue;
+                                cleanup_and_continue!("Failed to fetch nodes: {}", e);
                             }
                         };
                         // Get topology edges
@@ -315,8 +328,7 @@ async fn handle_connection(
                                 })
                                 .collect::<Vec<_>>(),
                             Err(e) => {
-                                error!("Failed to fetch routes: {}", e);
-                                continue;
+                                cleanup_and_continue!("Failed to fetch routes: {}", e);
                             }
                         };
 
@@ -340,7 +352,10 @@ async fn handle_connection(
                         }
 
                         // As a new node connects, checks if all the expected nodes are now connected
-                        let _ = new_node_connected_sender.send(NodeConnectedEvent { node_id });
+                        let _ = new_node_connected_sender.send(NodeConnectedEvent {
+                            node_id,
+                            connected_node_count,
+                        });
                     }
 
                     DataplaneToController::Metrics { metrics } => {

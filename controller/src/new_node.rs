@@ -22,6 +22,7 @@ use crate::utils::build_flows_for_node;
 #[derive(Debug, Clone)]
 pub struct NodeConnectedEvent {
     pub node_id: usize,
+    pub connected_node_count: usize,
 }
 
 /// A background task that checks if all the expected nodes have connected, and performs additional
@@ -42,14 +43,12 @@ pub async fn new_node_connected(
 
         // sends flows and link rates when all nodes are connected
         if let Some(expected_node_count) = config.topology.compute_node_count() {
-            let connected_node_count = node_ws.read().await.len();
-
             if start_time.is_none() {
                 start_time = Some(Instant::now());
                 info!("The first node has connected. Starting the timer.");
             }
 
-            if connected_node_count == expected_node_count {
+            if event.connected_node_count == expected_node_count {
                 all_nodes_handled = true;
 
                 // waits for all links to be established
@@ -79,7 +78,7 @@ pub async fn new_node_connected(
             } else {
                 info!(
                     "A new node with ID {} has connected. There are {} nodes already connected, out of a total of {} expected.",
-                    event.node_id, connected_node_count, expected_node_count
+                    event.node_id, event.connected_node_count, expected_node_count
                 );
             }
         }
