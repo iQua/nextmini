@@ -161,7 +161,7 @@ To prevent overwhelming the controller and database when spawning a large number
 Located in `dataplane/src/node/namespace/manager.rs`:
 
 ```rust
-// Sleep between node creation to prevent overwhelming the system.
+// sleeps between node creation to prevent overwhelming the system.
 thread::sleep(time::Duration::from_millis(200));
 ```
 

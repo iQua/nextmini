@@ -113,7 +113,7 @@ impl NamespaceManager {
                 continue;
             }
 
-            // Sleep between node creation to prevent overwhelming the system
+            // sleeps between node creation to prevent overwhelming the system
             thread::sleep(time::Duration::from_millis(200));
         }
 
