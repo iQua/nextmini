@@ -26,7 +26,7 @@ To change the number of nodes, you need to update the `n_nodes` field in three c
 - Change the `n_nodes` in controller-config.toml. As before, controller needs the correct configuration.
 
 
-### Step 2: Start Controller and Database
+### Step 2: Start Controller and Database Engine
 
 Start the controller and database services:
 
@@ -35,11 +35,11 @@ cd nextmini/examples/namespace
 docker compose build; docker compose up
 ```
 
-### Step 3: Build the Project
+### Step 3: Run the Project
 
-Build the project in a new terminal:
+Build and run the project using one of the following methods:
 
-**Use command Line**
+**Method 1: Command-line arguments**
 
 ```bash
 cd ~/nextmini
@@ -47,20 +47,23 @@ cargo build --release
 sudo ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-**Use configuration file**
+**Method 2: Configuration file**
 
-Add for example, `n_nodes = 5` into `examples/namespace/config.toml` also works.
+Add the parameter directly to `examples/namespace/config.toml`:
+```toml
+n_nodes = 5
+```
 
-After adding it, use:
-
+Then run:
 ```bash
 cd ~/nextmini
 cargo build --release
 sudo ./target/release/nextmini --config-path examples/namespace/config.toml
 ```
 
-INFO level log can be seen by using:
+**Enable INFO-level logging**
 
+To see detailed logs, set the `RUST_LOG` environment variable:
 ```bash
 cd ~/nextmini
 cargo build --release
