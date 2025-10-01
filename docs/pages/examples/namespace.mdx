@@ -37,11 +37,17 @@ docker compose build; docker compose up
 
 ### Step 4: Running the project
 
-To build and run this example with a specific number of nodes in a virtual or physical machine, you may use command-line arguments to specify the number of nodes:
+To build the dataplane that allows super-user execution (required for this example), use the following commands that builds the binary `nextmini` and installs it in `/usr/local/bin`:
 
 ```bash
 cd ~/nextmini
-cargo install --path dataplane
+sudo env "PATH=$HOME/.cargo/bin:$PATH" rustup default stable
+sudo env "PATH=$HOME/.cargo/bin:$PATH" cargo install --path dataplane --root /usr/local
+```
+
+To run this example with a specific number of nodes in a virtual or physical machine, you may use command-line arguments to specify the number of nodes:
+
+```
 sudo nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
