@@ -4,7 +4,7 @@ This example demonstrates and tests the startup time and memory usage when spawn
 
 ## How to Run
 
-### Step 0: Increase ARP Table Limits
+### Step 1: Increasing the ARP Table Limits
 
 These commands increase the Linux kernel's ARP (Address Resolution Protocol) neighbor table thresholds to handle a large number of network devices:
 
@@ -14,32 +14,30 @@ sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
 sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
 ```
 
-**ARP Threshold Explanations:**
-- `gc_thresh1` **(2048)**: **Soft minimum threshold** - The minimum number of entries to maintain in the ARP table.
-- `gc_thresh2` **(4096)**: **Soft maximum threshold** - When the ARP table reaches this size, the kernel becomes more aggressive about garbage collection and starts removing stale entries.
-- `gc_thresh3` **(8192)**: **Hard maximum threshold** - The absolute maximum number of ARP entries allowed.
+where:
 
-### Step 1: Configure the Number of Nodes
+- `gc_thresh1` **(2048)**: _Soft minimum threshold_ — The minimum number of entries to maintain in the ARP table.
 
-To change the number of nodes, you need to update the `n_nodes` field in three configuration files:
+- `gc_thresh2` **(4096)**: _Soft maximum threshold_ — When the ARP table reaches this size, the kernel becomes more aggressive about garbage collection and starts removing stale entries.
 
-- Change the `n_nodes` in controller-config.toml. As before, controller needs the correct configuration.
+- `gc_thresh3` **(8192)**: _Hard maximum threshold_ — The absolute maximum number of ARP entries allowed.
 
+### Step 2: Configuring the number of nodes in the controller
 
-### Step 2: Start Controller and Database Engine
+To change the number of nodes, you need to update the `n_nodes` field in the controller's configuration file, `controller-config.toml`, or specify the network topology to make sure that the number of nodes coincides with the configuration in the data plane.
 
-Start the controller and database services:
+### Step 3: Starting the controller and database engine
+
+To start the controller and database engine:
 
 ```bash
 cd nextmini/examples/namespace
 docker compose build; docker compose up
 ```
 
-### Step 3: Run the Project
+### Step 4: Running the project
 
-Build and run the project using one of the following methods:
-
-**Method 1: Command-line arguments**
+To build and run this example with a specific number of nodes in a virtual or physical machine, you may use command-line arguments to specify the number of nodes:
 
 ```bash
 cd ~/nextmini
@@ -47,12 +45,13 @@ cargo build --release
 sudo ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-**Method 2: Configuration file**
+Alternatively, specify the number of nodes in the configuration file, such as `examples/namespace/config.toml`:
 
-Add the parameter directly to `examples/namespace/config.toml`:
 ```toml
 n_nodes = 5
 ```
+
+Then run:
 
 Then run:
 ```bash
@@ -61,16 +60,15 @@ cargo build --release
 sudo ./target/release/nextmini --config-path examples/namespace/config.toml
 ```
 
-**Enable INFO-level logging**
+To see detailed logs, set the `RUST_LOG` environment variable to `info`:
 
-To see detailed logs, set the `RUST_LOG` environment variable:
 ```bash
 cd ~/nextmini
 cargo build --release
 sudo RUST_LOG=info ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-### Step 4: Observe the Results
+### Step 5: Observing the results
 
 You should see output similar to the following in the controller terminal:
 
@@ -86,7 +84,7 @@ Monitor memory usage in a new terminal:
 free -h
 ```
 
-### Step 5: Cleanup
+### Step 6: Cleaning up
 
 To clean up the environment:
 
