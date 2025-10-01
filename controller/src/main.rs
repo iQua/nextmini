@@ -375,31 +375,10 @@ async fn handle_connection(
                         }
 
                         // As a new node connects, checks if all the expected nodes are now connected
-                        // Capture the count right before sending to reflect actual current state
                         let connected_node_count = node_ws.read().await.len();
 
-                        // Log if there's a mismatch between node_id and count (for debugging)
-                        if node_id + 1 != connected_node_count {
-                            let node_ids: Vec<usize> = {
-                                let guard = node_ws.read().await;
-                                let mut ids: Vec<usize> = guard.keys().copied().collect();
-                                ids.sort();
-                                ids
-                            };
-                            let min_id = node_ids.first().copied().unwrap_or(0);
-                            let max_id = node_ids.last().copied().unwrap_or(0);
-                            warn!(
-                                "MISMATCH: Node {} connected, but there are {} nodes in node_ws. Expected {} nodes if IDs are sequential from 0. Current ID range: {}-{}",
-                                node_id,
-                                connected_node_count,
-                                node_id + 1,
-                                min_id,
-                                max_id
-                            );
-                        }
-
                         info!(
-                            "Node {} setup completed successfully. Sending NodeConnectedEvent with count {}",
+                            "Node {} setup completed successfully. The total number of connected nodes is {}.",
                             node_id, connected_node_count
                         );
 
