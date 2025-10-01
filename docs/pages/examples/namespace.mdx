@@ -102,7 +102,7 @@ To clean up the environment:
 sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'; echo "Cleaned up veths successfully"
 ```
 
-3. Verify cleanup was successful:
+3. To verify that the clean-up process was completed successfully, confirm that the following command would print `0`:
 
 ```bash
 ip link show | grep veth | wc -l
@@ -110,7 +110,7 @@ ip link show | grep veth | wc -l
 
 ## Testing Configuration
 
-### Entering namespace
+### Entering the namespace
 
 To enter a node's network namespace, you need to target a **child process**:
 
@@ -125,23 +125,23 @@ sudo nsenter -t <child_pid> -n bash  # uses any child PID from pstree
 ip addr show
 ```
 
-### Environment Requirements
+### Launching a virtual machine
 
-This namespace example can be tested with Arbutus `c16-180-576` configuration.
-
-As shown in this figure, `c16-180-576` is the name of `Flavor` in Arbutus. `Flavors` manage the sizing for the compute, memory and storage capacity of the instance.
+This example can be tested with the `c16-180-576` configuration in the Arbutus cloud (a part of the Digital Research Alliance of Canada). As shown in this figure, `c16-180-576` is the name of `Flavor` in the Arbutus cloud, which manage the sizes for the compute, memory and storage capacity of the instance.
 
 ![Arbutus c16-180-576 Flavor Configuration](/images/examples/namespace/arbutus-flavor.png)
 
-**Quick Start:** For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
+For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
 
-### Simplified Testing
+### Testing the startup time and memory consumption
 
-For testing pure startup speed and memory usage:
+To test the total amount of time for starting up all the nodes and the memory consumption afterwards:
+
 - Configure the desired `n_nodes` value with ring preset topology
+
 - Remove the `[routing]` section from configuration files (no persistent TCP connections and no routes needed)
 
-The following lines could be used in `/nextmini/examples/namespace/controller-config.toml` for test:
+The following lines could be used in `examples/namespace/controller-config.toml` for testing purposes:
 
 ```toml
 protocol = "tcp"
@@ -158,11 +158,11 @@ database = "nextmini"
 port = "5432"
 ```
 
-### Connection Staggering
+### Connection staggering
 
-To prevent overwhelming the controller and database when spawning a large number of nodes, Nextmini implements a connection staggering:
+To prevent overwhelming the controller and the PostgreSQL database when spawning a large number of nodes, Nextmini supports connection staggering:
 
-#### Network Interface Creation Delay (200ms between nodes)
+#### Network interface creation delay (200ms between nodes)
 
 Located in `dataplane/src/node/namespace/manager.rs`:
 
@@ -171,8 +171,7 @@ Located in `dataplane/src/node/namespace/manager.rs`:
 thread::sleep(time::Duration::from_millis(200));
 ```
 
-**Purpose:** This delay occurs in the parent process after completing critical operations for each node, like creating the veth pair, spawning the child process, and moving the veth peer into the child's network namespace.:
-
+This delay occurs in the parent process after completing critical operations for each node, like creating the veth pair, spawning the child process, and moving the veth peer into the child's network namespace.
 
 #### Controller Connection Delay (200ms × node_index)
 
@@ -184,7 +183,7 @@ let sleep_ms = (idx as u64) * 200;
 tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 ```
 
-**Purpose:** Each node waits `idx × 200ms` before connecting to the controller.
+Each node waits `idx × 200ms` before connecting to the controller.
 
 ## Memory Usage Analysis
 

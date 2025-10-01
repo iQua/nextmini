@@ -5,14 +5,16 @@ use std::time;
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::unistd;
-use rand::{rng, Rng};
+use rand::{Rng, rng};
 use tokio::time::Duration;
 use tracing::{error, info};
 
 use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
 
-use crate::node::namespace::network::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer};
+use crate::node::namespace::network::{
+    delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
+};
 
 const STACK_SIZE: usize = 1024 * 1024;
 
@@ -114,7 +116,7 @@ impl NamespaceManager {
             }
 
             // sleeps between node creation to prevent overwhelming the system
-            thread::sleep(time::Duration::from_millis(200));
+            thread::sleep(time::Duration::from_millis(50));
         }
 
         // waits for shutdown signal
@@ -183,7 +185,7 @@ fn child_process(
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
         // staggered connection: each node waits longer to prevent controller overload
-        let sleep_ms = (idx as u64) * 200;
+        let sleep_ms = rng().random_range(0..50);
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
