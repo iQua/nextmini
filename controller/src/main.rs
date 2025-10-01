@@ -138,21 +138,20 @@ async fn handle_connection(
                         // checks if the node ID is already used and registers immediately to prevent TOCTOU race
                         {
                             let mut node_ws_guard = node_ws.write().await;
+
                             if node_ws_guard.contains_key(&node_id) {
                                 let current_count = node_ws_guard.len();
+
                                 error!(
                                     "Node ID {} is already used. Current node_ws has {} entries. This connection will be rejected.",
                                     node_id, current_count
                                 );
+
                                 continue;
                             }
+
                             // Insert immediately after check to reserve this node_id
                             node_ws_guard.insert(node_id, write_arc.clone());
-                            let count_after_insert = node_ws_guard.len();
-                            info!(
-                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
-                                node_id, count_after_insert
-                            );
                         }
 
                         // Helper macro to cleanup node_ws on error
