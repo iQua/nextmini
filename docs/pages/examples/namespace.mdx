@@ -103,13 +103,21 @@ ip link show | grep veth | wc -l
 
 ## Testing Configuration
 
-### Enter namespace
+### Entering namespace
 
-To enter the network namespace of a specific node (e.g., node index 0), use the following command:
+To enter a node's network namespace, you need to target a **child process**:
 
 ```bash
-sudo ip netns exec nm-namespace-0 bash
+# List all nextmini processes.
+ps -eo pid,ppid,cmd | grep "nextmini" | grep -v grep | sort -n
+
+# Manually specify a child PID.
+sudo nsenter -t <child_pid> -n bash  # uses any child PID from pstree
+
+# Verify you're in a namespace.
+ip addr show
 ```
+
 ### Environment Requirements
 
 This namespace example can be tested with Arbutus `c16-180-576` configuration.
