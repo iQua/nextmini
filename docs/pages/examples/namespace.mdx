@@ -2,7 +2,7 @@
 
 This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
 
-## How to Run
+## Running the Example
 
 ### Step 1: Increasing the ARP Table Limits
 
@@ -41,11 +41,13 @@ To build and run this example with a specific number of nodes in a virtual or ph
 
 ```bash
 cd ~/nextmini
-cargo build --release
-sudo ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
+cargo install --path dataplane
+sudo nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-Alternatively, specify the number of nodes in the configuration file, such as `examples/namespace/config.toml`:
+You can also run `nextmini --help` to see all command-line arguments.
+
+Alternatively, you may specify the number of nodes in the configuration file, such as `examples/namespace/config.toml`:
 
 ```toml
 n_nodes = 5
