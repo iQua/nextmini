@@ -57,16 +57,16 @@ Then run:
 
 ```bash
 cd ~/nextmini
-cargo build --release
-sudo ./target/release/nextmini --config-path examples/namespace/config.toml
+cargo install --path dataplane
+sudo nextmini --config-path examples/namespace/config.toml
 ```
 
 To see detailed logs, set the `RUST_LOG` environment variable to `info`:
 
 ```bash
 cd ~/nextmini
-cargo build --release
-sudo RUST_LOG=info ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
+cargo install --path dataplane
+sudo RUST_LOG=info nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
 ### Step 5: Observing the results
