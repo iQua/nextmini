@@ -105,6 +105,13 @@ ip link show | grep veth | wc -l
 
 ## Testing Configuration
 
+### Enter namespace
+
+To enter the network namespace of a specific node (e.g., node index 0), use the following command:
+
+```bash
+sudo ip netns exec nm-namespace-0 bash
+```
 ### Environment Requirements
 
 This namespace example can be tested with Arbutus `c16-180-576` configuration.
@@ -113,13 +120,15 @@ As shown in this figure, `c16-180-576` is the name of `Flavor` in Arbutus. `Flav
 
 ![Arbutus c16-180-576 Flavor Configuration](/images/examples/namespace/arbutus-flavor.png)
 
+**Quick Start:** For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
+
 ### Simplified Testing
 
 For testing pure startup speed and memory usage:
 - Configure the desired `n_nodes` value with ring preset topology
 - Remove the `[routing]` section from configuration files (no persistent TCP connections and no routes needed)
 
-The following lines could be used in `/nextmini/namespace_init/controller_standalone/controller-config.toml` for test:
+The following lines could be used in `/nextmini/examples/namespace/controller-config.toml` for test:
 
 ```toml
 protocol = "tcp"
@@ -136,6 +145,33 @@ database = "nextmini"
 port = "5432"
 ```
 
+### Connection Staggering
+
+To prevent overwhelming the controller and database when spawning a large number of nodes, Nextmini implements a connection staggering:
+
+#### Network Interface Creation Delay (200ms between nodes)
+
+Located in `dataplane/src/node/namespace/manager.rs`:
+
+```rust
+// Sleep between node creation to prevent overwhelming the system.
+thread::sleep(time::Duration::from_millis(200));
+```
+
+**Purpose:** This delay occurs in the parent process after completing critical operations for each node, like creating the veth pair, spawning the child process, and moving the veth peer into the child's network namespace.:
+
+
+#### Controller Connection Delay (200ms × node_index)
+
+Located in `dataplane/src/node/namespace/manager.rs`:
+
+```rust
+// staggered connection: each node waits longer to prevent controller overload
+let sleep_ms = (idx as u64) * 200;
+tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+```
+
+**Purpose:** Each node waits `idx × 200ms` before connecting to the controller.
 
 ## Memory Usage Analysis
 
@@ -175,10 +211,36 @@ Swap:             0B          0B          0B
 
 ### Increasing Connection Limits
 
+Without sufficient `max_connections`, you'll encounter this error once the 100th node tries to connect:
+
+```text
+FATAL: sorry, too many clients already
+```
+
 To handle more than 100 concurrent connections, modify the PostgreSQL configuration in `docker-compose.yml`:
 
 ```yaml
-command: postgres -c max_connections=700 -c shared_preload_libraries=pg_stat_statements
+command: postgres -c max_connections=<number_of_max_connections> -c shared_preload_libraries=pg_stat_statements
+```
+
+where `<number_of_max_connections>` should be set based on your expected maximum concurrent connections.
+
+PostgreSQL's default `max_connections` is typically 100. The controller's database connection pool could be configured in `controller/src/db.rs` with:
+
+```rust
+.max_connections(<number_of_max_connections>)  // Maximum pool capacity
+.min_connections(<number_of_min_connections>)  // Minimum connections to maintain
+```
+
+The controller uses a connection pool to execute database operations (INSERT, SELECT, UPDATE).
+
+The 200ms staggering spreads connections over ~240 seconds for 600 nodes, so at most ~5 nodes connect simultaneously.
+
+**Recommended settings:**
+
+```rust
+.max_connections(100)  // Sufficient for concurrent operations
+.min_connections(50)   // Keep some connections warm
 ```
 
 ### Database Monitoring Commands
