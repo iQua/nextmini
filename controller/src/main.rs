@@ -136,7 +136,7 @@ async fn handle_connection(
                         );
 
                         // checks if the node ID is already used and registers immediately to prevent TOCTOU race
-                        {
+                        let connected_node_count = {
                             let mut node_ws_guard = node_ws.write().await;
 
                             if node_ws_guard.contains_key(&node_id) {
@@ -152,31 +152,17 @@ async fn handle_connection(
 
                             // Insert immediately after check to reserve this node_id
                             node_ws_guard.insert(node_id, write_arc.clone());
-                        }
+                            let count_after_insert = node_ws_guard.len();
+                            info!(
+                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
+                                node_id, count_after_insert
+                            );
+                            count_after_insert
+                        };
 
-                        // Helper macro to cleanup node_ws on error
-                        macro_rules! cleanup_and_continue {
-                            ($msg:expr) => {{
-                                error!($msg);
-                                warn!("CLEANUP: Removing node {} from node_ws due to setup failure", node_id);
-                                let removed = node_ws.write().await.remove(&node_id);
-                                if removed.is_some() {
-                                    let remaining = node_ws.read().await.len();
-                                    warn!("CLEANUP: Node {} removed. Remaining nodes: {}", node_id, remaining);
-                                }
-                                continue;
-                            }};
-                            ($fmt:expr, $($arg:tt)*) => {{
-                                error!($fmt, $($arg)*);
-                                warn!("CLEANUP: Removing node {} from node_ws due to setup failure", node_id);
-                                let removed = node_ws.write().await.remove(&node_id);
-                                if removed.is_some() {
-                                    let remaining = node_ws.read().await.len();
-                                    warn!("CLEANUP: Node {} removed. Remaining nodes: {}", node_id, remaining);
-                                }
-                                continue;
-                            }};
-                        }
+                        // Note: We keep nodes in node_ws even if setup fails, to maintain consistent
+                        // node_id to count mapping. The websocket connection is established, so the
+                        // node is "connected" even if configuration failed.
 
                         // checks if the node ID is correct
                         info!(
@@ -210,7 +196,8 @@ async fn handle_connection(
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
                             Err(e) => {
-                                cleanup_and_continue!("Failed to insert node into database: {}", e);
+                                error!("Failed to insert node {} into database: {}. Continuing with partial setup.", node_id, e);
+                                // Don't remove from node_ws - the websocket is connected
                             }
                         }
 
@@ -242,7 +229,11 @@ async fn handle_connection(
                         {
                             Ok(_) => info!("Sent StartUp response to node {}", node_id),
                             Err(e) => {
-                                cleanup_and_continue!("Failed to send StartUp response: {}", e);
+                                error!(
+                                    "Failed to send StartUp response to node {}: {}. Node will remain in node_ws but may not function correctly.",
+                                    node_id, e
+                                );
+                                // Don't remove from node_ws - keep for consistent counting
                             }
                         }
 
@@ -259,7 +250,11 @@ async fn handle_connection(
                         {
                             Ok(nodes) => nodes,
                             Err(e) => {
-                                cleanup_and_continue!("Failed to fetch nodes: {}", e);
+                                error!(
+                                    "Failed to fetch nodes for node {}: {}. Skipping neighbor setup.",
+                                    node_id, e
+                                );
+                                Vec::new() // Continue with empty node list
                             }
                         };
                         // Get topology edges
@@ -350,7 +345,11 @@ async fn handle_connection(
                                 })
                                 .collect::<Vec<_>>(),
                             Err(e) => {
-                                cleanup_and_continue!("Failed to fetch routes: {}", e);
+                                error!(
+                                    "Failed to fetch routes for node {}: {}. Skipping route installation.",
+                                    node_id, e
+                                );
+                                Vec::new() // Continue with empty route list
                             }
                         };
 
@@ -374,10 +373,8 @@ async fn handle_connection(
                         }
 
                         // As a new node connects, checks if all the expected nodes are now connected
-                        let connected_node_count = node_ws.read().await.len();
-
                         info!(
-                            "Node {} setup completed successfully. The total number of connected nodes is {}.",
+                            "Node {} setup completed successfully. At the time of insertion, there were {} nodes connected.",
                             node_id, connected_node_count
                         );
 

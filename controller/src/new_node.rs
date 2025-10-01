@@ -77,7 +77,7 @@ pub async fn new_node_connected(
                 );
             } else {
                 info!(
-                    "A new node with ID {} has connected. There are {} nodes already connected, out of a total of {} expected.",
+                    "Node {} connected. At time of insertion, {} nodes were connected (including this one), out of {} expected.",
                     event.node_id, event.connected_node_count, expected_node_count
                 );
             }
