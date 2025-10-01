@@ -546,12 +546,7 @@ impl LocalConfig {
             let ip = u32::from(real_ip);
             let base = u32::from(cfgs.external_base_addr);
             let computed_node_id = (ip - base) as NodeId;
-
-            if computed_node_id != 0 {
-                cfgs.node_id = computed_node_id;
-            } else {
-                info!("Computed node_id is 0 from ns_addr {ns_addr}; keeping the default value.");
-            }
+            cfgs.node_id = computed_node_id;
         } else {
             error!("Failed to parse ns_addr '{ns_addr}' as IPv4");
         }

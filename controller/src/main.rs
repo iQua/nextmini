@@ -131,26 +131,31 @@ async fn handle_connection(
                         let node_id = maybe_node_id.unwrap();
 
                         // checks if the node ID is already used and registers immediately to prevent TOCTOU race
-                        let connected_node_count = {
+                        {
                             let mut node_ws_guard = node_ws.write().await;
                             if node_ws_guard.contains_key(&node_id) {
-                                error!("Node ID {} is already used.", node_id);
+                                let current_count = node_ws_guard.len();
+                                error!(
+                                    "Node ID {} is already used. Current node_ws has {} entries. This connection will be rejected.",
+                                    node_id, current_count
+                                );
                                 continue;
                             }
                             // Insert immediately after check to reserve this node_id
                             node_ws_guard.insert(node_id, write_arc.clone());
-                            node_ws_guard.len()
-                        };
+                        }
 
                         // Helper macro to cleanup node_ws on error
                         macro_rules! cleanup_and_continue {
                             ($msg:expr) => {{
                                 error!($msg);
+                                warn!("Removing node {} from node_ws due to setup failure", node_id);
                                 node_ws.write().await.remove(&node_id);
                                 continue;
                             }};
                             ($fmt:expr, $($arg:tt)*) => {{
                                 error!($fmt, $($arg)*);
+                                warn!("Removing node {} from node_ws due to setup failure", node_id);
                                 node_ws.write().await.remove(&node_id);
                                 continue;
                             }};
@@ -352,6 +357,19 @@ async fn handle_connection(
                         }
 
                         // As a new node connects, checks if all the expected nodes are now connected
+                        // Capture the count right before sending to reflect actual current state
+                        let connected_node_count = node_ws.read().await.len();
+
+                        // Log if there's a mismatch between node_id and count (for debugging)
+                        if node_id + 1 != connected_node_count {
+                            warn!(
+                                "Node ID mismatch: node {} connected, but there are {} nodes in node_ws. Expected {} nodes if IDs are sequential from 0.",
+                                node_id,
+                                connected_node_count,
+                                node_id + 1
+                            );
+                        }
+
                         let _ = new_node_connected_sender.send(NodeConnectedEvent {
                             node_id,
                             connected_node_count,
