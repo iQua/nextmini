@@ -315,19 +315,6 @@ watch -n 1 'echo "=== $(date +%H:%M:%S) ==="; echo "ARP: $(arp -a | wc -l)/$(cat
 
 ## Troubleshooting
 
-### Process Monitoring
-
-Check namespace_init processes:
-```bash
-ps aux | grep namespace_init | grep " S+"
-sudo ps -eo pid,ppid,state,cmd | grep namespace_init | grep " S+"
-```
-
-Get process stack trace:
-```bash
-sudo cat /proc/<PID>/stack
-```
-
 ### Finding Missing Nodes
 
 Identify nodes that failed to connect (example for 600 nodes):
@@ -339,7 +326,7 @@ WITH RECURSIVE expected_nodes AS (
     UNION ALL
     SELECT node_id + 1
     FROM expected_nodes
-    WHERE node_id < 600
+    WHERE node_id < <number_of_n_nodes>
 )
 SELECT en.node_id as missing_node_id
 FROM expected_nodes en
@@ -347,6 +334,16 @@ LEFT JOIN nodes n ON en.node_id = n.id
 WHERE n.id IS NULL
 ORDER BY en.node_id
 LIMIT 10;"
+```
+
+## Check specific veth<idx>a:
+
+After finding the missing nodes, you could know about the <idx> of the node, which is `node_id-1`.
+
+Then check the status of veth<idx>a using:
+
+```bash
+ip link show | grep "veth<idx>[ab]"
 ```
 
 ## Performance Results
