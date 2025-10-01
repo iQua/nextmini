@@ -326,7 +326,7 @@ WITH RECURSIVE expected_nodes AS (
     UNION ALL
     SELECT node_id + 1
     FROM expected_nodes
-    WHERE node_id <number_of_n_nodes>
+    WHERE node_id < <number_of_n_nodes>
 )
 SELECT en.node_id as missing_node_id
 FROM expected_nodes en
