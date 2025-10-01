@@ -13,7 +13,7 @@ use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
 
 use crate::node::namespace::network::{
-    delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
+    bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
 };
 
 const STACK_SIZE: usize = 1024 * 1024;
@@ -57,6 +57,7 @@ impl NamespaceManager {
 
         // spawns each namespace
         for (idx, ns_ip) in ns_ips.iter().enumerate() {
+            let veth_idx;
             let veth2_idx;
 
             // prepares bridge + a fresh veth pair (bridge creation is idempotent)
@@ -66,8 +67,9 @@ impl NamespaceManager {
                 self.config.subnet,
                 idx,
             )) {
-                Ok((bridge_idx_val, _veth_idx, veth2_index)) => {
+                Ok((bridge_idx_val, veth_index, veth2_index)) => {
                     bridge_idx = Some(bridge_idx_val);
+                    veth_idx = veth_index;
                     veth2_idx = veth2_index;
                 }
                 Err(e) => {
@@ -112,6 +114,17 @@ impl NamespaceManager {
                 rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
             {
                 error!("Failed to join veth to namespace: {}. Retrying...", e);
+                continue;
+            }
+
+            // Give the child process time to start and configure its peer interface
+            // This prevents the race condition where master veth is UP but peer is still DOWN
+            thread::sleep(time::Duration::from_millis(100));
+
+            // Now bring up the master veth AFTER the child has had time to configure the peer
+            // This ensures both ends of the veth pair are ready, preventing NO-CARRIER state
+            if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
+                error!("Failed to bring up master veth: {}. Retrying...", e);
                 continue;
             }
 

@@ -182,20 +182,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .header
         .index;
 
-    // sets master veth up
-    handle
-        .link()
-        .set(LinkUnspec::new_with_index(veth_idx).up().build())
-        .execute()
-        .await
-        .map_err(|e| {
-            NetworkError::OperationError(format!(
-                "Set veth with idx {} to up failed: {}.",
-                veth_idx, e
-            ))
-        })?;
-
-    // sets master veth to bridge
+    // sets master veth to bridge (attach to bridge BEFORE bringing up)
     handle
         .link()
         .set(
@@ -212,6 +199,10 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
             ))
         })?;
 
+    // sets master veth up AFTER attaching to bridge
+    // sets master veth to bridge (attach to bridge but DON'T bring up yet)
+    // The veth master side should only be brought up AFTER the peer side is up
+    // to avoid NO-CARRIER state during the race condition window
     Ok((veth_idx, veth_2_idx))
 }
 
@@ -233,6 +224,27 @@ pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError
             NetworkError::OperationError(format!(
                 "Set veth with idx {} to process with pid {} failed: {}.",
                 veth_idx, pid, e
+            ))
+        })?;
+
+    Ok(())
+}
+
+pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
+    let (connection, handle, _) = new_connection()?;
+    tokio::spawn(connection);
+
+    // Bring up the master veth interface AFTER the peer is configured
+    // This prevents NO-CARRIER state that occurs when one end is up and the other is down
+    handle
+        .link()
+        .set(LinkUnspec::new_with_index(veth_idx).up().build())
+        .execute()
+        .await
+        .map_err(|e| {
+            NetworkError::OperationError(format!(
+                "Set master veth with idx {} to up failed: {}.",
+                veth_idx, e
             ))
         })?;
 
@@ -267,6 +279,7 @@ pub async fn setup_veth_peer(
         }
     }
 
+    // Bring up the veth peer interface
     handle
         .link()
         .set(LinkUnspec::new_with_index(veth_idx).up().build())
@@ -278,6 +291,9 @@ pub async fn setup_veth_peer(
                 veth_idx, e
             ))
         })?;
+
+    // Small delay to ensure the link state propagates properly
+    sleep(Duration::from_millis(10)).await;
 
     // sets lo interface to up
     let lo_idx = handle
