@@ -7,3 +7,4 @@ queue_capacity = 3000
 feature = "concurrent"
 n_nodes = 600
 # controller_service_rate = 8
+external_base_addr = "172.16.8.4"

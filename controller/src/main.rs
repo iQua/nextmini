@@ -130,6 +130,11 @@ async fn handle_connection(
                         // assigns a node ID as the dataplane node requests
                         let node_id = maybe_node_id.unwrap();
 
+                        info!(
+                            "Node with ID {} is attempting to connect (private: {}, public: {})",
+                            node_id, private_network_addr, public_network_addr
+                        );
+
                         // checks if the node ID is already used and registers immediately to prevent TOCTOU race
                         {
                             let mut node_ws_guard = node_ws.write().await;
@@ -143,20 +148,33 @@ async fn handle_connection(
                             }
                             // Insert immediately after check to reserve this node_id
                             node_ws_guard.insert(node_id, write_arc.clone());
+                            let count_after_insert = node_ws_guard.len();
+                            info!(
+                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
+                                node_id, count_after_insert
+                            );
                         }
 
                         // Helper macro to cleanup node_ws on error
                         macro_rules! cleanup_and_continue {
                             ($msg:expr) => {{
                                 error!($msg);
-                                warn!("Removing node {} from node_ws due to setup failure", node_id);
-                                node_ws.write().await.remove(&node_id);
+                                warn!("CLEANUP: Removing node {} from node_ws due to setup failure", node_id);
+                                let removed = node_ws.write().await.remove(&node_id);
+                                if removed.is_some() {
+                                    let remaining = node_ws.read().await.len();
+                                    warn!("CLEANUP: Node {} removed. Remaining nodes: {}", node_id, remaining);
+                                }
                                 continue;
                             }};
                             ($fmt:expr, $($arg:tt)*) => {{
                                 error!($fmt, $($arg)*);
-                                warn!("Removing node {} from node_ws due to setup failure", node_id);
-                                node_ws.write().await.remove(&node_id);
+                                warn!("CLEANUP: Removing node {} from node_ws due to setup failure", node_id);
+                                let removed = node_ws.write().await.remove(&node_id);
+                                if removed.is_some() {
+                                    let remaining = node_ws.read().await.len();
+                                    warn!("CLEANUP: Node {} removed. Remaining nodes: {}", node_id, remaining);
+                                }
                                 continue;
                             }};
                         }
@@ -362,13 +380,28 @@ async fn handle_connection(
 
                         // Log if there's a mismatch between node_id and count (for debugging)
                         if node_id + 1 != connected_node_count {
+                            let node_ids: Vec<usize> = {
+                                let guard = node_ws.read().await;
+                                let mut ids: Vec<usize> = guard.keys().copied().collect();
+                                ids.sort();
+                                ids
+                            };
+                            let min_id = node_ids.first().copied().unwrap_or(0);
+                            let max_id = node_ids.last().copied().unwrap_or(0);
                             warn!(
-                                "Node ID mismatch: node {} connected, but there are {} nodes in node_ws. Expected {} nodes if IDs are sequential from 0.",
+                                "MISMATCH: Node {} connected, but there are {} nodes in node_ws. Expected {} nodes if IDs are sequential from 0. Current ID range: {}-{}",
                                 node_id,
                                 connected_node_count,
-                                node_id + 1
+                                node_id + 1,
+                                min_id,
+                                max_id
                             );
                         }
+
+                        info!(
+                            "Node {} setup completed successfully. Sending NodeConnectedEvent with count {}",
+                            node_id, connected_node_count
+                        );
 
                         let _ = new_node_connected_sender.send(NodeConnectedEvent {
                             node_id,
