@@ -1,6 +1,7 @@
+use std::{fmt, net::Ipv4Addr, str::FromStr};
+
 use futures::TryStreamExt;
 use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
-use std::{fmt, net::Ipv4Addr, str::FromStr};
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
@@ -252,8 +253,8 @@ pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
     Ok(())
 }
 
-/// Wait for a veth interface to establish carrier (link to peer)
-/// This prevents NO-CARRIER state issues in high-load scenarios
+/// Waits for a veth interface to establish carrier (link to peer).
+/// This prevents NO-CARRIER state issues in high-load scenarios.
 pub async fn wait_for_veth_carrier(
     veth_idx: u32,
     max_retries: u32,
@@ -272,23 +273,23 @@ pub async fn wait_for_veth_carrier(
             .await
         {
             Ok(Some(link)) => {
-                // Check if the link has carrier
+                // Checks if the link has carrier
                 // In rtnetlink, we can check the operstate or flags
                 // IFF_LOWER_UP (0x10000) indicates carrier is present
                 let has_carrier = (link.header.flags.bits() & 0x10000) != 0;
 
                 if has_carrier {
                     info!(
-                        "Veth interface {} established carrier after {} attempts",
+                        "Veth interface {} established carrier after {} attempts.",
                         veth_idx, attempt
                     );
                     return Ok(());
                 }
 
-                // Log progress for debugging high node counts
+                // logs progress in the rare cases where more than 10 attempts were tried
                 if attempt % 10 == 0 {
                     info!(
-                        "Waiting for veth {} carrier (attempt {}/{})",
+                        "Waiting for veth {} carrier (attempt {}/{}).",
                         veth_idx, attempt, max_retries
                     );
                 }
@@ -343,7 +344,7 @@ pub async fn setup_veth_peer(
         }
     }
 
-    // Bring up the veth peer interface
+    // brings up the veth peer interface
     handle
         .link()
         .set(LinkUnspec::new_with_index(veth_idx).up().build())
@@ -356,7 +357,7 @@ pub async fn setup_veth_peer(
             ))
         })?;
 
-    // Small delay to ensure the link state propagates properly
+    // adds a small delay to ensure the link state propagates properly
     sleep(Duration::from_millis(10)).await;
 
     // sets lo interface to up
