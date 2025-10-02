@@ -1,10 +1,12 @@
-use std::{fmt, net::Ipv4Addr, str::FromStr};
+use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
 
 use futures::TryStreamExt;
 use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
+use once_cell::sync::OnceCell;
+use tokio::time::timeout;
 #[derive(Debug)]
 pub enum NetworkError {
     ConnectionError(rtnetlink::Error),
@@ -45,14 +47,57 @@ impl From<std::io::Error> for NetworkError {
     }
 }
 
+static GLOBAL_NETLINK: OnceCell<Arc<Handle>> = OnceCell::new();
+
+async fn get_global_handle() -> Result<Arc<Handle>, NetworkError> {
+    if let Some(h) = GLOBAL_NETLINK.get() {
+        return Ok(h.clone());
+    }
+    // initialize once (synchronous new_connection)
+    let (connection, handle, _) = new_connection()?;
+    tokio::spawn(connection);
+    let arc = Arc::new(handle);
+    let _ = GLOBAL_NETLINK.set(arc.clone());
+    Ok(arc)
+}
+
+async fn new_connection_with_timeout(
+    attempts: u32,
+    timeout_ms: u64,
+    backoff_ms: u64,
+) -> Result<Handle, NetworkError> {
+    for attempt in 1..=attempts {
+        let start = Instant::now();
+        match timeout(Duration::from_millis(timeout_ms), async { new_connection() }).await {
+            Ok(Ok((conn, handle, _))) => {
+                tokio::spawn(conn);
+                let elapsed = start.elapsed().as_millis();
+                info!("Child netlink connection established in {}ms (attempt {}/{}).", elapsed, attempt, attempts);
+                return Ok(handle);
+            }
+            Ok(Err(e)) => {
+                error!("Child netlink new_connection failed (attempt {}/{}): {}", attempt, attempts, e);
+            }
+            Err(_) => {
+                error!("Child netlink new_connection timed out after {}ms (attempt {}/{}).", timeout_ms, attempt, attempts);
+            }
+        }
+        if attempt < attempts {
+            sleep(Duration::from_millis(backoff_ms)).await;
+        }
+    }
+    Err(NetworkError::OperationError(
+        "Failed to establish child netlink connection after retries.".to_string(),
+    ))
+}
+
 pub async fn prepare_net(
     bridge_name: String,
     bridge_ip: &str,
     subnet: u8,
     idx: usize,
 ) -> Result<(u32, u32, u32), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     info!("Interact with bridge {bridge_name} at cidr {bridge_ip}/{subnet}.");
 
@@ -88,8 +133,7 @@ async fn get_bridge_idx(handle: &Handle, bridge_name: String) -> Result<u32, Net
 
 // Create and bring up a bridge.
 async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32, NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     handle
         .link()
@@ -142,8 +186,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
 }
 
 async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     // create veth interfaces with unique names based on idx
     let veth: String = format!("veth{}a", idx);
@@ -208,8 +251,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
 }
 
 pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     // sets veth to the process network namespace
     handle
@@ -232,8 +274,7 @@ pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError
 }
 
 pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     // Bring up the master veth interface
     // Note: It's safe to bring this up now even if peer isn't ready yet,
@@ -261,8 +302,7 @@ pub async fn wait_for_veth_carrier(
     max_retries: u32,
     retry_interval_ms: u64,
 ) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     info!(
         "Waiting for veth interface {} to establish carrier.",
@@ -329,8 +369,13 @@ pub async fn setup_veth_peer(
 ) -> Result<(), NetworkError> {
     info!("Trying to set up veth peer with ip: {}/{}.", ns_ip, subnet);
 
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let start = Instant::now();
+    let handle = new_connection_with_timeout(3, 1500, 200).await?;
+    info!(
+        "Child namespace netlink handle ready in {}ms for veth {}.",
+        start.elapsed().as_millis(),
+        veth_idx
+    );
 
     info!("Setup veth peer with ip: {}/{}.", ns_ip, subnet);
 
@@ -396,8 +441,7 @@ pub async fn setup_veth_peer(
 }
 
 pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     handle.link().del(bridge_idx).execute().await.map_err(|e| {
         NetworkError::OperationError(format!(

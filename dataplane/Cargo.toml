@@ -40,3 +40,4 @@ smoltcp = "0.12"
 tokio-splice = "0.2"
 nix = { version = "0.30", features = ["sched", "hostname", "fs"] }
 rtnetlink = "0.18"
+once_cell = "1"
