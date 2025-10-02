@@ -161,7 +161,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
 
     // adds ip address to bridge
     let bridge_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(bridge_ip)?);
-    AddressHandle::new(handle.clone())
+    AddressHandle::new((*handle).clone())
         .add(bridge_idx, bridge_addr, subnet)
         .execute()
         .await
