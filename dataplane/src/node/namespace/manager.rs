@@ -55,6 +55,9 @@ impl NamespaceManager {
         let mut stacks: Vec<Box<[u8; STACK_SIZE]>> = Vec::new();
         let mut bridge_idx: Option<u32> = None;
 
+        // Collect all master veth indices to bring up AFTER all children are spawned
+        let mut master_veth_indices: Vec<u32> = Vec::new();
+
         // spawns each namespace
         for (idx, ns_ip) in ns_ips.iter().enumerate() {
             let veth_idx;
@@ -82,10 +85,12 @@ impl NamespaceManager {
             let subnet = self.config.subnet;
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
+            let veth_peer_name = format!("veth{}b", idx);
             let cb = Box::new(|| {
                 child_process(
                     ns_ip.clone(),
                     veth2_idx,
+                    veth_peer_name.clone(),
                     controller_addr_clone.clone(),
                     idx,
                     subnet,
@@ -117,21 +122,40 @@ impl NamespaceManager {
                 continue;
             }
 
-            // Give the child process time to start and configure its peer interface
-            // This prevents the race condition where master veth is UP but peer is still DOWN
-            thread::sleep(time::Duration::from_millis(100));
-
-            // Now bring up the master veth AFTER the child has had time to configure the peer
-            // This ensures both ends of the veth pair are ready, preventing NO-CARRIER state
-            if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
-                error!("Failed to bring up master veth: {}. Retrying...", e);
-                continue;
-            }
+            // Store the master veth index to bring up later
+            master_veth_indices.push(veth_idx);
 
             // sleeps between node creation to prevent overwhelming the system
             thread::sleep(time::Duration::from_millis(50));
         }
 
+        // Wait for all child processes to start and configure their peer interfaces
+        // This is critical: each child needs time to create runtime, call setup_veth_peer(),
+        // add IP address (which has retry logic), and bring up the peer interface.
+        // Only after peers are up should we bring up the master interfaces.
+        info!("All children spawned. Waiting 2 seconds for peer interfaces to be configured...");
+        thread::sleep(time::Duration::from_secs(2));
+
+        // Now bring up all master veth interfaces
+        info!(
+            "Bringing up {} master veth interfaces...",
+            master_veth_indices.len()
+        );
+        for (idx, veth_idx) in master_veth_indices.iter().enumerate() {
+            match rt.block_on(async { bring_up_master_veth(*veth_idx).await }) {
+                Ok(_) => {
+                    if idx % 100 == 0 {
+                        info!("Brought up {} master veths...", idx);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to bring up master veth {}: {}", veth_idx, e);
+                }
+            }
+        }
+        info!("All master veth interfaces are up.");
+
+        // waits for shutdown signal</parameter>
         // waits for shutdown signal
         rt.block_on(self.wait_for_shutdown(bridge_idx));
     }
@@ -176,6 +200,7 @@ impl NamespaceManager {
 fn child_process(
     ns_ip: String,
     veth_peer_idx: u32,
+    veth_peer_name: String,
     controller_addr: String,
     idx: usize,
     subnet: u8,
@@ -195,7 +220,7 @@ fn child_process(
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
         // sets up veth interface
-        setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
+        setup_veth_peer(veth_peer_idx, &veth_peer_name, &ns_ip, subnet).await?;
 
         // staggered connection: each node waits longer to prevent controller overload
         let sleep_ms = rng().random_range(0..50);

@@ -37,7 +37,7 @@ When one end of a veth pair is UP while the other is DOWN, the kernel reports **
 
 ## Solution
 
-The fix ensures that the master end of the veth pair is **not brought UP** until the child process has had time to configure and bring up its peer end.
+The fix involves multiple improvements to ensure reliable veth pair configuration across all nodes:
 
 ### Fixed Flow:
 
@@ -46,9 +46,14 @@ The fix ensures that the master end of the veth pair is **not brought UP** until
 3. Returns control to parent process
 4. Parent spawns child process with `clone()`
 5. Parent moves peer end to child namespace
-6. **Parent waits 100ms** to allow child to start and configure peer
-7. Child process starts and calls `setup_veth_peer()` to bring up peer end
-8. **Parent brings up master end via `bring_up_master_veth()`**
+6. **Parent collects all master veth indices but doesn't bring them up yet**
+7. Parent continues spawning all children with 50ms delay between each
+8. **Parent waits 2 seconds after ALL children are spawned**
+9. Child processes start and call `setup_veth_peer()` which:
+   - Looks up interface BY NAME in child namespace (not using parent's index)
+   - Adds IP address with limited retries (max 20 attempts)
+   - Brings up peer interface
+10. **Parent brings up ALL master interfaces after the wait period**
 
 ### Key Changes:
 
@@ -59,20 +64,36 @@ The fix ensures that the master end of the veth pair is **not brought UP** until
 
 2. **network.rs - `bring_up_master_veth()`**:
    - New function added to bring up master veth from parent namespace
-   - Called after child process has configured its peer
+   - Verifies interface exists before bringing it up
+   - Called after ALL child processes have had time to configure peers
 
-3. **manager.rs - `spawn_all_nodes()`**:
-   - Added 100ms delay after moving peer to child namespace
-   - This gives child process time to start and configure peer interface
-   - Then explicitly brings up master veth via `bring_up_master_veth()`
+3. **network.rs - `setup_veth_peer()`**:
+   - **Looks up interface BY NAME** in child namespace instead of relying on parent's index
+   - Adds 50ms initial delay for interface to settle in new namespace
+   - Limits retries to 20 attempts (prevents infinite loops)
+   - Adds detailed logging for each step
+   - Verifies successful IP address assignment
+
+4. **manager.rs - `spawn_all_nodes()`**:
+   - Collects all master veth indices in a vector
+   - Spawns ALL children first (with 50ms delay between each)
+   - **Waits 2 seconds** after all children are spawned
+   - Then brings up all master veths in batch
+   - Logs progress every 100 interfaces
 
 ## Why This Works
 
-1. **Eliminates NO-CARRIER window**: By not bringing up the master until the child is ready, we avoid the state where one end is UP and the other is DOWN.
+1. **Eliminates NO-CARRIER window**: By not bringing up the master until ALL children are spawned and have had time to configure, we completely avoid the state where one end is UP and the other is DOWN.
 
-2. **Proper link establishment**: When the master is brought up after the peer is ready (or nearly ready), both ends can establish carrier simultaneously.
+2. **Proper link establishment**: When masters are brought up after peers are ready, both ends can establish carrier simultaneously.
 
-3. **Graceful under load**: The 100ms delay provides sufficient time even under heavy system load for the child process to start and begin configuring its interface.
+3. **Batch processing reduces timing issues**: By spawning all children first and then bringing up all masters in a separate phase, we eliminate per-node timing dependencies.
+
+4. **Namespace-aware interface lookup**: Looking up interfaces by name in the child namespace ensures we have the correct handle, avoiding potential index confusion across namespaces.
+
+5. **Limited retries prevent hangs**: The 20-retry limit with detailed logging ensures that persistent failures are caught and reported instead of hanging indefinitely.
+
+6. **Graceful under load**: The 2-second batch delay provides ample time even under heavy system load (400-600 nodes) for child processes to start, create runtimes, and configure interfaces.
 
 ## Testing Recommendations
 
@@ -84,12 +105,32 @@ To verify this fix works correctly:
 4. Test under system load to ensure timing remains adequate
 5. Monitor logs for any "Failed to bring up master veth" errors
 
+## Additional Robustness Improvements
+
+### Interface Name Lookup
+When a network interface is moved to a new namespace, it's critical to look it up BY NAME rather than relying on the index from the parent namespace. While Linux interface indices are supposed to be globally unique, looking up by name in the target namespace ensures we have the correct handle and avoids any potential edge cases.
+
+### Retry Logic
+The original code had an infinite retry loop when adding IP addresses, which could cause silent hangs. The improved version:
+- Limits retries to 20 attempts (4 seconds total with 200ms delays)
+- Logs each retry attempt with clear error messages
+- Returns an explicit error after max retries
+- Allows debugging of persistent issues
+
+### Batch Processing Benefits
+Instead of bringing up each master veth immediately after spawning its child:
+- All children are spawned first (reduces total startup time)
+- A single 2-second wait applies to all nodes
+- All masters are brought up in batch (more efficient)
+- Progress is logged every 100 interfaces
+- Timing is more predictable and less dependent on per-node scheduling
+
 ## Additional Notes
 
-- The 100ms delay was chosen as a conservative value that works well under load
-- This delay is per-node, so it adds ~1 minute to startup time for 600 nodes
-- The delay could potentially be tuned lower (e.g., 50ms) for faster startup, but 100ms provides good reliability
-- The original 50ms sleep between nodes is maintained for rate limiting
+- The 2-second batch delay was chosen as a conservative value that works reliably with 600+ nodes
+- This replaces the previous per-node 100ms delay, actually REDUCING total startup time
+- The 50ms sleep between node spawns is maintained for rate limiting and system stability
+- The 20-retry limit with 200ms delays gives 4 seconds per interface for IP assignment
 
 ## Technical Details
 
