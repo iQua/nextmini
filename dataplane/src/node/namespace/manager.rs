@@ -93,7 +93,7 @@ impl NamespaceManager {
             // create a pipe for handshake (child signals network ready)
             let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
             // set read end non-blocking so we can implement timeout polling
-            let _ = fcntl(read_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
+            let _ = fcntl(&read_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
 
             let raw_write_fd = write_fd.into_raw_fd();
             let cb = Box::new(move || {
