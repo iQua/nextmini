@@ -38,5 +38,5 @@ ahash = "0.8"
 flume = "0.11"
 smoltcp = "0.12"
 tokio-splice = "0.2"
-nix = "0.30"
+nix = { version = "0.30", features = ["sched", "hostname", "fs"] }
 rtnetlink = "0.18"
