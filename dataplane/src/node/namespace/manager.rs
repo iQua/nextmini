@@ -93,7 +93,7 @@ impl NamespaceManager {
             // create a pipe for handshake (child signals network ready)
             let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
             // set read end non-blocking so we can implement timeout polling
-            let _ = fcntl(read_fd.as_raw_fd(), FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
+            let _ = fcntl(read_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
 
             let cb = Box::new(|| {
                 child_process(
@@ -142,8 +142,10 @@ impl NamespaceManager {
             let handshake_deadline = time::Instant::now()
                 + time::Duration::from_millis(self.config.handshake_timeout_ms);
             let mut handshake_ok = false;
+
             while time::Instant::now() < handshake_deadline {
                 let mut buf = [0u8; 1];
+
                 match nix::unistd::read(&read_fd, &mut buf) {
                     Ok(1) => {
                         handshake_ok = true;
@@ -161,7 +163,6 @@ impl NamespaceManager {
                         break;
                     }
                 }
-                thread::sleep(time::Duration::from_millis(5));
             }
 
             if !handshake_ok {
