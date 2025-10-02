@@ -89,6 +89,9 @@ impl NamespaceManager {
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
 
+            // create a pipe for handshake (child signals network ready)
+            let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
+
             let cb = Box::new(|| {
                 child_process(
                     ns_ip.clone(),
@@ -97,6 +100,7 @@ impl NamespaceManager {
                     idx,
                     subnet,
                     config_path.clone(),
+                    Some(write_fd),
                 )
             });
 
@@ -111,6 +115,9 @@ impl NamespaceManager {
             }
             .expect("Clone failed");
 
+            // parent closes write end
+            let _ = nix::unistd::close(write_fd);
+
             // keeps stack memory alive
             stacks.push(tmp_stack);
 
@@ -123,25 +130,67 @@ impl NamespaceManager {
             }
 
             // gives the child process time to start and configure its peer interface
-            // adds an initial small sleep to let child process start
-            thread::sleep(time::Duration::from_millis(50));
+            // adds an initial, configurable small sleep to let child process start
+            thread::sleep(time::Duration::from_millis(self.config.child_start_delay_ms));
+
+            // wait for child handshake that peer interface is configured before bringing up master
+            let handshake_deadline = time::Instant::now()
+                + time::Duration::from_millis(self.config.handshake_timeout_ms);
+            let mut handshake_ok = false;
+            while time::Instant::now() < handshake_deadline {
+                let mut buf = [0u8; 1];
+                match nix::unistd::read(read_fd, &mut buf) {
+                    Ok(1) => {
+                        handshake_ok = true;
+                        break;
+                    }
+                    Ok(0) => {
+                        // pipe closed unexpectedly
+                        break;
+                    }
+                    Err(nix::errno::Errno::EAGAIN) => {
+                        thread::sleep(time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+                thread::sleep(time::Duration::from_millis(5));
+            }
+
+            if !handshake_ok {
+                error!("Handshake timeout waiting for child {} network setup", idx);
+                let _ = nix::unistd::close(read_fd);
+                continue;
+            }
+            let _ = nix::unistd::close(read_fd);
 
             // now bring up the master veth
-            // note: This may initially show NO-CARRIER until peer is up, which is expected
             if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
                 error!("Failed to bring up master veth: {}. Retrying...", e);
                 continue;
             }
 
-            // waits and verify that the veth pair link is established (has carrier)
-            // this prevents proceeding with a node that has NO-CARRIER state
-            // retrying for up to 5 seconds, which should be sufficient even under heavy load
-            let wait_result = rt.block_on(async { wait_for_veth_carrier(veth_idx, 50, 100).await });
+            // waits and verifies that the veth pair link is established (has carrier)
+            // uses configurable retry parameters
+            let max_retries = (self.config.carrier_max_wait_ms / self.config.carrier_poll_interval_ms) as u32;
+            let wait_result = rt.block_on(async {
+                wait_for_veth_carrier(
+                    veth_idx,
+                    max_retries,
+                    self.config.carrier_poll_interval_ms,
+                )
+                .await
+            });
 
             if let Err(e) = wait_result {
                 error!(
-                    "Veth pair {} failed to establish carrier: {}. Giving up.",
-                    idx, e
+                    "Veth pair {} (ifindex {}) failed to establish carrier: {}. Giving up after {} ms.",
+                    idx,
+                    veth_idx,
+                    e,
+                    self.config.carrier_max_wait_ms
                 );
                 continue;
             }
@@ -198,6 +247,7 @@ fn child_process(
     idx: usize,
     subnet: u8,
     config_path: String,
+    handshake_fd: Option<i32>,
 ) -> isize {
     info!(
         "Child process (PID: {}) started with idx {}",
@@ -215,6 +265,12 @@ fn child_process(
     let process = rt.block_on(async {
         // sets up veth interface (this brings up the peer side)
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
+
+        // signal parent that peer interface is configured
+        if let Some(fd) = handshake_fd {
+            let _ = nix::unistd::write(fd, &[1u8]);
+            let _ = nix::unistd::close(fd);
+        }
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
         let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);

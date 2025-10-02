@@ -254,7 +254,8 @@ pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
 }
 
 /// Waits for a veth interface to establish carrier (link to peer).
-/// This prevents NO-CARRIER state issues in high-load scenarios.
+/// Uses both interface flags and operstate to determine carrier. Also falls
+/// back to checking /sys/class/net/<ifname>/carrier when available.
 pub async fn wait_for_veth_carrier(
     veth_idx: u32,
     max_retries: u32,
