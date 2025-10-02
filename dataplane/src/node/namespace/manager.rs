@@ -14,6 +14,7 @@ use crate::node::config::LocalConfig;
 
 use crate::node::namespace::network::{
     bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
+    wait_for_veth_carrier,
 };
 
 const STACK_SIZE: usize = 1024 * 1024;
@@ -118,13 +119,25 @@ impl NamespaceManager {
             }
 
             // Give the child process time to start and configure its peer interface
-            // This prevents the race condition where master veth is UP but peer is still DOWN
-            thread::sleep(time::Duration::from_millis(100));
+            // Initial small sleep to let child process start
+            thread::sleep(time::Duration::from_millis(50));
 
-            // Now bring up the master veth AFTER the child has had time to configure the peer
-            // This ensures both ends of the veth pair are ready, preventing NO-CARRIER state
+            // Now bring up the master veth
+            // Note: This may initially show NO-CARRIER until peer is up, which is expected
             if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
                 error!("Failed to bring up master veth: {}. Retrying...", e);
+                continue;
+            }
+
+            // Wait and verify that the veth pair link is established (has carrier)
+            // This prevents proceeding with a node that has NO-CARRIER state
+            // Retry for up to 5 seconds, which should be sufficient even under heavy load
+            let wait_result = rt.block_on(async {
+                wait_for_veth_carrier(veth_idx, 50, 100).await
+            });
+            
+            if let Err(e) = wait_result {
+                error!("Veth pair {} failed to establish carrier: {}. Retrying...", idx, e);
                 continue;
             }
 
@@ -194,7 +207,7 @@ fn child_process(
     // creates runtime and executes
     let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
     let process = rt.block_on(async {
-        // sets up veth interface
+        // sets up veth interface (this brings up the peer side)
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
         // staggered connection: each node waits longer to prevent controller overload

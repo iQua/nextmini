@@ -234,8 +234,9 @@ pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // Bring up the master veth interface AFTER the peer is configured
-    // This prevents NO-CARRIER state that occurs when one end is up and the other is down
+    // Bring up the master veth interface
+    // Note: It's safe to bring this up now even if peer isn't ready yet,
+    // as the carrier state will update automatically when peer comes up
     handle
         .link()
         .set(LinkUnspec::new_with_index(veth_idx).up().build())
@@ -249,6 +250,59 @@ pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
         })?;
 
     Ok(())
+}
+
+/// Wait for a veth interface to establish carrier (link to peer)
+/// This prevents NO-CARRIER state issues in high-load scenarios
+pub async fn wait_for_veth_carrier(
+    veth_idx: u32,
+    max_retries: u32,
+    retry_interval_ms: u64,
+) -> Result<(), NetworkError> {
+    let (connection, handle, _) = new_connection()?;
+    tokio::spawn(connection);
+
+    for attempt in 1..=max_retries {
+        match handle.link().get().match_index(veth_idx).execute().try_next().await {
+            Ok(Some(link)) => {
+                // Check if the link has carrier
+                // In rtnetlink, we can check the operstate or flags
+                // IFF_LOWER_UP (0x10000) indicates carrier is present
+                let has_carrier = (link.header.flags & 0x10000) != 0;
+                
+                if has_carrier {
+                    info!("Veth interface {} established carrier after {} attempts", veth_idx, attempt);
+                    return Ok(());
+                }
+                
+                // Log progress for debugging high node counts
+                if attempt % 10 == 0 {
+                    info!(
+                        "Waiting for veth {} carrier (attempt {}/{})",
+                        veth_idx, attempt, max_retries
+                    );
+                }
+            }
+            Ok(None) => {
+                return Err(NetworkError::OperationError(format!(
+                    "Veth interface {} not found",
+                    veth_idx
+                )));
+            }
+            Err(e) => {
+                error!("Error checking veth {} carrier: {}", veth_idx, e);
+            }
+        }
+
+        sleep(Duration::from_millis(retry_interval_ms)).await;
+    }
+
+    Err(NetworkError::OperationError(format!(
+        "Veth interface {} failed to establish carrier after {} attempts ({} seconds)",
+        veth_idx,
+        max_retries,
+        (max_retries as u64 * retry_interval_ms) / 1000
+    )))
 }
 
 pub async fn setup_veth_peer(
