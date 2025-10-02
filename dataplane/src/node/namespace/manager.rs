@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use std::os::fd::{OwnedFd, IntoRawFd, FromRawFd};
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::thread;
 use std::time;
 
@@ -96,7 +96,7 @@ impl NamespaceManager {
             let _ = fcntl(read_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
 
             let raw_write_fd = write_fd.into_raw_fd();
-            let cb = Box::new(move || { 
+            let cb = Box::new(move || {
                 child_process(
                     ns_ip.clone(),
                     veth2_idx,
@@ -155,6 +155,7 @@ impl NamespaceManager {
                         // pipe closed unexpectedly
                         break;
                     }
+                    Ok(2..) => break,
                     Err(nix::errno::Errno::EAGAIN) => {
                         thread::sleep(time::Duration::from_millis(10));
                         continue;
