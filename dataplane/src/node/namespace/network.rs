@@ -263,18 +263,28 @@ pub async fn wait_for_veth_carrier(
     tokio::spawn(connection);
 
     for attempt in 1..=max_retries {
-        match handle.link().get().match_index(veth_idx).execute().try_next().await {
+        match handle
+            .link()
+            .get()
+            .match_index(veth_idx)
+            .execute()
+            .try_next()
+            .await
+        {
             Ok(Some(link)) => {
                 // Check if the link has carrier
                 // In rtnetlink, we can check the operstate or flags
                 // IFF_LOWER_UP (0x10000) indicates carrier is present
                 let has_carrier = (link.header.flags.bits() & 0x10000) != 0;
-                
+
                 if has_carrier {
-                    info!("Veth interface {} established carrier after {} attempts", veth_idx, attempt);
+                    info!(
+                        "Veth interface {} established carrier after {} attempts",
+                        veth_idx, attempt
+                    );
                     return Ok(());
                 }
-                
+
                 // Log progress for debugging high node counts
                 if attempt % 10 == 0 {
                     info!(
@@ -298,7 +308,7 @@ pub async fn wait_for_veth_carrier(
     }
 
     Err(NetworkError::OperationError(format!(
-        "Veth interface {} failed to establish carrier after {} attempts ({} seconds)",
+        "Veth interface {} failed to establish carrier after {} attempts ({} seconds).",
         veth_idx,
         max_retries,
         (max_retries as u64 * retry_interval_ms) / 1000

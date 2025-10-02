@@ -6,7 +6,7 @@ use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::unistd;
 use rand::{Rng, rng};
-use tokio::time::Duration;
+use tokio::{runtime, time};
 use tracing::{error, info};
 
 use crate::node::conductor::Conductor;
@@ -44,7 +44,8 @@ impl NamespaceManager {
 
     // spawns all namespaces and waits for shutdown
     pub fn spawn_all_nodes(&mut self) {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+        let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+
         // Directly sets the controller address to the bridge IP without using local controller_addr(127.0.0.1:3000).
         let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
         info!("Controller address set to {}.", controller_addr);
@@ -132,12 +133,13 @@ impl NamespaceManager {
             // Wait and verify that the veth pair link is established (has carrier)
             // This prevents proceeding with a node that has NO-CARRIER state
             // Retry for up to 5 seconds, which should be sufficient even under heavy load
-            let wait_result = rt.block_on(async {
-                wait_for_veth_carrier(veth_idx, 50, 100).await
-            });
-            
+            let wait_result = rt.block_on(async { wait_for_veth_carrier(veth_idx, 50, 100).await });
+
             if let Err(e) = wait_result {
-                error!("Veth pair {} failed to establish carrier: {}. Retrying...", idx, e);
+                error!(
+                    "Veth pair {} failed to establish carrier: {}. Retrying...",
+                    idx, e
+                );
                 continue;
             }
 
@@ -185,7 +187,7 @@ impl NamespaceManager {
     }
 }
 
-/// Child process function executed within the namespace
+/// The child process that runs in its own isolated network namespace.
 fn child_process(
     ns_ip: String,
     veth_peer_idx: u32,
@@ -202,17 +204,14 @@ fn child_process(
 
     // sets hostname for this namespace
     let ns_hostname = format!("nextmini-{}", random_suffix(5));
-    unistd::sethostname(&ns_hostname).expect("Failed to set hostname");
+    unistd::sethostname(&ns_hostname).expect("Failed to set hostname.");
 
-    // creates runtime and executes
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    // creates and runs the Tokio runtime
+    let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+
     let process = rt.block_on(async {
         // sets up veth interface (this brings up the peer side)
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
-
-        // staggered connection: each node waits longer to prevent controller overload
-        let sleep_ms = rng().random_range(0..30);
-        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
         let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
