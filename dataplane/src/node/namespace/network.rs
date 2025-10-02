@@ -1,12 +1,12 @@
 use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
 
 use futures::TryStreamExt;
+use once_cell::sync::OnceCell;
 use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
+use tokio::time::timeout;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
-use once_cell::sync::OnceCell;
-use tokio::time::timeout;
 #[derive(Debug)]
 pub enum NetworkError {
     ConnectionError(rtnetlink::Error),
@@ -53,11 +53,14 @@ async fn get_global_handle() -> Result<Arc<Handle>, NetworkError> {
     if let Some(h) = GLOBAL_NETLINK.get() {
         return Ok(h.clone());
     }
-    // initialize once (synchronous new_connection)
+
+    // initializes once (synchronous new_connection call)
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
+
     let arc = Arc::new(handle);
     let _ = GLOBAL_NETLINK.set(arc.clone());
+
     Ok(arc)
 }
 
@@ -68,6 +71,7 @@ async fn new_connection_with_timeout(
 ) -> Result<Handle, NetworkError> {
     for attempt in 1..=attempts {
         let start = Instant::now();
+
         match timeout(Duration::from_millis(timeout_ms), async {
             new_connection()
         })
@@ -101,6 +105,7 @@ async fn new_connection_with_timeout(
             sleep(Duration::from_millis(backoff_ms)).await;
         }
     }
+
     Err(NetworkError::OperationError(
         "Failed to establish child netlink connection after retries.".to_string(),
     ))
@@ -114,7 +119,7 @@ pub async fn prepare_net(
 ) -> Result<(u32, u32, u32), NetworkError> {
     let handle = get_global_handle().await?;
 
-    // creates bridge if not exist
+    // creates the bridge if it does not exist
     let bridge_idx = match get_bridge_idx(&handle, bridge_name.clone()).await {
         Ok(idx) => idx,
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
@@ -198,7 +203,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
 async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), NetworkError> {
     let handle = get_global_handle().await?;
 
-    // create veth interfaces with unique names based on idx
+    // creates veth interfaces with unique names based on idx
     let veth: String = format!("veth{}a", idx);
     let veth_2: String = format!("veth{}b", idx);
 
@@ -286,7 +291,7 @@ pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError
 pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
     let handle = get_global_handle().await?;
 
-    // Bring up the master veth interface
+    // brings up the master veth interface
     // Note: It's safe to bring this up now even if peer isn't ready yet,
     // as the carrier state will update automatically when peer comes up
     handle
