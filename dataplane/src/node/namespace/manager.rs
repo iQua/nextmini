@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use std::os::fd::{OwnedFd, IntoRawFd};
+use std::os::fd::{OwnedFd, IntoRawFd, FromRawFd};
 use std::thread;
 use std::time;
 
