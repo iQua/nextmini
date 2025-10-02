@@ -290,7 +290,7 @@ pub struct LocalConfig {
     pub child_start_delay_ms: u64,
 
     /// Timeout (ms) for parent waiting on child network setup handshake in namespace mode.
-    #[default(20000)]
+    #[default(60000)]
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
 }

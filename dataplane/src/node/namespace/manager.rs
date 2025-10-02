@@ -167,7 +167,11 @@ impl NamespaceManager {
             }
 
             if !handshake_ok {
-                error!("Handshake timeout waiting for child {} network setup", idx);
+                error!(
+                    "Handshake timeout waiting for child {} network setup. \
+                    Consider increasing handshake_timeout_ms in the local configuration.",
+                    idx
+                );
                 drop(read_fd); // timeout cleanup
                 continue;
             }
