@@ -3,6 +3,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::thread;
 use std::time;
 
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::unistd;
@@ -12,7 +13,6 @@ use tracing::{error, info};
 
 use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
-
 use crate::node::namespace::network::{
     bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
     wait_for_veth_carrier,
