@@ -19,7 +19,7 @@ use crate::node::namespace::network::{
 
 const STACK_SIZE: usize = 1024 * 1024;
 
-/// Generate a random suffix for hostname uniqueness
+/// Generates a random suffix for hostname uniqueness.
 fn random_suffix(len: usize) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                              abcdefghijklmnopqrstuvwxyz\
@@ -46,7 +46,8 @@ impl NamespaceManager {
     pub fn spawn_all_nodes(&mut self) {
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
-        // Directly sets the controller address to the bridge IP without using local controller_addr(127.0.0.1:3000).
+        // directly sets the controller address to the bridge IP without using local
+        // controller_addr(127.0.0.1:3000)
         let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
         info!("Controller address set to {}.", controller_addr);
 
@@ -80,10 +81,11 @@ impl NamespaceManager {
                 }
             }
 
-            // prepare child process
+            // prepares child process
             let subnet = self.config.subnet;
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
+
             let cb = Box::new(|| {
                 child_process(
                     ns_ip.clone(),
@@ -106,12 +108,12 @@ impl NamespaceManager {
             }
             .expect("Clone failed");
 
-            // Keep stack memory alive
+            // keeps stack memory alive
             stacks.push(tmp_stack);
 
             info!("Spawned child pid: {}", child_pid);
 
-            // Move veth peer into child's netns
+            // moves veth peer into child's netns
             if let Err(e) =
                 rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
             {
@@ -119,20 +121,20 @@ impl NamespaceManager {
                 continue;
             }
 
-            // Give the child process time to start and configure its peer interface
-            // Initial small sleep to let child process start
+            // gives the child process time to start and configure its peer interface
+            // adds an initial small sleep to let child process start
             thread::sleep(time::Duration::from_millis(50));
 
-            // Now bring up the master veth
-            // Note: This may initially show NO-CARRIER until peer is up, which is expected
+            // now bring up the master veth
+            // note: This may initially show NO-CARRIER until peer is up, which is expected
             if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
                 error!("Failed to bring up master veth: {}. Retrying...", e);
                 continue;
             }
 
-            // Wait and verify that the veth pair link is established (has carrier)
-            // This prevents proceeding with a node that has NO-CARRIER state
-            // Retry for up to 5 seconds, which should be sufficient even under heavy load
+            // waits and verify that the veth pair link is established (has carrier)
+            // this prevents proceeding with a node that has NO-CARRIER state
+            // retrying for up to 5 seconds, which should be sufficient even under heavy load
             let wait_result = rt.block_on(async { wait_for_veth_carrier(veth_idx, 50, 100).await });
 
             if let Err(e) = wait_result {
