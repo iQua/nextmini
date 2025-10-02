@@ -205,7 +205,7 @@ fn child_process(
     );
 
     // sets hostname for this namespace
-    let ns_hostname = format!("nextmini-{}", random_suffix(10));
+    let ns_hostname = format!("nextmini-{}", random_suffix(5));
     unistd::sethostname(&ns_hostname).expect("Failed to set hostname.");
 
     // creates and runs the Tokio runtime
