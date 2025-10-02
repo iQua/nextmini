@@ -130,11 +130,39 @@ async fn handle_connection(
                         // assigns a node ID as the dataplane node requests
                         let node_id = maybe_node_id.unwrap();
 
-                        // checks if the node ID is already used
-                        if node_ws.read().await.contains_key(&node_id) {
-                            error!("Node ID {} is already used.", node_id);
-                            continue;
-                        }
+                        info!(
+                            "Node with ID {} is attempting to connect (private: {}, public: {})",
+                            node_id, private_network_addr, public_network_addr
+                        );
+
+                        // checks if the node ID is already used and registers immediately to prevent TOCTOU race
+                        let connected_node_count = {
+                            let mut node_ws_guard = node_ws.write().await;
+
+                            if node_ws_guard.contains_key(&node_id) {
+                                let current_count = node_ws_guard.len();
+
+                                error!(
+                                    "Node ID {} is already used. Current node_ws has {} entries. This connection will be rejected.",
+                                    node_id, current_count
+                                );
+
+                                continue;
+                            }
+
+                            // Insert immediately after check to reserve this node_id
+                            node_ws_guard.insert(node_id, write_arc.clone());
+                            let count_after_insert = node_ws_guard.len();
+                            info!(
+                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
+                                node_id, count_after_insert
+                            );
+                            count_after_insert
+                        };
+
+                        // Note: We keep nodes in node_ws even if setup fails, to maintain consistent
+                        // node_id to count mapping. The websocket connection is established, so the
+                        // node is "connected" even if configuration failed.
 
                         // checks if the node ID is correct
                         info!(
@@ -168,8 +196,8 @@ async fn handle_connection(
                         .await {
                             Ok(_) => info!("Node {} added to database", node_id),
                             Err(e) => {
-                                error!("Failed to insert node into database: {}", e);
-                                continue;
+                                error!("Failed to insert node {} into database: {}. Continuing with partial setup.", node_id, e);
+                                // Don't remove from node_ws - the websocket is connected
                             }
                         }
 
@@ -201,16 +229,15 @@ async fn handle_connection(
                         {
                             Ok(_) => info!("Sent StartUp response to node {}", node_id),
                             Err(e) => {
-                                error!("Failed to send StartUp response: {}", e);
-                                continue;
+                                error!(
+                                    "Failed to send StartUp response to node {}: {}. Node will remain in node_ws but may not function correctly.",
+                                    node_id, e
+                                );
+                                // Don't remove from node_ws - keep for consistent counting
                             }
                         }
 
-                        // registers the WebSocket connection and associate it with the new node ID
-                        {
-                            let mut node_ws_guard = node_ws.write().await;
-                            node_ws_guard.insert(node_id, write_arc.clone());
-                        }
+                        // Node already registered in node_ws above to prevent TOCTOU race
 
                         current_node_id = Some(node_id);
 
@@ -223,8 +250,11 @@ async fn handle_connection(
                         {
                             Ok(nodes) => nodes,
                             Err(e) => {
-                                error!("Failed to fetch nodes: {}", e);
-                                continue;
+                                error!(
+                                    "Failed to fetch nodes for node {}: {}. Skipping neighbor setup.",
+                                    node_id, e
+                                );
+                                Vec::new() // Continue with empty node list
                             }
                         };
                         // Get topology edges
@@ -315,8 +345,11 @@ async fn handle_connection(
                                 })
                                 .collect::<Vec<_>>(),
                             Err(e) => {
-                                error!("Failed to fetch routes: {}", e);
-                                continue;
+                                error!(
+                                    "Failed to fetch routes for node {}: {}. Skipping route installation.",
+                                    node_id, e
+                                );
+                                Vec::new() // Continue with empty route list
                             }
                         };
 
@@ -340,7 +373,15 @@ async fn handle_connection(
                         }
 
                         // As a new node connects, checks if all the expected nodes are now connected
-                        let _ = new_node_connected_sender.send(NodeConnectedEvent { node_id });
+                        info!(
+                            "Node {} setup completed successfully. At the time of insertion, there were {} nodes connected.",
+                            node_id, connected_node_count
+                        );
+
+                        let _ = new_node_connected_sender.send(NodeConnectedEvent {
+                            node_id,
+                            connected_node_count,
+                        });
                     }
 
                     DataplaneToController::Metrics { metrics } => {

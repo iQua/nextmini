@@ -1,6 +1,9 @@
+use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
+
 use futures::TryStreamExt;
+use once_cell::sync::OnceCell;
 use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
-use std::{fmt, net::Ipv4Addr, str::FromStr};
+use tokio::time::timeout;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
 
@@ -44,23 +47,81 @@ impl From<std::io::Error> for NetworkError {
     }
 }
 
+static GLOBAL_NETLINK: OnceCell<Arc<Handle>> = OnceCell::new();
+
+async fn get_global_handle() -> Result<Arc<Handle>, NetworkError> {
+    if let Some(h) = GLOBAL_NETLINK.get() {
+        return Ok(h.clone());
+    }
+
+    // initializes once (synchronous new_connection call)
+    let (connection, handle, _) = new_connection()?;
+    tokio::spawn(connection);
+
+    let arc = Arc::new(handle);
+    let _ = GLOBAL_NETLINK.set(arc.clone());
+
+    Ok(arc)
+}
+
+async fn new_connection_with_timeout(
+    attempts: u32,
+    timeout_ms: u64,
+    backoff_ms: u64,
+) -> Result<Handle, NetworkError> {
+    for attempt in 1..=attempts {
+        let start = Instant::now();
+
+        match timeout(Duration::from_millis(timeout_ms), async {
+            new_connection()
+        })
+        .await
+        {
+            Ok(Ok((conn, handle, _))) => {
+                tokio::spawn(conn);
+                let elapsed = start.elapsed().as_millis();
+                info!(
+                    "Child netlink connection established in {} ms (attempt {} out of {}).",
+                    elapsed, attempt, attempts
+                );
+
+                Ok(handle)
+            }
+            Ok(Err(e)) => {
+                error!(
+                    "Child netlink new_connection failed (attempt {} out of {}): {}",
+                    attempt, attempts, e
+                );
+            }
+            Err(_) => {
+                error!(
+                    "Child netlink new_connection timed out after {} ms (attempt {} out of {}).",
+                    timeout_ms, attempt, attempts
+                );
+            }
+        }
+
+        if attempt < attempts {
+            sleep(Duration::from_millis(backoff_ms)).await;
+        }
+    }
+
+    Err(NetworkError::OperationError(
+        "Failed to establish child netlink connection after retries.".to_string(),
+    ))
+}
+
 pub async fn prepare_net(
     bridge_name: String,
     bridge_ip: &str,
     subnet: u8,
     idx: usize,
 ) -> Result<(u32, u32, u32), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
-    info!("Interact with bridge {bridge_name} at cidr {bridge_ip}/{subnet}.");
-
-    // creates bridge if not exist
+    // creates the bridge if it does not exist
     let bridge_idx = match get_bridge_idx(&handle, bridge_name.clone()).await {
-        Ok(idx) => {
-            info!("The bridge {} already exist.", bridge_name);
-            idx
-        }
+        Ok(idx) => idx,
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
     };
 
@@ -87,8 +148,7 @@ async fn get_bridge_idx(handle: &Handle, bridge_name: String) -> Result<u32, Net
 
 // Create and bring up a bridge.
 async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32, NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     handle
         .link()
@@ -116,7 +176,7 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
 
     // adds ip address to bridge
     let bridge_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(bridge_ip)?);
-    AddressHandle::new(handle.clone())
+    AddressHandle::new((*handle).clone())
         .add(bridge_idx, bridge_addr, subnet)
         .execute()
         .await
@@ -141,10 +201,9 @@ async fn create_bridge(name: String, bridge_ip: &str, subnet: u8) -> Result<u32,
 }
 
 async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
-    // create veth interfaces with unique names based on idx
+    // creates veth interfaces with unique names based on idx
     let veth: String = format!("veth{}a", idx);
     let veth_2: String = format!("veth{}b", idx);
 
@@ -182,20 +241,7 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
         .header
         .index;
 
-    // sets master veth up
-    handle
-        .link()
-        .set(LinkUnspec::new_with_index(veth_idx).up().build())
-        .execute()
-        .await
-        .map_err(|e| {
-            NetworkError::OperationError(format!(
-                "Set veth with idx {} to up failed: {}.",
-                veth_idx, e
-            ))
-        })?;
-
-    // sets master veth to bridge
+    // sets master veth to bridge (attach to bridge BEFORE bringing up)
     handle
         .link()
         .set(
@@ -212,12 +258,15 @@ async fn create_veth_pair(bridge_idx: u32, idx: usize) -> Result<(u32, u32), Net
             ))
         })?;
 
+    // sets master veth up AFTER attaching to bridge
+    // sets master veth to bridge (attach to bridge but DON'T bring up yet)
+    // The veth master side should only be brought up AFTER the peer side is up
+    // to avoid NO-CARRIER state during the race condition window
     Ok((veth_idx, veth_2_idx))
 }
 
 pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     // sets veth to the process network namespace
     handle
@@ -239,15 +288,102 @@ pub async fn join_veth_to_ns(veth_idx: u32, pid: u32) -> Result<(), NetworkError
     Ok(())
 }
 
+pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
+    let handle = get_global_handle().await?;
+
+    // brings up the master veth interface
+    // Note: It's safe to bring this up now even if peer isn't ready yet,
+    // as the carrier state will update automatically when peer comes up
+    handle
+        .link()
+        .set(LinkUnspec::new_with_index(veth_idx).up().build())
+        .execute()
+        .await
+        .map_err(|e| {
+            NetworkError::OperationError(format!(
+                "Set master veth with idx {} to up failed: {}.",
+                veth_idx, e
+            ))
+        })?;
+
+    Ok(())
+}
+
+/// Waits for a veth interface to establish carrier (link to peer).
+/// Uses both interface flags and operstate to determine carrier. Also falls
+/// back to checking /sys/class/net/<ifname>/carrier when available.
+pub async fn wait_for_veth_carrier(
+    veth_idx: u32,
+    max_retries: u32,
+    retry_interval_ms: u64,
+) -> Result<(), NetworkError> {
+    let handle = get_global_handle().await?;
+
+    info!(
+        "Waiting for veth interface {} to establish carrier.",
+        veth_idx
+    );
+
+    for attempt in 1..=max_retries {
+        match handle
+            .link()
+            .get()
+            .match_index(veth_idx)
+            .execute()
+            .try_next()
+            .await
+        {
+            Ok(Some(link)) => {
+                // Checks if the link has carrier
+                // In rtnetlink, we can check the operstate or flags
+                // IFF_LOWER_UP (0x10000) indicates carrier is present
+                let has_carrier = (link.header.flags.bits() & 0x10000) != 0;
+
+                if has_carrier {
+                    info!(
+                        "Veth interface {} established carrier after {} attempts.",
+                        veth_idx, attempt
+                    );
+                    return Ok(());
+                }
+
+                // logs progress in the rare cases where more than 10 attempts were tried
+                if attempt % 10 == 0 {
+                    info!(
+                        "Waiting for veth {} carrier (attempt {} out of {}).",
+                        veth_idx, attempt, max_retries
+                    );
+                }
+            }
+            Ok(None) => {
+                return Err(NetworkError::OperationError(format!(
+                    "Veth interface {} not found.",
+                    veth_idx
+                )));
+            }
+            Err(e) => {
+                error!("Error checking veth {} carrier: {}.", veth_idx, e);
+            }
+        }
+
+        sleep(Duration::from_millis(retry_interval_ms)).await;
+    }
+
+    Err(NetworkError::OperationError(format!(
+        "Veth interface {} failed to establish carrier after {} attempts ({} seconds).",
+        veth_idx,
+        max_retries,
+        (max_retries as u64 * retry_interval_ms) / 1000
+    )))
+}
+
 pub async fn setup_veth_peer(
     veth_idx: u32,
     ns_ip: &String,
     subnet: u8,
 ) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
-
-    info!("Setup veth peer with ip: {}/{}.", ns_ip, subnet);
+    let start = Instant::now();
+    let handle = new_connection_with_timeout(3, 1500, 200).await?;
 
     // sets veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
@@ -261,12 +397,13 @@ pub async fn setup_veth_peer(
         {
             Ok(_) => break,
             Err(e) => {
-                error!("Retrying in 200ms...{}.", e);
+                error!("Retrying in 200 ms...{}.", e);
                 sleep(Duration::from_millis(200)).await;
             }
         }
     }
 
+    // brings up the veth peer interface
     handle
         .link()
         .set(LinkUnspec::new_with_index(veth_idx).up().build())
@@ -278,6 +415,9 @@ pub async fn setup_veth_peer(
                 veth_idx, e
             ))
         })?;
+
+    // adds a small delay to ensure the link state propagates properly
+    sleep(Duration::from_millis(10)).await;
 
     // sets lo interface to up
     let lo_idx = handle
@@ -307,8 +447,7 @@ pub async fn setup_veth_peer(
 }
 
 pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
-    let (connection, handle, _) = new_connection()?;
-    tokio::spawn(connection);
+    let handle = get_global_handle().await?;
 
     handle.link().del(bridge_idx).execute().await.map_err(|e| {
         NetworkError::OperationError(format!(

@@ -1,22 +1,26 @@
 use std::net::Ipv4Addr;
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::thread;
 use std::time;
 
+use nix::fcntl::{FcntlArg, OFlag, fcntl};
 use nix::sched::*;
 use nix::sys::signal::Signal;
 use nix::unistd;
-use rand::{rng, Rng};
-use tokio::time::Duration;
+use rand::{Rng, rng};
+use tokio::runtime;
 use tracing::{error, info};
 
 use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
-
-use crate::node::namespace::network::{delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer};
+use crate::node::namespace::network::{
+    bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
+    wait_for_veth_carrier,
+};
 
 const STACK_SIZE: usize = 1024 * 1024;
 
-/// Generate a random suffix for hostname uniqueness
+/// Generates a random suffix for hostname uniqueness.
 fn random_suffix(len: usize) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                              abcdefghijklmnopqrstuvwxyz\
@@ -39,12 +43,17 @@ impl NamespaceManager {
         Self { config }
     }
 
-    // spawns all namespaces and waits for shutdown
+    // Spawns all namespaces and waits for shutdown.
     pub fn spawn_all_nodes(&mut self) {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-        // Directly sets the controller address to the bridge IP without using local controller_addr(127.0.0.1:3000).
+        let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+
+        // directly sets the controller address to the bridge IP without using the local
+        // controller_addr (127.0.0.1:3000)
         let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
-        info!("Controller address set to {}.", controller_addr);
+        info!(
+            "The controller address has been set to {}.",
+            controller_addr
+        );
 
         // computes the namespace IP addresses
         let ns_ips = self.compute_namespace_ips();
@@ -55,6 +64,7 @@ impl NamespaceManager {
 
         // spawns each namespace
         for (idx, ns_ip) in ns_ips.iter().enumerate() {
+            let veth_idx;
             let veth2_idx;
 
             // prepares bridge + a fresh veth pair (bridge creation is idempotent)
@@ -64,8 +74,9 @@ impl NamespaceManager {
                 self.config.subnet,
                 idx,
             )) {
-                Ok((bridge_idx_val, _veth_idx, veth2_index)) => {
+                Ok((bridge_idx_val, veth_index, veth2_index)) => {
                     bridge_idx = Some(bridge_idx_val);
+                    veth_idx = veth_index;
                     veth2_idx = veth2_index;
                 }
                 Err(e) => {
@@ -74,11 +85,18 @@ impl NamespaceManager {
                 }
             }
 
-            // prepare child process
+            // prepares child process
             let subnet = self.config.subnet;
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
-            let cb = Box::new(|| {
+
+            // create a pipe for handshake (child signals network ready)
+            let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
+            // set read end non-blocking so we can implement timeout polling
+            let _ = fcntl(&read_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
+
+            let raw_write_fd = write_fd.into_raw_fd();
+            let cb = Box::new(move || {
                 child_process(
                     ns_ip.clone(),
                     veth2_idx,
@@ -86,6 +104,7 @@ impl NamespaceManager {
                     idx,
                     subnet,
                     config_path.clone(),
+                    Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
                 )
             });
 
@@ -100,12 +119,12 @@ impl NamespaceManager {
             }
             .expect("Clone failed");
 
-            // Keep stack memory alive
+            // parent already transferred ownership of write end to child via raw fd
+
+            // keeps stack memory alive
             stacks.push(tmp_stack);
 
-            info!("Spawned child pid: {}", child_pid);
-
-            // Move veth peer into child's netns
+            // moves veth peer into child's netns
             if let Err(e) =
                 rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
             {
@@ -113,15 +132,86 @@ impl NamespaceManager {
                 continue;
             }
 
-            // Sleep between node creation to prevent overwhelming the system
-            thread::sleep(time::Duration::from_millis(200));
+            // gives the child process time to start and configure its peer interface
+            // adds an initial, configurable small sleep to let child process start
+            thread::sleep(time::Duration::from_millis(
+                self.config.child_start_delay_ms,
+            ));
+
+            // waits for child handshake that peer interface is configured before bringing up master
+            let handshake_deadline = time::Instant::now()
+                + time::Duration::from_millis(self.config.handshake_timeout_ms);
+            let mut handshake_ok = false;
+
+            while time::Instant::now() < handshake_deadline {
+                let mut buf = [0u8; 1];
+
+                match nix::unistd::read(&read_fd, &mut buf) {
+                    Ok(1) => {
+                        handshake_ok = true;
+                        break;
+                    }
+                    Ok(0) => {
+                        // pipe closed unexpectedly
+                        break;
+                    }
+                    Ok(2..) => break,
+                    Err(nix::errno::Errno::EAGAIN) => {
+                        thread::sleep(time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
+
+            if !handshake_ok {
+                error!(
+                    "Handshake timeout waiting for child {} network setup. \
+                    Consider increasing handshake_timeout_ms in the local configuration.",
+                    idx
+                );
+                drop(read_fd); // timeout cleanup
+                continue;
+            }
+
+            drop(read_fd); // success cleanup
+
+            // now brings up the master veth
+            if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
+                error!("Failed to bring up master veth: {}. Retrying...", e);
+                continue;
+            }
+
+            // waits and verifies that the veth pair link is established (has carrier)
+            // uses configurable retry parameters
+            let max_retries =
+                (self.config.carrier_max_wait_ms / self.config.carrier_poll_interval_ms) as u32;
+            let wait_result = rt.block_on(async {
+                wait_for_veth_carrier(veth_idx, max_retries, self.config.carrier_poll_interval_ms)
+                    .await
+            });
+
+            if let Err(e) = wait_result {
+                error!(
+                    "Veth pair {} (ifindex {}) failed to establish carrier: {}. Giving up after {} ms.",
+                    idx, veth_idx, e, self.config.carrier_max_wait_ms
+                );
+                continue;
+            }
+
+            // sleeps between node creation to prevent overwhelming the system
+            thread::sleep(time::Duration::from_millis(
+                self.config.interval_between_spawn,
+            ));
         }
 
         // waits for shutdown signal
         rt.block_on(self.wait_for_shutdown(bridge_idx));
     }
 
-    // computes the namespace IP addresses
+    // Computes the namespace IP addresses.
     fn compute_namespace_ips(&self) -> Vec<String> {
         let base: u32 = self
             .config
@@ -137,7 +227,7 @@ impl NamespaceManager {
             .collect()
     }
 
-    // waits for Ctrl+C shutdown signal
+    // Waits for the Ctrl + C shutdown signal.
     async fn wait_for_shutdown(&self, bridge_idx: Option<u32>) {
         match tokio::signal::ctrl_c().await {
             Ok(_) => {
@@ -157,7 +247,7 @@ impl NamespaceManager {
     }
 }
 
-/// Child process function executed within the namespace
+/// The child process that runs in its own isolated network namespace.
 fn child_process(
     ns_ip: String,
     veth_peer_idx: u32,
@@ -165,26 +255,26 @@ fn child_process(
     idx: usize,
     subnet: u8,
     config_path: String,
+    handshake_fd: Option<OwnedFd>,
 ) -> isize {
-    info!(
-        "Child process (PID: {}) started with idx {}",
-        unistd::getpid(),
-        idx
-    );
+    info!("Child process started with index {}.", idx);
 
     // sets hostname for this namespace
     let ns_hostname = format!("nextmini-{}", random_suffix(5));
-    unistd::sethostname(&ns_hostname).expect("Failed to set hostname");
+    unistd::sethostname(&ns_hostname).expect("Failed to set hostname.");
 
-    // creates runtime and executes
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
+    // creates and runs the Tokio runtime
+    let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+
     let process = rt.block_on(async {
-        // sets up veth interface
+        // sets up veth interface (this brings up the peer side)
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
-        // staggered connection: each node waits longer to prevent controller overload
-        let sleep_ms = (idx as u64) * 200;
-        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+        // signal parent that peer interface is configured
+        if let Some(fd) = handshake_fd {
+            let _ = nix::unistd::write(&fd, &[1u8]);
+            drop(fd);
+        }
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
         let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);

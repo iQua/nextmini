@@ -1,10 +1,10 @@
-# Description
+# Running Nextmini's dataplane nodes in virtualized network namespaces
 
 This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
 
-## How to Run
+## Running the Example
 
-### Step 0: Increase ARP Table Limits
+### Step 1: Increasing the ARP Table Limits
 
 These commands increase the Linux kernel's ARP (Address Resolution Protocol) neighbor table thresholds to handle a large number of network devices:
 
@@ -14,60 +14,68 @@ sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
 sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
 ```
 
-**ARP Threshold Explanations:**
-- `gc_thresh1` **(2048)**: **Soft minimum threshold** - The minimum number of entries to maintain in the ARP table.
-- `gc_thresh2` **(4096)**: **Soft maximum threshold** - When the ARP table reaches this size, the kernel becomes more aggressive about garbage collection and starts removing stale entries.
-- `gc_thresh3` **(8192)**: **Hard maximum threshold** - The absolute maximum number of ARP entries allowed.
+where:
 
-### Step 1: Configure the Number of Nodes
+- `gc_thresh1` **(2048)**: _Soft minimum threshold_ — The minimum number of entries to maintain in the ARP table.
 
-To change the number of nodes, you need to update the `n_nodes` field in three configuration files:
+- `gc_thresh2` **(4096)**: _Soft maximum threshold_ — When the ARP table reaches this size, the kernel becomes more aggressive about garbage collection and starts removing stale entries.
 
-- Change the `n_nodes` in controller-config.toml. As before, controller needs the correct configuration.
+- `gc_thresh3` **(8192)**: _Hard maximum threshold_ — The absolute maximum number of ARP entries allowed.
 
+### Step 2: Configuring the number of nodes in the controller
 
-### Step 2: Start Controller and Database
+To change the number of nodes, you need to update the `n_nodes` field in the controller's configuration file, `controller-config.toml`, or specify the network topology to make sure that the number of nodes coincides with the configuration in the data plane.
 
-Start the controller and database services:
+### Step 3: Starting the controller and database engine
+
+To start the controller and database engine:
 
 ```bash
 cd nextmini/examples/namespace
 docker compose build; docker compose up
 ```
 
-### Step 3: Build the Project
+### Step 4: Running the project
 
-Build the project in a new terminal:
-
-** Use command Line**
+To build the dataplane that allows super-user execution (required for this example), use the following commands that builds the binary `nextmini` and installs it in `/usr/local/bin`:
 
 ```bash
 cd ~/nextmini
-cargo build --release
-sudo ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
+sudo env "PATH=$HOME/.cargo/bin:$PATH" rustup default stable
+sudo env "PATH=$HOME/.cargo/bin:$PATH" cargo install --path dataplane --root /usr/local
 ```
 
-** Use configuration file**
+To run this example with a specific number of nodes in a virtual or physical machine, you may use command-line arguments to specify the number of nodes:
 
-Add for example, `n_nodes = 5` into `examples/namespace/config.toml` also works.
+```bash
+sudo nextmini --config-path examples/namespace/config.toml --n-nodes 5
+```
 
-After adding it, use:
+You can also run `nextmini --help` to see all command-line arguments.
+
+Alternatively, you may specify the number of nodes in the configuration file, such as `examples/namespace/config.toml`:
+
+```toml
+n_nodes = 5
+```
+
+Then run:
 
 ```bash
 cd ~/nextmini
-cargo build --release
-sudo ./target/release/nextmini --config-path examples/namespace/config.toml
+cargo install --path dataplane
+sudo nextmini --config-path examples/namespace/config.toml
 ```
 
-INFO level log can be seen by using:
+To see detailed logs, set the `RUST_LOG` environment variable to `info`:
 
 ```bash
 cd ~/nextmini
-cargo build --release
-sudo RUST_LOG=info ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 5
+cargo install --path dataplane
+sudo RUST_LOG=info nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
-### Step 4: Observe the Results
+### Step 5: Observing the results
 
 You should see output similar to the following in the controller terminal:
 
@@ -83,7 +91,7 @@ Monitor memory usage in a new terminal:
 free -h
 ```
 
-### Step 5: Cleanup
+### Step 6: Cleaning up
 
 To clean up the environment:
 
@@ -91,10 +99,17 @@ To clean up the environment:
 2. Remove created veth interfaces:
 
 ```bash
-sudo bash -c 'for veth in $(ifconfig | grep "^veth" | cut -d" " -f1); do ip link delete "$veth"; done'; echo "Cleaned up veths successfully"
+cd nextmini/examples/namespace
+./cleanup.sh
 ```
 
-3. Verify cleanup was successful:
+You should see:
+
+```bash
+The virtual network environment has been successfully cleaned up. You can now run the controller containers again.
+```
+
+3. To verify that the clean-up process was completed successfully, confirm that the following command would print `0`:
 
 ```bash
 ip link show | grep veth | wc -l
@@ -102,17 +117,38 @@ ip link show | grep veth | wc -l
 
 ## Testing Configuration
 
-### Environment Requirements
+### Entering the namespace
 
-This namespace example can be tested with Arbutus c16-180-576 configuration.
+To enter a node's network namespace, you need to target a **child process**:
 
-### Simplified Testing
+```bash
+# List all nextmini processes.
+ps -eo pid,ppid,cmd | grep "nextmini" | grep -v grep | sort -n
 
-For testing pure startup speed and memory usage:
+# Manually specify a child PID.
+sudo nsenter -t <child_pid> -n bash  # uses any child PID from pstree
+
+# Verify you're in a namespace.
+ip addr show
+```
+
+### Launching a virtual machine
+
+This example can be tested with the `c16-180-576` configuration in the Arbutus cloud (a part of the Digital Research Alliance of Canada). As shown in this figure, `c16-180-576` is the name of `Flavor` in the Arbutus cloud, which manage the sizes for the compute, memory and storage capacity of the instance.
+
+![Arbutus c16-180-576 Flavor Configuration](/images/examples/namespace/arbutus-flavor.png)
+
+For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
+
+### Testing the startup time and memory consumption
+
+To test the total amount of time for starting up all the nodes and the memory consumption afterwards:
+
 - Configure the desired `n_nodes` value with ring preset topology
+
 - Remove the `[routing]` section from configuration files (no persistent TCP connections and no routes needed)
 
-The following lines could be used in `/nextmini/namespace_init/controller_standalone/controller-config.toml` for test:
+The following lines could be used in `examples/namespace/controller-config.toml` for testing purposes:
 
 ```toml
 protocol = "tcp"
@@ -129,6 +165,32 @@ database = "nextmini"
 port = "5432"
 ```
 
+### Connection staggering
+
+To prevent overwhelming the controller and the PostgreSQL database when spawning a large number of nodes, Nextmini supports connection staggering:
+
+#### Network interface creation delay (200ms between nodes)
+
+Located in `dataplane/src/node/namespace/manager.rs`:
+
+```rust
+// sleeps between node creation to prevent overwhelming the system.
+thread::sleep(time::Duration::from_millis(200));
+```
+
+This delay occurs in the parent process after completing critical operations for each node, like creating the veth pair, spawning the child process, and moving the veth peer into the child's network namespace.
+
+#### Controller Connection Delay (200ms × node_index)
+
+Located in `dataplane/src/node/namespace/manager.rs`:
+
+```rust
+// staggered connection: each node waits longer to prevent controller overload
+let sleep_ms = (idx as u64) * 200;
+tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+```
+
+Each node waits `idx × 200ms` before connecting to the controller.
 
 ## Memory Usage Analysis
 
@@ -168,10 +230,36 @@ Swap:             0B          0B          0B
 
 ### Increasing Connection Limits
 
+Without sufficient `max_connections`, you'll encounter this error once the 100th node tries to connect:
+
+```text
+FATAL: sorry, too many clients already
+```
+
 To handle more than 100 concurrent connections, modify the PostgreSQL configuration in `docker-compose.yml`:
 
 ```yaml
-command: postgres -c max_connections=700 -c shared_preload_libraries=pg_stat_statements
+command: postgres -c max_connections=<number_of_max_connections> -c shared_preload_libraries=pg_stat_statements
+```
+
+where `<number_of_max_connections>` should be set based on your expected maximum concurrent connections.
+
+PostgreSQL's default `max_connections` is typically 100. The controller's database connection pool could be configured in `controller/src/db.rs` with:
+
+```rust
+.max_connections(<number_of_max_connections>)  // Maximum pool capacity
+.min_connections(<number_of_min_connections>)  // Minimum connections to maintain
+```
+
+The controller uses a connection pool to execute database operations (INSERT, SELECT, UPDATE).
+
+The 200ms staggering spreads connections over ~240 seconds for 600 nodes, so at most ~5 nodes connect simultaneously.
+
+**Recommended settings:**
+
+```rust
+.max_connections(100)  // Sufficient for concurrent operations
+.min_connections(50)   // Keep some connections warm
 ```
 
 ### Database Monitoring Commands
@@ -234,19 +322,6 @@ watch -n 1 'echo "=== $(date +%H:%M:%S) ==="; echo "ARP: $(arp -a | wc -l)/$(cat
 
 ## Troubleshooting
 
-### Process Monitoring
-
-Check namespace_init processes:
-```bash
-ps aux | grep namespace_init | grep " S+"
-sudo ps -eo pid,ppid,state,cmd | grep namespace_init | grep " S+"
-```
-
-Get process stack trace:
-```bash
-sudo cat /proc/<PID>/stack
-```
-
 ### Finding Missing Nodes
 
 Identify nodes that failed to connect (example for 600 nodes):
@@ -258,7 +333,7 @@ WITH RECURSIVE expected_nodes AS (
     UNION ALL
     SELECT node_id + 1
     FROM expected_nodes
-    WHERE node_id < 600
+    WHERE node_id < <number_of_n_nodes>
 )
 SELECT en.node_id as missing_node_id
 FROM expected_nodes en
@@ -266,6 +341,16 @@ LEFT JOIN nodes n ON en.node_id = n.id
 WHERE n.id IS NULL
 ORDER BY en.node_id
 LIMIT 10;"
+```
+
+## Check specific `veth<idx>a`:
+
+After finding the missing nodes, you could know about the `<idx>` of the node, which is `node_id-1`.
+
+Then check the status of `veth<idx>a` using:
+
+```bash
+ip link show | grep "veth<idx>[ab]"
 ```
 
 ## Performance Results

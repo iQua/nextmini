@@ -1,22 +1,15 @@
-/// The main entry point for the Nextmini dataplane node.
+/// The main entry point for the Nextmini dataplane node, with support for:
 ///
-/// Supports two deployment modes:
-/// Single-node deployment (n_nodes = 1): Run a traditional single dataplane node with docker containerization.
-/// Namespace deployment (n_nodes > 1): Spawn multiple isolated network namespaces with linux namespaces.
-///
-/// We use TaskTracker in Tokio (https://tokio.rs/tokio/topics/shutdown) to manage graceful
-/// shutdowns, similar to fork/join data parallelism or a structured concurrency model.
-///
-/// Reference:
-/// https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/
+/// Single-node deployment: runs a single dataplane node, typically within a Docker container.
+/// Multiple-node deployment: deploys multiple dataplane nodes in isolated network namespaces.
 mod node;
 mod tests;
 
 use std::error::Error;
 
+use tokio::runtime;
 use tokio::signal;
 use tokio_util::task::task_tracker::TaskTracker;
-
 use tracing::info;
 
 use node::conductor::Conductor;
@@ -27,30 +20,39 @@ fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt::init();
 
     let config = LocalConfig::new();
-    info!("Set n_nodes = {}.", config.n_nodes);
 
-    // checks if we should run in namespace deployment
+    // checks if we should run in virtual network namespaces on the same machine
     if config.n_nodes > 1 {
-        info!("Starting in namespace deployment with {} nodes.", config.n_nodes);
-        deploy_namespace(config);
+        info!(
+            "Started deploying {} dataplane nodes in isolated network namespaces.",
+            config.n_nodes
+        );
+        deploy_multiple(config);
     } else {
-        info!("Starting in single node deployment.");
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime.");
-        rt.block_on(deploy_single_node(config));
+        info!("Started deploying dataplane nodes in isolated network namespaces.");
+        let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+
+        rt.block_on(deploy(config));
     }
 
     Ok(())
 }
 
-// Spawn multiple isolated network namespaces.
-fn deploy_namespace(config: LocalConfig) {
+// Deploys multiple dataplane nodes, each in its isolated network namespace.
+fn deploy_multiple(config: LocalConfig) {
     let mut manager = NamespaceManager::new(config);
 
     manager.spawn_all_nodes();
 }
 
-// Run a single dataplane node.
-async fn deploy_single_node(config: LocalConfig) {
+// Deploys a single dataplane node.
+//
+// We use TaskTracker in Tokio (https://tokio.rs/tokio/topics/shutdown) to manage graceful
+// shutdowns, similar to fork/join data parallelism or a structured concurrency model.
+//
+// Reference:
+// https://vorpus.org/blog/notes-on-structured-concurrency-or-go-statement-considered-harmful/
+async fn deploy(config: LocalConfig) {
     let tracker = TaskTracker::new();
 
     // spawns the Conductor task with the receiver

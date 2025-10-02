@@ -273,6 +273,31 @@ pub struct LocalConfig {
     #[default(16)]
     #[arg(skip)]
     pub subnet: u8,
+
+    /// Amount of time to wait (ms) between node creation in namespace mode.
+    #[default(50)]
+    #[arg(skip)]
+    pub interval_between_spawn: u64,
+
+    /// Maximum time to wait (ms) for a veth interface to establish carrier in namespace mode.
+    #[default(20000)]
+    #[arg(skip)]
+    pub carrier_max_wait_ms: u64,
+
+    /// Poll interval (ms) for carrier checks in namespace mode.
+    #[default(100)]
+    #[arg(skip)]
+    pub carrier_poll_interval_ms: u64,
+
+    /// Additional delay after spawning child before starting handshake (ms) in namespace mode.
+    #[default(150)]
+    #[arg(skip)]
+    pub child_start_delay_ms: u64,
+
+    /// Timeout (ms) for parent waiting on child network setup handshake in namespace mode.
+    #[default(25000)]
+    #[arg(skip)]
+    pub handshake_timeout_ms: u64,
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -546,12 +571,7 @@ impl LocalConfig {
             let ip = u32::from(real_ip);
             let base = u32::from(cfgs.external_base_addr);
             let computed_node_id = (ip - base) as NodeId;
-
-            if computed_node_id != 0 {
-                cfgs.node_id = computed_node_id;
-            } else {
-                info!("Computed node_id is 0 from ns_addr {ns_addr}; keeping the default value.");
-            }
+            cfgs.node_id = computed_node_id;
         } else {
             error!("Failed to parse ns_addr '{ns_addr}' as IPv4");
         }
