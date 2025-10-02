@@ -1,6 +1,7 @@
 use std::net::Ipv4Addr;
 use std::thread;
 use std::time;
+use std::os::fd::{OwnedFd, AsRawFd};
 
 use nix::sched::*;
 use nix::sys::signal::Signal;
@@ -91,6 +92,8 @@ impl NamespaceManager {
 
             // create a pipe for handshake (child signals network ready)
             let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
+            // set read end non-blocking so we can implement timeout polling
+            let _ = nix::fcntl::fcntl(read_fd.as_raw_fd(), nix::fcntl::F_SETFL(nix::fcntl::OFlag::O_NONBLOCK));
 
             let cb = Box::new(|| {
                 child_process(
@@ -115,8 +118,8 @@ impl NamespaceManager {
             }
             .expect("Clone failed");
 
-            // parent closes write end
-            let _ = nix::unistd::close(write_fd);
+            // parent closes write end (child owns it now)
+            // drop write_fd here (OwnedFd drops automatically); explicit close redundant
 
             // keeps stack memory alive
             stacks.push(tmp_stack);
@@ -139,7 +142,7 @@ impl NamespaceManager {
             let mut handshake_ok = false;
             while time::Instant::now() < handshake_deadline {
                 let mut buf = [0u8; 1];
-                match nix::unistd::read(read_fd, &mut buf) {
+                match nix::unistd::read(read_fd.as_raw_fd(), &mut buf) {
                     Ok(1) => {
                         handshake_ok = true;
                         break;
@@ -161,10 +164,10 @@ impl NamespaceManager {
 
             if !handshake_ok {
                 error!("Handshake timeout waiting for child {} network setup", idx);
-                let _ = nix::unistd::close(read_fd);
+                let _ = nix::unistd::close(read_fd.as_raw_fd()); // close read end
                 continue;
             }
-            let _ = nix::unistd::close(read_fd);
+            let _ = nix::unistd::close(read_fd.as_raw_fd());
 
             // now bring up the master veth
             if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
@@ -247,7 +250,7 @@ fn child_process(
     idx: usize,
     subnet: u8,
     config_path: String,
-    handshake_fd: Option<i32>,
+    handshake_fd: Option<OwnedFd>,
 ) -> isize {
     info!(
         "Child process (PID: {}) started with idx {}",
@@ -268,8 +271,8 @@ fn child_process(
 
         // signal parent that peer interface is configured
         if let Some(fd) = handshake_fd {
-            let _ = nix::unistd::write(fd, &[1u8]);
-            let _ = nix::unistd::close(fd);
+            let _ = nix::unistd::write(fd.as_raw_fd(), &[1u8]);
+            let _ = nix::unistd::close(fd.as_raw_fd());
         }
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
