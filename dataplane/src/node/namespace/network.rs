@@ -51,10 +51,7 @@ pub async fn prepare_net(
     subnet: u8,
     idx: usize,
 ) -> Result<(u32, u32, u32), NetworkError> {
-    info!("prepare_net start: bridge={bridge_name} cidr={bridge_ip}/{subnet} idx={idx}");
-
     let (connection, handle, _) = new_connection()?;
-    info!("prepare_net: rtnetlink connection established");
     tokio::spawn(connection);
 
     info!("Interact with bridge {bridge_name} at cidr {bridge_ip}/{subnet}.");
@@ -330,6 +327,8 @@ pub async fn setup_veth_peer(
     ns_ip: &String,
     subnet: u8,
 ) -> Result<(), NetworkError> {
+    info!("Trying to set up veth peer with ip: {}/{}.", ns_ip, subnet);
+
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
