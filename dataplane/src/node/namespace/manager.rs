@@ -257,11 +257,7 @@ fn child_process(
     config_path: String,
     handshake_fd: Option<OwnedFd>,
 ) -> isize {
-    info!(
-        "Child process (PID: {}) started with idx {}",
-        unistd::getpid(),
-        idx
-    );
+    info!("Child process started with index {}.", idx);
 
     // sets hostname for this namespace
     let ns_hostname = format!("nextmini-{}", random_suffix(5));

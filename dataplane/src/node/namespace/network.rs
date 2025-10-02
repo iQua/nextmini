@@ -68,20 +68,35 @@ async fn new_connection_with_timeout(
 ) -> Result<Handle, NetworkError> {
     for attempt in 1..=attempts {
         let start = Instant::now();
-        match timeout(Duration::from_millis(timeout_ms), async { new_connection() }).await {
+        match timeout(Duration::from_millis(timeout_ms), async {
+            new_connection()
+        })
+        .await
+        {
             Ok(Ok((conn, handle, _))) => {
                 tokio::spawn(conn);
                 let elapsed = start.elapsed().as_millis();
-                info!("Child netlink connection established in {}ms (attempt {}/{}).", elapsed, attempt, attempts);
-                return Ok(handle);
+                info!(
+                    "Child netlink connection established in {} ms (attempt {} out of {}).",
+                    elapsed, attempt, attempts
+                );
+
+                Ok(handle)
             }
             Ok(Err(e)) => {
-                error!("Child netlink new_connection failed (attempt {}/{}): {}", attempt, attempts, e);
+                error!(
+                    "Child netlink new_connection failed (attempt {} out of {}): {}",
+                    attempt, attempts, e
+                );
             }
             Err(_) => {
-                error!("Child netlink new_connection timed out after {}ms (attempt {}/{}).", timeout_ms, attempt, attempts);
+                error!(
+                    "Child netlink new_connection timed out after {} ms (attempt {} out of {}).",
+                    timeout_ms, attempt, attempts
+                );
             }
         }
+
         if attempt < attempts {
             sleep(Duration::from_millis(backoff_ms)).await;
         }
@@ -99,14 +114,9 @@ pub async fn prepare_net(
 ) -> Result<(u32, u32, u32), NetworkError> {
     let handle = get_global_handle().await?;
 
-    info!("Interact with bridge {bridge_name} at cidr {bridge_ip}/{subnet}.");
-
     // creates bridge if not exist
     let bridge_idx = match get_bridge_idx(&handle, bridge_name.clone()).await {
-        Ok(idx) => {
-            info!("The bridge {} already exists.", bridge_name);
-            idx
-        }
+        Ok(idx) => idx,
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
     };
 
@@ -335,19 +345,19 @@ pub async fn wait_for_veth_carrier(
                 // logs progress in the rare cases where more than 10 attempts were tried
                 if attempt % 10 == 0 {
                     info!(
-                        "Waiting for veth {} carrier (attempt {}/{}).",
+                        "Waiting for veth {} carrier (attempt {} out of {}).",
                         veth_idx, attempt, max_retries
                     );
                 }
             }
             Ok(None) => {
                 return Err(NetworkError::OperationError(format!(
-                    "Veth interface {} not found",
+                    "Veth interface {} not found.",
                     veth_idx
                 )));
             }
             Err(e) => {
-                error!("Error checking veth {} carrier: {}", veth_idx, e);
+                error!("Error checking veth {} carrier: {}.", veth_idx, e);
             }
         }
 
@@ -367,17 +377,8 @@ pub async fn setup_veth_peer(
     ns_ip: &String,
     subnet: u8,
 ) -> Result<(), NetworkError> {
-    info!("Trying to set up veth peer with ip: {}/{}.", ns_ip, subnet);
-
     let start = Instant::now();
     let handle = new_connection_with_timeout(3, 1500, 200).await?;
-    info!(
-        "Child namespace netlink handle ready in {}ms for veth {}.",
-        start.elapsed().as_millis(),
-        veth_idx
-    );
-
-    info!("Setup veth peer with ip: {}/{}.", ns_ip, subnet);
 
     // sets veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
@@ -391,7 +392,7 @@ pub async fn setup_veth_peer(
         {
             Ok(_) => break,
             Err(e) => {
-                error!("Retrying in 200ms...{}.", e);
+                error!("Retrying in 200 ms...{}.", e);
                 sleep(Duration::from_millis(200)).await;
             }
         }
