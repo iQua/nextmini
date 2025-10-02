@@ -1,12 +1,12 @@
+use futures::stream::{SplitSink, SplitStream};
+use futures::{SinkExt, StreamExt};
+use rand::Rng;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
-
-use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt};
 use tracing::{error, info};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
@@ -95,6 +95,7 @@ impl ControllerInterfaceHandle {
 
         loop {
             let connect_fut = connect_async(url.as_str());
+
             match timeout(Duration::from_secs(5), connect_fut).await {
                 Ok(Ok((ws, _))) => {
                     ws_stream = ws;
@@ -107,13 +108,16 @@ impl ControllerInterfaceHandle {
                 }
                 Err(_) => {
                     // Timed out
-                    error!("Timed out attempting to connect to the controller after 5s. Retrying...");
+                    error!(
+                        "Timed out attempting to connect to the controller after 5s. Retrying..."
+                    );
                 }
             }
 
-            // Linear backoff with small jitter (0-500ms)
-            let jitter_ms: u64 = rand::random::<u16>() as u64 % 500;
+            // Linear backoff with small jitter (0 - 500ms)
+            let jitter_ms = rand::rng().random_range(0..500);
             let backoff = Duration::from_secs(2) + Duration::from_millis(jitter_ms);
+
             tokio::time::sleep(backoff).await;
         }
 
