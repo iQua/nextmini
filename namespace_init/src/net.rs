@@ -58,7 +58,7 @@ pub async fn prepare_net(
     // create bridge if not exist
     let bridge_idx = match get_bridge_idx(&handle, bridge_name.clone()).await {
         Ok(idx) => {
-            info!("bridge {} already exist", bridge_name);
+            info!("The bridge {} already exists.", bridge_name);
             idx
         }
         Err(_) => create_bridge(bridge_name, bridge_ip, subnet).await?,
