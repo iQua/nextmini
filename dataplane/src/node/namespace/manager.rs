@@ -114,8 +114,6 @@ impl NamespaceManager {
             // keeps stack memory alive
             stacks.push(tmp_stack);
 
-            info!("Spawned child pid: {}", child_pid);
-
             // moves veth peer into child's netns
             if let Err(e) =
                 rt.block_on(async { join_veth_to_ns(veth2_idx, child_pid.as_raw() as u32).await })
