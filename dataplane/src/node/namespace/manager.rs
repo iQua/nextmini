@@ -211,7 +211,7 @@ fn child_process(
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
         // staggered connection: each node waits longer to prevent controller overload
-        let sleep_ms = rng().random_range(0..50);
+        let sleep_ms = rng().random_range(0..30);
         tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
