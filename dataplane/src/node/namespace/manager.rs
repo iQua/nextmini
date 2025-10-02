@@ -171,6 +171,7 @@ impl NamespaceManager {
                 drop(read_fd); // timeout cleanup
                 continue;
             }
+
             drop(read_fd); // success cleanup
 
             // now bring up the master veth

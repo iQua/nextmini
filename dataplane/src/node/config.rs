@@ -274,23 +274,23 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub subnet: u8,
 
-    /// Maximum time to wait (ms) for a veth interface to establish carrier.
+    /// Maximum time to wait (ms) for a veth interface to establish carrier in namespace mode.
     #[default(20000)]
     #[arg(skip)]
     pub carrier_max_wait_ms: u64,
 
-    /// Poll interval (ms) for carrier checks.
+    /// Poll interval (ms) for carrier checks in namespace mode.
     #[default(100)]
     #[arg(skip)]
     pub carrier_poll_interval_ms: u64,
 
-    /// Additional delay after spawning child before starting handshake (ms).
+    /// Additional delay after spawning child before starting handshake (ms) in namespace mode.
     #[default(150)]
     #[arg(skip)]
     pub child_start_delay_ms: u64,
 
-    /// Timeout (ms) for parent waiting on child network setup handshake.
-    #[default(10000)]
+    /// Timeout (ms) for parent waiting on child network setup handshake in namespace mode.
+    #[default(20000)]
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
 }
