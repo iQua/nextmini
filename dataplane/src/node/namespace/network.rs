@@ -268,7 +268,7 @@ pub async fn wait_for_veth_carrier(
                 // Check if the link has carrier
                 // In rtnetlink, we can check the operstate or flags
                 // IFF_LOWER_UP (0x10000) indicates carrier is present
-                let has_carrier = (link.header.flags & 0x10000) != 0;
+                let has_carrier = (link.header.flags.bits() & 0x10000) != 0;
                 
                 if has_carrier {
                     info!("Veth interface {} established carrier after {} attempts", veth_idx, attempt);
