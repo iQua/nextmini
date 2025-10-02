@@ -42,7 +42,7 @@ impl NamespaceManager {
         Self { config }
     }
 
-    // spawns all namespaces and waits for shutdown
+    // Spawns all namespaces and waits for shutdown.
     pub fn spawn_all_nodes(&mut self) {
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
@@ -153,7 +153,7 @@ impl NamespaceManager {
         rt.block_on(self.wait_for_shutdown(bridge_idx));
     }
 
-    // computes the namespace IP addresses
+    // Computes the namespace IP addresses.
     fn compute_namespace_ips(&self) -> Vec<String> {
         let base: u32 = self
             .config
@@ -169,7 +169,7 @@ impl NamespaceManager {
             .collect()
     }
 
-    // waits for Ctrl+C shutdown signal
+    // Waits for the Ctrl + C shutdown signal.
     async fn wait_for_shutdown(&self, bridge_idx: Option<u32>) {
         match tokio::signal::ctrl_c().await {
             Ok(_) => {
