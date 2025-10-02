@@ -1,5 +1,5 @@
 use std::net::Ipv4Addr;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{OwnedFd, IntoRawFd};
 use std::thread;
 use std::time;
 
@@ -95,7 +95,8 @@ impl NamespaceManager {
             // set read end non-blocking so we can implement timeout polling
             let _ = fcntl(read_fd, FcntlArg::F_SETFL(OFlag::O_NONBLOCK));
 
-            let cb = Box::new(|| {
+            let raw_write_fd = write_fd.into_raw_fd();
+            let cb = Box::new(move || { 
                 child_process(
                     ns_ip.clone(),
                     veth2_idx,
@@ -103,7 +104,7 @@ impl NamespaceManager {
                     idx,
                     subnet,
                     config_path.clone(),
-                    Some(write_fd),
+                    Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
                 )
             });
 
@@ -118,8 +119,7 @@ impl NamespaceManager {
             }
             .expect("Clone failed");
 
-            // parent closes write end (child owns it now)
-            // drop write_fd here (OwnedFd drops automatically); explicit close redundant
+            // parent already transferred ownership of write end to child via raw fd
 
             // keeps stack memory alive
             stacks.push(tmp_stack);
