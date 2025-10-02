@@ -264,6 +264,11 @@ pub async fn wait_for_veth_carrier(
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
+    info!(
+        "Waiting for veth interface {} to establish carrier.",
+        veth_idx
+    );
+
     for attempt in 1..=max_retries {
         match handle
             .link()
