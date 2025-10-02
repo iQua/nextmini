@@ -234,22 +234,6 @@ pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    // Verify the interface exists before trying to bring it up
-    let link = handle
-        .link()
-        .get()
-        .match_index(veth_idx)
-        .execute()
-        .try_next()
-        .await?;
-
-    if link.is_none() {
-        return Err(NetworkError::OperationError(format!(
-            "Master veth with index {} not found",
-            veth_idx
-        )));
-    }
-
     // Bring up the master veth interface AFTER the peer is configured
     // This prevents NO-CARRIER state that occurs when one end is up and the other is down
     handle
@@ -269,72 +253,27 @@ pub async fn bring_up_master_veth(veth_idx: u32) -> Result<(), NetworkError> {
 
 pub async fn setup_veth_peer(
     veth_idx: u32,
-    veth_name: &String,
     ns_ip: &String,
     subnet: u8,
 ) -> Result<(), NetworkError> {
-    // Small initial delay to ensure interface has settled in new namespace
-    sleep(Duration::from_millis(50)).await;
-
     let (connection, handle, _) = new_connection()?;
     tokio::spawn(connection);
 
-    info!(
-        "Setup veth peer {} with ip: {}/{}.",
-        veth_name, ns_ip, subnet
-    );
+    info!("Setup veth peer with ip: {}/{}.", ns_ip, subnet);
 
-    // Look up interface by NAME in this namespace to get correct index
-    // Interface indices may not be reliable across namespace boundaries
-    let actual_veth_idx = match handle
-        .link()
-        .get()
-        .match_name(veth_name.clone())
-        .execute()
-        .try_next()
-        .await?
-    {
-        Some(link) => link.header.index,
-        None => {
-            return Err(NetworkError::OperationError(format!(
-                "Failed to find veth interface {} in namespace",
-                veth_name
-            )));
-        }
-    };
-
-    info!(
-        "Found veth {} with index {} in namespace",
-        veth_name, actual_veth_idx
-    );
-
-    // sets veth peer address with limited retries
+    // sets veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
-    let max_retries = 20;
-    let mut retry_count = 0;
 
+    // keeps retrying until successful
     loop {
         match AddressHandle::new(handle.clone())
-            .add(actual_veth_idx, veth_2_addr, subnet)
+            .add(veth_idx, veth_2_addr, subnet)
             .execute()
             .await
         {
-            Ok(_) => {
-                info!("Successfully added IP address to {}", veth_name);
-                break;
-            }
+            Ok(_) => break,
             Err(e) => {
-                retry_count += 1;
-                if retry_count >= max_retries {
-                    return Err(NetworkError::OperationError(format!(
-                        "Failed to add IP address to {} after {} retries: {}",
-                        veth_name, max_retries, e
-                    )));
-                }
-                error!(
-                    "Failed to add IP to {} (attempt {}/{}), retrying in 200ms: {}",
-                    veth_name, retry_count, max_retries, e
-                );
+                error!("Retrying in 200ms...{}.", e);
                 sleep(Duration::from_millis(200)).await;
             }
         }
@@ -343,20 +282,18 @@ pub async fn setup_veth_peer(
     // Bring up the veth peer interface
     handle
         .link()
-        .set(LinkUnspec::new_with_index(actual_veth_idx).up().build())
+        .set(LinkUnspec::new_with_index(veth_idx).up().build())
         .execute()
         .await
         .map_err(|e| {
             NetworkError::OperationError(format!(
-                "Set veth {} with idx {} to up failed: {}.",
-                veth_name, actual_veth_idx, e
+                "Set veth with idx {} to up failed: {}.",
+                veth_idx, e
             ))
         })?;
 
-    info!("Successfully brought up veth peer {}", veth_name);
-
     // Small delay to ensure the link state propagates properly
-    sleep(Duration::from_millis(50)).await;
+    sleep(Duration::from_millis(10)).await;
 
     // sets lo interface to up
     let lo_idx = handle
