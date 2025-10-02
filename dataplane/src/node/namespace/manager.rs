@@ -1,8 +1,7 @@
 use std::net::Ipv4Addr;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::thread;
 use std::time;
-use std::os::fd::{OwnedFd, AsRawFd};
-use nix::fcntl::{fcntl, FcntlArg, OFlag};
 
 use nix::sched::*;
 use nix::sys::signal::Signal;
@@ -135,7 +134,9 @@ impl NamespaceManager {
 
             // gives the child process time to start and configure its peer interface
             // adds an initial, configurable small sleep to let child process start
-            thread::sleep(time::Duration::from_millis(self.config.child_start_delay_ms));
+            thread::sleep(time::Duration::from_millis(
+                self.config.child_start_delay_ms,
+            ));
 
             // wait for child handshake that peer interface is configured before bringing up master
             let handshake_deadline = time::Instant::now()
@@ -178,23 +179,17 @@ impl NamespaceManager {
 
             // waits and verifies that the veth pair link is established (has carrier)
             // uses configurable retry parameters
-            let max_retries = (self.config.carrier_max_wait_ms / self.config.carrier_poll_interval_ms) as u32;
+            let max_retries =
+                (self.config.carrier_max_wait_ms / self.config.carrier_poll_interval_ms) as u32;
             let wait_result = rt.block_on(async {
-                wait_for_veth_carrier(
-                    veth_idx,
-                    max_retries,
-                    self.config.carrier_poll_interval_ms,
-                )
-                .await
+                wait_for_veth_carrier(veth_idx, max_retries, self.config.carrier_poll_interval_ms)
+                    .await
             });
 
             if let Err(e) = wait_result {
                 error!(
                     "Veth pair {} (ifindex {}) failed to establish carrier: {}. Giving up after {} ms.",
-                    idx,
-                    veth_idx,
-                    e,
-                    self.config.carrier_max_wait_ms
+                    idx, veth_idx, e, self.config.carrier_max_wait_ms
                 );
                 continue;
             }
