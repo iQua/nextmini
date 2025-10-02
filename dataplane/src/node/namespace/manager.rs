@@ -138,7 +138,7 @@ impl NamespaceManager {
                 self.config.child_start_delay_ms,
             ));
 
-            // wait for child handshake that peer interface is configured before bringing up master
+            // waits for child handshake that peer interface is configured before bringing up master
             let handshake_deadline = time::Instant::now()
                 + time::Duration::from_millis(self.config.handshake_timeout_ms);
             let mut handshake_ok = false;
@@ -178,7 +178,7 @@ impl NamespaceManager {
 
             drop(read_fd); // success cleanup
 
-            // now bring up the master veth
+            // now brings up the master veth
             if let Err(e) = rt.block_on(async { bring_up_master_veth(veth_idx).await }) {
                 error!("Failed to bring up master veth: {}. Retrying...", e);
                 continue;
@@ -202,7 +202,9 @@ impl NamespaceManager {
             }
 
             // sleeps between node creation to prevent overwhelming the system
-            thread::sleep(time::Duration::from_millis(50));
+            thread::sleep(time::Duration::from_millis(
+                self.config.interval_between_spawn,
+            ));
         }
 
         // waits for shutdown signal

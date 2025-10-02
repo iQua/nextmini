@@ -274,6 +274,11 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub subnet: u8,
 
+    /// Amount of time to wait (ms) between node creation in namespace mode.
+    #[default(50)]
+    #[arg(skip)]
+    pub interval_between_spawn: u64,
+
     /// Maximum time to wait (ms) for a veth interface to establish carrier in namespace mode.
     #[default(20000)]
     #[arg(skip)]
