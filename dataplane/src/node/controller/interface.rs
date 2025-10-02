@@ -93,6 +93,8 @@ impl ControllerInterfaceHandle {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+        info!("Attempting to connect to the controller.");
+
         loop {
             let connect_fut = connect_async(url.as_str());
 
