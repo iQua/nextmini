@@ -134,12 +134,12 @@ impl NamespaceManager {
 
             // waits and verify that the veth pair link is established (has carrier)
             // this prevents proceeding with a node that has NO-CARRIER state
-            // retrying for up to 5 seconds, which should be sufficient even under heavy load
-            let wait_result = rt.block_on(async { wait_for_veth_carrier(veth_idx, 50, 100).await });
+            // retrying for up to 75 seconds, which should be sufficient even under heavy load
+            let wait_result = rt.block_on(async { wait_for_veth_carrier(veth_idx, 30, 150).await });
 
             if let Err(e) = wait_result {
                 error!(
-                    "Veth pair {} failed to establish carrier: {}. Retrying...",
+                    "Veth pair {} failed to establish carrier: {}. Giving up.",
                     idx, e
                 );
                 continue;
