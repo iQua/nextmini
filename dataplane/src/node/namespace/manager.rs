@@ -46,10 +46,13 @@ impl NamespaceManager {
     pub fn spawn_all_nodes(&mut self) {
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
-        // directly sets the controller address to the bridge IP without using local
-        // controller_addr(127.0.0.1:3000)
+        // directly sets the controller address to the bridge IP without using the local
+        // controller_addr (127.0.0.1:3000)
         let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
-        info!("Controller address set to {}.", controller_addr);
+        info!(
+            "The controller address has been set to {}.",
+            controller_addr
+        );
 
         // computes the namespace IP addresses
         let ns_ips = self.compute_namespace_ips();
