@@ -1,6 +1,6 @@
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval};
+use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
@@ -94,17 +94,27 @@ impl ControllerInterfaceHandle {
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
 
         loop {
-            match connect_async(url.as_str()).await {
-                Ok((ws, _)) => {
+            let connect_fut = connect_async(url.as_str());
+            match timeout(Duration::from_secs(5), connect_fut).await {
+                Ok(Ok((ws, _))) => {
                     ws_stream = ws;
                     info!("WebSocket handshake has been successfully completed.");
                     break;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
+                    // Connection attempt failed quickly (e.g., refused, handshake error)
                     error!("Failed to connect to the controller: {}. Retrying...", e);
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(_) => {
+                    // Timed out
+                    error!("Timed out attempting to connect to the controller after 5s. Retrying...");
                 }
             }
+
+            // Linear backoff with small jitter (0-500ms)
+            let jitter_ms: u64 = rand::random::<u16>() as u64 % 500;
+            let backoff = Duration::from_secs(2) + Duration::from_millis(jitter_ms);
+            tokio::time::sleep(backoff).await;
         }
 
         let startup_msg = DataplaneToController::StartUp {
