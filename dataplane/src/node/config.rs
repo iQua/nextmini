@@ -275,7 +275,7 @@ pub struct LocalConfig {
     pub subnet: u8,
 
     /// Amount of time to wait (ms) between node creation in namespace mode.
-    #[default(200)]
+    #[default(50)]
     #[arg(skip)]
     pub interval_between_spawn: u64,
 
