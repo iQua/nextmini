@@ -2,7 +2,9 @@ use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
 
 use futures::TryStreamExt;
 use once_cell::sync::OnceCell;
-use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
+use rtnetlink::{
+    AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder, new_connection,
+};
 use tokio::time::timeout;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
@@ -443,6 +445,43 @@ pub async fn setup_veth_peer(
         })?;
 
     Ok(())
+}
+
+/// Adds a default route (0.0.0.0/0) via the specified gateway on the given interface index
+/// inside the current network namespace. This enables outbound connectivity from the namespace
+/// to networks reachable through the host bridge and beyond.
+pub async fn add_default_route(veth_idx: u32, gateway_ip: &str) -> Result<(), NetworkError> {
+    let handle = new_connection_with_timeout(3, 1500, 200).await?;
+
+    let gateway = Ipv4Addr::from_str(gateway_ip)?;
+
+    // Builds RouteMessage using the builder API from rtnetlink v0.18.
+    let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+        .destination_prefix(Ipv4Addr::new(0, 0, 0, 0), 0)
+        .gateway(gateway)
+        .output_interface(veth_idx)
+        .build();
+
+    // Uses replace() to avoid errors if a default route already exists.
+    match handle.route().add(msg).replace().execute().await {
+        Ok(_) => {
+            info!(
+                "Installed default route via {} on ifindex {} inside namespace.",
+                gateway_ip, veth_idx
+            );
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                "Failed to add default route via {} on ifindex {}: {}.",
+                gateway_ip, veth_idx, e
+            );
+            Err(NetworkError::OperationError(format!(
+                "Add default route failed: {}.",
+                e
+            )))
+        }
+    }
 }
 
 pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {

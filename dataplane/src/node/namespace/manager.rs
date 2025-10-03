@@ -14,8 +14,8 @@ use tracing::{error, info};
 use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
 use crate::node::namespace::network::{
-    bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
-    wait_for_veth_carrier,
+    add_default_route, bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net,
+    setup_veth_peer, wait_for_veth_carrier,
 };
 
 const STACK_SIZE: usize = 1024 * 1024;
@@ -89,6 +89,7 @@ impl NamespaceManager {
 
             // prepares child process
             let subnet = self.config.subnet;
+            let bridge_ip = self.config.bridge_ip.clone();
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
 
@@ -107,6 +108,7 @@ impl NamespaceManager {
                     subnet,
                     config_path.clone(),
                     Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
+                    bridge_ip.clone(),
                 )
             });
 
@@ -258,6 +260,7 @@ fn child_process(
     subnet: u8,
     config_path: String,
     handshake_fd: Option<OwnedFd>,
+    bridge_ip: String,
 ) -> isize {
     info!("Child process started with index {}.", idx);
 
@@ -280,6 +283,14 @@ fn child_process(
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
         let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
+
+        // adds a default route via the host bridge inside this namespace to enable outbound traffic
+        if let Err(e) = add_default_route(veth_peer_idx, &bridge_ip).await {
+            error!(
+                "Failed to add default route in namespace idx {} via {}: {}.",
+                idx, bridge_ip, e
+            );
+        }
 
         // starts the conductor
         let conductor = Conductor::new(config).await;
