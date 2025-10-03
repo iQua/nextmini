@@ -498,7 +498,7 @@ pub fn ensure_ip_forward_enabled() -> Result<(), NetworkError> {
                 .open("/proc/sys/net/ipv4/ip_forward")
                 .map_err(NetworkError::Other)?;
             f.write_all(b"1").map_err(NetworkError::Other)?;
-            info!("Enabled net.ipv4.ip_forward=1");
+            info!("Enabled net.ipv4.ip_forward=1.");
             Ok(())
         }
     }
@@ -538,7 +538,7 @@ pub fn ensure_forward_rules(bridge_name: &str, outbound_if: &str) -> Result<(), 
             .map_err(NetworkError::Other)?;
         if !add1.success() {
             error!(
-                "Failed to apply iptables FORWARD rule: -i {} -o {} -j ACCEPT",
+                "Failed to apply iptables FORWARD rule: -i {} -o {} -j ACCEPT.",
                 bridge_name, outbound_if
             );
         }
@@ -584,7 +584,7 @@ pub fn ensure_forward_rules(bridge_name: &str, outbound_if: &str) -> Result<(), 
             .map_err(NetworkError::Other)?;
         if !add2.success() {
             error!(
-                "Failed to apply iptables FORWARD rule: -i {} -o {} -m state --state RELATED,ESTABLISHED -j ACCEPT",
+                "Failed to apply iptables FORWARD rule: -i {} -o {} -m state --state RELATED,ESTABLISHED -j ACCEPT.",
                 outbound_if, bridge_name
             );
         }
@@ -629,7 +629,7 @@ pub fn ensure_nat_masquerade(subnet_cidr: &str, outbound_if: &str) -> Result<(),
             .map_err(NetworkError::Other)?;
         if !add.success() {
             error!(
-                "Failed to ensure NAT MASQUERADE on {} via {}",
+                "Failed to ensure NAT MASQUERADE on {} via {}.",
                 subnet_cidr, outbound_if
             );
         }
