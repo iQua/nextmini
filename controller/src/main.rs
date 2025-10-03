@@ -16,7 +16,6 @@ use sqlx::{Pool, Postgres};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock, broadcast};
-
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
@@ -135,34 +134,33 @@ async fn handle_connection(
                             node_id, private_network_addr, public_network_addr
                         );
 
-                        // checks if the node ID is already used and registers immediately to prevent TOCTOU race
+                        // checks if the node ID is already used and registers immediately
                         let connected_node_count = {
                             let mut node_ws_guard = node_ws.write().await;
 
                             if node_ws_guard.contains_key(&node_id) {
-                                let current_count = node_ws_guard.len();
-
                                 error!(
-                                    "Node ID {} is already used. Current node_ws has {} entries. This connection will be rejected.",
-                                    node_id, current_count
+                                    "Node ID {} is already used. This connection will be rejected.",
+                                    node_id
                                 );
 
                                 continue;
                             }
 
-                            // Insert immediately after check to reserve this node_id
+                            // inserts immediately after check to reserve this node_id
                             node_ws_guard.insert(node_id, write_arc.clone());
                             let count_after_insert = node_ws_guard.len();
+
                             info!(
                                 "Node {} successfully inserted into node_ws. Total nodes now: {}",
                                 node_id, count_after_insert
                             );
+
                             count_after_insert
                         };
 
-                        // Note: We keep nodes in node_ws even if setup fails, to maintain consistent
-                        // node_id to count mapping. The websocket connection is established, so the
-                        // node is "connected" even if configuration failed.
+                        // note: We keep nodes in node_ws even if setup fails. The websocket connection is established, so the
+                        // node is considered connected even if configuration failed.
 
                         // checks if the node ID is correct
                         info!(
@@ -201,7 +199,7 @@ async fn handle_connection(
                             }
                         }
 
-                        // Finds the node specification for the current node
+                        // finds the node specification for the current node
                         let node_spec = config
                             .nodes
                             .iter()
@@ -230,14 +228,11 @@ async fn handle_connection(
                             Ok(_) => info!("Sent StartUp response to node {}", node_id),
                             Err(e) => {
                                 error!(
-                                    "Failed to send StartUp response to node {}: {}. Node will remain in node_ws but may not function correctly.",
+                                    "Failed to send StartUp response to node {}: {}.",
                                     node_id, e
                                 );
-                                // Don't remove from node_ws - keep for consistent counting
                             }
                         }
-
-                        // Node already registered in node_ws above to prevent TOCTOU race
 
                         current_node_id = Some(node_id);
 
@@ -257,11 +252,14 @@ async fn handle_connection(
                                 Vec::new() // Continue with empty node list
                             }
                         };
-                        // Get topology edges
+
+                        // gets the topology edges
                         let topology_edges =
                             topo::topo::build_topology(&config).unwrap_or_default();
-                        // Collect neighbors of the new node
+
+                        // collects neighbors of the new node
                         let mut neighbors: HashSet<i32> = HashSet::new();
+
                         for &(a, b) in &topology_edges {
                             if a == node_id as u32 {
                                 neighbors.insert(b as i32);
@@ -269,6 +267,7 @@ async fn handle_connection(
                                 neighbors.insert(a as i32);
                             }
                         }
+
                         // establishes connections between the new node and its neighbors by sending AddNode messages
                         for node in nodes {
                             if node.id == node_id as i32 {
@@ -372,7 +371,7 @@ async fn handle_connection(
                             error!("No routes to install for node {}.", node_id);
                         }
 
-                        // As a new node connects, checks if all the expected nodes are now connected
+                        // as a new node connects, checks if all the expected nodes are now connected
                         info!(
                             "Node {} setup completed successfully. At the time of insertion, there were {} nodes connected.",
                             node_id, connected_node_count
