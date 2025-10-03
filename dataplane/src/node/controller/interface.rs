@@ -121,14 +121,6 @@ impl ControllerInterfaceHandle {
             tokio::time::sleep(backoff).await;
         }
 
-        // If node_id is 0 (which is the default value from dataplane),
-        // request one from the controller. Otherwise, use the configured ID.
-        let node_id_to_send = if config.node_id == 0 {
-            None
-        } else {
-            Some(config.node_id)
-        };
-
         let startup_msg = DataplaneToController::StartUp {
             private_network_name: config.private_network_name.clone(),
             private_network_addr: config.private_network_addr.clone()
@@ -137,7 +129,7 @@ impl ControllerInterfaceHandle {
             public_network_addr: config.public_network_addr.clone()
                 + ":"
                 + &config.public_network_port.clone(),
-            node_id: node_id_to_send,
+            node_id: config.node_id.to_string().parse().ok(),
         };
 
         ws_stream
