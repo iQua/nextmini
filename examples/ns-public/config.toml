@@ -1,0 +1,10 @@
+public_network_interface = "ens3"
+private_network_name = "vm1-private"
+private_network_interface = "ens3"
+controller_addr = "206.12.90.108:3000"
+num_tun_queues = 1
+num_packet_processors = 1
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+n_nodes = 10

@@ -202,7 +202,7 @@ fn default_user_space_base_addr() -> Ipv4Addr {
 
 /// The default base ipv4 address for external network
 fn default_external_base_addr() -> Ipv4Addr {
-    Ipv4Addr::new(172, 16, 8, 4)
+    Ipv4Addr::new(172, 16, 8, 3)
 }
 
 /// The default transport protocol: QUIC
