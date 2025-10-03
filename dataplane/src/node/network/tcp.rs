@@ -6,7 +6,7 @@ use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;

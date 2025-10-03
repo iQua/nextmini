@@ -7,7 +7,7 @@ use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 

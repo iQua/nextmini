@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
