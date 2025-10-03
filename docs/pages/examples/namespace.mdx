@@ -62,16 +62,12 @@ n_nodes = 5
 Then run:
 
 ```bash
-cd ~/nextmini
-cargo install --path dataplane
 sudo nextmini --config-path examples/namespace/config.toml
 ```
 
-To see detailed logs, set the `RUST_LOG` environment variable to `info`:
+To see detailed logs, set the `RUST_LOG` environment variable to `info`. For example:
 
 ```bash
-cd ~/nextmini
-cargo install --path dataplane
 sudo RUST_LOG=info nextmini --config-path examples/namespace/config.toml --n-nodes 5
 ```
 
