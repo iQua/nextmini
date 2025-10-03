@@ -107,12 +107,6 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-    /// Offset added to computed node IDs for namespace mode to avoid clashes across VMs.
-    /// TODO: Haven't tested yet.
-    #[default(0)]
-    #[arg(long)]
-    pub node_id_offset: usize,
-
     /// If true, enable IPv4 forwarding on the host (writes /proc/sys/net/ipv4/ip_forward=1).
     #[default(false)]
     #[arg(long)]
