@@ -637,6 +637,9 @@ pub fn ensure_nat_masquerade(subnet_cidr: &str, outbound_if: &str) -> Result<(),
     Ok(())
 }
 
+// TODO: 1) Add delete rules fn() after ctrl+c
+// TODO: 2) Add delete veth pairs fn() after ctrl+c
+
 pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
     let handle = get_global_handle().await?;
 
