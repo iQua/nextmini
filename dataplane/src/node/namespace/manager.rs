@@ -79,7 +79,6 @@ impl NamespaceManager {
                 }
             }
             if self.config.auto_add_nat {
-                let cidr = format!("{}/{}", self.config.bridge_ip, self.config.subnet);
                 if let Err(e) = ensure_nat_masquerade(&format!("172.16.0.0/16"), &out_if) {
                     error!("Failed to add MASQUERADE: {}.", e);
                 }
@@ -121,6 +120,7 @@ impl NamespaceManager {
             let bridge_ip = self.config.bridge_ip.clone();
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
+            let node_id_offset = self.config.node_id_offset;
 
             // create a pipe for handshake (child signals network ready)
             let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
@@ -133,7 +133,7 @@ impl NamespaceManager {
                     ns_ip.clone(),
                     veth2_idx,
                     controller_addr_clone.clone(),
-                    idx,
+                    idx + node_id_offset,
                     subnet,
                     config_path.clone(),
                     Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
@@ -285,13 +285,13 @@ fn child_process(
     ns_ip: String,
     veth_peer_idx: u32,
     controller_addr: String,
-    idx: usize,
+    node_index: usize,
     subnet: u8,
     config_path: String,
     handshake_fd: Option<OwnedFd>,
     bridge_ip: String,
 ) -> isize {
-    info!("Child process started with index {}.", idx);
+    info!("Child process started with index {}.", node_index);
 
     // sets hostname for this namespace
     let ns_hostname = format!("nextmini-{}", random_suffix(5));
@@ -311,13 +311,14 @@ fn child_process(
         }
 
         // loads config using new_for_namespace (handles all namespace-specific settings)
-        let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
+        let config =
+            LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip, node_index);
 
         // adds a default route via the host bridge inside this namespace to enable outbound traffic
         if let Err(e) = add_default_route(veth_peer_idx, &bridge_ip).await {
             error!(
                 "Failed to add default route in namespace idx {} via {}: {}.",
-                idx, bridge_ip, e
+                node_index, bridge_ip, e
             );
         }
 

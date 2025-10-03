@@ -107,7 +107,12 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
-    /// If true, enable IPv4 forwarding on the host (writes /proc/sys/net/ipv4/ip_forward=1).
+    /// The node ID offset added to computed node IDs for namespace mode to avoid clashes across VMs.
+    #[default(0)]
+    #[arg(long)]
+    pub node_id_offset: usize,
+
+    /// If true, enable IPv4 forwarding on the host, writes /proc/sys/net/ipv4/ip_forward=1.
     #[default(false)]
     #[arg(long)]
     pub auto_enable_ip_forward: bool,
@@ -559,6 +564,7 @@ impl LocalConfig {
         config_path: &str,
         controller_addr: &str,
         ns_addr: &str,
+        node_index: usize,
     ) -> LocalConfig {
         // Reads the TOML configuration file (or falls back to defaults).
         let mut cfgs = match std::fs::read_to_string(config_path) {
@@ -581,15 +587,9 @@ impl LocalConfig {
         cfgs.private_network_addr = ns_addr.to_string();
         cfgs.public_network_addr = ns_addr.to_string();
 
-        // calculates the node_id
-        if let Ok(real_ip) = ns_addr.parse::<Ipv4Addr>() {
-            let ip = u32::from(real_ip);
-            let base = u32::from(cfgs.external_base_addr);
-            let computed_node_id = (ip - base) as NodeId;
-            cfgs.node_id = computed_node_id;
-        } else {
-            error!("Failed to parse ns_addr '{ns_addr}' as IPv4");
-        }
+        // The node_id is now based on the creation index + 1, since IDs are 1-based.
+        // The node_id_offset from the config is applied in the caller manager.rs.
+        cfgs.node_id = (node_index + 1) as NodeId;
 
         // Placeholder – caller (e.g. isoserver) should overwrite this.
         cfgs.controller_addr = controller_addr.to_string();
