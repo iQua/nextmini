@@ -85,7 +85,7 @@ async fn new_connection_with_timeout(
                     elapsed, attempt, attempts
                 );
 
-                Ok(handle)
+                return Ok(handle);
             }
             Ok(Err(e)) => {
                 error!(
@@ -382,7 +382,6 @@ pub async fn setup_veth_peer(
     ns_ip: &String,
     subnet: u8,
 ) -> Result<(), NetworkError> {
-    let start = Instant::now();
     let handle = new_connection_with_timeout(3, 1500, 200).await?;
 
     // sets veth peer address
