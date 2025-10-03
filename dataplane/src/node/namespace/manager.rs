@@ -47,9 +47,11 @@ impl NamespaceManager {
     pub fn spawn_all_nodes(&mut self) {
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
-        // directly sets the controller address to the bridge IP without using the local
-        // controller_addr (127.0.0.1:3000)
-        let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
+        // Sets the controller address to the bridge IP if it's running on the host -> controller_addr (127.0.0.1:3000).
+        let controller_addr: String = match self.config.controller_addr.as_str() {
+            "127.0.0.1:3000" => format!("ws://{}:3000", self.config.bridge_ip),
+            _ => format!("ws://{}", self.config.controller_addr),
+        };
         info!(
             "The controller address has been set to {}.",
             controller_addr
