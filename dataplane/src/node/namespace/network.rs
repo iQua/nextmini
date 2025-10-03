@@ -8,6 +8,7 @@ use rtnetlink::{
 use std::fs;
 use std::io::Write;
 use std::process::Command;
+use std::process::Stdio;
 use tokio::time::timeout;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
@@ -517,6 +518,7 @@ pub fn ensure_forward_rules(bridge_name: &str, outbound_if: &str) -> Result<(), 
             "-j",
             "ACCEPT",
         ])
+        .stderr(Stdio::null())
         .status()
         .map_err(NetworkError::Other)?;
     if !check1.success() {
@@ -558,6 +560,7 @@ pub fn ensure_forward_rules(bridge_name: &str, outbound_if: &str) -> Result<(), 
             "-j",
             "ACCEPT",
         ])
+        .stderr(Stdio::null())
         .status()
         .map_err(NetworkError::Other)?;
     if !check2.success() {
@@ -605,6 +608,7 @@ pub fn ensure_nat_masquerade(subnet_cidr: &str, outbound_if: &str) -> Result<(),
             "-j",
             "MASQUERADE",
         ])
+        .stderr(Stdio::null())
         .status()
         .map_err(NetworkError::Other)?;
     if !check.success() {
@@ -638,7 +642,7 @@ pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
 
     handle.link().del(bridge_idx).execute().await.map_err(|e| {
         NetworkError::OperationError(format!(
-            "Delet bridge with idx {} failed: {}.",
+            "Delete bridge with idx {} failed: {}.",
             bridge_idx, e
         ))
     })?;
