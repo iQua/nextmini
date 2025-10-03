@@ -126,38 +126,48 @@ async fn handle_connection(
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
 
-                        // assigns a node ID as the dataplane node requests
-                        let node_id = maybe_node_id.unwrap();
+                        // Determine the node ID to use.
+                        let node_id = match maybe_node_id {
+                            // If the node_id is already in use,
+                            // controller should reject the requested node_id from dataplane
+                            Some(id) => {
+                                let node_ws_guard = node_ws.read().await;
+                                if node_ws_guard.contains_key(&id) {
+                                    error!(
+                                        "Requested node ID {} is already used. This connection will be rejected.",
+                                        id
+                                    );
+                                    continue;
+                                }
+                                id
+                            }
+                            // If the requested node_id is none, then controller assigns a new ID to dataplane node.
+                            // In this case, nodes on different instances could be assigned the node ID automatically.
+                            None => {
+                                let node_ws_guard = node_ws.read().await;
+                                // Find the smallest available node ID starting from 1
+                                let mut new_id = 1;
+                                while node_ws_guard.contains_key(&new_id) {
+                                    new_id += 1;
+                                }
+                                info!("No node ID requested. Assigning new ID: {}", new_id);
+                                new_id
+                            }
+                        };
+
+                        // Re-acquire write lock to insert
+                        let mut node_ws_guard = node_ws.write().await;
+                        // inserts immediately after check to reserve this node_id
+                        node_ws_guard.insert(node_id, write_arc.clone());
+                        let connected_node_count = node_ws_guard.len();
 
                         info!(
-                            "Node with ID {} is attempting to connect (private: {}, public: {})",
-                            node_id, private_network_addr, public_network_addr
+                            "Node {} ({}, {}) successfully registered. Total nodes now: {}",
+                            node_id,
+                            private_network_addr,
+                            public_network_addr,
+                            connected_node_count,
                         );
-
-                        // checks if the node ID is already used and registers immediately
-                        let connected_node_count = {
-                            let mut node_ws_guard = node_ws.write().await;
-
-                            if node_ws_guard.contains_key(&node_id) {
-                                error!(
-                                    "Node ID {} is already used. This connection will be rejected.",
-                                    node_id
-                                );
-
-                                continue;
-                            }
-
-                            // inserts immediately after check to reserve this node_id
-                            node_ws_guard.insert(node_id, write_arc.clone());
-                            let count_after_insert = node_ws_guard.len();
-
-                            info!(
-                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
-                                node_id, count_after_insert
-                            );
-
-                            count_after_insert
-                        };
 
                         // note: We keep nodes in node_ws even if setup fails. The websocket connection is established, so the
                         // node is considered connected even if configuration failed.
