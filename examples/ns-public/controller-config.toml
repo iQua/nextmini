@@ -2,7 +2,7 @@ protocol = "tcp"
 
 [topology]
 type = "ring"
-ring_config = { n_nodes = 400 }
+ring_config = { n_nodes = 10 }
 
 [db]
 user = "pgusr"
