@@ -65,7 +65,7 @@ impl NamespaceManager {
             }
         }
         if self.config.auto_add_forward_rules || self.config.auto_add_nat {
-            // Detect outbound interface
+            // detects outbound interface
             let out_if = std::process::Command::new("/bin/sh")
                 .arg("-c")
                 .arg("ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") {print $(i+1); exit}}'")
