@@ -122,15 +122,14 @@ impl TcpClient {
                     stream
                         .write_all(&local_node_id.to_be_bytes())
                         .await
-                        .expect("Failed to send local node id to the node");
+                        .expect("Failed to send local node id to the node.");
 
                     info!("Connected to node {} with TCP.", remote_node_id);
-
                     return stream;
                 }
                 Err(e) => {
-                    error!(
-                        "Failed to connect to node address {} with error: {}, retrying in {}s.",
+                    warn!(
+                        "Failed to connect to node address {} with error: {}, retrying in {} seconds.",
                         remote_addr,
                         e,
                         delay.as_secs()
@@ -139,7 +138,10 @@ impl TcpClient {
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRY {
-                        panic!("Maximum retry reached for TCP connection to {remote_addr}");
+                        error!(
+                            "Maximum retry reached for establishing a TCP connection to {}.",
+                            remote_addr
+                        );
                     }
 
                     delay = delay.mul_f32(1.5); // Exponential backoff
