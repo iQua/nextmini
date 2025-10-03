@@ -107,6 +107,27 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
+    /// Offset added to computed node IDs for namespace mode to avoid clashes across VMs.
+    /// TODO: Haven't tested yet.
+    #[default(0)]
+    #[arg(long)]
+    pub node_id_offset: usize,
+
+    /// If true, enable IPv4 forwarding on the host (writes /proc/sys/net/ipv4/ip_forward=1).
+    #[default(false)]
+    #[arg(long)]
+    pub auto_enable_ip_forward: bool,
+
+    /// If true, add FORWARD rules between the namespace bridge and the outbound interface.
+    #[default(false)]
+    #[arg(long)]
+    pub auto_add_forward_rules: bool,
+
+    /// If true, add a MASQUERADE rule for the namespace subnet on the outbound interface.
+    #[default(false)]
+    #[arg(long)]
+    pub auto_add_nat: bool,
+
     /// This is not used in metrics collector.
     /// The interval at which metrics are collected and sent to the controller.
     #[default(5)]

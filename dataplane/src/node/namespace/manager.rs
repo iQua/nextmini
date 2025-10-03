@@ -14,7 +14,8 @@ use tracing::{error, info};
 use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
 use crate::node::namespace::network::{
-    add_default_route, bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net,
+    add_default_route, bring_up_master_veth, delete_namespace, ensure_forward_rules,
+    ensure_ip_forward_enabled, ensure_nat_masquerade, join_veth_to_ns, prepare_net,
     setup_veth_peer, wait_for_veth_carrier,
 };
 
@@ -56,6 +57,34 @@ impl NamespaceManager {
             "The controller address has been set to {}.",
             controller_addr
         );
+
+        // sets up host forwarding/NAT if configured
+        if self.config.auto_enable_ip_forward {
+            if let Err(e) = ensure_ip_forward_enabled() {
+                error!("Failed to enable ip_forward: {}", e);
+            }
+        }
+        if self.config.auto_add_forward_rules || self.config.auto_add_nat {
+            // Detect outbound interface
+            let out_if = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") {print $(i+1); exit}}'")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "ens3".to_string());
+
+            if self.config.auto_add_forward_rules {
+                if let Err(e) = ensure_forward_rules(&self.config.bridge_name, &out_if) {
+                    error!("Failed to add FORWARD rules: {}.", e);
+                }
+            }
+            if self.config.auto_add_nat {
+                let cidr = format!("{}/{}", self.config.bridge_ip, self.config.subnet);
+                if let Err(e) = ensure_nat_masquerade(&format!("172.16.0.0/16"), &out_if) {
+                    error!("Failed to add MASQUERADE: {}.", e);
+                }
+            }
+        }
 
         // computes the namespace IP addresses
         let ns_ips = self.compute_namespace_ips();
