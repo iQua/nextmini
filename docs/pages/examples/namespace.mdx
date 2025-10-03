@@ -364,4 +364,15 @@ All dataplane nodes have connected. It takes 264.35 seconds since the first node
 
 # Running Nextmini's dataplane nodes in virtualized network namespaces on multiple hosts
 
-## Run Multiple Hosts Example
+## Run Multiple Hosts Example on Arbutus
+
+Before running any commands, the port security on each instance should be disabled to allow traffic between instances.
+
+Choose `Edit port security group` and click `Edit Port` button.
+Then the following window will pop up, uncheck `Port Security` and click `Update` button.
+
+![Disable Port Security on Arbutus Instance](`/images/examples/ns-public/arbutus-port-security.png`)
+
+These steps are required to be done on all instances before running the example.
+
+### Controller settings
