@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
@@ -218,21 +218,21 @@ impl TcpMaxClient {
                     stream
                         .write_all(&[0x06])
                         .await
-                        .expect("Failed to send max client identifier to the node");
+                        .expect("Failed to send the max client identifier to the node.");
 
                     // sends the flow ID to the node
                     stream
                         .write_all(&flow_id.to_be_bytes()) // writes the flow_id as a 16-byte big-endian integer
                         .await
-                        .expect("Failed to send flow ID to the node");
+                        .expect("Failed to send the flow ID to the node.");
 
                     info!("Connected to {} with TCP max.", remote_addr);
 
                     return stream;
                 }
                 Err(e) => {
-                    error!(
-                        "Failed to connect to node address {} with error: {}, retrying in {}s.",
+                    warn!(
+                        "Failed to connect to node address {} with error: {}, retrying in {} seconds.",
                         remote_addr,
                         e,
                         delay.as_secs()
@@ -241,8 +241,9 @@ impl TcpMaxClient {
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRY {
-                        panic!(
-                            "Maximum retry reached for establishing a TCP max connection to {remote_addr}."
+                        error!(
+                            "Maximum retry reached for establishing a TCP max connection to {}.",
+                            remote_addr
                         );
                     }
 
@@ -280,21 +281,24 @@ impl TcpMaxClient {
             match TcpStream::connect(remote_addr).await {
                 Ok(stream) => {
                     info!("Connected to {} without max header.", remote_addr);
+
                     return stream;
                 }
                 Err(e) => {
-                    error!(
-                        "Failed to connect to node address {} with error: {}, retrying in {}s.",
+                    warn!(
+                        "Failed to connect to node address {} with error: {}, retrying in {} seconds.",
                         remote_addr,
                         e,
                         delay.as_secs()
                     );
+
                     tokio::time::sleep(delay).await;
                     retry_count += 1;
 
                     if retry_count >= MAX_RETRY {
-                        panic!(
-                            "Maximum retry reached for establishing a TCP connection to {remote_addr}."
+                        error!(
+                            "Maximum retry reached for establishing a TCP connection to {}.",
+                            remote_addr
                         );
                     }
 

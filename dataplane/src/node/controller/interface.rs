@@ -7,7 +7,7 @@ use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
@@ -93,8 +93,6 @@ impl ControllerInterfaceHandle {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-        info!("Attempting to connect to the controller.");
-
         loop {
             let connect_fut = connect_async(url.as_str());
 
@@ -106,11 +104,11 @@ impl ControllerInterfaceHandle {
                 }
                 Ok(Err(e)) => {
                     // Connection attempt failed quickly (e.g., refused, handshake error)
-                    error!("Failed to connect to the controller: {}. Retrying...", e);
+                    warn!("Failed to connect to the controller: {}. Retrying...", e);
                 }
                 Err(_) => {
                     // Timed out
-                    error!(
+                    warn!(
                         "Timed out attempting to connect to the controller after 5s. Retrying..."
                     );
                 }
