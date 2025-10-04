@@ -14,8 +14,9 @@ use tracing::{error, info};
 use crate::node::conductor::Conductor;
 use crate::node::config::LocalConfig;
 use crate::node::namespace::network::{
-    bring_up_master_veth, delete_namespace, join_veth_to_ns, prepare_net, setup_veth_peer,
-    wait_for_veth_carrier,
+    add_default_route, bring_up_master_veth, delete_namespace, ensure_forward_rules,
+    ensure_ip_forward_enabled, ensure_nat_masquerade, join_veth_to_ns, prepare_net,
+    setup_veth_peer, wait_for_veth_carrier,
 };
 
 const STACK_SIZE: usize = 1024 * 1024;
@@ -47,13 +48,41 @@ impl NamespaceManager {
     pub fn spawn_all_nodes(&mut self) {
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
-        // directly sets the controller address to the bridge IP without using the local
-        // controller_addr (127.0.0.1:3000)
-        let controller_addr = format!("ws://{}:3000", self.config.bridge_ip);
+        // The parent process no longer transforms the controller address.
+        // It passes the original address from the config directly to the child,
+        // which will then be responsible for resolving it to the gateway if needed.
+        let controller_addr = format!("ws://{}", self.config.controller_addr);
         info!(
             "The controller address has been set to {}.",
             controller_addr
         );
+
+        // sets up host forwarding/NAT if configured
+        if self.config.auto_enable_ip_forward {
+            if let Err(e) = ensure_ip_forward_enabled() {
+                error!("Failed to enable ip_forward: {}", e);
+            }
+        }
+        if self.config.auto_add_forward_rules || self.config.auto_add_nat {
+            // detects outbound interface
+            let out_if = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg("ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i==\"dev\") {print $(i+1); exit}}'")
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|_| "ens3".to_string());
+
+            if self.config.auto_add_forward_rules {
+                if let Err(e) = ensure_forward_rules(&self.config.bridge_name, &out_if) {
+                    error!("Failed to add FORWARD rules: {}.", e);
+                }
+            }
+            if self.config.auto_add_nat {
+                if let Err(e) = ensure_nat_masquerade(&format!("172.16.0.0/16"), &out_if) {
+                    error!("Failed to add MASQUERADE: {}.", e);
+                }
+            }
+        }
 
         // computes the namespace IP addresses
         let ns_ips = self.compute_namespace_ips();
@@ -87,8 +116,10 @@ impl NamespaceManager {
 
             // prepares child process
             let subnet = self.config.subnet;
+            let bridge_ip = self.config.bridge_ip.clone();
             let controller_addr_clone = controller_addr.clone();
             let config_path = self.config.config_path.clone();
+            let node_id_offset = self.config.node_id_offset;
 
             // create a pipe for handshake (child signals network ready)
             let (read_fd, write_fd) = nix::unistd::pipe().expect("pipe failed");
@@ -101,10 +132,11 @@ impl NamespaceManager {
                     ns_ip.clone(),
                     veth2_idx,
                     controller_addr_clone.clone(),
-                    idx,
+                    idx + node_id_offset,
                     subnet,
                     config_path.clone(),
                     Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
+                    bridge_ip.clone(),
                 )
             });
 
@@ -252,12 +284,13 @@ fn child_process(
     ns_ip: String,
     veth_peer_idx: u32,
     controller_addr: String,
-    idx: usize,
+    node_index: usize,
     subnet: u8,
     config_path: String,
     handshake_fd: Option<OwnedFd>,
+    bridge_ip: String,
 ) -> isize {
-    info!("Child process started with index {}.", idx);
+    info!("Child process started with index {}.", node_index);
 
     // sets hostname for this namespace
     let ns_hostname = format!("nextmini-{}", random_suffix(5));
@@ -276,8 +309,30 @@ fn child_process(
             drop(fd);
         }
 
+        // The child process is now responsible for resolving the controller address.
+        // If the address is localhost, it's replaced by the bridge IP (gateway)
+        // to ensure connectivity from within the isolated namespace.
+        let mut resolved_controller_addr = controller_addr;
+        if resolved_controller_addr.contains("127.0.0.1") {
+            info!(
+                "Controller address '{}' is localhost, replacing with gateway IP '{}'.",
+                resolved_controller_addr, bridge_ip
+            );
+            resolved_controller_addr = resolved_controller_addr.replace("127.0.0.1", &bridge_ip);
+            info!("New controller address: {}.", resolved_controller_addr);
+        }
+
         // loads config using new_for_namespace (handles all namespace-specific settings)
-        let config = LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip);
+        let mut config = LocalConfig::new_for_namespace(&config_path, &ns_ip, node_index);
+        config.controller_addr = resolved_controller_addr; // Set the resolved address
+
+        // adds a default route via the host bridge inside this namespace to enable outbound traffic
+        if let Err(e) = add_default_route(veth_peer_idx, &bridge_ip).await {
+            error!(
+                "Failed to add default route in namespace idx {} via {}: {}.",
+                node_index, bridge_ip, e
+            );
+        }
 
         // starts the conductor
         let conductor = Conductor::new(config).await;

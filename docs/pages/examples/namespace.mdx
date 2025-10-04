@@ -1,8 +1,8 @@
-# Running Nextmini's dataplane nodes in virtualized network namespaces
+# Running Nextmini's dataplane nodes in virtualized network namespaces on a single host
 
 This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
 
-## Running the Example
+## Running the Single Host Example
 
 ### Step 1: Increasing the ARP Table Limits
 
@@ -281,4 +281,82 @@ Then check the status of `veth<idx>a` using:
 
 ```bash
 ip link show | grep "veth<idx>[ab]"
+```
+
+# Running Nextmini's dataplane nodes in virtualized network namespaces on multiple hosts
+
+## Run Multiple Hosts Example on Arbutus
+
+Before running any commands, the port security on each instance should be disabled to allow traffic between instances.
+
+Choose `Edit port security group` and click `Edit Port` button.
+Then the following window will pop up, uncheck `Port Security` and click `Update` button.
+
+![Disable Port Security on Arbutus Instance](`/images/examples/ns-public/arbutus-port-security.png`)
+
+These steps are required to be done on all instances before running the example.
+
+## Running the Example
+
+There is an instruction for running multi-host example in `examples/ns-public`.
+
+### Step 1: Increasing the ARP Table Limits
+
+These commands increase the Linux kernel's ARP (Address Resolution Protocol) neighbor table thresholds to handle a large number of network devices:
+
+```bash
+sudo sysctl net.ipv4.neigh.default.gc_thresh1=2048
+sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
+sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
+```
+
+### Step 2: Configuring the number of nodes in the controller
+
+To change the number of nodes, you need to update the `n_nodes` field in the controller's configuration file, `controller-config.toml`, or specify the network topology to make sure that the number of nodes coincides with the configuration in the data plane.
+
+In this ns-public example, we use 10 nodes for quick test.
+
+### Step 3: Starting the controller and database engine
+
+To start the controller and database engine:
+
+```bash
+cd nextmini/examples/namespace
+docker compose build; docker compose up
+```
+
+### Step 4: Running the project
+
+To build the dataplane that allows super-user execution (required for this example), use the following commands that builds the binary `nextmini` and installs it in `/usr/local/bin`:
+
+```bash
+cd ~/nextmini
+sudo env "PATH=$HOME/.cargo/bin:$PATH" rustup default stable
+sudo env "PATH=$HOME/.cargo/bin:$PATH" cargo install --path dataplane --root /usr/local
+```
+
+In the first VM, enter the following command:
+
+```bash
+sudo RUST_LOG=info nextmini --config-path examples/ns-public/VM1-config.toml
+```
+
+Then the logs on Controller terminal would be observed.
+
+Then on another VM, repeat **step 4** with:
+
+```bash
+sudo RUST_LOG=info nextmini --config-path examples/ns-public/VM2-config.toml
+```
+
+### Step 5: Cleaning up
+
+To clean up the environment:
+
+1. Press `Control+C` in both the controller and namespace terminals
+2. Remove created veth interfaces:
+
+```bash
+cd nextmini/examples/namespace
+./cleanup.sh
 ```

@@ -1,8 +1,14 @@
+use std::fs;
+use std::io::Write;
+use std::process::Command;
+use std::process::Stdio;
 use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
 
 use futures::TryStreamExt;
 use once_cell::sync::OnceCell;
-use rtnetlink::{AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, new_connection};
+use rtnetlink::{
+    AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder, new_connection,
+};
 use tokio::time::timeout;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
@@ -445,12 +451,201 @@ pub async fn setup_veth_peer(
     Ok(())
 }
 
+/// Add a default route (0.0.0.0/0) via the specified gateway on the given interface index
+/// inside the current network namespace. This enables outbound connectivity from the namespace
+/// to networks reachable through the host bridge and beyond.
+pub async fn add_default_route(veth_idx: u32, gateway_ip: &str) -> Result<(), NetworkError> {
+    let handle = new_connection_with_timeout(3, 1500, 200).await?;
+
+    let gateway = Ipv4Addr::from_str(gateway_ip)?;
+
+    // Builds RouteMessage using the builder API from rtnetlink v0.18.
+    let msg = RouteMessageBuilder::<Ipv4Addr>::new()
+        .destination_prefix(Ipv4Addr::new(0, 0, 0, 0), 0)
+        .gateway(gateway)
+        .output_interface(veth_idx)
+        .build();
+
+    // Uses replace() to avoid errors if a default route already exists.
+    match handle.route().add(msg).replace().execute().await {
+        Ok(_) => {
+            info!(
+                "Installed default route via {} on ifindex {} inside namespace.",
+                gateway_ip, veth_idx
+            );
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                "Failed to add default route via {} on ifindex {}: {}.",
+                gateway_ip, veth_idx, e
+            );
+            Err(NetworkError::OperationError(format!(
+                "Add default route failed: {}.",
+                e
+            )))
+        }
+    }
+}
+
+/// Enable IPv4 forwarding on the host if disabled.
+pub fn ensure_ip_forward_enabled() -> Result<(), NetworkError> {
+    match fs::read_to_string("/proc/sys/net/ipv4/ip_forward") {
+        Ok(content) if content.trim() == "1" => Ok(()),
+        _ => {
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .open("/proc/sys/net/ipv4/ip_forward")
+                .map_err(NetworkError::Other)?;
+            f.write_all(b"1").map_err(NetworkError::Other)?;
+            info!("Enabled net.ipv4.ip_forward=1.");
+            Ok(())
+        }
+    }
+}
+
+/// Add iptables FORWARD rules to allow traffic between isobr0 and the outbound interface.
+pub fn ensure_forward_rules(bridge_name: &str, outbound_if: &str) -> Result<(), NetworkError> {
+    // First rule: isobr0 -> outbound: ACCEPT
+    let check1 = Command::new("iptables")
+        .args([
+            "-C",
+            "FORWARD",
+            "-i",
+            bridge_name,
+            "-o",
+            outbound_if,
+            "-j",
+            "ACCEPT",
+        ])
+        .stderr(Stdio::null())
+        .status()
+        .map_err(NetworkError::Other)?;
+    if !check1.success() {
+        let add1 = Command::new("iptables")
+            .args([
+                "-I",
+                "FORWARD",
+                "1",
+                "-i",
+                bridge_name,
+                "-o",
+                outbound_if,
+                "-j",
+                "ACCEPT",
+            ])
+            .status()
+            .map_err(NetworkError::Other)?;
+        if !add1.success() {
+            error!(
+                "Failed to apply iptables FORWARD rule: -i {} -o {} -j ACCEPT.",
+                bridge_name, outbound_if
+            );
+        }
+    }
+
+    // Second rule: outbound -> isobr0 RELATED,ESTABLISHED: ACCEPT
+    let check2 = Command::new("iptables")
+        .args([
+            "-C",
+            "FORWARD",
+            "-i",
+            outbound_if,
+            "-o",
+            bridge_name,
+            "-m",
+            "state",
+            "--state",
+            "RELATED,ESTABLISHED",
+            "-j",
+            "ACCEPT",
+        ])
+        .stderr(Stdio::null())
+        .status()
+        .map_err(NetworkError::Other)?;
+    if !check2.success() {
+        let add2 = Command::new("iptables")
+            .args([
+                "-I",
+                "FORWARD",
+                "1",
+                "-i",
+                outbound_if,
+                "-o",
+                bridge_name,
+                "-m",
+                "state",
+                "--state",
+                "RELATED,ESTABLISHED",
+                "-j",
+                "ACCEPT",
+            ])
+            .status()
+            .map_err(NetworkError::Other)?;
+        if !add2.success() {
+            error!(
+                "Failed to apply iptables FORWARD rule: -i {} -o {} -m state --state RELATED,ESTABLISHED -j ACCEPT.",
+                outbound_if, bridge_name
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Add a MASQUERADE rule for the namespace subnet on the given outbound interface.
+pub fn ensure_nat_masquerade(subnet_cidr: &str, outbound_if: &str) -> Result<(), NetworkError> {
+    let check = Command::new("iptables")
+        .args([
+            "-t",
+            "nat",
+            "-C",
+            "POSTROUTING",
+            "-s",
+            subnet_cidr,
+            "-o",
+            outbound_if,
+            "-j",
+            "MASQUERADE",
+        ])
+        .stderr(Stdio::null())
+        .status()
+        .map_err(NetworkError::Other)?;
+    if !check.success() {
+        let add = Command::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                subnet_cidr,
+                "-o",
+                outbound_if,
+                "-j",
+                "MASQUERADE",
+            ])
+            .status()
+            .map_err(NetworkError::Other)?;
+        if !add.success() {
+            error!(
+                "Failed to ensure NAT MASQUERADE on {} via {}.",
+                subnet_cidr, outbound_if
+            );
+        }
+    }
+    Ok(())
+}
+
+// TODO: 1) Add delete rules fn() after ctrl+c
+// TODO: 2) Add delete veth pairs fn() after ctrl+c
+
 pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
     let handle = get_global_handle().await?;
 
     handle.link().del(bridge_idx).execute().await.map_err(|e| {
         NetworkError::OperationError(format!(
-            "Delet bridge with idx {} failed: {}.",
+            "Delete bridge with idx {} failed: {}.",
             bridge_idx, e
         ))
     })?;

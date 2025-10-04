@@ -107,6 +107,26 @@ pub struct LocalConfig {
     #[arg(long)]
     pub node_id: NodeId,
 
+    /// The node ID offset added to computed node IDs for namespace mode to avoid clashes across VMs.
+    #[default(0)]
+    #[arg(long)]
+    pub node_id_offset: usize,
+
+    /// If true, enable IPv4 forwarding on the host, writes /proc/sys/net/ipv4/ip_forward=1.
+    #[default(false)]
+    #[arg(long)]
+    pub auto_enable_ip_forward: bool,
+
+    /// If true, add FORWARD rules between the namespace bridge and the outbound interface.
+    #[default(false)]
+    #[arg(long)]
+    pub auto_add_forward_rules: bool,
+
+    /// If true, add a MASQUERADE rule for the namespace subnet on the outbound interface.
+    #[default(false)]
+    #[arg(long)]
+    pub auto_add_nat: bool,
+
     /// This is not used in metrics collector.
     /// The interval at which metrics are collected and sent to the controller.
     #[default(5)]
@@ -353,8 +373,8 @@ impl LocalConfig {
         }
     }
 
-    /// Creates a new instance of LocalConfig.
-    pub fn new() -> LocalConfig {
+    /// Parses config file from config.toml.
+    fn from_file_and_args() -> (LocalConfig, Option<String>) {
         let mut args = Args::parse();
 
         let mut cfgs = match std::fs::read_to_string(&args.config_path) {
@@ -374,13 +394,22 @@ impl LocalConfig {
             }
         };
 
-        // overrides controller_addr from command line if provided
-        if let Some(addr) = args.controller_addr {
-            cfgs.controller_addr = addr;
-        }
+        let controller_addr_args = args.controller_addr;
 
         // remembers which config file produced this configuration so namespace children can reuse it
         cfgs.config_path = args.config_path.clone();
+
+        (cfgs, controller_addr_args)
+    }
+
+    /// Creates a new instance of LocalConfig.
+    pub fn new() -> LocalConfig {
+        let (mut cfgs, controller_addr_args) = Self::from_file_and_args();
+
+        // overrides controller_addr from command line if provided
+        if let Some(addr) = controller_addr_args {
+            cfgs.controller_addr = addr;
+        }
 
         // sets the private ipv4 address of the network interface for the private network
         // Defined by RFC 1918, private IP addresses fall within the following ranges:
@@ -477,6 +506,28 @@ impl LocalConfig {
         cfgs
     }
 
+    /// Initializes the config for the namespace nodes.
+    #[allow(unused)]
+    pub fn new_for_namespace(config_path: &str, ns_addr: &str, node_index: usize) -> LocalConfig {
+        let (mut cfgs, _) = Self::from_file_and_args();
+
+        // manually sets namespace node's ip addresses
+        cfgs.private_network_addr = ns_addr.to_string();
+        cfgs.public_network_addr = ns_addr.to_string();
+
+        // The node_id is now based on the creation index + 1, since IDs are 1-based.
+        // The node_id_offset from the config is applied in the caller manager.rs.
+        cfgs.node_id = (node_index + 1) as NodeId;
+
+        if cfgs.num_packet_processors == 0 {
+            cfgs.num_packet_processors = num_cpus::get();
+        }
+
+        cfgs.config_path = config_path.to_string();
+
+        cfgs
+    }
+
     pub fn update(&mut self, response: Result<Message, Error>) {
         match response {
             Ok(Message::Binary(data)) => {
@@ -536,55 +587,5 @@ impl LocalConfig {
                 error!("Error receiving the message: {}", e);
             }
         }
-    }
-
-    /// initialize the config for the namespace nodes
-    #[allow(unused)]
-    pub fn new_for_namespace(
-        config_path: &str,
-        controller_addr: &str,
-        ns_addr: &str,
-    ) -> LocalConfig {
-        // Reads the TOML configuration file (or falls back to defaults).
-        let mut cfgs = match std::fs::read_to_string(config_path) {
-            Ok(content) => match toml::from_str::<<LocalConfig as ClapSerde>::Opt>(&content) {
-                Ok(opts) => LocalConfig::from(opts),
-                Err(e) => {
-                    info!("Failed to parse config file (with error: {e}), using default values.");
-                    LocalConfig::from(<LocalConfig as ClapSerde>::Opt::default())
-                }
-            },
-            Err(e) => {
-                info!(
-                    "Failed to read the config file '{config_path}' (with error: {e}), using default values."
-                );
-                LocalConfig::from(<LocalConfig as ClapSerde>::Opt::default())
-            }
-        };
-
-        // manually sets namespace node's ip addresses
-        cfgs.private_network_addr = ns_addr.to_string();
-        cfgs.public_network_addr = ns_addr.to_string();
-
-        // calculates the node_id
-        if let Ok(real_ip) = ns_addr.parse::<Ipv4Addr>() {
-            let ip = u32::from(real_ip);
-            let base = u32::from(cfgs.external_base_addr);
-            let computed_node_id = (ip - base) as NodeId;
-            cfgs.node_id = computed_node_id;
-        } else {
-            error!("Failed to parse ns_addr '{ns_addr}' as IPv4");
-        }
-
-        // Placeholder – caller (e.g. isoserver) should overwrite this.
-        cfgs.controller_addr = controller_addr.to_string();
-
-        if cfgs.num_packet_processors == 0 {
-            cfgs.num_packet_processors = num_cpus::get();
-        }
-
-        cfgs.config_path = config_path.to_string();
-
-        cfgs
     }
 }

@@ -1,0 +1,15 @@
+public_network_interface = "ens3"
+private_network_name = "vm1-private"
+private_network_interface = "ens3"
+controller_addr = "206.12.95.232:3000" # ns-test2 ip address
+num_tun_queues = 1
+num_packet_processors = 1
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+n_nodes = 5
+
+# Auto-configure networking for namespace nodes to reach external controller
+auto_enable_ip_forward = true
+auto_add_forward_rules = true
+auto_add_nat = true
