@@ -7,7 +7,7 @@ num_packet_processors = 1
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
-n_nodes = 10
+n_nodes = 5
 
 # Auto-configure networking for namespace nodes to reach external controller
 auto_enable_ip_forward = true
