@@ -373,7 +373,7 @@ impl LocalConfig {
         }
     }
 
-    /// Creates a new instance of LocalConfig.
+    /// Parses config file from config.toml.
     fn from_file_and_args() -> (LocalConfig, Option<String>) {
         let mut args = Args::parse();
 
@@ -402,8 +402,7 @@ impl LocalConfig {
         (cfgs, controller_addr_args)
     }
 
-    /// Creates a new instance of LocalConfig for standalone (e.g., Docker) or main process use.
-    /// It loads from file, merges with CLI args, and then performs auto-detection for network addresses and node_id.
+    /// Creates a new instance of LocalConfig.
     pub fn new() -> LocalConfig {
         let (mut cfgs, controller_addr_args) = Self::from_file_and_args();
 
@@ -507,7 +506,7 @@ impl LocalConfig {
         cfgs
     }
 
-    /// Initialize the config for the namespace nodes.
+    /// Initializes the config for the namespace nodes.
     #[allow(unused)]
     pub fn new_for_namespace(config_path: &str, ns_addr: &str, node_index: usize) -> LocalConfig {
         let (mut cfgs, _) = Self::from_file_and_args();
