@@ -48,11 +48,10 @@ impl NamespaceManager {
     pub fn spawn_all_nodes(&mut self) {
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
-        // Sets the controller address to the bridge IP if it's running on the host -> controller_addr (127.0.0.1:3000).
-        let controller_addr: String = match self.config.controller_addr.as_str() {
-            "127.0.0.1:3000" => format!("ws://{}:3000", self.config.bridge_ip),
-            _ => format!("ws://{}", self.config.controller_addr),
-        };
+        // The parent process no longer transforms the controller address.
+        // It passes the original address from the config directly to the child,
+        // which will then be responsible for resolving it to the gateway if needed.
+        let controller_addr = format!("ws://{}", self.config.controller_addr);
         info!(
             "The controller address has been set to {}.",
             controller_addr
@@ -310,9 +309,22 @@ fn child_process(
             drop(fd);
         }
 
+        // The child process is now responsible for resolving the controller address.
+        // If the address is localhost, it's replaced by the bridge IP (gateway)
+        // to ensure connectivity from within the isolated namespace.
+        let mut resolved_controller_addr = controller_addr;
+        if resolved_controller_addr.contains("127.0.0.1") {
+            info!(
+                "Controller address '{}' is localhost, replacing with gateway IP '{}'.",
+                resolved_controller_addr, bridge_ip
+            );
+            resolved_controller_addr = resolved_controller_addr.replace("127.0.0.1", &bridge_ip);
+            info!("New controller address: {}.", resolved_controller_addr);
+        }
+
         // loads config using new_for_namespace (handles all namespace-specific settings)
-        let config =
-            LocalConfig::new_for_namespace(&config_path, &controller_addr, &ns_ip, node_index);
+        let mut config = LocalConfig::new_for_namespace(&config_path, &ns_ip, node_index);
+        config.controller_addr = resolved_controller_addr; // Set the resolved address
 
         // adds a default route via the host bridge inside this namespace to enable outbound traffic
         if let Err(e) = add_default_route(veth_peer_idx, &bridge_ip).await {
