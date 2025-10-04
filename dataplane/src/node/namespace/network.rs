@@ -1,3 +1,7 @@
+use std::fs;
+use std::io::Write;
+use std::process::Command;
+use std::process::Stdio;
 use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
 
 use futures::TryStreamExt;
@@ -5,10 +9,6 @@ use once_cell::sync::OnceCell;
 use rtnetlink::{
     AddressHandle, Handle, LinkBridge, LinkUnspec, LinkVeth, RouteMessageBuilder, new_connection,
 };
-use std::fs;
-use std::io::Write;
-use std::process::Command;
-use std::process::Stdio;
 use tokio::time::timeout;
 use tokio::time::{Duration, sleep};
 use tracing::{error, info};
