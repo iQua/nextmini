@@ -314,7 +314,7 @@ sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
 
 To change the number of nodes, you need to update the `n_nodes` field in the controller's configuration file, `controller-config.toml`, or specify the network topology to make sure that the number of nodes coincides with the configuration in the data plane.
 
-In this ns-public example, we use 10 nodes for quick test.
+In this ns-public example, we use 10 nodes for quick test. Each VM instance runs 5 nodes.
 
 ### Step 3: Starting the controller and database engine
 
@@ -349,9 +349,11 @@ Then on another VM, repeat **step 4** with:
 sudo RUST_LOG=info nextmini --config-path examples/ns-public/VM2-config.toml
 ```
 
+Note that `node_id_offset = 5` is set in `VM2-config.toml` to make sure that the node IDs do not overlap with those in the first VM.
+
 ### Step 5: Cleaning up
 
-To clean up the environment:
+To clean up the environment on all dataplane VM instances:
 
 1. Press `Control+C` in both the controller and namespace terminals
 2. Remove created veth interfaces:
