@@ -54,10 +54,17 @@ pub enum ProcessorHandle {
 }
 
 impl ProcessorHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(
+        config: LocalConfig,
+        controller_sender: mpsc::UnboundedSender<DataplaneToController>,
+    ) -> Self {
         match config.feature {
-            Feature::Sequential => ProcessorHandle::Sequential(SequentialProcHandle::new(config)),
-            Feature::Concurrent => ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config)),
+            Feature::Sequential => {
+                ProcessorHandle::Sequential(SequentialProcHandle::new(config, controller_sender))
+            }
+            Feature::Concurrent => {
+                ProcessorHandle::Concurrent(ConcurrentProcHandle::new(config, controller_sender))
+            }
         }
     }
 
@@ -245,7 +252,10 @@ pub struct SequentialProcHandle {
 }
 
 impl SequentialProcHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(
+        config: LocalConfig,
+        controller_sender: mpsc::UnboundedSender<DataplaneToController>,
+    ) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
@@ -258,6 +268,7 @@ impl SequentialProcHandle {
                 PacketReceiver::Sequential(packet_receiver),
                 broadcast_sender.subscribe(),
                 config.clone(),
+                controller_sender.clone(),
             );
 
             tokio::spawn(async move {
@@ -346,7 +357,10 @@ pub struct ConcurrentProcHandle {
 }
 
 impl ConcurrentProcHandle {
-    pub fn new(config: LocalConfig) -> Self {
+    pub fn new(
+        config: LocalConfig,
+        controller_sender: mpsc::UnboundedSender<DataplaneToController>,
+    ) -> Self {
         let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
@@ -355,6 +369,7 @@ impl ConcurrentProcHandle {
                 PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_sender.subscribe(),
                 config.clone(),
+                controller_sender.clone(),
             );
 
             tokio::spawn(async move {
@@ -485,6 +500,9 @@ struct Processor {
     // receives messages from the broadcast channel (from the controller interface or the conductor)
     broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
 
+    // reports new external flows to the controller interface
+    controller_sender: mpsc::UnboundedSender<DataplaneToController>,
+
     // the local TUN interface
     local_interface: Option<Arc<LocalInterfaceHandle>>,
 
@@ -506,10 +524,12 @@ impl Processor {
         packet_receiver: PacketReceiver,
         broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
         config: LocalConfig,
+        controller_sender: mpsc::UnboundedSender<DataplaneToController>,
     ) -> Self {
         Self {
             packet_receiver,
             broadcast_receiver,
+            controller_sender,
             local_interface: None,
             user_space_senders: AHashMap::new(),
             server: None,
