@@ -102,18 +102,19 @@ async fn create_db(pool: &Pool<Postgres>) {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS external_flows (
+        CREATE TABLE IF NOT EXISTS app_flows (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL UNIQUE,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            first_seen TIMESTAMP WITH TIME ZONE NOT NULL
+            bytes INTEGER NOT NULL,
+            is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
     )
     .execute(pool)
     .await
-    .expect("Failed to create external_flows table");
+    .expect("Failed to create app_flows table");
 }
 
 // Resets the entire database.
@@ -124,10 +125,10 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .await
         .expect("Failed to drop metrics table");
 
-    sqlx::query("DROP TABLE IF EXISTS external_flows")
+    sqlx::query("DROP TABLE IF EXISTS app_flows")
         .execute(pool)
         .await
-        .expect("Failed to drop external_flows table");
+        .expect("Failed to drop app_flows table");
 
     sqlx::query("DROP TABLE IF EXISTS flows")
         .execute(pool)
@@ -210,7 +211,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
 
     sqlx::query(
         r#"
-        CREATE TABLE external_flows (
+        CREATE TABLE app_flows (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL UNIQUE,
             src_node_id INTEGER NOT NULL,
@@ -221,7 +222,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
     )
     .execute(pool)
     .await
-    .expect("Failed to create external_flows table");
+    .expect("Failed to create app_flows table");
 }
 
 /// Connects to and initializes the PostgreSQL database.

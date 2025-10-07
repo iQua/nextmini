@@ -449,37 +449,71 @@ async fn handle_connection(
                             }
                         }
                     }
-                    DataplaneToController::ExternalFlowStart {
+                    DataplaneToController::AppFlowStart {
                         flow_id,
                         src_node_id,
                         dst_node_id,
-                        first_seen,
+                        bytes,
+                        is_finished,
                     } => {
-                        let db_pool = db_pool.clone();
-                        tokio::spawn(async move {
-                            let flow_id_slice = flow_id.as_ref();
+                        let flow_id_slice = flow_id.as_ref();
+                        // TODO: Update the if statement.
+                        if is_finished {
+                            // updates existing record when a flow is finished
                             match sqlx::query(
                                 r#"
-                                INSERT INTO external_flows (flow_id, src_node_id, dst_node_id, first_seen)
-                                VALUES ($1, $2, $3, $4)
+                                UPDATE app_flows
+                                SET is_finished = TRUE, bytes = $2
+                                WHERE flow_id = $1
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .bind(bytes as i32)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(result) => {
+                                    if result.rows_affected() > 0 {
+                                        info!(
+                                            "Marked app flow from node {} to {} as finished.",
+                                            src_node_id, dst_node_id
+                                        );
+                                    } else {
+                                        warn!(
+                                            "App flow from node {} to {} not found when trying to mark as finished.",
+                                            src_node_id, dst_node_id
+                                        );
+                                    }
+                                }
+                                Err(e) => error!("Failed to update app flow: {}.", e),
+                            }
+                        } else {
+                            // inserts a new record when receives an AppFlowStart message
+                            match sqlx::query(
+                                r#"
+                                INSERT INTO app_flows (flow_id, src_node_id, dst_node_id, bytes, is_finished)
+                                VALUES ($1, $2, $3, $4, FALSE)
                                 ON CONFLICT (flow_id) DO NOTHING
                                 "#,
                             )
                             .bind(flow_id_slice)
                             .bind(src_node_id as i32)
                             .bind(dst_node_id as i32)
-                            .bind(first_seen)
+                            .bind(bytes as i32)
                             .execute(&*db_pool)
                             .await
                             {
                                 Ok(result) => {
                                     if result.rows_affected() > 0 {
-                                        info!("Registered new external flow from node {} to {}.", src_node_id, dst_node_id);
+                                        info!(
+                                            "Registered new app flow from node {} to {}.",
+                                            src_node_id, dst_node_id
+                                        );
                                     }
                                 }
-                                Err(e) => error!("Failed to insert external flow: {}.", e),
+                                Err(e) => error!("Failed to insert app flow: {}.", e),
                             }
-                        });
+                        }
                     }
                 }
             }

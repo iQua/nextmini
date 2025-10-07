@@ -29,6 +29,7 @@ pub enum DataplaneToController {
         src_node_id: usize,
         dst_node_id: usize,
         bytes: usize,
+        is_finished: bool,
     },
 }
 
