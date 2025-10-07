@@ -72,7 +72,7 @@ impl RoutingTable {
     }
 
     /// Extracts source and destination node IDs from the flow ID.
-    fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
+    pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
         let src_ip = flow_id.src_ip();
         let dst_ip = flow_id.dst_ip();
 
