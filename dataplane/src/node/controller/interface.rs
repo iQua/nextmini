@@ -86,7 +86,6 @@ impl ControllerInterfaceHandle {
 
     pub async fn connect(
         mut config: LocalConfig,
-        northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
     ) -> (
         LocalConfig,
         ProcessorHandle,
@@ -147,8 +146,8 @@ impl ControllerInterfaceHandle {
             error!("No response has been received from controller.");
         }
 
-        // starts the processor actor with the updated configuration
-        let processors = ProcessorHandle::new(config.clone(), northbridge_sender);
+        // starts the processor actor
+        let processors = ProcessorHandle::new(config.clone());
 
         (config, processors, ws_stream)
     }
