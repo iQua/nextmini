@@ -34,8 +34,7 @@ impl ControllerInterfaceHandle {
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
         // connects to the controller over WebSockets
-        let (config, processors, ws_stream) =
-            ControllerInterfaceHandle::connect(config, northbridge_sender.clone()).await;
+        let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
 
         let (sender_stream, receiver_stream) = ws_stream.split();
 
