@@ -24,11 +24,11 @@ pub enum DataplaneToController {
     FlowFinished {
         controller_id: i32,
     },
-    ExternalFlowStart {
+    AppFlowStart {
         flow_id: [u8; 16],
         src_node_id: usize,
         dst_node_id: usize,
-        first_seen: chrono::DateTime<chrono::Utc>,
+        bytes: usize,
     },
 }
 
