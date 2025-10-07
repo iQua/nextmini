@@ -92,7 +92,7 @@ async fn create_db(pool: &Pool<Postgres>) {
             local_node_id INTEGER NOT NULL,
             remote_node_id INTEGER NOT NULL,
             bytes INTEGER NOT NULL,
-            time_read TIMESTAMP NOT NULL
+            time_read TIMESTAMP WITH TIME ZONE NOT NULL
         )
         "#,
     )
