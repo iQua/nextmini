@@ -1,3 +1,5 @@
+import { Callout } from 'nextra/components'
+
 # Running Nextmini's dataplane nodes in virtualized network namespaces on a single host
 
 This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
@@ -91,8 +93,7 @@ free -h
 
 To clean up the environment:
 
-1. Press `Control+C` in both the controller and namespace terminals
-2. Remove created veth interfaces:
+Press `Control + C` in both the controller and namespace terminals, and then remove the active `veth` interfaces:
 
 ```bash
 cd nextmini/examples/namespace
@@ -111,7 +112,7 @@ The virtual network environment has been successfully cleaned up. You can now ru
 ip link show | grep veth | wc -l
 ```
 
-## Testing Configuration
+## Development and Testing Notes
 
 ### Entering the namespace
 
@@ -282,6 +283,10 @@ Then check the status of `veth<idx>a` using:
 ```bash
 ip link show | grep "veth<idx>[ab]"
 ```
+
+<Callout type="warning" emoji="⚠️">
+The following instructions have not been verified to work correctly.
+</Callout>
 
 # Running Nextmini's dataplane nodes in virtualized network namespaces on multiple hosts
 
