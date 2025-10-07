@@ -24,6 +24,12 @@ pub enum DataplaneToController {
     FlowFinished {
         controller_id: i32,
     },
+    ExternalFlowStart {
+        flow_id: [u8; 16],
+        src_node_id: usize,
+        dst_node_id: usize,
+        first_seen: chrono::DateTime<chrono::Utc>,
+    },
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.
