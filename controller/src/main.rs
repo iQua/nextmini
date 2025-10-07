@@ -40,7 +40,7 @@ async fn main() {
     let db_pool = Arc::new(init_db(&config).await);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
-        .expect("Failed to bind to port");
+        .expect("Failed to bind to port.");
     info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
@@ -64,9 +64,9 @@ async fn main() {
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
             .peer_addr()
-            .expect("Connected streams should have a peer address");
+            .expect("Connected streams should have a peer address.");
 
-        info!("New connection from {}", peer);
+        info!("New connection from {}.", peer);
 
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
@@ -109,7 +109,7 @@ async fn handle_connection(
                 let dataplane_msg = match rmp_serde::from_slice::<DataplaneToController>(&data) {
                     Ok(msg) => msg,
                     Err(e) => {
-                        error!("Failed to parse dataplane message: {}", e);
+                        error!("Failed to parse dataplane message: {}.", e);
                         continue;
                     }
                 };
@@ -122,7 +122,7 @@ async fn handle_connection(
                         node_id: maybe_node_id,
                     } => {
                         info!(
-                            "Received StartUp message from {} (public), {} (private), requested ID: {:?}",
+                            "Received StartUp message from {} (public), {} (private), requested ID: {:?}.",
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
 
@@ -130,7 +130,7 @@ async fn handle_connection(
                         let node_id = maybe_node_id.unwrap();
 
                         info!(
-                            "Node with ID {} is attempting to connect (private: {}, public: {})",
+                            "Node with ID {} is attempting to connect (private: {}, public: {}).",
                             node_id, private_network_addr, public_network_addr
                         );
 
@@ -152,7 +152,7 @@ async fn handle_connection(
                             let count_after_insert = node_ws_guard.len();
 
                             info!(
-                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
+                                "Node {} successfully inserted into node_ws. Total nodes now: {}.",
                                 node_id, count_after_insert
                             );
 
@@ -225,7 +225,7 @@ async fn handle_connection(
                             .send(Message::binary(rmp_serde::to_vec(&response).unwrap()))
                             .await
                         {
-                            Ok(_) => info!("Sent StartUp response to node {}", node_id),
+                            Ok(_) => info!("Sent StartUp response to node {}.", node_id),
                             Err(e) => {
                                 error!(
                                     "Failed to send StartUp response to node {}: {}.",
@@ -448,6 +448,38 @@ async fn handle_connection(
                                 );
                             }
                         }
+                    }
+                    DataplaneToController::ExternalFlowStart {
+                        flow_id,
+                        src_node_id,
+                        dst_node_id,
+                        first_seen,
+                    } => {
+                        let db_pool = db_pool.clone();
+                        tokio::spawn(async move {
+                            let flow_id_slice = flow_id.as_ref();
+                            match sqlx::query(
+                                r#"
+                                INSERT INTO external_flows (flow_id, src_node_id, dst_node_id, first_seen)
+                                VALUES ($1, $2, $3, $4)
+                                ON CONFLICT (flow_id) DO NOTHING
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .bind(src_node_id as i32)
+                            .bind(dst_node_id as i32)
+                            .bind(first_seen)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(result) => {
+                                    if result.rows_affected() > 0 {
+                                        info!("Registered new external flow from node {} to {}.", src_node_id, dst_node_id);
+                                    }
+                                }
+                                Err(e) => error!("Failed to insert external flow: {}.", e),
+                            }
+                        });
                     }
                 }
             }
