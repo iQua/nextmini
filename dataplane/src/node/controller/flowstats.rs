@@ -104,6 +104,8 @@ impl FlowStatsReporterHandle {
     pub fn check_and_report_finished(&self, packet: &Packet) {
         if packet.is_tcp_fin_or_rst() {
             self.report_flow_finished(packet.flow_id, None);
+        }
+    }
 }
 
 struct FlowStatsReporter {
