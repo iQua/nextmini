@@ -447,7 +447,19 @@ async fn handle_connection(
                         } else {
                             // application flows reading from TUN interface without controller_id
                             let flow_id_slice = flow_id.as_ref();
-                            info!("Received FlowFinished message for application flow {:?}.", flow_id);
+                            info!(
+                                "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}].",
+                                flow_id_slice[0],
+                                flow_id_slice[1],
+                                flow_id_slice[2],
+                                flow_id_slice[3],
+                                u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                flow_id_slice[4],
+                                flow_id_slice[5],
+                                flow_id_slice[6],
+                                flow_id_slice[7],
+                                u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]])
+                            );
 
                             // inserts or updates the flow as finished
                             // if the flow doesn't exist yet, create it with only flow_id and is_finished set
@@ -465,14 +477,16 @@ async fn handle_connection(
                             {
                                 Ok(result) => {
                                     if result.rows_affected() > 0 {
-                                        info!("Marked application flow as finished (created or updated).");
+                                        info!(
+                                            "Marked application flow as finished (created or updated)."
+                                        );
                                     }
                                 }
                                 Err(e) => {
                                     error!("Failed to update application flow: {}.", e);
                                 }
                             }
-                            
+
                             // removes the app flow route for the finished flow
                             if let Err(e) = sqlx::query(
                                 r#"
@@ -522,8 +536,18 @@ async fn handle_connection(
                     DataplaneToController::RouteAssigned { flow_id, route_id } => {
                         let flow_id_slice = flow_id.as_ref();
                         info!(
-                            "Received RouteAssigned message: flow {:?} → route {}.",
-                            flow_id, route_id
+                            "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {}.",
+                            flow_id_slice[0],
+                            flow_id_slice[1],
+                            flow_id_slice[2],
+                            flow_id_slice[3],
+                            u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                            flow_id_slice[4],
+                            flow_id_slice[5],
+                            flow_id_slice[6],
+                            flow_id_slice[7],
+                            u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
+                            route_id
                         );
 
                         // inserts the app flow route for the assigned flow
