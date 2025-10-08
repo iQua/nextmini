@@ -14,7 +14,7 @@ use nextmini_messages::{Flow, FlowLen};
 
 use crate::node::{NodeIdExt, FlowId, FlowIdExt};
 use crate::node::config::LocalConfig;
-use crate::node::controller::reporter::ControllerReporterHandle;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow::SOCKET_BUFFER_SIZE;
 use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
@@ -25,9 +25,7 @@ use crate::node::processor::ProcessorHandle;
 pub struct UserSpaceClientHandle {
     config: LocalConfig,
     processors: ProcessorHandle,
-
-    // handles communication with the controller, including flow completion notifications
-    reporter: ControllerReporterHandle,
+    flowstats_reporter: FlowStatsReporterHandle,
     next_client_port: u16,
 }
 
@@ -35,14 +33,14 @@ impl UserSpaceClientHandle {
     pub fn new(
         config: LocalConfig,
         processors: ProcessorHandle,
-        reporter: ControllerReporterHandle,
+        flowstats_reporter: FlowStatsReporterHandle,
     ) -> Self {
         let next_client_port = config.user_space_client_port;
 
         Self {
             config,
             processors,
-            reporter,
+            flowstats_reporter,
             next_client_port,
         }
     }
@@ -51,7 +49,7 @@ impl UserSpaceClientHandle {
         for flow in flows {
             let config = self.config.clone();
             let processors = self.processors.clone();
-            let reporter = self.reporter.clone();
+            let flowstats_reporter = self.flowstats_reporter.clone();
             self.next_client_port += 1;
             let client_port = self.next_client_port;
             let (packet_sender, packet_receiver) = mpsc::channel(config.channel_capacity);
@@ -89,7 +87,7 @@ impl UserSpaceClientHandle {
                 config,
                 flow,
                 processors,
-                reporter,
+                flowstats_reporter,
                 client_port,
                 packet_receiver,
             );
@@ -106,7 +104,7 @@ struct UserSpaceClient {
     config: LocalConfig,
     flow: Flow,
     processors: ProcessorHandle,
-    reporter: ControllerReporterHandle,
+    flowstats_reporter: FlowStatsReporterHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
     client_port: u16,
@@ -117,7 +115,7 @@ impl UserSpaceClient {
         config: LocalConfig,
         flow: Flow,
         processors: ProcessorHandle,
-        reporter: ControllerReporterHandle,
+        flowstats_reporter: FlowStatsReporterHandle,
         client_port: u16,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
@@ -132,7 +130,7 @@ impl UserSpaceClient {
             config,
             flow,
             processors,
-            reporter,
+            flowstats_reporter,
             packet_receiver: Some(packet_receiver),
             state,
             client_port,
@@ -209,10 +207,8 @@ impl UserSpaceClient {
                 // removes the user-space packet sender from the processors
                 self.processors.disconnect_user_space_sender(flow_id);
 
-                // reports flow completion to the controller if this flow has a database ID
-                if let Some(controller_id) = self.flow.controller_id {
-                    self.reporter.report_flow_finished(controller_id);
-                }
+                // reports flow completion to the controller
+                self.flowstats_reporter.report_flow_finished(flow_id, self.flow.controller_id);
 
                 info!(
                     "The user-space TCP flow from node {} to node {} has finished. The client is closing.",
