@@ -13,9 +13,8 @@ use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, SchedulingDiscipline,
 };
 
-use crate::node::NodeId;
-use crate::node::NodeIdExt;
 use crate::node::scheduler::drop::DropStrategy;
+use crate::node::{FlowId, FlowIdExt, NodeId, NodeIdExt};
 
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
@@ -371,6 +370,15 @@ impl LocalConfig {
                 panic!("Detected unknown IP {}.", ip);
             }
         }
+    }
+
+    /// Extracts source and destination node IDs from the flow ID.
+    pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
+        let src_ip = flow_id.src_ip();
+        let dst_ip = flow_id.dst_ip();
+        let src_node_id = self.ip_to_node_id(src_ip);
+        let dst_node_id = self.ip_to_node_id(dst_ip);
+        (src_node_id, dst_node_id)
     }
 
     /// Parses config file from config.toml.
