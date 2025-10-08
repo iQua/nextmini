@@ -147,7 +147,15 @@ impl FlowStatsReporter {
                         }
                         FlowMetricMessage::FlowFinished(controller_id) => {
                             let msg = DataplaneToController::FlowFinished { controller_id };
+                        FlowStatsMessage::FlowFinished(flow_finished) => {
+                            let msg = DataplaneToController::FlowFinished {
+                                flow_id: flow_finished.flow_id.to_be_bytes(),
+                                controller_id: flow_finished.controller_id,
+                            };
                             self.controller.send(msg).await;
+
+                            // cleans up tracking state for this flow
+                            self.reported_app_flows.remove(&flow_finished.flow_id);
                         }
                     }
                 }
