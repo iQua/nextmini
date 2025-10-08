@@ -145,12 +145,13 @@ impl FlowStatsReporter {
                     match msg {
                         FlowStatsMessage::AppFlowStart(app_flow) => {
                             if !self.reported_app_flows.contains(&app_flow.flow_id) {
-                                self.reported_app_flows.insert(app_flow.flow_id);
+                                let flow_id = app_flow.flow_id;
+                                self.reported_app_flows.insert(flow_id);
                                 self.app_flows.push(app_flow);
                                 
                                 // cleans up the finished flag;
                                 // if a new flow starts with the same flow_id, the old connection is definitely finished
-                                self.reported_finished_flows.remove(&app_flow.flow_id);
+                                self.reported_finished_flows.remove(&flow_id);
                             }
                         }
                         FlowStatsMessage::RouteAssigned(route_assigned) => {
