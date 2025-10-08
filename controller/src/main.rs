@@ -512,7 +512,8 @@ async fn handle_connection(
                                 VALUES ($1, $2, $3, FALSE)
                                 ON CONFLICT (flow_id) DO UPDATE
                                 SET src_node_id = EXCLUDED.src_node_id,
-                                    dst_node_id = EXCLUDED.dst_node_id
+                                    dst_node_id = EXCLUDED.dst_node_id,
+                                    is_finished = FALSE
                                 "#,
                             )
                             .bind(flow_id_slice)

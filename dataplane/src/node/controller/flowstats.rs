@@ -116,7 +116,7 @@ struct FlowStatsReporter {
     receiver: UnboundedReceiver<FlowStatsMessage>,
     app_flows: Vec<AppFlowInfo>,
     reported_app_flows: AHashSet<FlowId>,
-    reported_route_assignments: AHashMap<FlowId, AHashSet<usize>>,
+    reported_route_assignments: AHashMap<FlowId, usize>,
     reported_finished_flows: AHashSet<FlowId>,
 }
 
@@ -137,7 +137,7 @@ impl FlowStatsReporter {
 
     pub async fn run(&mut self) {
         // transmits app flows every 5 seconds
-        let mut flowstats_tick = interval(Duration::from_secs(5));
+        let mut flowstats_tick = interval(Duration::from_millis(300));
 
         loop {
             tokio::select! {
@@ -155,18 +155,22 @@ impl FlowStatsReporter {
                             }
                         }
                         FlowStatsMessage::RouteAssigned(route_assigned) => {
-                            let entry = self
-                                .reported_route_assignments
-                                .entry(route_assigned.flow_id)
-                                .or_default();
-
-                            if entry.insert(route_assigned.route_id) {
+                            // checks if route has changed or is first time
+                            let should_report = match self.reported_route_assignments.get(&route_assigned.flow_id) {
+                                Some(&last_route) => last_route != route_assigned.route_id,
+                                None => true, 
+                            };
+                            
+                            if should_report {
                                 // sends RouteAssigned msg to controller
                                 let msg = DataplaneToController::RouteAssigned {
                                     flow_id: route_assigned.flow_id.to_be_bytes(),
                                     route_id: route_assigned.route_id,
                                 };
                                 self.controller.send(msg).await;
+                                
+                                // updates last reported route
+                                self.reported_route_assignments.insert(route_assigned.flow_id, route_assigned.route_id);
                             }
                         }
                         FlowStatsMessage::FlowFinished(flow_finished) => {
