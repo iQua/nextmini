@@ -12,7 +12,6 @@ use tracing::{error, info};
 
 use nextmini_messages::{Flow, FlowLen};
 
-use crate::node::{NodeIdExt, FlowId, FlowIdExt};
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow::SOCKET_BUFFER_SIZE;
@@ -20,6 +19,7 @@ use crate::node::flow::device::VirtualDevice;
 use crate::node::flow::state::ConnectionState;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, FlowIdExt, NodeIdExt};
 
 #[derive(Debug, Clone)]
 pub struct UserSpaceClientHandle {
@@ -208,7 +208,8 @@ impl UserSpaceClient {
                 self.processors.disconnect_user_space_sender(flow_id);
 
                 // reports flow completion to the controller
-                self.flowstats_reporter.report_flow_finished(flow_id, self.flow.controller_id);
+                self.flowstats_reporter
+                    .report_flow_finished(flow_id, self.flow.controller_id);
 
                 info!(
                     "The user-space TCP flow from node {} to node {} has finished. The client is closing.",
