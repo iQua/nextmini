@@ -14,7 +14,6 @@ pub struct NewFlow {
     pub flow_id: FlowId,
     pub src_node_id: NodeId,
     pub dst_node_id: NodeId,
-    pub bytes: usize,
 }
 
 pub struct RouteAssigned {
