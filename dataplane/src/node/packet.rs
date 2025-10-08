@@ -58,7 +58,7 @@ impl Packet {
         let tcp_offset = ihl * 4;
         let tcp_flags = self.buf[tcp_offset + 13];
 
-        // checks if FIN or RST is 0
+        // checks if FIN or RST flag is set
         (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
     }
 
