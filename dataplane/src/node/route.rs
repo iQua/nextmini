@@ -6,6 +6,7 @@ use tracing::debug;
 use nextmini_messages::{INVALID, RoutingTableEntry};
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -78,7 +79,11 @@ impl RoutingTable {
 
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
-    pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
+    pub fn select_route_for_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Option<usize> {
         if flow_id == flow::INVALID_FLOW_ID {
             // the flow ID cannot be successfully extracted, no routing is possible
             return Some(INVALID);
@@ -117,6 +122,11 @@ impl RoutingTable {
         // stores the selected route into the cache
         self.cache.insert(flow_id, selected_route_id);
 
+        // reports route assignment to the controller
+        if let Some(flowstats_reporter) = flowstats_reporter {
+            flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
+        }
+
         debug!(
             "Route ID {} is selected for source {}:{} → destination {}:{} from {} available routes.",
             selected_route_id,
@@ -131,9 +141,13 @@ impl RoutingTable {
     }
 
     /// Obtains the next hop by the flow ID.
-    pub fn get_next_hop_by_flow(&mut self, flow_id: FlowId) -> Result<NodeId, String> {
+    pub fn get_next_hop_by_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<NodeId, String> {
         // selects the route ID for a new flow
-        if let Some(route_id) = self.select_route_for_flow(flow_id) {
+        if let Some(route_id) = self.select_route_for_flow(flow_id, flowstats_reporter) {
             if route_id == INVALID {
                 // No route can be possible as the flow ID is not valid.
                 // perhaps a non-IPv4 packet? Drops the packet without forwarding it.

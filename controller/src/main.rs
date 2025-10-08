@@ -469,6 +469,20 @@ async fn handle_connection(
                                     error!("Failed to update application flow: {}.", e);
                                 }
                             }
+                            
+                            // removes the app flow route for the finished flow
+                            if let Err(e) = sqlx::query(
+                                r#"
+                                DELETE FROM app_flow_routes
+                                WHERE flow_id = $1
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                error!("Failed to remove app_flow_route for finished flow: {}.", e);
+                            }
                         }
                     }
                     DataplaneToController::AppFlowStart { appflows } => {
@@ -507,6 +521,23 @@ async fn handle_connection(
                             flow_id, route_id
                         );
 
+                        // inserts the app flow route for the assigned flow
+                        if let Err(e) = sqlx::query(
+                            r#"
+                            INSERT INTO app_flow_routes (flow_id, route_id)
+                            VALUES ($1, $2)
+                            ON CONFLICT (flow_id) DO UPDATE
+                            SET route_id = EXCLUDED.route_id,
+                                last_reported_at = NOW()
+                            "#,
+                        )
+                        .bind(flow_id_slice)
+                        .bind(route_id as i32)
+                        .execute(&*db_pool)
+                        .await
+                        {
+                            error!("Failed to upsert app_flow_route: {}.", e);
+                        }
                     }
                 }
             }

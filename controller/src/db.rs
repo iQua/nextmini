@@ -114,6 +114,20 @@ async fn create_db(pool: &Pool<Postgres>) {
     .execute(pool)
     .await
     .expect("Failed to create app_flows table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_flow_routes (
+            flow_id BYTEA PRIMARY KEY,
+            route_id INTEGER NOT NULL,
+            first_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            last_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to create app_flow_routes table");
 }
 
 // Resets the entire database.
@@ -128,6 +142,11 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .execute(pool)
         .await
         .expect("Failed to drop app_flows table");
+
+    sqlx::query("DROP TABLE IF EXISTS app_flow_routes")
+        .execute(pool)
+        .await
+        .expect("Failed to drop app_flow_routes table");
 
     sqlx::query("DROP TABLE IF EXISTS flows")
         .execute(pool)
@@ -222,6 +241,20 @@ async fn reset_db(pool: &Pool<Postgres>) {
     .execute(pool)
     .await
     .expect("Failed to create app_flows table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE app_flow_routes (
+            flow_id BYTEA PRIMARY KEY,
+            route_id INTEGER NOT NULL,
+            first_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+            last_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to create app_flow_routes table");
 }
 
 /// Connects to and initializes the PostgreSQL database.

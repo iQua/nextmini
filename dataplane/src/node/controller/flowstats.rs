@@ -1,4 +1,4 @@
-use ahash::AHashSet;
+use ahash::{AHashMap, AHashSet};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::error;
@@ -111,7 +111,9 @@ impl FlowStatsReporterHandle {
 struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
-    flow_metrics: AHashMap<FlowId, FlowMetric>,
+    app_flows: Vec<AppFlowInfo>,
+    reported_app_flows: AHashSet<FlowId>,
+    reported_route_assignments: AHashMap<FlowId, AHashSet<usize>>,
 }
 
 impl FlowStatsReporter {
@@ -122,7 +124,9 @@ impl FlowStatsReporter {
         Self {
             controller,
             receiver,
-            flow_metrics: AHashMap::default(),
+            app_flows: Vec::new(),
+            reported_app_flows: AHashSet::default(),
+            reported_route_assignments: AHashMap::default(),
         }
     }
 
@@ -134,19 +138,27 @@ impl FlowStatsReporter {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
                     match msg {
-                        FlowMetricMessage::FlowMetric(metric) => {
-                            let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
-                                FlowMetric {
-                                    flow_id: metric.flow_id,
-                                    local_node_id: metric.local_node_id,
-                                    remote_node_id: metric.remote_node_id,
-                                    bytes: 0
-                                });
-
-                            (*flow_metric).bytes += metric.bytes;
+                        FlowStatsMessage::AppFlowStart(app_flow) => {
+                            if !self.reported_app_flows.contains(&app_flow.flow_id) {
+                                self.reported_app_flows.insert(app_flow.flow_id);
+                                self.app_flows.push(app_flow);
+                            }
                         }
-                        FlowMetricMessage::FlowFinished(controller_id) => {
-                            let msg = DataplaneToController::FlowFinished { controller_id };
+                        FlowStatsMessage::RouteAssigned(route_assigned) => {
+                            let entry = self
+                                .reported_route_assignments
+                                .entry(route_assigned.flow_id)
+                                .or_default();
+
+                            if entry.insert(route_assigned.route_id) {
+                                // sends RouteAssigned msg to controller
+                                let msg = DataplaneToController::RouteAssigned {
+                                    flow_id: route_assigned.flow_id.to_be_bytes(),
+                                    route_id: route_assigned.route_id,
+                                };
+                                self.controller.send(msg).await;
+                            }
+                        }
                         FlowStatsMessage::FlowFinished(flow_finished) => {
                             let msg = DataplaneToController::FlowFinished {
                                 flow_id: flow_finished.flow_id.to_be_bytes(),
@@ -154,8 +166,11 @@ impl FlowStatsReporter {
                             };
                             self.controller.send(msg).await;
 
-                            // cleans up tracking state for this flow
+                            // cleans up app flow tracking to allow port reuse
                             self.reported_app_flows.remove(&flow_finished.flow_id);
+
+                            // allows future route assignment reporting for reused flow IDs
+                            self.reported_route_assignments.remove(&flow_finished.flow_id);
                         }
                     }
                 }

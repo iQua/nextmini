@@ -18,6 +18,7 @@ use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::connector::Connector;
 use crate::node::connector::ConnectorMessage;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
@@ -45,6 +46,7 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    SetFlowStatsReporter(FlowStatsReporterHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +192,30 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the SetFlowWeight message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    pub fn set_flowstats_reporter(&self, flowstats_reporter: FlowStatsReporterHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SetFlowStatsReporter(
+                flowstats_reporter.clone(),
+            ))
+        {
+            error!(
+                "Error sending the SetFlowStatsReporter message to the processors: {}",
+                e
+            );
+        };
+
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::SetFlowStatsReporter(flowstats_reporter))
+        {
+            error!(
+                "Error sending the SetFlowStatsReporter message to the connector: {}",
                 e
             );
         };
@@ -497,6 +523,9 @@ struct Processor {
     // the routing table
     routing_table: RoutingTable,
 
+    // optional flow stats reporter for route telemetry
+    flowstats_reporter: Option<FlowStatsReporterHandle>,
+
     // a unified hashmap for schedulers in normal mode
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
@@ -514,6 +543,7 @@ impl Processor {
             user_space_senders: AHashMap::new(),
             server: None,
             routing_table: RoutingTable::new(config.clone()),
+            flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
         }
@@ -574,6 +604,9 @@ impl Processor {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
             }
+            ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
+                self.flowstats_reporter = Some(flowstats_reporter);
+            }
         }
     }
 
@@ -581,7 +614,10 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        match self.routing_table.get_next_hop_by_flow(packet_flow_id) {
+        match self
+            .routing_table
+            .get_next_hop_by_flow(packet_flow_id, self.flowstats_reporter.as_ref())
+        {
             Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
             Err(e) => error!("Error getting the next hop: {}", e),
         }
