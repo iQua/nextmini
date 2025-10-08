@@ -117,6 +117,7 @@ struct FlowStatsReporter {
     app_flows: Vec<AppFlowInfo>,
     reported_app_flows: AHashSet<FlowId>,
     reported_route_assignments: AHashMap<FlowId, AHashSet<usize>>,
+    reported_finished_flows: AHashSet<FlowId>,
 }
 
 impl FlowStatsReporter {
@@ -130,6 +131,7 @@ impl FlowStatsReporter {
             app_flows: Vec::new(),
             reported_app_flows: AHashSet::default(),
             reported_route_assignments: AHashMap::default(),
+            reported_finished_flows: AHashSet::default(),
         }
     }
 
@@ -145,6 +147,10 @@ impl FlowStatsReporter {
                             if !self.reported_app_flows.contains(&app_flow.flow_id) {
                                 self.reported_app_flows.insert(app_flow.flow_id);
                                 self.app_flows.push(app_flow);
+                                
+                                // cleans up the finished flag;
+                                // if a new flow starts with the same flow_id, the old connection is definitely finished
+                                self.reported_finished_flows.remove(&app_flow.flow_id);
                             }
                         }
                         FlowStatsMessage::RouteAssigned(route_assigned) => {
@@ -163,17 +169,20 @@ impl FlowStatsReporter {
                             }
                         }
                         FlowStatsMessage::FlowFinished(flow_finished) => {
-                            let msg = DataplaneToController::FlowFinished {
-                                flow_id: flow_finished.flow_id.to_be_bytes(),
-                                controller_id: flow_finished.controller_id,
-                            };
-                            self.controller.send(msg).await;
+                            // only reports once per flow to avoid duplicates
+                            if self.reported_finished_flows.insert(flow_finished.flow_id) {
+                                let msg = DataplaneToController::FlowFinished {
+                                    flow_id: flow_finished.flow_id.to_be_bytes(),
+                                    controller_id: flow_finished.controller_id,
+                                };
+                                self.controller.send(msg).await;
 
-                            // cleans up app flow tracking to allow port reuse
-                            self.reported_app_flows.remove(&flow_finished.flow_id);
+                                // cleans up app flow tracking to allow port reuse
+                                self.reported_app_flows.remove(&flow_finished.flow_id);
 
-                            // allows future route assignment reporting for reused flow IDs
-                            self.reported_route_assignments.remove(&flow_finished.flow_id);
+                                // allows future route assignment reporting for reused flow IDs
+                                self.reported_route_assignments.remove(&flow_finished.flow_id);
+                            }
                         }
                     }
                 }
