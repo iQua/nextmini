@@ -1,16 +1,15 @@
-use ahash::AHashMap;
-use chrono::Utc;
-
+use ahash::AHashSet;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::error;
 
-use nextmini_messages::{AppFlows, DataplaneToController};
+use nextmini_messages::{AppFlow, DataplaneToController};
 
+use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
 
-pub struct NewFlow {
+pub struct AppFlowInfo {
     pub flow_id: FlowId,
     pub src_node_id: NodeId,
     pub dst_node_id: NodeId,
@@ -27,7 +26,7 @@ pub struct FlowFinished {
 }
 
 pub enum FlowStatsMessage {
-    NewFlow(NewFlow),
+    AppFlowStart(AppFlowInfo),
     RouteAssigned(RouteAssigned),
     FlowFinished(FlowFinished),
 }
@@ -35,10 +34,11 @@ pub enum FlowStatsMessage {
 #[derive(Debug, Clone)]
 pub struct FlowStatsReporterHandle {
     sender: UnboundedSender<FlowStatsMessage>,
+    config: LocalConfig,
 }
 
 impl FlowStatsReporterHandle {
-    pub fn new(controller: ControllerInterfaceHandle) -> Self {
+    pub fn new(controller: ControllerInterfaceHandle, config: LocalConfig) -> Self {
         let (sender, receiver) = unbounded_channel();
 
         let mut flowstats_reporter = FlowStatsReporter::new(controller, receiver);
@@ -47,7 +47,7 @@ impl FlowStatsReporterHandle {
             flowstats_reporter.run().await;
         });
 
-        Self { sender }
+        Self { sender, config }
     }
 
     pub fn report_new_appflows(&self, appflows: Vec<AppFlow>) {
