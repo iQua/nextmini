@@ -437,7 +437,7 @@ async fn handle_connection(
                                     if result.rows_affected() > 0 {
                                         info!("Marked user space flow {} as finished.", id);
                                     } else {
-                                        warn!("user space flow {} not found in database.", id);
+                                        warn!("User space flow {} not found in database.", id);
                                     }
                                 }
                                 Err(e) => {
