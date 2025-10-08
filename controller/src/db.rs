@@ -107,7 +107,6 @@ async fn create_db(pool: &Pool<Postgres>) {
             flow_id BYTEA NOT NULL UNIQUE,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            bytes INTEGER NOT NULL,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
@@ -216,7 +215,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
             flow_id BYTEA NOT NULL UNIQUE,
             src_node_id INTEGER NOT NULL,
             dst_node_id INTEGER NOT NULL,
-            first_seen TIMESTAMP WITH TIME ZONE NOT NULL
+            is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
     )

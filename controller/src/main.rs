@@ -414,92 +414,77 @@ async fn handle_connection(
                             );
                         }
                     }
-                    DataplaneToController::FlowFinished { controller_id } => {
-                        info!("Received FlowFinished message for flow {}.", controller_id);
-
-                        match sqlx::query(
-                            r#"
-                            UPDATE flows
-                            SET is_finished = TRUE
-                            WHERE id = $1
-                            "#,
-                        )
-                        .bind(controller_id)
-                        .execute(&*db_pool)
-                        .await
-                        {
-                            Ok(result) => {
-                                if result.rows_affected() > 0 {
-                                    info!(
-                                        "Marked flow {} as finished in the database.",
-                                        controller_id
-                                    );
-                                } else {
-                                    warn!(
-                                        "Flow with ID {} not found in the database.",
-                                        controller_id
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to update flow {} in the database: {}.",
-                                    controller_id, e
-                                );
-                            }
-                        }
-                    }
-                    DataplaneToController::AppFlowStart {
+                    DataplaneToController::FlowFinished {
                         flow_id,
-                        src_node_id,
-                        dst_node_id,
-                        bytes,
-                        is_finished,
+                        controller_id,
                     } => {
-                        let flow_id_slice = flow_id.as_ref();
-                        // TODO: Update the if statement.
-                        if is_finished {
-                            // updates existing record when a flow is finished
+                        if let Some(id) = controller_id {
+                            // user space flow with controller_id
+                            info!("Received FlowFinished message for user space flow {}.", id);
+
                             match sqlx::query(
                                 r#"
-                                UPDATE app_flows
-                                SET is_finished = TRUE, bytes = $2
-                                WHERE flow_id = $1
+                                UPDATE flows
+                                SET is_finished = TRUE
+                                WHERE id = $1
                                 "#,
                             )
-                            .bind(flow_id_slice)
-                            .bind(bytes as i32)
+                            .bind(id)
                             .execute(&*db_pool)
                             .await
                             {
                                 Ok(result) => {
                                     if result.rows_affected() > 0 {
-                                        info!(
-                                            "Marked app flow from node {} to {} as finished.",
-                                            src_node_id, dst_node_id
-                                        );
+                                        info!("Marked user space flow {} as finished.", id);
                                     } else {
-                                        warn!(
-                                            "App flow from node {} to {} not found when trying to mark as finished.",
-                                            src_node_id, dst_node_id
-                                        );
+                                        warn!("user space flow {} not found in database.", id);
                                     }
                                 }
-                                Err(e) => error!("Failed to update app flow: {}.", e),
+                                Err(e) => {
+                                    error!("Failed to update user space flow {}: {}.", id, e);
+                                }
                             }
                         } else {
-                            // inserts a new record when receives an AppFlowStart message
+                            // application flows reading from TUN interface without controller_id
+                            let flow_id_slice = flow_id.as_ref();
+                            info!("Received FlowFinished message for application flow {:?}.", flow_id);
+
                             match sqlx::query(
                                 r#"
-                                INSERT INTO app_flows (flow_id, src_node_id, dst_node_id, bytes, is_finished)
-                                VALUES ($1, $2, $3, $4, FALSE)
+                                UPDATE app_flows
+                                SET is_finished = TRUE
+                                WHERE flow_id = $1
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(result) => {
+                                    if result.rows_affected() > 0 {
+                                        info!("Marked application flow as finished.");
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to update application flow: {}.", e);
+                                }
+                            }
+                        }
+                    }
+                    DataplaneToController::AppFlowStart { appflows } => {
+                        for appflow in appflows {
+                            let flow_id_slice = appflow.flow_id.as_ref();
+
+                            match sqlx::query(
+                                r#"
+                                INSERT INTO app_flows (flow_id, src_node_id, dst_node_id, is_finished)
+                                VALUES ($1, $2, $3, FALSE)
                                 ON CONFLICT (flow_id) DO NOTHING
                                 "#,
                             )
                             .bind(flow_id_slice)
-                            .bind(src_node_id as i32)
-                            .bind(dst_node_id as i32)
-                            .bind(bytes as i32)
+                            .bind(appflow.src_node_id as i32)
+                            .bind(appflow.dst_node_id as i32)
                             .execute(&*db_pool)
                             .await
                             {
@@ -507,13 +492,21 @@ async fn handle_connection(
                                     if result.rows_affected() > 0 {
                                         info!(
                                             "Registered new app flow from node {} to {}.",
-                                            src_node_id, dst_node_id
+                                            appflow.src_node_id, appflow.dst_node_id
                                         );
                                     }
                                 }
                                 Err(e) => error!("Failed to insert app flow: {}.", e),
                             }
                         }
+                    }
+                    DataplaneToController::RouteAssigned { flow_id, route_id } => {
+                        let flow_id_slice = flow_id.as_ref();
+                        info!(
+                            "Received RouteAssigned message: flow {:?} → route {}.",
+                            flow_id, route_id
+                        );
+
                     }
                 }
             }
