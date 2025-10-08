@@ -73,6 +73,9 @@ impl LocalReader {
                     // reports new app flows to the controller
                     self.flowstats_reporter.report_app_flow(packet.flow_id);
 
+                    // checks and reports if flow finished (FIN/RST)
+                    self.flowstats_reporter.check_and_report_finished(&packet);
+
                     // sends to the processor for routing and forwarding
                     self.processor.process_packet(packet);
                 }

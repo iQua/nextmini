@@ -48,6 +48,20 @@ impl Packet {
         is_tcp && !is_syn && !is_fin && !is_rst && !is_ack
     }
 
+    pub fn is_tcp_fin_or_rst(&self) -> bool {
+        // checks if it is tcp
+        if self.buf[9] != 6 {
+            return false;
+        }
+
+        let ihl = (self.buf[0] & 0x0F) as usize;
+        let tcp_offset = ihl * 4;
+        let tcp_flags = self.buf[tcp_offset + 13];
+
+        // checks if FIN or RST is 0
+        (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
+    }
+
     fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
         if buf[0] >> 4 == 4 {
             let src_dst_ip = BigEndian::read_u64(&buf[12..20]);

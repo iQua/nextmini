@@ -7,6 +7,7 @@ use nextmini_messages::{AppFlow, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
+use crate::node::packet::Packet;
 use crate::node::{FlowId, NodeId};
 
 pub struct AppFlowInfo {
@@ -97,6 +98,12 @@ impl FlowStatsReporterHandle {
             );
         }
     }
+
+    // since userspace flows doesn't need to check if received FIN/RST,
+    // we can report them directly
+    pub fn check_and_report_finished(&self, packet: &Packet) {
+        if packet.is_tcp_fin_or_rst() {
+            self.report_flow_finished(packet.flow_id, None);
 }
 
 struct FlowStatsReporter {
