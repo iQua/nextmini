@@ -51,21 +51,14 @@ impl FlowStatsReporterHandle {
         Self { sender, config }
     }
 
-    pub fn report_app_flow(&self, flow_id: FlowId) {
-        let (src_node_id, dst_node_id) = self.config.extract_node_ids_from_flow(flow_id);
-
-        if let Err(e) = self
-            .sender
-            .send(FlowStatsMessage::AppFlowStart(AppFlowInfo {
-                flow_id,
-                src_node_id,
-                dst_node_id,
-            }))
-        {
-            error!(
-                "Error sending app flow message to the flowstats reporter: {}.",
-                e
-            );
+    /// Reports packet-related flow stats: app flow start and flow finish (if FIN/RST)
+    pub fn report_packet(&self, packet: &Packet) {
+        // Report app flow start
+        self.report_app_flow(packet.flow_id);
+        
+        // Check and report if flow finished (FIN/RST)
+        if packet.is_tcp_fin_or_rst() {
+            self.report_flow_finished(packet.flow_id, None);
         }
     }
 
@@ -79,6 +72,24 @@ impl FlowStatsReporterHandle {
         {
             error!(
                 "Error sending route assigned message to the flowstats reporter: {}.",
+                e
+            );
+        }
+    }
+
+    pub fn report_app_flow(&self, flow_id: FlowId) {
+        let (src_node_id, dst_node_id) = self.config.extract_node_ids_from_flow(flow_id);
+
+        if let Err(e) = self
+            .sender
+            .send(FlowStatsMessage::AppFlowStart(AppFlowInfo {
+                flow_id,
+                src_node_id,
+                dst_node_id,
+            }))
+        {
+            error!(
+                "Error sending app flow message to the flowstats reporter: {}.",
                 e
             );
         }
@@ -105,7 +116,6 @@ impl FlowStatsReporterHandle {
         if packet.is_tcp_fin_or_rst() {
             self.report_flow_finished(packet.flow_id, None);
         }
-    }
 }
 
 struct FlowStatsReporter {
