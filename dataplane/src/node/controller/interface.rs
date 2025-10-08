@@ -59,7 +59,7 @@ impl ControllerInterfaceHandle {
             FlowStatsReporterHandle::new(controller_interface.clone(), config.clone());
 
         // passes flowstats reporter to routing table for automatic route assignment reporting
-        processors.set_flowstats_reporter(flowstats_reporter.clone());
+        processors.set_flowstats_reporter(flowstats_reporter.clone()).await;
 
         // adds flowstats reporter to report flow finish
         let user_space_client = UserSpaceClientHandle::new(

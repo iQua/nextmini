@@ -77,17 +77,18 @@ impl ControllerReporter {
             tokio::select! {
                 // receives new metrics data
                 Some(msg) = self.receiver.recv() => {
-                    if let FlowMetricMessage::FlowMetric(metric) = msg {
-                        let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
-                            FlowMetric {
-                                flow_id: metric.flow_id,
-                                local_node_id: metric.local_node_id,
-                                remote_node_id: metric.remote_node_id,
-                                bytes: 0
-                            });
+                    let FlowMetricMessage::FlowMetric(metric) = msg;
 
-                        (*flow_metric).bytes += metric.bytes;
-                    }
+                    let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
+                        FlowMetric {
+                            flow_id: metric.flow_id,
+                            local_node_id: metric.local_node_id,
+                            remote_node_id: metric.remote_node_id,
+                            bytes: 0,
+                        },
+                    );
+
+                    flow_metric.bytes += metric.bytes;
                 }
                 // timer tick: calculates flow rates and transmits to the controller
                 _ = metrics_tick.tick() => {

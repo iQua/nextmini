@@ -197,7 +197,7 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn set_flowstats_reporter(&self, flowstats_reporter: FlowStatsReporterHandle) {
+    pub async fn set_flowstats_reporter(&self, flowstats_reporter: FlowStatsReporterHandle) {
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::SetFlowStatsReporter(
@@ -213,6 +213,7 @@ impl ProcessorHandle {
         if let Err(e) = self
             .connector_message_sender()
             .send(ConnectorMessage::SetFlowStatsReporter(flowstats_reporter))
+            .await
         {
             error!(
                 "Error sending the SetFlowStatsReporter message to the connector: {}",
