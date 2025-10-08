@@ -122,9 +122,12 @@ impl RoutingTable {
         // stores the selected route into the cache
         self.cache.insert(flow_id, selected_route_id);
 
-        // reports route assignment to the controller
+        // reports route assignment to the controller only from the source node
         if let Some(flowstats_reporter) = flowstats_reporter {
-            flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
+            let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
+            if src_node_id == self.local_id {
+                flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
+            }
         }
 
         debug!(
