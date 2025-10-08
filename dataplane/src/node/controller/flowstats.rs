@@ -21,8 +21,13 @@ pub struct RouteAssigned {
     pub route_id: usize,
 }
 
+pub struct FlowFinished {
+    pub flow_id: FlowId,
+    pub controller_id: Option<i32>,
+}
+
 pub enum FlowStatsMessage {
     NewFlow(NewFlow),
     RouteAssigned(RouteAssigned),
-    FlowFinished(i32),
+    FlowFinished(FlowFinished),
 }

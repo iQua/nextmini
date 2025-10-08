@@ -22,7 +22,8 @@ pub enum DataplaneToController {
         metrics: Vec<Metric>,
     },
     FlowFinished {
-        controller_id: i32,
+        flow_id: [u8; 16],
+        controller_id: Option<i32>,
     },
     AppFlowStart {
         appflows: Vec<AppFlow>,
