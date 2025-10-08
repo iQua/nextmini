@@ -25,12 +25,21 @@ pub enum DataplaneToController {
         controller_id: i32,
     },
     AppFlowStart {
-        flow_id: [u8; 16],
-        src_node_id: usize,
-        dst_node_id: usize,
-        bytes: usize,
-        is_finished: bool,
+        appflows: Vec<AppFlows>,
     },
+    RouteAssigned {
+        flow_id: [u8; 16],
+        route_id: usize,
+    },
+}
+
+/// The new app flow message reported to controller from a src node to dest node.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AppFlows {
+    pub flow_id: [u8; 16],
+    pub src_node_id: usize,
+    pub dst_node_id: usize,
+    pub bytes: usize,
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.
