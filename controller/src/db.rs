@@ -105,8 +105,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         CREATE TABLE IF NOT EXISTS app_flows (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL UNIQUE,
-            src_node_id INTEGER NOT NULL,
-            dst_node_id INTEGER NOT NULL,
+            src_node_id INTEGER,
+            dst_node_id INTEGER,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
@@ -232,8 +232,8 @@ async fn reset_db(pool: &Pool<Postgres>) {
         CREATE TABLE app_flows (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL UNIQUE,
-            src_node_id INTEGER NOT NULL,
-            dst_node_id INTEGER NOT NULL,
+            src_node_id INTEGER,
+            dst_node_id INTEGER,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,

@@ -53,12 +53,12 @@ impl FlowStatsReporterHandle {
 
     /// Reports packet-related flow stats: app flow start and flow finish (if FIN/RST)
     pub fn report_packet(&self, packet: &Packet) {
-        // Report app flow start
-        self.report_app_flow(packet.flow_id);
-        
-        // Check and report if flow finished (FIN/RST)
+        // checks and reports if flow finished (FIN/RST)
         if packet.is_tcp_fin_or_rst() {
             self.report_flow_finished(packet.flow_id, None);
+        } else {
+            // only reports app flow start for non-terminating packets
+            self.report_app_flow(packet.flow_id);
         }
     }
 
@@ -148,10 +148,10 @@ impl FlowStatsReporter {
                                 let flow_id = app_flow.flow_id;
                                 self.reported_app_flows.insert(flow_id);
                                 self.app_flows.push(app_flow);
-                                
-                                // cleans up the finished flag;
-                                // if a new flow starts with the same flow_id, the old connection is definitely finished
-                                self.reported_finished_flows.remove(&flow_id);
+
+                                if self.reported_finished_flows.contains(&flow_id) {
+                                    self.reported_finished_flows.remove(&flow_id);
+                                }
                             }
                         }
                         FlowStatsMessage::RouteAssigned(route_assigned) => {

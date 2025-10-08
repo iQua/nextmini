@@ -449,11 +449,14 @@ async fn handle_connection(
                             let flow_id_slice = flow_id.as_ref();
                             info!("Received FlowFinished message for application flow {:?}.", flow_id);
 
+                            // inserts or updates the flow as finished
+                            // if the flow doesn't exist yet, create it with only flow_id and is_finished set
                             match sqlx::query(
                                 r#"
-                                UPDATE app_flows
+                                INSERT INTO app_flows (flow_id, is_finished)
+                                VALUES ($1, TRUE)
+                                ON CONFLICT (flow_id) DO UPDATE
                                 SET is_finished = TRUE
-                                WHERE flow_id = $1
                                 "#,
                             )
                             .bind(flow_id_slice)
@@ -462,7 +465,7 @@ async fn handle_connection(
                             {
                                 Ok(result) => {
                                     if result.rows_affected() > 0 {
-                                        info!("Marked application flow as finished.");
+                                        info!("Marked application flow as finished (created or updated).");
                                     }
                                 }
                                 Err(e) => {
@@ -493,7 +496,9 @@ async fn handle_connection(
                                 r#"
                                 INSERT INTO app_flows (flow_id, src_node_id, dst_node_id, is_finished)
                                 VALUES ($1, $2, $3, FALSE)
-                                ON CONFLICT (flow_id) DO NOTHING
+                                ON CONFLICT (flow_id) DO UPDATE
+                                SET src_node_id = EXCLUDED.src_node_id,
+                                    dst_node_id = EXCLUDED.dst_node_id
                                 "#,
                             )
                             .bind(flow_id_slice)
@@ -505,12 +510,12 @@ async fn handle_connection(
                                 Ok(result) => {
                                     if result.rows_affected() > 0 {
                                         info!(
-                                            "Registered new app flow from node {} to {}.",
+                                            "Registered/updated app flow from node {} to {}.",
                                             appflow.src_node_id, appflow.dst_node_id
                                         );
                                     }
                                 }
-                                Err(e) => error!("Failed to insert app flow: {}.", e),
+                                Err(e) => error!("Failed to insert/update app flow: {}.", e),
                             }
                         }
                     }
