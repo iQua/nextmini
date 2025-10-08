@@ -50,52 +50,65 @@ impl FlowStatsReporterHandle {
         Self { sender, config }
     }
 
-    pub fn report_new_appflows(&self, appflows: Vec<AppFlow>) {
-        for appflow in appflows {
-            if let Err(e) = self.sender.send(FlowStatsMessage::NewFlow) {
-                error!(
-                    "Error sending registering new app flow messages to the FlowStats reporter: {}.",
-                    e
-                );
-            }
-        }
-    }
+    pub fn report_app_flow(&self, flow_id: FlowId) {
+        let (src_node_id, dst_node_id) = self.config.extract_node_ids_from_flow(flow_id);
 
-    pub fn report_flow_finished(&self, flow_finished: FlowFinished) {
         if let Err(e) = self
             .sender
-            .send(FlowStatsMessage::FlowFinished(FlowFinished))
+            .send(FlowStatsMessage::AppFlowStart(AppFlowInfo {
+                flow_id,
+                src_node_id,
+                dst_node_id,
+            }))
         {
             error!(
-                "Error sending a flow finished message to the FlowStats reporter: {}.",
+                "Error sending app flow message to the flowstats reporter: {}.",
                 e
             );
         }
     }
 
-    pub fn report_route_assigned(&self, route_assigned: RouteAssigned) {
+    pub fn report_route_assigned(&self, flow_id: FlowId, route_id: usize) {
         if let Err(e) = self
             .sender
-            .send(FlowStatsMessage::RouteAssigned(RouteAssigned))
+            .send(FlowStatsMessage::RouteAssigned(RouteAssigned {
+                flow_id,
+                route_id,
+            }))
         {
             error!(
-                "Error sending a route assigned message to the FlowStats reporter: {}.",
+                "Error sending route assigned message to the flowstats reporter: {}.",
+                e
+            );
+        }
+    }
+
+    pub fn report_flow_finished(&self, flow_id: FlowId, controller_id: Option<i32>) {
+        if let Err(e) = self
+            .sender
+            .send(FlowStatsMessage::FlowFinished(FlowFinished {
+                flow_id,
+                controller_id,
+            }))
+        {
+            error!(
+                "Error sending flow finished message to the flowstats reporter: {}.",
                 e
             );
         }
     }
 }
 
-pub struct FlowStatsReporter {
+struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
     flow_metrics: AHashMap<FlowId, FlowMetric>,
 }
 
-impl ControllerReporter {
-    pub fn new(
+impl FlowStatsReporter {
+    fn new(
         controller: ControllerInterfaceHandle,
-        receiver: UnboundedReceiver<FlowMetricMessage>,
+        receiver: UnboundedReceiver<FlowStatsMessage>,
     ) -> Self {
         Self {
             controller,
@@ -105,12 +118,11 @@ impl ControllerReporter {
     }
 
     pub async fn run(&mut self) {
-        // transmits metrics every 5 seconds
-        let mut metrics_tick = interval(Duration::from_secs(5));
+        // transmits app flows every 5 seconds
+        let mut flowstats_tick = interval(Duration::from_secs(5));
 
         loop {
             tokio::select! {
-                // receives new metrics data
                 Some(msg) = self.receiver.recv() => {
                     match msg {
                         FlowMetricMessage::FlowMetric(metric) => {
@@ -130,31 +142,26 @@ impl ControllerReporter {
                         }
                     }
                 }
-                // timer tick: calculates flow rates and transmits to the controller
-                _ = metrics_tick.tick() => {
-                    if !self.flow_metrics.is_empty() {
-                        let now = Utc::now();
-                        let mut metrics_array = Vec::new();
+                _ = flowstats_tick.tick() => {
+                    if !self.app_flows.is_empty() {
+                        let mut appflows = Vec::new();
 
-                        for flow_metric in self.flow_metrics.values() {
-                            metrics_array.push(Metric {
-                                flow_id: flow_metric.flow_id.to_be_bytes(),
-                                bytes: flow_metric.bytes,
-                                local_node_id: flow_metric.local_node_id,
-                                remote_node_id: flow_metric.remote_node_id,
-                                time_read: now,
+                        for app_flow in &self.app_flows {
+                            appflows.push(AppFlow {
+                                flow_id: app_flow.flow_id.to_be_bytes(),
+                                src_node_id: app_flow.src_node_id,
+                                dst_node_id: app_flow.dst_node_id,
                             });
                         }
 
-                        if !metrics_array.is_empty() {
-                            let msg = DataplaneToController::Metrics {
-                                metrics: metrics_array,
+                        if !appflows.is_empty() {
+                            let msg = DataplaneToController::AppFlowStart {
+                                appflows,
                             };
-
                             self.controller.send(msg).await;
                         }
 
-                        self.flow_metrics.clear();
+                        self.app_flows.clear();
                     }
                 }
             }
