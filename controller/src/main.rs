@@ -447,6 +447,8 @@ async fn handle_connection(
                         } else {
                             // application flows reading from TUN interface without controller_id
                             let flow_id_slice = flow_id.as_ref();
+
+                            // Debug!: this message is now used for debugging
                             info!(
                                 "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}].",
                                 flow_id_slice[0],
@@ -536,6 +538,8 @@ async fn handle_connection(
                     }
                     DataplaneToController::RouteAssigned { flow_id, route_id } => {
                         let flow_id_slice = flow_id.as_ref();
+
+                        // Debug!: this message is now used for debugging
                         info!(
                             "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {}.",
                             flow_id_slice[0],
