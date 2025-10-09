@@ -119,9 +119,7 @@ async fn create_db(pool: &Pool<Postgres>) {
         r#"
         CREATE TABLE IF NOT EXISTS app_flow_routes (
             flow_id BYTEA PRIMARY KEY,
-            route_id INTEGER NOT NULL,
-            first_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-            last_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            route_id INTEGER NOT NULL
         )
         "#,
     )
@@ -246,9 +244,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
         r#"
         CREATE TABLE app_flow_routes (
             flow_id BYTEA PRIMARY KEY,
-            route_id INTEGER NOT NULL,
-            first_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-            last_reported_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            route_id INTEGER NOT NULL
         )
         "#,
     )

@@ -557,8 +557,7 @@ async fn handle_connection(
                             INSERT INTO app_flow_routes (flow_id, route_id)
                             VALUES ($1, $2)
                             ON CONFLICT (flow_id) DO UPDATE
-                            SET route_id = EXCLUDED.route_id,
-                                last_reported_at = NOW()
+                            SET route_id = EXCLUDED.route_id
                             "#,
                         )
                         .bind(flow_id_slice)
