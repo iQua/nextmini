@@ -122,10 +122,15 @@ impl RoutingTable {
         // stores the selected route into the cache
         self.cache.insert(flow_id, selected_route_id);
 
-        // reports route assignment to the controller only from the source node
+        // reports route assignment to the controller only for app flows from the source node
         if let Some(flowstats_reporter) = flowstats_reporter {
             let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
-            if src_node_id == self.local_id {
+
+            // only reports for app flows (not user space flows)
+            // user space flows use a dedicated server port
+            let is_app_flow = flow_id.dst_port() != self.config.user_space_server_port;
+
+            if src_node_id == self.local_id && is_app_flow {
                 flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
             }
         }
