@@ -547,7 +547,7 @@ pub async fn setup_flow_notification(
             .execute(&mut *conn)
             .await
             .expect("Failed to create flow trigger");
-        info!("Created flow notification trigger");
+        info!("Created flow notification trigger.");
     }
 
     // sets up a listener for flow notifications
