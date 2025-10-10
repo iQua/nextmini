@@ -10,7 +10,7 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::{FlowId, NodeId};
 
-pub struct AppFlowInfo {
+pub struct AppFlowStart {
     pub flow_id: FlowId,
     pub src_node_id: NodeId,
     pub dst_node_id: NodeId,
@@ -27,7 +27,7 @@ pub struct FlowFinished {
 }
 
 pub enum FlowStatsMessage {
-    AppFlowStart(AppFlowInfo),
+    AppFlowStart(AppFlowStart),
     RouteAssigned(RouteAssigned),
     FlowFinished(FlowFinished),
 }
@@ -82,7 +82,7 @@ impl FlowStatsReporterHandle {
 
         if let Err(e) = self
             .sender
-            .send(FlowStatsMessage::AppFlowStart(AppFlowInfo {
+            .send(FlowStatsMessage::AppFlowStart(AppFlowStart {
                 flow_id,
                 src_node_id,
                 dst_node_id,
@@ -115,6 +115,7 @@ struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
     app_flows: Vec<AppFlowInfo>,
+    app_flows: Vec<AppFlowStart>,
     reported_app_flows: AHashSet<FlowId>,
     reported_route_assignments: AHashMap<FlowId, usize>,
     reported_finished_flows: AHashSet<FlowId>,
@@ -136,7 +137,7 @@ impl FlowStatsReporter {
     }
 
     pub async fn run(&mut self) {
-        // transmits app flows every 5 seconds
+        // transmits all buffered flow stats every 300ms
         let mut flowstats_tick = interval(Duration::from_millis(300));
 
         loop {
@@ -183,8 +184,8 @@ impl FlowStatsReporter {
 
                                 // cleans up app flow tracking to allow port reuse
                                 self.reported_app_flows.remove(&flow_finished.flow_id);
-
-                                // allows future route assignment reporting for reused flow IDs
+                                
+                                // cleans up route assignment tracking to allow port reuse
                                 self.reported_route_assignments.remove(&flow_finished.flow_id);
                             }
                         }
@@ -207,6 +208,10 @@ impl FlowStatsReporter {
                                 appflows,
                             };
                             self.controller.send(msg).await;
+                        let msg = DataplaneToController::AppFlowStart { appflows };
+                        self.controller.send(msg).await;
+                        self.app_flows.clear();
+                    }
                         }
 
                         self.app_flows.clear();
