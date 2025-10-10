@@ -22,15 +22,13 @@ pub enum DataplaneToController {
         metrics: Vec<Metric>,
     },
     FlowFinished {
-        flow_id: [u8; 16],
-        controller_id: Option<i32>,
+        flows: Vec<FlowFinishedInfo>,
     },
     AppFlowStart {
         appflows: Vec<AppFlow>,
     },
     RouteAssigned {
-        flow_id: [u8; 16],
-        route_id: usize,
+        assignments: Vec<RouteAssignment>,
     },
 }
 
@@ -40,6 +38,20 @@ pub struct AppFlow {
     pub flow_id: [u8; 16],
     pub src_node_id: usize,
     pub dst_node_id: usize,
+}
+
+/// The information about a finished flow.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FlowFinishedInfo {
+    pub flow_id: [u8; 16],
+    pub controller_id: Option<i32>,
+}
+
+/// The information about a route assignment.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RouteAssignment {
+    pub flow_id: [u8; 16],
+    pub route_id: usize,
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.
