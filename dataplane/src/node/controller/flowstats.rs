@@ -163,25 +163,26 @@ impl FlowStatsReporter {
                             let should_report = self.reported_route_assignments
                                 .get(&route_assigned.flow_id)
                                 .map_or(true, |&last_route| last_route != route_assigned.route_id);
-                            
+
                             if should_report {
                                 // updates immediately to prevent duplicates within the same tick period
                                 self.reported_route_assignments.insert(route_assigned.flow_id, route_assigned.route_id);
-                                
+
                                 // for batch sending at next tick
                                 self.route_assignments.push(route_assigned);
                             }
                         }
                         FlowStatsMessage::FlowFinished(flow_finished) => {
                             // only buffers once per flow to avoid duplicates
-                            if self.reported_finished_flows.insert(flow_finished.flow_id) {
+                            let flow_id = flow_finished.flow_id;
+                            if self.reported_finished_flows.insert(flow_id) {
                                 self.finished_flows.push(flow_finished);
 
                                 // cleans up app flow tracking to allow port reuse
-                                self.reported_app_flows.remove(&flow_finished.flow_id);
-                                
+                                self.reported_app_flows.remove(&flow_id);
+
                                 // cleans up route assignment tracking to allow port reuse
-                                self.reported_route_assignments.remove(&flow_finished.flow_id);
+                                self.reported_route_assignments.remove(&flow_id);
                             }
                         }
                     }
