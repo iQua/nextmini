@@ -414,93 +414,95 @@ async fn handle_connection(
                             );
                         }
                     }
-                    DataplaneToController::FlowFinished {
-                        flow_id,
-                        controller_id,
-                    } => {
-                        if let Some(id) = controller_id {
-                            // user space flow with controller_id
-                            info!("Received FlowFinished message for user space flow {}.", id);
+                    DataplaneToController::FlowFinished { flows } => {
+                        for flow_finished in flows {
+                            let flow_id = flow_finished.flow_id;
+                            let controller_id = flow_finished.controller_id;
 
-                            match sqlx::query(
-                                r#"
-                                UPDATE flows
-                                SET is_finished = TRUE
-                                WHERE id = $1
-                                "#,
-                            )
-                            .bind(id)
-                            .execute(&*db_pool)
-                            .await
-                            {
-                                Ok(result) => {
-                                    if result.rows_affected() > 0 {
-                                        info!("Marked user space flow {} as finished.", id);
-                                    } else {
-                                        warn!("User space flow {} not found in database.", id);
+                            if let Some(id) = controller_id {
+                                // user space flow with controller_id
+                                info!("Received FlowFinished message for user space flow {}.", id);
+
+                                match sqlx::query(
+                                    r#"
+                                    UPDATE flows
+                                    SET is_finished = TRUE
+                                    WHERE id = $1
+                                    "#,
+                                )
+                                .bind(id)
+                                .execute(&*db_pool)
+                                .await
+                                {
+                                    Ok(result) => {
+                                        if result.rows_affected() > 0 {
+                                            info!("Marked user space flow {} as finished.", id);
+                                        } else {
+                                            warn!("User space flow {} not found in database.", id);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to update user space flow {}: {}.", id, e);
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Failed to update user space flow {}: {}.", id, e);
-                                }
-                            }
-                        } else {
-                            // application flows reading from TUN interface without controller_id
-                            let flow_id_slice = flow_id.as_ref();
+                            } else {
+                                // application flows reading from TUN interface without controller_id
+                                let flow_id_slice = flow_id.as_ref();
 
-                            // Debug!: this message is now used for debugging
-                            info!(
-                                "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}].",
-                                flow_id_slice[0],
-                                flow_id_slice[1],
-                                flow_id_slice[2],
-                                flow_id_slice[3],
-                                u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
-                                flow_id_slice[4],
-                                flow_id_slice[5],
-                                flow_id_slice[6],
-                                flow_id_slice[7],
-                                u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]])
-                            );
+                                // Debug!: this message is now used for debugging
+                                info!(
+                                    "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}].",
+                                    flow_id_slice[0],
+                                    flow_id_slice[1],
+                                    flow_id_slice[2],
+                                    flow_id_slice[3],
+                                    u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                    flow_id_slice[4],
+                                    flow_id_slice[5],
+                                    flow_id_slice[6],
+                                    flow_id_slice[7],
+                                    u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]])
+                                );
 
-                            // inserts or updates the flow as finished
-                            // if the flow doesn't exist yet, create it with only flow_id and is_finished set
-                            match sqlx::query(
-                                r#"
-                                INSERT INTO app_flows (flow_id, is_finished)
-                                VALUES ($1, TRUE)
-                                ON CONFLICT (flow_id) DO UPDATE
-                                SET is_finished = TRUE
-                                "#,
-                            )
-                            .bind(flow_id_slice)
-                            .execute(&*db_pool)
-                            .await
-                            {
-                                Ok(result) => {
-                                    if result.rows_affected() > 0 {
-                                        info!(
-                                            "Marked application flow as finished (created or updated)."
-                                        );
+                                // inserts or updates the flow as finished
+                                // if the flow doesn't exist yet, create it with only flow_id and is_finished set
+                                match sqlx::query(
+                                    r#"
+                                    INSERT INTO app_flows (flow_id, is_finished)
+                                    VALUES ($1, TRUE)
+                                    ON CONFLICT (flow_id) DO UPDATE
+                                    SET is_finished = TRUE
+                                    "#,
+                                )
+                                .bind(flow_id_slice)
+                                .execute(&*db_pool)
+                                .await
+                                {
+                                    Ok(result) => {
+                                        if result.rows_affected() > 0 {
+                                            info!(
+                                                "Marked application flow as finished (created or updated)."
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to update application flow: {}.", e);
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Failed to update application flow: {}.", e);
-                                }
-                            }
 
-                            // removes the app flow route for the finished flow
-                            if let Err(e) = sqlx::query(
-                                r#"
-                                DELETE FROM app_flow_routes
-                                WHERE flow_id = $1
-                                "#,
-                            )
-                            .bind(flow_id_slice)
-                            .execute(&*db_pool)
-                            .await
-                            {
-                                error!("Failed to remove app_flow_route for finished flow: {}.", e);
+                                // removes the app flow route for the finished flow
+                                if let Err(e) = sqlx::query(
+                                    r#"
+                                    DELETE FROM app_flow_routes
+                                    WHERE flow_id = $1
+                                    "#,
+                                )
+                                .bind(flow_id_slice)
+                                .execute(&*db_pool)
+                                .await
+                                {
+                                    error!("Failed to remove app_flow_route for finished flow: {}.", e);
+                                }
                             }
                         }
                     }
@@ -536,40 +538,44 @@ async fn handle_connection(
                             }
                         }
                     }
-                    DataplaneToController::RouteAssigned { flow_id, route_id } => {
-                        let flow_id_slice = flow_id.as_ref();
+                    DataplaneToController::RouteAssigned { assignments } => {
+                        for assignment in assignments {
+                            let flow_id = assignment.flow_id;
+                            let route_id = assignment.route_id;
+                            let flow_id_slice = flow_id.as_ref();
 
-                        // Debug!: this message is now used for debugging
-                        info!(
-                            "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {}.",
-                            flow_id_slice[0],
-                            flow_id_slice[1],
-                            flow_id_slice[2],
-                            flow_id_slice[3],
-                            u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
-                            flow_id_slice[4],
-                            flow_id_slice[5],
-                            flow_id_slice[6],
-                            flow_id_slice[7],
-                            u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
-                            route_id
-                        );
+                            // Debug!: this message is now used for debugging
+                            info!(
+                                "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {}.",
+                                flow_id_slice[0],
+                                flow_id_slice[1],
+                                flow_id_slice[2],
+                                flow_id_slice[3],
+                                u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                flow_id_slice[4],
+                                flow_id_slice[5],
+                                flow_id_slice[6],
+                                flow_id_slice[7],
+                                u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
+                                route_id
+                            );
 
-                        // inserts the app flow route for the assigned flow
-                        if let Err(e) = sqlx::query(
-                            r#"
-                            INSERT INTO app_flow_routes (flow_id, route_id)
-                            VALUES ($1, $2)
-                            ON CONFLICT (flow_id) DO UPDATE
-                            SET route_id = EXCLUDED.route_id
-                            "#,
-                        )
-                        .bind(flow_id_slice)
-                        .bind(route_id as i32)
-                        .execute(&*db_pool)
-                        .await
-                        {
-                            error!("Failed to upsert app_flow_route: {}.", e);
+                            // inserts the app flow route for the assigned flow
+                            if let Err(e) = sqlx::query(
+                                r#"
+                                INSERT INTO app_flow_routes (flow_id, route_id)
+                                VALUES ($1, $2)
+                                ON CONFLICT (flow_id) DO UPDATE
+                                SET route_id = EXCLUDED.route_id
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .bind(route_id as i32)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                error!("Failed to upsert app_flow_route: {}.", e);
+                            }
                         }
                     }
                 }

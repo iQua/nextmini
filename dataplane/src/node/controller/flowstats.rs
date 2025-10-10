@@ -3,7 +3,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::error;
 
-use nextmini_messages::{AppFlow, DataplaneToController};
+use nextmini_messages::{AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
@@ -114,8 +114,9 @@ impl FlowStatsReporterHandle {
 struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
-    app_flows: Vec<AppFlowInfo>,
     app_flows: Vec<AppFlowStart>,
+    route_assignments: Vec<RouteAssigned>,
+    finished_flows: Vec<FlowFinished>,
     reported_app_flows: AHashSet<FlowId>,
     reported_route_assignments: AHashMap<FlowId, usize>,
     reported_finished_flows: AHashSet<FlowId>,
@@ -130,6 +131,8 @@ impl FlowStatsReporter {
             controller,
             receiver,
             app_flows: Vec::new(),
+            route_assignments: Vec::new(),
+            finished_flows: Vec::new(),
             reported_app_flows: AHashSet::default(),
             reported_route_assignments: AHashMap::default(),
             reported_finished_flows: AHashSet::default(),
@@ -162,25 +165,14 @@ impl FlowStatsReporter {
                                 .map_or(true, |&last_route| last_route != route_assigned.route_id);
                             
                             if should_report {
-                                // sends RouteAssigned msg to controller
-                                let msg = DataplaneToController::RouteAssigned {
-                                    flow_id: route_assigned.flow_id.to_be_bytes(),
-                                    route_id: route_assigned.route_id,
-                                };
-                                self.controller.send(msg).await;
-                                
-                                // updates last reported route
-                                self.reported_route_assignments.insert(route_assigned.flow_id, route_assigned.route_id);
+                                // for batch sending at next tick
+                                self.route_assignments.push(route_assigned);
                             }
                         }
                         FlowStatsMessage::FlowFinished(flow_finished) => {
-                            // only reports once per flow to avoid duplicates
+                            // only buffers once per flow to avoid duplicates
                             if self.reported_finished_flows.insert(flow_finished.flow_id) {
-                                let msg = DataplaneToController::FlowFinished {
-                                    flow_id: flow_finished.flow_id.to_be_bytes(),
-                                    controller_id: flow_finished.controller_id,
-                                };
-                                self.controller.send(msg).await;
+                                self.finished_flows.push(flow_finished);
 
                                 // cleans up app flow tracking to allow port reuse
                                 self.reported_app_flows.remove(&flow_finished.flow_id);
