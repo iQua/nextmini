@@ -156,10 +156,9 @@ impl FlowStatsReporter {
                         }
                         FlowStatsMessage::RouteAssigned(route_assigned) => {
                             // checks if route has changed or is first time
-                            let should_report = match self.reported_route_assignments.get(&route_assigned.flow_id) {
-                                Some(&last_route) => last_route != route_assigned.route_id,
-                                None => true, 
-                            };
+                            let should_report = self.reported_route_assignments
+                                .get(&route_assigned.flow_id)
+                                .map_or(true, |&last_route| last_route != route_assigned.route_id);
                             
                             if should_report {
                                 // sends RouteAssigned msg to controller
