@@ -165,6 +165,9 @@ impl FlowStatsReporter {
                                 .map_or(true, |&last_route| last_route != route_assigned.route_id);
                             
                             if should_report {
+                                // updates immediately to prevent duplicates within the same tick period
+                                self.reported_route_assignments.insert(route_assigned.flow_id, route_assigned.route_id);
+                                
                                 // for batch sending at next tick
                                 self.route_assignments.push(route_assigned);
                             }
