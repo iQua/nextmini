@@ -127,8 +127,9 @@ impl RoutingTable {
             let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
 
             // only reports for app flows (not user space flows)
-            // user space flows use a dedicated server port
-            let is_app_flow = flow_id.dst_port() != self.config.user_space_server_port;
+            // user space flows use a dedicated server port (check both directions)
+            let is_app_flow = flow_id.dst_port() != self.config.user_space_server_port
+                && flow_id.src_port() != self.config.user_space_server_port;
 
             if src_node_id == self.local_id && is_app_flow {
                 flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
