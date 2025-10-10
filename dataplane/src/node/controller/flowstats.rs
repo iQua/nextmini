@@ -184,6 +184,7 @@ impl FlowStatsReporter {
                     }
                 }
                 _ = flowstats_tick.tick() => {
+                    // sends app flows message
                     if !self.app_flows.is_empty() {
                         let mut appflows = Vec::new();
 
