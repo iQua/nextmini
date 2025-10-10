@@ -195,18 +195,41 @@ impl FlowStatsReporter {
                             });
                         }
 
-                        if !appflows.is_empty() {
-                            let msg = DataplaneToController::AppFlowStart {
-                                appflows,
-                            };
-                            self.controller.send(msg).await;
                         let msg = DataplaneToController::AppFlowStart { appflows };
                         self.controller.send(msg).await;
                         self.app_flows.clear();
                     }
+
+                    // sends route assignments message
+                    if !self.route_assignments.is_empty() {
+                        let mut assignments = Vec::new();
+
+                        for route_assigned in &self.route_assignments {
+                            assignments.push(RouteAssignment {
+                                flow_id: route_assigned.flow_id.to_be_bytes(),
+                                route_id: route_assigned.route_id,
+                            });
                         }
 
-                        self.app_flows.clear();
+                        let msg = DataplaneToController::RouteAssigned { assignments };
+                        self.controller.send(msg).await;
+                        self.route_assignments.clear();
+                    }
+
+                    // sends flow finished message
+                    if !self.finished_flows.is_empty() {
+                        let mut flows = Vec::new();
+
+                        for flow_finished in &self.finished_flows {
+                            flows.push(FlowFinishedInfo {
+                                flow_id: flow_finished.flow_id.to_be_bytes(),
+                                controller_id: flow_finished.controller_id,
+                            });
+                        }
+
+                        let msg = DataplaneToController::FlowFinished { flows };
+                        self.controller.send(msg).await;
+                        self.finished_flows.clear();
                     }
                 }
             }
