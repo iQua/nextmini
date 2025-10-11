@@ -141,7 +141,7 @@ impl FlowStatsReporter {
 
     pub async fn run(&mut self) {
         // transmits all buffered flow stats every 300ms
-        let mut flowstats_tick = interval(Duration::from_millis(300));
+        let mut flowstats_tick = interval(Duration::from_secs(1));
 
         loop {
             tokio::select! {
