@@ -51,7 +51,7 @@ impl FlowStatsReporterHandle {
         Self { sender, config }
     }
 
-    /// Reports packet-related flow stats: app flow start and flow finish (if FIN/RST)
+    /// Report packet-related flow stats: app flow start and flow finish (if FIN/RST).
     pub fn report_packet(&self, packet: &Packet) {
         // checks and reports if flow finished (FIN/RST)
         if packet.is_tcp_fin_or_rst() {
@@ -62,6 +62,7 @@ impl FlowStatsReporterHandle {
         }
     }
 
+    /// Report route assigned for a flow.
     pub fn report_route_assigned(&self, flow_id: FlowId, route_id: usize) {
         if let Err(e) = self
             .sender
@@ -77,6 +78,7 @@ impl FlowStatsReporterHandle {
         }
     }
 
+    /// Report app flow start for a flow.
     pub fn report_app_flow(&self, flow_id: FlowId) {
         let (src_node_id, dst_node_id) = self.config.extract_node_ids_from_flow(flow_id);
 
@@ -95,6 +97,7 @@ impl FlowStatsReporterHandle {
         }
     }
 
+    /// Report flow finished for a flow.
     pub fn report_flow_finished(&self, flow_id: FlowId, controller_id: Option<i32>) {
         if let Err(e) = self
             .sender
@@ -140,7 +143,7 @@ impl FlowStatsReporter {
     }
 
     pub async fn run(&mut self) {
-        // transmits all buffered flow stats every 300ms
+        // transmits all buffered flow stat every 1 second
         let mut flowstats_tick = interval(Duration::from_secs(1));
 
         loop {
@@ -178,10 +181,10 @@ impl FlowStatsReporter {
                             if self.reported_finished_flows.insert(flow_id) {
                                 self.finished_flows.push(flow_finished);
 
-                                // cleans up app flow tracking to allow port reuse
+                                // cleans up app flow tracking
                                 self.reported_app_flows.remove(&flow_id);
 
-                                // cleans up route assignment tracking to allow port reuse
+                                // cleans up route assignment tracking
                                 self.reported_route_assignments.remove(&flow_id);
                             }
                         }
