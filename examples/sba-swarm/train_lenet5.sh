@@ -6,4 +6,4 @@ mpirun --allow-run-as-root \
   -x PATH \
   -bind-to none \
   -map-by :OVERSUBSCRIBE \
-  sh -c 'export RANK=$OMPI_COMM_WORLD_RANK; export WORLD_SIZE=$OMPI_COMM_WORLD_SIZE; uv run lenet5.py'
+  sh -c 'export RANK=$OMPI_COMM_WORLD_RANK; export WORLD_SIZE=$OMPI_COMM_WORLD_SIZE; uv run --python 3.12 lenet5.py'
