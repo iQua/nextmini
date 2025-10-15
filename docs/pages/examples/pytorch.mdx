@@ -97,6 +97,7 @@ Controller and postgres services can be started by:
 
 ```bash
 docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
+# docker compose -f controller-swarm.yml build --no-cache; docker compose -f controller-swarm.yml up
 ```
 
 On the manager instance, `<CONTROLLER_IP>` in `dataplane-swarm.yml` should be altered accordingly.
@@ -108,6 +109,7 @@ Build the pytorch base image on all manager and work instances :
 ```bash
 cd nextmini/
 docker build -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
+# docker build --no-cache --pull -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
 ```
 
 ### Step 3
