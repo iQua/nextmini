@@ -1,0 +1,21 @@
+# This node's ID. The node id can be assigned here as whatever you want.
+# From dataplane/local/interface.rs, the node_id can be read in dataplane.config.
+node_id = 1
+
+# --- Public Network ---
+# The network interface that has the public IP. From your ifconfig, this is eth0.
+public_network_interface = "enp0s31f6"
+
+# The public IP address of this node on Sim.
+public_network_addr = "142.150.238.3"
+
+
+# --- Private Network ---
+# Set a unique name to ensure communication with Node 2 happens over the public network.
+private_network_name = "vm1-private"
+
+num_tun_queues = 1
+num_packet_processors = 1
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"

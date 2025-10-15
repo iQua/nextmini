@@ -1,0 +1,14 @@
+node_id = 2
+# Public network interface of Boston.
+public_network_interface = "eno2"
+
+# Public IP address of Boston.
+public_network_addr = "142.150.238.6"
+
+private_network_name = "vm2-private"
+
+num_tun_queues = 1
+num_packet_processors = 1
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
