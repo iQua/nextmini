@@ -58,6 +58,18 @@ This should start a training session for a `LeNet-5` model to be trained with th
 The following instructions have not been verified to work correctly.
 </Callout>
 
+Before starting, make sure all the containers are stopped and removed.
+
+```bash
+docker rm -f $(docker ps -aq)
+```
+
+And remove all the Nextmini related networks, for example, `nextmini_network`.
+
+```bash
+docker network rm nextmini_network
+```
+
 Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
 
 ### Step 1
@@ -125,6 +137,11 @@ After all workers has joined the swarm, deploy services on the manager instance 
 ```bash
 cd examples/pytorch
 docker stack deploy -c dataplane-swarm.yml nextmini
+```
+
+To check the status of services, use:
+```bash
+docker service ls
 ```
 
 ### Step 5
