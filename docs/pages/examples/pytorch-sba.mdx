@@ -1,62 +1,4 @@
-import { Callout } from 'nextra/components'
-
-# Distributed PyTorch Trainers
-
-## Running a Distributed PyTorch Trainer with OpenMPI on a Single Machine
-
-`Nextmini` is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or macOS).
-
-Before starting to build the docker image, it is recommended to start from a clean slate:
-
-```bash
-docker system prune -a
-```
-
-This will remove all stopped containers, all networks not used by at least one container, all images without at least one container associated to them, as well as all build cache. If you wish to remove all existing volumes at the same time as well, run:
-
-```bash
-docker system prune -a --volumes -f
-```
-
-To build and run the docker image in this example, run the following in the `examples/pytorch` directory:
-
-```bash
-docker compose build && docker compose up
-```
-
-This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with
-
-```bash
-docker exec -it node1 /bin/bash
-```
-
-Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
-
-```bash
-mpirun --allow-run-as-root -np 4 echo hello world
-```
-
-We can also run a Python script using `uv`:
-
-```bash
-mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by :OVERSUBSCRIBE uv run test.py
-```
-
-We should see four `Hello World!` printed after the Python packages are downloaded and installed.
-
-Finally, we can start distributed training with PyTorch:
-
-```bash
-sh train_lenet5.sh
-```
-
-This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes for 10 epochs, each running in its own Docker container.
-
-## Running a Distributed PyTorch Trainer across Multiple Machines
-
-<Callout type="warning" emoji="⚠️">
-The following instructions have not been verified to work correctly.
-</Callout>
+# Distributed PyTorch Trainers on Sim, Boston and Arbutus
 
 Before starting, make sure all the containers are stopped and removed.
 
@@ -77,7 +19,7 @@ Before running this example, at least three linux machines (or virtual machine i
 On the controller instance, build controller and postgres image:
 
 ```bash
-cd nextmini/examples/pytorch
+cd nextmini/examples/sba-swarm
 docker build -t nextmini_controller_pytorch -f ../../controller/Dockerfile ../../
 docker pull postgres:alpine
 ```
@@ -161,16 +103,10 @@ docker exec -it <containerID> /bin/bash
 Once logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
 
 ```bash
-mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 echo hello world
+mpirun --allow-run-as-root -np 2 -H 10.0.0.1:1,10.0.0.2:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by :OVERSUBSCRIBE uv run test.py
 ```
 
-We can also run a Python script using `uv`:
-
-```bash
-mpirun --allow-run-as-root -np 4 -H 10.0.0.1:1,10.0.0.2:1,10.0.0.3:1,10.0.0.4:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by slot uv run test.py
-```
-
-We should see four `Hello World!` printed after the Python packages are downloaded and installed.
+We should see two `Hello World!` printed after the Python packages are downloaded and installed.
 
 Finally, we can start distributed training with PyTorch:
 
