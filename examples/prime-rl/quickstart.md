@@ -3,7 +3,7 @@
 ## Build
 
 ```bash
-cd /home/xindan/nextmini/examples/prime-rl-demo
+cd /home/xindan/nextmini/examples/prime-rl
 docker compose -f docker-compose.gpu.yml build
 ```
 
