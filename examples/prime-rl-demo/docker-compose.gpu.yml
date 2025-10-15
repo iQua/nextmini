@@ -1,0 +1,251 @@
+# GPU-enabled docker-compose for running Prime-RL reverse text example
+# Extends base docker-compose.yml with GPU support
+
+networks:
+  primerl-net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.16.8.0/24
+
+services:
+  postgres:
+    container_name: postgres
+    image: postgres:alpine
+    hostname: postgres
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      primerl-net:
+        ipv4_address: 172.16.8.2
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    restart: unless-stopped
+
+  controller:
+    container_name: controller
+    hostname: controller
+    image: nextmini_controller
+    build:
+      context: ../../
+      dockerfile: ./controller/Dockerfile
+    networks:
+      primerl-net:
+        ipv4_address: 172.16.8.3
+    stdin_open: true
+    volumes:
+      - ./controller-config.toml:/var/nextmini/config.toml
+      - ./scripts:/var/nextmini/scripts
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+
+  # Node 1: Trainer with GPU
+  node1:
+    container_name: node1
+    hostname: node1
+    image: nextmini_primerl
+    build:
+      context: ../../
+      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+    runtime: nvidia
+    networks:
+      primerl-net:
+        ipv4_address: 172.16.8.4
+    stdin_open: true
+    privileged: true
+    ipc: host
+    environment:
+      - GLOO_SOCKET_IFNAME=utun
+      - NCCL_SOCKET_IFNAME=utun
+      - NCCL_IB_DISABLE=1
+      - NCCL_SHM_DISABLE=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_NET_GDR_LEVEL=0
+      - NCCL_COLLNET_ENABLE=0
+      - HUGGING_FACE_HUB_TOKEN=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
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ./scripts:/var/nextmini/scripts
+      - /home/xindan/prime-rl:/var/prime-rl
+    depends_on:
+      - controller
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - IPC_LOCK
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    command: |
+      /bin/bash -c "
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo '' >> /var/nextmini/config.toml &&
+        echo 'node_id = 1' >> /var/nextmini/config.toml &&
+        sleep 7 &&
+        /var/nextmini/nextmini ws://controller:3000 &
+        echo 'Node 1 (Trainer) is running at 10.0.0.1 with GPU 1' &&
+        sleep infinity
+      "
+
+  # Node 2: Trainer 2 with GPU
+  node2:
+    container_name: node2
+    hostname: node2
+    image: nextmini_primerl
+    build:
+      context: ../../
+      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+    runtime: nvidia
+    networks:
+      primerl-net:
+        ipv4_address: 172.16.8.5
+    stdin_open: true
+    privileged: true
+    ipc: host
+    environment:
+      - GLOO_SOCKET_IFNAME=utun
+      - NCCL_SOCKET_IFNAME=utun
+      - NCCL_IB_DISABLE=1
+      - NCCL_SHM_DISABLE=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_NET_GDR_LEVEL=0
+      - NCCL_COLLNET_ENABLE=0
+      - HUGGING_FACE_HUB_TOKEN=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
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ./scripts:/var/nextmini/scripts
+      - /home/xindan/prime-rl:/var/prime-rl
+    depends_on:
+      - controller
+      - node1
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - IPC_LOCK
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["2"]
+              capabilities: [gpu]
+    command: |
+      /bin/bash -c "
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo '' >> /var/nextmini/config.toml &&
+        echo 'node_id = 2' >> /var/nextmini/config.toml &&
+        sleep 8 &&
+        /var/nextmini/nextmini ws://controller:3000 &
+        echo 'Node 2 (Trainer 2) is running at 10.0.0.2 with GPU 2' &&
+        sleep infinity
+      "
+
+  # Node 3: Orchestrator (CPU only)
+  node3:
+    container_name: node3
+    hostname: node3
+    image: nextmini_primerl
+    build:
+      context: ../../
+      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+    networks:
+      primerl-net:
+        ipv4_address: 172.16.8.6
+    stdin_open: true
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ./scripts:/var/nextmini/scripts
+      - /home/xindan/prime-rl:/var/prime-rl
+    depends_on:
+      - controller
+      - node2
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    command: |
+      /bin/bash -c "
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo '' >> /var/nextmini/config.toml &&
+        echo 'node_id = 3' >> /var/nextmini/config.toml &&
+        sleep 9 &&
+        /var/nextmini/nextmini ws://controller:3000 &
+        echo 'Node 3 (Orchestrator) is running at 10.0.0.3' &&
+        sleep infinity
+      "
+
+  # Node 4: Inference Server with GPU
+  node4:
+    container_name: node4
+    hostname: node4
+    image: nextmini_primerl
+    build:
+      context: ../../
+      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+    runtime: nvidia
+    networks:
+      primerl-net:
+        ipv4_address: 172.16.8.7
+    stdin_open: true
+    privileged: true
+    ipc: host
+    environment:
+      - GLOO_SOCKET_IFNAME=utun
+      - NCCL_SOCKET_IFNAME=utun
+      - NCCL_IB_DISABLE=1
+      - NCCL_SHM_DISABLE=1
+      - NCCL_P2P_DISABLE=1
+      - NCCL_NET_GDR_LEVEL=0
+      - NCCL_COLLNET_ENABLE=0
+      - HUGGING_FACE_HUB_TOKEN=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
+    volumes:
+      - ./config.toml:/var/nextmini/config.toml.template
+      - ./scripts:/var/nextmini/scripts
+      - /home/xindan/prime-rl:/var/prime-rl
+    depends_on:
+      - controller
+      - node3
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - IPC_LOCK
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
+    command: |
+      /bin/bash -c "
+        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+        echo '' >> /var/nextmini/config.toml &&
+        echo 'node_id = 4' >> /var/nextmini/config.toml &&
+        sleep 10 &&
+        /var/nextmini/nextmini ws://controller:3000 &
+        echo 'Node 4 (Inference) is running at 10.0.0.4 with GPU 0' &&
+        sleep infinity
+      "

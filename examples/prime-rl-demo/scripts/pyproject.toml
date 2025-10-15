@@ -1,0 +1,9 @@
+[project]
+name = "prime-rl-monitor"
+version = "0.1.0"
+description = "Flow monitoring scripts for Prime-RL on Nextmini"
+requires-python = ">=3.8"
+dependencies = [
+    "psycopg2-binary>=2.9.0",
+    "tabulate>=0.9.0",
+]
