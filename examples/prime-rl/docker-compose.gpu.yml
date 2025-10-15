@@ -59,7 +59,7 @@ services:
     image: nextmini_primerl
     build:
       context: ../../
-      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+      dockerfile: ./examples/prime-rl/Dockerfile.primerl
     runtime: nvidia
     networks:
       primerl-net:
@@ -113,7 +113,7 @@ services:
     image: nextmini_primerl
     build:
       context: ../../
-      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+      dockerfile: ./examples/prime-rl/Dockerfile.primerl
     runtime: nvidia
     networks:
       primerl-net:
@@ -168,7 +168,7 @@ services:
     image: nextmini_primerl
     build:
       context: ../../
-      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+      dockerfile: ./examples/prime-rl/Dockerfile.primerl
     networks:
       primerl-net:
         ipv4_address: 172.16.8.6
@@ -202,7 +202,7 @@ services:
     image: nextmini_primerl
     build:
       context: ../../
-      dockerfile: ./examples/prime-rl-demo/Dockerfile.primerl
+      dockerfile: ./examples/prime-rl/Dockerfile.primerl
     runtime: nvidia
     networks:
       primerl-net:
