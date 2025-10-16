@@ -23,6 +23,7 @@ class Database:
         self.t_link = None
         self.t_flow = None
         self.t_app_flows = None
+        self.t_user_flows = None
 
     def update_t_node(self):
         cursor = self.connection.cursor()
@@ -96,31 +97,37 @@ class Database:
         cursor = self.connection.cursor()
 
         query = '''
-            SELECT flow_id, local_node_id, remote_node_id,
+            SELECT format('%s.%s.%s.%s:%s → %s.%s.%s.%s:%s',
+                          get_byte(flow_id,0), get_byte(flow_id,1), get_byte(flow_id,2), get_byte(flow_id,3),
+                          (get_byte(flow_id,8)::int << 8) + get_byte(flow_id,9),
+                          get_byte(flow_id,4), get_byte(flow_id,5), get_byte(flow_id,6), get_byte(flow_id,7),
+                          (get_byte(flow_id,10)::int << 8) + get_byte(flow_id,11)
+                   ) AS flow_tuple,
+                   local_node_id, 
+                   remote_node_id,
                    SUM(bytes * 8.0 / 5.0) AS total_rate_bps
             FROM metrics
             WHERE time_read >= NOW() - INTERVAL '5 seconds'
             GROUP BY flow_id, local_node_id, remote_node_id
             HAVING COUNT(*) > 0
-            ORDER BY total_rate_bps DESC;
+            ORDER BY total_rate_bps DESC
+            LIMIT 20;
         '''
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_flow = Table(title="Data Rate Per Flow (Metrics)")
-        self.t_flow.add_column("Flow ID (hex)", justify="center")
-        self.t_flow.add_column("Local Node ID", justify="center")
-        self.t_flow.add_column("Remote Node ID", justify="center")
-        self.t_flow.add_column("Rate (Mbps)", justify="center")
+        self.t_flow = Table(title="Data Rate Per Flow (Recent 5s)")
+        self.t_flow.add_column("Flow ID", overflow="fold")
+        self.t_flow.add_column("Local→Remote", justify="center")
+        self.t_flow.add_column("Rate (Mbps)", justify="right")
 
-        for (flow_id, local_node, remote_node, total_rate_bps) in metrics:
-            flow_hex = flow_id.hex()[:16] + "..." if len(flow_id.hex()) > 16 else flow_id.hex()
+        for (flow_tuple, local_node, remote_node, total_rate_bps) in metrics:
             rate_mbps = float(total_rate_bps or 0) / 1000000.0
+            link = f"{local_node}→{remote_node}"
             self.t_flow.add_row(
-                flow_hex,
-                str(local_node),
-                str(remote_node),
-                str(rate_mbps)
+                flow_tuple or "N/A",
+                link,
+                f"{rate_mbps:.3f}"
             )
         cursor.close()
 
@@ -140,13 +147,14 @@ class Database:
                    af.route_id,
                    af.is_finished
             FROM app_flows af
+            WHERE af.src_node_id IS NOT NULL
             ORDER BY af.id DESC
             LIMIT 30;
         '''
         cursor.execute(query)
         flows = cursor.fetchall()
 
-        self.t_app_flows = Table(title="Flows (App + User-space)")
+        self.t_app_flows = Table(title="App Flows (TUN Interface)")
         self.t_app_flows.add_column("ID", justify="right")
         self.t_app_flows.add_column("Flow ID", overflow="fold")
         self.t_app_flows.add_column("Src→Dst", justify="center")
@@ -167,11 +175,64 @@ class Database:
             )
         cursor.close()
 
+    def update_t_user_flows(self):
+        cursor = self.connection.cursor()
+
+        query = '''
+            SELECT f.id,
+                   f.src_node_id,
+                   f.dst_node_id,
+                   f.flow_len_type,
+                   f.flow_len_bytes,
+                   f.flow_len_duration,
+                   f.flow_rate,
+                   f.flow_weight,
+                   f.is_finished
+            FROM flows f
+            ORDER BY f.id DESC
+            LIMIT 30;
+        '''
+        cursor.execute(query)
+        flows = cursor.fetchall()
+
+        self.t_user_flows = Table(title="User-space Flows (Configured)")
+        self.t_user_flows.add_column("ID", justify="right")
+        self.t_user_flows.add_column("Src→Dst", justify="center")
+        self.t_user_flows.add_column("Length", justify="right")
+        self.t_user_flows.add_column("Rate", justify="right")
+        self.t_user_flows.add_column("Weight", justify="right")
+        self.t_user_flows.add_column("Finished")
+
+        for (fid, src, dst, len_type, len_bytes, len_duration, rate, weight, is_finished) in flows:
+            src_dst = f"{src}→{dst}"
+            
+            if len_type == "bytes":
+                length = f"{len_bytes} B" if len_bytes else "-"
+            elif len_type == "duration":
+                length = f"{len_duration} s" if len_duration else "-"
+            else:
+                length = "-"
+            
+            rate_str = f"{rate} B/s" if rate else "-"
+            weight_str = str(weight) if weight else "-"
+            finished_mark = "✓" if is_finished else ""
+            
+            self.t_user_flows.add_row(
+                str(fid),
+                src_dst,
+                length,
+                rate_str,
+                weight_str,
+                finished_mark
+            )
+        cursor.close()
+
 
 def show(console):
     db = Database()
     try:
         db.update_t_app_flows()
+        db.update_t_user_flows()
         db.update_t_node()
         db.update_t_link()
         db.update_t_flow()
@@ -179,10 +240,11 @@ def show(console):
         with console.capture() as capture:
             console.print(
                 Panel(db.t_app_flows, border_style="cyan"),
-                Panel(db.t_node, border_style="green"),
-                Panel(db.t_link, border_style="yellow"),
-                Panel(db.t_flow, border_style="magenta"),
-                Panel(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", border_style="blue"),
+                Panel(db.t_user_flows, border_style="green"),
+                Panel(db.t_node, border_style="yellow"),
+                Panel(db.t_link, border_style="magenta"),
+                Panel(db.t_flow, border_style="blue"),
+                Panel(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", border_style="white"),
                 sep="\n"
             )
 
