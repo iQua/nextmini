@@ -489,20 +489,6 @@ async fn handle_connection(
                                         error!("Failed to update application flow: {}.", e);
                                     }
                                 }
-
-                                // removes the app flow route for the finished flow
-                                if let Err(e) = sqlx::query(
-                                    r#"
-                                    DELETE FROM app_flow_routes
-                                    WHERE flow_id = $1
-                                    "#,
-                                )
-                                .bind(flow_id_slice)
-                                .execute(&*db_pool)
-                                .await
-                                {
-                                    error!("Failed to remove app_flow_route for finished flow: {}.", e);
-                                }
                             }
                         }
                     }
@@ -560,11 +546,11 @@ async fn handle_connection(
                                 route_id
                             );
 
-                            // inserts the app flow route for the assigned flow
+                            // upsert route_id into app_flows table
                             if let Err(e) = sqlx::query(
                                 r#"
-                                INSERT INTO app_flow_routes (flow_id, route_id)
-                                VALUES ($1, $2)
+                                INSERT INTO app_flows (flow_id, route_id, is_finished)
+                                VALUES ($1, $2, FALSE)
                                 ON CONFLICT (flow_id) DO UPDATE
                                 SET route_id = EXCLUDED.route_id
                                 "#,
@@ -574,7 +560,7 @@ async fn handle_connection(
                             .execute(&*db_pool)
                             .await
                             {
-                                error!("Failed to upsert app_flow_route: {}.", e);
+                                error!("Failed to upsert app_flows.route_id: {}.", e);
                             }
                         }
                     }

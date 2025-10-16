@@ -6,6 +6,8 @@ import os
 
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from datetime import datetime
 
 class Database:
     def __init__(self):
@@ -20,6 +22,7 @@ class Database:
         self.t_node = None
         self.t_link = None
         self.t_flow = None
+        self.t_app_flows = None
 
     def update_t_node(self):
         cursor = self.connection.cursor()
@@ -104,7 +107,7 @@ class Database:
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_flow = Table(title="Data Rate Per Flow")
+        self.t_flow = Table(title="Data Rate Per Flow (Metrics)")
         self.t_flow.add_column("Flow ID (hex)", justify="center")
         self.t_flow.add_column("Local Node ID", justify="center")
         self.t_flow.add_column("Remote Node ID", justify="center")
@@ -121,16 +124,67 @@ class Database:
             )
         cursor.close()
 
+    def update_t_app_flows(self):
+        cursor = self.connection.cursor()
+
+        query = '''
+            SELECT af.id,
+                   format('%s.%s.%s.%s:%s → %s.%s.%s.%s:%s',
+                          get_byte(af.flow_id,0), get_byte(af.flow_id,1), get_byte(af.flow_id,2), get_byte(af.flow_id,3),
+                          (get_byte(af.flow_id,8)::int << 8) + get_byte(af.flow_id,9),
+                          get_byte(af.flow_id,4), get_byte(af.flow_id,5), get_byte(af.flow_id,6), get_byte(af.flow_id,7),
+                          (get_byte(af.flow_id,10)::int << 8) + get_byte(af.flow_id,11)
+                   ) AS flow_tuple,
+                   af.src_node_id,
+                   af.dst_node_id,
+                   af.route_id,
+                   af.is_finished
+            FROM app_flows af
+            ORDER BY af.id DESC
+            LIMIT 30;
+        '''
+        cursor.execute(query)
+        flows = cursor.fetchall()
+
+        self.t_app_flows = Table(title="Flows (App + User-space)")
+        self.t_app_flows.add_column("ID", justify="right")
+        self.t_app_flows.add_column("Flow ID", overflow="fold")
+        self.t_app_flows.add_column("Src→Dst", justify="center")
+        self.t_app_flows.add_column("Route", justify="right")
+        self.t_app_flows.add_column("Finished")
+
+        for (flow_id_int, flow_tuple, src, dst, route_id, is_finished) in flows:
+            src_dst = f"{src}→{dst}" if src and dst else "N/A"
+            route_str = str(route_id) if route_id else "-"
+            finished_mark = "✓" if is_finished else ""
+            
+            self.t_app_flows.add_row(
+                str(flow_id_int),
+                flow_tuple or "N/A",
+                src_dst,
+                route_str,
+                finished_mark
+            )
+        cursor.close()
+
 
 def show(console):
     db = Database()
     try:
+        db.update_t_app_flows()
         db.update_t_node()
         db.update_t_link()
         db.update_t_flow()
 
         with console.capture() as capture:
-            console.print(db.t_node, db.t_link, db.t_flow, sep="\n")
+            console.print(
+                Panel(db.t_app_flows, border_style="cyan"),
+                Panel(db.t_node, border_style="green"),
+                Panel(db.t_link, border_style="yellow"),
+                Panel(db.t_flow, border_style="magenta"),
+                Panel(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", border_style="blue"),
+                sep="\n"
+            )
 
         os.system("clear")
         print(capture.get())
