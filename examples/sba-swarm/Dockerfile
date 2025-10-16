@@ -20,12 +20,17 @@ COPY messages /var/nextmini/messages
 COPY cert-gen /var/nextmini/cert-gen
 COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
 COPY dataplane/src /var/nextmini/dataplane/src
+COPY examples/sba-swarm/ring-emu/Cargo.toml /var/nextmini/examples/sba-swarm/ring-emu/Cargo.toml
+COPY examples/sba-swarm/ring-emu/src /var/nextmini/examples/sba-swarm/ring-emu/src
 
 # running the certificate generator first
 RUN /bin/bash -c "cargo run -p cert-gen"
 
 # build the dataplane from source
 RUN /bin/bash -c "cargo build -p nextmini --release"
+
+# build the ring emulator
+RUN /bin/bash -c "cargo build -p ring-emu --release"
 
 FROM bitnami/minideb:latest
 
@@ -62,3 +67,4 @@ WORKDIR /var/nextmini
 COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
 COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem
 COPY --from=build /var/nextmini/server_key.pem /var/nextmini/server_key.pem
+COPY --from=build /var/nextmini/target/release/ring-emu /var/nextmini/ring-emu
