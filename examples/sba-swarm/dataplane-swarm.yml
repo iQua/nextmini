@@ -22,12 +22,14 @@ services:
       - ./gpt2.py:/var/nextmini/gpt2.py
       - ./resnet.py:/var/nextmini/resnet.py
       - ./vgg16.py:/var/nextmini/vgg16.py
+      - ./ring_allreduce.py:/var/nextmini/ring_allreduce.py
       - ./test.py:/var/nextmini/test.py
       - ./run-test.sh:/var/nextmini/run-test.sh
       - ./train_lenet5.sh:/var/nextmini/train_lenet5.sh
       - ./train_gpt2.sh:/var/nextmini/train_gpt2.sh
       - ./train_resnet.sh:/var/nextmini/train_resnet.sh
       - ./train_vgg16.sh:/var/nextmini/train_vgg16.sh
+      - ./train_ring_allreduce.sh:/var/nextmini/train_ring_allreduce.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
     cap_add:
@@ -81,7 +83,9 @@ services:
       - ./gpt2.py:/var/nextmini/gpt2.py
       - ./vgg16.py:/var/nextmini/vgg16.py
       - ./resnet.py:/var/nextmini/resnet.py
+      - ./ring_allreduce.py:/var/nextmini/ring_allreduce.py
       - ./test.py:/var/nextmini/test.py
+      - ./train_ring_allreduce.sh:/var/nextmini/train_ring_allreduce.sh
       - ./pyproject.toml:/var/nextmini/pyproject.toml
       - /dev/net/tun:/dev/net/tun
     cap_add:
