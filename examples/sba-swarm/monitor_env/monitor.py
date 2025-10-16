@@ -37,9 +37,8 @@ def query_app_flows(conn: psycopg.Connection):
                       (get_byte(af.flow_id,10)::int << 8) + get_byte(af.flow_id,11)
                ) AS tuple,
                af.src_node_id, af.dst_node_id, af.is_finished,
-               afr.route_id
+               af.route_id
         FROM app_flows af
-        LEFT JOIN app_flow_routes afr ON af.flow_id = afr.flow_id
         ORDER BY af.id DESC
         LIMIT 30
         """

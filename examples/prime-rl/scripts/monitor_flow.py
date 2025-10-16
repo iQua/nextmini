@@ -47,11 +47,10 @@ def get_active_flows(conn):
             af.src_node_id,
             af.dst_node_id,
             af.is_finished,
-            afr.route_id,
+            af.route_id,
             r.edges
         FROM app_flows af
-        LEFT JOIN app_flow_routes afr ON af.flow_id = afr.flow_id
-        LEFT JOIN routes r ON afr.route_id = r.route_id
+        LEFT JOIN routes r ON af.route_id = r.route_id
         WHERE af.is_finished = FALSE
         ORDER BY af.id DESC;
     """)
@@ -82,11 +81,11 @@ def get_route_usage(conn):
             r.src_node_id,
             r.dst_node_id,
             r.edges,
-            COUNT(afr.flow_id) as flow_count
+            COUNT(af.flow_id) as flow_count
         FROM routes r
-        LEFT JOIN app_flow_routes afr ON r.route_id = afr.route_id
+        LEFT JOIN app_flows af ON r.route_id = af.route_id
         GROUP BY r.route_id, r.src_node_id, r.dst_node_id, r.edges
-        HAVING COUNT(afr.flow_id) > 0
+        HAVING COUNT(af.flow_id) > 0
         ORDER BY flow_count DESC;
     """)
     return cursor.fetchall()
