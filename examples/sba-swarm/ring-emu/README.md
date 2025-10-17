@@ -39,7 +39,7 @@ uv run launch_ring.py \
 
 The ring file should contain one IP:port per line:
 
-```
+```txt
 10.0.0.1:9000
 10.0.0.2:9000
 ```

@@ -156,6 +156,7 @@ impl FlowStatsReporter {
                                 self.reported_app_flows.insert(flow_id);
                                 self.app_flows.push(app_flow);
 
+                                // if FlowFinished arrived before AppFlowStart, remove it from reported set
                                 if self.reported_finished_flows.contains(&flow_id) {
                                     self.reported_finished_flows.remove(&flow_id);
                                 }
@@ -180,12 +181,6 @@ impl FlowStatsReporter {
                             let flow_id = flow_finished.flow_id;
                             if self.reported_finished_flows.insert(flow_id) {
                                 self.finished_flows.push(flow_finished);
-
-                                // cleans up app flow tracking
-                                self.reported_app_flows.remove(&flow_id);
-
-                                // cleans up route assignment tracking
-                                self.reported_route_assignments.remove(&flow_id);
                             }
                         }
                     }
@@ -237,6 +232,14 @@ impl FlowStatsReporter {
 
                         let msg = DataplaneToController::FlowFinished { flows };
                         self.controller.send(msg).await;
+                        
+                        // cleans up finished flows after sending all messages
+                        // ensures AppFlowStart and RouteAssigned are sent before cleanup
+                        for flow_finished in &self.finished_flows {
+                            self.reported_app_flows.remove(&flow_finished.flow_id);
+                            self.reported_route_assignments.remove(&flow_finished.flow_id);
+                        }
+                        
                         self.finished_flows.clear();
                     }
                 }

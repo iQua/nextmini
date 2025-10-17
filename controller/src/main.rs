@@ -464,14 +464,13 @@ async fn handle_connection(
                                     u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]])
                                 );
 
-                                // inserts or updates the flow as finished
-                                // if the flow doesn't exist yet, create it with only flow_id and is_finished set
+                                // updates the flow as finished (only if it already exists)
+                                // if AppFlowStart hasn't arrived yet, this update will be ignored
                                 match sqlx::query(
                                     r#"
-                                    INSERT INTO app_flows (flow_id, is_finished)
-                                    VALUES ($1, TRUE)
-                                    ON CONFLICT (flow_id) DO UPDATE
+                                    UPDATE app_flows
                                     SET is_finished = TRUE
+                                    WHERE flow_id = $1
                                     "#,
                                 )
                                 .bind(flow_id_slice)
@@ -481,7 +480,15 @@ async fn handle_connection(
                                     Ok(result) => {
                                         if result.rows_affected() > 0 {
                                             info!(
-                                                "Marked application flow as finished (created or updated)."
+                                                "Marked application flow as finished."
+                                            );
+                                        } else {
+                                            info!(
+                                                "FlowFinished arrived before AppFlowStart for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}], will be marked finished when AppFlowStart arrives.",
+                                                flow_id_slice[0], flow_id_slice[1], flow_id_slice[2], flow_id_slice[3],
+                                                u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                                flow_id_slice[4], flow_id_slice[5], flow_id_slice[6], flow_id_slice[7],
+                                                u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]])
                                             );
                                         }
                                     }
@@ -502,8 +509,7 @@ async fn handle_connection(
                                 VALUES ($1, $2, $3, FALSE)
                                 ON CONFLICT (flow_id) DO UPDATE
                                 SET src_node_id = EXCLUDED.src_node_id,
-                                    dst_node_id = EXCLUDED.dst_node_id,
-                                    is_finished = FALSE
+                                    dst_node_id = EXCLUDED.dst_node_id
                                 "#,
                             )
                             .bind(flow_id_slice)
@@ -546,21 +552,34 @@ async fn handle_connection(
                                 route_id
                             );
 
-                            // upsert route_id into app_flows table
-                            if let Err(e) = sqlx::query(
+                            // updates route_id in app_flows table (only if flow already exists)
+                            match sqlx::query(
                                 r#"
-                                INSERT INTO app_flows (flow_id, route_id, is_finished)
-                                VALUES ($1, $2, FALSE)
-                                ON CONFLICT (flow_id) DO UPDATE
-                                SET route_id = EXCLUDED.route_id
+                                UPDATE app_flows
+                                SET route_id = $1
+                                WHERE flow_id = $2
                                 "#,
                             )
-                            .bind(flow_id_slice)
                             .bind(route_id as i32)
+                            .bind(flow_id_slice)
                             .execute(&*db_pool)
                             .await
                             {
-                                error!("Failed to upsert app_flows.route_id: {}.", e);
+                                Ok(result) => {
+                                    if result.rows_affected() == 0 {
+                                        info!(
+                                            "RouteAssigned arrived before AppFlowStart for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {}, will be updated when AppFlowStart arrives.",
+                                            flow_id_slice[0], flow_id_slice[1], flow_id_slice[2], flow_id_slice[3],
+                                            u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                            flow_id_slice[4], flow_id_slice[5], flow_id_slice[6], flow_id_slice[7],
+                                            u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
+                                            route_id
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to update app_flows.route_id: {}.", e);
+                                }
                             }
                         }
                     }
