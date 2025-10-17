@@ -158,6 +158,11 @@ async def main():
     else:
         print(f"[launcher] SSH hosts derived from ring IPs.")
 
+    # Normalize paths used on remote
+    remote_dir_clean = remote_dir.rstrip('/')
+    remote_ring_path = f"{remote_dir_clean}/{args.remote_ring_name}"
+    remote_bin_path = f"{remote_dir_clean}/ringallreduce"
+
     # 1) Prepare remote directories and copy artifacts
     if not args.no_copy:
         # Ensure binary exists and is executable
@@ -169,13 +174,11 @@ async def main():
             tasks.append(ssh_mkdir(host, remote_dir, args.ssh_port))
         await asyncio.gather(*tasks)
 
-        remote_ring_path = f"{remote_dir.rstrip('/')}/{args.remote_ring_name}"
         tasks = []
         for host in ssh_targets:
             tasks.append(scp_to_host(args.ring, host, remote_ring_path, args.ssh_port))
         await asyncio.gather(*tasks)
 
-        remote_bin_path = f"{remote_dir.rstrip('/')}/ringallreduce"
         tasks = []
         for host in ssh_targets:
             tasks.append(scp_to_host(args.bin, host, remote_bin_path, args.ssh_port))
@@ -187,17 +190,19 @@ async def main():
         await asyncio.gather(*tasks)
         print("[launcher] Copied binary and ring file to all hosts.")
     else:
-        remote_ring_path = f"{remote_dir.rstrip('/')}/{args.remote_ring_name}"
-        remote_bin_path = f"{remote_dir.rstrip('/')}/ringallreduce"
         print("[launcher] Skipping copy; assuming artifacts already present remotely.")
 
     # 2) Launch all ranks concurrently and stream logs
     runners = []
     for rank, host in enumerate(ssh_targets):
         verify_flag = "--verify" if args.verify else ""
-        cmdline = f"cd {shlex.quote(remote_dir)} && " \
-                  f"./ringallreduce --ring {shlex.quote(remote_ring_path)} " \
+        # Build the command to run on the remote host
+        # Use cd to ensure we're in the right directory, then run the binary
+        cmdline = f"cd {remote_dir_clean} && {remote_bin_path} --ring {remote_ring_path} " \
                   f"--rank {rank} --len {args.length} --init {args.init} --reps {args.reps} {verify_flag}"
+
+        # Debug print of the exact command per host
+        print(f"[launcher] cmd rank={rank} host={host}: {cmdline}")
 
         ssh_cmd = [
             "ssh",
@@ -206,7 +211,8 @@ async def main():
         ]
         if not args.strict_host_key_checking:
             ssh_cmd += ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
-        ssh_cmd += [host, "bash", "-lc", cmdline]
+        # Remove the bash -lc wrapper - just pass the command directly to ssh
+        ssh_cmd += [host, cmdline]
 
         prefix = f"rank={rank}@{host}"
         runners.append(stream_rank(prefix, ssh_cmd))
@@ -232,4 +238,3 @@ if __name__ == "__main__":
         # On Windows, ProactorEventLoop is default; ensure asyncio subprocess works
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     asyncio.run(main())
-

@@ -1,133 +1,133 @@
 networks:
-  nextmini-net:
-    driver: overlay
-    attachable: true
-    ipam:
-      driver: default
-      config:
-        - subnet: 172.16.8.0/24
+    nextmini-net:
+        driver: overlay
+        attachable: true
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.16.8.0/24
 
 services:
-  node1:
-    image: nextmini_datapath_pytorch
-    hostname: "node1"
-    networks:
-      - nextmini-net
-    stdin_open: true
-    privileged: true
-    volumes:
-      - ./ssh:/var/nextmini/.ssh
-      - ./config.toml:/var/nextmini/config.toml.template
-      - ./lenet5.py:/var/nextmini/lenet5.py
-      - ./gpt2.py:/var/nextmini/gpt2.py
-      - ./resnet.py:/var/nextmini/resnet.py
-      - ./vgg16.py:/var/nextmini/vgg16.py
-      - ./test.py:/var/nextmini/test.py
-      - ./run-test.sh:/var/nextmini/run-test.sh
-      - ./train_lenet5.sh:/var/nextmini/train_lenet5.sh
-      - ./train_gpt2.sh:/var/nextmini/train_gpt2.sh
-      - ./train_resnet.sh:/var/nextmini/train_resnet.sh
-      - ./train_vgg16.sh:/var/nextmini/train_vgg16.sh
-      - ./ring-emu/ring.txt:/var/nextmini/ring.txt
-      - ./ring-emu/launch_ring.py:/var/nextmini/launch_ring.py
-      - ./pyproject.toml:/var/nextmini/pyproject.toml
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - NET_ADMIN
-    command: |
-      /bin/bash -c "
-        cp -r /var/nextmini/.ssh /root &&
-        chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
-        /usr/sbin/sshd -p 22 &
-        sleep 8 &&
-        echo \"Current hostname: \$$(hostname)\" &&
-        NODE_ID=\$$(hostname | sed 's/node//') &&
-        echo \"Extracted NODE_ID: \$$NODE_ID\" &&
-        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
-        echo \"\" >> /var/nextmini/config.toml &&
-        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
-        echo \"Generated config file:\" &&
-        cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
-          echo \"Controller not ready, waiting 2 seconds...\"
-          sleep 2
-        done &&
-        echo \"Controller is ready, starting dataplane...\" &&
-        /var/nextmini/nextmini ws://206.12.89.244:3000 &
-        echo \"Node 1 is now running.\" &&
-        sleep 15 &&
-        echo \"Configuring SSH for ring-allreduce...\" &&
-        ssh-keyscan -H 10.0.0.1 >> /root/.ssh/known_hosts 2>/dev/null || true &&
-        ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts 2>/dev/null || true &&
-        echo \"\" &&
-        echo \"=== Ready to run ring-allreduce ===\" &&
-        echo \"Run: cd /var/nextmini && uv run launch_ring.py --ring ring.txt --bin ringallreduce --no-copy --len 1048576 --init rank --reps 10 --verify\" &&
-        echo \"\" &&
-        sleep infinity
-      "
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-      placement:
-        constraints:
-          - "node.role == manager"
+    node1:
+        image: nextmini_datapath_pytorch
+        hostname: "node1"
+        networks:
+            - nextmini-net
+        stdin_open: true
+        privileged: true
+        volumes:
+            - ./ssh:/var/nextmini/.ssh
+            - ./config.toml:/var/nextmini/config.toml.template
+            - ./lenet5.py:/var/nextmini/lenet5.py
+            - ./gpt2.py:/var/nextmini/gpt2.py
+            - ./resnet.py:/var/nextmini/resnet.py
+            - ./vgg16.py:/var/nextmini/vgg16.py
+            - ./test.py:/var/nextmini/test.py
+            - ./run-test.sh:/var/nextmini/run-test.sh
+            - ./train_lenet5.sh:/var/nextmini/train_lenet5.sh
+            - ./train_gpt2.sh:/var/nextmini/train_gpt2.sh
+            - ./train_resnet.sh:/var/nextmini/train_resnet.sh
+            - ./train_vgg16.sh:/var/nextmini/train_vgg16.sh
+            - ./ring-emu/ring.txt:/var/nextmini/ring.txt
+            - ./ring-emu/launch_ring.py:/var/nextmini/launch_ring.py
+            - ./pyproject.toml:/var/nextmini/pyproject.toml
+            - /dev/net/tun:/dev/net/tun
+        cap_add:
+            - NET_ADMIN
+        command: |
+            /bin/bash -c "
+              cp -r /var/nextmini/.ssh /root &&
+              chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+              /usr/sbin/sshd -p 22 &
+              sleep 8 &&
+              echo \"Current hostname: \$$(hostname)\" &&
+              NODE_ID=\$$(hostname | sed 's/node//') &&
+              echo \"Extracted NODE_ID: \$$NODE_ID\" &&
+              cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+              echo \"\" >> /var/nextmini/config.toml &&
+              echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+              echo \"Generated config file:\" &&
+              cat /var/nextmini/config.toml &&
+              echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
+              while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
+                echo \"Controller not ready, waiting 2 seconds...\"
+                sleep 2
+              done &&
+              echo \"Controller is ready, starting dataplane...\" &&
+              /var/nextmini/nextmini ws://206.12.89.244:3000 &
+              echo \"Node 1 is now running.\" &&
+              sleep 15 &&
+              echo \"Configuring SSH for ring-allreduce...\" &&
+              ssh-keyscan -H 10.0.0.1 >> /root/.ssh/known_hosts 2>/dev/null || true &&
+              ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts 2>/dev/null || true &&
+              echo \"\" &&
+              echo \"=== Ready to run ring-allreduce ===\" &&
+              echo \"Run: cd /var/nextmini && uv run launch_ring.py --ring ring.txt --bin ringallreduce --no-copy --remote-dir /var/nextmini --len 1048576 --init rank --reps 10 --verify\" &&
+              echo \"\" &&
+              sleep infinity
+            "
+        deploy:
+            replicas: 1
+            restart_policy:
+                condition: on-failure
+                delay: 10s
+            placement:
+                constraints:
+                    - "node.role == manager"
 
-  node2:
-    image: nextmini_datapath_pytorch
-    hostname: "node2"
-    networks:
-      - nextmini-net
-    stdin_open: true
-    privileged: true
-    volumes:
-      - ./ssh:/var/nextmini/.ssh
-      - ./config.toml:/var/nextmini/config.toml.template
-      - ./lenet5.py:/var/nextmini/lenet5.py
-      - ./gpt2.py:/var/nextmini/gpt2.py
-      - ./vgg16.py:/var/nextmini/vgg16.py
-      - ./resnet.py:/var/nextmini/resnet.py
-      - ./test.py:/var/nextmini/test.py
-      - ./pyproject.toml:/var/nextmini/pyproject.toml
-      - /dev/net/tun:/dev/net/tun
-    cap_add:
-      - NET_ADMIN
-    command: |
-      /bin/bash -c "
-        cp -r /var/nextmini/.ssh /root &&
-        chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
-        /usr/sbin/sshd -p 22 &
-        sleep 11 &&
-        echo \"Current hostname: \$$(hostname)\" &&
-        NODE_ID=\$$(hostname | sed 's/node//') &&
-        echo \"Extracted NODE_ID: \$$NODE_ID\" &&
-        cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
-        echo \"\" >> /var/nextmini/config.toml &&
-        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
-        echo \"Generated config file:\" &&
-        cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
-          echo \"Controller not ready, waiting 2 seconds...\"
-          sleep 2
-        done &&
-        echo \"Controller is ready, starting dataplane...\" &&
-        /var/nextmini/nextmini ws://206.12.89.244:3000 &
-        echo \"Node 2 is now running.\" &&
-        sleep 15 &&
-        echo \"Configuring SSH for ring-allreduce...\" &&
-        ssh-keyscan -H 10.0.0.1 >> /root/.ssh/known_hosts 2>/dev/null || true &&
-        ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts 2>/dev/null || true &&
-        echo \"Node2 ready (controlled by node1).\" &&
-        sleep infinity
-      "
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-        delay: 10s
-      placement:
-        constraints:
-          - "node.role == worker"
+    node2:
+        image: nextmini_datapath_pytorch
+        hostname: "node2"
+        networks:
+            - nextmini-net
+        stdin_open: true
+        privileged: true
+        volumes:
+            - ./ssh:/var/nextmini/.ssh
+            - ./config.toml:/var/nextmini/config.toml.template
+            - ./lenet5.py:/var/nextmini/lenet5.py
+            - ./gpt2.py:/var/nextmini/gpt2.py
+            - ./vgg16.py:/var/nextmini/vgg16.py
+            - ./resnet.py:/var/nextmini/resnet.py
+            - ./test.py:/var/nextmini/test.py
+            - ./pyproject.toml:/var/nextmini/pyproject.toml
+            - /dev/net/tun:/dev/net/tun
+        cap_add:
+            - NET_ADMIN
+        command: |
+            /bin/bash -c "
+              cp -r /var/nextmini/.ssh /root &&
+              chmod 400 /root/.ssh/id_rsa && mkdir -p /run/sshd &&
+              /usr/sbin/sshd -p 22 &
+              sleep 11 &&
+              echo \"Current hostname: \$$(hostname)\" &&
+              NODE_ID=\$$(hostname | sed 's/node//') &&
+              echo \"Extracted NODE_ID: \$$NODE_ID\" &&
+              cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
+              echo \"\" >> /var/nextmini/config.toml &&
+              echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+              echo \"Generated config file:\" &&
+              cat /var/nextmini/config.toml &&
+              echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
+              while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
+                echo \"Controller not ready, waiting 2 seconds...\"
+                sleep 2
+              done &&
+              echo \"Controller is ready, starting dataplane...\" &&
+              /var/nextmini/nextmini ws://206.12.89.244:3000 &
+              echo \"Node 2 is now running.\" &&
+              sleep 15 &&
+              echo \"Configuring SSH for ring-allreduce...\" &&
+              ssh-keyscan -H 10.0.0.1 >> /root/.ssh/known_hosts 2>/dev/null || true &&
+              ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts 2>/dev/null || true &&
+              echo \"Node2 ready (controlled by node1).\" &&
+              sleep infinity
+            "
+        deploy:
+            replicas: 1
+            restart_policy:
+                condition: on-failure
+                delay: 10s
+            placement:
+                constraints:
+                    - "node.role == worker"

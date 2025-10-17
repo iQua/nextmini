@@ -68,3 +68,5 @@ COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
 COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem
 COPY --from=build /var/nextmini/server_key.pem /var/nextmini/server_key.pem
 COPY --from=build /var/nextmini/target/release/ringallreduce /var/nextmini/ringallreduce
+# For ringallreduce to work:
+COPY --from=build /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
