@@ -6,12 +6,37 @@ import psycopg2
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 DB_USER = os.environ.get("NEXTMINI_DB_USER", "pgusr")
 DB_PASSWORD = os.environ.get("NEXTMINI_DB_PASSWORD", "pgpwrd")
 DB_HOST = os.environ.get("NEXTMINI_DB_HOST", "localhost")
 DB_PORT = os.environ.get("NEXTMINI_DB_PORT", "5432")
 DB_NAME = os.environ.get("NEXTMINI_DB_NAME", "nextmini")
+
+
+def format_rate(rate_mbps):
+    """Format rate with colors based on value"""
+    if rate_mbps >= 100:
+        return Text(f"{rate_mbps}", style="bold red")
+    elif rate_mbps >= 10:
+        return Text(f"{rate_mbps}", style="bold yellow")
+    elif rate_mbps >= 1:
+        return Text(f"{rate_mbps}", style="bold green")
+    else:
+        return Text(f"{rate_mbps}", style="dim")
+
+
+def format_bytes(bytes_val):
+    """Format bytes with appropriate unit"""
+    if bytes_val >= 1e9:
+        return f"{bytes_val/1e9} GB"
+    elif bytes_val >= 1e6:
+        return f"{bytes_val/1e6} MB"
+    elif bytes_val >= 1e3:
+        return f"{bytes_val/1e3} KB"
+    else:
+        return f"{bytes_val} B"
 
 
 class Database:
@@ -60,7 +85,7 @@ class Database:
         recv_dict = {node_id: rate_bps or 0 for node_id, rate_bps in recv}
         all_nodes = set(sent_dict.keys()) | set(recv_dict.keys())
 
-        self.t_node = Table(title="Data Rate Per Node")
+        self.t_node = Table(title="Data Rate Per Node", show_header=True)
         self.t_node.add_column("Node ID", justify="center")
         self.t_node.add_column("Sent Rate (Mbps)", justify="center")
         self.t_node.add_column("Recv Rate (Mbps)", justify="center")
@@ -90,7 +115,7 @@ class Database:
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_link = Table(title="Data Rate Per Link")
+        self.t_link = Table(title="Data Rate Per Link", show_header=True)
         self.t_link.add_column("Source Node ID", justify="center")
         self.t_link.add_column("Destination Node ID", justify="center")
         self.t_link.add_column("Rate (Mbps)", justify="center")
@@ -123,15 +148,21 @@ class Database:
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_flow = Table(title="Data Rate Per Flow (Recent 5s)")
-        self.t_flow.add_column("Flow ID", overflow="fold")
+        self.t_flow = Table(
+            title="Data Rate Per Flow (Last 5s)", show_header=True
+        )
+        self.t_flow.add_column("Flow ID", overflow="fold", style="dim")
         self.t_flow.add_column("Local→Remote", justify="center")
-        self.t_flow.add_column("Rate (Mbps)", justify="right")
+        self.t_flow.add_column("Rate (Mbps)", justify="center")
 
         for flow_tuple, local_node, remote_node, total_rate_bps in metrics:
             rate_mbps = float(total_rate_bps or 0) / 1000000.0
-            link = f"{local_node}→{remote_node}"
-            self.t_flow.add_row(flow_tuple or "N/A", link, f"{rate_mbps:.3f}")
+
+            self.t_flow.add_row(
+                flow_tuple or "[dim]N/A[/dim]",
+                f"[cyan]{local_node}[/cyan]→[magenta]{remote_node}[/magenta]",
+                format_rate(rate_mbps),
+            )
         cursor.close()
 
     def update_t_app_flows(self):
@@ -157,21 +188,35 @@ class Database:
         cursor.execute(query)
         flows = cursor.fetchall()
 
-        self.t_app_flows = Table(title="App Flows (TUN Interface)")
-        self.t_app_flows.add_column("ID", justify="right")
-        self.t_app_flows.add_column("Flow ID", overflow="fold")
+        self.t_app_flows = Table(
+            title="App Flows (TUN Interface)", show_header=True
+        )
+        self.t_app_flows.add_column("ID", justify="left", style="bold")
+        self.t_app_flows.add_column("Flow ID", overflow="fold", style="dim")
         self.t_app_flows.add_column("Src→Dst", justify="center")
-        self.t_app_flows.add_column("Route", justify="right")
-        self.t_app_flows.add_column("Finished")
+        self.t_app_flows.add_column("Route", justify="center")
+        self.t_app_flows.add_column("Finished", justify="center")
 
         for flow_id_int, flow_tuple, src, dst, route_id, is_finished in flows:
-            src_dst = f"{src}→{dst}" if src and dst else "N/A"
-            route_str = str(route_id) if route_id else "-"
-            finished_mark = "✓" if is_finished else ""
+            src_dst = (
+                f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
+                if src and dst
+                else "[dim]N/A[/dim]"
+            )
+            route_str = (
+                f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
+            )
+
+            if is_finished:
+                finished_mark = "[green]✓[/green]"
+                id_style = "dim"
+            else:
+                finished_mark = "[red]✗[/red]"
+                id_style = "bold cyan"
 
             self.t_app_flows.add_row(
-                str(flow_id_int),
-                flow_tuple or "N/A",
+                f"[{id_style}]{flow_id_int}[/{id_style}]",
+                flow_tuple or "[dim]N/A[/dim]",
                 src_dst,
                 route_str,
                 finished_mark,
@@ -198,13 +243,15 @@ class Database:
         cursor.execute(query)
         flows = cursor.fetchall()
 
-        self.t_user_flows = Table(title="User-space Flows (Configured)")
-        self.t_user_flows.add_column("ID", justify="right")
+        self.t_user_flows = Table(
+            title="User-space Flows (Configured)", show_header=True
+        )
+        self.t_user_flows.add_column("ID", justify="left", style="bold")
         self.t_user_flows.add_column("Src→Dst", justify="center")
-        self.t_user_flows.add_column("Length", justify="right")
-        self.t_user_flows.add_column("Rate", justify="right")
-        self.t_user_flows.add_column("Weight", justify="right")
-        self.t_user_flows.add_column("Finished")
+        self.t_user_flows.add_column("Length", justify="center")
+        self.t_user_flows.add_column("Rate", justify="center")
+        self.t_user_flows.add_column("Weight", justify="center")
+        self.t_user_flows.add_column("Status", justify="center")
 
         for (
             fid,
@@ -217,21 +264,46 @@ class Database:
             weight,
             is_finished,
         ) in flows:
-            src_dst = f"{src}→{dst}"
+            src_dst = f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
 
             if len_type == "bytes":
-                length = f"{len_bytes} B" if len_bytes else "-"
+                length = (
+                    f"[green]{format_bytes(len_bytes)}[/green]"
+                    if len_bytes
+                    else "[dim]-[/dim]"
+                )
             elif len_type == "duration":
-                length = f"{len_duration} s" if len_duration else "-"
+                length = (
+                    f"[yellow]{len_duration}s[/yellow]"
+                    if len_duration
+                    else "[dim]-[/dim]"
+                )
             else:
-                length = "-"
+                length = "[dim]-[/dim]"
 
-            rate_str = f"{rate} B/s" if rate else "-"
-            weight_str = str(weight) if weight else "-"
-            finished_mark = "✓" if is_finished else ""
+            rate_str = (
+                f"[blue]{format_bytes(rate)}/s[/blue]"
+                if rate
+                else "[dim]-[/dim]"
+            )
+            weight_str = (
+                f"[magenta]{weight}[/magenta]" if weight else "[dim]-[/dim]"
+            )
+
+            if is_finished:
+                finished_mark = "[green]✓[/green]"
+                id_style = "dim"
+            else:
+                finished_mark = "[red]✗[/red]"
+                id_style = "bold cyan"
 
             self.t_user_flows.add_row(
-                str(fid), src_dst, length, rate_str, weight_str, finished_mark
+                f"[{id_style}]{fid}[/{id_style}]",
+                src_dst,
+                length,
+                rate_str,
+                weight_str,
+                finished_mark,
             )
         cursor.close()
 
@@ -246,28 +318,61 @@ def show(live):
         db.update_t_flow()
 
         layout = Table.grid(padding=(0, 1))
-        layout.add_row(Panel(db.t_app_flows, border_style="cyan"))
-        layout.add_row(Panel(db.t_user_flows, border_style="green"))
-        layout.add_row(Panel(db.t_node, border_style="yellow"))
-        layout.add_row(Panel(db.t_link, border_style="magenta"))
-        layout.add_row(Panel(db.t_flow, border_style="blue"))
         layout.add_row(
-            Panel(
-                f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                border_style="white",
-            )
+            Panel(db.t_app_flows, border_style="cyan", padding=(1, 2))
         )
+        layout.add_row(
+            Panel(db.t_user_flows, border_style="green", padding=(1, 2))
+        )
+        layout.add_row(Panel(db.t_node, border_style="yellow", padding=(1, 2)))
+        layout.add_row(Panel(db.t_link, border_style="magenta", padding=(1, 2)))
+        layout.add_row(Panel(db.t_flow, border_style="blue", padding=(1, 2)))
+
+        # Create status footer
+        status_text = Text()
+        status_text.append("Updated: ", style="bold yellow")
+        status_text.append(
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"), style="bold cyan"
+        )
+        status_text.append(" | DB: ", style="bold yellow")
+        status_text.append(f"{DB_HOST}:{DB_PORT}/{DB_NAME}", style="bold green")
+        status_text.append(" | ", style="bold yellow")
+        status_text.append("NextMini Dashboard", style="bold magenta")
+
+        layout.add_row(Panel(status_text, border_style="white", padding=(0, 2)))
 
         live.update(layout)
 
     except Exception as error:
-        live.update(f"[red]Error:[/red] {error}")
+        error_text = Text()
+        error_text.append("ERROR: ", style="bold red")
+        error_text.append(str(error), style="red")
+        live.update(Panel(error_text, border_style="red", padding=(1, 2)))
 
 
 if __name__ == "__main__":
+    from rich.align import Align
     from rich.live import Live
 
     console = Console()
+
+    # Display startup banner
+    banner = Text()
+    banner.append("\n", style="bold yellow")
+    banner.append("NextMini Network Dashboard", style="bold magenta")
+    banner.append("\n", style="bold yellow")
+    banner.append(
+        f"Connected to: {DB_HOST}:{DB_PORT}/{DB_NAME}\n", style="cyan"
+    )
+    banner.append("Press Ctrl+C to exit\n", style="dim")
+
+    console.print(
+        Panel(
+            Align.center(banner), border_style="bright_magenta", padding=(1, 2)
+        )
+    )
+    sleep(1)
+
     with Live(console=console, refresh_per_second=2) as live:
         while True:
             show(live)

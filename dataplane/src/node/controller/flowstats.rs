@@ -232,14 +232,14 @@ impl FlowStatsReporter {
 
                         let msg = DataplaneToController::FlowFinished { flows };
                         self.controller.send(msg).await;
-                        
+
                         // cleans up finished flows after sending all messages
                         // ensures AppFlowStart and RouteAssigned are sent before cleanup
                         for flow_finished in &self.finished_flows {
                             self.reported_app_flows.remove(&flow_finished.flow_id);
                             self.reported_route_assignments.remove(&flow_finished.flow_id);
                         }
-                        
+
                         self.finished_flows.clear();
                     }
                 }
