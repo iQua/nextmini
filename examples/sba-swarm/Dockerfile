@@ -30,7 +30,7 @@ RUN /bin/bash -c "cargo run -p cert-gen"
 RUN /bin/bash -c "cargo build -p nextmini --release"
 
 # build the ring emulator
-RUN /bin/bash -c "cargo build -p ring-emu --release"
+RUN /bin/bash -c "cargo build -p ringallreduce --release"
 
 FROM bitnami/minideb:latest
 
@@ -67,4 +67,4 @@ WORKDIR /var/nextmini
 COPY --from=build /var/nextmini/target/release/nextmini /var/nextmini/nextmini
 COPY --from=build /var/nextmini/server_cert.pem /var/nextmini/server_cert.pem
 COPY --from=build /var/nextmini/server_key.pem /var/nextmini/server_key.pem
-COPY --from=build /var/nextmini/target/release/ring-emu /var/nextmini/ring-emu
+COPY --from=build /var/nextmini/target/release/ringallreduce /var/nextmini/ringallreduce
