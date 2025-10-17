@@ -20,6 +20,9 @@ uv run launch_ring.py \
   --verify
 ```
 
+**Note**
+No need of `--no-copy` if you want to copy the binary and ring file to remote nodes. Then no need to mount ring.txt in docker-swarm.yml.
+
 ### Command Line Options
 
 - `--ring <FILE>`: Path to ring file with IP:port per line (bind addresses)
