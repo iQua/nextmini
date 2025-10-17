@@ -120,7 +120,7 @@ def main():
         conn.read_only = True
         conn.autocommit = True
 
-        with Live(console=console, refresh_per_second=max(1, int(1/REFRESH_INTERVAL_SEC))):
+        with Live(console=console, refresh_per_second=max(1, int(1/REFRESH_INTERVAL_SEC))) as live:
             while True:
                 try:
                     flows = query_app_flows(conn)
@@ -136,13 +136,12 @@ def main():
                         )
                     )
 
-                    console.print(layout)
+                    live.update(layout)
                     time.sleep(REFRESH_INTERVAL_SEC)
-                    console.clear()
                 except KeyboardInterrupt:
                     break
                 except Exception as e:
-                    console.print(f"[red]Error:[/red] {e}", highlight=False)
+                    live.update(f"[red]Error:[/red] {e}")
                     time.sleep(2)
 
 
