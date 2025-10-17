@@ -1,4 +1,5 @@
 [workspace]
-# members = ["messages", "controller", "dataplane", "cert-gen", "examples/sba-swarm/ring-emu"]
-members = ["messages", "controller", "dataplane", "cert-gen"]
+# Uncomment it when running sba-swarm ring allreduce example.
+members = ["messages", "controller", "dataplane", "cert-gen", "examples/sba-swarm/ring-emu"]
+# members = ["messages", "controller", "dataplane", "cert-gen"]
 resolver = "3"
