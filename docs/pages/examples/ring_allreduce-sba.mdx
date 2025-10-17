@@ -42,6 +42,28 @@ docker compose -f controller-swarm.yml build; docker compose -f controller-swarm
 # docker compose -f controller-swarm.yml build --no-cache; docker compose -f controller-swarm.yml up
 ```
 
+### Monitoring Dashboard
+
+To monitor network flows and system status, you can start the dashboard on the controller instance:
+
+```bash
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Navigate to the monitor directory
+cd nextmini/monitor
+
+# Run the monitor dashboard
+uv run monitor.py
+```
+
+Or use:
+
+```bash
+cd nextmini/tools/monitor
+uv run dashboard.py
+```
+
 On the manager instance, `<CONTROLLER_IP>` in `dataplane-swarm.yml` should be altered accordingly.
 
 ### Step 2

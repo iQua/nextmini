@@ -1,16 +1,13 @@
 import os
 import time
-import contextlib
-import threading
 from datetime import datetime
 
 import psycopg
 from psycopg.rows import dict_row
 from rich.console import Console
 from rich.live import Live
-from rich.table import Table
 from rich.panel import Panel
-
+from rich.table import Table
 
 DB_USER = os.environ.get("NEXTMINI_DB_USER", "pgusr")
 DB_PASSWORD = os.environ.get("NEXTMINI_DB_PASSWORD", "pgpwrd")
@@ -26,8 +23,7 @@ def make_conn_string() -> str:
 
 
 def query_app_flows(conn: psycopg.Connection):
-    sql = (
-        """
+    sql = """
         SELECT af.id,
                encode(af.flow_id, 'hex') AS flow_hex,
                format('%s.%s.%s.%s:%s → %s.%s.%s.%s:%s',
@@ -37,20 +33,19 @@ def query_app_flows(conn: psycopg.Connection):
                       (get_byte(af.flow_id,10)::int << 8) + get_byte(af.flow_id,11)
                ) AS tuple,
                af.src_node_id, af.dst_node_id, af.is_finished,
-               af.route_id
+               afr.route_id
         FROM app_flows af
+        LEFT JOIN app_flow_routes afr ON af.flow_id = afr.flow_id
         ORDER BY af.id DESC
         LIMIT 30
         """
-    )
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql)
         return cur.fetchall()
 
 
 def query_metrics(conn: psycopg.Connection):
-    sql = (
-        """
+    sql = """
         SELECT to_char(time_read, 'HH24:MI:SS') AS ts,
                encode(flow_id, 'hex') AS flow_hex,
                format('%s.%s.%s.%s:%s → %s.%s.%s.%s:%s',
@@ -65,7 +60,6 @@ def query_metrics(conn: psycopg.Connection):
         ORDER BY id DESC
         LIMIT 30
         """
-    )
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql)
         return cur.fetchall()
@@ -81,12 +75,15 @@ def build_app_flows_table(rows):
 
     for r in rows:
         src_dst = f"{r.get('src_node_id')}→{r.get('dst_node_id')}"
+        finished_mark = (
+            "[green]✓[/green]" if r.get("is_finished") else "[red]✗[/red]"
+        )
         table.add_row(
             str(r.get("id")),
             r.get("tuple") or "",
             src_dst,
             str(r.get("route_id")) if r.get("route_id") is not None else "",
-            "✓" if r.get("is_finished") else ""
+            finished_mark,
         )
     return table
 
@@ -120,19 +117,28 @@ def main():
         conn.read_only = True
         conn.autocommit = True
 
-        with Live(console=console, refresh_per_second=max(1, int(1/REFRESH_INTERVAL_SEC))) as live:
+        with Live(
+            console=console,
+            refresh_per_second=max(1, int(1 / REFRESH_INTERVAL_SEC)),
+        ) as live:
             while True:
                 try:
                     flows = query_app_flows(conn)
                     metrics = query_metrics(conn)
 
                     layout = Table.grid(padding=(0, 1))
-                    layout.add_row(Panel(build_app_flows_table(flows), border_style="cyan"))
-                    layout.add_row(Panel(build_metrics_table(metrics), border_style="magenta"))
+                    layout.add_row(
+                        Panel(build_app_flows_table(flows), border_style="cyan")
+                    )
+                    layout.add_row(
+                        Panel(
+                            build_metrics_table(metrics), border_style="magenta"
+                        )
+                    )
                     layout.add_row(
                         Panel(
                             f"Updated: {datetime.now().strftime('%H:%M:%S')}  DB: {DB_HOST}:{DB_PORT}/{DB_NAME}",
-                            border_style="green"
+                            border_style="green",
                         )
                     )
 
