@@ -1,7 +1,7 @@
 use ahash::{AHashMap, AHashSet};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
-use tracing::error;
+use tracing::{error, info};
 
 use nextmini_messages::{AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment};
 
@@ -14,16 +14,19 @@ pub struct AppFlowStart {
     pub flow_id: FlowId,
     pub src_node_id: NodeId,
     pub dst_node_id: NodeId,
+    pub time: i64,
 }
 
 pub struct RouteAssigned {
     pub flow_id: FlowId,
     pub route_id: usize,
+    pub time: i64,
 }
 
 pub struct FlowFinished {
     pub flow_id: FlowId,
     pub controller_id: Option<i32>,
+    pub time: i64,
 }
 
 pub enum FlowStatsMessage {
@@ -69,6 +72,7 @@ impl FlowStatsReporterHandle {
             .send(FlowStatsMessage::RouteAssigned(RouteAssigned {
                 flow_id,
                 route_id,
+                time: 0, // will be filled by FlowStatsReporter
             }))
         {
             error!(
@@ -88,6 +92,7 @@ impl FlowStatsReporterHandle {
                 flow_id,
                 src_node_id,
                 dst_node_id,
+                time: 0, // will be filled by FlowStatsReporter on first occurrence
             }))
         {
             error!(
@@ -104,6 +109,7 @@ impl FlowStatsReporterHandle {
             .send(FlowStatsMessage::FlowFinished(FlowFinished {
                 flow_id,
                 controller_id,
+                time: 0, // will be filled by FlowStatsReporter
             }))
         {
             error!(
@@ -120,9 +126,10 @@ struct FlowStatsReporter {
     app_flows: Vec<AppFlowStart>,
     route_assignments: Vec<RouteAssigned>,
     finished_flows: Vec<FlowFinished>,
-    reported_app_flows: AHashSet<FlowId>,
-    reported_route_assignments: AHashMap<FlowId, usize>,
-    reported_finished_flows: AHashSet<FlowId>,
+    flow_times: AHashMap<FlowId, i64>,
+    reported_app_flows: AHashSet<(FlowId, i64)>,
+    reported_route_assignments: AHashMap<(FlowId, i64), usize>,
+    reported_finished_flows: AHashSet<(FlowId, i64)>,
 }
 
 impl FlowStatsReporter {
@@ -136,6 +143,7 @@ impl FlowStatsReporter {
             app_flows: Vec::new(),
             route_assignments: Vec::new(),
             finished_flows: Vec::new(),
+            flow_times: AHashMap::default(),
             reported_app_flows: AHashSet::default(),
             reported_route_assignments: AHashMap::default(),
             reported_finished_flows: AHashSet::default(),
