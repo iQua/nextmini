@@ -109,6 +109,7 @@ async fn create_db(pool: &Pool<Postgres>) {
             src_node_id INTEGER,
             dst_node_id INTEGER,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE,
+            finish_time BIGINT,
             route_id INTEGER,
             UNIQUE (flow_id, time)
         )
@@ -222,6 +223,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
             src_node_id INTEGER,
             dst_node_id INTEGER,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE,
+            finish_time BIGINT,
             route_id INTEGER,
             UNIQUE (flow_id, time)
         )
