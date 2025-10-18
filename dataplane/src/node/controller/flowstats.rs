@@ -1,7 +1,7 @@
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
-use tracing::{error, info};
+use tracing::{error, info, debug};
 
 use nextmini_messages::{AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment};
 
@@ -14,19 +14,16 @@ pub struct AppFlowStart {
     pub flow_id: FlowId,
     pub src_node_id: NodeId,
     pub dst_node_id: NodeId,
-    pub time: i64,
 }
 
 pub struct RouteAssigned {
     pub flow_id: FlowId,
     pub route_id: usize,
-    pub time: i64,
 }
 
 pub struct FlowFinished {
     pub flow_id: FlowId,
     pub controller_id: Option<i32>,
-    pub time: i64,
 }
 
 pub enum FlowStatsMessage {
@@ -72,7 +69,6 @@ impl FlowStatsReporterHandle {
             .send(FlowStatsMessage::RouteAssigned(RouteAssigned {
                 flow_id,
                 route_id,
-                time: 0, // will be filled by FlowStatsReporter
             }))
         {
             error!(
@@ -92,7 +88,6 @@ impl FlowStatsReporterHandle {
                 flow_id,
                 src_node_id,
                 dst_node_id,
-                time: 0, // will be filled by FlowStatsReporter on first occurrence
             }))
         {
             error!(
@@ -109,7 +104,6 @@ impl FlowStatsReporterHandle {
             .send(FlowStatsMessage::FlowFinished(FlowFinished {
                 flow_id,
                 controller_id,
-                time: 0, // will be filled by FlowStatsReporter
             }))
         {
             error!(
@@ -120,16 +114,26 @@ impl FlowStatsReporterHandle {
     }
 }
 
+#[derive(Debug, Clone)]
+struct FlowStats {
+    flow_id: FlowId,
+    start_time: i64,
+    finish_time: Option<i64>,
+    src_node_id: NodeId,
+    dst_node_id: NodeId,
+    route_id: Option<usize>,
+    controller_id: Option<i32>,
+}
+
 struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
-    app_flows: Vec<AppFlowStart>,
-    route_assignments: Vec<RouteAssigned>,
-    finished_flows: Vec<FlowFinished>,
-    flow_times: AHashMap<FlowId, i64>,
-    reported_app_flows: AHashSet<(FlowId, i64)>,
-    reported_route_assignments: AHashMap<(FlowId, i64), usize>,
-    reported_finished_flows: AHashSet<(FlowId, i64)>,
+    
+    // The active flows that are still in progress.
+    active_flows: AHashMap<FlowId, FlowStats>,
+    
+    // The flows waiting to be sent in the next tick, both active and completed.
+    pending_send: AHashMap<(FlowId, i64), FlowStats>,
 }
 
 impl FlowStatsReporter {
@@ -140,85 +144,88 @@ impl FlowStatsReporter {
         Self {
             controller,
             receiver,
-            app_flows: Vec::new(),
-            route_assignments: Vec::new(),
-            finished_flows: Vec::new(),
-            flow_times: AHashMap::default(),
-            reported_app_flows: AHashSet::default(),
-            reported_route_assignments: AHashMap::default(),
-            reported_finished_flows: AHashSet::default(),
+            active_flows: AHashMap::default(),
+            pending_send: AHashMap::default(),
         }
     }
 
     pub async fn run(&mut self) {
-        // transmits all buffered flow stat every 1 second
+        // transmits all buffered flow stats every 1 second
         let mut flowstats_tick = interval(Duration::from_secs(1));
 
         loop {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
                     match msg {
-                        FlowStatsMessage::AppFlowStart(mut app_flow) => {
+                        FlowStatsMessage::AppFlowStart(app_flow) => {
                             let flow_id = app_flow.flow_id;
 
-                            // check if we already have this flow_id
-                            if self.flow_times.contains_key(&flow_id) {
-                                // flow still active, ignore duplicate AppFlowStart
-                                // (the flow hasn't finished yet or FlowFinished hasn't been sent)
+                            // checks if the flow_id is already in the active_flows
+                            if self.active_flows.contains_key(&flow_id) {
+                                // if the flow_id is already in the active_flows, ignores the duplicate AppFlowStart
+                                debug!("Duplicate AppFlowStart ignored for flow_id {:?} (flow still active).", flow_id);
                             } else {
-                                // first time seeing this flow_id, or old flow has been cleaned up after finishing
+                                // for a new flow, creates a FlowStats record
                                 let time = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis() as i64;
 
-                                app_flow.time = time;
+                                let flow_stats = FlowStats {
+                                    flow_id,
+                                    start_time: time,
+                                    finish_time: None,
+                                    src_node_id: app_flow.src_node_id,
+                                    dst_node_id: app_flow.dst_node_id,
+                                    route_id: None,
+                                    controller_id: None,
+                                };
 
-                                // record the new flow
-                                self.flow_times.insert(flow_id, time);
-                                self.reported_app_flows.insert((flow_id, time));
-                                self.app_flows.push(app_flow);
+                                self.active_flows.insert(flow_id, flow_stats.clone());
+                                // adds to pending_send to be sent in the next tick
+                                self.pending_send.insert((flow_id, time), flow_stats);
                             }
                         }
-                        FlowStatsMessage::RouteAssigned(mut route_assigned) => {
+                        FlowStatsMessage::RouteAssigned(route_assigned) => {
                             let flow_id = route_assigned.flow_id;
 
-                            // look up the time for this flow_id
-                            if let Some(&time) = self.flow_times.get(&flow_id) {
-                                route_assigned.time = time;
-                                let key = (flow_id, time);
-
-                                // checks if route has changed or is first time
-                                let should_report = self.reported_route_assignments
-                                    .get(&key)
-                                    .map_or(true, |&last_route| last_route != route_assigned.route_id);
-
-                                if should_report {
-                                    // updates immediately to prevent duplicates within the same tick period
-                                    self.reported_route_assignments.insert(key, route_assigned.route_id);
-
-                                    // for batch sending at next tick
-                                    self.route_assignments.push(route_assigned);
+                            // updates the route_id in the flow stats
+                            if let Some(flow_stats) = self.active_flows.get_mut(&flow_id) {
+                                // only updates if route changed
+                                if flow_stats.route_id != Some(route_assigned.route_id) {
+                                    flow_stats.route_id = Some(route_assigned.route_id);
+                                    // adds to pending_send to be sent in the next tick
+                                    let key = (flow_id, flow_stats.start_time);
+                                    self.pending_send.insert(key, flow_stats.clone());
                                 }
                             } else {
                                 info!(
-                                    "RouteAssigned arrived before AppFlowStart for flow_id {:?}, ignoring.",
+                                    "RouteAssigned for unknown flow_id {:?}, ignoring (flow may have already finished or not started yet).",
                                     flow_id
                                 );
                             }
                         }
-                        FlowStatsMessage::FlowFinished(mut flow_finished) => {
+                        FlowStatsMessage::FlowFinished(flow_finished) => {
                             let flow_id = flow_finished.flow_id;
 
-                            // looks up the time for this flow_id
-                            if let Some(&time) = self.flow_times.get(&flow_id) {
-                                flow_finished.time = time;
-                                let key = (flow_id, time);
+                            // immediately removes from active_flows to allow flow_id reuse
+                            if let Some(mut flow_stats) = self.active_flows.remove(&flow_id) {
+                                let finish_time = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as i64;
 
-                                // only buffers once per flow to avoid duplicates
-                                if self.reported_finished_flows.insert(key) {
-                                    self.finished_flows.push(flow_finished);
-                                }
+                                flow_stats.finish_time = Some(finish_time);
+                                flow_stats.controller_id = flow_finished.controller_id;
+
+                                // adds to pending_send to be sent in the next tick
+                                let key = (flow_id, flow_stats.start_time);
+                                self.pending_send.insert(key, flow_stats);
+                                
+                                info!(
+                                    "Flow {:?} finished. Queued for sending (flow_id now available for reuse).",
+                                    flow_id
+                                );
                             } else {
                                 info!(
                                     "FlowFinished for unknown flow_id {:?} ignored - no matching AppFlowStart found. \
@@ -230,72 +237,59 @@ impl FlowStatsReporter {
                     }
                 }
                 _ = flowstats_tick.tick() => {
-                    // sends app flows message
-                    if !self.app_flows.is_empty() {
-                        let mut appflows = Vec::new();
+                    if self.pending_send.is_empty() {
+                        continue;
+                    }
 
-                        for app_flow in &self.app_flows {
-                            appflows.push(AppFlow {
-                                flow_id: app_flow.flow_id.to_be_bytes(),
-                                src_node_id: app_flow.src_node_id,
-                                dst_node_id: app_flow.dst_node_id,
-                                time: app_flow.time,
+                    // builds three message types from pending flows
+                    let mut appflows = Vec::new();
+                    let mut assignments = Vec::new();
+                    let mut finished_infos = Vec::new();
+
+                    for flow_stats in self.pending_send.values() {
+                        appflows.push(AppFlow {
+                            flow_id: flow_stats.flow_id.to_be_bytes(),
+                            src_node_id: flow_stats.src_node_id,
+                            dst_node_id: flow_stats.dst_node_id,
+                            time: flow_stats.start_time,
+                        });
+
+                        if let Some(route_id) = flow_stats.route_id {
+                            assignments.push(RouteAssignment {
+                                flow_id: flow_stats.flow_id.to_be_bytes(),
+                                route_id,
+                                time: flow_stats.start_time, 
                             });
                         }
 
+                        if let Some(finish_time) = flow_stats.finish_time {
+                            finished_infos.push(FlowFinishedInfo {
+                                flow_id: flow_stats.flow_id.to_be_bytes(),
+                                controller_id: flow_stats.controller_id,
+                                time: flow_stats.start_time, 
+                                finish_time,
+                            });
+                        }
+                    }
+
+                    // sends messages in order: Start -> Assign -> Finish
+                    if !appflows.is_empty() {
                         let msg = DataplaneToController::AppFlowStart { appflows };
                         self.controller.send(msg).await;
-                        self.app_flows.clear();
                     }
 
-                    // sends route assignments message
-                    if !self.route_assignments.is_empty() {
-                        let mut assignments = Vec::new();
-
-                        for route_assigned in &self.route_assignments {
-                            assignments.push(RouteAssignment {
-                                flow_id: route_assigned.flow_id.to_be_bytes(),
-                                route_id: route_assigned.route_id,
-                                time: route_assigned.time,
-                            });
-                        }
-
+                    if !assignments.is_empty() {
                         let msg = DataplaneToController::RouteAssigned { assignments };
                         self.controller.send(msg).await;
-                        self.route_assignments.clear();
                     }
 
-                    // sends flow finished message
-                    if !self.finished_flows.is_empty() {
-                        let mut flows = Vec::new();
-
-                        for flow_finished in &self.finished_flows {
-                            flows.push(FlowFinishedInfo {
-                                flow_id: flow_finished.flow_id.to_be_bytes(),
-                                controller_id: flow_finished.controller_id,
-                                time: flow_finished.time,
-                            });
-                        }
-
-                        let msg = DataplaneToController::FlowFinished { flows };
+                    if !finished_infos.is_empty() {
+                        let msg = DataplaneToController::FlowFinished { flows: finished_infos };
                         self.controller.send(msg).await;
-
-                        // cleans up finished flows after sending all messages
-                        for flow_finished in &self.finished_flows {
-                            let key = (flow_finished.flow_id, flow_finished.time);
-
-                            // unconditionally remove from flow_times
-                            // (flow has finished and message has been sent, allow immediate reuse)
-                            self.flow_times.remove(&flow_finished.flow_id);
-
-                            // clean up all tracking data to prevent unbounded growth
-                            self.reported_finished_flows.remove(&key);
-                            self.reported_app_flows.remove(&key);
-                            self.reported_route_assignments.remove(&key);
-                        }
-
-                        self.finished_flows.clear();
                     }
+
+                    // clears pending send buffer after sending
+                    self.pending_send.clear();
                 }
             }
         }
