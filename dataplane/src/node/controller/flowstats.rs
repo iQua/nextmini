@@ -56,8 +56,8 @@ impl FlowStatsReporterHandle {
         // checks and reports if flow finished (FIN/RST)
         if packet.is_tcp_fin_or_rst() {
             self.report_flow_finished(packet.flow_id, None);
-        } else {
-            // only reports app flow start for non-terminating packets
+        } else if packet.has_tcp_payload() {
+            // only reports app flow start for packets with payload; ignores zero-payload ACKs
             self.report_app_flow(packet.flow_id);
         }
     }
