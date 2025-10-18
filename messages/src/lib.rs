@@ -47,6 +47,7 @@ pub struct FlowFinishedInfo {
     pub flow_id: [u8; 16],
     pub controller_id: Option<i32>,
     pub time: i64,
+    pub finish_time: i64,
 }
 
 /// The information about a route assignment.

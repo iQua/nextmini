@@ -180,7 +180,8 @@ class Database:
                    af.dst_node_id,
                    af.route_id,
                    af.is_finished,
-                   af.time
+                   af.time,
+                   af.finish_time
             FROM app_flows af
             WHERE af.src_node_id IS NOT NULL
             ORDER BY af.id DESC
@@ -196,10 +197,12 @@ class Database:
         self.t_app_flows.add_column("Flow ID", overflow="fold", style="dim")
         self.t_app_flows.add_column("Src→Dst", justify="center")
         self.t_app_flows.add_column("Route", justify="center")
-        self.t_app_flows.add_column("Time", justify="center", style="dim")
-        self.t_app_flows.add_column("Finished", justify="center")
+        self.t_app_flows.add_column("Start Time", justify="center", style="dim")
+        self.t_app_flows.add_column("Finish Time", justify="center", style="dim")
+        self.t_app_flows.add_column("Duration (ms)", justify="center")
+        self.t_app_flows.add_column("Status", justify="center")
 
-        for flow_id_int, flow_tuple, src, dst, route_id, is_finished, time_ms in flows:
+        for flow_id_int, flow_tuple, src, dst, route_id, is_finished, time_ms, finish_time_ms in flows:
             src_dst = (
                 f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
                 if src and dst
@@ -209,18 +212,37 @@ class Database:
                 f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
             )
             
-            # Convert milliseconds timestamp to readable format
+            # Convert milliseconds timestamp to readable format (start time)
             if time_ms:
-                time_str = datetime.fromtimestamp(time_ms / 1000.0).strftime("%H:%M:%S.%f")[:-3]
-                time_display = f"[dim]{time_str}[/dim]"
+                start_time_str = datetime.fromtimestamp(time_ms / 1000.0).strftime("%H:%M:%S.%f")[:-3]
+                start_time_display = f"[dim]{start_time_str}[/dim]"
             else:
-                time_display = "[dim]-[/dim]"
+                start_time_display = "[dim]-[/dim]"
+            
+            # Convert finish time to readable format
+            if finish_time_ms:
+                finish_time_str = datetime.fromtimestamp(finish_time_ms / 1000.0).strftime("%H:%M:%S.%f")[:-3]
+                finish_time_display = f"[dim]{finish_time_str}[/dim]"
+            else:
+                finish_time_display = "[dim]-[/dim]"
+            
+            # Calculate duration if flow is finished
+            if is_finished and finish_time_ms and time_ms:
+                duration_ms = finish_time_ms - time_ms
+                if duration_ms < 1000:
+                    duration_display = f"[green]{duration_ms}[/green]"
+                elif duration_ms < 5000:
+                    duration_display = f"[yellow]{duration_ms}[/yellow]"
+                else:
+                    duration_display = f"[red]{duration_ms}[/red]"
+            else:
+                duration_display = "[dim]-[/dim]"
 
             if is_finished:
-                finished_mark = "[green]✓[/green]"
+                status_mark = "[green]✓[/green]"
                 id_style = "dim"
             else:
-                finished_mark = "[red]✗[/red]"
+                status_mark = "[red]✗[/red]"
                 id_style = "bold cyan"
 
             self.t_app_flows.add_row(
@@ -228,8 +250,10 @@ class Database:
                 flow_tuple or "[dim]N/A[/dim]",
                 src_dst,
                 route_str,
-                time_display,
-                finished_mark,
+                start_time_display,
+                finish_time_display,
+                duration_display,
+                status_mark,
             )
         cursor.close()
 
