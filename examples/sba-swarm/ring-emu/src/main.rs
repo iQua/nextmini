@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Simple ring all-reduce (sum) over TCP sockets, no MPI/NCCL.
 /// One process per node. Each node binds to its address and connects to its right neighbor.
@@ -90,9 +90,20 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("rank {} failed to bind {}", args.rank, my))?;
 
+    // Wait 1 second to let all nodes bind before attempting connections
+    println!("[rank {}] waiting 1s for all nodes to bind...", args.rank);
+    sleep(Duration::from_secs(1)).await;
+
     let mut right_stream = connect_with_retry(right, args.retry_ms, args.rank).await?;
     right_stream.set_nodelay(true)?;
-    send_msg(&mut right_stream, &Msg::Hello { rank: args.rank as u32, world: world as u32 }).await?;
+    send_msg(
+        &mut right_stream,
+        &Msg::Hello {
+            rank: args.rank as u32,
+            world: world as u32,
+        },
+    )
+    .await?;
 
     let (mut left_stream, left_addr) = listener.accept().await?;
     left_stream.set_nodelay(true)?;
@@ -102,7 +113,11 @@ async fn main() -> Result<()> {
         _ => bail!("expected Hello from left neighbor"),
     };
     if left_world != world {
-        bail!("neighbor world mismatch: got {}, expected {}", left_world, world);
+        bail!(
+            "neighbor world mismatch: got {}, expected {}",
+            left_world,
+            world
+        );
     }
     if left_rank != (args.rank + world - 1) % world {
         bail!("unexpected left rank {} from {}", left_rank, left_addr);
@@ -150,9 +165,13 @@ async fn main() -> Result<()> {
         if args.verify {
             let out = assemble(&ranges, &local);
             let expected = expected_sum_vector(args.init.as_str(), p, args.len);
-            verify_equal(&out, &expected)
-                .with_context(|| format!("[rank {}] verification failed (rep {}).", args.rank, rep))?;
-            println!("[rank {}] verification OK (rep {}, {:?}).", args.rank, rep, dt);
+            verify_equal(&out, &expected).with_context(|| {
+                format!("[rank {}] verification failed (rep {}).", args.rank, rep)
+            })?;
+            println!(
+                "[rank {}] verification OK (rep {}, {:?}).",
+                args.rank, rep, dt
+            );
         } else {
             println!("[rank {}] completed rep {} in {:?}.", args.rank, rep, dt);
         }
@@ -162,7 +181,10 @@ async fn main() -> Result<()> {
     if args.reps > 1 {
         let total: Duration = durations.iter().copied().sum();
         let avg = total / (args.reps as u32);
-        println!("[rank {}] avg over {} reps: {:?}", args.rank, args.reps, avg);
+        println!(
+            "[rank {}] avg over {} reps: {:?}",
+            args.rank, args.reps, avg
+        );
     }
 
     Ok(())
@@ -178,8 +200,8 @@ async fn reduce_scatter(
     chunks: &mut [Vec<f32>],
 ) -> Result<()> {
     if world == 1 {
-            return Ok(());
-        }
+        return Ok(());
+    }
     for step in 0..(world - 1) {
         let send_idx = modulo(rank as isize - step as isize, world) as usize;
         let recv_idx = modulo(rank as isize - step as isize - 1, world) as usize;
@@ -214,7 +236,11 @@ async fn reduce_scatter(
                 }
                 add_in_place(&mut chunks[idx], &payload)?;
             }
-            m => bail!("[rank {}] unexpected message in reduce_scatter: {:?}", rank, m),
+            m => bail!(
+                "[rank {}] unexpected message in reduce_scatter: {:?}",
+                rank,
+                m
+            ),
         }
     }
     Ok(())
@@ -300,7 +326,8 @@ async fn recv_msg(stream: &mut TcpStream) -> Result<Msg> {
     let len = stream.read_u32_le().await?;
     let mut buf = vec![0u8; len as usize];
     stream.read_exact(&mut buf).await?;
-    let (msg, _): (Msg, usize) = bincode::serde::decode_from_slice(&buf, bincode::config::standard())?;
+    let (msg, _): (Msg, usize) =
+        bincode::serde::decode_from_slice(&buf, bincode::config::standard())?;
     Ok(msg)
 }
 
@@ -313,7 +340,9 @@ fn init_chunk(init: &str, rank: usize, len: usize) -> Result<Vec<f32>> {
         "random" => {
             // Simple LCG for reproducibility per (rank,len) without RNG crates
             let mut v = Vec::with_capacity(len);
-            let mut x = (rank as u64).wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mut x = (rank as u64)
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
             for _ in 0..len {
                 x = x.wrapping_mul(2862933555777941757).wrapping_add(3037000493);
                 // scale to [0,1)
@@ -401,8 +430,8 @@ fn modulo(x: isize, m: usize) -> isize {
 }
 
 fn load_ring(path: &PathBuf) -> Result<Vec<SocketAddr>> {
-    let txt = fs::read_to_string(path)
-        .with_context(|| format!("failed to read ring file {:?}", path))?;
+    let txt =
+        fs::read_to_string(path).with_context(|| format!("failed to read ring file {:?}", path))?;
     let mut out = Vec::new();
     for (lineno, line) in txt.lines().enumerate() {
         let line = line.trim();
