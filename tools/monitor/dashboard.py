@@ -10,7 +10,7 @@ from rich.text import Text
 
 DB_USER = os.environ.get("NEXTMINI_DB_USER", "pgusr")
 DB_PASSWORD = os.environ.get("NEXTMINI_DB_PASSWORD", "pgpwrd")
-DB_HOST = os.environ.get("NEXTMINI_DB_HOST", "localhost")
+DB_HOST = os.environ.get("NEXTMINI_DB_HOST", "172.16.8.2")
 DB_PORT = os.environ.get("NEXTMINI_DB_PORT", "5432")
 DB_NAME = os.environ.get("NEXTMINI_DB_NAME", "nextmini")
 
@@ -179,7 +179,8 @@ class Database:
                    af.src_node_id,
                    af.dst_node_id,
                    af.route_id,
-                   af.is_finished
+                   af.is_finished,
+                   af.time
             FROM app_flows af
             WHERE af.src_node_id IS NOT NULL
             ORDER BY af.id DESC
@@ -195,9 +196,10 @@ class Database:
         self.t_app_flows.add_column("Flow ID", overflow="fold", style="dim")
         self.t_app_flows.add_column("Src→Dst", justify="center")
         self.t_app_flows.add_column("Route", justify="center")
+        self.t_app_flows.add_column("Time", justify="center", style="dim")
         self.t_app_flows.add_column("Finished", justify="center")
 
-        for flow_id_int, flow_tuple, src, dst, route_id, is_finished in flows:
+        for flow_id_int, flow_tuple, src, dst, route_id, is_finished, time_ms in flows:
             src_dst = (
                 f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
                 if src and dst
@@ -206,6 +208,13 @@ class Database:
             route_str = (
                 f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
             )
+            
+            # Convert milliseconds timestamp to readable format
+            if time_ms:
+                time_str = datetime.fromtimestamp(time_ms / 1000.0).strftime("%H:%M:%S.%f")[:-3]
+                time_display = f"[dim]{time_str}[/dim]"
+            else:
+                time_display = "[dim]-[/dim]"
 
             if is_finished:
                 finished_mark = "[green]✓[/green]"
@@ -219,6 +228,7 @@ class Database:
                 flow_tuple or "[dim]N/A[/dim]",
                 src_dst,
                 route_str,
+                time_display,
                 finished_mark,
             )
         cursor.close()
