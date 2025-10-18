@@ -121,6 +121,8 @@ async fn create_db(pool: &Pool<Postgres>) {
 
 // Resets the entire database.
 async fn reset_db(pool: &Pool<Postgres>) {
+    info!("Resetting database - dropping all tables...");
+
     // drops the existing tables to ensure schema changes are applied
     sqlx::query("DROP TABLE IF EXISTS metrics")
         .execute(pool)
