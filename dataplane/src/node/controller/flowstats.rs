@@ -158,37 +158,74 @@ impl FlowStatsReporter {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
                     match msg {
-                        FlowStatsMessage::AppFlowStart(app_flow) => {
-                            if !self.reported_app_flows.contains(&app_flow.flow_id) {
-                                let flow_id = app_flow.flow_id;
-                                self.reported_app_flows.insert(flow_id);
+                        FlowStatsMessage::AppFlowStart(mut app_flow) => {
+                            let flow_id = app_flow.flow_id;
+
+                            // check if we already have this flow_id
+                            if self.flow_times.contains_key(&flow_id) {
+                                // flow already exists, ignore duplicate AppFlowStart
+                            } else {
+                                // first time seeing this flow_id, generate timestamp
+                                let time = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as i64;
+
+                                app_flow.time = time;
+
+                                // record the new flow
+                                self.flow_times.insert(flow_id, time);
+                                self.reported_app_flows.insert((flow_id, time));
                                 self.app_flows.push(app_flow);
+                            }
+                        }
+                        FlowStatsMessage::RouteAssigned(mut route_assigned) => {
+                            let flow_id = route_assigned.flow_id;
 
-                                // if FlowFinished arrived before AppFlowStart, remove it from reported set
-                                if self.reported_finished_flows.contains(&flow_id) {
-                                    self.reported_finished_flows.remove(&flow_id);
+                            // look up the time for this flow_id
+                            if let Some(&time) = self.flow_times.get(&flow_id) {
+                                route_assigned.time = time;
+                                let key = (flow_id, time);
+
+                                // checks if route has changed or is first time
+                                let should_report = self.reported_route_assignments
+                                    .get(&key)
+                                    .map_or(true, |&last_route| last_route != route_assigned.route_id);
+
+                                if should_report {
+                                    // updates immediately to prevent duplicates within the same tick period
+                                    self.reported_route_assignments.insert(key, route_assigned.route_id);
+
+                                    // for batch sending at next tick
+                                    self.route_assignments.push(route_assigned);
                                 }
+                            } else {
+                                info!(
+                                    "RouteAssigned arrived before AppFlowStart for flow_id {:?}, ignoring.",
+                                    flow_id
+                                );
                             }
                         }
-                        FlowStatsMessage::RouteAssigned(route_assigned) => {
-                            // checks if route has changed or is first time
-                            let should_report = self.reported_route_assignments
-                                .get(&route_assigned.flow_id)
-                                .map_or(true, |&last_route| last_route != route_assigned.route_id);
-
-                            if should_report {
-                                // updates immediately to prevent duplicates within the same tick period
-                                self.reported_route_assignments.insert(route_assigned.flow_id, route_assigned.route_id);
-
-                                // for batch sending at next tick
-                                self.route_assignments.push(route_assigned);
-                            }
-                        }
-                        FlowStatsMessage::FlowFinished(flow_finished) => {
-                            // only buffers once per flow to avoid duplicates
+                        FlowStatsMessage::FlowFinished(mut flow_finished) => {
                             let flow_id = flow_finished.flow_id;
-                            if self.reported_finished_flows.insert(flow_id) {
-                                self.finished_flows.push(flow_finished);
+
+                            // looks up the time for this flow_id
+                            if let Some(&time) = self.flow_times.get(&flow_id) {
+                                flow_finished.time = time;
+                                let key = (flow_id, time);
+
+                                // only buffers once per flow to avoid duplicates
+                                if self.reported_finished_flows.insert(key) {
+                                    self.finished_flows.push(flow_finished);
+
+                                    // removes flow_id from flow_times to allow fast reuse
+                                    self.flow_times.remove(&flow_id);
+                                }
+                            } else {
+                                info!(
+                                    "FlowFinished for unknown flow_id {:?} (likely FIN-only connection), ignoring.",
+                                    flow_id
+                                );
                             }
                         }
                     }
@@ -203,6 +240,7 @@ impl FlowStatsReporter {
                                 flow_id: app_flow.flow_id.to_be_bytes(),
                                 src_node_id: app_flow.src_node_id,
                                 dst_node_id: app_flow.dst_node_id,
+                                time: app_flow.time,
                             });
                         }
 
@@ -219,6 +257,7 @@ impl FlowStatsReporter {
                             assignments.push(RouteAssignment {
                                 flow_id: route_assigned.flow_id.to_be_bytes(),
                                 route_id: route_assigned.route_id,
+                                time: route_assigned.time,
                             });
                         }
 
@@ -235,6 +274,7 @@ impl FlowStatsReporter {
                             flows.push(FlowFinishedInfo {
                                 flow_id: flow_finished.flow_id.to_be_bytes(),
                                 controller_id: flow_finished.controller_id,
+                                time: flow_finished.time,
                             });
                         }
 
@@ -242,10 +282,11 @@ impl FlowStatsReporter {
                         self.controller.send(msg).await;
 
                         // cleans up finished flows after sending all messages
-                        // ensures AppFlowStart and RouteAssigned are sent before cleanup
+                        // flow_times is already removed immediately when FlowFinished arrives
                         for flow_finished in &self.finished_flows {
-                            self.reported_app_flows.remove(&flow_finished.flow_id);
-                            self.reported_route_assignments.remove(&flow_finished.flow_id);
+                            let key = (flow_finished.flow_id, flow_finished.time);
+                            self.reported_app_flows.remove(&key);
+                            self.reported_route_assignments.remove(&key);
                         }
 
                         self.finished_flows.clear();
