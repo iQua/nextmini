@@ -163,9 +163,10 @@ impl FlowStatsReporter {
 
                             // check if we already have this flow_id
                             if self.flow_times.contains_key(&flow_id) {
-                                // flow already exists, ignore duplicate AppFlowStart
+                                // flow still active, ignore duplicate AppFlowStart
+                                // (the flow hasn't finished yet or FlowFinished hasn't been sent)
                             } else {
-                                // first time seeing this flow_id, generate timestamp
+                                // first time seeing this flow_id, or old flow has been cleaned up after finishing
                                 let time = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
@@ -217,13 +218,11 @@ impl FlowStatsReporter {
                                 // only buffers once per flow to avoid duplicates
                                 if self.reported_finished_flows.insert(key) {
                                     self.finished_flows.push(flow_finished);
-
-                                    // removes flow_id from flow_times to allow fast reuse
-                                    self.flow_times.remove(&flow_id);
                                 }
                             } else {
                                 info!(
-                                    "FlowFinished for unknown flow_id {:?} (likely FIN-only connection), ignoring.",
+                                    "FlowFinished for unknown flow_id {:?} ignored - no matching AppFlowStart found. \
+                                    This could be: (1) FIN-only connection, (2) flow already cleaned up, or (3) FIN from non-source node.",
                                     flow_id
                                 );
                             }
@@ -282,9 +281,15 @@ impl FlowStatsReporter {
                         self.controller.send(msg).await;
 
                         // cleans up finished flows after sending all messages
-                        // flow_times is already removed immediately when FlowFinished arrives
                         for flow_finished in &self.finished_flows {
                             let key = (flow_finished.flow_id, flow_finished.time);
+
+                            // unconditionally remove from flow_times
+                            // (flow has finished and message has been sent, allow immediate reuse)
+                            self.flow_times.remove(&flow_finished.flow_id);
+
+                            // clean up all tracking data to prevent unbounded growth
+                            self.reported_finished_flows.remove(&key);
                             self.reported_app_flows.remove(&key);
                             self.reported_route_assignments.remove(&key);
                         }
