@@ -199,7 +199,7 @@ impl FlowStatsReporter {
                                     self.pending_send.insert(key, flow_stats.clone());
                                 }
                             } else {
-                                info!(
+                                debug!(
                                     "RouteAssigned for unknown flow_id {:?}, ignoring (flow may have already finished or not started yet).",
                                     flow_id
                                 );
@@ -223,11 +223,11 @@ impl FlowStatsReporter {
                                 self.pending_send.insert(key, flow_stats);
                                 
                                 info!(
-                                    "Flow {:?} finished. Queued for sending (flow_id now available for reuse).",
+                                    "Flow {:?} finished. Queued for sending, flow_id now available for reuse.",
                                     flow_id
                                 );
                             } else {
-                                info!(
+                                debug!(
                                     "FlowFinished for unknown flow_id {:?} ignored - no matching AppFlowStart found. \
                                     This could be: (1) FIN-only connection, (2) flow already cleaned up, or (3) FIN from non-source node.",
                                     flow_id

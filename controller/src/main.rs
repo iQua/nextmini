@@ -451,7 +451,25 @@ async fn handle_connection(
                                 let time = flow_finished.time;
                                 let finish_time = flow_finished.finish_time;
 
-                                // updates the flow as finished
+                                // Debug!: this message is now used for debugging
+                                info!(
+                                    "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] at start_time {} and finish_time {}.",
+                                    flow_id_slice[0],
+                                    flow_id_slice[1],
+                                    flow_id_slice[2],
+                                    flow_id_slice[3],
+                                    u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                    flow_id_slice[4],
+                                    flow_id_slice[5],
+                                    flow_id_slice[6],
+                                    flow_id_slice[7],
+                                    u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
+                                    time,
+                                    finish_time
+                                );
+
+                                // updates the flow as finished (only if it already exists)
+                                // if AppFlowStart hasn't arrived yet, this update will be ignored
                                 match sqlx::query(
                                     r#"
                                     UPDATE app_flows
@@ -465,7 +483,36 @@ async fn handle_connection(
                                 .execute(&*db_pool)
                                 .await
                                 {
-                                    Ok(_) => {}
+                                    Ok(result) => {
+                                        if result.rows_affected() > 0 {
+                                            info!(
+                                                "Marked application flow as finished (time: {}).",
+                                                time
+                                            );
+                                        } else {
+                                            warn!(
+                                                "FlowFinished for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (time={}). \
+                                                Either AppFlowStart hasn't arrived or flow_id was reused.",
+                                                flow_id_slice[0],
+                                                flow_id_slice[1],
+                                                flow_id_slice[2],
+                                                flow_id_slice[3],
+                                                u16::from_be_bytes([
+                                                    flow_id_slice[8],
+                                                    flow_id_slice[9]
+                                                ]),
+                                                flow_id_slice[4],
+                                                flow_id_slice[5],
+                                                flow_id_slice[6],
+                                                flow_id_slice[7],
+                                                u16::from_be_bytes([
+                                                    flow_id_slice[10],
+                                                    flow_id_slice[11]
+                                                ]),
+                                                time
+                                            );
+                                        }
+                                    }
                                     Err(e) => {
                                         error!("Failed to update application flow: {}.", e);
                                     }
@@ -478,11 +525,38 @@ async fn handle_connection(
                             let flow_id_slice = appflow.flow_id.as_ref();
                             let time = appflow.time;
 
+                            // checks if the record already exists to avoid consuming sequence numbers
+                            match sqlx::query(
+                                r#"
+                                SELECT 1 FROM app_flows WHERE flow_id = $1 AND time = $2
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .bind(time)
+                            .fetch_optional(&*db_pool)
+                            .await
+                            {
+                                Ok(Some(_)) => {
+                                    // if the record already exists, skips insertion
+                                    info!(
+                                        "Duplicate AppFlowStart ignored (flow_id + time already exists)."
+                                    );
+                                    continue;
+                                }
+                                Ok(None) => {
+                                    // if the record doesn't exist, proceeds with insertion
+                                }
+                                Err(e) => {
+                                    error!("Failed to check app flow existence: {}.", e);
+                                    continue;
+                                }
+                            }
+
+                            // inserts the new record
                             match sqlx::query(
                                 r#"
                                 INSERT INTO app_flows (flow_id, time, src_node_id, dst_node_id, is_finished)
                                 VALUES ($1, $2, $3, $4, FALSE)
-                                ON CONFLICT (flow_id, time) DO NOTHING
                                 "#,
                             )
                             .bind(flow_id_slice)
@@ -494,11 +568,11 @@ async fn handle_connection(
                             {
                                 Ok(_) => {
                                     info!(
-                                        "Processed AppFlowStart for flow from node {} to {} at time {}.",
+                                        "Registered new app flow from node {} to {} at time {}.",
                                         appflow.src_node_id, appflow.dst_node_id, time
                                     );
                                 }
-                                Err(e) => error!("Failed to process app flow: {}.", e),
+                                Err(e) => error!("Failed to insert app flow: {}.", e),
                             }
                         }
                     }
@@ -509,7 +583,24 @@ async fn handle_connection(
                             let time = assignment.time;
                             let flow_id_slice = flow_id.as_ref();
 
-                            // updates route_id in app_flows table
+                            // Debug!: this message is now used for debugging
+                            info!(
+                                "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {} at time {}.",
+                                flow_id_slice[0],
+                                flow_id_slice[1],
+                                flow_id_slice[2],
+                                flow_id_slice[3],
+                                u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                flow_id_slice[4],
+                                flow_id_slice[5],
+                                flow_id_slice[6],
+                                flow_id_slice[7],
+                                u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
+                                route_id,
+                                time
+                            );
+
+                            // updates route_id in app_flows table (only if flow already exists)
                             match sqlx::query(
                                 r#"
                                 UPDATE app_flows
@@ -523,7 +614,53 @@ async fn handle_connection(
                             .execute(&*db_pool)
                             .await
                             {
-                                Ok(_) => {}
+                                Ok(result) => {
+                                    if result.rows_affected() == 0 {
+                                        info!(
+                                            "RouteAssigned for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (time={}). \
+                                            Likely arrived before AppFlowStart.",
+                                            flow_id_slice[0],
+                                            flow_id_slice[1],
+                                            flow_id_slice[2],
+                                            flow_id_slice[3],
+                                            u16::from_be_bytes([
+                                                flow_id_slice[8],
+                                                flow_id_slice[9]
+                                            ]),
+                                            flow_id_slice[4],
+                                            flow_id_slice[5],
+                                            flow_id_slice[6],
+                                            flow_id_slice[7],
+                                            u16::from_be_bytes([
+                                                flow_id_slice[10],
+                                                flow_id_slice[11]
+                                            ]),
+                                            time
+                                        );
+                                    } else {
+                                        info!(
+                                            "Updated route_id={} for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (time: {}).",
+                                            route_id,
+                                            flow_id_slice[0],
+                                            flow_id_slice[1],
+                                            flow_id_slice[2],
+                                            flow_id_slice[3],
+                                            u16::from_be_bytes([
+                                                flow_id_slice[8],
+                                                flow_id_slice[9]
+                                            ]),
+                                            flow_id_slice[4],
+                                            flow_id_slice[5],
+                                            flow_id_slice[6],
+                                            flow_id_slice[7],
+                                            u16::from_be_bytes([
+                                                flow_id_slice[10],
+                                                flow_id_slice[11]
+                                            ]),
+                                            time
+                                        );
+                                    }
+                                }
                                 Err(e) => {
                                     error!("Failed to update app_flows.route_id: {}.", e);
                                 }
