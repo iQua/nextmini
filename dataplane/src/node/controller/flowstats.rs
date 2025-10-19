@@ -206,7 +206,7 @@ impl FlowStatsReporter {
                             let flow_id = route_assigned.flow_id;
                             let new_route_id = route_assigned.route_id;
 
-                            // Helper closure to update route and queue assignment
+                            //updates route and queue assignment
                             let update_flow_route = |flow_stats: &mut FlowStats,
                                                      pending_assignments: &mut HashSet<(FlowId, usize, i64)>,
                                                      is_finished: bool| {
@@ -214,6 +214,7 @@ impl FlowStatsReporter {
                                     flow_stats.route_id = Some(new_route_id);
                                     pending_assignments.insert((flow_id, new_route_id, flow_stats.start_time));
 
+                                    // DEBUG!: for debugging.
                                     info!(
                                         "RouteAssigned processed for {} flow: flow_id={:?}, route_id={}",
                                         if is_finished { "finished" } else { "active" },
@@ -241,10 +242,6 @@ impl FlowStatsReporter {
                                     .unwrap()
                                     .as_millis() as i64;
                                 self.pending_routes.insert(flow_id, (new_route_id, now));
-                                debug!(
-                                    "RouteAssigned for not-yet-started flow_id {:?}, stored in pending_routes.",
-                                    flow_id
-                                );
                             }
                         }
                         FlowStatsMessage::FlowFinished(flow_finished) => {
@@ -270,12 +267,6 @@ impl FlowStatsReporter {
                                 info!(
                                     "Flow {:?} finished. Queued for sending (route_id: {:?}), flow_id now available for reuse.",
                                     flow_id, flow_stats.route_id
-                                );
-                            } else {
-                                debug!(
-                                    "FlowFinished for unknown flow_id {:?} ignored - no matching AppFlowStart found. \
-                                    This could be: (1) FIN-only connection, (2) flow already cleaned up, or (3) FIN from non-source node.",
-                                    flow_id
                                 );
                             }
                         }
