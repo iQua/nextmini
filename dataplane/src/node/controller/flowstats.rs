@@ -1,5 +1,4 @@
 use ahash::AHashMap;
-use chrono::Utc;
 use std::collections::HashSet;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
@@ -210,16 +209,10 @@ impl FlowStatsReporter {
                             // Helper closure to update route and queue assignment
                             let update_flow_route = |flow_stats: &mut FlowStats,
                                                      pending_assignments: &mut HashSet<(FlowId, usize, i64)>,
-                                                     pending_send: &mut AHashMap<(FlowId, i64), FlowStats>,
                                                      is_finished: bool| {
                                 if flow_stats.route_id != Some(new_route_id) {
                                     flow_stats.route_id = Some(new_route_id);
                                     pending_assignments.insert((flow_id, new_route_id, flow_stats.start_time));
-
-                                    if is_finished {
-                                        let key = (flow_id, flow_stats.start_time);
-                                        pending_send.insert(key, flow_stats.clone());
-                                    }
 
                                     info!(
                                         "RouteAssigned processed for {} flow: flow_id={:?}, route_id={}",
@@ -235,11 +228,11 @@ impl FlowStatsReporter {
 
                             // tries to update active flows first
                             if let Some(flow_stats) = self.active_flows.get_mut(&flow_id) {
-                                update_flow_route(flow_stats, &mut self.pending_assignments, &mut self.pending_send, false);
+                                update_flow_route(flow_stats, &mut self.pending_assignments, false);
                             }
                             // then tries to update finished flows
                             else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
-                                update_flow_route(flow_stats, &mut self.pending_assignments, &mut self.pending_send, true);
+                                update_flow_route(flow_stats, &mut self.pending_assignments, true);
                             }
                             // if the flow hasn't started yet
                             else {
@@ -291,7 +284,10 @@ impl FlowStatsReporter {
                 _ = flowstats_tick.tick() => {
                     // evicts outdated finished flows & pending routes (keep them up to 30s)
                     const TTL_MS: i64 = 30_000; // 30 seconds
-                    let now_ms = Utc::now().timestamp_millis();
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64;
 
                     self.finished_flows.retain(|_, fs| {
                         fs.finish_time.map_or(true, |ft| now_ms - ft <= TTL_MS)
