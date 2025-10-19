@@ -1,7 +1,9 @@
 use ahash::AHashMap;
+use std::collections::HashSet;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::{error, info, debug};
+use chrono::Utc;
 
 use nextmini_messages::{AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment};
 
@@ -131,9 +133,18 @@ struct FlowStatsReporter {
     
     // The active flows that are still in progress.
     active_flows: AHashMap<FlowId, FlowStats>,
+
+    // The flows that have finished but are waiting for a route_id.
+    finished_flows: AHashMap<FlowId, FlowStats>,
+
+    // The routes that have been assigned before the flow started. 
+    pending_routes: AHashMap<FlowId, (usize, i64)>,
     
     // The flows waiting to be sent in the next tick, both active and completed.
     pending_send: AHashMap<(FlowId, i64), FlowStats>,
+
+    // The route assignments waiting to be sent in the next tick.
+    pending_assignments: HashSet<(FlowId, usize, i64)>,
 }
 
 impl FlowStatsReporter {
@@ -145,7 +156,10 @@ impl FlowStatsReporter {
             controller,
             receiver,
             active_flows: AHashMap::default(),
+            finished_flows: AHashMap::default(),
+            pending_routes: AHashMap::default(),
             pending_send: AHashMap::default(),
+            pending_assignments: HashSet::default(),
         }
     }
 
@@ -170,6 +184,9 @@ impl FlowStatsReporter {
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis() as i64;
+                                
+                                // if a new flow starts, removes any finished flow with the same flow_id
+                                self.finished_flows.remove(&flow_id);
 
                                 let flow_stats = FlowStats {
                                     flow_id,
@@ -177,7 +194,7 @@ impl FlowStatsReporter {
                                     finish_time: None,
                                     src_node_id: app_flow.src_node_id,
                                     dst_node_id: app_flow.dst_node_id,
-                                    route_id: None,
+                                    route_id: self.pending_routes.remove(&flow_id).map(|(r, _)| r),
                                     controller_id: None,
                                 };
 
@@ -194,13 +211,39 @@ impl FlowStatsReporter {
                                 // only updates if route changed
                                 if flow_stats.route_id != Some(route_assigned.route_id) {
                                     flow_stats.route_id = Some(route_assigned.route_id);
-                                    // adds to pending_send to be sent in the next tick
+
+                                    // adds to pending_assignments to be sent in the next tick
+                                    self.pending_assignments.insert((flow_id, route_assigned.route_id, flow_stats.start_time));
+                                    
+                                    info!(
+                                        "RouteAssigned processed: flow_id={:?}, route_id={}, updated active_flows and pending_send",
+                                        flow_id, route_assigned.route_id
+                                    );
+                                }
+                            } else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
+                                // the flow has already finished, but got a late RouteAssigned
+                                if flow_stats.route_id != Some(route_assigned.route_id) {
+
+                                    flow_stats.route_id = Some(route_assigned.route_id);
                                     let key = (flow_id, flow_stats.start_time);
                                     self.pending_send.insert(key, flow_stats.clone());
+                                    // adds to pending_assignments to be sent in the next tick
+                                    self.pending_assignments.insert((flow_id, route_assigned.route_id, flow_stats.start_time));
+
+                                    info!(
+                                        "RouteAssigned processed for a finished flow: flow_id={:?}, route_id={}, updated pending_send",
+                                        flow_id, route_assigned.route_id
+                                    );
                                 }
                             } else {
+                                // the flow has not started yet, stores the route assignment
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis() as i64;
+                                self.pending_routes.insert(flow_id, (route_assigned.route_id, now));
                                 debug!(
-                                    "RouteAssigned for unknown flow_id {:?}, ignoring (flow may have already finished or not started yet).",
+                                    "RouteAssigned for a not-yet-started flow_id {:?}, stored in pending_routes.",
                                     flow_id
                                 );
                             }
@@ -220,11 +263,14 @@ impl FlowStatsReporter {
 
                                 // adds to pending_send to be sent in the next tick
                                 let key = (flow_id, flow_stats.start_time);
-                                self.pending_send.insert(key, flow_stats);
+                                self.pending_send.insert(key, flow_stats.clone());
                                 
+                                // keeps the finished flow for a while in case of a late RouteAssigned
+                                self.finished_flows.insert(flow_id, flow_stats.clone());
+
                                 info!(
-                                    "Flow {:?} finished. Queued for sending, flow_id now available for reuse.",
-                                    flow_id
+                                    "Flow {:?} finished. Queued for sending (route_id: {:?}), flow_id now available for reuse.",
+                                    flow_id, flow_stats.route_id
                                 );
                             } else {
                                 debug!(
@@ -237,7 +283,17 @@ impl FlowStatsReporter {
                     }
                 }
                 _ = flowstats_tick.tick() => {
-                    if self.pending_send.is_empty() {
+                    // evicts outdated finished flows & pending routes (keep them up to 30s)
+                    const TTL_MS: i64 = 30_000; // 30 seconds
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+
+                    self.finished_flows.retain(|_, fs| {
+                        fs.finish_time.map_or(true, |ft| now_ms - ft <= TTL_MS)
+                    });
+
+                    self.pending_routes.retain(|_, (_, ts)| now_ms - *ts <= TTL_MS);
+
+                    if self.pending_send.is_empty() && self.pending_assignments.is_empty() {
                         continue;
                     }
 
@@ -255,11 +311,7 @@ impl FlowStatsReporter {
                         });
 
                         if let Some(route_id) = flow_stats.route_id {
-                            assignments.push(RouteAssignment {
-                                flow_id: flow_stats.flow_id.to_be_bytes(),
-                                route_id,
-                                time: flow_stats.start_time, 
-                            });
+                            self.pending_assignments.insert((flow_stats.flow_id, route_id, flow_stats.start_time));
                         }
 
                         if let Some(finish_time) = flow_stats.finish_time {
@@ -272,24 +324,36 @@ impl FlowStatsReporter {
                         }
                     }
 
+                    for (flow_id, route_id, time) in self.pending_assignments.drain() {
+                        assignments.push(RouteAssignment {
+                            flow_id: flow_id.to_be_bytes(),
+                            route_id,
+                            time, 
+                        });
+                    }
+
                     // sends messages in order: Start -> Assign -> Finish
                     if !appflows.is_empty() {
+                        debug!("Sending {} AppFlowStart messages", appflows.len());
                         let msg = DataplaneToController::AppFlowStart { appflows };
                         self.controller.send(msg).await;
                     }
 
                     if !assignments.is_empty() {
+                        debug!("Sending {} RouteAssigned messages", assignments.len());
                         let msg = DataplaneToController::RouteAssigned { assignments };
                         self.controller.send(msg).await;
                     }
 
                     if !finished_infos.is_empty() {
+                        debug!("Sending {} FlowFinished messages", finished_infos.len());
                         let msg = DataplaneToController::FlowFinished { flows: finished_infos };
                         self.controller.send(msg).await;
                     }
 
                     // clears pending send buffer after sending
                     self.pending_send.clear();
+                    self.pending_assignments.clear();
                 }
             }
         }
