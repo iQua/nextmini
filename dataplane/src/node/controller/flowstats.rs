@@ -1,9 +1,9 @@
 use ahash::AHashMap;
+use chrono::Utc;
 use std::collections::HashSet;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
-use tracing::{error, info, debug};
-use chrono::Utc;
+use tracing::{debug, error, info};
 
 use nextmini_messages::{AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment};
 
@@ -130,20 +130,20 @@ struct FlowStats {
 struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
-    
-    // The active flows that are still in progress.
+
+    /// The active flows that are still in progress.
     active_flows: AHashMap<FlowId, FlowStats>,
 
-    // The flows that have finished but are waiting for a route_id.
+    /// The flows that have finished but are waiting for a route_id.
     finished_flows: AHashMap<FlowId, FlowStats>,
 
-    // The routes that have been assigned before the flow started. 
+    /// The routes that have been assigned before the flow started.
     pending_routes: AHashMap<FlowId, (usize, i64)>,
-    
-    // The flows waiting to be sent in the next tick, both active and completed.
+
+    /// The flows waiting to be sent in the next tick, both active and completed.
     pending_send: AHashMap<(FlowId, i64), FlowStats>,
 
-    // The route assignments waiting to be sent in the next tick.
+    /// The route assignments waiting to be sent in the next tick.
     pending_assignments: HashSet<(FlowId, usize, i64)>,
 }
 
@@ -184,7 +184,7 @@ impl FlowStatsReporter {
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis() as i64;
-                                
+
                                 // if a new flow starts, removes any finished flow with the same flow_id
                                 self.finished_flows.remove(&flow_id);
 
@@ -214,7 +214,7 @@ impl FlowStatsReporter {
 
                                     // adds to pending_assignments to be sent in the next tick
                                     self.pending_assignments.insert((flow_id, route_assigned.route_id, flow_stats.start_time));
-                                    
+
                                     info!(
                                         "RouteAssigned processed: flow_id={:?}, route_id={}, updated active_flows and pending_send",
                                         flow_id, route_assigned.route_id
@@ -264,7 +264,7 @@ impl FlowStatsReporter {
                                 // adds to pending_send to be sent in the next tick
                                 let key = (flow_id, flow_stats.start_time);
                                 self.pending_send.insert(key, flow_stats.clone());
-                                
+
                                 // keeps the finished flow for a while in case of a late RouteAssigned
                                 self.finished_flows.insert(flow_id, flow_stats.clone());
 
@@ -285,7 +285,7 @@ impl FlowStatsReporter {
                 _ = flowstats_tick.tick() => {
                     // evicts outdated finished flows & pending routes (keep them up to 30s)
                     const TTL_MS: i64 = 30_000; // 30 seconds
-                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let now_ms = Utc::now().timestamp_millis();
 
                     self.finished_flows.retain(|_, fs| {
                         fs.finish_time.map_or(true, |ft| now_ms - ft <= TTL_MS)
@@ -318,7 +318,7 @@ impl FlowStatsReporter {
                             finished_infos.push(FlowFinishedInfo {
                                 flow_id: flow_stats.flow_id.to_be_bytes(),
                                 controller_id: flow_stats.controller_id,
-                                time: flow_stats.start_time, 
+                                time: flow_stats.start_time,
                                 finish_time,
                             });
                         }
@@ -328,7 +328,7 @@ impl FlowStatsReporter {
                         assignments.push(RouteAssignment {
                             flow_id: flow_id.to_be_bytes(),
                             route_id,
-                            time, 
+                            time,
                         });
                     }
 
