@@ -205,45 +205,51 @@ impl FlowStatsReporter {
                         }
                         FlowStatsMessage::RouteAssigned(route_assigned) => {
                             let flow_id = route_assigned.flow_id;
+                            let new_route_id = route_assigned.route_id;
 
-                            // updates the route_id in the flow stats
+                            // Helper closure to update route and queue assignment
+                            let update_flow_route = |flow_stats: &mut FlowStats,
+                                                     pending_assignments: &mut HashSet<(FlowId, usize, i64)>,
+                                                     pending_send: &mut AHashMap<(FlowId, i64), FlowStats>,
+                                                     is_finished: bool| {
+                                if flow_stats.route_id != Some(new_route_id) {
+                                    flow_stats.route_id = Some(new_route_id);
+                                    pending_assignments.insert((flow_id, new_route_id, flow_stats.start_time));
+
+                                    if is_finished {
+                                        let key = (flow_id, flow_stats.start_time);
+                                        pending_send.insert(key, flow_stats.clone());
+                                    }
+
+                                    info!(
+                                        "RouteAssigned processed for {} flow: flow_id={:?}, route_id={}",
+                                        if is_finished { "finished" } else { "active" },
+                                        flow_id,
+                                        new_route_id
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+
+                            // tries to update active flows first
                             if let Some(flow_stats) = self.active_flows.get_mut(&flow_id) {
-                                // only updates if route changed
-                                if flow_stats.route_id != Some(route_assigned.route_id) {
-                                    flow_stats.route_id = Some(route_assigned.route_id);
-
-                                    // adds to pending_assignments to be sent in the next tick
-                                    self.pending_assignments.insert((flow_id, route_assigned.route_id, flow_stats.start_time));
-
-                                    info!(
-                                        "RouteAssigned processed: flow_id={:?}, route_id={}, updated active_flows and pending_send",
-                                        flow_id, route_assigned.route_id
-                                    );
-                                }
-                            } else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
-                                // the flow has already finished, but got a late RouteAssigned
-                                if flow_stats.route_id != Some(route_assigned.route_id) {
-
-                                    flow_stats.route_id = Some(route_assigned.route_id);
-                                    let key = (flow_id, flow_stats.start_time);
-                                    self.pending_send.insert(key, flow_stats.clone());
-                                    // adds to pending_assignments to be sent in the next tick
-                                    self.pending_assignments.insert((flow_id, route_assigned.route_id, flow_stats.start_time));
-
-                                    info!(
-                                        "RouteAssigned processed for a finished flow: flow_id={:?}, route_id={}, updated pending_send",
-                                        flow_id, route_assigned.route_id
-                                    );
-                                }
-                            } else {
-                                // the flow has not started yet, stores the route assignment
+                                update_flow_route(flow_stats, &mut self.pending_assignments, &mut self.pending_send, false);
+                            }
+                            // then tries to update finished flows
+                            else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
+                                update_flow_route(flow_stats, &mut self.pending_assignments, &mut self.pending_send, true);
+                            }
+                            // if the flow hasn't started yet
+                            else {
                                 let now = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_millis() as i64;
-                                self.pending_routes.insert(flow_id, (route_assigned.route_id, now));
+                                self.pending_routes.insert(flow_id, (new_route_id, now));
                                 debug!(
-                                    "RouteAssigned for a not-yet-started flow_id {:?}, stored in pending_routes.",
+                                    "RouteAssigned for not-yet-started flow_id {:?}, stored in pending_routes.",
                                     flow_id
                                 );
                             }
