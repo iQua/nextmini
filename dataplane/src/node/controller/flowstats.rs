@@ -16,7 +16,7 @@ use crate::node::{FlowId, NodeId};
 fn current_time_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .expect("Time went backwards. This should never happen.")
+        .unwrap()
         .as_millis() as i64
 }
 
