@@ -62,8 +62,8 @@ Examples:
     
     # Stop database
     print("\nStopping PostgreSQL database...")
-    stop_result = run_command("docker stop strato-database")
-    rm_result = run_command("docker rm strato-database")
+    stop_result = run_command("docker stop nextmini-database")
+    rm_result = run_command("docker rm nextmini-database")
     if stop_result or rm_result:
         print("✓ Database stopped and removed")
     else:

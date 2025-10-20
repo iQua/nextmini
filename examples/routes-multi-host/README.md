@@ -177,8 +177,8 @@ sudo pkill nextmini
 sudo pkill controller
 
 # On controller: stop database
-docker stop strato-database
-docker rm strato-database
+docker stop nextmini-database
+docker rm nextmini-database
 ```
 
 ---
@@ -236,8 +236,8 @@ telnet 206.12.89.244 3000
 
 **On controller machine:**
 ```bash
-docker ps | grep strato-database
-docker logs strato-database
+docker ps | grep nextmini-database
+docker logs nextmini-database
 ```
 
 ### Issue: TUN device permission denied
