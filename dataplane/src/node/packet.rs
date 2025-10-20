@@ -71,18 +71,18 @@ impl Packet {
 
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
-        
+
         // extracts total length from IP header (bytes 2-3)
         let total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
-        
+
         // extracts TCP header length from data offset field (upper 4 bits of byte 12 in TCP header)
         let tcp_offset = ip_header_len;
         let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
         let tcp_header_len = tcp_data_offset * 4;
-        
+
         // calculates payload size
         let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);
-        
+
         payload_size > 0
     }
 

@@ -1,7 +1,7 @@
 use ahash::AHashMap;
 use jumphash::JumpHasher;
 use rand::Rng;
-use tracing::{debug, info};
+use tracing::debug;
 
 use nextmini_messages::{INVALID, RoutingTableEntry};
 
@@ -138,7 +138,10 @@ impl RoutingTable {
 
             if src_node_id == self.local_id && is_app_flow {
                 flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
-                debug!("Reported route assignment: flow_id={:?}, route_id={}", flow_id, selected_route_id);
+                debug!(
+                    "Reported route assignment: flow_id={:?}, route_id={}",
+                    flow_id, selected_route_id
+                );
             }
         }
 
