@@ -88,8 +88,8 @@ Examples:
     
     parser.add_argument(
         '--interface',
-        default='eth0',
-        help='Network interface name (default: eth0). Use "ip addr" to find yours.'
+        default='ens3',
+        help='Network interface name (default: ens3). Use "ip addr" to find yours.'
     )
     
     parser.add_argument(

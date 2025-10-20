@@ -2,24 +2,75 @@
 
 Deploy Nextmini Controller and Dataplane Nodes across multiple physical machines.
 
-## Deployment Scenario
+## Quick Start
 
+### Scenario
+- Controller: `206.12.89.244` (Physical Machine 1)
+- Node 1: Physical Machine 2
+- Node 2: Physical Machine 3
+
+All nodes use port `8080` (no conflict).
+
+---
+
+### Step 1: Build (Once)
+
+```bash
+cd nextmini
+cargo run -p cert-gen
+cargo build --release -p controller
+cargo build --release -p nextmini
 ```
-Physical Machine 1 (206.12.89.244)
-├── PostgreSQL (Docker)
-└── Controller (port 3000)
 
-Physical Machine 2
-└── Node 1 (port 8080)
+### Step 2: Deploy Controller (206.12.89.244)
 
-Physical Machine 3  
-└── Node 2 (port 8080)
-
-Physical Machine N
-└── Node N (port 8080)
+```bash
+cd ~/nextmini/examples/routes-multi-host
+chmod +x *.py
+uv run deploy_controller.py
 ```
 
-**Key Point:** Each node runs on a separate machine, so all nodes can use the **same port 8080**.
+### Step 3: Deploy Nodes
+
+**Important:** Check your network interface first:
+```bash
+ip addr show | grep "state UP"
+# Example output: ens3, eth0, etc.
+```
+
+**Node Machine 1:**
+```bash
+cd ~/nextmini/examples/routes-multi-host
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface ens3
+```
+
+**Node Machine 2:**
+```bash
+cd ~/nextmini/examples/routes-multi-host
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface ens3
+```
+
+**Note:** Replace `ens3` with your actual interface name if different.
+
+### Step 4: Verify
+
+```bash
+# Controller log
+tail -f ~/nextmini/examples/routes-multi-host/controller-deploy/controller.log
+
+# Node logs (on each node machine)
+tail -f ~/nextmini/examples/routes-multi-host/node1-deploy/node1.log
+tail -f ~/nextmini/examples/routes-multi-host/node2-deploy/node2.log
+```
+
+### Step 5: Cleanup
+
+```bash
+cd ~/nextmini/examples/routes-multi-host
+uv run cleanup.py
+```
 
 ---
 
@@ -28,7 +79,7 @@ Physical Machine N
 ### All Machines
 - Rust toolchain: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - Build tools: `build-essential`, `pkg-config`, `libssl-dev`
-- Python 3.8+ and uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Python 3.13 and uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - Network connectivity between all machines
 
 ### Controller Machine (206.12.89.244)
@@ -41,160 +92,18 @@ Physical Machine N
 
 ---
 
-## Step 1: Build Binaries (Once)
-
-On any machine with Rust:
-
-```bash
-cd nextmini
-
-# Generate TLS certificates
-cargo run -p cert-gen
-
-# Build binaries
-cargo build --release -p controller
-cargo build --release -p nextmini
-```
-
-Artifacts created:
-- `target/release/controller`
-- `target/release/nextmini`
-- `server_cert.pem`
-- `server_key.pem`
-
----
-
-## Step 2: Deploy Controller
-
-On controller machine (`206.12.89.244`):
-
-```bash
-# Copy example folder
-cd ~/nextmini
-cp -r examples/routes-multi-host ~/deploy
-
-# Make scripts executable
-cd ~/deploy
-chmod +x *.py *.sh
-
-# Deploy controller
-uv run deploy_controller.py
-```
-
-**Output shows:** Controller listening on `0.0.0.0:3000`
-
----
-
-## Step 3: Deploy Dataplane Nodes
-
-On each dataplane machine:
-
-```bash
-# Copy example folder
-cd ~/nextmini
-cp -r examples/routes-multi-host ~/deploy
-
-# Make scripts executable
-cd ~/deploy
-chmod +x *.py *.sh
-
-# Deploy node (each machine uses same command with different node-id)
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id <N>
-```
-
-**Examples:**
-
-**Machine 2 (Node 1):**
-```bash
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1
-```
-
-**Machine 3 (Node 2):**
-```bash
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2
-```
-
-**Machine 4 (Node 3):**
-```bash
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 3
-```
-
-All nodes use port `8080` by default (no conflict because they're on different machines).
-
----
-
-## Verification
-
-### Check Controller (on 206.12.89.244)
-
-```bash
-tail -f ~/deploy/controller-deploy/controller.log
-```
-
-Look for:
-```
-INFO controller: Node 1 successfully inserted into node_ws. Total nodes now: 1.
-INFO controller: Node 2 successfully inserted into node_ws. Total nodes now: 2.
-```
-
-### Check Nodes (on each node machine)
-
-```bash
-tail -f ~/deploy/node<N>-deploy/node<N>.log
-```
-
-Look for:
-```
-INFO nextmini::node::controller::interface: WebSocket handshake has been successfully completed.
-INFO nextmini::node::conductor: Starting Nextmini node <N> on :8080...
-```
-
-### Test Connectivity
-
-From any node machine:
-```bash
-# Test controller reachability
-telnet 206.12.89.244 3000
-
-# Check TUN interface
-ip addr show | grep utun
-```
-
----
-
-## Cleanup
-
-On each machine:
-```bash
-cd ~/deploy
-uv run cleanup.py
-```
-
-Or manually:
-```bash
-# Stop processes
-sudo pkill nextmini
-sudo pkill controller
-
-# On controller: stop database
-docker stop nextmini-database
-docker rm nextmini-database
-```
-
----
-
 ## Optional Parameters
 
-### Custom Network Interface
+### Change Network Interface
 
-If your interface is not `eth0`:
+Default is `ens3`. If your interface is different:
 
 ```bash
-# Find interface
+# Find your interface
 ip addr show | grep "state UP"
 
-# Deploy with custom interface
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface ens3
+# Deploy with different interface (e.g., eth0)
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface eth0
 ```
 
 ### Custom Controller Port
@@ -207,12 +116,19 @@ uv run deploy_controller.py --port 3001
 uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --controller-port 3001
 ```
 
-### Custom Node Port (Usually Not Needed)
-
-Only if you need a different port for specific reasons:
+### Custom Node Port
 
 ```bash
+# Only if you need a different port
 uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --port 9000
+```
+
+### View Help
+
+```bash
+uv run deploy_controller.py --help
+uv run deploy_node.py --help
+uv run cleanup.py --help
 ```
 
 ---
@@ -244,6 +160,25 @@ docker logs nextmini-database
 
 **Solution:** Scripts use sudo automatically. Ensure sudo access on node machines.
 
+### Issue: Build permission denied (target directory)
+
+**Symptoms:**
+```
+error: failed to write `/home/ubuntu/nextmini/target/release/.fingerprint/...`
+Caused by: Permission denied (os error 13)
+```
+
+**Cause:** Previous builds with sudo created root-owned files in target directory.
+
+**Solution:**
+```bash
+cd /home/ubuntu/nextmini
+sudo chown -R ubuntu:ubuntu target/
+cargo run -p cert-gen
+cargo build --release -p controller
+cargo build --release -p nextmini
+```
+
 ### Issue: Port already in use
 
 **Find and kill process:**
@@ -262,13 +197,13 @@ protocol = "tcp"
 
 [topology]
 type = "full_mesh"
-full_mesh_config = { n_nodes = 4 }
+full_mesh_config = { n_nodes = 2 }
 
 [[routes]]
-route = [[1, 2], [2, 4], [1, 3], [3, 4]]
+route = [[1, 2]]
 
 [[routes]]
-route = [[4, 1]]
+route = [[2, 1]]
 
 [db]
 user = "pgusr"
@@ -296,49 +231,51 @@ public_network_port = "8080"
 
 ---
 
-## Scripts Reference
+## Deployment Architecture
 
-### Python Scripts (Recommended)
+```
+Physical Machine 1 (206.12.89.244)
+├── PostgreSQL (Docker, port 5432)
+└── Controller (port 3000)
+        │
+        ├─ Node 1 (Machine 2, port 8080)
+        └─ Node 2 (Machine 3, port 8080)
+```
 
-- `deploy_controller.py` - Deploy controller with database
-- `deploy_node.py` - Deploy single dataplane node
-- `cleanup.py` - Stop all processes and cleanup
-
-### Shell Scripts (Alternative)
-
-- `deploy-controller.sh` - Deploy controller
-- `deploy-node.sh <CONTROLLER_IP> <NODE_ID>` - Deploy node
-- `cleanup.sh` - Cleanup
+**Key Point:** Each node runs on a separate machine, so all nodes can use the same port 8080.
 
 ---
 
-## Help Commands
+## Advanced Topics
 
+### Customizing Routes
+
+Edit `controller-config.toml` before deploying:
+
+```toml
+# Example: Add more routes
+[[routes]]
+route = [[1, 2]]
+
+[[routes]]
+route = [[2, 1]]
+```
+
+Then redeploy controller:
 ```bash
-uv run deploy_controller.py --help
-uv run deploy_node.py --help
-uv run cleanup.py --help
+uv run cleanup.py
+uv run deploy_controller.py
 ```
 
----
+### Changing Number of Nodes
 
-## File Structure
+Edit `controller-config.toml`:
+```toml
+[topology]
+full_mesh_config = { n_nodes = 3 }  # Change to 3 nodes
+```
 
-```
-routes-multi-host/
-├── README.md                      # This file
-├── QUICKSTART.md                  # Quick reference
-├── USAGE_EXAMPLES.md              # Copy-paste commands
-├── pyproject.toml                 # Python config
-├── controller-config.toml         # Controller config
-├── node-config-template.toml      # Node template
-├── deploy_controller.py           # Python: deploy controller
-├── deploy_node.py                 # Python: deploy node
-├── cleanup.py                     # Python: cleanup
-├── deploy-controller.sh           # Shell: deploy controller
-├── deploy-node.sh                 # Shell: deploy node
-└── cleanup.sh                     # Shell: cleanup
-```
+Deploy additional nodes with higher node IDs.
 
 ---
 
@@ -349,3 +286,4 @@ routes-multi-host/
 - TLS certificates are self-signed (generated by cert-gen)
 - PostgreSQL runs in Docker on controller machine
 - Logs are in `*-deploy/*.log` files
+- Database container name: `nextmini-database`

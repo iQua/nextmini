@@ -1,4 +1,4 @@
-private_network_interface = "eth0"
+private_network_interface = "ens3"
 private_network_name = "net1"
 num_tun_queues = 1
 num_packet_processors = 4
