@@ -161,6 +161,9 @@ struct FlowStatsReporter {
 
     /// The route assignments waiting to be sent in the next tick.
     pending_assignments: HashSet<(FlowId, usize, i64)>,
+
+    /// The user-space flow finishes waiting to be sent (they don't emit AppFlowStart).
+    pending_user_flow_finishes: Vec<FlowFinishedInfo>,
 }
 
 impl FlowStatsReporter {
@@ -176,6 +179,7 @@ impl FlowStatsReporter {
             pending_routes: AHashMap::default(),
             pending_send: AHashMap::default(),
             pending_assignments: HashSet::default(),
+            pending_user_flow_finishes: Vec::new(),
         }
     }
 
@@ -293,6 +297,23 @@ impl FlowStatsReporter {
                                     "Flow {:?} finished. Queued for sending (route_id: {:?}), flow_id now available for reuse.",
                                     flow_id, flow_stats.route_id
                                 );
+                            } else if let Some(controller_id) = flow_finished.controller_id {
+                                // User-space flows never generated an AppFlowStart, so we synthesize
+                                // a minimal FlowFinishedInfo directly.
+                                let finish_time = flow_finished.finish_time;
+                                let flow_finished_info = FlowFinishedInfo {
+                                    flow_id: flow_id.to_be_bytes(),
+                                    controller_id: Some(controller_id),
+                                    time: finish_time,
+                                    finish_time,
+                                };
+
+                                self.pending_user_flow_finishes.push(flow_finished_info);
+
+                                info!(
+                                    "Flow {:?} finished (user space). Queued for sending without AppFlowStart.",
+                                    flow_id
+                                );
                             }
                         }
                     }
@@ -358,6 +379,14 @@ impl FlowStatsReporter {
                         debug!("Sending {} RouteAssigned messages", assignments.len());
                         let msg = DataplaneToController::RouteAssigned { assignments };
                         self.controller.send(msg).await;
+                    }
+
+                    if !finished_infos.is_empty() {
+                        if !self.pending_user_flow_finishes.is_empty() {
+                            finished_infos.extend(self.pending_user_flow_finishes.drain(..));
+                        }
+                    } else if !self.pending_user_flow_finishes.is_empty() {
+                        finished_infos.extend(self.pending_user_flow_finishes.drain(..));
                     }
 
                     if !finished_infos.is_empty() {
