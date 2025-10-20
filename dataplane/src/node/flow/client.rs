@@ -8,7 +8,7 @@ use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use nextmini_messages::{Flow, FlowLen};
 
@@ -88,6 +88,7 @@ impl UserSpaceClientHandle {
                 flow,
                 processors,
                 flowstats_reporter,
+                flow_id,
                 client_port,
                 packet_receiver,
             );
@@ -108,6 +109,8 @@ struct UserSpaceClient {
     packet_receiver: Option<mpsc::Receiver<Packet>>,
     state: ConnectionState,
     client_port: u16,
+    flow_id: FlowId,
+    start_reported: bool,
 }
 
 impl UserSpaceClient {
@@ -116,6 +119,7 @@ impl UserSpaceClient {
         flow: Flow,
         processors: ProcessorHandle,
         flowstats_reporter: FlowStatsReporterHandle,
+        flow_id: FlowId,
         client_port: u16,
         packet_receiver: mpsc::Receiver<Packet>,
     ) -> Self {
@@ -134,6 +138,8 @@ impl UserSpaceClient {
             packet_receiver: Some(packet_receiver),
             state,
             client_port,
+            flow_id,
+            start_reported: false,
         }
     }
 
@@ -187,29 +193,12 @@ impl UserSpaceClient {
             if socket.is_active() {
                 self.send(socket);
             } else {
-                let client_ip = self
-                    .config
-                    .node_id
-                    .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
-                let server_ip = self
-                    .flow
-                    .dst_node_id
-                    .ip_addr(self.config.user_space_base_addr, self.config.local_netmask);
-
-                let client_port = self.client_port;
-                let server_port = self.config.user_space_server_port;
-
-                let flow_id: FlowId = ((u32::from(server_ip) as u128) << 96)
-                    | ((u32::from(client_ip) as u128) << 64)
-                    | ((server_port as u128) << 48)
-                    | ((client_port as u128) << 32);
-
                 // removes the user-space packet sender from the processors
-                self.processors.disconnect_user_space_sender(flow_id);
+                self.processors.disconnect_user_space_sender(self.flow_id);
 
                 // reports flow completion to the controller
                 self.flowstats_reporter
-                    .report_flow_finished(flow_id, self.flow.controller_id);
+                    .report_flow_finished(self.flow_id, self.flow.controller_id);
 
                 info!(
                     "The user-space TCP flow from node {} to node {} has finished. The client is closing.",
@@ -247,6 +236,27 @@ impl UserSpaceClient {
     /// Sends data, as much as possible or up to a certain flow rate, to the user-space TCP server.
     fn send(&mut self, socket: &mut tcp::Socket) {
         if socket.can_send() {
+            if !self.start_reported {
+                match self.flow.controller_id {
+                    Some(controller_id) => {
+                        self.flowstats_reporter
+                            .report_user_flow_start(self.flow_id, controller_id);
+                        self.start_reported = true;
+                        info!(
+                            "Reported start of user-space flow {} from node {} to node {}.",
+                            controller_id, self.flow.src_node_id, self.flow.dst_node_id
+                        );
+                    }
+                    None => {
+                        warn!(
+                            "User-space flow from node {} to node {} lacks controller_id; start will not be reported.",
+                            self.flow.src_node_id, self.flow.dst_node_id
+                        );
+                        self.start_reported = true;
+                    }
+                }
+            }
+
             let remaining = match self.flow.flow_spec.flow_len {
                 FlowLen::Bytes(size) => size as u64 - self.state.bytes_total,
                 _ => SOCKET_BUFFER_SIZE as u64, // For duration-based flows

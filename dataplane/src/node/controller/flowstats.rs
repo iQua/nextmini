@@ -2,9 +2,11 @@ use ahash::AHashMap;
 use std::collections::HashSet;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
-use nextmini_messages::{AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment};
+use nextmini_messages::{
+    AppFlow, DataplaneToController, FlowFinishedInfo, RouteAssignment, UserFlowStart,
+};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
@@ -39,10 +41,17 @@ pub struct FlowFinished {
     pub controller_id: Option<i32>,
 }
 
+pub struct UserSpaceFlowStart {
+    pub flow_id: FlowId,
+    pub controller_id: i32,
+    pub start_time: i64,
+}
+
 pub enum FlowStatsMessage {
     AppFlowStart(AppFlowStart),
     RouteAssigned(RouteAssigned),
     FlowFinished(FlowFinished),
+    UserFlowStart(UserSpaceFlowStart),
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +139,23 @@ impl FlowStatsReporterHandle {
             );
         }
     }
+
+    /// Report the start of a user-space flow (controller-managed).
+    pub fn report_user_flow_start(&self, flow_id: FlowId, controller_id: i32) {
+        if let Err(e) = self
+            .sender
+            .send(FlowStatsMessage::UserFlowStart(UserSpaceFlowStart {
+                flow_id,
+                controller_id,
+                start_time: current_time_millis(),
+            }))
+        {
+            error!(
+                "Error sending user-space flow start message to the flowstats reporter: {}.",
+                e
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +167,18 @@ struct FlowStats {
     dst_node_id: NodeId,
     route_id: Option<usize>,
     controller_id: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+struct UserFlowStats {
+    start_time: i64,
+    controller_id: i32,
+}
+
+#[derive(Debug, Clone)]
+struct PendingUserFlowStart {
+    flow_id: FlowId,
+    stats: UserFlowStats,
 }
 
 struct FlowStatsReporter {
@@ -164,6 +202,12 @@ struct FlowStatsReporter {
 
     /// The user-space flow finishes waiting to be sent (they don't emit AppFlowStart).
     pending_user_flow_finishes: Vec<FlowFinishedInfo>,
+
+    /// The user-space flow starts waiting to be sent.
+    pending_user_flow_starts: Vec<PendingUserFlowStart>,
+
+    /// Tracks user-space flow start metadata for pairing with their finish events.
+    user_flow_starts: AHashMap<FlowId, UserFlowStats>,
 }
 
 impl FlowStatsReporter {
@@ -180,6 +224,8 @@ impl FlowStatsReporter {
             pending_send: AHashMap::default(),
             pending_assignments: HashSet::default(),
             pending_user_flow_finishes: Vec::new(),
+            pending_user_flow_starts: Vec::new(),
+            user_flow_starts: AHashMap::default(),
         }
     }
 
@@ -298,23 +344,61 @@ impl FlowStatsReporter {
                                     flow_id, flow_stats.route_id
                                 );
                             } else if let Some(controller_id) = flow_finished.controller_id {
-                                // User-space flows never generated an AppFlowStart, so we synthesize
-                                // a minimal FlowFinishedInfo directly.
                                 let finish_time = flow_finished.finish_time;
-                                let flow_finished_info = FlowFinishedInfo {
-                                    flow_id: flow_id.to_be_bytes(),
-                                    controller_id: Some(controller_id),
-                                    time: finish_time,
-                                    finish_time,
-                                };
+                                if let Some(stats) = self.user_flow_starts.remove(&flow_id) {
+                                    if controller_id != stats.controller_id {
+                                        warn!(
+                                            "Controller ID mismatch for flow {:?}: start={}, finish={:?}. Using finish controller_id.",
+                                            flow_id, stats.controller_id, controller_id
+                                        );
+                                    }
 
-                                self.pending_user_flow_finishes.push(flow_finished_info);
+                                    self.pending_user_flow_finishes.push(FlowFinishedInfo {
+                                        flow_id: flow_id.to_be_bytes(),
+                                        controller_id: Some(controller_id),
+                                        time: stats.start_time,
+                                        finish_time,
+                                    });
 
-                                info!(
-                                    "Flow {:?} finished (user space). Queued for sending without AppFlowStart.",
-                                    flow_id
+                                    info!(
+                                        "Flow {:?} finished (user space). Queued for sending with start_time {}.",
+                                        flow_id, stats.start_time
+                                    );
+                                } else {
+                                    // No recorded start; fall back to finish time for reporting.
+                                    self.pending_user_flow_finishes.push(FlowFinishedInfo {
+                                        flow_id: flow_id.to_be_bytes(),
+                                        controller_id: Some(controller_id),
+                                        time: finish_time,
+                                        finish_time,
+                                    });
+
+                                    warn!(
+                                        "Flow {:?} finished (user space) without a recorded start. Using finish_time as start_time.",
+                                        flow_id
+                                    );
+                                }
+                            }
+                        }
+                        FlowStatsMessage::UserFlowStart(user_flow_start) => {
+                            let stats = UserFlowStats {
+                                start_time: user_flow_start.start_time,
+                                controller_id: user_flow_start.controller_id,
+                            };
+
+                            if let Some(existing) =
+                                self.user_flow_starts.insert(user_flow_start.flow_id, stats.clone())
+                            {
+                                warn!(
+                                    "Replacing existing user-space flow start for {:?}. Old start_time={}, controller_id={}",
+                                    user_flow_start.flow_id, existing.start_time, existing.controller_id
                                 );
                             }
+
+                            self.pending_user_flow_starts.push(PendingUserFlowStart {
+                                flow_id: user_flow_start.flow_id,
+                                stats,
+                            });
                         }
                     }
                 }
@@ -329,7 +413,11 @@ impl FlowStatsReporter {
 
                     self.pending_routes.retain(|_, (_, ts)| now_ms - *ts <= TTL_MS);
 
-                    if self.pending_send.is_empty() && self.pending_assignments.is_empty() {
+                    if self.pending_send.is_empty()
+                        && self.pending_assignments.is_empty()
+                        && self.pending_user_flow_finishes.is_empty()
+                        && self.pending_user_flow_starts.is_empty()
+                    {
                         continue;
                     }
 
@@ -337,6 +425,7 @@ impl FlowStatsReporter {
                     let mut appflows = Vec::new();
                     let mut assignments = Vec::new();
                     let mut finished_infos = Vec::new();
+                    let mut user_flow_starts = Vec::new();
 
                     for flow_stats in self.pending_send.values() {
                         appflows.push(AppFlow {
@@ -368,6 +457,16 @@ impl FlowStatsReporter {
                         });
                     }
 
+                    for pending_start in self.pending_user_flow_starts.drain(..) {
+                        user_flow_starts.push(UserFlowStart {
+                            controller_id: pending_start.stats.controller_id,
+                            flow_id: pending_start.flow_id.to_be_bytes(),
+                            start_time: pending_start.stats.start_time,
+                        });
+                    }
+
+                    finished_infos.extend(self.pending_user_flow_finishes.drain(..));
+
                     // sends messages in order: Start -> Assign -> Finish
                     if !appflows.is_empty() {
                         debug!("Sending {} AppFlowStart messages", appflows.len());
@@ -375,18 +474,16 @@ impl FlowStatsReporter {
                         self.controller.send(msg).await;
                     }
 
+                    if !user_flow_starts.is_empty() {
+                        debug!("Sending {} UserFlowStart messages", user_flow_starts.len());
+                        let msg = DataplaneToController::UserFlowStart { flows: user_flow_starts };
+                        self.controller.send(msg).await;
+                    }
+
                     if !assignments.is_empty() {
                         debug!("Sending {} RouteAssigned messages", assignments.len());
                         let msg = DataplaneToController::RouteAssigned { assignments };
                         self.controller.send(msg).await;
-                    }
-
-                    if !finished_infos.is_empty() {
-                        if !self.pending_user_flow_finishes.is_empty() {
-                            finished_infos.extend(self.pending_user_flow_finishes.drain(..));
-                        }
-                    } else if !self.pending_user_flow_finishes.is_empty() {
-                        finished_infos.extend(self.pending_user_flow_finishes.drain(..));
                     }
 
                     if !finished_infos.is_empty() {

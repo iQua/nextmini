@@ -58,6 +58,8 @@ async fn create_db(pool: &Pool<Postgres>) {
             flow_len_duration DOUBLE PRECISION,
             flow_rate INTEGER,
             flow_weight INTEGER,
+            start_time BIGINT,
+            finish_time BIGINT,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
@@ -65,6 +67,16 @@ async fn create_db(pool: &Pool<Postgres>) {
     .execute(pool)
     .await
     .expect("Failed to create flows table");
+
+    sqlx::query(r#"ALTER TABLE flows ADD COLUMN IF NOT EXISTS start_time BIGINT"#)
+        .execute(pool)
+        .await
+        .expect("Failed to ensure flows.start_time column exists");
+
+    sqlx::query(r#"ALTER TABLE flows ADD COLUMN IF NOT EXISTS finish_time BIGINT"#)
+        .execute(pool)
+        .await
+        .expect("Failed to ensure flows.finish_time column exists");
 
     // route_id: Unique identifier for the route, automatically assigned by controller.
     // src_node_id: Source node ID for the route.

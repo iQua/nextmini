@@ -24,6 +24,9 @@ pub enum DataplaneToController {
     FlowFinished {
         flows: Vec<FlowFinishedInfo>,
     },
+    UserFlowStart {
+        flows: Vec<UserFlowStart>,
+    },
     AppFlowStart {
         appflows: Vec<AppFlow>,
     },
@@ -48,6 +51,14 @@ pub struct FlowFinishedInfo {
     pub controller_id: Option<i32>,
     pub time: i64,
     pub finish_time: i64,
+}
+
+/// The information about the start of a user-space flow.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UserFlowStart {
+    pub controller_id: i32,
+    pub flow_id: [u8; 16],
+    pub start_time: i64,
 }
 
 /// The information about a route assignment.

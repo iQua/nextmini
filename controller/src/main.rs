@@ -414,6 +414,42 @@ async fn handle_connection(
                             );
                         }
                     }
+                    DataplaneToController::UserFlowStart { flows } => {
+                        for flow_start in flows {
+                            match sqlx::query(
+                                r#"
+                                UPDATE flows
+                                SET start_time = $2, is_finished = FALSE
+                                WHERE id = $1
+                                "#,
+                            )
+                            .bind(flow_start.controller_id)
+                            .bind(flow_start.start_time)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(result) => {
+                                    if result.rows_affected() > 0 {
+                                        info!(
+                                            "Recorded start_time {} for user space flow {}.",
+                                            flow_start.start_time, flow_start.controller_id
+                                        );
+                                    } else {
+                                        warn!(
+                                            "User space flow {} not found when recording start_time.",
+                                            flow_start.controller_id
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to update start_time for user space flow {}: {}.",
+                                        flow_start.controller_id, e
+                                    );
+                                }
+                            }
+                        }
+                    }
                     DataplaneToController::FlowFinished { flows } => {
                         for flow_finished in flows {
                             let flow_id = flow_finished.flow_id;
@@ -426,11 +462,13 @@ async fn handle_connection(
                                 match sqlx::query(
                                     r#"
                                     UPDATE flows
-                                    SET is_finished = TRUE
+                                    SET is_finished = TRUE, finish_time = $2, start_time = COALESCE(start_time, $3)
                                     WHERE id = $1
                                     "#,
                                 )
                                 .bind(id)
+                                .bind(flow_finished.finish_time)
+                                .bind(flow_finished.time)
                                 .execute(&*db_pool)
                                 .await
                                 {
