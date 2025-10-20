@@ -39,6 +39,42 @@ def format_bytes(bytes_val):
         return f"{bytes_val} B"
 
 
+def format_timestamp_ms(timestamp_ms):
+    if timestamp_ms:
+        try:
+            ts = datetime.fromtimestamp(timestamp_ms / 1000.0)
+            return ts.strftime("%H:%M:%S.%f")[:-3]
+        except (OSError, ValueError, OverflowError):
+            return "-"
+    return "-"
+
+
+def format_duration_ms(start_ms, finish_ms):
+    if start_ms and finish_ms:
+        duration = finish_ms - start_ms
+        if duration < 0:
+            return None
+        return duration
+    return None
+
+
+def styled_duration(duration):
+    if duration is None:
+        return "[dim]-[/dim]"
+    if duration < 1000:
+        return f"[green]{duration}[/green]"
+    if duration < 5000:
+        return f"[yellow]{duration}[/yellow]"
+    return f"[red]{duration}[/red]"
+
+
+def styled_timestamp(timestamp_ms):
+    value = format_timestamp_ms(timestamp_ms)
+    if value == "-":
+        return "[dim]-[/dim]"
+    return f"[dim]{value}[/dim]"
+
+
 class Database:
     def __init__(self):
         self.connection = psycopg2.connect(
@@ -212,31 +248,13 @@ class Database:
                 f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
             )
             
-            # Convert milliseconds timestamp to readable format (start time)
-            if time_ms:
-                start_time_str = datetime.fromtimestamp(time_ms / 1000.0).strftime("%H:%M:%S.%f")[:-3]
-                start_time_display = f"[dim]{start_time_str}[/dim]"
-            else:
-                start_time_display = "[dim]-[/dim]"
-            
-            # Convert finish time to readable format
-            if finish_time_ms:
-                finish_time_str = datetime.fromtimestamp(finish_time_ms / 1000.0).strftime("%H:%M:%S.%f")[:-3]
-                finish_time_display = f"[dim]{finish_time_str}[/dim]"
-            else:
-                finish_time_display = "[dim]-[/dim]"
-            
-            # Calculate duration if flow is finished
-            if is_finished and finish_time_ms and time_ms:
-                duration_ms = finish_time_ms - time_ms
-                if duration_ms < 1000:
-                    duration_display = f"[green]{duration_ms}[/green]"
-                elif duration_ms < 5000:
-                    duration_display = f"[yellow]{duration_ms}[/yellow]"
-                else:
-                    duration_display = f"[red]{duration_ms}[/red]"
-            else:
-                duration_display = "[dim]-[/dim]"
+            start_time_display = styled_timestamp(time_ms)
+            finish_time_display = styled_timestamp(finish_time_ms)
+
+            duration_value = (
+                format_duration_ms(time_ms, finish_time_ms) if is_finished else None
+            )
+            duration_display = styled_duration(duration_value)
 
             if is_finished:
                 status_mark = "[green]✓[/green]"
@@ -269,7 +287,9 @@ class Database:
                    f.flow_len_duration,
                    f.flow_rate,
                    f.flow_weight,
-                   f.is_finished
+                   f.is_finished,
+                   f.start_time,
+                   f.finish_time
             FROM flows f
             ORDER BY f.id DESC
             LIMIT 30;
@@ -282,6 +302,9 @@ class Database:
         )
         self.t_user_flows.add_column("ID", justify="left", style="bold")
         self.t_user_flows.add_column("Src→Dst", justify="center")
+        self.t_user_flows.add_column("Start Time", justify="center", style="dim")
+        self.t_user_flows.add_column("Finish Time", justify="center", style="dim")
+        self.t_user_flows.add_column("Duration (ms)", justify="center")
         self.t_user_flows.add_column("Length", justify="center")
         self.t_user_flows.add_column("Rate", justify="center")
         self.t_user_flows.add_column("Weight", justify="center")
@@ -297,6 +320,8 @@ class Database:
             rate,
             weight,
             is_finished,
+            start_time,
+            finish_time,
         ) in flows:
             src_dst = f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
 
@@ -331,9 +356,20 @@ class Database:
                 finished_mark = "[red]✗[/red]"
                 id_style = "bold cyan"
 
+            start_time_str = format_timestamp_ms(start_time)
+            start_display = styled_timestamp(start_time)
+            finish_display = styled_timestamp(finish_time)
+
             self.t_user_flows.add_row(
                 f"[{id_style}]{fid}[/{id_style}]",
                 src_dst,
+                start_display,
+                finish_display,
+                styled_duration(
+                    format_duration_ms(start_time, finish_time)
+                    if is_finished
+                    else None
+                ),
                 length,
                 rate_str,
                 weight_str,
