@@ -188,6 +188,8 @@ async fn reset_db(pool: &Pool<Postgres>) {
             flow_len_duration DOUBLE PRECISION,
             flow_rate INTEGER,
             flow_weight INTEGER,
+            start_time BIGINT,
+            finish_time BIGINT,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
