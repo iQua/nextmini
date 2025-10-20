@@ -1,5 +1,6 @@
 use ahash::AHashMap;
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::{debug, error, info};
@@ -11,19 +12,29 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::{FlowId, NodeId};
 
+fn current_timestamp_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
 pub struct AppFlowStart {
     pub flow_id: FlowId,
     pub src_node_id: NodeId,
     pub dst_node_id: NodeId,
+    pub start_time: i64,
 }
 
 pub struct RouteAssigned {
     pub flow_id: FlowId,
+    pub assignment_time: i64,
     pub route_id: usize,
 }
 
 pub struct FlowFinished {
     pub flow_id: FlowId,
+    pub finish_time: i64,
     pub controller_id: Option<i32>,
 }
 
@@ -69,6 +80,7 @@ impl FlowStatsReporterHandle {
             .sender
             .send(FlowStatsMessage::RouteAssigned(RouteAssigned {
                 flow_id,
+                assignment_time: current_timestamp_ms(),
                 route_id,
             }))
         {
@@ -89,6 +101,7 @@ impl FlowStatsReporterHandle {
                 flow_id,
                 src_node_id,
                 dst_node_id,
+                start_time: current_timestamp_ms(),
             }))
         {
             error!(
@@ -104,6 +117,7 @@ impl FlowStatsReporterHandle {
             .sender
             .send(FlowStatsMessage::FlowFinished(FlowFinished {
                 flow_id,
+                finish_time: current_timestamp_ms(),
                 controller_id,
             }))
         {
@@ -179,10 +193,8 @@ impl FlowStatsReporter {
                                 debug!("Duplicate AppFlowStart ignored for flow_id {:?} (flow still active).", flow_id);
                             } else {
                                 // for a new flow, creates a FlowStats record
-                                let time = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis() as i64;
+                                // uses the timestamp from when the packet was first seen
+                                let time = app_flow.start_time;
 
                                 // if a new flow starts, removes any finished flow with the same flow_id
                                 self.finished_flows.remove(&flow_id);
@@ -205,17 +217,25 @@ impl FlowStatsReporter {
                         FlowStatsMessage::RouteAssigned(route_assigned) => {
                             let flow_id = route_assigned.flow_id;
                             let new_route_id = route_assigned.route_id;
+                            let assignment_time = route_assigned.assignment_time;
 
-                            //updates route and queue assignment
+                            // updates route and queue assignment
                             let update_flow_route = |flow_stats: &mut FlowStats,
                                                      pending_assignments: &mut HashSet<(FlowId, usize, i64)>,
                                                      is_finished: bool| {
+                                // ignores late RouteAssigned events from previous flow instances
+                                if assignment_time < flow_stats.start_time {
+                                    debug!("Ignored a late RouteAssigned event for a reused FlowId {:?}", flow_id);
+                                    return false;
+                                }
+
                                 if flow_stats.route_id != Some(new_route_id) {
                                     flow_stats.route_id = Some(new_route_id);
-                                    pending_assignments.insert((flow_id, new_route_id, flow_stats.start_time));
+                                    pending_assignments
+                                        .insert((flow_id, new_route_id, flow_stats.start_time));
 
                                     // DEBUG!: for debugging.
-                                    info!(
+                                    debug!(
                                         "RouteAssigned processed for {} flow: flow_id={:?}, route_id={}",
                                         if is_finished { "finished" } else { "active" },
                                         flow_id,
@@ -249,12 +269,14 @@ impl FlowStatsReporter {
 
                             // immediately removes from active_flows to allow flow_id reuse
                             if let Some(mut flow_stats) = self.active_flows.remove(&flow_id) {
-                                let finish_time = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis() as i64;
+                                // ignores late FINs from a reused flow instances
+                                if flow_finished.finish_time < flow_stats.start_time {
+                                    self.active_flows.insert(flow_id, flow_stats);
+                                    debug!("Ignored a late FlowFinished event for a reused FlowId {:?}", flow_id);
+                                    continue;
+                                }
 
-                                flow_stats.finish_time = Some(finish_time);
+                                flow_stats.finish_time = Some(flow_finished.finish_time);
                                 flow_stats.controller_id = flow_finished.controller_id;
 
                                 // adds to pending_send to be sent in the next tick
