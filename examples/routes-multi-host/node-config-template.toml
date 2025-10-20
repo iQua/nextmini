@@ -1,0 +1,13 @@
+private_network_interface = "eth0"
+private_network_name = "net1"
+num_tun_queues = 1
+num_packet_processors = 4
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+
+# The following will be set by the deployment script:
+# controller_addr = "ws://<CONTROLLER_IP>:3000"
+# node_id = <NODE_ID>
+# public_network_port = "<PORT>"
+
