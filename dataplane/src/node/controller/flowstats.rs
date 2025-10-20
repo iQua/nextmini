@@ -1,6 +1,5 @@
 use ahash::AHashMap;
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::{debug, error, info};
@@ -12,10 +11,12 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::{FlowId, NodeId};
 
-fn current_timestamp_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
+/// Returns the current time in milliseconds since the Unix epoch.
+#[inline]
+fn current_time_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards. This should never happen.")
         .as_millis() as i64
 }
 
@@ -80,7 +81,7 @@ impl FlowStatsReporterHandle {
             .sender
             .send(FlowStatsMessage::RouteAssigned(RouteAssigned {
                 flow_id,
-                assignment_time: current_timestamp_ms(),
+                assignment_time: current_time_millis(),
                 route_id,
             }))
         {
@@ -95,13 +96,15 @@ impl FlowStatsReporterHandle {
     pub fn report_app_flow(&self, flow_id: FlowId) {
         let (src_node_id, dst_node_id) = self.config.extract_node_ids_from_flow(flow_id);
 
+        let start_time = current_time_millis();
+
         if let Err(e) = self
             .sender
             .send(FlowStatsMessage::AppFlowStart(AppFlowStart {
                 flow_id,
                 src_node_id,
                 dst_node_id,
-                start_time: current_timestamp_ms(),
+                start_time,
             }))
         {
             error!(
@@ -117,7 +120,7 @@ impl FlowStatsReporterHandle {
             .sender
             .send(FlowStatsMessage::FlowFinished(FlowFinished {
                 flow_id,
-                finish_time: current_timestamp_ms(),
+                finish_time: current_time_millis(),
                 controller_id,
             }))
         {
@@ -192,8 +195,6 @@ impl FlowStatsReporter {
                                 // if the flow_id is already in the active_flows, ignores the duplicate AppFlowStart
                                 debug!("Duplicate AppFlowStart ignored for flow_id {:?} (flow still active).", flow_id);
                             } else {
-                                // for a new flow, creates a FlowStats record
-                                // uses the timestamp from when the packet was first seen
                                 let time = app_flow.start_time;
 
                                 // if a new flow starts, removes any finished flow with the same flow_id
@@ -221,7 +222,11 @@ impl FlowStatsReporter {
 
                             // updates route and queue assignment
                             let update_flow_route = |flow_stats: &mut FlowStats,
-                                                     pending_assignments: &mut HashSet<(FlowId, usize, i64)>,
+                                                     pending_assignments: &mut HashSet<(
+                                FlowId,
+                                usize,
+                                i64,
+                            )>,
                                                      is_finished: bool| {
                                 // ignores late RouteAssigned events from previous flow instances
                                 if assignment_time < flow_stats.start_time {
@@ -257,10 +262,7 @@ impl FlowStatsReporter {
                             }
                             // if the flow hasn't started yet
                             else {
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_millis() as i64;
+                                let now = current_time_millis();
                                 self.pending_routes.insert(flow_id, (new_route_id, now));
                             }
                         }
@@ -269,10 +271,11 @@ impl FlowStatsReporter {
 
                             // immediately removes from active_flows to allow flow_id reuse
                             if let Some(mut flow_stats) = self.active_flows.remove(&flow_id) {
-                                // ignores late FINs from a reused flow instances
+                                // ignores late FINs from previous flow instances
                                 if flow_finished.finish_time < flow_stats.start_time {
+                                    // this is a late event, ignore it and put the active flow back
                                     self.active_flows.insert(flow_id, flow_stats);
-                                    debug!("Ignored a late FlowFinished event for a reused FlowId {:?}", flow_id);
+                                    info!("Ignored a late FlowFinished event for a reused FlowId {:?}", flow_id);
                                     continue;
                                 }
 
@@ -297,10 +300,7 @@ impl FlowStatsReporter {
                 _ = flowstats_tick.tick() => {
                     // evicts outdated finished flows & pending routes (keep them up to 30s)
                     const TTL_MS: i64 = 30_000; // 30 seconds
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64;
+                    let now_ms = current_time_millis();
 
                     self.finished_flows.retain(|_, fs| {
                         fs.finish_time.map_or(true, |ft| now_ms - ft <= TTL_MS)
