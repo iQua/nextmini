@@ -1,5 +1,7 @@
 use ahash::AHashMap;
 use std::collections::HashSet;
+#[cfg(test)]
+use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::{debug, error, info, warn};
@@ -14,12 +16,27 @@ use crate::node::packet::Packet;
 use crate::node::{FlowId, NodeId};
 
 /// Returns the current time in milliseconds since the Unix epoch.
+#[cfg(not(test))]
 #[inline]
 fn current_time_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+#[inline]
+fn current_time_millis() -> i64 {
+    TEST_TIME_MILLIS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+static TEST_TIME_MILLIS: AtomicI64 = AtomicI64::new(0);
+
+#[cfg(test)]
+pub(super) fn set_current_time_millis_for_test(value: i64) {
+    TEST_TIME_MILLIS.store(value, Ordering::Relaxed);
 }
 
 pub struct AppFlowStart {
@@ -181,6 +198,12 @@ struct PendingUserFlowStart {
     stats: UserFlowStats,
 }
 
+#[derive(Debug, Clone)]
+struct PendingRoute {
+    route_id: usize,
+    assignment_time: i64,
+}
+
 struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
@@ -192,7 +215,7 @@ struct FlowStatsReporter {
     finished_flows: AHashMap<FlowId, FlowStats>,
 
     /// The routes that have been assigned before the flow started.
-    pending_routes: AHashMap<FlowId, (usize, i64)>,
+    pending_routes: AHashMap<FlowId, PendingRoute>,
 
     /// The flows waiting to be sent in the next tick, both active and completed.
     pending_send: AHashMap<(FlowId, i64), FlowStats>,
@@ -236,267 +259,389 @@ impl FlowStatsReporter {
         loop {
             tokio::select! {
                 Some(msg) = self.receiver.recv() => {
-                    match msg {
-                        FlowStatsMessage::AppFlowStart(app_flow) => {
-                            let flow_id = app_flow.flow_id;
-
-                            // checks if the flow_id is already in the active_flows
-                            if self.active_flows.contains_key(&flow_id) {
-                                // if the flow_id is already in the active_flows, ignores the duplicate AppFlowStart
-                                debug!("Duplicate AppFlowStart ignored for flow_id {:?} (flow still active).", flow_id);
-                            } else {
-                                let time = app_flow.start_time;
-
-                                // if a new flow starts, removes any finished flow with the same flow_id
-                                self.finished_flows.remove(&flow_id);
-
-                                let flow_stats = FlowStats {
-                                    flow_id,
-                                    start_time: time,
-                                    finish_time: None,
-                                    src_node_id: app_flow.src_node_id,
-                                    dst_node_id: app_flow.dst_node_id,
-                                    route_id: self.pending_routes.remove(&flow_id).map(|(r, _)| r),
-                                    controller_id: None,
-                                };
-
-                                self.active_flows.insert(flow_id, flow_stats.clone());
-                                // adds to pending_send to be sent in the next tick
-                                self.pending_send.insert((flow_id, time), flow_stats);
-                            }
-                        }
-                        FlowStatsMessage::RouteAssigned(route_assigned) => {
-                            let flow_id = route_assigned.flow_id;
-                            let new_route_id = route_assigned.route_id;
-                            let assignment_time = route_assigned.assignment_time;
-
-                            // updates route and queue assignment
-                            let update_flow_route = |flow_stats: &mut FlowStats,
-                                                     pending_assignments: &mut HashSet<(
-                                FlowId,
-                                usize,
-                                i64,
-                            )>,
-                                                     is_finished: bool| {
-                                // ignores late RouteAssigned events from previous flow instances
-                                if assignment_time < flow_stats.start_time {
-                                    debug!("Ignored a late RouteAssigned event for a reused FlowId {:?}", flow_id);
-                                    return false;
-                                }
-
-                                if flow_stats.route_id != Some(new_route_id) {
-                                    flow_stats.route_id = Some(new_route_id);
-                                    pending_assignments
-                                        .insert((flow_id, new_route_id, flow_stats.start_time));
-
-                                    // DEBUG!: for debugging.
-                                    debug!(
-                                        "RouteAssigned processed for {} flow: flow_id={:?}, route_id={}",
-                                        if is_finished { "finished" } else { "active" },
-                                        flow_id,
-                                        new_route_id
-                                    );
-                                    true
-                                } else {
-                                    false
-                                }
-                            };
-
-                            // tries to update active flows first
-                            if let Some(flow_stats) = self.active_flows.get_mut(&flow_id) {
-                                update_flow_route(flow_stats, &mut self.pending_assignments, false);
-                            }
-                            // then tries to update finished flows
-                            else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
-                                update_flow_route(flow_stats, &mut self.pending_assignments, true);
-                            }
-                            // if the flow hasn't started yet
-                            else {
-                                let now = current_time_millis();
-                                self.pending_routes.insert(flow_id, (new_route_id, now));
-                            }
-                        }
-                        FlowStatsMessage::FlowFinished(flow_finished) => {
-                            let flow_id = flow_finished.flow_id;
-
-                            // immediately removes from active_flows to allow flow_id reuse
-                            if let Some(mut flow_stats) = self.active_flows.remove(&flow_id) {
-                                // ignores late FINs from previous flow instances
-                                if flow_finished.finish_time < flow_stats.start_time {
-                                    // this is a late event, ignore it and put the active flow back
-                                    self.active_flows.insert(flow_id, flow_stats);
-                                    info!("Ignored a late FlowFinished event for a reused FlowId {:?}", flow_id);
-                                    continue;
-                                }
-
-                                flow_stats.finish_time = Some(flow_finished.finish_time);
-                                flow_stats.controller_id = flow_finished.controller_id;
-
-                                // adds to pending_send to be sent in the next tick
-                                let key = (flow_id, flow_stats.start_time);
-                                self.pending_send.insert(key, flow_stats.clone());
-
-                                // keeps the finished flow for a while in case of a late RouteAssigned
-                                self.finished_flows.insert(flow_id, flow_stats.clone());
-
-                                info!(
-                                    "Flow {:?} finished. Queued for sending (route_id: {:?}), flow_id now available for reuse.",
-                                    flow_id, flow_stats.route_id
-                                );
-                            } else if let Some(controller_id) = flow_finished.controller_id {
-                                let finish_time = flow_finished.finish_time;
-                                if let Some(stats) = self.user_flow_starts.remove(&flow_id) {
-                                    if controller_id != stats.controller_id {
-                                        warn!(
-                                            "Controller ID mismatch for flow {:?}: start={}, finish={:?}. Using finish controller_id.",
-                                            flow_id, stats.controller_id, controller_id
-                                        );
-                                    }
-
-                                    self.pending_user_flow_finishes.push(FlowFinishedInfo {
-                                        flow_id: flow_id.to_be_bytes(),
-                                        controller_id: Some(controller_id),
-                                        time: stats.start_time,
-                                        finish_time,
-                                    });
-
-                                    info!(
-                                        "Flow {:?} finished (user space). Queued for sending with start_time {}.",
-                                        flow_id, stats.start_time
-                                    );
-                                } else {
-                                    // No recorded start; fall back to finish time for reporting.
-                                    self.pending_user_flow_finishes.push(FlowFinishedInfo {
-                                        flow_id: flow_id.to_be_bytes(),
-                                        controller_id: Some(controller_id),
-                                        time: finish_time,
-                                        finish_time,
-                                    });
-
-                                    warn!(
-                                        "Flow {:?} finished (user space) without a recorded start. Using finish_time as start_time.",
-                                        flow_id
-                                    );
-                                }
-                            }
-                        }
-                        FlowStatsMessage::UserFlowStart(user_flow_start) => {
-                            let stats = UserFlowStats {
-                                start_time: user_flow_start.start_time,
-                                controller_id: user_flow_start.controller_id,
-                            };
-
-                            if let Some(existing) =
-                                self.user_flow_starts.insert(user_flow_start.flow_id, stats.clone())
-                            {
-                                warn!(
-                                    "Replacing existing user-space flow start for {:?}. Old start_time={}, controller_id={}",
-                                    user_flow_start.flow_id, existing.start_time, existing.controller_id
-                                );
-                            }
-
-                            self.pending_user_flow_starts.push(PendingUserFlowStart {
-                                flow_id: user_flow_start.flow_id,
-                                stats,
-                            });
-                        }
-                    }
+                    self.handle_message(msg);
                 }
                 _ = flowstats_tick.tick() => {
-                    // evicts outdated finished flows & pending routes (keep them up to 30s)
-                    const TTL_MS: i64 = 30_000; // 30 seconds
-                    let now_ms = current_time_millis();
-
-                    self.finished_flows.retain(|_, fs| {
-                        fs.finish_time.map_or(true, |ft| now_ms - ft <= TTL_MS)
-                    });
-
-                    self.pending_routes.retain(|_, (_, ts)| now_ms - *ts <= TTL_MS);
-
-                    if self.pending_send.is_empty()
-                        && self.pending_assignments.is_empty()
-                        && self.pending_user_flow_finishes.is_empty()
-                        && self.pending_user_flow_starts.is_empty()
-                    {
-                        continue;
-                    }
-
-                    // builds three message types from pending flows
-                    let mut appflows = Vec::new();
-                    let mut assignments = Vec::new();
-                    let mut finished_infos = Vec::new();
-                    let mut user_flow_starts = Vec::new();
-
-                    for flow_stats in self.pending_send.values() {
-                        appflows.push(AppFlow {
-                            flow_id: flow_stats.flow_id.to_be_bytes(),
-                            src_node_id: flow_stats.src_node_id,
-                            dst_node_id: flow_stats.dst_node_id,
-                            time: flow_stats.start_time,
-                        });
-
-                        if let Some(route_id) = flow_stats.route_id {
-                            self.pending_assignments.insert((flow_stats.flow_id, route_id, flow_stats.start_time));
-                        }
-
-                        if let Some(finish_time) = flow_stats.finish_time {
-                            finished_infos.push(FlowFinishedInfo {
-                                flow_id: flow_stats.flow_id.to_be_bytes(),
-                                controller_id: flow_stats.controller_id,
-                                time: flow_stats.start_time,
-                                finish_time,
-                            });
-                        }
-                    }
-
-                    for (flow_id, route_id, time) in self.pending_assignments.drain() {
-                        assignments.push(RouteAssignment {
-                            flow_id: flow_id.to_be_bytes(),
-                            route_id,
-                            time,
-                        });
-                    }
-
-                    for pending_start in self.pending_user_flow_starts.drain(..) {
-                        user_flow_starts.push(UserFlowStart {
-                            controller_id: pending_start.stats.controller_id,
-                            flow_id: pending_start.flow_id.to_be_bytes(),
-                            start_time: pending_start.stats.start_time,
-                        });
-                    }
-
-                    finished_infos.extend(self.pending_user_flow_finishes.drain(..));
-
-                    // sends messages in order: Start -> Assign -> Finish
-                    if !appflows.is_empty() {
-                        debug!("Sending {} AppFlowStart messages", appflows.len());
-                        let msg = DataplaneToController::AppFlowStart { appflows };
-                        self.controller.send(msg).await;
-                    }
-
-                    if !user_flow_starts.is_empty() {
-                        debug!("Sending {} UserFlowStart messages", user_flow_starts.len());
-                        let msg = DataplaneToController::UserFlowStart { flows: user_flow_starts };
-                        self.controller.send(msg).await;
-                    }
-
-                    if !assignments.is_empty() {
-                        debug!("Sending {} RouteAssigned messages", assignments.len());
-                        let msg = DataplaneToController::RouteAssigned { assignments };
-                        self.controller.send(msg).await;
-                    }
-
-                    if !finished_infos.is_empty() {
-                        debug!("Sending {} FlowFinished messages", finished_infos.len());
-                        let msg = DataplaneToController::FlowFinished { flows: finished_infos };
-                        self.controller.send(msg).await;
-                    }
-
-                    // clears pending send buffer after sending
-                    self.pending_send.clear();
-                    self.pending_assignments.clear();
+                    self.flush().await;
                 }
             }
+        }
+    }
+
+    fn handle_message(&mut self, msg: FlowStatsMessage) {
+        match msg {
+            FlowStatsMessage::AppFlowStart(app_flow) => {
+                let flow_id = app_flow.flow_id;
+
+                if self.active_flows.contains_key(&flow_id) {
+                    debug!(
+                        "Duplicate AppFlowStart ignored for flow_id {:?} (flow still active).",
+                        flow_id
+                    );
+                } else {
+                    let time = app_flow.start_time;
+
+                    self.finished_flows.remove(&flow_id);
+
+                    let pending_route = self.pending_routes.remove(&flow_id);
+
+                    if let Some(pending) = pending_route.as_ref() {
+                        let wait_ms = time.saturating_sub(pending.assignment_time);
+                        if wait_ms > 0 {
+                            debug!(
+                                "Flow {:?} started {} ms after route assignment.",
+                                flow_id, wait_ms
+                            );
+                        }
+                    }
+
+                    let flow_stats = FlowStats {
+                        flow_id,
+                        start_time: time,
+                        finish_time: None,
+                        src_node_id: app_flow.src_node_id,
+                        dst_node_id: app_flow.dst_node_id,
+                        route_id: pending_route.map(|pending| pending.route_id),
+                        controller_id: None,
+                    };
+
+                    self.active_flows.insert(flow_id, flow_stats.clone());
+                    self.pending_send.insert((flow_id, time), flow_stats);
+                }
+            }
+            FlowStatsMessage::RouteAssigned(route_assigned) => {
+                let flow_id = route_assigned.flow_id;
+                let new_route_id = route_assigned.route_id;
+                let assignment_time = route_assigned.assignment_time;
+
+                let update_flow_route =
+                    |flow_stats: &mut FlowStats,
+                     pending_assignments: &mut HashSet<(FlowId, usize, i64)>,
+                     is_finished: bool| {
+                        if assignment_time < flow_stats.start_time {
+                            debug!(
+                                "Ignored a late RouteAssigned event for a reused FlowId {:?}",
+                                flow_id
+                            );
+                            return false;
+                        }
+
+                        if flow_stats.route_id != Some(new_route_id) {
+                            flow_stats.route_id = Some(new_route_id);
+                            pending_assignments.insert((
+                                flow_id,
+                                new_route_id,
+                                flow_stats.start_time,
+                            ));
+
+                            debug!(
+                                "RouteAssigned processed for {} flow: flow_id={:?}, route_id={}",
+                                if is_finished { "finished" } else { "active" },
+                                flow_id,
+                                new_route_id
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    };
+
+                if let Some(flow_stats) = self.active_flows.get_mut(&flow_id) {
+                    update_flow_route(flow_stats, &mut self.pending_assignments, false);
+                } else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
+                    update_flow_route(flow_stats, &mut self.pending_assignments, true);
+                } else {
+                    let pending = PendingRoute {
+                        route_id: new_route_id,
+                        assignment_time,
+                    };
+
+                    if self.pending_routes.insert(flow_id, pending).is_some() {
+                        debug!(
+                            "Updated pending route assignment for flow {:?} before start.",
+                            flow_id
+                        );
+                    }
+                }
+            }
+            FlowStatsMessage::FlowFinished(flow_finished) => {
+                let flow_id = flow_finished.flow_id;
+
+                if let Some(mut flow_stats) = self.active_flows.remove(&flow_id) {
+                    if flow_finished.finish_time < flow_stats.start_time {
+                        self.active_flows.insert(flow_id, flow_stats);
+                        info!(
+                            "Ignored a late FlowFinished event for a reused FlowId {:?}",
+                            flow_id
+                        );
+                        return;
+                    }
+
+                    flow_stats.finish_time = Some(flow_finished.finish_time);
+                    flow_stats.controller_id = flow_finished.controller_id;
+
+                    let key = (flow_id, flow_stats.start_time);
+                    self.pending_send.insert(key, flow_stats.clone());
+
+                    self.finished_flows.insert(flow_id, flow_stats.clone());
+
+                    info!(
+                        "Flow {:?} finished. Queued for sending (route_id: {:?}), flow_id now available for reuse.",
+                        flow_id, flow_stats.route_id
+                    );
+
+                    if self.pending_routes.remove(&flow_id).is_some() {
+                        debug!(
+                            "Cleared stale pending route for flow {:?} when finishing active flow.",
+                            flow_id
+                        );
+                    }
+                } else if let Some(controller_id) = flow_finished.controller_id {
+                    let finish_time = flow_finished.finish_time;
+                    if let Some(stats) = self.user_flow_starts.remove(&flow_id) {
+                        if controller_id != stats.controller_id {
+                            warn!(
+                                "Controller ID mismatch for flow {:?}: start={}, finish={:?}. Using finish controller_id.",
+                                flow_id, stats.controller_id, controller_id
+                            );
+                        }
+
+                        self.pending_user_flow_finishes.push(FlowFinishedInfo {
+                            flow_id: flow_id.to_be_bytes(),
+                            controller_id: Some(controller_id),
+                            time: stats.start_time,
+                            finish_time,
+                        });
+
+                        info!(
+                            "Flow {:?} finished (user space). Queued for sending with start_time {}.",
+                            flow_id, stats.start_time
+                        );
+                    } else {
+                        self.pending_user_flow_finishes.push(FlowFinishedInfo {
+                            flow_id: flow_id.to_be_bytes(),
+                            controller_id: Some(controller_id),
+                            time: finish_time,
+                            finish_time,
+                        });
+
+                        warn!(
+                            "Flow {:?} finished (user space) without a recorded start. Using finish_time as start_time.",
+                            flow_id
+                        );
+                    }
+                    if self.pending_routes.remove(&flow_id).is_some() {
+                        debug!(
+                            "Removed pending route for user-space flow {:?} after finish.",
+                            flow_id
+                        );
+                    }
+                } else if self.pending_routes.remove(&flow_id).is_some() {
+                    debug!(
+                        "Dropping pending route for flow {:?} because it finished before AppFlowStart.",
+                        flow_id
+                    );
+                }
+            }
+            FlowStatsMessage::UserFlowStart(user_flow_start) => {
+                let stats = UserFlowStats {
+                    start_time: user_flow_start.start_time,
+                    controller_id: user_flow_start.controller_id,
+                };
+
+                if let Some(existing) = self
+                    .user_flow_starts
+                    .insert(user_flow_start.flow_id, stats.clone())
+                {
+                    warn!(
+                        "Replacing existing user-space flow start for {:?}. Old start_time={}, controller_id={}",
+                        user_flow_start.flow_id, existing.start_time, existing.controller_id
+                    );
+                }
+
+                self.pending_user_flow_starts.push(PendingUserFlowStart {
+                    flow_id: user_flow_start.flow_id,
+                    stats,
+                });
+            }
+        }
+    }
+
+    async fn flush(&mut self) {
+        // evicts outdated finished flows (keep them up to 30s)
+        const TTL_MS: i64 = 30_000; // 30 seconds
+        let now_ms = current_time_millis();
+
+        self.finished_flows
+            .retain(|_, fs| fs.finish_time.map_or(true, |ft| now_ms - ft <= TTL_MS));
+
+        if self.pending_send.is_empty()
+            && self.pending_assignments.is_empty()
+            && self.pending_user_flow_finishes.is_empty()
+            && self.pending_user_flow_starts.is_empty()
+        {
+            return;
+        }
+
+        let mut appflows = Vec::new();
+        let mut assignments = Vec::new();
+        let mut finished_infos = Vec::new();
+        let mut user_flow_starts = Vec::new();
+
+        for flow_stats in self.pending_send.values() {
+            appflows.push(AppFlow {
+                flow_id: flow_stats.flow_id.to_be_bytes(),
+                src_node_id: flow_stats.src_node_id,
+                dst_node_id: flow_stats.dst_node_id,
+                time: flow_stats.start_time,
+            });
+
+            if let Some(route_id) = flow_stats.route_id {
+                self.pending_assignments.insert((
+                    flow_stats.flow_id,
+                    route_id,
+                    flow_stats.start_time,
+                ));
+            }
+
+            if let Some(finish_time) = flow_stats.finish_time {
+                finished_infos.push(FlowFinishedInfo {
+                    flow_id: flow_stats.flow_id.to_be_bytes(),
+                    controller_id: flow_stats.controller_id,
+                    time: flow_stats.start_time,
+                    finish_time,
+                });
+            }
+        }
+
+        for (flow_id, route_id, time) in self.pending_assignments.drain() {
+            assignments.push(RouteAssignment {
+                flow_id: flow_id.to_be_bytes(),
+                route_id,
+                time,
+            });
+        }
+
+        for pending_start in self.pending_user_flow_starts.drain(..) {
+            user_flow_starts.push(UserFlowStart {
+                controller_id: pending_start.stats.controller_id,
+                flow_id: pending_start.flow_id.to_be_bytes(),
+                start_time: pending_start.stats.start_time,
+            });
+        }
+
+        finished_infos.extend(self.pending_user_flow_finishes.drain(..));
+
+        if !appflows.is_empty() {
+            debug!("Sending {} AppFlowStart messages", appflows.len());
+            let msg = DataplaneToController::AppFlowStart { appflows };
+            self.controller.send(msg).await;
+        }
+
+        if !user_flow_starts.is_empty() {
+            debug!("Sending {} UserFlowStart messages", user_flow_starts.len());
+            let msg = DataplaneToController::UserFlowStart {
+                flows: user_flow_starts,
+            };
+            self.controller.send(msg).await;
+        }
+
+        if !assignments.is_empty() {
+            debug!("Sending {} RouteAssigned messages", assignments.len());
+            let msg = DataplaneToController::RouteAssigned { assignments };
+            self.controller.send(msg).await;
+        }
+
+        if !finished_infos.is_empty() {
+            debug!("Sending {} FlowFinished messages", finished_infos.len());
+            let msg = DataplaneToController::FlowFinished {
+                flows: finished_infos,
+            };
+            self.controller.send(msg).await;
+        }
+
+        self.pending_send.clear();
+        self.pending_assignments.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    #[tokio::test]
+    async fn pending_route_survives_long_gap_before_start() {
+        set_current_time_millis_for_test(0);
+
+        let (controller, mut controller_rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller.clone(), receiver);
+
+        let flow_id: FlowId = 42;
+        let route_id = 7;
+
+        reporter.handle_message(FlowStatsMessage::RouteAssigned(RouteAssigned {
+            flow_id,
+            assignment_time: 0,
+            route_id,
+        }));
+
+        assert!(
+            reporter.pending_routes.contains_key(&flow_id),
+            "pending route should be buffered before start"
+        );
+
+        set_current_time_millis_for_test(35_000);
+        reporter.flush().await;
+
+        assert!(
+            reporter.pending_routes.contains_key(&flow_id),
+            "pending route was evicted before AppFlowStart"
+        );
+
+        set_current_time_millis_for_test(40_000);
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 40_000,
+        }));
+
+        let stats = reporter
+            .active_flows
+            .get(&flow_id)
+            .expect("flow should be tracked as active after AppFlowStart");
+        assert_eq!(
+            stats.route_id,
+            Some(route_id),
+            "route assignment should be retained until flow start"
+        );
+
+        reporter.flush().await;
+
+        let app_flow_msg = controller_rx
+            .recv()
+            .await
+            .expect("expected AppFlowStart message");
+        if let DataplaneToController::AppFlowStart { appflows } = app_flow_msg {
+            assert_eq!(appflows.len(), 1);
+            assert_eq!(appflows[0].flow_id, flow_id.to_be_bytes());
+            assert_eq!(appflows[0].time, 40_000);
+        } else {
+            panic!("first message should be AppFlowStart");
+        }
+
+        let assignment_msg = controller_rx
+            .recv()
+            .await
+            .expect("expected RouteAssigned message");
+        if let DataplaneToController::RouteAssigned { assignments } = assignment_msg {
+            assert_eq!(assignments.len(), 1);
+            assert_eq!(assignments[0].flow_id, flow_id.to_be_bytes());
+            assert_eq!(assignments[0].route_id, route_id);
+        } else {
+            panic!("second message should be RouteAssigned");
         }
     }
 }

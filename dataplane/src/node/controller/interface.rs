@@ -177,6 +177,24 @@ impl ControllerInterfaceHandle {
     }
 }
 
+#[cfg(test)]
+impl ControllerInterfaceHandle {
+    pub fn test_handle() -> (Self, mpsc::UnboundedReceiver<DataplaneToController>) {
+        let config = LocalConfig::default();
+        let processors = ProcessorHandle::new(config.clone());
+        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+
+        (
+            Self {
+                config,
+                processors,
+                northbridge_sender,
+            },
+            northbridge_receiver,
+        )
+    }
+}
+
 /// An actor used for sending messages from the dataplane to the controller over WebSockets.
 pub struct DataplaneToControllerSender {
     northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
