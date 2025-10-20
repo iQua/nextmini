@@ -87,13 +87,21 @@ impl Packet {
     }
 
     fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
-        if buf[0] >> 4 == 4 {
-            let src_dst_ip = BigEndian::read_u64(&buf[12..20]);
-            let src_dst_port = BigEndian::read_u32(&buf[20..24]);
-            (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
-        } else {
-            flow::INVALID_FLOW_ID
+        if buf.len() < 20 || buf[0] >> 4 != 4 {
+            return flow::INVALID_FLOW_ID;
         }
+
+        let src_dst_ip = BigEndian::read_u64(&buf[12..20]);
+
+        let ihl = (buf[0] & 0x0F) as usize;
+        let ip_header_len = ihl * 4;
+        if ip_header_len < 20 || buf.len() < ip_header_len + 4 {
+            return flow::INVALID_FLOW_ID;
+        }
+
+        let src_dst_port = BigEndian::read_u32(&buf[ip_header_len..ip_header_len + 4]);
+
+        (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
     }
 
     /// for TSO support: avoids copying the buffer
