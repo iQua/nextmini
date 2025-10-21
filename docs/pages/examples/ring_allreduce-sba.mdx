@@ -288,3 +288,17 @@ If you see "failed to read ring file" errors, ensure you're using the correct `-
 # Incorrect: ring.txt is not in /var/nextmini directly
 --remote-dir /var/nextmini
 ```
+
+### Clean up
+
+To clean up the dataplane worker nodes: use the command below:
+
+```bash
+docker stack rm nextmini
+```
+
+To clean up the controller & db VM instance in DigitalOcean, use the command:
+
+```bash
+docker compose -f controller-swarm.yml down
+```
