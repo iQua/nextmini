@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "messages", 
-    "controller", 
-    "dataplane", 
-    "cert-gen", 
+    "messages",
+    "controller",
+    "dataplane",
+    "cert-gen",
     "examples/sba-swarm/ring-emu",
     "examples/routes-multi-host/ring-emu"
 ]
