@@ -62,11 +62,11 @@ Again, **copy and run the SSH setup command** shown at the end.
 
 ```bash
 # Controller log
-tail -f ~/nextmini/examples/routes-multi-host/controller-deploy/controller.log
+tail -f ~/nextmini/examples/bare-metal/controller-deploy/controller.log
 
 # Node logs (on each node machine)
-tail -f ~/nextmini/examples/routes-multi-host/node1-deploy/node1.log
-tail -f ~/nextmini/examples/routes-multi-host/node2-deploy/node2.log
+tail -f ~/nextmini/examples/bare-metal/node1-deploy/node1.log
+tail -f ~/nextmini/examples/bare-metal/node2-deploy/node2.log
 ```
 
 Look for:
