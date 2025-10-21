@@ -26,11 +26,11 @@ cargo build --release -p nextmini
 
 ```bash
 cd ~/nextmini/examples/routes-multi-host
-chmod +x *.py
+chmod +x *.py *.sh
 uv run deploy_controller.py
 ```
 
-### Step 3: Deploy Nodes
+### Step 3: Deploy Nodes (with SSH setup)
 
 **Important:** Check your network interface first:
 ```bash
@@ -45,12 +45,16 @@ chmod +x *.py
 uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface ens3
 ```
 
+The script will show SSH setup command at the end. **Copy and run it** to enable ring all-reduce testing.
+
 **Node Machine 2:**
 ```bash
 cd ~/nextmini/examples/routes-multi-host
 chmod +x *.py
 uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface ens3
 ```
+
+Again, **copy and run the SSH setup command** shown at the end.
 
 **Note:** Replace `ens3` with your actual interface name if different.
 
@@ -65,7 +69,46 @@ tail -f ~/nextmini/examples/routes-multi-host/node1-deploy/node1.log
 tail -f ~/nextmini/examples/routes-multi-host/node2-deploy/node2.log
 ```
 
-### Step 5: Cleanup
+Look for:
+```
+INFO controller: Node 1 successfully inserted into node_ws. Total nodes now: 1.
+INFO controller: Node 2 successfully inserted into node_ws. Total nodes now: 2.
+INFO controller::new_node: All 2 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
+INFO controller::new_node: All dataplane nodes have connected. It takes XX.XX seconds since the first node arrived.
+```
+
+### Step 5: Test with Ring All-Reduce (Optional)
+
+```bash
+# Build ringallreduce (once)
+cd ~/nextmini
+cargo build --release -p ringallreduce-routes
+
+# Run test
+cd ~/nextmini/examples/routes-multi-host
+./run_ring.sh
+```
+
+Or test with iperf3:
+
+**On Node 2 machine:**
+```bash
+iperf3 -s
+```
+
+**On Node 1 machine:**
+```bash
+# Test to Node 2's TUN IP
+iperf3 -c 10.0.0.1
+
+# Example output:
+# [ ID] Interval           Transfer     Bitrate
+# [  5]   0.00-10.00  sec  XXX MBytes  XXX Mbits/sec
+```
+
+The traffic will go through Nextmini's TUN interface and appear in controller logs as flows.
+
+### Step 6: Cleanup
 
 ```bash
 cd ~/nextmini/examples/routes-multi-host
@@ -179,7 +222,60 @@ cargo build --release -p controller
 cargo build --release -p nextmini
 ```
 
-### Issue: Port already in use
+### Issue: Ring all-reduce "Cannot assign requested address"
+
+**Symptoms:**
+```
+Error: rank 0 failed to bind 10.0.0.1:9000
+Caused by: Cannot assign requested address (os error 99)
+```
+
+**Cause:** `ring.txt` IP order doesn't match actual node TUN IPs.
+
+**Solution:**
+
+Check actual TUN IPs on each node:
+```bash
+# On Node 1
+ip addr show | grep -A 2 utun
+# Example: inet 10.0.0.2/16
+
+# On Node 2  
+ip addr show | grep -A 2 utun
+# Example: inet 10.0.0.1/16
+```
+
+Update `ring.txt` to match:
+```bash
+# If Node 1 has 10.0.0.2 and Node 2 has 10.0.0.1:
+10.0.0.2:9000  # rank 0 (Node 1)
+10.0.0.1:9000  # rank 1 (Node 2)
+```
+
+Order in `ring.txt` must match `ssh_hosts.txt` order.
+
+### Issue: Ring all-reduce "Address already in use"
+
+**Symptoms:**
+```
+Error: rank 0 failed to bind 10.0.0.2:9000
+Caused by: Address already in use (os error 98)
+```
+
+**Solution:**
+```bash
+# Cleanup and retry
+cd ~/nextmini/examples/routes-multi-host
+uv run cleanup_ring.py
+./run_ring.sh
+```
+
+Or manually on each node:
+```bash
+pkill -9 ringallreduce
+```
+
+### Issue: Port already in use (Dataplane)
 
 **Find and kill process:**
 ```bash

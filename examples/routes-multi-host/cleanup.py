@@ -48,14 +48,14 @@ Examples:
     
     # Stop all nextmini processes
     print("\nStopping dataplane nodes...")
-    if run_command("sudo pkill -9 -f 'nextmini'"):
+    if run_command("sudo pkill -9 nextmini"):
         print("✓ Dataplane nodes stopped")
     else:
         print("  No dataplane nodes running")
     
     # Stop controller
     print("\nStopping controller...")
-    if run_command("sudo pkill -9 -f 'controller'"):
+    if run_command("sudo pkill -9 controller"):
         print("✓ Controller stopped")
     else:
         print("  No controller running")

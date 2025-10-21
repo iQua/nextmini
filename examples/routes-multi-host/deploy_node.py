@@ -42,6 +42,34 @@ def check_file_exists(filepath, error_msg):
         sys.exit(1)
 
 
+def setup_ssh_on_node():
+    """Setup SSH public key on the current machine (run this on node machines)."""
+    script_dir = Path(__file__).parent.resolve()
+    ssh_dir = script_dir / "ssh"
+    public_key_file = ssh_dir / "id_rsa.pub"
+    
+    if not public_key_file.exists():
+        print("Warning: SSH public key not found, skipping SSH setup")
+        return
+    
+    with open(public_key_file, 'r') as f:
+        public_key = f.read().strip()
+    
+    print("\n" + "=" * 60)
+    print("Setting up SSH access for ring all-reduce...")
+    print("=" * 60)
+    print("\nRun this command on THIS node machine:")
+    print("-" * 60)
+    print(f"""mkdir -p ~/.ssh && chmod 700 ~/.ssh && \\
+echo '{public_key}' >> ~/.ssh/authorized_keys && \\
+chmod 600 ~/.ssh/authorized_keys && \\
+sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys
+""")
+    print("-" * 60)
+    print("This allows the controller to SSH into this node for testing.")
+    print("=" * 60)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Deploy Nextmini Dataplane Node',
@@ -210,6 +238,9 @@ public_network_port = "{args.port}"
     print(f"\nTo view logs: tail -f {deploy_dir / f'node{args.node_id}.log'}")
     print(f"To stop: sudo kill {node_pid}")
     print("=" * 60)
+    
+    # Show SSH setup instructions
+    setup_ssh_on_node()
 
 
 if __name__ == "__main__":

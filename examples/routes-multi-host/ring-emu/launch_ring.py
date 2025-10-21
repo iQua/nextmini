@@ -70,20 +70,30 @@ async def run_cmd(cmd: List[str], *, stdin=None, capture=False, pipe_stderr=Fals
         rc = await proc.wait()
         return rc, None
 
-async def scp_to_host(local: pathlib.Path, host: str, remote_path: str, ssh_port: int):
-    cmd = ["scp", "-P", str(ssh_port), "-q", str(local), f"{host}:{remote_path}"]
+async def scp_to_host(local: pathlib.Path, host: str, remote_path: str, ssh_port: int, ssh_key=None):
+    cmd = ["scp", "-P", str(ssh_port), "-q"]
+    if ssh_key:
+        cmd += ["-i", str(ssh_key)]
+    cmd += ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
+    cmd += [str(local), f"{host}:{remote_path}"]
     rc, _ = await run_cmd(cmd, capture=False)
     if rc != 0:
         raise RuntimeError(f"SCP to {host} failed for {local}")
 
-async def ssh_mkdir(host: str, remote_dir: str, ssh_port: int):
-    cmd = ["ssh", "-p", str(ssh_port), host, "mkdir", "-p", remote_dir]
+async def ssh_mkdir(host: str, remote_dir: str, ssh_port: int, ssh_key=None):
+    cmd = ["ssh", "-p", str(ssh_port)]
+    if ssh_key:
+        cmd += ["-i", str(ssh_key)]
+    cmd += [host, "mkdir", "-p", remote_dir]
     rc, _ = await run_cmd(cmd, capture=False)
     if rc != 0:
         raise RuntimeError(f"ssh mkdir on {host} failed.")
 
-async def ssh_chmod(host: str, remote_bin: str, ssh_port: int):
-    cmd = ["ssh", "-p", str(ssh_port), host, "chmod", "+x", remote_bin]
+async def ssh_chmod(host: str, remote_bin: str, ssh_port: int, ssh_key=None):
+    cmd = ["ssh", "-p", str(ssh_port)]
+    if ssh_key:
+        cmd += ["-i", str(ssh_key)]
+    cmd += [host, "chmod", "+x", remote_bin]
     rc, _ = await run_cmd(cmd, capture=False)
     if rc != 0:
         raise RuntimeError(f"ssh chmod on {host} failed.")
@@ -121,6 +131,8 @@ async def main():
                     help="Optional: file with SSH targets (one per line, user@host), in rank order.")
     ap.add_argument("--ssh-port", type=int, default=22,
                     help="SSH port (uniform across hosts; default: 22).")
+    ap.add_argument("--ssh-key", type=pathlib.Path, default=None,
+                    help="SSH private key file (e.g., ~/.ssh/id_rsa).")
     ap.add_argument("--len", type=int, default=1024, dest="length",
                     help="Tensor length (elements).")
     ap.add_argument("--init", type=str, default="rank",
@@ -171,22 +183,22 @@ async def main():
         # Create temp copy of ring file to ensure exactly what is sent
         tasks = []
         for host in ssh_targets:
-            tasks.append(ssh_mkdir(host, remote_dir, args.ssh_port))
+            tasks.append(ssh_mkdir(host, remote_dir, args.ssh_port, args.ssh_key))
         await asyncio.gather(*tasks)
 
         tasks = []
         for host in ssh_targets:
-            tasks.append(scp_to_host(args.ring, host, remote_ring_path, args.ssh_port))
+            tasks.append(scp_to_host(args.ring, host, remote_ring_path, args.ssh_port, args.ssh_key))
         await asyncio.gather(*tasks)
 
         tasks = []
         for host in ssh_targets:
-            tasks.append(scp_to_host(args.bin, host, remote_bin_path, args.ssh_port))
+            tasks.append(scp_to_host(args.bin, host, remote_bin_path, args.ssh_port, args.ssh_key))
         await asyncio.gather(*tasks)
 
         tasks = []
         for host in ssh_targets:
-            tasks.append(ssh_chmod(host, remote_bin_path, args.ssh_port))
+            tasks.append(ssh_chmod(host, remote_bin_path, args.ssh_port, args.ssh_key))
         await asyncio.gather(*tasks)
         print("[launcher] Copied binary and ring file to all hosts.")
     else:
@@ -209,6 +221,8 @@ async def main():
             "-p",
             str(args.ssh_port),
         ]
+        if args.ssh_key:
+            ssh_cmd += ["-i", str(args.ssh_key)]
         if not args.strict_host_key_checking:
             ssh_cmd += ["-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null"]
         # Remove the bash -lc wrapper - just pass the command directly to ssh

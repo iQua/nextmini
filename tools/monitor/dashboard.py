@@ -10,7 +10,7 @@ from rich.text import Text
 
 DB_USER = os.environ.get("NEXTMINI_DB_USER", "pgusr")
 DB_PASSWORD = os.environ.get("NEXTMINI_DB_PASSWORD", "pgpwrd")
-DB_HOST = os.environ.get("NEXTMINI_DB_HOST", "172.16.8.2")
+DB_HOST = os.environ.get("NEXTMINI_DB_HOST", "localhost")
 DB_PORT = os.environ.get("NEXTMINI_DB_PORT", "5432")
 DB_NAME = os.environ.get("NEXTMINI_DB_NAME", "nextmini")
 
