@@ -25,7 +25,7 @@ cargo build --release -p nextmini
 ### Step 2: Deploy Controller (206.12.89.244)
 
 ```bash
-cd ~/nextmini/examples/routes-multi-host
+cd ~/nextmini/examples/bare-metal
 chmod +x *.py *.sh
 uv run deploy_controller.py
 ```
@@ -40,7 +40,7 @@ ip addr show | grep "state UP"
 
 **Node Machine 1:**
 ```bash
-cd ~/nextmini/examples/routes-multi-host
+cd ~/nextmini/examples/bare-metal
 chmod +x *.py
 uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface ens3
 ```
@@ -49,7 +49,7 @@ The script will show SSH setup command at the end. **Copy and run it** to enable
 
 **Node Machine 2:**
 ```bash
-cd ~/nextmini/examples/routes-multi-host
+cd ~/nextmini/examples/bare-metal
 chmod +x *.py
 uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface ens3
 ```
@@ -85,7 +85,7 @@ cd ~/nextmini
 cargo build --release -p ringallreduce-routes
 
 # Run test
-cd ~/nextmini/examples/routes-multi-host
+cd ~/nextmini/examples/bare-metal
 ./run_ring.sh
 ```
 
@@ -111,7 +111,7 @@ The traffic will go through Nextmini's TUN interface and appear in controller lo
 ### Step 6: Cleanup
 
 ```bash
-cd ~/nextmini/examples/routes-multi-host
+cd ~/nextmini/examples/bare-metal
 uv run cleanup.py
 ```
 
@@ -252,7 +252,7 @@ Caused by: Address already in use (os error 98)
 **Solution:**
 ```bash
 # Cleanup and retry
-cd ~/nextmini/examples/routes-multi-host
+cd ~/nextmini/examples/bare-metal
 uv run cleanup_ring.py
 ./run_ring.sh
 ```
