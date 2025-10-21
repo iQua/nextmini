@@ -539,7 +539,7 @@ impl FlowStatsReporter {
         }
 
         if !user_flow_starts.is_empty() {
-            debug!("Sending {} UserFlowStart messages", user_flow_starts.len());
+            debug!("Sending {} UserFlowStart messages.", user_flow_starts.len());
             let msg = DataplaneToController::UserFlowStart {
                 flows: user_flow_starts,
             };
@@ -547,13 +547,13 @@ impl FlowStatsReporter {
         }
 
         if !assignments.is_empty() {
-            debug!("Sending {} RouteAssigned messages", assignments.len());
+            debug!("Sending {} RouteAssigned messages.", assignments.len());
             let msg = DataplaneToController::RouteAssigned { assignments };
             self.controller.send(msg).await;
         }
 
         if !finished_infos.is_empty() {
-            debug!("Sending {} FlowFinished messages", finished_infos.len());
+            debug!("Sending {} FlowFinished messages.", finished_infos.len());
             let msg = DataplaneToController::FlowFinished {
                 flows: finished_infos,
             };
@@ -640,8 +640,331 @@ mod tests {
             assert_eq!(assignments.len(), 1);
             assert_eq!(assignments[0].flow_id, flow_id.to_be_bytes());
             assert_eq!(assignments[0].route_id, route_id);
+            assert_eq!(assignments[0].time, 40_000);
         } else {
             panic!("second message should be RouteAssigned");
         }
     }
+
+    #[tokio::test]
+    async fn test_flowid_reuse_with_late_finish() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // First flow starts and finishes
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 42,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 1000,
+        }));
+        
+        set_current_time_millis_for_test(2000);
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 42,
+            finish_time: 2000,
+            controller_id: None,
+        }));
+
+        reporter.flush().await;
+        rx.recv().await; // AppFlowStart
+        rx.recv().await; // FlowFinished
+
+        // FlowId reused with new flow
+        set_current_time_millis_for_test(3000);
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 42,
+            src_node_id: 3,
+            dst_node_id: 4,
+            start_time: 3000,
+        }));
+
+        // Late finish from old flow arrives (timestamp earlier than new start)
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 42,
+            finish_time: 1999, // Before new start!
+            controller_id: None,
+        }));
+
+        reporter.flush().await;
+
+        // Should only see new flow start, late finish should be ignored
+        let msg = rx.recv().await.unwrap();
+        if let DataplaneToController::AppFlowStart { appflows } = msg {
+            assert_eq!(appflows.len(), 1);
+            assert_eq!(appflows[0].time, 3000);
+        }
+
+        // No FlowFinished should be sent (late one ignored)
+        assert!(rx.try_recv().is_err(), "Late finish should be ignored");
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_app_flow_start() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // First start
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 42,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 1000,
+        }));
+
+        // Duplicate start (should be ignored while flow is active)
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 42,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 1100,
+        }));
+
+        reporter.flush().await;
+
+        // Should only get one AppFlowStart
+        let msg = rx.recv().await.unwrap();
+        if let DataplaneToController::AppFlowStart { appflows } = msg {
+            assert_eq!(appflows.len(), 1);
+            assert_eq!(appflows[0].time, 1000); // First one
+        }
+
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_route_changes_for_active_flow() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // Flow starts
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 42,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 1000,
+        }));
+
+        // First route assignment
+        reporter.handle_message(FlowStatsMessage::RouteAssigned(RouteAssigned {
+            flow_id: 42,
+            assignment_time: 1100,
+            route_id: 5,
+        }));
+
+        // Route changes to different path
+        reporter.handle_message(FlowStatsMessage::RouteAssigned(RouteAssigned {
+            flow_id: 42,
+            assignment_time: 1200,
+            route_id: 7,
+        }));
+
+        reporter.flush().await;
+
+        rx.recv().await; // AppFlowStart
+        let msg = rx.recv().await.unwrap();
+        
+        // Should receive both route assignments (order-agnostic)
+        if let DataplaneToController::RouteAssigned { assignments } = msg {
+            assert_eq!(assignments.len(), 2);
+            let mut ids: Vec<_> = assignments.iter().map(|a| a.route_id).collect();
+            ids.sort();
+            assert_eq!(ids, vec![5, 7]);
+        } else {
+            panic!("Expected RouteAssigned");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_user_flow_without_start() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // User flow finishes without a start event
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 99,
+            finish_time: 1000,
+            controller_id: Some(1),
+        }));
+
+        reporter.flush().await;
+
+        // Should send finish with finish_time as start_time
+        let msg = rx.recv().await.unwrap();
+        if let DataplaneToController::FlowFinished { flows } = msg {
+            assert_eq!(flows.len(), 1);
+            assert_eq!(flows[0].time, 1000); // start_time = finish_time
+            assert_eq!(flows[0].finish_time, 1000);
+            assert_eq!(flows[0].controller_id, Some(1));
+        } else {
+            panic!("Expected FlowFinished");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_user_flow_controller_id_mismatch() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // User flow starts with controller_id = 1
+        reporter.handle_message(FlowStatsMessage::UserFlowStart(UserSpaceFlowStart {
+            flow_id: 42,
+            controller_id: 1,
+            start_time: 1000,
+        }));
+
+        // Finishes with different controller_id = 2 (should warn but handle)
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 42,
+            finish_time: 2000,
+            controller_id: Some(2),
+        }));
+
+        reporter.flush().await;
+
+        rx.recv().await; // UserFlowStart
+        let msg = rx.recv().await.unwrap();
+        
+        if let DataplaneToController::FlowFinished { flows } = msg {
+            assert_eq!(flows.len(), 1);
+            assert_eq!(flows[0].controller_id, Some(2)); // Uses finish controller_id
+            assert_eq!(flows[0].time, 1000); // Uses start time
+        } else {
+            panic!("Expected FlowFinished");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_finished_flow_ttl_cleanup() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // Flow 1 completes
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 1,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 1000,
+        }));
+        set_current_time_millis_for_test(2000);
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 1,
+            finish_time: 2000,
+            controller_id: None,
+        }));
+
+        reporter.flush().await;
+        rx.recv().await; // Clear messages
+
+        // Flow 2 completes much later
+        set_current_time_millis_for_test(10000);
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 2,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 10000,
+        }));
+        set_current_time_millis_for_test(11000);
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 2,
+            finish_time: 11000,
+            controller_id: None,
+        }));
+
+        // Time advances beyond TTL for flow 1 (30s)
+        set_current_time_millis_for_test(35000);
+        reporter.flush().await;
+
+        // Flow 1 should be cleaned up (finished > 30s ago)
+        assert!(!reporter.finished_flows.contains_key(&1));
+        // Flow 2 should still be there
+        assert!(reporter.finished_flows.contains_key(&2));
+    }
+
+    #[tokio::test]
+    async fn test_batch_send_multiple_flows() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // Start 10 flows simultaneously
+        for i in 1..=10 {
+            reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+                flow_id: i,
+                src_node_id: 1,
+                dst_node_id: 2,
+                start_time: 1000 + i as i64,
+            }));
+        }
+
+        reporter.flush().await;
+
+        // All 10 should be sent in a single batched message
+        let msg = rx.recv().await.unwrap();
+        if let DataplaneToController::AppFlowStart { appflows } = msg {
+            assert_eq!(appflows.len(), 10, "Should batch all 10 flow starts");
+        } else {
+            panic!("Expected batched AppFlowStart");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_route_assignment_for_finished_flow() {
+        set_current_time_millis_for_test(1000);
+        let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
+        let (_sender, receiver) = unbounded_channel();
+        let mut reporter = FlowStatsReporter::new(controller, receiver);
+
+        // Flow starts and finishes quickly
+        reporter.handle_message(FlowStatsMessage::AppFlowStart(AppFlowStart {
+            flow_id: 42,
+            src_node_id: 1,
+            dst_node_id: 2,
+            start_time: 1000,
+        }));
+        
+        set_current_time_millis_for_test(2000);
+        reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
+            flow_id: 42,
+            finish_time: 2000,
+            controller_id: None,
+        }));
+
+        reporter.flush().await;
+        rx.recv().await; // AppFlowStart
+        rx.recv().await; // FlowFinished
+
+        // Route assigned after flow already finished
+        reporter.handle_message(FlowStatsMessage::RouteAssigned(RouteAssigned {
+            flow_id: 42,
+            assignment_time: 2100,
+            route_id: 5,
+        }));
+
+        reporter.flush().await;
+
+        // Route should be assigned to finished flow
+        let msg = rx.recv().await.unwrap();
+        if let DataplaneToController::RouteAssigned { assignments } = msg {
+            assert_eq!(assignments.len(), 1);
+            assert_eq!(assignments[0].route_id, 5);
+            assert_eq!(assignments[0].time, 1000); // Uses flow start_time
+        } else {
+            panic!("Expected RouteAssigned for finished flow");
+        }
+    }
 }
+
