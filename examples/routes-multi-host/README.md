@@ -178,19 +178,6 @@ uv run cleanup.py --help
 
 ## Troubleshooting
 
-### Issue: Node can't connect to controller
-
-**Check firewall on controller machine:**
-```bash
-sudo ufw allow 3000/tcp
-sudo ufw status
-```
-
-**Test connectivity from node:**
-```bash
-telnet 206.12.89.244 3000
-```
-
 ### Issue: Database connection failed
 
 **On controller machine:**
