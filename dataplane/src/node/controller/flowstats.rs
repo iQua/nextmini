@@ -198,12 +198,6 @@ struct PendingUserFlowStart {
     stats: UserFlowStats,
 }
 
-#[derive(Debug, Clone)]
-struct PendingRoute {
-    route_id: usize,
-    assignment_time: i64,
-}
-
 struct FlowStatsReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowStatsMessage>,
@@ -215,7 +209,7 @@ struct FlowStatsReporter {
     finished_flows: AHashMap<FlowId, FlowStats>,
 
     /// The routes that have been assigned before the flow started.
-    pending_routes: AHashMap<FlowId, PendingRoute>,
+    pending_routes: AHashMap<FlowId, usize>,
 
     /// The flows waiting to be sent in the next tick, both active and completed.
     pending_send: AHashMap<(FlowId, i64), FlowStats>,
@@ -273,27 +267,11 @@ impl FlowStatsReporter {
             FlowStatsMessage::AppFlowStart(app_flow) => {
                 let flow_id = app_flow.flow_id;
 
-                if self.active_flows.contains_key(&flow_id) {
-                    debug!(
-                        "Duplicate AppFlowStart ignored for flow_id {:?} (flow still active).",
-                        flow_id
-                    );
-                } else {
+                if !self.active_flows.contains_key(&flow_id) {
                     let start_time = app_flow.start_time;
-
                     self.finished_flows.remove(&flow_id);
 
-                    let pending_route = self.pending_routes.remove(&flow_id);
-
-                    if let Some(pending) = pending_route.as_ref() {
-                        let wait_ms = start_time.saturating_sub(pending.assignment_time);
-                        if wait_ms > 0 {
-                            debug!(
-                                "Flow {:?} started {} ms after route assignment.",
-                                flow_id, wait_ms
-                            );
-                        }
-                    }
+                    let route_id = self.pending_routes.remove(&flow_id);
 
                     let flow_stats = FlowStats {
                         flow_id,
@@ -301,7 +279,7 @@ impl FlowStatsReporter {
                         finish_time: None,
                         src_node_id: app_flow.src_node_id,
                         dst_node_id: app_flow.dst_node_id,
-                        route_id: pending_route.map(|pending| pending.route_id),
+                        route_id,
                         controller_id: None,
                     };
 
@@ -351,12 +329,7 @@ impl FlowStatsReporter {
                 } else if let Some(flow_stats) = self.finished_flows.get_mut(&flow_id) {
                     update_flow_route(flow_stats, &mut self.pending_assignments, true);
                 } else {
-                    let pending = PendingRoute {
-                        route_id: new_route_id,
-                        assignment_time,
-                    };
-
-                    if self.pending_routes.insert(flow_id, pending).is_some() {
+                    if self.pending_routes.insert(flow_id, new_route_id).is_some() {
                         debug!(
                             "Updated pending route assignment for flow {:?} before start.",
                             flow_id
