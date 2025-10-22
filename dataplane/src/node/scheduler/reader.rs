@@ -8,7 +8,7 @@ use nextmini_messages::SchedulingDiscipline;
 use crate::node::packet::Packet;
 use crate::node::scheduler::drop::PacketDrop;
 use crate::node::scheduler::queue::SchedulerQueue;
-use crate::node::scheduler::scheduler::SchedulerReaderMessage;
+use crate::node::scheduler::sched::SchedulerReaderMessage;
 
 /// Producer side of scheduler
 pub struct SchedulerReader {

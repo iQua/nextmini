@@ -13,7 +13,7 @@ use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorPacket;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub enum ConnectorMessage {

@@ -25,7 +25,7 @@ use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
@@ -201,9 +201,9 @@ impl ProcessorHandle {
         let broadcast_reporter = flowstats_reporter.clone();
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::SetFlowStatsReporter(
-                Box::new(broadcast_reporter),
-            ))
+            .send(ProcessorMessage::SetFlowStatsReporter(Box::new(
+                broadcast_reporter,
+            )))
         {
             error!(
                 "Error sending the SetFlowStatsReporter message to the processors: {}",
@@ -213,7 +213,9 @@ impl ProcessorHandle {
 
         if let Err(e) = self
             .connector_message_sender()
-            .send(ConnectorMessage::SetFlowStatsReporter(Box::new(flowstats_reporter)))
+            .send(ConnectorMessage::SetFlowStatsReporter(Box::new(
+                flowstats_reporter,
+            )))
             .await
         {
             error!(
@@ -239,7 +241,9 @@ impl ProcessorHandle {
     pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
         if let Err(e) = self
             .connector_message_sender()
-            .send(ConnectorMessage::ConnectTcpMaxClient(Box::new(tcp_max_client)))
+            .send(ConnectorMessage::ConnectTcpMaxClient(Box::new(
+                tcp_max_client,
+            )))
             .await
         {
             error!(
@@ -664,11 +668,12 @@ impl Processor {
 
                 let dest = self.user_space_sender(flow_id);
                 if let Some(sender) = dest
-                    && sender.try_send(packet).is_err() {
-                        tracing::error!(
-                            "Failed to send a packet in user-space flows to its local destination."
-                        );
-                    }
+                    && sender.try_send(packet).is_err()
+                {
+                    tracing::error!(
+                        "Failed to send a packet in user-space flows to its local destination."
+                    );
+                }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
             scheduler.send(packet);

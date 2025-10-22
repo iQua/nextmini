@@ -17,6 +17,13 @@ use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topology::topo;
 
+/// Describes a directed path between two nodes as a list of edges.
+pub type RoutePath = Vec<(u32, u32)>;
+/// Aggregates route metadata: source node, destination node, and the path edges.
+pub type RouteDescriptor = (u32, u32, RoutePath);
+/// Collection of route descriptors.
+pub type RouteCollection = Vec<RouteDescriptor>;
+
 /// Bundles the parameters required to build a startup message for the dataplane.
 #[derive(Clone, Debug)]
 pub struct StartupResponseParams {
@@ -138,7 +145,7 @@ fn create_graph_with_mapping(
 pub fn build_routes_from_topology(
     edges: &[(u32, u32)],
     protocol: &Option<config::RoutingProtocol>,
-) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
+) -> RouteCollection {
     match protocol {
         None => Vec::new(),
         Some(config::RoutingProtocol::ShortestPath) => {
@@ -152,7 +159,7 @@ pub fn build_routes_from_topology(
             let (node_ids, _node_map, graph) = create_graph_with_mapping(&bidirectional_edges);
 
             let mut shortest_path = routing::ShortestPath::new(graph.clone());
-            let mut routes = Vec::new();
+            let mut routes: RouteCollection = Vec::new();
 
             // generates shortest path for every node pair
             for src_idx in graph.node_indices() {
@@ -188,8 +195,8 @@ pub fn build_routes_from_topology(
 }
 
 /// Merge all routes from configuration (both custom and topology-generated).
-pub fn merge_all_routes(config: &config::Config) -> Vec<(u32, u32, Vec<(u32, u32)>)> {
-    let mut routes = Vec::new();
+pub fn merge_all_routes(config: &config::Config) -> RouteCollection {
+    let mut routes: RouteCollection = Vec::new();
 
     // adds custom routes from config
     for route in &config.routes {

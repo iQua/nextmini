@@ -6,7 +6,7 @@ use tracing::error;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::scheduler::queue::SchedulerQueue;
-use crate::node::scheduler::scheduler::SchedulerWriterMessage;
+use crate::node::scheduler::sched::SchedulerWriterMessage;
 use crate::node::scheduler::token_bucket::TokenBucket;
 
 /// The consumer in the scheduler.
