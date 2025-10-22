@@ -303,7 +303,7 @@ impl AppFlowEntry {
         FlowFinishStatus::Accepted
     }
 
-    fn into_finished(&self) -> Option<FlowFinishedInfo> {
+    fn finished_snapshot(&self) -> Option<FlowFinishedInfo> {
         self.finish_time.map(|finish_time| FlowFinishedInfo {
             flow_id: self.flow_id.to_be_bytes(),
             controller_id: self.controller_id,
@@ -551,7 +551,7 @@ impl FlowStore {
                 }
 
                 if app_entry.pending.send_finish {
-                    if let Some(finished) = app_entry.into_finished() {
+                    if let Some(finished) = app_entry.finished_snapshot() {
                         output.finishes.push(finished);
                     }
                     app_entry.pending.send_finish = false;
