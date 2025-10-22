@@ -6,6 +6,8 @@ This guide demonstrates **native binary deployment** on bare metal or virtual ma
 
 ## Quick Start
 
+Add `"examples/bare-metal/ring-emu"` to `/nextmini/Cargo.toml`.
+
 ### Scenario
 - Controller: `206.12.89.244` (Physical Machine 1)
 - Node 1: Physical Machine 2
@@ -229,7 +231,7 @@ Check actual TUN IPs on each node:
 ip addr show | grep -A 2 utun
 # Example: inet 10.0.0.2/16
 
-# On Node 2  
+# On Node 2
 ip addr show | grep -A 2 utun
 # Example: inet 10.0.0.1/16
 ```
@@ -372,4 +374,3 @@ Deploy additional nodes with higher node IDs.
 - PostgreSQL runs in Docker on controller machine
 - Logs are in `*-deploy/*.log` files
 - Database container name: `nextmini-database`
-
