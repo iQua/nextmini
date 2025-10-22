@@ -1,311 +1,266 @@
+"""
+Database access layer adapted for new nextmini architecture.
+"""
 import json
 from collections import defaultdict
-from functools import reduce
-
 import psycopg2
 
 
 class Database:
     def __init__(self, db_creds: dict):
         self.connection = psycopg2.connect(**db_creds)
-        self.connection.autocommit = (
-            True  # Add autocommit to avoid transaction issues
-        )
+        self.connection.autocommit = True
         self.print_buffer = []
 
     def get_cursor(self):
         return self.connection.cursor()
 
     def get_all_routes(self):
+        """
+        Fetch all routes from database.
+        Returns: [(src_node_id, dst_node_id, route_id, edges), ...]
+        Note: edges is JSONB type that needs to be parsed.
+        """
         cursor = self.connection.cursor()
         cursor.execute("""
-            SELECT src_node_id, dst_node_id, route_id, hops
-            FROM "routes"
+            SELECT src_node_id, dst_node_id, route_id, edges
+            FROM routes
+            ORDER BY src_node_id, dst_node_id, route_id
         """)
-        return [(arr[0], arr[1], arr[2], arr[3]) for arr in cursor.fetchall()]
+        results = []
+        for row in cursor.fetchall():
+            src, dst, route_id, edges_json = row
+            edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
+            results.append((src, dst, route_id, edges))
+        cursor.close()
+        return results
 
     def get_all_nodes(self):
+        """Fetch all node IDs from database."""
         cursor = self.connection.cursor()
         cursor.execute("""
-            SELECT id
-            FROM "nodes"
+            SELECT id FROM nodes ORDER BY id
         """)
-        return [(arr[0]) for arr in cursor.fetchall()]
+        result = [row[0] for row in cursor.fetchall()]
+        cursor.close()
+        return result
 
-    def get_newest_pernode(self):
+    def get_active_flows(self):
+        """
+        Fetch all active flows with their statistics.
+        Returns: [(flow_id_bytes, src_node_id, dst_node_id, route_id, bps), ...]
+        """
         cursor = self.connection.cursor()
         cursor.execute("""
-            SELECT prev_hop_id, SUM(bps) AS total_bps
+            WITH flow_metrics AS (
+                SELECT 
+                    m.flow_id,
+                    m.bytes,
+                    m.time_read,
+                    LAG(m.bytes) OVER (PARTITION BY m.flow_id ORDER BY m.time_read) as prev_bytes,
+                    LAG(m.time_read) OVER (PARTITION BY m.flow_id ORDER BY m.time_read) as prev_time,
+                    ROW_NUMBER() OVER (PARTITION BY m.flow_id ORDER BY m.time_read DESC) as rn
+                FROM metrics m
+                WHERE m.time_read > NOW() - INTERVAL '60 seconds'
+            )
+            SELECT 
+                af.flow_id,
+                af.src_node_id,
+                af.dst_node_id,
+                af.route_id,
+                COALESCE(
+                    CASE 
+                        WHEN fm.prev_bytes IS NOT NULL AND fm.prev_time IS NOT NULL 
+                            AND EXTRACT(EPOCH FROM (fm.time_read - fm.prev_time)) > 0
+                            AND fm.bytes >= fm.prev_bytes
+                        THEN (fm.bytes - fm.prev_bytes) * 8.0 / 
+                             EXTRACT(EPOCH FROM (fm.time_read - fm.prev_time))
+                        ELSE 0
+                    END,
+                    0
+                ) as bps
+            FROM app_flows af
+            LEFT JOIN flow_metrics fm ON af.flow_id = fm.flow_id AND fm.rn = 1
+            WHERE af.is_finished = FALSE
+              AND af.route_id IS NOT NULL
+        """)
+        result = cursor.fetchall()
+        cursor.close()
+        return result
+
+    def get_route_utilization(self):
+        """
+        Get current utilization (total traffic) of each route.
+        Uses simple sum over time window (same as dashboard).
+        Returns: {(src_node_id, dst_node_id, route_id): bps, ...}
+        """
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT af.src_node_id,
+                   af.dst_node_id,
+                   af.route_id,
+                   SUM(m.bytes * 8.0 / 20.0) as total_rate_bps
+            FROM app_flows af
+            LEFT JOIN metrics m ON af.flow_id = m.flow_id
+            WHERE af.is_finished = FALSE
+              AND af.route_id IS NOT NULL
+              AND m.time_read >= NOW() - INTERVAL '20 seconds'
+            GROUP BY af.src_node_id, af.dst_node_id, af.route_id
+        """)
+        result = {}
+        for row in cursor.fetchall():
+            result[(row[0], row[1], row[2])] = float(row[3]) if row[3] else 0.0
+        cursor.close()
+        return result
+
+    def get_link_utilization(self):
+        """
+        Get utilization of each physical link.
+        Uses simple sum over time window (same as dashboard).
+        Returns: {(local_node_id, remote_node_id): bps, ...}
+        """
+        cursor = self.connection.cursor()
+        cursor.execute("""
+            SELECT local_node_id, remote_node_id,
+                   SUM(bytes * 8.0 / 20.0) AS total_rate_bps
             FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY prev_hop_id)
-            GROUP BY prev_hop_id
-            ORDER BY prev_hop_id ASC;
+            WHERE time_read >= NOW() - INTERVAL '20 seconds'
+            GROUP BY local_node_id, remote_node_id
+            HAVING COUNT(*) > 0
+            ORDER BY total_rate_bps DESC
         """)
-        sent = cursor.fetchall()
-
-        cursor.execute("""
-            SELECT hop_id, SUM(bps) AS total_bps
-            FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-            GROUP BY hop_id
-            ORDER BY hop_id ASC;
-        """)
-        recv = cursor.fetchall()
-        metrics = zip(sent, recv)
+        result = {}
+        for row in cursor.fetchall():
+            result[(row[0], row[1])] = float(row[2]) if row[2] else 0.0
         cursor.close()
-        return metrics
+        return result
 
-    def get_newest_perlink(self):
-        cursor = self.connection.cursor()
-        cursor.execute("""
-            SELECT prev_hop_id, hop_id, SUM(bps) AS total_bps
-            FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-                AND prev_hop_id != hop_id
-            GROUP BY prev_hop_id, hop_id
-            ORDER BY prev_hop_id ASC;
-        """)
-
-        metrics = cursor.fetchall()
-        ret = {(arr[0], arr[1]): arr[2] for arr in metrics}
-        cursor.close()
-        return ret
-
-    def get_newest_perflow(self):
+    def get_flow_distribution(self):
         """
-        Get the most recent bps for each flow (each unique src/dst pair);
-        return an dictionary of {(src_id, dst_id): bps}.
-        We calculate bps of each flow based on the sum of its bps in all its link segments.
+        Get distribution of flows across routes.
+        Returns: {(src, dst): {route_id: count, ...}, ...}
         """
         cursor = self.connection.cursor()
         cursor.execute("""
-            SELECT src_id, dst_id, SUM(bps) AS total_bps
-            FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-                AND hop_id=dst_id
-            GROUP BY src_id, dst_id
+            SELECT src_node_id, dst_node_id, route_id, COUNT(*) as flow_count
+            FROM app_flows
+            WHERE is_finished = FALSE AND route_id IS NOT NULL
+            GROUP BY src_node_id, dst_node_id, route_id
         """)
-        ret = {(arr[0], arr[1]): arr[2] for arr in cursor.fetchall()}
-        ret = defaultdict(lambda: 0, ret)
+        result = defaultdict(dict)
+        for row in cursor.fetchall():
+            result[(row[0], row[1])][row[2]] = row[3]
         cursor.close()
-        return ret
+        return dict(result)
 
-    def get_newest_perroute(self):
+    def clear_routes(self, src_node_id, dst_node_id):
         """
-        Get the most recent bps for each route; return an dictionary of {(src_id, dst_id, route_id): bps}.
-        We calculate bps of the entire path based on its bps in its last link segment.
+        Delete all routes between specified src-dst pair.
+        Warning: This will cause existing flows to re-select routes!
         """
         cursor = self.connection.cursor()
         cursor.execute("""
-            SELECT src_id, dst_id, route_id, prev_hop_id, hop_id, SUM(bps) AS total_bps
-            FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-                AND hop_id=dst_id
-            GROUP BY src_id, dst_id, route_id, prev_hop_id, hop_id
-        """)
-        ret = {(arr[0], arr[1], arr[2]): arr[5] for arr in cursor.fetchall()}
-        ret = defaultdict(lambda: 0, ret)
+            DELETE FROM routes
+            WHERE src_node_id = %s AND dst_node_id = %s
+        """, (src_node_id, dst_node_id))
+        deleted = cursor.rowcount
         cursor.close()
-        return ret
+        return deleted
 
-    def get_newest_perroutelink(self):
+    def install_route(self, src_node_id, dst_node_id, edges):
         """
-        Get the most recent bps for each flow in each link segment.
+        Install a new route.
+        edges: List of edges, e.g., [[1, 2], [2, 3]]
+        Returns: route_id
         """
         cursor = self.connection.cursor()
+        edges_json = json.dumps(edges)
         cursor.execute("""
-            SELECT src_id, dst_id, route_id, prev_hop_id, hop_id, SUM(bps) AS total_bps
-            FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-            GROUP BY src_id, dst_id, route_id, prev_hop_id, hop_id
-        """)
-        ret = {
-            (arr[0], arr[1], arr[2], arr[3], arr[4], arr[5]): arr[6]
-            for arr in cursor.fetchall()
-        }
+            INSERT INTO routes (src_node_id, dst_node_id, edges)
+            VALUES (%s, %s, %s)
+            RETURNING route_id
+        """, (src_node_id, dst_node_id, edges_json))
+        route_id = cursor.fetchone()[0]
         cursor.close()
-        return ret
+        return route_id
 
-    def get_newest_perstream(self):
+    def update_routes(self, src_node_id, dst_node_id, paths):
         """
-        Get the most recent bps for each stream at the source node
+        Atomically update all routes between src-dst pair.
+        Keeps route_ids stable to maintain Jump Hash consistency.
+        paths: List of paths, each path is a list of nodes, e.g., [[1,2,3], [1,4,3]]
         """
         cursor = self.connection.cursor()
-        cursor.execute("""
-            SELECT src_id, dst_id, route_id, stream_id, SUM(bps) AS min_bps
-            FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-            GROUP BY src_id, dst_id, route_id, stream_id
-        """)
+        
+        cursor.execute("BEGIN")
+        
+        try:
+            # Get existing route IDs for this src-dst pair
+            cursor.execute("""
+                SELECT route_id FROM routes
+                WHERE src_node_id = %s AND dst_node_id = %s
+                ORDER BY route_id
+            """, (src_node_id, dst_node_id))
+            existing_ids = [row[0] for row in cursor.fetchall()]
+            
+            route_ids = []
+            
+            # Update existing routes or insert new ones
+            for i, path in enumerate(paths):
+                edges = [[path[i], path[i+1]] for i in range(len(path)-1)]
+                edges_json = json.dumps(edges)
+                
+                if i < len(existing_ids):
+                    # Update existing route
+                    route_id = existing_ids[i]
+                    cursor.execute("""
+                        UPDATE routes
+                        SET edges = %s
+                        WHERE route_id = %s
+                    """, (edges_json, route_id))
+                    route_ids.append(route_id)
+                else:
+                    # Insert new route
+                    cursor.execute("""
+                        INSERT INTO routes (src_node_id, dst_node_id, edges)
+                        VALUES (%s, %s, %s)
+                        RETURNING route_id
+                    """, (src_node_id, dst_node_id, edges_json))
+                    route_ids.append(cursor.fetchone()[0])
+            
+            # Delete excess routes if we have fewer paths than before
+            if len(paths) < len(existing_ids):
+                excess_ids = existing_ids[len(paths):]
+                cursor.execute("""
+                    DELETE FROM routes
+                    WHERE route_id = ANY(%s)
+                """, (excess_ids,))
+            
+            cursor.execute("COMMIT")
+            cursor.close()
+            return route_ids
+            
+        except Exception as e:
+            cursor.execute("ROLLBACK")
+            cursor.close()
+            raise e
 
-        # src_id, dst_id, route_id, stream_id, bps
-        ret = [
-            (arr[0], arr[1], arr[2], arr[3], arr[4])
-            for arr in cursor.fetchall()
-        ]
-        ret = filter(lambda x: False if x[3] == "0:0" else True, ret)
-        ret = [i for i in ret]
-        cursor.close()
-        return ret
-
-    def get_newest_splitting_ratio(self):
+    def edges_to_path(self, edges):
         """
-        returns a list of [src_id, dst_id, stream_id, splitting_ratio] where splitting_ratio represents the ratio of bps for each connection within the flow.
+        Convert edge list to path (node list).
+        edges: [[1, 2], [2, 3]] -> path: [1, 2, 3]
         """
-        # Get the newest perstream data. The type of data is [src_id, dst_id, route_id, stream_id, bps][]
-        data = self.get_newest_perstream()
+        if not edges:
+            return []
+        path = [edges[0][0]]
+        for edge in edges:
+            path.append(edge[1])
+        return path
 
-        # Get the total out-going bps for each flow pair
-        def reduce_total(acc, item):
-            acc[(item[0], item[1])] += item[-1]
-            return acc
-
-        total = reduce(reduce_total, data, defaultdict(lambda: 0))
-
-        # Get the ratio for each stream
-        def map_ratio(item):
-            return [
-                item[0],
-                item[1],
-                item[3],
-                item[-1] / total[item[0], item[1], item[2]],
-            ]
-
-        return map(map_ratio, data)
-
-    def get_path_hops(self, src_id, dst_id, route_id):
+    def path_to_edges(self, path):
         """
-        Get the path hops based on src_id, dst_id, and route_id
+        Convert path to edge list.
+        path: [1, 2, 3] -> edges: [[1, 2], [2, 3]]
         """
-        cursor = self.connection.cursor()
-        cursor.execute(
-            """
-            SELECT hops
-            FROM "routes"
-            WHERE src_node_id=%s AND dst_node_id=%s AND route_id=%s
-        """,
-            (src_id, dst_id, route_id),
-        )
-        ret = [arr[0] for arr in cursor.fetchall()][0]
-        cursor.close()
-        return ret
+        return [[path[i], path[i+1]] for i in range(len(path)-1)]
 
-    def get_newest_routes_streams(self):
-        """
-        Get a dictionary of all streams assigned to each route
-        """
-        ret = defaultdict(lambda: [])
-        cursor = self.connection.cursor()
-        cursor.execute("""
-            SELECT src_id, dst_id, route_id, stream_id FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id)
-            GROUP BY src_id, dst_id, route_id, stream_id
-        """)
-        print("------DB Fetch Routes Streams-----")
-        for arr in cursor.fetchall():
-            print(arr)
-            if arr[3] == "0:0":
-                continue
-            ret[(arr[0], arr[1], arr[2])].append(arr[3])
-        cursor.close()
-        return ret
-
-    def get_newest_streambps(self):
-        """
-        Get a dictionary of all streams, with their bps
-        This differs from get_newest_perstream() in that it returns a dictionary instead of a list.
-        """
-        cursor = self.connection.cursor()
-        cursor.execute("""
-            SELECT src_id, dst_id, stream_id, bps FROM metrics
-            WHERE (hop_id, time_read) IN (
-                SELECT hop_id, MAX(time_read)
-                FROM metrics
-                GROUP BY hop_id) AND stream_id != '0:0'
-        """)
-        ret = {(arr[0], arr[1], arr[2]): arr[3] for arr in cursor.fetchall()}
-        ret = defaultdict(lambda: 0, ret)
-        cursor.close()
-        return ret
-
-    def install_route(self, cursor, route_id, src, dst, path, streams):
-        print(f"DEBUG - Original streams: {streams}")
-
-        formatted_streams = []
-        for stream in streams:
-            if len(stream) >= 2:
-                formatted_streams.append(f"{stream[0]}:{stream[1]}")
-
-        print(f"DEBUG - Formatted streams: {formatted_streams}")
-
-        streams = json.dumps(formatted_streams)
-
-        print(f"DEBUG - JSON string to be stored in DB: {streams}")
-
-        query = """
-        INSERT INTO "routes" (src_node_id, dst_node_id, route_id, hops, streams) VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (src_node_id, dst_node_id, route_id) DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams;
-        """
-        cursor.execute(query, (src, dst, route_id, path, streams))
-        print(
-            f"DEBUG - SQL executed: INSERT/UPDATE route ({src}, {dst}, {route_id}) with streams: {streams}"
-        )
-
-    def install_route_and_sync(self, cursor, route_id, src, dst, path, streams):
-        cursor = self.connection.cursor()
-
-        print(f"DEBUG - [sync] Original streams: {streams}")
-
-        formatted_streams = []
-        for stream in streams:
-            if len(stream) >= 2:
-                formatted_streams.append(f"{stream[0]}:{stream[1]}")
-
-        print(f"DEBUG - [sync] Formatted streams: {formatted_streams}")
-
-        streams = json.dumps(formatted_streams)
-
-        print(f"DEBUG - [sync] JSON string to be stored in DB: {streams}")
-
-        query = """
-        INSERT INTO "routes" (src_node_id, dst_node_id, route_id, hops, streams) VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (src_node_id, dst_node_id, route_id) DO UPDATE SET hops = EXCLUDED.hops, streams = EXCLUDED.streams;
-        """
-        cursor.execute(query, (src, dst, route_id, path, streams))
-        print(
-            f"DEBUG - [sync] SQL executed: INSERT/UPDATE route ({src}, {dst}, {route_id}) with streams: {streams}"
-        )
-        self.connection.commit()
-        cursor.close()
-
-    def sync_db(self, cursor):
-        query = """
-        NOTIFY sync_routes;
-        """
-        cursor.execute(query)
-        self.connection.commit()
-        cursor.close()

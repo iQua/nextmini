@@ -1,80 +1,202 @@
 """
-This is an implementation of the equal cost multi path algorithm.
-This algorithm splits connections (approximately) equallly among all paths
+ECMP (Equal Cost Multi-Path) algorithm for new nextmini architecture.
 
-Note: Traffic splitting is acheived through assigning streams to different
-paths, which means that we cannot achieve theoretical equal-split. Instead,
-what we aim to do here is to find a solution to the discrete optimization
-problem of assigning streams to different paths such that traffic is
-distributed as evenly as possible. Specifically, we are trying to find the
-approximate solution to a loosely constrained bin-packing problem, where
-the size of each bin is the theoretical equal-split, and the the constraint
-is "exceeding the size of each bin a little as possible". We employ a classic
-first-fit algorithm to approximate optimal solution.
+Core idea:
+1. Maintain N optimal paths for each node pair
+2. Jump Hash automatically distributes flows evenly among these paths
+3. Periodically adjust available path set based on link status
+
+This version does not need to modify dataplane, leveraging Jump Hash for load balancing.
 """
 
 from collections import defaultdict
 from time import sleep
+import heapq
 
 from common import Database
 
 
-class Algorithm:
-    def __init__(self, db_creds: dict, npaths: int):
+class ECMPAlgorithm:
+    def __init__(self, db_creds: dict, num_paths: int):
+        """
+        Initialize ECMP algorithm.
+        
+        Args:
+            db_creds: Database connection configuration
+            num_paths: Number of paths to maintain per node pair
+        """
         self.db = Database(db_creds)
-        self.npaths = npaths
-
+        self.num_paths = num_paths
+        self.topology = None
+        self.all_paths_cache = {}
+        
+    def discover_topology(self):
+        """Discover network topology from database."""
+        print("Discovering network topology...")
+        nodes = self.db.get_all_nodes()
+        
+        routes = self.db.get_all_routes()
+        links = set()
+        
+        for src, dst, route_id, edges in routes:
+            for edge in edges:
+                links.add((edge[0], edge[1]))
+        
+        self.topology = {
+            'nodes': set(nodes),
+            'links': links
+        }
+        print(f"Topology: {len(nodes)} nodes, {len(links)} links")
+        
+    def find_k_shortest_paths(self, src, dst, k):
+        """
+        Find k shortest paths from src to dst (simplified Yen's algorithm).
+        In production, could use more complex algorithms considering bandwidth, latency, etc.
+        
+        Args:
+            src: Source node ID
+            dst: Destination node ID
+            k: Number of paths to find
+            
+        Returns:
+            List of paths, each path is a list of node IDs
+        """
+        cache_key = (src, dst, k)
+        if cache_key in self.all_paths_cache:
+            return self.all_paths_cache[cache_key]
+        
+        graph = defaultdict(list)
+        for u, v in self.topology['links']:
+            graph[u].append(v)
+        
+        all_paths = []
+        queue = [(src, [src])]
+        
+        while queue and len(all_paths) < k * 10:
+            node, path = queue.pop(0)
+            
+            if node == dst:
+                all_paths.append(path)
+                continue
+            
+            if len(path) > 10:
+                continue
+            
+            for neighbor in graph.get(node, []):
+                if neighbor not in path:
+                    queue.append((neighbor, path + [neighbor]))
+        
+        all_paths.sort(key=len)
+        result = all_paths[:k]
+        
+        self.all_paths_cache[cache_key] = result
+        return result
+    
+    def evaluate_path_quality(self, path):
+        """
+        Evaluate path quality (considering bandwidth, latency, packet loss, etc.).
+        Current simplified version: only considers maximum link utilization on the path.
+        
+        Args:
+            path: List of node IDs representing the path
+            
+        Returns:
+            Quality score (lower is better)
+        """
+        link_util = self.db.get_link_utilization()
+        
+        max_utilization = 0
+        for i in range(len(path) - 1):
+            util = link_util.get((path[i], path[i+1]), 0)
+            max_utilization = max(max_utilization, util)
+        
+        return max_utilization
+    
+    def select_best_paths(self, src, dst):
+        """
+        Select num_paths best paths for src-dst pair.
+        
+        Args:
+            src: Source node ID
+            dst: Destination node ID
+            
+        Returns:
+            List of selected paths
+        """
+        candidate_paths = self.find_k_shortest_paths(src, dst, self.num_paths * 2)
+        
+        if not candidate_paths:
+            print(f"Warning: No path found from {src} to {dst}")
+            return []
+        
+        path_scores = []
+        for path in candidate_paths:
+            score = self.evaluate_path_quality(path)
+            path_scores.append((score, path))
+        
+        path_scores.sort(key=lambda x: x[0])
+        selected = [path for score, path in path_scores[:self.num_paths]]
+        
+        return selected
+    
     def run(self, update_interval: int):
-        # The theoretical ecmp bps per path
-        ecmp_bps = 1 / self.npaths
+        """
+        Main loop: periodically update routing table.
+        
+        Args:
+            update_interval: Update interval in seconds
+        """
+        self.discover_topology()
+        
+        round_num = 0
+        
         while True:
-            data = self.db.get_newest_splitting_ratio()
-            print(data)
-            # Assign streams to different paths based its ratio
-            conn_budget = defaultdict(lambda: ecmp_bps)
-            conn_assign = defaultdict(lambda: [])
-            for src_id, dst_id, sock_id, bps in data:
-                max_budget = -float("inf")
-                max_route = -1
-                f_break = False
-                # Loop through all the paths, and place the stream in the first path with enough budget
-                for route_id in self.npaths:
-                    budget = conn_budget[(src_id, dst_id, route_id)]
-                    if budget >= bps:
-                        conn_budget[(src_id, dst_id, route_id)] -= bps
-                        conn_assign[(src_id, dst_id, route_id)].append(
-                            [int(s) for s in sock_id.split(":")]
-                        )
-                        f_break = True
-                        break
-                    # Keep track of the route with the most remaining budget for future
-                    if conn_budget[(src_id, dst_id, route_id)] > max_budget:
-                        max_budget = budget
-                        max_route = route_id
-
-                # if no route has enough remaining budget, we assign to the route with largest remaining
-                if not f_break:
-                    conn_budget[(src_id, dst_id, max_route)] -= bps
-                    conn_assign[(src_id, dst_id, max_route)].append(
-                        [int(s) for s in sock_id.split(":")]
-                    )
-
-            # Install the route assignment.
-            cursor = self.db.get_cursor()
-            for key, val in conn_assign.items():
-                (src_id, dst_id, route_id) = key
-                conns = [[int(s) for s in conn.split(":")] for conn in val]
-                path = self.db.get_path_hops(src_id, dst_id, route_id)
-                self.db.install_route(
-                    cursor=cursor,
-                    route_id=route_id,
-                    src=src_id,
-                    dst=dst_id,
-                    path=path,
-                    streams=conns,
-                )
-            # Sync to db.
-            self.db.sync_db(cursor)
+            print(f"\n=== Round {round_num} ===")
+            
+            nodes = list(self.topology['nodes'])
+            node_pairs = [(src, dst) for src in nodes for dst in nodes if src != dst]
+            
+            total_updates = 0
+            
+            for src, dst in node_pairs:
+                best_paths = self.select_best_paths(src, dst)
+                
+                if not best_paths:
+                    continue
+                
+                current_routes = [
+                    (route_id, self.db.edges_to_path(edges))
+                    for s, d, route_id, edges in self.db.get_all_routes()
+                    if s == src and d == dst
+                ]
+                
+                current_paths = set(tuple(path) for _, path in current_routes)
+                new_paths = set(tuple(path) for path in best_paths)
+                
+                if current_paths != new_paths:
+                    print(f"Updating routes for {src} -> {dst}")
+                    print(f"  Old paths: {len(current_routes)}")
+                    print(f"  New paths: {len(best_paths)}")
+                    
+                    self.db.update_routes(src, dst, best_paths)
+                    total_updates += 1
+            
+            print(f"\nStatistics:")
+            print(f"  Route table updates: {total_updates}")
+            
+            route_util = self.db.get_route_utilization()
+            if route_util:
+                print(f"  Active routes: {len(route_util)}")
+                total_bps = sum(route_util.values())
+                print(f"  Total traffic: {total_bps / 1e9:.2f} Gbps")
+            
+            flow_dist = self.db.get_flow_distribution()
+            if flow_dist:
+                print(f"  Flow pairs: {len(flow_dist)}")
+                for (src, dst), routes in flow_dist.items():
+                    print(f"    {src}->{dst}: {sum(routes.values())} flows across {len(routes)} routes")
+            
+            round_num += 1
             sleep(update_interval)
 
 
@@ -84,35 +206,9 @@ if __name__ == "__main__":
         "password": "pgpwrd",
         "host": "127.0.0.1",
         "port": "5432",
-        "database": "strato",
+        "database": "nextmini",
     }
-    alg = Algorithm(creds, 2)
-    alg.run(30)
-
-"""
-1.To quickly test if the algorithm works, starts two stato nodes with the following configuration in the controller's config.json:
-{
-    "protocol": "quic",
-    "num_paths": 3,
-    "routes_preset": {
-        "type": "full_mesh",
-        "n_nodes": 3,
-        "route_ids": [0, 1]
-    }
-}
-
-2.Then, attach to each of the strato nodes, any one of them can be the server and the other will be the client.
-
-3.On server node, run:
-iperf3 -s & iperf3 -s -p 5202 & iperf3 -s -p 5203
-
-4.On client node, run:
-iperf3 -c 10.0.0.2 -p 5201 -u -b 200M -n 10G & iperf3 -c 10.0.0.2 -p 5202 -u -b 100M -n 10G & iperf3 -c 10.0.0.2 -p 5203 -u -b 100M -n 10G
-
-5.Observe the flow distribution among the two paths between the two nodes, the first path should have around 300mbps throughput, while the second path 100.
-
-6.Now, run this script, and wait for a few seconds to allow the routes to be installed.
-
-7.Observer the flow distribution again, it should now be around 200 on each path
-"""
-#
+    
+    alg = ECMPAlgorithm(creds, num_paths=3)
+    
+    alg.run(update_interval=30)

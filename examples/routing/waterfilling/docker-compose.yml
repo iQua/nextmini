@@ -26,7 +26,7 @@ services:
       network:
         ipv4_address: 172.16.8.2
     volumes:
-      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
 
   controller:
@@ -59,14 +59,13 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./iperf3_c.sh:/var/nextmini/iperf3_c.sh
       - ./config.toml:/var/nextmini/config.toml
       - ../../../tools/:/var/nextmini/tools
     depends_on:
       - controller
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_c.sh && sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node2:
     container_name: node2
@@ -81,7 +80,6 @@ services:
     stdin_open: true
     privileged: true
     volumes:
-      - ./iperf3_s.sh:/var/nextmini/iperf3_s.sh
       - ./config.toml:/var/nextmini/config.toml
       - ../../../tools/:/var/nextmini/tools
     depends_on:
@@ -89,7 +87,7 @@ services:
       - node1
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 7 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "sleep 7 && /var/nextmini/nextmini ws://controller:3000"
 
   node3:
     container_name: node3
