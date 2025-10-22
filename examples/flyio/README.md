@@ -2,14 +2,38 @@
 
 Deploy Nextmini to Fly.io using optimized Docker images with cargo-chef and Alpine Linux.
 
-## Quick Deployment with One Command
+## Prerequisites
 
-Firstly install the flyctl:
+### 1. Install flyctl
+
 ```bash
 # Install flyctl
 curl -L https://fly.io/install.sh | sh
-flyctl auth login
+
+# Add to PATH (copy the output from installer or manually add)
+export FLYCTL_INSTALL="/home/$USER/.fly"
+export PATH="$FLYCTL_INSTALL/bin:$PATH"
+
+# Permanently add to shell profile
+echo 'export FLYCTL_INSTALL="/home/$USER/.fly"' >> ~/.bashrc
+echo 'export PATH="$FLYCTL_INSTALL/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify installation
+flyctl version
 ```
+
+### 2. Login to Fly.io
+
+```bash
+# Login (opens browser for authentication)
+flyctl auth login
+
+# Verify you're logged in
+flyctl auth whoami
+```
+
+## Quick Deployment
 
 ```bash
 # Deploy everything
