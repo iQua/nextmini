@@ -241,17 +241,20 @@ impl UserSpaceClient {
                     Some(controller_id) => {
                         self.flowstats_reporter
                             .report_user_flow_start(self.flow_id, controller_id);
+
                         self.start_reported = true;
+
                         info!(
                             "Reported start of user-space flow {} from node {} to node {}.",
                             controller_id, self.flow.src_node_id, self.flow.dst_node_id
                         );
                     }
                     None => {
-                        warn!(
-                            "User-space flow from node {} to node {} lacks controller_id; start will not be reported.",
+                        error!(
+                            "User-space flow from node {} to node {} was not from the controller.",
                             self.flow.src_node_id, self.flow.dst_node_id
                         );
+
                         self.start_reported = true;
                     }
                 }

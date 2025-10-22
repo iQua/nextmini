@@ -66,9 +66,9 @@ pub struct UserSpaceFlowStart {
 
 pub enum FlowStatsMessage {
     AppFlowStart(AppFlowStart),
+    UserFlowStart(UserSpaceFlowStart),
     RouteAssigned(RouteAssigned),
     FlowFinished(FlowFinished),
-    UserFlowStart(UserSpaceFlowStart),
 }
 
 #[derive(Debug, Clone)]
@@ -134,7 +134,7 @@ impl FlowStatsReporterHandle {
             }))
         {
             error!(
-                "Error sending app flow message to the flowstats reporter: {}.",
+                "Error sending an AppFlowStart message to FlowStatsReporter: {}.",
                 e
             );
         }
@@ -151,7 +151,7 @@ impl FlowStatsReporterHandle {
             }))
         {
             error!(
-                "Error sending flow finished message to the flowstats reporter: {}.",
+                "Error sending a FlowFinished message to FlowStatsReporter: {}.",
                 e
             );
         }
@@ -168,7 +168,7 @@ impl FlowStatsReporterHandle {
             }))
         {
             error!(
-                "Error sending user-space flow start message to the flowstats reporter: {}.",
+                "Error sending a UserFlowStart message to FlowStatsReporter: {}.",
                 e
             );
         }
@@ -398,12 +398,10 @@ impl FlowStatsReporter {
                     }
                 } else if let Some(controller_id) = flow_finished.controller_id {
                     let finish_time = flow_finished.finish_time;
+
                     if let Some(stats) = self.user_flow_starts.remove(&flow_id) {
                         if controller_id != stats.controller_id {
-                            warn!(
-                                "Controller ID mismatch for flow {:?}: start={}, finish={:?}. Using finish controller_id.",
-                                flow_id, stats.controller_id, controller_id
-                            );
+                            error!("Controller ID mismatch for flow {}.", flow_id);
                         }
 
                         self.pending_user_flow_finishes.push(FlowFinishedInfo {
@@ -425,20 +423,20 @@ impl FlowStatsReporter {
                             finish_time,
                         });
 
-                        warn!(
-                            "Flow {:?} finished (user space) without a recorded start. Using finish_time as start_time.",
+                        error!(
+                            "User-space flow {:?} finished without a recorded start.",
                             flow_id
                         );
                     }
                     if self.pending_routes.remove(&flow_id).is_some() {
                         debug!(
-                            "Removed pending route for user-space flow {:?} after finish.",
+                            "Removed pending route for user-space flow {:?} after it finished.",
                             flow_id
                         );
                     }
                 } else if self.pending_routes.remove(&flow_id).is_some() {
-                    debug!(
-                        "Dropping pending route for flow {:?} because it finished before AppFlowStart.",
+                    error!(
+                        "Removed pending route for flow {:?} because it finished before AppFlowStart.",
                         flow_id
                     );
                 }
