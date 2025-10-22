@@ -46,7 +46,7 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
-    SetFlowStatsReporter(FlowStatsReporterHandle),
+    SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
 }
 
 #[derive(Clone, Debug)]
@@ -198,10 +198,11 @@ impl ProcessorHandle {
     }
 
     pub async fn set_flowstats_reporter(&self, flowstats_reporter: FlowStatsReporterHandle) {
+        let broadcast_reporter = flowstats_reporter.clone();
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::SetFlowStatsReporter(
-                flowstats_reporter.clone(),
+                Box::new(broadcast_reporter),
             ))
         {
             error!(
@@ -606,7 +607,7 @@ impl Processor {
                 }
             }
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
-                self.flowstats_reporter = Some(flowstats_reporter);
+                self.flowstats_reporter = Some(*flowstats_reporter);
             }
         }
     }
