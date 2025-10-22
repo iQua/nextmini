@@ -1,0 +1,35 @@
+# Fly.io configuration for Nextmini Controller
+app = "nextmini-controller"
+primary_region = "iad"  # Change to your preferred region
+
+[build]
+  dockerfile = "Dockerfile.controller"
+  # Build context is the repository root
+  build-target = "runtime"
+
+[env]
+  RUST_LOG = "info"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 3000
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 3000
+
+# VM Configuration
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+
+# Mount config file
+[[files]]
+  guest_path = "/app/controller-config.toml"
+  local_path = "examples/flyio/controller-config.toml"
+
+# PostgreSQL Database (create separately with fly postgres)
+# Then attach: fly postgres attach <postgres-app-name>
+

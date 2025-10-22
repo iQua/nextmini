@@ -1,10 +1,11 @@
 [workspace]
-members = [
-    "messages", 
-    "controller", 
-    "dataplane", 
-    "cert-gen", 
-    "examples/sba-swarm/ring-emu",
-    "examples/bare-metal/ring-emu"
-]
+# members = [
+#     "messages", 
+#     "controller", 
+#     "dataplane", 
+#     "cert-gen", 
+#     "examples/sba-swarm/ring-emu",
+#     "examples/bare-metal/ring-emu"
+# ]
+members = ["messages", "controller", "dataplane", "cert-gen"]
 resolver = "3"

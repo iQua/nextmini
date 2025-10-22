@@ -1,0 +1,15 @@
+# Fly.io network interface (usually eth0)
+private_network_interface = "eth0"
+private_network_name = "flynet"
+num_tun_queues = 1
+num_packet_processors = 4
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+
+# These should be set via environment variables or fly secrets
+# controller_addr = "ws://<controller-app>.internal:3000"
+# node_id = 1
+public_network_port = "8080"
+
+
