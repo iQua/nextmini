@@ -246,8 +246,8 @@ impl FlowStatsReporter {
             pending_routes: AHashMap::default(),
             pending_send: AHashMap::default(),
             pending_assignments: HashSet::default(),
-            pending_user_flow_finishes: Vec::new(),
             pending_user_flow_starts: Vec::new(),
+            pending_user_flow_finishes: Vec::new(),
             user_flow_starts: AHashMap::default(),
         }
     }
@@ -279,14 +279,14 @@ impl FlowStatsReporter {
                         flow_id
                     );
                 } else {
-                    let time = app_flow.start_time;
+                    let start_time = app_flow.start_time;
 
                     self.finished_flows.remove(&flow_id);
 
                     let pending_route = self.pending_routes.remove(&flow_id);
 
                     if let Some(pending) = pending_route.as_ref() {
-                        let wait_ms = time.saturating_sub(pending.assignment_time);
+                        let wait_ms = start_time.saturating_sub(pending.assignment_time);
                         if wait_ms > 0 {
                             debug!(
                                 "Flow {:?} started {} ms after route assignment.",
@@ -297,7 +297,7 @@ impl FlowStatsReporter {
 
                     let flow_stats = FlowStats {
                         flow_id,
-                        start_time: time,
+                        start_time,
                         finish_time: None,
                         src_node_id: app_flow.src_node_id,
                         dst_node_id: app_flow.dst_node_id,
@@ -306,7 +306,7 @@ impl FlowStatsReporter {
                     };
 
                     self.active_flows.insert(flow_id, flow_stats.clone());
-                    self.pending_send.insert((flow_id, time), flow_stats);
+                    self.pending_send.insert((flow_id, start_time), flow_stats);
                 }
             }
             FlowStatsMessage::RouteAssigned(route_assigned) => {
@@ -409,7 +409,7 @@ impl FlowStatsReporter {
                         self.pending_user_flow_finishes.push(FlowFinishedInfo {
                             flow_id: flow_id.to_be_bytes(),
                             controller_id: Some(controller_id),
-                            time: stats.start_time,
+                            start_time: stats.start_time,
                             finish_time,
                         });
 
@@ -421,7 +421,7 @@ impl FlowStatsReporter {
                         self.pending_user_flow_finishes.push(FlowFinishedInfo {
                             flow_id: flow_id.to_be_bytes(),
                             controller_id: Some(controller_id),
-                            time: finish_time,
+                            start_time: finish_time,
                             finish_time,
                         });
 
@@ -454,7 +454,7 @@ impl FlowStatsReporter {
                     .insert(user_flow_start.flow_id, stats.clone())
                 {
                     warn!(
-                        "Replacing existing user-space flow start for {:?}. Old start_time={}, controller_id={}",
+                        "Replacing existing user-space flow start for {:?}. Old start_time: {}, controller_id: {}",
                         user_flow_start.flow_id, existing.start_time, existing.controller_id
                     );
                 }
@@ -493,7 +493,7 @@ impl FlowStatsReporter {
                 flow_id: flow_stats.flow_id.to_be_bytes(),
                 src_node_id: flow_stats.src_node_id,
                 dst_node_id: flow_stats.dst_node_id,
-                time: flow_stats.start_time,
+                start_time: flow_stats.start_time,
             });
 
             if let Some(route_id) = flow_stats.route_id {
@@ -508,17 +508,17 @@ impl FlowStatsReporter {
                 finished_infos.push(FlowFinishedInfo {
                     flow_id: flow_stats.flow_id.to_be_bytes(),
                     controller_id: flow_stats.controller_id,
-                    time: flow_stats.start_time,
+                    start_time: flow_stats.start_time,
                     finish_time,
                 });
             }
         }
 
-        for (flow_id, route_id, time) in self.pending_assignments.drain() {
+        for (flow_id, route_id, start_time) in self.pending_assignments.drain() {
             assignments.push(RouteAssignment {
                 flow_id: flow_id.to_be_bytes(),
                 route_id,
-                time,
+                time: start_time,
             });
         }
 
@@ -627,7 +627,7 @@ mod tests {
         if let DataplaneToController::AppFlowStart { appflows } = app_flow_msg {
             assert_eq!(appflows.len(), 1);
             assert_eq!(appflows[0].flow_id, flow_id.to_be_bytes());
-            assert_eq!(appflows[0].time, 40_000);
+            assert_eq!(appflows[0].start_time, 40_000);
         } else {
             panic!("first message should be AppFlowStart");
         }
@@ -660,7 +660,7 @@ mod tests {
             dst_node_id: 2,
             start_time: 1000,
         }));
-        
+
         set_current_time_millis_for_test(2000);
         reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
             flow_id: 42,
@@ -694,7 +694,7 @@ mod tests {
         let msg = rx.recv().await.unwrap();
         if let DataplaneToController::AppFlowStart { appflows } = msg {
             assert_eq!(appflows.len(), 1);
-            assert_eq!(appflows[0].time, 3000);
+            assert_eq!(appflows[0].start_time, 3000);
         }
 
         // No FlowFinished should be sent (late one ignored)
@@ -730,7 +730,7 @@ mod tests {
         let msg = rx.recv().await.unwrap();
         if let DataplaneToController::AppFlowStart { appflows } = msg {
             assert_eq!(appflows.len(), 1);
-            assert_eq!(appflows[0].time, 1000); // First one
+            assert_eq!(appflows[0].start_time, 1000); // First one
         }
 
         assert!(rx.try_recv().is_err());
@@ -769,7 +769,7 @@ mod tests {
 
         rx.recv().await; // AppFlowStart
         let msg = rx.recv().await.unwrap();
-        
+
         // Should receive both route assignments (order-agnostic)
         if let DataplaneToController::RouteAssigned { assignments } = msg {
             assert_eq!(assignments.len(), 2);
@@ -801,7 +801,7 @@ mod tests {
         let msg = rx.recv().await.unwrap();
         if let DataplaneToController::FlowFinished { flows } = msg {
             assert_eq!(flows.len(), 1);
-            assert_eq!(flows[0].time, 1000); // start_time = finish_time
+            assert_eq!(flows[0].start_time, 1000); // start_time = finish_time
             assert_eq!(flows[0].finish_time, 1000);
             assert_eq!(flows[0].controller_id, Some(1));
         } else {
@@ -834,11 +834,11 @@ mod tests {
 
         rx.recv().await; // UserFlowStart
         let msg = rx.recv().await.unwrap();
-        
+
         if let DataplaneToController::FlowFinished { flows } = msg {
             assert_eq!(flows.len(), 1);
             assert_eq!(flows[0].controller_id, Some(2)); // Uses finish controller_id
-            assert_eq!(flows[0].time, 1000); // Uses start time
+            assert_eq!(flows[0].start_time, 1000); // Uses start time
         } else {
             panic!("Expected FlowFinished");
         }
@@ -935,7 +935,7 @@ mod tests {
             dst_node_id: 2,
             start_time: 1000,
         }));
-        
+
         set_current_time_millis_for_test(2000);
         reporter.handle_message(FlowStatsMessage::FlowFinished(FlowFinished {
             flow_id: 42,
@@ -967,4 +967,3 @@ mod tests {
         }
     }
 }
-

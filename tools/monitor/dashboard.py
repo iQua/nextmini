@@ -216,7 +216,7 @@ class Database:
                    af.dst_node_id,
                    af.route_id,
                    af.is_finished,
-                   af.time,
+                   af.start_time,
                    af.finish_time
             FROM app_flows af
             WHERE af.src_node_id IS NOT NULL
@@ -238,7 +238,7 @@ class Database:
         self.t_app_flows.add_column("Duration (ms)", justify="center")
         self.t_app_flows.add_column("Status", justify="center")
 
-        for flow_id_int, flow_tuple, src, dst, route_id, is_finished, time_ms, finish_time_ms in flows:
+        for flow_id_int, flow_tuple, src, dst, route_id, is_finished, start_time_ms, finish_time_ms in flows:
             src_dst = (
                 f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
                 if src and dst
@@ -248,11 +248,11 @@ class Database:
                 f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
             )
             
-            start_time_display = styled_timestamp(time_ms)
+            start_time_display = styled_timestamp(start_time_ms)
             finish_time_display = styled_timestamp(finish_time_ms)
 
             duration_value = (
-                format_duration_ms(time_ms, finish_time_ms) if is_finished else None
+                format_duration_ms(start_time_ms, finish_time_ms) if is_finished else None
             )
             duration_display = styled_duration(duration_value)
 

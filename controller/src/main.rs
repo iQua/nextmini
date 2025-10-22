@@ -468,7 +468,7 @@ async fn handle_connection(
                                 )
                                 .bind(id)
                                 .bind(flow_finished.finish_time)
-                                .bind(flow_finished.time)
+                                .bind(flow_finished.start_time)
                                 .execute(&*db_pool)
                                 .await
                                 {
@@ -486,7 +486,7 @@ async fn handle_connection(
                             } else {
                                 // application flows reading from TUN interface without controller_id
                                 let flow_id_slice = flow_id.as_ref();
-                                let time = flow_finished.time;
+                                let start_time = flow_finished.start_time;
                                 let finish_time = flow_finished.finish_time;
 
                                 // Debug!: this message is now used for debugging
@@ -502,7 +502,7 @@ async fn handle_connection(
                                     flow_id_slice[6],
                                     flow_id_slice[7],
                                     u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
-                                    time,
+                                    start_time,
                                     finish_time
                                 );
 
@@ -512,11 +512,11 @@ async fn handle_connection(
                                     r#"
                                     UPDATE app_flows
                                     SET is_finished = TRUE, finish_time = $3
-                                    WHERE flow_id = $1 AND time = $2
+                                    WHERE flow_id = $1 AND start_time = $2
                                     "#,
                                 )
                                 .bind(flow_id_slice)
-                                .bind(time)
+                                .bind(start_time)
                                 .bind(finish_time)
                                 .execute(&*db_pool)
                                 .await
@@ -524,12 +524,12 @@ async fn handle_connection(
                                     Ok(result) => {
                                         if result.rows_affected() > 0 {
                                             info!(
-                                                "Marked application flow as finished (time: {}).",
-                                                time
+                                                "Marked application flow as finished (start_time: {}).",
+                                                start_time
                                             );
                                         } else {
                                             warn!(
-                                                "FlowFinished for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (time={}). \
+                                                "FlowFinished for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}). \
                                                 Either AppFlowStart hasn't arrived or flow_id was reused.",
                                                 flow_id_slice[0],
                                                 flow_id_slice[1],
@@ -547,7 +547,7 @@ async fn handle_connection(
                                                     flow_id_slice[10],
                                                     flow_id_slice[11]
                                                 ]),
-                                                time
+                                                start_time
                                             );
                                         }
                                     }
@@ -561,23 +561,23 @@ async fn handle_connection(
                     DataplaneToController::AppFlowStart { appflows } => {
                         for appflow in appflows {
                             let flow_id_slice = appflow.flow_id.as_ref();
-                            let time = appflow.time;
+                            let start_time = appflow.start_time;
 
                             // checks if the record already exists to avoid consuming sequence numbers
                             match sqlx::query(
                                 r#"
-                                SELECT 1 FROM app_flows WHERE flow_id = $1 AND time = $2
+                                SELECT 1 FROM app_flows WHERE flow_id = $1 AND start_time = $2
                                 "#,
                             )
                             .bind(flow_id_slice)
-                            .bind(time)
+                            .bind(start_time)
                             .fetch_optional(&*db_pool)
                             .await
                             {
                                 Ok(Some(_)) => {
                                     // if the record already exists, skips insertion
                                     info!(
-                                        "Duplicate AppFlowStart ignored (flow_id + time already exists)."
+                                        "Duplicate AppFlowStart ignored (flow_id + start_time already exists)."
                                     );
                                     continue;
                                 }
@@ -593,12 +593,12 @@ async fn handle_connection(
                             // inserts the new record
                             match sqlx::query(
                                 r#"
-                                INSERT INTO app_flows (flow_id, time, src_node_id, dst_node_id, is_finished)
+                                INSERT INTO app_flows (flow_id, start_time, src_node_id, dst_node_id, is_finished)
                                 VALUES ($1, $2, $3, $4, FALSE)
                                 "#,
                             )
                             .bind(flow_id_slice)
-                            .bind(time)
+                            .bind(start_time)
                             .bind(appflow.src_node_id as i32)
                             .bind(appflow.dst_node_id as i32)
                             .execute(&*db_pool)
@@ -606,8 +606,8 @@ async fn handle_connection(
                             {
                                 Ok(_) => {
                                     info!(
-                                        "Registered new app flow from node {} to {} at time {}.",
-                                        appflow.src_node_id, appflow.dst_node_id, time
+                                        "Registered new app flow from node {} to {} at start_time {}.",
+                                        appflow.src_node_id, appflow.dst_node_id, start_time
                                     );
                                 }
                                 Err(e) => error!("Failed to insert app flow: {}.", e),
@@ -618,12 +618,12 @@ async fn handle_connection(
                         for assignment in assignments {
                             let flow_id = assignment.flow_id;
                             let route_id = assignment.route_id;
-                            let time = assignment.time;
+                            let start_time = assignment.time;
                             let flow_id_slice = flow_id.as_ref();
 
                             // Debug!: this message is now used for debugging
                             info!(
-                                "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {} at time {}.",
+                                "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {} at start_time {}.",
                                 flow_id_slice[0],
                                 flow_id_slice[1],
                                 flow_id_slice[2],
@@ -635,7 +635,7 @@ async fn handle_connection(
                                 flow_id_slice[7],
                                 u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
                                 route_id,
-                                time
+                                start_time
                             );
 
                             // updates route_id in app_flows table (only if flow already exists)
@@ -643,19 +643,19 @@ async fn handle_connection(
                                 r#"
                                 UPDATE app_flows
                                 SET route_id = $1
-                                WHERE flow_id = $2 AND time = $3
+                                WHERE flow_id = $2 AND start_time = $3
                                 "#,
                             )
                             .bind(route_id as i32)
                             .bind(flow_id_slice)
-                            .bind(time)
+                            .bind(start_time)
                             .execute(&*db_pool)
                             .await
                             {
                                 Ok(result) => {
                                     if result.rows_affected() == 0 {
                                         info!(
-                                            "RouteAssigned for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (time={}). \
+                                            "RouteAssigned for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}). \
                                             Likely arrived before AppFlowStart.",
                                             flow_id_slice[0],
                                             flow_id_slice[1],
@@ -673,11 +673,11 @@ async fn handle_connection(
                                                 flow_id_slice[10],
                                                 flow_id_slice[11]
                                             ]),
-                                            time
+                                            start_time
                                         );
                                     } else {
                                         info!(
-                                            "Updated route_id={} for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (time: {}).",
+                                            "Updated route_id={} for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}).",
                                             route_id,
                                             flow_id_slice[0],
                                             flow_id_slice[1],
@@ -695,7 +695,7 @@ async fn handle_connection(
                                                 flow_id_slice[10],
                                                 flow_id_slice[11]
                                             ]),
-                                            time
+                                            start_time
                                         );
                                     }
                                 }

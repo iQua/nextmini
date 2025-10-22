@@ -24,6 +24,7 @@ async fn create_db(pool: &Pool<Postgres>) {
     // public_network_addr: Address of the node in the public network, when connecting to other private networks
     // over the public internet.
     // virtual_network_addr: Address of the node in the virtual network, established by Nextmini.
+    // start_time: Timestamp when the dataplane observed the first payload packet.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS nodes (
@@ -107,13 +108,13 @@ async fn create_db(pool: &Pool<Postgres>) {
         CREATE TABLE IF NOT EXISTS app_flows (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL,
-            time BIGINT NOT NULL,
+            start_time BIGINT NOT NULL,
             src_node_id INTEGER,
             dst_node_id INTEGER,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE,
             finish_time BIGINT,
             route_id INTEGER,
-            UNIQUE (flow_id, time)
+            UNIQUE (flow_id, start_time)
         )
         "#,
     )

@@ -41,7 +41,7 @@ pub struct AppFlow {
     pub flow_id: [u8; 16],
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    pub time: i64,
+    pub start_time: i64,
 }
 
 /// The information about a finished flow.
@@ -49,7 +49,7 @@ pub struct AppFlow {
 pub struct FlowFinishedInfo {
     pub flow_id: [u8; 16],
     pub controller_id: Option<i32>,
-    pub time: i64,
+    pub start_time: i64,
     pub finish_time: i64,
 }
 
