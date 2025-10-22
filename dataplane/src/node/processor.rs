@@ -212,7 +212,7 @@ impl ProcessorHandle {
 
         if let Err(e) = self
             .connector_message_sender()
-            .send(ConnectorMessage::SetFlowStatsReporter(flowstats_reporter))
+            .send(ConnectorMessage::SetFlowStatsReporter(Box::new(flowstats_reporter)))
             .await
         {
             error!(
@@ -238,7 +238,7 @@ impl ProcessorHandle {
     pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
         if let Err(e) = self
             .connector_message_sender()
-            .send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client))
+            .send(ConnectorMessage::ConnectTcpMaxClient(Box::new(tcp_max_client)))
             .await
         {
             error!(

@@ -17,20 +17,36 @@ use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topology::topo;
 
+/// Bundles the parameters required to build a startup message for the dataplane.
+#[derive(Clone, Debug)]
+pub struct StartupResponseParams {
+    pub node_id: usize,
+    pub net_mask: Ipv4Addr,
+    pub virtual_base_addr: Ipv4Addr,
+    pub user_space_base_addr: Ipv4Addr,
+    pub external_base_addr: Ipv4Addr,
+    pub max_server_port: u16,
+    pub protocol: Protocol,
+    pub scheduler_type: SchedulingDiscipline,
+    pub node_spec: Option<NodeSpec>,
+}
+
 /// Builds a startup message for the dataplane, which includes basic information about the node.
-pub fn build_startup_response(
-    node_id: usize,
-    net_mask: Ipv4Addr,
-    virtual_base_addr: Ipv4Addr,
-    user_space_base_addr: Ipv4Addr,
-    external_base_addr: Ipv4Addr,
-    max_server_port: u16,
-    protocol: Protocol,
-    scheduler_type: SchedulingDiscipline,
-    nodes: Option<NodeSpec>,
-) -> ControllerToDataplane {
+pub fn build_startup_response(params: StartupResponseParams) -> ControllerToDataplane {
+    let StartupResponseParams {
+        node_id,
+        net_mask,
+        virtual_base_addr,
+        user_space_base_addr,
+        external_base_addr,
+        max_server_port,
+        protocol,
+        scheduler_type,
+        node_spec,
+    } = params;
+
     // Set default node specification if None
-    let node_spec = nodes.unwrap_or(NodeSpec {
+    let node_spec = node_spec.unwrap_or(NodeSpec {
         node_id,
         operating_mode: OperatingMode::Normal,
     });

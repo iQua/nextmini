@@ -19,9 +19,9 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 pub enum ConnectorMessage {
     AddNodeAddress(NodeId, String),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    ConnectTcpMaxClient(TcpMaxClient),
+    ConnectTcpMaxClient(Box<TcpMaxClient>),
     InboundMaxRequest(FlowId, TcpStream),
-    SetFlowStatsReporter(FlowStatsReporterHandle),
+    SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
 }
 
 pub struct Connector {
@@ -91,7 +91,7 @@ impl Connector {
     async fn handle_message(&mut self, msg: ConnectorMessage) {
         match msg {
             ConnectorMessage::ConnectTcpMaxClient(tcp_max_client) => {
-                self.tcp_max_client = Some(tcp_max_client);
+                self.tcp_max_client = Some(*tcp_max_client);
             }
             ConnectorMessage::AddNodeAddress(node_id, address) => {
                 self.node_addresses.insert(node_id, address);
@@ -103,7 +103,7 @@ impl Connector {
                 self.handle_inbound_request(flow_id, stream).await;
             }
             ConnectorMessage::SetFlowStatsReporter(flowstats_reporter) => {
-                self.flowstats_reporter = Some(flowstats_reporter);
+                self.flowstats_reporter = Some(*flowstats_reporter);
             }
         }
     }

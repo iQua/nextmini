@@ -26,7 +26,7 @@ use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
 use crate::models::{DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
-use crate::utils::{build_routes_for_node, build_startup_response};
+use crate::utils::{build_routes_for_node, build_startup_response, StartupResponseParams};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 pub type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -206,17 +206,17 @@ async fn handle_connection(
                             .cloned();
 
                         // sends the startup response
-                        let response = build_startup_response(
+                        let response = build_startup_response(StartupResponseParams {
                             node_id,
-                            config.net_mask,
-                            config.base_addr,
-                            config.user_space_base_addr,
-                            config.external_base_addr,
-                            config.max_server_port,
-                            config.protocol.clone(),
-                            config.scheduler_type,
+                            net_mask: config.net_mask,
+                            virtual_base_addr: config.base_addr,
+                            user_space_base_addr: config.user_space_base_addr,
+                            external_base_addr: config.external_base_addr,
+                            max_server_port: config.max_server_port,
+                            protocol: config.protocol.clone(),
+                            scheduler_type: config.scheduler_type,
                             node_spec,
-                        );
+                        });
 
                         match write_arc
                             .lock()
