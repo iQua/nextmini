@@ -15,7 +15,7 @@ use crate::config;
 use crate::models::{DbFlow, Route};
 use crate::routing;
 use crate::routing::RoutingProtocol;
-use crate::topo::topo;
+use crate::topology::topo;
 
 /// Builds a startup message for the dataplane, which includes basic information about the node.
 pub fn build_startup_response(

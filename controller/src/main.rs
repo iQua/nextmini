@@ -4,7 +4,7 @@ mod models;
 mod new_node;
 mod route_ser;
 mod routing;
-mod topo;
+mod topology;
 mod utils;
 
 use std::collections::{HashMap, HashSet};
@@ -254,7 +254,7 @@ async fn handle_connection(
 
                         // gets the topology edges
                         let topology_edges =
-                            topo::topo::build_topology(&config).unwrap_or_default();
+                            topology::topo::build_topology(&config).unwrap_or_default();
 
                         // collects neighbors of the new node
                         let mut neighbors: HashSet<i32> = HashSet::new();
