@@ -31,6 +31,12 @@ chmod +x deploy.sh
 ./deploy.sh
 ```
 
+To ssh into the nodes:
+
+```bash
+flyctl ssh console -a nextmini-node-1
+```
+
 Follow the prompts to deploy database, controller, and dataplane nodes.
 
 ## Manual Deployment
