@@ -367,9 +367,10 @@ impl FlowStore {
 
         if let Some(entry) = self.entries.get(&flow_id)
             && let FlowEntry::App(app_entry) = entry
-                && matches!(app_entry.stage, AppStage::Active) {
-                    return;
-                }
+            && matches!(app_entry.stage, AppStage::Active)
+        {
+            return;
+        }
 
         let pending_route = match self.entries.remove(&flow_id) {
             Some(FlowEntry::Pending(pending)) => pending.route_id,
@@ -516,13 +517,13 @@ impl FlowStore {
         if let Some(existing) = self.entries.insert(
             flow_id,
             FlowEntry::User(UserFlowEntry::new(user_flow_start)),
-        )
-            && let FlowEntry::User(prev) = existing {
-                warn!(
-                    "Replacing existing user-space flow start for {:?}. Old start_time: {}, controller_id: {}",
-                    flow_id, prev.start_time, prev.controller_id
-                );
-            }
+        ) && let FlowEntry::User(prev) = existing
+        {
+            warn!(
+                "Replacing existing user-space flow start for {:?}. Old start_time: {}, controller_id: {}",
+                flow_id, prev.start_time, prev.controller_id
+            );
+        }
     }
 
     fn flush(&mut self, now_ms: i64) -> FlushOutput {
@@ -559,9 +560,10 @@ impl FlowStore {
 
                 if matches!(app_entry.stage, AppStage::Finished)
                     && let Some(finish_time) = app_entry.finish_time
-                        && now_ms - finish_time > TTL_MS {
-                            return false;
-                        }
+                    && now_ms - finish_time > TTL_MS
+                {
+                    return false;
+                }
 
                 true
             }

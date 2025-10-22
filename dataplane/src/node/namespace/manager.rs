@@ -59,9 +59,10 @@ impl NamespaceManager {
 
         // sets up host forwarding/NAT if configured
         if self.config.auto_enable_ip_forward
-            && let Err(e) = ensure_ip_forward_enabled() {
-                error!("Failed to enable ip_forward: {}", e);
-            }
+            && let Err(e) = ensure_ip_forward_enabled()
+        {
+            error!("Failed to enable ip_forward: {}", e);
+        }
         if self.config.auto_add_forward_rules || self.config.auto_add_nat {
             // detects outbound interface
             let out_if = std::process::Command::new("/bin/sh")
@@ -72,13 +73,15 @@ impl NamespaceManager {
                 .unwrap_or_else(|_| "ens3".to_string());
 
             if self.config.auto_add_forward_rules
-                && let Err(e) = ensure_forward_rules(&self.config.bridge_name, &out_if) {
-                    error!("Failed to add FORWARD rules: {}.", e);
-                }
+                && let Err(e) = ensure_forward_rules(&self.config.bridge_name, &out_if)
+            {
+                error!("Failed to add FORWARD rules: {}.", e);
+            }
             if self.config.auto_add_nat
-                && let Err(e) = ensure_nat_masquerade("172.16.0.0/16", &out_if) {
-                    error!("Failed to add MASQUERADE: {}.", e);
-                }
+                && let Err(e) = ensure_nat_masquerade("172.16.0.0/16", &out_if)
+            {
+                error!("Failed to add MASQUERADE: {}.", e);
+            }
         }
 
         // computes the namespace IP addresses
@@ -269,9 +272,10 @@ impl NamespaceManager {
 
         // cleans up the bridge
         if let Some(bridge_idx) = bridge_idx
-            && let Err(e) = delete_namespace(bridge_idx).await {
-                error!("Failed to delete namespace: {}", e);
-            }
+            && let Err(e) = delete_namespace(bridge_idx).await
+        {
+            error!("Failed to delete namespace: {}", e);
+        }
     }
 }
 

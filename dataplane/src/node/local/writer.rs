@@ -29,14 +29,14 @@ impl LocalWriter {
                 shutdown_receiver,
                 packet_receiver,
             )),
-            Feature::Concurrent => LocalWriter::Concurrent(Box::new(
-                ConcurrentLocalWriterProducer::new(
+            Feature::Concurrent => {
+                LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
                     config,
                     device,
                     shutdown_receiver,
                     packet_receiver,
-                ),
-            )),
+                )))
+            }
         }
     }
 

@@ -26,7 +26,7 @@ use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
 use crate::models::{DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
-use crate::utils::{build_routes_for_node, build_startup_response, StartupResponseParams};
+use crate::utils::{StartupResponseParams, build_routes_for_node, build_startup_response};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 pub type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
