@@ -7,14 +7,15 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+echo "==================================="
 echo "Nextmini Fly.io Deployment"
-echo "================================"
+echo "==================================="
 echo ""
 
 # Check if flyctl is installed
 if ! command -v flyctl &> /dev/null; then
     echo "❌ Error: flyctl is not installed"
-    echo "Install it from: https://fly.io/docs/hands-on/install-flyctl/"
+    echo "Install: https://fly.io/docs/hands-on/install-flyctl/"
     exit 1
 fi
 
@@ -25,189 +26,174 @@ if ! flyctl auth whoami &> /dev/null; then
     exit 1
 fi
 
-echo "flyctl is installed and you are logged in"
+echo "✅ flyctl installed and authenticated"
 echo ""
 
-# Step 1: Create PostgreSQL database
-echo "Step 1: Create PostgreSQL Database"
-echo "--------------------------------------"
-read -p "Create new PostgreSQL database? (y/n): " -n 1 -r
+# Configuration
+read -p "Database app name [nextmini-db]: " DB_APP_NAME
+DB_APP_NAME=${DB_APP_NAME:-nextmini-db}
+
+read -p "Controller app name [nextmini-controller]: " CONTROLLER_APP_NAME
+CONTROLLER_APP_NAME=${CONTROLLER_APP_NAME:-nextmini-controller}
+
+read -p "Region [iad]: " REGION
+REGION=${REGION:-iad}
+
+read -p "Number of dataplane nodes [2]: " NUM_NODES
+NUM_NODES=${NUM_NODES:-2}
+
+echo ""
+echo "Configuration:"
+echo "  Database:   $DB_APP_NAME"
+echo "  Controller: $CONTROLLER_APP_NAME"
+echo "  Region:     $REGION"
+echo "  Nodes:      $NUM_NODES"
+echo ""
+read -p "Continue? (y/n): " -n 1 -r
 echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    read -p "Enter database app name [nextmini-db]: " DB_APP_NAME
-    DB_APP_NAME=${DB_APP_NAME:-nextmini-db}
-    
-    read -p "Enter region [sjc]: " DB_REGION
-    DB_REGION=${DB_REGION:-sjc}
-    
+[[ ! $REPLY =~ ^[Yy]$ ]] && exit 0
+
+# ============================================================
+# Step 1: PostgreSQL Database
+# ============================================================
+echo ""
+echo "Step 1: PostgreSQL Database"
+echo "----------------------------"
+
+if flyctl apps list | grep -q "^$DB_APP_NAME"; then
+    echo "⚠️  Database $DB_APP_NAME already exists"
+    read -p "Delete and recreate? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        flyctl apps destroy "$DB_APP_NAME" -y
+    else
+        echo "Using existing database"
+        DB_SKIP=1
+    fi
+fi
+
+if [ -z "$DB_SKIP" ]; then
     echo "Creating PostgreSQL database..."
     flyctl postgres create \
         --name "$DB_APP_NAME" \
-        --region "$DB_REGION" \
+        --region "$REGION" \
         --initial-cluster-size 1 \
-        --vm-size shared-cpu-1x \
+        --vm-size shared-cpu-2x \
         --volume-size 1
     
-    echo ""
-    echo "Database created: $DB_APP_NAME"
-    echo ""
-    echo "Setting up custom user and database..."
-    sleep 10  # Wait for database to be ready
+    echo "⏳ Waiting for database to be ready..."
+    sleep 10
     
-    # Create custom user and database to match local setup
-    flyctl postgres connect -a "$DB_APP_NAME" <<EOF
-CREATE USER pgusr WITH PASSWORD 'pgpwrd';
-CREATE DATABASE nextmini OWNER pgusr;
-GRANT ALL PRIVILEGES ON DATABASE nextmini TO pgusr;
-\q
-EOF
+    echo "Creating user 'pgusr' and database 'nextmini'..."
+    echo -e "CREATE USER pgusr WITH PASSWORD 'pgpwrd' SUPERUSER;\nCREATE DATABASE nextmini OWNER pgusr;\n\\q" | \
+        flyctl postgres connect -a "$DB_APP_NAME"
     
-    echo "User 'pgusr' and database 'nextmini' created"
-else
-    read -p "Enter existing database app name: " DB_APP_NAME
+    echo "Disabling SSL..."
+    echo -e "ALTER SYSTEM SET ssl = off;\nSELECT pg_reload_conf();\n\\q" | \
+        flyctl postgres connect -a "$DB_APP_NAME"
+    
+    echo "Restarting database..."
+    DB_MACHINE_ID=$(flyctl machine list -a "$DB_APP_NAME" -q | head -1 | tr -d '[:space:]')
+    flyctl machine restart "$DB_MACHINE_ID" -a "$DB_APP_NAME"
+    
+    echo "✅ Database ready"
 fi
+
+# ============================================================
+# Step 2: Controller
+# ============================================================
 echo ""
+echo "Step 2: Controller"
+echo "------------------"
 
-# Step 2: Deploy Controller
-echo "Step 2: Deploy Controller"
-echo "-----------------------------"
-read -p "Enter controller app name [nextmini-controller]: " CONTROLLER_APP_NAME
-CONTROLLER_APP_NAME=${CONTROLLER_APP_NAME:-nextmini-controller}
+if flyctl apps list | grep -q "^$CONTROLLER_APP_NAME"; then
+    echo "⚠️  Controller $CONTROLLER_APP_NAME already exists"
+    read -p "Delete and recreate? (y/n): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        flyctl apps destroy "$CONTROLLER_APP_NAME" -y
+        flyctl apps create "$CONTROLLER_APP_NAME"
+    fi
+else
+    flyctl apps create "$CONTROLLER_APP_NAME"
+fi
 
-read -p "Enter region [sjc]: " CONTROLLER_REGION
-CONTROLLER_REGION=${CONTROLLER_REGION:-sjc}
+# Update controller config with database hostname
+cd "$SCRIPT_DIR"
+sed -i.bak "s/host = \".*\.internal\"/host = \"$DB_APP_NAME.internal\"/" controller-config.toml
 
-read -p "Deploy controller? (y/n): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    cd "$REPO_ROOT"
+echo "Deploying controller..."
+cd "$REPO_ROOT"
+flyctl deploy \
+    --config "$SCRIPT_DIR/fly.controller.toml" \
+    --dockerfile "$SCRIPT_DIR/Dockerfile.controller" \
+    --build-arg CARGO_PROFILE=release \
+    --ha=false
+
+echo "✅ Controller deployed"
+
+# ============================================================
+# Step 3: Dataplane Nodes
+# ============================================================
+echo ""
+echo "Step 3: Dataplane Nodes"
+echo "-----------------------"
+
+for ((i=1; i<=NUM_NODES; i++)); do
+    NODE_APP_NAME="nextmini-node-$i"
+    echo ""
+    echo "Deploying node $i ($NODE_APP_NAME)..."
     
-    # Create or update the app
-    if flyctl apps list | grep -q "$CONTROLLER_APP_NAME"; then
-        echo "App $CONTROLLER_APP_NAME already exists"
-        read -p "Delete and recreate? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "Deleting old app..."
-            flyctl apps destroy "$CONTROLLER_APP_NAME" -y
-            echo "Creating new app: $CONTROLLER_APP_NAME"
-            flyctl apps create "$CONTROLLER_APP_NAME" --org personal
-        else
-            echo "Using existing app (this may fail if app has no machines)"
-        fi
+    if flyctl apps list | grep -q "^$NODE_APP_NAME"; then
+        echo "App exists, updating..."
     else
-        echo "Creating new app: $CONTROLLER_APP_NAME"
-        flyctl apps create "$CONTROLLER_APP_NAME" --org personal
+        flyctl apps create "$NODE_APP_NAME"
     fi
     
-    # Attach PostgreSQL database
-    echo "Attaching database to controller..."
-    flyctl postgres attach "$DB_APP_NAME" -a "$CONTROLLER_APP_NAME" || true
+    # Create temporary config with unique node_id
+    TMP_NODE_CONFIG="/tmp/node-config-$i.toml"
+    cp "$SCRIPT_DIR/node-config.toml" "$TMP_NODE_CONFIG"
+    sed -i "s/node_id = [0-9]*/node_id = $i/" "$TMP_NODE_CONFIG"
     
-    # Update controller-config.toml with correct database host
-    echo "Updating database host in config..."
-    cd "$SCRIPT_DIR"
-    sed -i.bak "s/host = \".*\.internal\"/host = \"$DB_APP_NAME.internal\"/" controller-config.toml
+    # Create temporary fly.toml
+    TMP_FLY_CONFIG="/tmp/fly.node-$i.toml"
+    cp "$SCRIPT_DIR/fly.dataplane.toml" "$TMP_FLY_CONFIG"
+    sed -i "s/app = \"nextmini-node-1\"/app = \"$NODE_APP_NAME\"/" "$TMP_FLY_CONFIG"
+    sed -i "s|local_path = \"examples/flyio/node-config.toml\"|local_path = \"$TMP_NODE_CONFIG\"|" "$TMP_FLY_CONFIG"
+    # Remove [build] section to use command-line --dockerfile
+    sed -i '/^\[build\]/,/^$/d' "$TMP_FLY_CONFIG"
     
-    # Set secrets
-    echo "Setting environment variables..."
-    
-    # Deploy (from repo root with flyio directory for config files)
-    echo "Deploying controller..."
+    # Deploy from repo root
     cd "$REPO_ROOT"
     flyctl deploy \
-        --config "$SCRIPT_DIR/fly.controller.toml" \
-        --dockerfile "$SCRIPT_DIR/Dockerfile.controller" \
-        --build-arg BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 \
-        --app "$CONTROLLER_APP_NAME" \
+        --config "$TMP_FLY_CONFIG" \
+        --dockerfile "$SCRIPT_DIR/Dockerfile.dataplane" \
+        --build-arg CARGO_PROFILE=release \
         --ha=false
     
-    echo "Controller deployed: $CONTROLLER_APP_NAME"
-    echo "Access at: https://$CONTROLLER_APP_NAME.fly.dev"
-else
-    echo "Skipping controller deployment"
-fi
-echo ""
+    rm -f "$TMP_NODE_CONFIG" "$TMP_FLY_CONFIG"
+    echo "✅ Node $i deployed"
+done
 
-# Step 3: Deploy Dataplane Nodes
-echo "Step 3: Deploy Dataplane Nodes"
-echo "-----------------------------------"
-read -p "How many dataplane nodes to deploy? [2]: " NUM_NODES
-NUM_NODES=${NUM_NODES:-2}
-
-read -p "Deploy dataplane nodes? (y/n): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    for ((i=1; i<=NUM_NODES; i++)); do
-        NODE_APP_NAME="nextmini-node-$i"
-        
-        echo ""
-        echo "Deploying node $i..."
-        echo "--------------------"
-        
-        cd "$REPO_ROOT"
-        
-        # Create or update the app
-        if flyctl apps list | grep -q "$NODE_APP_NAME"; then
-            echo "App $NODE_APP_NAME already exists, updating..."
-        else
-            echo "Creating new app: $NODE_APP_NAME"
-            flyctl apps create "$NODE_APP_NAME" --org personal
-        fi
-        
-        # Set secrets for this node
-        echo "Setting node configuration..."
-        flyctl secrets set \
-            NODE_ID="$i" \
-            CONTROLLER_ADDR="ws://$CONTROLLER_APP_NAME.internal:3000" \
-            -a "$NODE_APP_NAME"
-        
-        # Deploy
-        echo "Deploying node $i..."
-        
-        # Create a temporary fly.toml for this node
-        cp "$SCRIPT_DIR/fly.dataplane.toml" /tmp/fly.node-$i.toml
-        sed -i "s/nextmini-node-1/$NODE_APP_NAME/g" /tmp/fly.node-$i.toml
-        # Remove entire [build] section to rely on command line --dockerfile
-        sed -i '/^\[build\]/,/^$/d' /tmp/fly.node-$i.toml
-        
-        cd "$REPO_ROOT"
-        flyctl deploy \
-            --config /tmp/fly.node-$i.toml \
-            --dockerfile "$SCRIPT_DIR/Dockerfile.dataplane" \
-            --build-arg BUILDKIT_CONTEXT_KEEP_GIT_DIR=1 \
-            --app "$NODE_APP_NAME" \
-            --ha=false
-        
-        rm /tmp/fly.node-$i.toml
-        
-        echo "Node $i deployed: $NODE_APP_NAME"
-    done
-else
-    echo "Skipping dataplane node deployment"
-fi
-echo ""
-
+# ============================================================
 # Summary
+# ============================================================
+echo ""
+echo "==================================="
 echo "Deployment Complete!"
-echo "======================="
+echo "==================================="
 echo ""
-echo "Controller: $CONTROLLER_APP_NAME"
-echo "  URL: https://$CONTROLLER_APP_NAME.fly.dev"
-echo "  Internal: ws://$CONTROLLER_APP_NAME.internal:3000"
-echo ""
-echo "Database: $DB_APP_NAME"
-echo ""
-echo "Dataplane Nodes: $NUM_NODES"
+echo "Database:   $DB_APP_NAME.internal"
+echo "Controller: $CONTROLLER_APP_NAME.internal:3000"
+echo "Nodes:      $NUM_NODES"
 for ((i=1; i<=NUM_NODES; i++)); do
     echo "  - nextmini-node-$i"
 done
 echo ""
-echo "Next Steps:"
-echo "  1. Check controller logs: flyctl logs -a $CONTROLLER_APP_NAME"
-echo "  2. Check node logs: flyctl logs -a nextmini-node-1"
-echo "  3. Scale nodes: flyctl scale count 2 -a nextmini-node-1"
-echo "  4. SSH into controller: flyctl ssh console -a $CONTROLLER_APP_NAME"
+echo "Check logs:"
+echo "  flyctl logs -a $CONTROLLER_APP_NAME"
+echo "  flyctl logs -a nextmini-node-1"
 echo ""
-echo "Documentation: examples/flyio/README.md"
-
+echo "Verify connection:"
+echo "  flyctl ssh console -a $CONTROLLER_APP_NAME"
+echo ""

@@ -7,9 +7,11 @@ channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
 
-# These should be set via environment variables or fly secrets
-# controller_addr = "ws://<controller-app>.internal:3000"
-# node_id = 1
+# Controller address for Fly.io deployment
+controller_addr = "ws://nextmini-controller.internal:3000"
+# Node ID - should be set differently for each node
+node_id = 1
 public_network_port = "8080"
+
 
 
