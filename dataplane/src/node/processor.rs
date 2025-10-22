@@ -38,7 +38,7 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    ConnectServerHandle(UserSpaceServerHandle),
+    ConnectServerHandle(Box<UserSpaceServerHandle>),
     ConnectUserSpaceSender {
         flow_id: FlowId,
         sender: UserSpaceSender,
@@ -176,7 +176,7 @@ impl ProcessorHandle {
     pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectServerHandle(server))
+            .send(ProcessorMessage::ConnectServerHandle(Box::new(server)))
         {
             error!(
                 "Error sending the ConnectServerHandle message to the processors: {}",
@@ -597,7 +597,7 @@ impl Processor {
                 }
             }
             ProcessorMessage::ConnectServerHandle(user_space_server) => {
-                self.server = Some(user_space_server);
+                self.server = Some(*user_space_server);
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
