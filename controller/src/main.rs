@@ -621,23 +621,6 @@ async fn handle_connection(
                             let start_time = assignment.time;
                             let flow_id_slice = flow_id.as_ref();
 
-                            // Debug!: this message is now used for debugging
-                            info!(
-                                "Received RouteAssigned message: flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] → route {} at start_time {}.",
-                                flow_id_slice[0],
-                                flow_id_slice[1],
-                                flow_id_slice[2],
-                                flow_id_slice[3],
-                                u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
-                                flow_id_slice[4],
-                                flow_id_slice[5],
-                                flow_id_slice[6],
-                                flow_id_slice[7],
-                                u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
-                                route_id,
-                                start_time
-                            );
-
                             // updates route_id in app_flows table (only if flow already exists)
                             match sqlx::query(
                                 r#"
@@ -654,27 +637,7 @@ async fn handle_connection(
                             {
                                 Ok(result) => {
                                     if result.rows_affected() == 0 {
-                                        info!(
-                                            "RouteAssigned for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}). \
-                                            Likely arrived before AppFlowStart.",
-                                            flow_id_slice[0],
-                                            flow_id_slice[1],
-                                            flow_id_slice[2],
-                                            flow_id_slice[3],
-                                            u16::from_be_bytes([
-                                                flow_id_slice[8],
-                                                flow_id_slice[9]
-                                            ]),
-                                            flow_id_slice[4],
-                                            flow_id_slice[5],
-                                            flow_id_slice[6],
-                                            flow_id_slice[7],
-                                            u16::from_be_bytes([
-                                                flow_id_slice[10],
-                                                flow_id_slice[11]
-                                            ]),
-                                            start_time
-                                        );
+                                        error!("RouteAssigned for non-existent flow.");
                                     } else {
                                         info!(
                                             "Updated route_id={} for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}).",
