@@ -85,8 +85,7 @@ impl UserSpaceServerHandle {
         let specs = self.flow_specs.lock().unwrap();
 
         let flow_rate = specs
-            .get(&IpAddress::from(src_ip))
-            .map_or(None, |spec| spec.flow_rate);
+            .get(&IpAddress::from(src_ip)).and_then(|spec| spec.flow_rate);
 
         let server = UserSpaceServer::new(config, flow_id, flow_rate, processors, packet_receiver);
 
@@ -159,15 +158,14 @@ impl UserSpaceServer {
         let socket = sockets.get_mut::<tcp::Socket>(socket_handle);
 
         // listens on the socket
-        if !socket.is_open() {
-            if let Err(e) = socket.listen(self.flow_id.dst_port()) {
+        if !socket.is_open()
+            && let Err(e) = socket.listen(self.flow_id.dst_port()) {
                 error!(
                     "Server failed to listen on port {}: {:?}",
                     self.flow_id.dst_port(),
                     e
                 );
             }
-        }
 
         loop {
             let timestamp = Instant::now();
@@ -205,10 +203,9 @@ impl UserSpaceServer {
     }
 
     fn recv(&mut self, socket: &mut tcp::Socket) {
-        if socket.can_recv() {
-            if let Err(e) = socket.recv(|buf| (buf.len(), buf.len())) {
+        if socket.can_recv()
+            && let Err(e) = socket.recv(|buf| (buf.len(), buf.len())) {
                 error!("Error receiving from a user-space TCP client: {:?}", e);
             }
-        }
     }
 }

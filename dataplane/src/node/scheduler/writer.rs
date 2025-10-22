@@ -68,13 +68,11 @@ impl SchedulerWriter {
 
         if let Some(ref mut token_bucket) = self.token_bucket {
             token_bucket.send(&mut self.net_interface, packets).await;
-        } else {
-            if let Err(e) = self.net_interface.send(packets).await {
-                error!(
-                    "SchedulerWriter: Error sending batch of {} packets: {}",
-                    packet_count, e
-                );
-            }
+        } else if let Err(e) = self.net_interface.send(packets).await {
+            error!(
+                "SchedulerWriter: Error sending batch of {} packets: {}",
+                packet_count, e
+            );
         }
     }
 }

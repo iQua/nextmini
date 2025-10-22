@@ -217,7 +217,7 @@ impl UserSpaceClient {
                     .dst_node_id
                     .ip_addr(self.config.user_space_base_addr, self.config.local_netmask),
             );
-            let remote_endpoint = (remote_addr, self.config.user_space_server_port as u16);
+            let remote_endpoint = (remote_addr, self.config.user_space_server_port);
 
             match socket.connect(iface_context, remote_endpoint, self.client_port) {
                 Ok(_) => {

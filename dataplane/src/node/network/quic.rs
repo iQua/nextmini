@@ -238,7 +238,7 @@ impl QuicWriter {
         let mut slices = io_slices.as_mut_slice();
 
         while !slices.is_empty() {
-            let written_this_call = self.stream.write_vectored(&slices).await?;
+            let written_this_call = self.stream.write_vectored(slices).await?;
 
             if written_this_call == 0 {
                 return Err(std::io::Error::new(

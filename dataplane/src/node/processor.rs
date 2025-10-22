@@ -662,18 +662,15 @@ impl Processor {
                 let flow_id = packet.flow_id;
 
                 let dest = self.user_space_sender(flow_id);
-                if let Some(sender) = dest {
-                    if sender.try_send(packet).is_err() {
+                if let Some(sender) = dest
+                    && sender.try_send(packet).is_err() {
                         tracing::error!(
                             "Failed to send a packet in user-space flows to its local destination."
                         );
                     }
-                }
             }
-        } else {
-            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-                scheduler.send(packet);
-            }
+        } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
+            scheduler.send(packet);
         }
     }
 }

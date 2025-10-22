@@ -12,7 +12,7 @@ pub struct FatTreeConfig {
 
 impl FatTreeConfig {
     fn validate_params(k: u32) -> Result<()> {
-        if k % 2 != 0 {
+        if !k.is_multiple_of(2) {
             return Err(TopologyError::InvalidConfig("k must be even".into()));
         }
 

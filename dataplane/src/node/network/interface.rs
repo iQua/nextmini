@@ -108,7 +108,7 @@ impl NetworkInterfaceHandle {
             flow_metrics.push(metric);
         }
 
-        let _ = self.writer.write_packets(packets).await?;
+        self.writer.write_packets(packets).await?;
 
         self.reporter.send(flow_metrics);
 

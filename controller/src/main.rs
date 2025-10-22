@@ -19,7 +19,6 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
-use tracing_subscriber;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 

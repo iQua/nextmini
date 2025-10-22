@@ -187,22 +187,22 @@ impl RoutingTable {
                 if next_hops.len() > 1 {
                     // randomizes the choice between all possible next hops
                     let idx = rand::rng().random_range(0..next_hops.len());
-                    return Ok(next_hops[idx]);
+                    Ok(next_hops[idx])
                 } else {
                     // selects the only choice as the next hop
-                    return Ok(next_hops[0]);
+                    Ok(next_hops[0])
                 }
             } else {
-                return Err(format!(
+                Err(format!(
                     "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
                     route_id, flow_id
-                ));
+                ))
             }
         } else {
-            return Err(format!(
+            Err(format!(
                 "No route is found for flow {}: the routing table may be misconfigured.",
                 flow_id
-            ));
+            ))
         }
     }
 }

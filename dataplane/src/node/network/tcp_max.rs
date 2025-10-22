@@ -157,7 +157,7 @@ impl TcpMaxServer {
 
             _ => {
                 stream.write_all(&[0x05, 0xff]).await?;
-                return Err(Error::new(ErrorKind::NotFound, "Unsupported request type"));
+                Err(Error::new(ErrorKind::NotFound, "Unsupported request type"))
             }
         }
     }

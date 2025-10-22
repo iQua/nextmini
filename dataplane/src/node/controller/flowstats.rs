@@ -365,13 +365,11 @@ impl FlowStore {
     fn handle_app_flow_start(&mut self, app_flow: AppFlowStart) {
         let flow_id = app_flow.flow_id;
 
-        if let Some(entry) = self.entries.get(&flow_id) {
-            if let FlowEntry::App(app_entry) = entry {
-                if matches!(app_entry.stage, AppStage::Active) {
+        if let Some(entry) = self.entries.get(&flow_id)
+            && let FlowEntry::App(app_entry) = entry
+                && matches!(app_entry.stage, AppStage::Active) {
                     return;
                 }
-            }
-        }
 
         let pending_route = match self.entries.remove(&flow_id) {
             Some(FlowEntry::Pending(pending)) => pending.route_id,
@@ -518,14 +516,13 @@ impl FlowStore {
         if let Some(existing) = self.entries.insert(
             flow_id,
             FlowEntry::User(UserFlowEntry::new(user_flow_start)),
-        ) {
-            if let FlowEntry::User(prev) = existing {
+        )
+            && let FlowEntry::User(prev) = existing {
                 warn!(
                     "Replacing existing user-space flow start for {:?}. Old start_time: {}, controller_id: {}",
                     flow_id, prev.start_time, prev.controller_id
                 );
             }
-        }
     }
 
     fn flush(&mut self, now_ms: i64) -> FlushOutput {
@@ -560,13 +557,11 @@ impl FlowStore {
                     app_entry.pending.send_finish = false;
                 }
 
-                if matches!(app_entry.stage, AppStage::Finished) {
-                    if let Some(finish_time) = app_entry.finish_time {
-                        if now_ms - finish_time > TTL_MS {
+                if matches!(app_entry.stage, AppStage::Finished)
+                    && let Some(finish_time) = app_entry.finish_time
+                        && now_ms - finish_time > TTL_MS {
                             return false;
                         }
-                    }
-                }
 
                 true
             }

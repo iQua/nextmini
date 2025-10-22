@@ -6,7 +6,6 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json;
 use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
