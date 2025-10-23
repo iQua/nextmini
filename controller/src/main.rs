@@ -37,10 +37,13 @@ async fn main() {
     tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
+    let listener = TcpListener::bind(format!("[::]:{}", config.port))
         .await
         .expect("Failed to bind to port.");
-    info!("The controller is now listening on port {}.", config.port);
+    info!(
+        "The controller is now listening on port {} (IPv4 and IPv6).",
+        config.port
+    );
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
