@@ -99,9 +99,10 @@ impl Conductor {
                         self.reporter.clone(),
                     );
 
+                    let max_server_port_str = max_server_port.to_string();
                     let tcp_max_server_addr = format_bind_address(
                         &self.config.private_network_addr,
-                        &max_server_port.to_string(),
+                        &max_server_port_str,
                     );
                     let tcp_server_addr =
                         format_bind_address(&self.config.private_network_addr, &public_port);
@@ -126,9 +127,10 @@ impl Conductor {
                         format_bind_address(&self.config.private_network_addr, &public_port);
                     let tcp_server_private_addr =
                         format_bind_address(&self.config.private_network_addr, &private_port);
+                    let max_server_port_str = max_server_port.to_string();
                     let tcp_max_server_addr = format_bind_address(
                         &self.config.private_network_addr,
-                        &max_server_port.to_string(),
+                        &max_server_port_str,
                     );
 
                     tokio::select! {
