@@ -167,7 +167,7 @@ def deploy_node(repo_root, script_dir, public_ip, node_id):
     os.remove(tmp_node_config)
     os.remove(tmp_fly_config)
 
-    print(f"✅ Node {node_id} deployed successfully!")
+    print(f"Node {node_id} deployed successfully!")
     return app_name
 
 
