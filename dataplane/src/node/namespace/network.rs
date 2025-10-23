@@ -383,11 +383,7 @@ pub async fn wait_for_veth_carrier(
     )))
 }
 
-pub async fn setup_veth_peer(
-    veth_idx: u32,
-    ns_ip: &String,
-    subnet: u8,
-) -> Result<(), NetworkError> {
+pub async fn setup_veth_peer(veth_idx: u32, ns_ip: &str, subnet: u8) -> Result<(), NetworkError> {
     let handle = new_connection_with_timeout(3, 1500, 200).await?;
 
     // sets veth peer address

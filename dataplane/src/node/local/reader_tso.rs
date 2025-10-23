@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow;
 use crate::node::local::interface::ShutdownMessage;
 use crate::node::packet::Packet;
@@ -14,6 +15,7 @@ pub struct LocalReader {
     device: Arc<AsyncDevice>, // each device is shared by both LocalReader and LocalWriter actors
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     processor: ProcessorHandle,
+    flowstats_reporter: FlowStatsReporterHandle,
     // for TSO support on Linux
     original_buffer: Vec<u8>,
     packet_buffers: Vec<Vec<u8>>,
@@ -25,11 +27,13 @@ impl LocalReader {
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         processor: ProcessorHandle,
+        flowstats_reporter: FlowStatsReporterHandle,
     ) -> Self {
         Self {
             device,
             shutdown_receiver,
             processor,
+            flowstats_reporter,
             original_buffer: vec![0; VIRTIO_NET_HDR_LEN + 65535],
             packet_buffers: vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE],
             packet_sizes: vec![0; IDEAL_BATCH_SIZE],
@@ -76,6 +80,9 @@ impl LocalReader {
                         if packet.flow_id == flow::INVALID_FLOW_ID {
                             continue;
                         }
+
+                        // reports packet flow stats (app flow start and flow finish if FIN/RST)
+                        self.flowstats_reporter.report_packet(&packet);
 
                         // sends to the processor for routing and forwarding
                         self.processor.process_packet(packet);

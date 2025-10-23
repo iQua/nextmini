@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         deploy_multiple(config);
     } else {
-        info!("Started deploying dataplane nodes in isolated network namespaces.");
+        info!("Started deploying a single dataplane node.");
         let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
 
         rt.block_on(deploy(config));

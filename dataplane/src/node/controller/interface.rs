@@ -12,13 +12,14 @@ use tracing::{error, info, warn};
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
-use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::scheduler::sched::SchedulerHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -29,7 +30,9 @@ pub struct ControllerInterfaceHandle {
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
-    pub async fn new(config: LocalConfig) -> (Self, ControllerReporterHandle) {
+    pub async fn new(
+        config: LocalConfig,
+    ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
@@ -52,8 +55,20 @@ impl ControllerInterfaceHandle {
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
 
-        let user_space_client =
-            UserSpaceClientHandle::new(config.clone(), processors.clone(), reporter.clone());
+        let flowstats_reporter =
+            FlowStatsReporterHandle::new(controller_interface.clone(), config.clone());
+
+        // passes flowstats reporter to routing table for automatic route assignment reporting
+        processors
+            .set_flowstats_reporter(flowstats_reporter.clone())
+            .await;
+
+        // adds flowstats reporter to report flow finish
+        let user_space_client = UserSpaceClientHandle::new(
+            config.clone(),
+            processors.clone(),
+            flowstats_reporter.clone(),
+        );
 
         // creates the server handle for the processor to use
         let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
@@ -80,7 +95,7 @@ impl ControllerInterfaceHandle {
             controller_receiver.run().await;
         });
 
-        (controller_interface, reporter)
+        (controller_interface, reporter, flowstats_reporter)
     }
 
     pub async fn connect(
@@ -159,6 +174,24 @@ impl ControllerInterfaceHandle {
                 e
             );
         };
+    }
+}
+
+#[cfg(test)]
+impl ControllerInterfaceHandle {
+    pub fn test_handle() -> (Self, mpsc::UnboundedReceiver<DataplaneToController>) {
+        let config = LocalConfig::default();
+        let processors = ProcessorHandle::new(config.clone());
+        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+
+        (
+            Self {
+                config,
+                processors,
+                northbridge_sender,
+            },
+            northbridge_receiver,
+        )
     }
 }
 

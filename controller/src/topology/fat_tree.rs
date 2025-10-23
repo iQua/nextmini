@@ -2,8 +2,8 @@
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::topo::topo::Result;
-use crate::topo::topo::{TopologyBuilder, TopologyError};
+use crate::topology::topo::Result;
+use crate::topology::topo::{TopologyBuilder, TopologyError};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct FatTreeConfig {
@@ -12,7 +12,7 @@ pub struct FatTreeConfig {
 
 impl FatTreeConfig {
     fn validate_params(k: u32) -> Result<()> {
-        if k % 2 != 0 {
+        if !k.is_multiple_of(2) {
             return Err(TopologyError::InvalidConfig("k must be even".into()));
         }
 

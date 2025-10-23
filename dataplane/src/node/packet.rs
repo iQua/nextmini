@@ -48,14 +48,60 @@ impl Packet {
         is_tcp && !is_syn && !is_fin && !is_rst && !is_ack
     }
 
-    fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
-        if buf[0] >> 4 == 4 {
-            let src_dst_ip = BigEndian::read_u64(&buf[12..20]);
-            let src_dst_port = BigEndian::read_u32(&buf[20..24]);
-            (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
-        } else {
-            flow::INVALID_FLOW_ID
+    pub fn is_tcp_fin_or_rst(&self) -> bool {
+        // checks if it is tcp
+        if self.buf[9] != 6 {
+            return false;
         }
+
+        let ihl = (self.buf[0] & 0x0F) as usize;
+        let tcp_offset = ihl * 4;
+        let tcp_flags = self.buf[tcp_offset + 13];
+
+        // checks if FIN or RST flag is set
+        (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
+    }
+
+    /// Checks if this TCP packet has payload (non-zero data length).
+    pub fn has_tcp_payload(&self) -> bool {
+        // checks if it is tcp
+        if self.buf[9] != 6 {
+            return false;
+        }
+
+        let ihl = (self.buf[0] & 0x0F) as usize;
+        let ip_header_len = ihl * 4;
+
+        // extracts total length from IP header (bytes 2-3)
+        let total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
+
+        // extracts TCP header length from data offset field (upper 4 bits of byte 12 in TCP header)
+        let tcp_offset = ip_header_len;
+        let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
+        let tcp_header_len = tcp_data_offset * 4;
+
+        // calculates payload size
+        let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);
+
+        payload_size > 0
+    }
+
+    fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
+        if buf.len() < 20 || buf[0] >> 4 != 4 {
+            return flow::INVALID_FLOW_ID;
+        }
+
+        let src_dst_ip = BigEndian::read_u64(&buf[12..20]);
+
+        let ihl = (buf[0] & 0x0F) as usize;
+        let ip_header_len = ihl * 4;
+        if ip_header_len < 20 || buf.len() < ip_header_len + 4 {
+            return flow::INVALID_FLOW_ID;
+        }
+
+        let src_dst_port = BigEndian::read_u32(&buf[ip_header_len..ip_header_len + 4]);
+
+        (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
     }
 
     /// for TSO support: avoids copying the buffer

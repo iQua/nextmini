@@ -6,6 +6,7 @@ use tracing::debug;
 use nextmini_messages::{INVALID, RoutingTableEntry};
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -72,19 +73,17 @@ impl RoutingTable {
     }
 
     /// Extracts source and destination node IDs from the flow ID.
-    fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
-        let src_ip = flow_id.src_ip();
-        let dst_ip = flow_id.dst_ip();
-
-        let src_node_id = self.config.ip_to_node_id(src_ip);
-        let dst_node_id = self.config.ip_to_node_id(dst_ip);
-
-        (src_node_id, dst_node_id)
+    pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
+        self.config.extract_node_ids_from_flow(flow_id)
     }
 
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
-    pub fn select_route_for_flow(&mut self, flow_id: FlowId) -> Option<usize> {
+    pub fn select_route_for_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Option<usize> {
         if flow_id == flow::INVALID_FLOW_ID {
             // the flow ID cannot be successfully extracted, no routing is possible
             return Some(INVALID);
@@ -123,6 +122,29 @@ impl RoutingTable {
         // stores the selected route into the cache
         self.cache.insert(flow_id, selected_route_id);
 
+        // reports route assignment to the controller only for app flows from the source node
+        if let Some(flowstats_reporter) = flowstats_reporter {
+            let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
+
+            // only reports for app flows (not user space flows)
+            // user space flows use a dedicated server port (check both directions)
+            let is_app_flow = flow_id.dst_port() != self.config.user_space_server_port
+                && flow_id.src_port() != self.config.user_space_server_port;
+
+            debug!(
+                "Route selection: flow_id={:?}, src_node={}, local_id={}, is_app_flow={}, route={}",
+                flow_id, src_node_id, self.local_id, is_app_flow, selected_route_id
+            );
+
+            if src_node_id == self.local_id && is_app_flow {
+                flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
+                debug!(
+                    "Reported route assignment: flow_id={:?}, route_id={}",
+                    flow_id, selected_route_id
+                );
+            }
+        }
+
         debug!(
             "Route ID {} is selected for source {}:{} → destination {}:{} from {} available routes.",
             selected_route_id,
@@ -137,9 +159,13 @@ impl RoutingTable {
     }
 
     /// Obtains the next hop by the flow ID.
-    pub fn get_next_hop_by_flow(&mut self, flow_id: FlowId) -> Result<NodeId, String> {
+    pub fn get_next_hop_by_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<NodeId, String> {
         // selects the route ID for a new flow
-        if let Some(route_id) = self.select_route_for_flow(flow_id) {
+        if let Some(route_id) = self.select_route_for_flow(flow_id, flowstats_reporter) {
             if route_id == INVALID {
                 // No route can be possible as the flow ID is not valid.
                 // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
@@ -161,22 +187,22 @@ impl RoutingTable {
                 if next_hops.len() > 1 {
                     // randomizes the choice between all possible next hops
                     let idx = rand::rng().random_range(0..next_hops.len());
-                    return Ok(next_hops[idx]);
+                    Ok(next_hops[idx])
                 } else {
                     // selects the only choice as the next hop
-                    return Ok(next_hops[0]);
+                    Ok(next_hops[0])
                 }
             } else {
-                return Err(format!(
+                Err(format!(
                     "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
                     route_id, flow_id
-                ));
+                ))
             }
         } else {
-            return Err(format!(
+            Err(format!(
                 "No route is found for flow {}: the routing table may be misconfigured.",
                 flow_id
-            ));
+            ))
         }
     }
 }

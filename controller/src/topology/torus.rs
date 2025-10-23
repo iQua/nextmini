@@ -3,8 +3,8 @@ use petgraph::graph::{NodeIndex, UnGraph};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::topo::topo::Result;
-use crate::topo::topo::{TopologyBuilder, TopologyError};
+use crate::topology::topo::Result;
+use crate::topology::topo::{TopologyBuilder, TopologyError};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct TorusConfig {

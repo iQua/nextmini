@@ -1,0 +1,23 @@
+protocol = "tcp"
+
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 2 }
+
+# Set the routing protocol to "shortest_path" if routes in the topology are needed.
+# [routing]
+# protocol = "shortest_path"
+
+[[routes]]
+route = [[1, 2]]
+
+[[routes]]
+route = [[2, 1]]
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "127.0.0.1"
+port = "5432"
+database = "nextmini"
+

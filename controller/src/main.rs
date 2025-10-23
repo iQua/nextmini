@@ -4,7 +4,7 @@ mod models;
 mod new_node;
 mod route_ser;
 mod routing;
-mod topo;
+mod topology;
 mod utils;
 
 use std::collections::{HashMap, HashSet};
@@ -19,7 +19,6 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
-use tracing_subscriber;
 
 use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
@@ -27,7 +26,7 @@ use crate::config::{Config, get_config};
 use crate::db::{init_db, setup_flow_notification, setup_route_notification};
 use crate::models::{DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
-use crate::utils::{build_routes_for_node, build_startup_response};
+use crate::utils::{StartupResponseParams, build_routes_for_node, build_startup_response};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 pub type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -40,7 +39,7 @@ async fn main() {
     let db_pool = Arc::new(init_db(&config).await);
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
-        .expect("Failed to bind to port");
+        .expect("Failed to bind to port.");
     info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
@@ -64,9 +63,9 @@ async fn main() {
     while let Ok((stream, _)) = listener.accept().await {
         let peer = stream
             .peer_addr()
-            .expect("Connected streams should have a peer address");
+            .expect("Connected streams should have a peer address.");
 
-        info!("New connection from {}", peer);
+        info!("New connection from {}.", peer);
 
         let ws_stream = match accept_async(stream).await {
             Ok(ws) => ws,
@@ -109,7 +108,7 @@ async fn handle_connection(
                 let dataplane_msg = match rmp_serde::from_slice::<DataplaneToController>(&data) {
                     Ok(msg) => msg,
                     Err(e) => {
-                        error!("Failed to parse dataplane message: {}", e);
+                        error!("Failed to parse dataplane message: {}.", e);
                         continue;
                     }
                 };
@@ -122,7 +121,7 @@ async fn handle_connection(
                         node_id: maybe_node_id,
                     } => {
                         info!(
-                            "Received StartUp message from {} (public), {} (private), requested ID: {:?}",
+                            "Received StartUp message from {} (public), {} (private), requested ID: {:?}.",
                             &public_network_addr, &private_network_addr, maybe_node_id
                         );
 
@@ -130,7 +129,7 @@ async fn handle_connection(
                         let node_id = maybe_node_id.unwrap();
 
                         info!(
-                            "Node with ID {} is attempting to connect (private: {}, public: {})",
+                            "Node with ID {} is attempting to connect (private: {}, public: {}).",
                             node_id, private_network_addr, public_network_addr
                         );
 
@@ -152,7 +151,7 @@ async fn handle_connection(
                             let count_after_insert = node_ws_guard.len();
 
                             info!(
-                                "Node {} successfully inserted into node_ws. Total nodes now: {}",
+                                "Node {} successfully inserted into node_ws. Total nodes now: {}.",
                                 node_id, count_after_insert
                             );
 
@@ -207,17 +206,17 @@ async fn handle_connection(
                             .cloned();
 
                         // sends the startup response
-                        let response = build_startup_response(
+                        let response = build_startup_response(StartupResponseParams {
                             node_id,
-                            config.net_mask,
-                            config.base_addr,
-                            config.user_space_base_addr,
-                            config.external_base_addr,
-                            config.max_server_port,
-                            config.protocol.clone(),
-                            config.scheduler_type,
+                            net_mask: config.net_mask,
+                            virtual_base_addr: config.base_addr,
+                            user_space_base_addr: config.user_space_base_addr,
+                            external_base_addr: config.external_base_addr,
+                            max_server_port: config.max_server_port,
+                            protocol: config.protocol.clone(),
+                            scheduler_type: config.scheduler_type,
                             node_spec,
-                        );
+                        });
 
                         match write_arc
                             .lock()
@@ -225,7 +224,7 @@ async fn handle_connection(
                             .send(Message::binary(rmp_serde::to_vec(&response).unwrap()))
                             .await
                         {
-                            Ok(_) => info!("Sent StartUp response to node {}", node_id),
+                            Ok(_) => info!("Sent StartUp response to node {}.", node_id),
                             Err(e) => {
                                 error!(
                                     "Failed to send StartUp response to node {}: {}.",
@@ -255,7 +254,7 @@ async fn handle_connection(
 
                         // gets the topology edges
                         let topology_edges =
-                            topo::topo::build_topology(&config).unwrap_or_default();
+                            topology::topo::build_topology(&config).unwrap_or_default();
 
                         // collects neighbors of the new node
                         let mut neighbors: HashSet<i32> = HashSet::new();
@@ -414,38 +413,257 @@ async fn handle_connection(
                             );
                         }
                     }
-                    DataplaneToController::FlowFinished { controller_id } => {
-                        info!("Received FlowFinished message for flow {}.", controller_id);
-
-                        match sqlx::query(
-                            r#"
-                            UPDATE flows
-                            SET is_finished = TRUE
-                            WHERE id = $1
-                            "#,
-                        )
-                        .bind(controller_id)
-                        .execute(&*db_pool)
-                        .await
-                        {
-                            Ok(result) => {
-                                if result.rows_affected() > 0 {
-                                    info!(
-                                        "Marked flow {} as finished in the database.",
-                                        controller_id
-                                    );
-                                } else {
-                                    warn!(
-                                        "Flow with ID {} not found in the database.",
-                                        controller_id
+                    DataplaneToController::UserFlowStart { flows } => {
+                        for flow_start in flows {
+                            match sqlx::query(
+                                r#"
+                                UPDATE flows
+                                SET start_time = $2, is_finished = FALSE
+                                WHERE id = $1
+                                "#,
+                            )
+                            .bind(flow_start.controller_id)
+                            .bind(flow_start.start_time)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(result) => {
+                                    if result.rows_affected() > 0 {
+                                        info!(
+                                            "Recorded start_time {} for user space flow {}.",
+                                            flow_start.start_time, flow_start.controller_id
+                                        );
+                                    } else {
+                                        warn!(
+                                            "User space flow {} not found when recording start_time.",
+                                            flow_start.controller_id
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to update start_time for user space flow {}: {}.",
+                                        flow_start.controller_id, e
                                     );
                                 }
                             }
-                            Err(e) => {
-                                error!(
-                                    "Failed to update flow {} in the database: {}.",
-                                    controller_id, e
+                        }
+                    }
+                    DataplaneToController::FlowFinished { flows } => {
+                        for flow_finished in flows {
+                            let flow_id = flow_finished.flow_id;
+                            let controller_id = flow_finished.controller_id;
+
+                            if let Some(id) = controller_id {
+                                // user space flow with controller_id
+                                info!("Received FlowFinished message for user space flow {}.", id);
+
+                                match sqlx::query(
+                                    r#"
+                                    UPDATE flows
+                                    SET is_finished = TRUE, finish_time = $2, start_time = COALESCE(start_time, $3)
+                                    WHERE id = $1
+                                    "#,
+                                )
+                                .bind(id)
+                                .bind(flow_finished.finish_time)
+                                .bind(flow_finished.start_time)
+                                .execute(&*db_pool)
+                                .await
+                                {
+                                    Ok(result) => {
+                                        if result.rows_affected() > 0 {
+                                            info!("Marked user space flow {} as finished.", id);
+                                        } else {
+                                            warn!("User space flow {} not found in database.", id);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to update user space flow {}: {}.", id, e);
+                                    }
+                                }
+                            } else {
+                                // application flows reading from TUN interface without controller_id
+                                let flow_id_slice = flow_id.as_ref();
+                                let start_time = flow_finished.start_time;
+                                let finish_time = flow_finished.finish_time;
+
+                                // Debug!: this message is now used for debugging
+                                info!(
+                                    "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] at start_time {} and finish_time {}.",
+                                    flow_id_slice[0],
+                                    flow_id_slice[1],
+                                    flow_id_slice[2],
+                                    flow_id_slice[3],
+                                    u16::from_be_bytes([flow_id_slice[8], flow_id_slice[9]]),
+                                    flow_id_slice[4],
+                                    flow_id_slice[5],
+                                    flow_id_slice[6],
+                                    flow_id_slice[7],
+                                    u16::from_be_bytes([flow_id_slice[10], flow_id_slice[11]]),
+                                    start_time,
+                                    finish_time
                                 );
+
+                                // updates the flow as finished (only if it already exists)
+                                // if AppFlowStart hasn't arrived yet, this update will be ignored
+                                match sqlx::query(
+                                    r#"
+                                    UPDATE app_flows
+                                    SET is_finished = TRUE, finish_time = $3
+                                    WHERE flow_id = $1 AND start_time = $2
+                                    "#,
+                                )
+                                .bind(flow_id_slice)
+                                .bind(start_time)
+                                .bind(finish_time)
+                                .execute(&*db_pool)
+                                .await
+                                {
+                                    Ok(result) => {
+                                        if result.rows_affected() > 0 {
+                                            info!(
+                                                "Marked application flow as finished (start_time: {}).",
+                                                start_time
+                                            );
+                                        } else {
+                                            warn!(
+                                                "FlowFinished for non-existent flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}). \
+                                                Either AppFlowStart hasn't arrived or flow_id was reused.",
+                                                flow_id_slice[0],
+                                                flow_id_slice[1],
+                                                flow_id_slice[2],
+                                                flow_id_slice[3],
+                                                u16::from_be_bytes([
+                                                    flow_id_slice[8],
+                                                    flow_id_slice[9]
+                                                ]),
+                                                flow_id_slice[4],
+                                                flow_id_slice[5],
+                                                flow_id_slice[6],
+                                                flow_id_slice[7],
+                                                u16::from_be_bytes([
+                                                    flow_id_slice[10],
+                                                    flow_id_slice[11]
+                                                ]),
+                                                start_time
+                                            );
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to update application flow: {}.", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    DataplaneToController::AppFlowStart { appflows } => {
+                        for appflow in appflows {
+                            let flow_id_slice = appflow.flow_id.as_ref();
+                            let start_time = appflow.start_time;
+
+                            // checks if the record already exists to avoid consuming sequence numbers
+                            match sqlx::query(
+                                r#"
+                                SELECT 1 FROM app_flows WHERE flow_id = $1 AND start_time = $2
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .bind(start_time)
+                            .fetch_optional(&*db_pool)
+                            .await
+                            {
+                                Ok(Some(_)) => {
+                                    // if the record already exists, skips insertion
+                                    info!(
+                                        "Duplicate AppFlowStart ignored (flow_id + start_time already exists)."
+                                    );
+                                    continue;
+                                }
+                                Ok(None) => {
+                                    // if the record doesn't exist, proceeds with insertion
+                                }
+                                Err(e) => {
+                                    error!("Failed to check app flow existence: {}.", e);
+                                    continue;
+                                }
+                            }
+
+                            // inserts the new record
+                            match sqlx::query(
+                                r#"
+                                INSERT INTO app_flows (flow_id, start_time, src_node_id, dst_node_id, is_finished)
+                                VALUES ($1, $2, $3, $4, FALSE)
+                                "#,
+                            )
+                            .bind(flow_id_slice)
+                            .bind(start_time)
+                            .bind(appflow.src_node_id as i32)
+                            .bind(appflow.dst_node_id as i32)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(_) => {
+                                    info!(
+                                        "Registered new app flow from node {} to {} at start_time {}.",
+                                        appflow.src_node_id, appflow.dst_node_id, start_time
+                                    );
+                                }
+                                Err(e) => error!("Failed to insert app flow: {}.", e),
+                            }
+                        }
+                    }
+                    DataplaneToController::RouteAssigned { assignments } => {
+                        for assignment in assignments {
+                            let flow_id = assignment.flow_id;
+                            let route_id = assignment.route_id;
+                            let start_time = assignment.time;
+                            let flow_id_slice = flow_id.as_ref();
+
+                            // updates route_id in app_flows table (only if flow already exists)
+                            match sqlx::query(
+                                r#"
+                                UPDATE app_flows
+                                SET route_id = $1
+                                WHERE flow_id = $2 AND start_time = $3
+                                "#,
+                            )
+                            .bind(route_id as i32)
+                            .bind(flow_id_slice)
+                            .bind(start_time)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                Ok(result) => {
+                                    if result.rows_affected() == 0 {
+                                        error!("RouteAssigned for non-existent flow.");
+                                    } else {
+                                        info!(
+                                            "Updated route_id={} for flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] (start_time: {}).",
+                                            route_id,
+                                            flow_id_slice[0],
+                                            flow_id_slice[1],
+                                            flow_id_slice[2],
+                                            flow_id_slice[3],
+                                            u16::from_be_bytes([
+                                                flow_id_slice[8],
+                                                flow_id_slice[9]
+                                            ]),
+                                            flow_id_slice[4],
+                                            flow_id_slice[5],
+                                            flow_id_slice[6],
+                                            flow_id_slice[7],
+                                            u16::from_be_bytes([
+                                                flow_id_slice[10],
+                                                flow_id_slice[11]
+                                            ]),
+                                            start_time
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to update app_flows.route_id: {}.", e);
+                                }
                             }
                         }
                     }

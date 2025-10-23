@@ -8,18 +8,20 @@ use tracing::{error, info};
 use nextmini_messages::RoutingTableEntry;
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorPacket;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 pub enum ConnectorMessage {
     AddNodeAddress(NodeId, String),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    ConnectTcpMaxClient(TcpMaxClient),
+    ConnectTcpMaxClient(Box<TcpMaxClient>),
     InboundMaxRequest(FlowId, TcpStream),
+    SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
 }
 
 pub struct Connector {
@@ -40,6 +42,9 @@ pub struct Connector {
 
     /// a hashmap for the schedulers in max mode
     schedulers: AHashMap<FlowId, SchedulerHandle>,
+
+    /// optional flow stats reporter for route reporting
+    flowstats_reporter: Option<FlowStatsReporterHandle>,
 }
 
 impl Connector {
@@ -55,6 +60,7 @@ impl Connector {
             routing_table: RoutingTable::new(config),
             node_addresses: AHashMap::new(),
             schedulers: AHashMap::new(),
+            flowstats_reporter: None,
         }
     }
 
@@ -85,7 +91,7 @@ impl Connector {
     async fn handle_message(&mut self, msg: ConnectorMessage) {
         match msg {
             ConnectorMessage::ConnectTcpMaxClient(tcp_max_client) => {
-                self.tcp_max_client = Some(tcp_max_client);
+                self.tcp_max_client = Some(*tcp_max_client);
             }
             ConnectorMessage::AddNodeAddress(node_id, address) => {
                 self.node_addresses.insert(node_id, address);
@@ -95,6 +101,9 @@ impl Connector {
             }
             ConnectorMessage::InboundMaxRequest(flow_id, stream) => {
                 self.handle_inbound_request(flow_id, stream).await;
+            }
+            ConnectorMessage::SetFlowStatsReporter(flowstats_reporter) => {
+                self.flowstats_reporter = Some(*flowstats_reporter);
             }
         }
     }
@@ -111,7 +120,10 @@ impl Connector {
             // if the scheduler is not initialized, initiates a new connection for the first packet of the flow
 
             // obtains the next hop id from the routing table
-            let next_hop_id = match self.routing_table.get_next_hop_by_flow(flow_id) {
+            let next_hop_id = match self
+                .routing_table
+                .get_next_hop_by_flow(flow_id, self.flowstats_reporter.as_ref())
+            {
                 Ok(next_hop_id) => next_hop_id,
                 Err(e) => {
                     error!("Error getting the next hop: {}", e);
@@ -148,7 +160,10 @@ impl Connector {
 
     /// Handles an inbound request as the destination node or as a relay node.
     async fn handle_inbound_request(&mut self, flow_id: FlowId, mut inbound_stream: TcpStream) {
-        let next_hop_id = match self.routing_table.get_next_hop_by_flow(flow_id) {
+        let next_hop_id = match self
+            .routing_table
+            .get_next_hop_by_flow(flow_id, self.flowstats_reporter.as_ref())
+        {
             Ok(next_hop_id) => next_hop_id,
             Err(e) => {
                 error!("Error getting the next hop: {}", e);

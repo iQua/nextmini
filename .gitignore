@@ -16,3 +16,9 @@ lightning_logs/
 **/__pycache__
 **/server_cert.pem
 **/server_key.pem
+
+**/controller-deploy/
+**/node*-deploy/
+*.log
+*.bak
+*~

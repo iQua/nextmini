@@ -6,7 +6,6 @@ use tokio::sync::{Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json;
 use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
@@ -24,6 +23,7 @@ async fn create_db(pool: &Pool<Postgres>) {
     // public_network_addr: Address of the node in the public network, when connecting to other private networks
     // over the public internet.
     // virtual_network_addr: Address of the node in the virtual network, established by Nextmini.
+    // start_time: Timestamp when the dataplane observed the first payload packet.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS nodes (
@@ -58,6 +58,8 @@ async fn create_db(pool: &Pool<Postgres>) {
             flow_len_duration DOUBLE PRECISION,
             flow_rate INTEGER,
             flow_weight INTEGER,
+            start_time BIGINT,
+            finish_time BIGINT,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
         )
         "#,
@@ -92,22 +94,50 @@ async fn create_db(pool: &Pool<Postgres>) {
             local_node_id INTEGER NOT NULL,
             remote_node_id INTEGER NOT NULL,
             bytes INTEGER NOT NULL,
-            time_read TIMESTAMP NOT NULL
+            time_read TIMESTAMP WITH TIME ZONE NOT NULL
         )
         "#,
     )
     .execute(pool)
     .await
     .expect("Failed to create metrics table");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS app_flows (
+            id SERIAL PRIMARY KEY,
+            flow_id BYTEA NOT NULL,
+            start_time BIGINT NOT NULL,
+            src_node_id INTEGER,
+            dst_node_id INTEGER,
+            is_finished BOOLEAN NOT NULL DEFAULT FALSE,
+            finish_time BIGINT,
+            route_id INTEGER,
+            UNIQUE (flow_id, start_time)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to create app_flows table");
+
+    // NOTE: Add new schema changes here so init/reset paths stay in sync.
 }
 
 // Resets the entire database.
 async fn reset_db(pool: &Pool<Postgres>) {
+    info!("Resetting database - dropping all tables...");
+
     // drops the existing tables to ensure schema changes are applied
     sqlx::query("DROP TABLE IF EXISTS metrics")
         .execute(pool)
         .await
         .expect("Failed to drop metrics table");
+
+    sqlx::query("DROP TABLE IF EXISTS app_flows")
+        .execute(pool)
+        .await
+        .expect("Failed to drop app_flows table");
 
     sqlx::query("DROP TABLE IF EXISTS flows")
         .execute(pool)
@@ -125,68 +155,7 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .expect("Failed to drop nodes table");
 
     // recreates the tables with current schema
-    sqlx::query(
-        r#"
-        CREATE TABLE nodes (
-            id SERIAL PRIMARY KEY,
-            private_network_name TEXT,
-            private_network_addr TEXT NOT NULL,
-            public_network_addr TEXT NOT NULL
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to recreate nodes table");
-
-    sqlx::query(
-        r#"
-        CREATE TABLE flows (
-            id SERIAL PRIMARY KEY,
-            src_node_id INTEGER NOT NULL,
-            dst_node_id INTEGER NOT NULL,
-            flow_len_type TEXT NOT NULL CHECK (flow_len_type IN ('bytes', 'duration')),
-            flow_len_bytes BIGINT,
-            flow_len_duration DOUBLE PRECISION,
-            flow_rate INTEGER,
-            flow_weight INTEGER,
-            is_finished BOOLEAN NOT NULL DEFAULT FALSE
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to recreate flows table");
-
-    sqlx::query(
-        r#"
-        CREATE TABLE routes (
-            route_id SERIAL PRIMARY KEY,
-            src_node_id INTEGER NOT NULL,
-            dst_node_id INTEGER NOT NULL,
-            edges JSONB NOT NULL
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to recreate routes table");
-
-    sqlx::query(
-        r#"
-        CREATE TABLE metrics (
-            id SERIAL PRIMARY KEY,
-            flow_id BYTEA NOT NULL,
-            local_node_id INTEGER NOT NULL,
-            remote_node_id INTEGER NOT NULL,
-            bytes INTEGER NOT NULL,
-            time_read TIMESTAMP NOT NULL
-        )
-        "#,
-    )
-    .execute(pool)
-    .await
-    .expect("Failed to recreate metrics table");
+    create_db(pool).await;
 }
 
 /// Connects to and initializes the PostgreSQL database.
@@ -206,8 +175,7 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         .await
         .expect("Failed to connect to database");
 
-    // creates the database and tables if they do not exist, and then resets it
-    create_db(&pool).await;
+    // ensures the database starts from a clean state every time
     reset_db(&pool).await;
 
     // adds routes derived from both custom routes and topology to the database
@@ -483,7 +451,7 @@ pub async fn setup_flow_notification(
             .execute(&mut *conn)
             .await
             .expect("Failed to create flow trigger");
-        info!("Created flow notification trigger");
+        info!("Created flow notification trigger.");
     }
 
     // sets up a listener for flow notifications

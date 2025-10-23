@@ -1,10 +1,12 @@
 [project]
-name = "strato-waterfilling"
-version = "0.1.0"
-description = "A simple waterfilling algorithm for adjusting routes in Strato at runtime."
+name = "nextmini-routing"
+version = "2.0.0"
+description = "Dynamic routing algorithms for Nextmini"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = "==3.13.*"
 dependencies = [
-    "psycopg2-binary",
-    "numpy"
+    "psycopg2-binary>=2.9.0",
 ]
+
+[tool.uv]
+dev-dependencies = []

@@ -9,7 +9,7 @@ use tracing::{error, info};
 use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
 
 use crate::route_ser::deserialize_route_edges;
-use crate::topo::{FatTreeConfig, FullMeshConfig, RingConfig, TorusConfig};
+use crate::topology::{FatTreeConfig, FullMeshConfig, RingConfig, TorusConfig};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DBConfig {

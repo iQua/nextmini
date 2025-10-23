@@ -4,4 +4,5 @@ export default {
 	waterfilling: "Waterfilling",
 	routes: "Routes",
 	namespace: "Namespace",
+	"bare-metal": "Bare Metal",
 };

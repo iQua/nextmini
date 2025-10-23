@@ -1,0 +1,9 @@
+[project]
+name = "waterfilling-example"
+version = "1.0.0"
+description = "Waterfilling algorithm example for nextmini"
+requires-python = "==3.13.*"
+dependencies = [
+    "psycopg2-binary>=2.9.0",
+]
+

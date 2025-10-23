@@ -5,30 +5,61 @@ type = "full_mesh"
 full_mesh_config = { n_nodes = 4 }
 
 [[routes]]
+route = [1, 2]
+
+[[routes]]
 route = [1, 3, 2]
 
 [[routes]]
 route = [1, 4, 2]
 
-[routing]
-protocol = "shortest_path"
+[[routes]]
+route = [2, 1]
 
+# Link rates: tuned so waterfilling saturates at 10/20/30 Mbps
+# Path capacities:
+#   [1,2]: 10 Mbps (direct)
+#   [1,3,2]: min(40, 20) = 20 Mbps (bottleneck at 3->2)
+#   [1,4,2]: min(30, 30) = 30 Mbps (high capacity)
+# Ratio: 10:20:30 = 1:2:3
+# Expected: ~2:4:6 route copies
+
+# Forward direction link rates
 [[link_rates]]
 src_node_id = 1
 dst_node_id = 2
-rate = 100_000_000
+rate = 1_250_000
+bucket_size = 5000
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 3
+rate = 5_000_000
 bucket_size = 5000
 
 [[link_rates]]
 src_node_id = 3
 dst_node_id = 2
-rate = 100_000_000
+rate = 2_500_000    
+bucket_size = 5000
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 4
+rate = 3_750_000
 bucket_size = 5000
 
 [[link_rates]]
 src_node_id = 4
 dst_node_id = 2
-rate = 100_000_000
+rate = 3_750_000    # High capacity path
+bucket_size = 5000
+
+# Reverse direction link rate (for ACK traffic)
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 1
+rate = 1_250_000
 bucket_size = 5000
 
 [db]

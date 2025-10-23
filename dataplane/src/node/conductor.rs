@@ -30,13 +30,14 @@ pub struct Conductor {
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
         // connects the processors with its downstream local interface writers to send packets out
-        let (controller_interface, reporter) = ControllerInterfaceHandle::new(config.clone()).await;
+        let (controller_interface, reporter, flowstats_reporter) =
+            ControllerInterfaceHandle::new(config.clone()).await;
 
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
         let local_interface: LocalInterfaceHandle =
-            LocalInterfaceHandle::new(config.clone(), processors.clone());
+            LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
 
         Conductor {

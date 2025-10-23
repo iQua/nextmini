@@ -13,7 +13,7 @@ use crate::node::packet::Packet;
 
 pub enum LocalWriter {
     Sequential(SequentialLocalWriter),
-    Concurrent(ConcurrentLocalWriterProducer),
+    Concurrent(Box<ConcurrentLocalWriterProducer>),
 }
 
 impl LocalWriter {
@@ -29,12 +29,14 @@ impl LocalWriter {
                 shutdown_receiver,
                 packet_receiver,
             )),
-            Feature::Concurrent => LocalWriter::Concurrent(ConcurrentLocalWriterProducer::new(
-                config,
-                device,
-                shutdown_receiver,
-                packet_receiver,
-            )),
+            Feature::Concurrent => {
+                LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
+                    config,
+                    device,
+                    shutdown_receiver,
+                    packet_receiver,
+                )))
+            }
         }
     }
 

@@ -62,10 +62,10 @@ impl TokenBucket {
         }
 
         // sends the permitted packets in one batch
-        if !packets_permitted.is_empty() {
-            if let Err(e) = net_interface.send(packets_permitted).await {
-                error!("TokenBucket: Error sending a batch of packets: {}", e);
-            }
+        if !packets_permitted.is_empty()
+            && let Err(e) = net_interface.send(packets_permitted).await
+        {
+            error!("TokenBucket: Error sending a batch of packets: {}", e);
         }
 
         // then sends the delayed packets one by one

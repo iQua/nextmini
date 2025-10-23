@@ -19,7 +19,6 @@ pub struct FlowMetric {
 
 pub enum FlowMetricMessage {
     FlowMetric(FlowMetric),
-    FlowFinished(i32),
 }
 
 #[derive(Debug, Clone)]
@@ -50,18 +49,6 @@ impl ControllerReporterHandle {
             }
         }
     }
-
-    pub fn report_flow_finished(&self, controller_id: i32) {
-        if let Err(e) = self
-            .sender
-            .send(FlowMetricMessage::FlowFinished(controller_id))
-        {
-            error!(
-                "Error sending a flow finished message to the controller reporter: {}",
-                e
-            );
-        }
-    }
 }
 
 pub struct ControllerReporter {
@@ -90,23 +77,18 @@ impl ControllerReporter {
             tokio::select! {
                 // receives new metrics data
                 Some(msg) = self.receiver.recv() => {
-                    match msg {
-                        FlowMetricMessage::FlowMetric(metric) => {
-                            let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
-                                FlowMetric {
-                                    flow_id: metric.flow_id,
-                                    local_node_id: metric.local_node_id,
-                                    remote_node_id: metric.remote_node_id,
-                                    bytes: 0
-                                });
+                    let FlowMetricMessage::FlowMetric(metric) = msg;
 
-                            (*flow_metric).bytes += metric.bytes;
-                        }
-                        FlowMetricMessage::FlowFinished(controller_id) => {
-                            let msg = DataplaneToController::FlowFinished { controller_id };
-                            self.controller.send(msg).await;
-                        }
-                    }
+                    let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
+                        FlowMetric {
+                            flow_id: metric.flow_id,
+                            local_node_id: metric.local_node_id,
+                            remote_node_id: metric.remote_node_id,
+                            bytes: 0,
+                        },
+                    );
+
+                    flow_metric.bytes += metric.bytes;
                 }
                 // timer tick: calculates flow rates and transmits to the controller
                 _ = metrics_tick.tick() => {

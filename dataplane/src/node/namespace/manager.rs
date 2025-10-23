@@ -58,10 +58,10 @@ impl NamespaceManager {
         );
 
         // sets up host forwarding/NAT if configured
-        if self.config.auto_enable_ip_forward {
-            if let Err(e) = ensure_ip_forward_enabled() {
-                error!("Failed to enable ip_forward: {}", e);
-            }
+        if self.config.auto_enable_ip_forward
+            && let Err(e) = ensure_ip_forward_enabled()
+        {
+            error!("Failed to enable ip_forward: {}", e);
         }
         if self.config.auto_add_forward_rules || self.config.auto_add_nat {
             // detects outbound interface
@@ -72,15 +72,15 @@ impl NamespaceManager {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
                 .unwrap_or_else(|_| "ens3".to_string());
 
-            if self.config.auto_add_forward_rules {
-                if let Err(e) = ensure_forward_rules(&self.config.bridge_name, &out_if) {
-                    error!("Failed to add FORWARD rules: {}.", e);
-                }
+            if self.config.auto_add_forward_rules
+                && let Err(e) = ensure_forward_rules(&self.config.bridge_name, &out_if)
+            {
+                error!("Failed to add FORWARD rules: {}.", e);
             }
-            if self.config.auto_add_nat {
-                if let Err(e) = ensure_nat_masquerade(&format!("172.16.0.0/16"), &out_if) {
-                    error!("Failed to add MASQUERADE: {}.", e);
-                }
+            if self.config.auto_add_nat
+                && let Err(e) = ensure_nat_masquerade("172.16.0.0/16", &out_if)
+            {
+                error!("Failed to add MASQUERADE: {}.", e);
             }
         }
 
@@ -128,16 +128,16 @@ impl NamespaceManager {
 
             let raw_write_fd = write_fd.into_raw_fd();
             let cb = Box::new(move || {
-                child_process(
-                    ns_ip.clone(),
-                    veth2_idx,
-                    controller_addr_clone.clone(),
-                    idx + node_id_offset,
+                child_process(ChildProcessArgs {
+                    ns_ip: ns_ip.clone(),
+                    veth_peer_idx: veth2_idx,
+                    controller_addr: controller_addr_clone.clone(),
+                    node_index: idx + node_id_offset,
                     subnet,
-                    config_path.clone(),
-                    Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
-                    bridge_ip.clone(),
-                )
+                    config_path: config_path.clone(),
+                    handshake_fd: Some(unsafe { OwnedFd::from_raw_fd(raw_write_fd) }),
+                    bridge_ip: bridge_ip.clone(),
+                })
             });
 
             let mut tmp_stack: Box<[u8; STACK_SIZE]> = Box::new([0; STACK_SIZE]);
@@ -271,16 +271,16 @@ impl NamespaceManager {
         }
 
         // cleans up the bridge
-        if let Some(bridge_idx) = bridge_idx {
-            if let Err(e) = delete_namespace(bridge_idx).await {
-                error!("Failed to delete namespace: {}", e);
-            }
+        if let Some(bridge_idx) = bridge_idx
+            && let Err(e) = delete_namespace(bridge_idx).await
+        {
+            error!("Failed to delete namespace: {}", e);
         }
     }
 }
 
-/// The child process that runs in its own isolated network namespace.
-fn child_process(
+/// Parameters required to spawn the child process inside a namespace.
+struct ChildProcessArgs {
     ns_ip: String,
     veth_peer_idx: u32,
     controller_addr: String,
@@ -289,7 +289,20 @@ fn child_process(
     config_path: String,
     handshake_fd: Option<OwnedFd>,
     bridge_ip: String,
-) -> isize {
+}
+
+/// The child process that runs in its own isolated network namespace.
+fn child_process(args: ChildProcessArgs) -> isize {
+    let ChildProcessArgs {
+        ns_ip,
+        veth_peer_idx,
+        controller_addr,
+        node_index,
+        subnet,
+        config_path,
+        mut handshake_fd,
+        bridge_ip,
+    } = args;
     info!("Child process started with index {}.", node_index);
 
     // sets hostname for this namespace
@@ -304,7 +317,7 @@ fn child_process(
         setup_veth_peer(veth_peer_idx, &ns_ip, subnet).await?;
 
         // signal parent that peer interface is configured
-        if let Some(fd) = handshake_fd {
+        if let Some(fd) = handshake_fd.take() {
             let _ = nix::unistd::write(&fd, &[1u8]);
             drop(fd);
         }

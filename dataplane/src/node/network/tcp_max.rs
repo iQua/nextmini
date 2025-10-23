@@ -10,7 +10,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::processor::ProcessorHandle;
-use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct TcpMaxServer {
@@ -157,7 +157,7 @@ impl TcpMaxServer {
 
             _ => {
                 stream.write_all(&[0x05, 0xff]).await?;
-                return Err(Error::new(ErrorKind::NotFound, "Unsupported request type"));
+                Err(Error::new(ErrorKind::NotFound, "Unsupported request type"))
             }
         }
     }

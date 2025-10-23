@@ -18,13 +18,14 @@ use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::connector::Connector;
 use crate::node::connector::ConnectorMessage;
+use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::scheduler::SchedulerHandle;
+use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
@@ -37,7 +38,7 @@ pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
-    ConnectServerHandle(UserSpaceServerHandle),
+    ConnectServerHandle(Box<UserSpaceServerHandle>),
     ConnectUserSpaceSender {
         flow_id: FlowId,
         sender: UserSpaceSender,
@@ -45,6 +46,7 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
 }
 
 #[derive(Clone, Debug)]
@@ -174,7 +176,7 @@ impl ProcessorHandle {
     pub fn connect_server(&self, server: UserSpaceServerHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectServerHandle(server))
+            .send(ProcessorMessage::ConnectServerHandle(Box::new(server)))
         {
             error!(
                 "Error sending the ConnectServerHandle message to the processors: {}",
@@ -190,6 +192,34 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the SetFlowWeight message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    pub async fn set_flowstats_reporter(&self, flowstats_reporter: FlowStatsReporterHandle) {
+        let broadcast_reporter = flowstats_reporter.clone();
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SetFlowStatsReporter(Box::new(
+                broadcast_reporter,
+            )))
+        {
+            error!(
+                "Error sending the SetFlowStatsReporter message to the processors: {}",
+                e
+            );
+        };
+
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::SetFlowStatsReporter(Box::new(
+                flowstats_reporter,
+            )))
+            .await
+        {
+            error!(
+                "Error sending the SetFlowStatsReporter message to the connector: {}",
                 e
             );
         };
@@ -211,7 +241,9 @@ impl ProcessorHandle {
     pub async fn connect_tcp_max_client(&self, tcp_max_client: TcpMaxClient) {
         if let Err(e) = self
             .connector_message_sender()
-            .send(ConnectorMessage::ConnectTcpMaxClient(tcp_max_client))
+            .send(ConnectorMessage::ConnectTcpMaxClient(Box::new(
+                tcp_max_client,
+            )))
             .await
         {
             error!(
@@ -497,6 +529,9 @@ struct Processor {
     // the routing table
     routing_table: RoutingTable,
 
+    // optional flow stats reporter for route telemetry
+    flowstats_reporter: Option<FlowStatsReporterHandle>,
+
     // a unified hashmap for schedulers in normal mode
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 }
@@ -514,6 +549,7 @@ impl Processor {
             user_space_senders: AHashMap::new(),
             server: None,
             routing_table: RoutingTable::new(config.clone()),
+            flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
         }
@@ -566,13 +602,16 @@ impl Processor {
                 }
             }
             ProcessorMessage::ConnectServerHandle(user_space_server) => {
-                self.server = Some(user_space_server);
+                self.server = Some(*user_space_server);
             }
             ProcessorMessage::SetFlowWeight(flow_id, weight) => {
                 // updates the flow weight for all schedulers
                 for (_, scheduler) in self.schedulers.iter_mut() {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
+            }
+            ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
+                self.flowstats_reporter = Some(*flowstats_reporter);
             }
         }
     }
@@ -581,7 +620,10 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        match self.routing_table.get_next_hop_by_flow(packet_flow_id) {
+        match self
+            .routing_table
+            .get_next_hop_by_flow(packet_flow_id, self.flowstats_reporter.as_ref())
+        {
             Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
             Err(e) => error!("Error getting the next hop: {}", e),
         }
@@ -625,18 +667,16 @@ impl Processor {
                 let flow_id = packet.flow_id;
 
                 let dest = self.user_space_sender(flow_id);
-                if let Some(sender) = dest {
-                    if sender.try_send(packet).is_err() {
-                        tracing::error!(
-                            "Failed to send a packet in user-space flows to its local destination."
-                        );
-                    }
+                if let Some(sender) = dest
+                    && sender.try_send(packet).is_err()
+                {
+                    tracing::error!(
+                        "Failed to send a packet in user-space flows to its local destination."
+                    );
                 }
             }
-        } else {
-            if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-                scheduler.send(packet);
-            }
+        } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
+            scheduler.send(packet);
         }
     }
 }

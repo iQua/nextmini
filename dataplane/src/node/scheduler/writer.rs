@@ -6,7 +6,7 @@ use tracing::error;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::packet::Packet;
 use crate::node::scheduler::queue::SchedulerQueue;
-use crate::node::scheduler::scheduler::SchedulerWriterMessage;
+use crate::node::scheduler::sched::SchedulerWriterMessage;
 use crate::node::scheduler::token_bucket::TokenBucket;
 
 /// The consumer in the scheduler.
@@ -68,13 +68,11 @@ impl SchedulerWriter {
 
         if let Some(ref mut token_bucket) = self.token_bucket {
             token_bucket.send(&mut self.net_interface, packets).await;
-        } else {
-            if let Err(e) = self.net_interface.send(packets).await {
-                error!(
-                    "SchedulerWriter: Error sending batch of {} packets: {}",
-                    packet_count, e
-                );
-            }
+        } else if let Err(e) = self.net_interface.send(packets).await {
+            error!(
+                "SchedulerWriter: Error sending batch of {} packets: {}",
+                packet_count, e
+            );
         }
     }
 }
