@@ -1,0 +1,36 @@
+# Fly.io configuration for Nextmini Dataplane Node
+# This is a template - actual app name will be set by deploy-flyio.py
+app = "{{APP_NAME}}"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.dataplane"
+  build-target = "runtime"
+
+[env]
+  RUST_LOG = "info"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 8080
+
+# VM Configuration - requires privileged access for TUN device
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Mount config file
+[[files]]
+  guest_path = "/app/config.toml"
+  local_path = "{{CONFIG_PATH}}"
+
+# Auto-scaling configuration
+[scaling]
+  min_machines_running = 1
+  max_machines_running = 1
