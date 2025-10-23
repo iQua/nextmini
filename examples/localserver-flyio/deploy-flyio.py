@@ -13,15 +13,11 @@ import sys
 from pathlib import Path
 
 
-def run_command(cmd, check=True, capture_output=False, input_text=None):
-    """Run a shell command, optionally sending stdin."""
+def run_command(cmd, check=True, capture_output=False):
+    """Run a shell command."""
     print(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(
-        cmd,
-        check=check,
-        capture_output=capture_output,
-        text=True,
-        input=input_text,
+        cmd, check=check, capture_output=capture_output, text=True
     )
     return result
 
@@ -138,10 +134,7 @@ def deploy_node(repo_root, script_dir, public_ip, node_id):
 
     if result.returncode != 0:
         print(f"Creating new app: {app_name}")
-        run_command(
-            ["flyctl", "apps", "create", app_name, "--org", "personal"],
-            input_text="n\n",
-        )
+        run_command(["flyctl", "apps", "create", app_name, "--org", "personal"])
     else:
         print(f"App exists: {app_name}")
 
