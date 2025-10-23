@@ -234,6 +234,9 @@ def main():
     print("   1. Check controller logs: docker compose logs -f controller")
     print(f"   2. Check node logs: flyctl logs -a {deployed_apps[0]}")
     print("   3. Monitor status: flyctl status -a <app-name>")
+    print("   4. SSH into a node:")
+    for app in deployed_apps:
+        print(f"      flyctl ssh console -a {app}")
     print()
     print("Cleanup:")
     for app in deployed_apps:
