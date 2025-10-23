@@ -160,6 +160,7 @@ def deploy_node(repo_root, script_dir, public_ip, node_id):
             "--app",
             app_name,
             "--ha=false",
+            "--no-public-ips",
             "--yes",
         ]
     )
