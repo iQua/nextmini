@@ -2,17 +2,41 @@ protocol = "tcp"
 
 [topology]
 type = "full_mesh"
-full_mesh_config = { n_nodes = 2 }
+full_mesh_config = { n_nodes = 5 }
 
 # Set the routing protocol to "shortest_path" if routes in the topology are needed.
 # [routing]
 # protocol = "shortest_path"
 
 [[routes]]
-route = [[1, 2]]
+route = [1, 5, 2]
 
 [[routes]]
-route = [[2, 1]]
+route = [2, 4, 3]
+
+[[routes]]
+route = [3, 5, 4]
+
+[[routes]]
+route = [4, 1, 5]
+
+[[routes]]
+route = [5, 1]
+
+[[routes]]
+route = [1, 5]
+
+[[routes]]
+route = [5, 1, 4]
+
+[[routes]]
+route = [4, 5, 3]
+
+[[routes]]
+route = [3, 4, 2]
+
+[[routes]]
+route = [2, 5, 1]
 
 [db]
 user = "pgusr"

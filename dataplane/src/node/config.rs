@@ -25,6 +25,15 @@ pub enum CongestionControl {
     Cubic,
 }
 
+/// IP version for network addresses
+#[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum IpVersion {
+    #[default]
+    Ipv4,
+    Ipv6,
+}
+
 /// The processing mode for processing packets
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -81,6 +90,11 @@ pub struct LocalConfig {
     #[default("eth0".to_string())]
     #[arg(long)]
     pub private_network_interface: String,
+
+    /// IP version for network addresses (ipv4 or ipv6)
+    #[default(IpVersion::Ipv4)]
+    #[arg(long)]
+    pub ip_version: IpVersion,
 
     /// The port to use for communicating between nodes on the same network.
     #[default("8080".to_string())]
@@ -462,18 +476,38 @@ impl LocalConfig {
                 }
             }
 
-            if !ipv6addr.is_empty() {
-                cfgs.private_network_addr = ipv6addr.clone();
-                info!(
-                    "Using IPv6 address for private network: {}",
-                    cfgs.private_network_addr
-                );
-            } else if !ipv4addr.is_empty() {
-                cfgs.private_network_addr = ipv4addr.clone();
-                info!(
-                    "Using IPv4 address for private network: {}",
-                    cfgs.private_network_addr
-                );
+            // Choose IP version based on ip_version configuration.
+            match cfgs.ip_version {
+                IpVersion::Ipv4 => {
+                    if !ipv4addr.is_empty() {
+                        cfgs.private_network_addr = ipv4addr.clone();
+                        info!(
+                            "Using IPv4 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    } else if !ipv6addr.is_empty() {
+                        cfgs.private_network_addr = ipv6addr.clone();
+                        info!(
+                            "Using IPv6 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    }
+                }
+                IpVersion::Ipv6 => {
+                    if !ipv6addr.is_empty() {
+                        cfgs.private_network_addr = ipv6addr.clone();
+                        info!(
+                            "Using IPv6 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    } else if !ipv4addr.is_empty() {
+                        cfgs.private_network_addr = ipv4addr.clone();
+                        info!(
+                            "Using IPv4 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    }
+                }
             }
 
             if cfgs.node_id == 0 {
@@ -550,18 +584,38 @@ impl LocalConfig {
                 }
             }
 
-            if !ipv6addr.is_empty() {
-                cfgs.public_network_addr = ipv6addr;
-                info!(
-                    "Using IPv6 address for public network: {}",
-                    cfgs.public_network_addr
-                );
-            } else if !ipv4addr.is_empty() {
-                cfgs.public_network_addr = ipv4addr;
-                info!(
-                    "Using IPv4 address for public network: {}",
-                    cfgs.public_network_addr
-                );
+            // Choose IP version based on ip_version configuration
+            match cfgs.ip_version {
+                IpVersion::Ipv4 => {
+                    if !ipv4addr.is_empty() {
+                        cfgs.public_network_addr = ipv4addr;
+                        info!(
+                            "Using IPv4 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    } else if !ipv6addr.is_empty() {
+                        cfgs.public_network_addr = ipv6addr;
+                        info!(
+                            "Using IPv6 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    }
+                }
+                IpVersion::Ipv6 => {
+                    if !ipv6addr.is_empty() {
+                        cfgs.public_network_addr = ipv6addr;
+                        info!(
+                            "Using IPv6 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    } else if !ipv4addr.is_empty() {
+                        cfgs.public_network_addr = ipv4addr;
+                        info!(
+                            "Using IPv4 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    }
+                }
             }
         }
 
