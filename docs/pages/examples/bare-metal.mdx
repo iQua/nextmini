@@ -121,6 +121,55 @@ uv run cleanup.py
 
 ---
 
+## Digital Ocean Deployment (5 Nodes) with public ip address(change different private_network_name in deploy_node.py)
+
+### Deploy Nodes on Each VM
+
+**On VM 1 (143.110.246.15) - Node 1:**
+```bash
+cd ~/nextmini/examples/bare-metal
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface eth0
+```
+
+**On VM 2 (165.227.232.28) - Node 2:**
+```bash
+cd ~/nextmini/examples/bare-metal
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface eth0
+```
+
+**On VM 3 (134.209.198.44) - Node 3:**
+```bash
+cd ~/nextmini/examples/bare-metal
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 3 --interface eth0
+```
+
+**On VM 4 (134.199.168.42) - Node 4:**
+```bash
+cd ~/nextmini/examples/bare-metal
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 4 --interface eth0
+```
+
+**On VM 5 (165.22.175.12) - Node 5:**
+```bash
+cd ~/nextmini/examples/bare-metal
+chmod +x *.py
+uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 5 --interface eth0
+```
+
+### Verify All Nodes Connected
+
+On the controller VM, check the logs:
+
+```bash
+tail -f ~/nextmini/examples/bare-metal/controller-deploy/controller.log
+```
+
+---
+
 ## Prerequisites
 
 ### All Machines
