@@ -124,18 +124,83 @@ uv run cleanup.py
 ## Prerequisites
 
 ### All Machines
-- Rust toolchain: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
-- Build tools: `build-essential`, `pkg-config`, `libssl-dev`
-- Python 3.13 and uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- Network connectivity between all machines
+
+Before deploying Nextmini, install the following on **every machine** (controller and dataplane nodes):
+
+#### 1. Install Rust Toolchain
+
+```bash
+# Install rustup (Rust installer)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+
+# Load Rust environment
+source "$HOME/.cargo/env"
+
+# Verify installation
+rustc --version
+cargo --version
+```
+
+#### 2. Install Build Tools
+
+```bash
+# Ubuntu/Debian (Digital Ocean droplets)
+sudo apt update
+sudo apt install -y build-essential pkg-config libssl-dev
+
+# Verify installation
+gcc --version
+```
+
+These tools are required because Rust dependencies include C libraries that need compilation.
+
+#### 3. Install uv (Python Package Manager)
+
+```bash
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Add to PATH for future sessions
+echo '' >> ~/.bashrc
+echo '# uv package manager' >> ~/.bashrc
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+# Load uv in current session
+export PATH="$HOME/.local/bin:$PATH"
+
+# Verify installation
+uv --version
+```
+
+**Note:** If you open a new terminal and `uv` is not found, run:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+Or start a fresh shell session: `exec bash`
+
+#### 4. Network Connectivity
+- Ensure all machines can communicate with each other
+- Check firewall rules allow traffic between nodes
 
 ### Controller Machine (206.12.89.244)
-- Docker for PostgreSQL
-- Port 3000 open for incoming connections
 
-### Dataplane Machines
-- Root/sudo access (for TUN device)
-- Port 8080 open for node-to-node communication
+Additional requirements for the controller:
+
+#### Install Docker (for PostgreSQL)
+
+```bash
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Allow current user to run Docker without sudo
+sudo usermod -aG docker $USER
+newgrp docker
+
+# Verify installation
+docker --version
+docker ps
+```
 
 ---
 
