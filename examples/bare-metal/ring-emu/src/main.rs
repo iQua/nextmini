@@ -214,10 +214,11 @@ async fn reduce_scatter(
             chunk_idx: send_idx as u32,
             payload,
         };
-        send_msg(right, &msg).await?;
-
-        // Receive neighbor contribution for recv_idx and add in-place
-        let incoming = recv_msg(left).await?;
+        
+        // Concurrently send and receive to avoid deadlock
+        let send_future = send_msg(right, &msg);
+        let recv_future = recv_msg(left);
+        let (_send_result, incoming) = tokio::try_join!(send_future, recv_future)?;
         match incoming {
             Msg::Data {
                 phase: Phase::ReduceScatter,
@@ -268,10 +269,11 @@ async fn all_gather(
             chunk_idx: send_idx as u32,
             payload,
         };
-        send_msg(right, &msg).await?;
-
-        // Receive the next reduced chunk we need to store
-        let incoming = recv_msg(left).await?;
+        
+        // Concurrently send and receive to avoid deadlock
+        let send_future = send_msg(right, &msg);
+        let recv_future = recv_msg(left);
+        let (_send_result, incoming) = tokio::try_join!(send_future, recv_future)?;
         match incoming {
             Msg::Data {
                 phase: Phase::AllGather,
