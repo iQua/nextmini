@@ -50,6 +50,7 @@ def main():
 Examples:
   uv run deploy_controller.py
   uv run deploy_controller.py --db-password mypassword
+  uv run deploy_controller.py --public-ip  # Show public IP for remote dataplane nodes
         """
     )
     
@@ -64,6 +65,12 @@ Examples:
         type=int,
         default=3000,
         help='Controller port (default: 3000)'
+    )
+    
+    parser.add_argument(
+        '--public-ip',
+        action='store_true',
+        help='Show public IP address instead of local IP (for remote dataplane nodes)'
     )
     
     args = parser.parse_args()
@@ -156,8 +163,16 @@ Examples:
         sys.exit(1)
     
     # Get host IP
-    result = run_command(["hostname", "-I"], check=False)
-    host_ip = result.stdout.split()[0] if result.stdout else "unknown"
+    if args.public_ip:
+        # Get public IP for remote dataplane nodes
+        result = run_command(["curl", "-s", "ifconfig.me"], check=False)
+        host_ip = result.stdout.strip() if result.stdout else "unknown"
+        ip_type = "Public IP"
+    else:
+        # Get local IP for same-network dataplane nodes
+        result = run_command(["hostname", "-I"], check=False)
+        host_ip = result.stdout.split()[0] if result.stdout else "unknown"
+        ip_type = "Local IP"
     
     print("\n" + "=" * 60)
     print("Controller Deployment Complete")
@@ -169,8 +184,11 @@ Examples:
     print(f"To stop: kill {controller_pid}")
     print("\n" + "=" * 60)
     print("Get this host's IP address for dataplane nodes:")
-    print(f"  IP: {host_ip}")
+    print(f"  {ip_type}: {host_ip}")
     print(f"  Full address: ws://{host_ip}:{args.port}")
+    if not args.public_ip:
+        print(f"\nNote: This is a local IP. For remote dataplane nodes,")
+        print(f"      run with --public-ip to get the public IP address.")
     print("=" * 60)
 
 
