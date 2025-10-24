@@ -177,6 +177,7 @@ Examples:
     
     config_content = f"""private_network_interface = "{args.interface}"
 private_network_name = "{args.network_name}"
+ip_version = "ipv4"
 num_tun_queues = 4
 num_packet_processors = 4
 channel_capacity = 4000
