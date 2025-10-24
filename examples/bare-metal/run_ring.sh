@@ -15,11 +15,11 @@ cd ring-emu
 
 uv run launch_ring.py \
   --ring ../ring.txt \
-  --bin ~/nextmini/target/release/ringallreduce-routes \
+  --bin ~/nextmini/examples/bare-metal/ring-emu/target/release/ringallreduce-routes \
   --ssh-hosts ../ssh_hosts.txt \
   --ssh-key ../ssh/id_rsa \
   --remote-dir ~/ring-test \
-  --len 104850 \
+  --len 104857 \
   --init rank \
   --reps 10 \
   --verify
