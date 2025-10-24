@@ -120,12 +120,6 @@ Examples:
         help='Network interface name (default: ens3). Use "ip addr" to find yours.'
     )
     
-    parser.add_argument(
-        '--network-name',
-        default='net1',
-        help='Private network name (default: net1)'
-    )
-    
     args = parser.parse_args()
     
     print("=" * 60)
@@ -176,7 +170,7 @@ Examples:
     print(f"\nStep 3: Generating configuration for Node {args.node_id}...")
     
     config_content = f"""private_network_interface = "{args.interface}"
-private_network_name = "{args.network_name}"
+private_network_name = "node{args.node_id}"
 ip_version = "ipv4"
 num_tun_queues = 4
 num_packet_processors = 4
