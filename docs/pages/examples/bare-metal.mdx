@@ -6,8 +6,6 @@ This guide demonstrates **native binary deployment** on bare metal or virtual ma
 
 ## Quick Start
 
-Add `"examples/bare-metal/ring-emu"` to `/nextmini/Cargo.toml`.
-
 ### Scenario
 - Controller: `206.12.89.244` (Physical Machine 1)
 - Node 1: Physical Machine 2
@@ -85,8 +83,8 @@ INFO controller::new_node: All dataplane nodes have connected. It takes XX.XX se
 
 ```bash
 # Build ringallreduce (once)
-cd ~/nextmini
-cargo build --release -p ringallreduce-routes
+cd ~/nextmini/examples/bare-metal/ring-emu
+cargo build --release
 
 # Run test
 cd ~/nextmini/examples/bare-metal
