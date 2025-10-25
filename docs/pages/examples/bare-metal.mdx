@@ -6,6 +6,79 @@ This guide demonstrates **native binary deployment** on bare metal or virtual ma
 
 ## Quick Start
 
+You have **two deployment options**:
+
+1. **Automated Deployment** (Recommended) - One-command deployment via SSH
+2. **Manual Deployment** - Step-by-step deployment on each machine
+
+---
+
+## Option 1: Automated Deployment (Recommended)
+
+Deploy to multiple remote VMs using a single script with SSH/SCP.
+
+### Quick view
+
+```bash
+cd ~/nextmini/examples/bare-metal/auto-deploy
+vim controller-config.toml  
+vim nodes.conf
+./deploy-controller.sh       
+./deploy-all.sh
+
+# To clean:
+./cleanup.sh
+```
+
+### Step 1: Deploy Controller
+
+```bash
+cd nextmini/examples/bare-metal/auto-deploy
+./deploy-controller.sh
+```
+
+### Step 2: Configure Node List
+
+Edit `nodes.conf` with your node information:
+
+```bash
+# Controller Configuration
+CONTROLLER_IP=206.12.89.244    # Controller's public IP
+CONTROLLER_PORT=3000
+
+# SSH Configuration
+SSH_KEY=ssh/id_rsa             # Path to SSH private key
+REMOTE_DEPLOY_DIR=/root/nextmini-node
+
+# Node List
+# Format: NODE_ID|NODE_IP:SSH_PORT|INTERFACE|DATAPLANE_PORT
+1|69.30.85.191:22113|eth0|8080
+2|69.30.85.219:22079|eth0|8080
+```
+
+### Step 3: Deploy All Nodes
+
+```bash
+./deploy-all.sh
+```
+
+**Done.** All nodes are deployed and connected to the controller.
+
+### Verify Deployment
+
+```bash
+# View controller logs
+tail -f ../controller-deploy/controller.log
+
+# View remote node logs (SSH to node)
+ssh -i ssh/id_rsa -p 22113 root@69.30.85.191
+tail -f /root/nextmini-node/node.log
+```
+
+---
+
+## Option 2: Manual Deployment
+
 ### Scenario
 - Controller: `206.12.89.244` (Physical Machine 1)
 - Node 1: Physical Machine 2
@@ -121,7 +194,11 @@ uv run cleanup.py
 
 ---
 
-## Digital Ocean Deployment (5 Nodes) with public ip address(change different private_network_name in deploy_node.py)
+## Digital Ocean Deployment (5 Nodes)
+
+**Note:** You can use the automated deployment method (Option 1) for Digital Ocean VMs too! Just add all 5 nodes to `nodes.conf` and run `./deploy-all.sh`.
+
+### Manual Method (with public ip address)
 
 ### Deploy Nodes on Each VM
 

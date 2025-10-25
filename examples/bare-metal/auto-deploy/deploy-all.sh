@@ -18,7 +18,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # Colors
 RED='\033[0;31m'
@@ -110,13 +110,18 @@ load_config() {
         
         # Trim whitespace
         key=$(echo "$key" | xargs)
-        value=$(echo "$value" | xargs)
+        # Remove inline comments (everything after #) and trim whitespace
+        value=$(echo "$value" | sed 's/#.*//' | xargs)
         
         case "$key" in
             CONTROLLER_IP) CONTROLLER_IP="$value" ;;
             CONTROLLER_PORT) CONTROLLER_PORT="$value" ;;
             SSH_USER) SSH_USER="$value" ;;
-            SSH_KEY) SSH_KEY="$SCRIPT_DIR/$value" ;;
+            SSH_KEY)
+                # Remove leading ./ if present, then make it relative to SCRIPT_DIR
+                value="${value#./}"
+                SSH_KEY="$SCRIPT_DIR/$value"
+                ;;
             REMOTE_DEPLOY_DIR) REMOTE_DEPLOY_DIR="$value" ;;
             SKIP_BUILD) SKIP_BUILD="$value" ;;
         esac
