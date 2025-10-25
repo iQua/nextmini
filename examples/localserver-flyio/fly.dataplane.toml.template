@@ -21,9 +21,9 @@ primary_region = "iad"
     port = 8080
 
 # VM Configuration - requires privileged access for TUN device
+# Note: memory is automatically assigned based on vm-size
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
 
 # Mount config file
 [[files]]
