@@ -300,3 +300,61 @@ impl ConcurrentLocalWriterConsumer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seq_less_orders_increasing_values() {
+        assert!(
+            SequencedPacket::seq_less(100, 200),
+            "lower sequence numbers should compare as less"
+        );
+        assert!(
+            !SequencedPacket::seq_less(200, 100),
+            "higher sequence numbers should not be considered less"
+        );
+    }
+
+    #[test]
+    fn seq_less_handles_wraparound_correctly() {
+        let near_max = u32::MAX - 5;
+        assert!(
+            SequencedPacket::seq_less(near_max, 10),
+            "numbers near wraparound should precede small sequence numbers"
+        );
+        assert!(
+            !SequencedPacket::seq_less(10, near_max),
+            "new sequence numbers after wrap should not precede the tail end"
+        );
+    }
+
+    #[test]
+    fn binary_heap_respects_sequence_order_with_wraparound() {
+        let mut heap = BinaryHeap::new();
+        let sequences = [u32::MAX - 1, 0, 1, 500, u32::MAX];
+
+        for &seq in &sequences {
+            heap.push(SequencedPacket {
+                seq,
+                packet: Packet {
+                    flow_id: seq as u128,
+                    packet_size: 0,
+                    buf: Vec::new(),
+                },
+            });
+        }
+
+        let mut result = Vec::new();
+        while let Some(entry) = heap.pop() {
+            result.push(entry.seq);
+        }
+
+        assert_eq!(
+            result,
+            vec![u32::MAX - 1, u32::MAX, 0, 1, 500],
+            "heap should yield packets in ascending sequence order accounting for wraparound"
+        );
+    }
+}

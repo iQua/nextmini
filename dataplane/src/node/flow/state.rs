@@ -41,3 +41,57 @@ impl ConnectionState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn update_initializes_counters_on_first_transfer() {
+        let initial_start = StdInstant::now() - Duration::from_secs(10);
+        let mut state = ConnectionState {
+            start_time: initial_start,
+            time_last_updated: StdInstant::now(),
+            bytes_last_updated: 0,
+            bytes_total: 0,
+        };
+
+        state.update(3, 7, 512);
+
+        assert_eq!(state.bytes_total, 512);
+        assert_eq!(state.bytes_last_updated, 512);
+        assert!(
+            state.start_time >= initial_start,
+            "first update should refresh the start timestamp when data begins flowing"
+        );
+    }
+
+    #[test]
+    fn update_resets_window_after_reporting() {
+        let initial_start = StdInstant::now() - Duration::from_secs(5);
+        let initial_last_update = StdInstant::now() - Duration::from_secs(2);
+        let mut state = ConnectionState {
+            start_time: initial_start,
+            time_last_updated: initial_last_update,
+            bytes_last_updated: 128,
+            bytes_total: 1024,
+        };
+
+        state.update(1, 2, 256);
+
+        assert_eq!(state.bytes_total, 1280);
+        assert_eq!(
+            state.bytes_last_updated, 0,
+            "bytes_last_updated should reset after throughput reporting window elapses"
+        );
+        assert!(
+            state.time_last_updated >= initial_last_update,
+            "time_last_updated should advance when the reporting window flushes"
+        );
+        assert_eq!(
+            state.start_time, initial_start,
+            "start_time should remain unchanged after the first update"
+        );
+    }
+}
