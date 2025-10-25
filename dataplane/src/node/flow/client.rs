@@ -303,3 +303,148 @@ impl UserSpaceClient {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::controller::interface::ControllerInterfaceHandle;
+    use crate::node::processor::ProcessorMessage;
+    use crate::node::FlowIdExt;
+    use tokio::time::{sleep, timeout, Duration};
+
+    fn make_test_config() -> LocalConfig {
+        let mut config = LocalConfig::default();
+        config.node_id = 1;
+        config.num_packet_processors = 1;
+        config.channel_capacity = 32;
+        config.user_space_client_port = 4000;
+        config.user_space_server_port = 5000;
+        config
+    }
+
+    fn make_flow(dst_node_id: usize, weight: Option<usize>) -> Flow {
+        Flow {
+            controller_id: Some(42),
+            src_node_id: 1,
+            dst_node_id,
+            flow_spec: nextmini_messages::FlowSpec {
+                flow_len: FlowLen::Bytes(1024),
+                flow_rate: Some(1_000_000),
+                flow_weight: weight,
+            },
+        }
+    }
+
+    fn expected_flow_id(config: &LocalConfig, flow: &Flow, client_port: u16) -> FlowId {
+        let client_ip =
+            config
+                .node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let server_ip =
+            flow
+                .dst_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+
+        ((u32::from(server_ip) as u128) << 96)
+            | ((u32::from(client_ip) as u128) << 64)
+            | ((config.user_space_server_port as u128) << 48)
+            | ((client_port as u128) << 32)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_flows_registers_sender_and_weight() {
+        let config = make_test_config();
+        let processors = ProcessorHandle::new(config.clone());
+
+        let (controller, _controller_rx) = ControllerInterfaceHandle::test_handle();
+        let flowstats = FlowStatsReporterHandle::new(controller, config.clone());
+
+        let mut client_handle =
+            UserSpaceClientHandle::new(config.clone(), processors.clone(), flowstats);
+        let mut broadcast_rx = processors.broadcast_sender().subscribe();
+
+        let weight = 7usize;
+        let flow = make_flow(2, Some(weight));
+
+        client_handle.add_flows(vec![flow.clone()]);
+        // allow spawned client thread to progress
+        sleep(Duration::from_millis(10)).await;
+
+        let expected_flow_id =
+            expected_flow_id(&config, &flow, config.user_space_client_port + 1);
+
+        let mut saw_connect = false;
+        let mut saw_weight = false;
+
+        for _ in 0..5 {
+            if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await {
+                match msg.expect("processor channel open") {
+                    ProcessorMessage::ConnectUserSpaceSender { flow_id, .. } => {
+                        assert_eq!(flow_id, expected_flow_id);
+                        saw_connect = true;
+                    }
+                    ProcessorMessage::SetFlowWeight(flow_id, value) => {
+                        assert_eq!(flow_id, expected_flow_id.reverse());
+                        assert_eq!(value, weight);
+                        saw_weight = true;
+                    }
+                    ProcessorMessage::DisconnectUserSpaceSender(_flow_id) => {}
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(
+            saw_connect,
+            "add_flows should connect a user-space sender for the flow"
+        );
+        assert!(
+            saw_weight,
+            "add_flows should set the flow weight when provided"
+        );
+        assert_eq!(
+            client_handle.next_client_port,
+            config.user_space_client_port + 1,
+            "client port counter should advance after provisioning a flow"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_flows_without_weight_skips_weight_update() {
+        let config = make_test_config();
+        let processors = ProcessorHandle::new(config.clone());
+
+        let (controller, _controller_rx) = ControllerInterfaceHandle::test_handle();
+        let flowstats = FlowStatsReporterHandle::new(controller, config.clone());
+
+        let mut client_handle =
+            UserSpaceClientHandle::new(config.clone(), processors.clone(), flowstats);
+        let mut broadcast_rx = processors.broadcast_sender().subscribe();
+
+        let flow = make_flow(3, None);
+        client_handle.add_flows(vec![flow.clone()]);
+        sleep(Duration::from_millis(10)).await;
+
+        let mut saw_weight_message = false;
+
+        for _ in 0..4 {
+            if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await {
+                if matches!(msg.expect("processor channel open"), ProcessorMessage::SetFlowWeight(..))
+                {
+                    saw_weight_message = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            !saw_weight_message,
+            "flow weight should not be updated when the specification omits it"
+        );
+        assert_eq!(
+            client_handle.next_client_port,
+            config.user_space_client_port + 1,
+            "port counter should still advance after handling the flow"
+        );
+    }
+}

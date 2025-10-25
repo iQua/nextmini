@@ -177,3 +177,105 @@ impl LocalInterfaceHandle {
         queues
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::FlowId;
+    use crate::node::FlowIdExt;
+    use tokio::time::{timeout, Duration};
+
+    fn flow_id_for_bucket(bucket: usize, capacity: usize) -> FlowId {
+        for candidate in 0u128..50_000u128 {
+            if FlowIdExt::hash(&candidate, capacity) == bucket {
+                return candidate;
+            }
+        }
+        panic!(
+            "unable to find flow id for bucket {} within search space",
+            bucket
+        );
+    }
+
+    fn packet_with_flow_id(flow_id: FlowId) -> Packet {
+        Packet {
+            flow_id,
+            packet_size: 0,
+            buf: Vec::new(),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mask_to_prefix_handles_common_netmasks() {
+        assert_eq!(
+            LocalInterfaceHandle::mask_to_prefix(Ipv4Addr::new(255, 255, 255, 0)),
+            24
+        );
+        assert_eq!(
+            LocalInterfaceHandle::mask_to_prefix(Ipv4Addr::new(255, 255, 0, 0)),
+            16
+        );
+        assert_eq!(
+            LocalInterfaceHandle::mask_to_prefix(Ipv4Addr::new(255, 255, 255, 192)),
+            26
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_packet_routes_based_on_flow_hash() {
+        let (shutdown_sender, _) = broadcast::channel(8);
+        let (sender_a, mut receiver_a) = mpsc::channel(4);
+        let (sender_b, mut receiver_b) = mpsc::channel(4);
+
+        let handle = LocalInterfaceHandle {
+            shutdown_sender,
+            write_senders: vec![sender_a, sender_b],
+        };
+
+        let flow_id_a = flow_id_for_bucket(0, 2);
+        let flow_id_b = flow_id_for_bucket(1, 2);
+
+        handle.write_packet(packet_with_flow_id(flow_id_a));
+        handle.write_packet(packet_with_flow_id(flow_id_b));
+
+        let msg_a = receiver_a
+            .try_recv()
+            .expect("flow mapped to bucket 0 should reach first sender");
+        let msg_b = receiver_b
+            .try_recv()
+            .expect("flow mapped to bucket 1 should reach second sender");
+
+        let packet_a = match msg_a {
+            LocalInterfaceMessage::WritePacket(packet) => packet,
+        };
+        assert_eq!(packet_a.flow_id, flow_id_a);
+
+        let packet_b = match msg_b {
+            LocalInterfaceMessage::WritePacket(packet) => packet,
+        };
+        assert_eq!(packet_b.flow_id, flow_id_b);
+
+        assert!(
+            receiver_a.try_recv().is_err() && receiver_b.try_recv().is_err(),
+            "each sender should receive only one packet in this scenario"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_broadcasts_signal_to_listeners() {
+        let (shutdown_sender, _) = broadcast::channel(4);
+        let handle = LocalInterfaceHandle {
+            shutdown_sender: shutdown_sender.clone(),
+            write_senders: Vec::new(),
+        };
+        let mut receiver = shutdown_sender.subscribe();
+
+        handle.shutdown().await;
+
+        let msg = timeout(Duration::from_millis(50), receiver.recv())
+            .await
+            .expect("shutdown signal should be delivered promptly")
+            .expect("broadcast channel should remain open");
+        assert!(matches!(msg, ShutdownMessage::Shutdown));
+    }
+}

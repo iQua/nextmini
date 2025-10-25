@@ -212,3 +212,101 @@ impl UserSpaceServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nextmini_messages::FlowLen;
+    use std::time::Duration;
+
+    fn make_test_config() -> LocalConfig {
+        let mut config = LocalConfig::default();
+        config.node_id = 2;
+        config.num_packet_processors = 1;
+        config.channel_capacity = 16;
+        config.user_space_server_port = 5000;
+        config
+    }
+
+    fn make_flow(src_node_id: usize, dst_node_id: usize, rate: Option<usize>) -> Flow {
+        Flow {
+            controller_id: None,
+            src_node_id,
+            dst_node_id,
+            flow_spec: FlowSpec {
+                flow_len: FlowLen::Bytes(1024),
+                flow_rate: rate,
+                flow_weight: None,
+            },
+        }
+    }
+
+    fn make_flow_id(config: &LocalConfig, flow: &Flow, src_port: u16) -> FlowId {
+        let src_ip =
+            flow
+                .src_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let dst_ip =
+            flow
+                .dst_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let dst_port = config.user_space_server_port;
+
+        ((u32::from(src_ip) as u128) << 96)
+            | ((u32::from(dst_ip) as u128) << 64)
+            | ((src_port as u128) << 48)
+            | ((dst_port as u128) << 32)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn store_flow_spec_registers_flow_rate() {
+        let config = make_test_config();
+        let processors = ProcessorHandle::new(config.clone());
+        let handle = UserSpaceServerHandle::new(config.clone(), processors);
+
+        let flow = make_flow(5, config.node_id, Some(25_000));
+        handle.store_flow_spec(flow.clone());
+
+        let src_ip = flow
+            .src_node_id
+            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let specs = handle.flow_specs.lock().unwrap();
+        let stored = specs
+            .get(&IpAddress::from(src_ip))
+            .expect("flow spec should be recorded for source IP");
+
+        assert_eq!(
+            stored.flow_rate, flow.flow_spec.flow_rate,
+            "stored flow spec should preserve the controller-provided rate"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn add_server_reuses_existing_sender_for_same_flow() {
+        let config = make_test_config();
+        let processors = ProcessorHandle::new(config.clone());
+        let handle = UserSpaceServerHandle::new(config.clone(), processors);
+
+        let flow = make_flow(6, config.node_id, Some(10));
+        handle.store_flow_spec(flow.clone());
+
+        let flow_id = make_flow_id(&config, &flow, 4100);
+
+        let sender_first = handle.add_server(flow_id);
+        // give the server thread a moment to start
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let sender_second = handle.add_server(flow_id);
+
+        assert!(
+            sender_first.same_channel(&sender_second),
+            "a subsequent request for the same flow should reuse the existing sender"
+        );
+
+        let senders = handle.packet_senders.lock().unwrap();
+        assert_eq!(
+            senders.len(),
+            1,
+            "only one sender entry should exist for duplicate add_server calls"
+        );
+    }
+}
