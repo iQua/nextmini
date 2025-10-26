@@ -40,6 +40,7 @@ impl Packet {
         self.has_tcp_payload()
     }
 
+    // Is this packet a TCP FIN or RST?
     pub fn is_tcp_fin_or_rst(&self) -> bool {
         // checks if it is tcp
         if self.buf[9] != 6 {
