@@ -19,8 +19,8 @@ use s2n_quic::{client, Client, Server};
 use tracing::{error, info, warn};
 
 use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::CongestionControl;
-use crate::node::config::LocalConfig;
+use crate::node::config::{LocalConfig, QuicTransportMode};
+use crate::node::config::CongestionControl as CcMode;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
@@ -55,7 +55,7 @@ impl QuicServer {
         let server_addr: SocketAddr = addr.parse().unwrap();
 
         let mut server = match self.config.quic_congestion_control {
-            CongestionControl::Cubic => {
+            CcMode::Cubic => {
                 let builder = Server::builder()
                     .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
                     .expect("Failed to set TLS config")
@@ -103,7 +103,7 @@ impl QuicServer {
 
                 builder.start().expect("Failed to start server")
             }
-            CongestionControl::Bbr => {
+            CcMode::Bbr => {
                 let builder = Server::builder()
                     .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
                     .expect("Failed to set TLS config")
@@ -151,6 +151,64 @@ impl QuicServer {
 
                 builder.start().expect("Failed to start server")
             }
+            CcMode::Disabled => {
+                let builder = Server::builder()
+                    .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
+                    .expect("Failed to set TLS config")
+                    .with_congestion_controller({
+                        #[cfg(feature = "quic_no_cc")]
+                        {
+                            no_cc::NoopCcEndpoint
+                        }
+                        #[cfg(not(feature = "quic_no_cc"))]
+                        {
+                            warn!("quic_no_cc not compiled; falling back to BBR");
+                            congestion_controller::Bbr::default()
+                        }
+                    })
+                    .expect("Failed to set congestion controller")
+                    .with_io(server_addr)
+                    .expect("Failed to bind to address");
+
+                let builder = {
+                    #[cfg(feature = "quic_datagram")]
+                    {
+                        let dgram = DatagramEndpoint::builder()
+                            .with_recv_capacity(2048)
+                            .expect("Failed to set datagram recv capacity")
+                            .with_send_capacity(2048)
+                            .expect("Failed to set datagram send capacity")
+                            .build()
+                            .expect("Failed to build datagram endpoint");
+                        builder
+                            .with_datagram(dgram)
+                            .expect("Failed to enable datagrams on server")
+                    }
+                    #[cfg(not(feature = "quic_datagram"))]
+                    {
+                        builder
+                    }
+                };
+
+                let builder = builder.with_limits({
+                    let limits = Limits::default();
+                    let limits = limits
+                        .with_data_window(64 * 1024 * 1024)
+                        .expect("invalid data window");
+                    let limits = limits
+                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi local window");
+                    let limits = limits
+                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi remote window");
+                    limits
+                        .with_max_send_buffer_size(64 * 1024 * 1024)
+                        .expect("invalid send buffer")
+                })
+                .expect("Failed to set QUIC limits");
+
+                builder.start().expect("Failed to start server")
+            }
         };
 
         while let Some(mut connection) = server.accept().await {
@@ -173,68 +231,104 @@ impl QuicServer {
 
                 info!("Incoming connection from node {}...", remote_node_id);
 
-                #[cfg(all(not(feature = "quic_datagram"), not(feature = "quic_per_flow")))]
-                let network_interface = NetworkInterfaceHandle::new(
-                    config.clone(),
-                    NetworkStream::Quic(stream),
-                    processors.clone(),
-                    self.reporter.clone(),
-                    remote_node_id,
-                )
-                .await;
+                // Choose transport mode by runtime config; fall back gracefully if the compiled
+                // features don't support the selected mode.
+                let network_interface = match config.quic_transport_mode {
+                    QuicTransportMode::SingleStream => {
+                        NetworkInterfaceHandle::new(
+                            config.clone(),
+                            NetworkStream::Quic(stream),
+                            processors.clone(),
+                            self.reporter.clone(),
+                            remote_node_id,
+                        )
+                        .await
+                    }
+                    QuicTransportMode::PerFlow => {
+                        #[cfg(feature = "quic_per_flow")]
+                        {
+                            let (handle, mut acceptor): (QuicHandle, StreamAcceptor) =
+                                connection.split();
 
-                #[cfg(all(not(feature = "quic_datagram"), feature = "quic_per_flow"))]
-                let network_interface = {
-                    let (handle, mut acceptor): (QuicHandle, StreamAcceptor) = connection.split();
+                            let proc_clone = processors.clone();
+                            tokio::spawn(async move {
+                                loop {
+                                    match acceptor.accept_bidirectional_stream().await {
+                                        Ok(Some(stream)) => {
+                                            let (rx, _tx) = stream.split();
+                                            let mut reader =
+                                                QuicReader::new(rx, proc_clone.clone());
+                                            tokio::spawn(async move {
+                                                reader.run().await;
+                                            });
+                                        }
+                                        Ok(None) => break,
+                                        Err(e) => {
+                                            error!("Error accepting QUIC stream: {}", e);
+                                            break;
+                                        }
+                                    }
+                                }
+                            });
 
-                    // accept per-flow bidirectional streams and spawn a reader per stream
-                    let proc_clone = processors.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            match acceptor.accept_bidirectional_stream().await {
-                                Ok(Some(stream)) => {
-                                    let (rx, _tx) = stream.split();
-                                    let mut reader = QuicReader::new(rx, proc_clone.clone());
-                                    tokio::spawn(async move {
-                                        reader.run().await;
-                                    });
-                                }
-                                Ok(None) => break,
-                                Err(e) => {
-                                    error!("Error accepting QUIC stream: {}", e);
-                                    break;
-                                }
-                            }
+                            NetworkInterfaceHandle::new(
+                                config.clone(),
+                                NetworkStream::QuicConn(handle),
+                                processors.clone(),
+                                self.reporter.clone(),
+                                remote_node_id,
+                            )
+                            .await
                         }
-                    });
+                        #[cfg(not(feature = "quic_per_flow"))]
+                        {
+                            warn!(
+                                "quic_per_flow not compiled; falling back to single stream mode"
+                            );
+                            NetworkInterfaceHandle::new(
+                                config.clone(),
+                                NetworkStream::Quic(stream),
+                                processors.clone(),
+                                self.reporter.clone(),
+                                remote_node_id,
+                            )
+                            .await
+                        }
+                    }
+                    QuicTransportMode::Datagram => {
+                        #[cfg(feature = "quic_datagram")]
+                        {
+                            let handle = connection.handle();
+                            let mut dgram_reader =
+                                QuicDatagramReader::new(handle.clone(), processors.clone());
+                            tokio::spawn(async move {
+                                dgram_reader.run().await;
+                            });
 
-                    NetworkInterfaceHandle::new(
-                        config.clone(),
-                        NetworkStream::QuicConn(handle),
-                        processors.clone(),
-                        self.reporter.clone(),
-                        remote_node_id,
-                    )
-                    .await
-                };
-
-                #[cfg(feature = "quic_datagram")]
-                let network_interface = {
-                    let handle = connection.handle();
-                    // Start datagram receiver task
-                    let mut dgram_reader = QuicDatagramReader::new(handle.clone(), processors.clone());
-                    tokio::spawn(async move {
-                        dgram_reader.run().await;
-                    });
-
-                    NetworkInterfaceHandle::new(
-                        config.clone(),
-                        NetworkStream::QuicDatagram(handle),
-                        processors.clone(),
-                        self.reporter.clone(),
-                        remote_node_id,
-                    )
-                    .await
+                            NetworkInterfaceHandle::new(
+                                config.clone(),
+                                NetworkStream::QuicDatagram(handle),
+                                processors.clone(),
+                                self.reporter.clone(),
+                                remote_node_id,
+                            )
+                            .await
+                        }
+                        #[cfg(not(feature = "quic_datagram"))]
+                        {
+                            warn!(
+                                "quic_datagram not compiled; falling back to single stream mode"
+                            );
+                            NetworkInterfaceHandle::new(
+                                config.clone(),
+                                NetworkStream::Quic(stream),
+                                processors.clone(),
+                                self.reporter.clone(),
+                                remote_node_id,
+                            )
+                            .await
+                        }
+                    }
                 };
 
                 // creates the scheduler handle
@@ -267,9 +361,26 @@ pub struct QuicClient {
     pub config: LocalConfig,
 }
 
+pub enum QuicConnectOutcome {
+    SingleStream(BidirectionalStream),
+    #[cfg(feature = "quic_per_flow")]
+    PerFlow(s2n_quic::connection::Handle, BidirectionalStream),
+    #[cfg(feature = "quic_datagram")]
+    Datagram(s2n_quic::connection::Handle, BidirectionalStream),
+}
+
 impl QuicClient {
-    #[cfg(all(not(feature = "quic_datagram"), not(feature = "quic_per_flow")))]
+    // Backward-compatible single-stream connect
     pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
+        self.connect_single(remote_node_id, remote_addr).await
+    }
+
+    // Always-available single-stream connect used for SingleStream mode or fallback
+    async fn connect_single(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+    ) -> BidirectionalStream {
         let client = Client::builder()
             // For clients, configure the trusted server certificate instead of presenting one.
             .with_tls(Path::new("server_cert.pem"))
@@ -345,9 +456,9 @@ impl QuicClient {
 
         stream
     }
-    
-    #[cfg(all(not(feature = "quic_datagram"), feature = "quic_per_flow"))]
-    pub async fn connect(
+
+    #[cfg(feature = "quic_per_flow")]
+    pub async fn connect_per_flow(
         &self,
         remote_node_id: usize,
         remote_addr: &str,
@@ -356,6 +467,24 @@ impl QuicClient {
             // For clients, configure the trusted server certificate instead of presenting one.
             .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
+            .with_congestion_controller({
+                match self.config.quic_congestion_control {
+                    CcMode::Cubic => congestion_controller::Cubic::default(),
+                    CcMode::Bbr => congestion_controller::Bbr::default(),
+                    CcMode::Disabled => {
+                        #[cfg(feature = "quic_no_cc")]
+                        {
+                            no_cc::NoopCcEndpoint
+                        }
+                        #[cfg(not(feature = "quic_no_cc"))]
+                        {
+                            warn!("quic_no_cc not compiled; falling back to BBR");
+                            congestion_controller::Bbr::default()
+                        }
+                    }
+                }
+            })
+            .expect("Failed to set congestion controller")
             .with_io("0.0.0.0:0")
             .expect("Failed to bind the client")
             .with_limits({
@@ -429,7 +558,7 @@ impl QuicClient {
     }
 
     #[cfg(feature = "quic_datagram")]
-    pub async fn connect(
+    pub async fn connect_datagram(
         &self,
         remote_node_id: usize,
         remote_addr: &str,
@@ -437,6 +566,24 @@ impl QuicClient {
         let builder = Client::builder()
             .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
+            .with_congestion_controller({
+                match self.config.quic_congestion_control {
+                    CcMode::Cubic => congestion_controller::Cubic::default(),
+                    CcMode::Bbr => congestion_controller::Bbr::default(),
+                    CcMode::Disabled => {
+                        #[cfg(feature = "quic_no_cc")]
+                        {
+                            no_cc::NoopCcEndpoint
+                        }
+                        #[cfg(not(feature = "quic_no_cc"))]
+                        {
+                            warn!("quic_no_cc not compiled; falling back to BBR");
+                            congestion_controller::Bbr::default()
+                        }
+                    }
+                }
+            })
+            .expect("Failed to set congestion controller")
             .with_io("0.0.0.0:0")
             .expect("Failed to bind the client");
 
@@ -523,6 +670,45 @@ impl QuicClient {
 
         (connection.handle(), stream)
     }
+
+    // Unified connect that returns a runtime-selected outcome
+    #[cfg(any(feature = "quic_datagram", feature = "quic_per_flow"))]
+    pub async fn connect_unified(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+    ) -> QuicConnectOutcome {
+        match self.config.quic_transport_mode {
+            QuicTransportMode::SingleStream => {
+                let s = self.connect_single(remote_node_id, remote_addr).await;
+                QuicConnectOutcome::SingleStream(s)
+            }
+            QuicTransportMode::PerFlow => {
+                #[cfg(feature = "quic_per_flow")]
+                {
+                    let (h, s) = self.connect_per_flow(remote_node_id, remote_addr).await;
+                    QuicConnectOutcome::PerFlow(h, s)
+                }
+                #[cfg(not(feature = "quic_per_flow"))]
+                {
+                    let s = self.connect_single(remote_node_id, remote_addr).await;
+                    QuicConnectOutcome::SingleStream(s)
+                }
+            }
+            QuicTransportMode::Datagram => {
+                #[cfg(feature = "quic_datagram")]
+                {
+                    let (h, s) = self.connect_datagram(remote_node_id, remote_addr).await;
+                    QuicConnectOutcome::Datagram(h, s)
+                }
+                #[cfg(not(feature = "quic_datagram"))]
+                {
+                    let s = self.connect_single(remote_node_id, remote_addr).await;
+                    QuicConnectOutcome::SingleStream(s)
+                }
+            }
+        }
+    }
 }
 
 /// An actor that reads packets from a QUIC stream.
@@ -566,6 +752,78 @@ pub struct QuicWriter {
     stream: SendStream,
 }
 
+// No-op congestion controller (disables QUIC CC). Use in controlled env only.
+#[cfg(feature = "quic_no_cc")]
+mod no_cc {
+    use super::*;
+    use s2n_quic::provider::congestion_controller::{CongestionController, Endpoint as CcEndpoint, PathInfo, Publisher, RandomGenerator, RttEstimator, Timestamp};
+    use std::fmt::Debug;
+
+    #[derive(Debug, Default, Clone, Copy)]
+    pub struct NoopCc;
+
+    impl CongestionController for NoopCc {
+        type PacketInfo = ();
+
+        fn congestion_window(&self) -> u32 { u32::MAX }
+        fn bytes_in_flight(&self) -> u32 { 0 }
+        fn is_congestion_limited(&self) -> bool { false }
+        fn requires_fast_retransmission(&self) -> bool { false }
+        fn on_packet_sent<Pub: Publisher>(
+            &mut self,
+            _time_sent: Timestamp,
+            _sent_bytes: usize,
+            _app_limited: Option<bool>,
+            _rtt_estimator: &RttEstimator,
+            _publisher: &mut Pub,
+        ) -> Self::PacketInfo { () }
+        fn on_rtt_update<Pub: Publisher>(
+            &mut self,
+            _time_sent: Timestamp,
+            _now: Timestamp,
+            _rtt_estimator: &RttEstimator,
+            _publisher: &mut Pub,
+        ) {}
+        fn on_ack<Pub: Publisher>(
+            &mut self,
+            _newest_acked_time_sent: Timestamp,
+            _bytes_acknowledged: usize,
+            _newest_acked_packet_info: Self::PacketInfo,
+            _rtt_estimator: &RttEstimator,
+            _random_generator: &mut dyn RandomGenerator,
+            _ack_receive_time: Timestamp,
+            _publisher: &mut Pub,
+        ) {}
+        fn on_packet_lost<Pub: Publisher>(
+            &mut self,
+            _lost_bytes: u32,
+            _packet_info: Self::PacketInfo,
+            _persistent_congestion: bool,
+            _new_loss_burst: bool,
+            _random_generator: &mut dyn RandomGenerator,
+            _timestamp: Timestamp,
+            _publisher: &mut Pub,
+        ) {}
+        fn on_explicit_congestion<Pub: Publisher>(
+            &mut self,
+            _ce_count: u64,
+            _event_time: Timestamp,
+            _publisher: &mut Pub,
+        ) {}
+        fn on_mtu_update<Pub: Publisher>(&mut self, _max_data_size: u16, _publisher: &mut Pub) {}
+        fn on_packet_discarded<Pub: Publisher>(&mut self, _bytes_sent: usize, _publisher: &mut Pub) {}
+        fn earliest_departure_time(&self) -> Option<Timestamp> { None }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct NoopCcEndpoint;
+    impl CcEndpoint for NoopCcEndpoint {
+        type CongestionController = NoopCc;
+        fn new_congestion_controller(&mut self, _path_info: PathInfo) -> Self::CongestionController {
+            NoopCc
+        }
+    }
+}
 impl QuicWriter {
     pub fn new(stream: SendStream) -> Self {
         Self { stream }

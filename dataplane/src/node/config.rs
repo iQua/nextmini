@@ -16,6 +16,19 @@ use nextmini_messages::{
 use crate::node::scheduler::drop::DropStrategy;
 use crate::node::{FlowId, FlowIdExt, NodeId, NodeIdExt};
 
+/// QUIC transport mode: how the TUN payloads are carried over QUIC.
+#[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuicTransportMode {
+    /// Single reliable stream for all packets (HOL across all flows).
+    #[default]
+    SingleStream,
+    /// One QUIC send stream per inner TCP flow; reduces HOL across flows.
+    PerFlow,
+    /// QUIC DATAGRAMs (RFC 9221): unreliable, unordered frames (still congestion-controlled).
+    Datagram,
+}
+
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -23,6 +36,8 @@ pub enum CongestionControl {
     #[default]
     Bbr,
     Cubic,
+    /// Disable QUIC congestion control (requires quic_no_cc build feature). Use with caution.
+    Disabled,
 }
 
 /// The processing mode for processing packets
@@ -183,6 +198,11 @@ pub struct LocalConfig {
     #[default(CongestionControl::Bbr)]
     #[arg(long, value_enum)]
     pub quic_congestion_control: CongestionControl,
+
+    /// QUIC transport mode selection.
+    #[default(QuicTransportMode::SingleStream)]
+    #[arg(long, value_enum)]
+    pub quic_transport_mode: QuicTransportMode,
 
     /// The local network address.
     #[default(default_local_address())]

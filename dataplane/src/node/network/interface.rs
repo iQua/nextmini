@@ -10,6 +10,8 @@ use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
+#[cfg(any(feature = "quic_datagram", feature = "quic_per_flow"))]
+use crate::node::network::quic::QuicConnectOutcome;
 #[cfg(feature = "quic_per_flow")]
 use crate::node::network::quic::QuicMuxWriter;
 #[cfg(feature = "quic_datagram")]
@@ -166,28 +168,27 @@ impl NetworkInterface {
                     config: self.config.clone(),
                 };
 
-                #[cfg(all(not(feature = "quic_per_flow"), not(feature = "quic_datagram")))]
+                #[cfg(any(feature = "quic_datagram", feature = "quic_per_flow"))]
+                {
+                    let outcome = quic_client
+                        .connect_unified(remote_node_id, remote_addr.as_str())
+                        .await;
+                    match outcome {
+                        QuicConnectOutcome::SingleStream(s) => self.init(NetworkStream::Quic(s)),
+                        #[cfg(feature = "quic_per_flow")]
+                        QuicConnectOutcome::PerFlow(h, _) => self.init(NetworkStream::QuicConn(h)),
+                        #[cfg(feature = "quic_datagram")]
+                        QuicConnectOutcome::Datagram(h, _) => {
+                            self.init(NetworkStream::QuicDatagram(h))
+                        }
+                    }
+                }
+                #[cfg(all(not(feature = "quic_datagram"), not(feature = "quic_per_flow")))]
                 {
                     let quic_stream = quic_client
                         .connect(remote_node_id, remote_addr.as_str())
                         .await;
                     self.init(NetworkStream::Quic(quic_stream))
-                }
-
-                #[cfg(all(feature = "quic_per_flow", not(feature = "quic_datagram")))]
-                {
-                    let (handle, _handshake_stream) =
-                        quic_client.connect(remote_node_id, remote_addr.as_str()).await;
-                    // We don't attach a reader to the handshake stream here; the server side
-                    // accept loop will start per-flow readers.
-                    self.init(NetworkStream::QuicConn(handle))
-                }
-
-                #[cfg(feature = "quic_datagram")]
-                {
-                    let (handle, _handshake_stream) =
-                        quic_client.connect(remote_node_id, remote_addr.as_str()).await;
-                    self.init(NetworkStream::QuicDatagram(handle))
                 }
             }
         }

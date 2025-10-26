@@ -50,3 +50,4 @@ quic_per_flow = []
 # Enable QUIC DATAGRAM transport for TUN payloads (RFC 9221). This requires
 # the s2n-quic "unstable-provider-datagram" feature.
 quic_datagram = ["s2n-quic/unstable-provider-datagram"]
+quic_no_cc = ["s2n-quic/unstable-congestion-controller"]
