@@ -132,7 +132,8 @@ impl LocalInterfaceHandle {
     /// Creates local TUN devices for communicating with the application.
     #[cfg(target_os = "linux")]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
-        let num_queues = config.num_tun_queues;
+        // Ensure at least one TUN queue
+        let num_queues = config.num_tun_queues.max(1);
 
         let if_name = config.tun_interface_name.clone();
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);

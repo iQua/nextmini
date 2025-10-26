@@ -8,9 +8,10 @@ use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use s2n_quic::provider::congestion_controller;
+use s2n_quic::provider::limits::Limits;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
-use s2n_quic::{Client, Server, client};
+use s2n_quic::{client, Client, Server};
 use tracing::{error, info};
 
 use crate::node::RECEIVE_BUF_SIZE;
@@ -52,6 +53,23 @@ impl QuicServer {
                 .expect("Failed to set congestion controller")
                 .with_io(server_addr)
                 .expect("Failed to bind to address")
+                .with_limits({
+                    let limits = Limits::default();
+                    let limits = limits
+                        // Increase flow-control and send buffers for high BDP paths
+                        .with_data_window(64 * 1024 * 1024)
+                        .expect("invalid data window");
+                    let limits = limits
+                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi local window");
+                    let limits = limits
+                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi remote window");
+                    limits
+                        .with_max_send_buffer_size(64 * 1024 * 1024)
+                        .expect("invalid send buffer")
+                })
+                .expect("Failed to set QUIC limits")
                 .start()
                 .expect("Failed to start server"),
             CongestionControl::Bbr => Server::builder()
@@ -61,6 +79,22 @@ impl QuicServer {
                 .expect("Failed to set congestion controller")
                 .with_io(server_addr)
                 .expect("Failed to bind to address")
+                .with_limits({
+                    let limits = Limits::default();
+                    let limits = limits
+                        .with_data_window(64 * 1024 * 1024)
+                        .expect("invalid data window");
+                    let limits = limits
+                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi local window");
+                    let limits = limits
+                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi remote window");
+                    limits
+                        .with_max_send_buffer_size(64 * 1024 * 1024)
+                        .expect("invalid send buffer")
+                })
+                .expect("Failed to set QUIC limits")
                 .start()
                 .expect("Failed to start server"),
         };
@@ -84,7 +118,7 @@ impl QuicServer {
 
                 info!("Incoming connection from node {}...", remote_node_id);
 
-                // handles an inbound connection from a new client
+                // handles an inbound connection from a new client (stream-based)
                 let network_interface = NetworkInterfaceHandle::new(
                     config.clone(),
                     NetworkStream::Quic(stream),
@@ -124,10 +158,27 @@ pub struct QuicClient {
 impl QuicClient {
     pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
         let client = Client::builder()
-            .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
+            // For clients, configure the trusted server certificate instead of presenting one.
+            .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
             .with_io("0.0.0.0:0")
             .expect("Failed to bind the client")
+            .with_limits({
+                let limits = Limits::default();
+                let limits = limits
+                    .with_data_window(64 * 1024 * 1024)
+                    .expect("invalid data window");
+                let limits = limits
+                    .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                    .expect("invalid bidi local window");
+                let limits = limits
+                    .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                    .expect("invalid bidi remote window");
+                limits
+                    .with_max_send_buffer_size(64 * 1024 * 1024)
+                    .expect("invalid send buffer")
+            })
+            .expect("Failed to set QUIC limits")
             .start()
             .expect("Failed to start client");
 
@@ -207,6 +258,12 @@ impl QuicReader {
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
+        if msg_len < 20 || msg_len > RECEIVE_BUF_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid IPv4 total length: {}", msg_len),
+            ));
+        }
         self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
         Ok(Packet::new(msg_len, buf))

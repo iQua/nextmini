@@ -131,7 +131,9 @@ impl SequentialLocalWriter {
 
     pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(50);
+        // Use a small flush timeout to avoid excessive CPU spin while keeping latency low.
+        // 1ms is a good compromise for WAN scenarios.
+        let batch_timeout = Duration::from_millis(1);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -166,7 +168,7 @@ impl SequentialLocalWriter {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (50 milliseconds)
+                // sends to the TUN device anyway every once in a while (1 millisecond)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
