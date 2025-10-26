@@ -163,3 +163,59 @@ impl PacketDrop for Red {
         queue_overflow || threshold_overflow || threshold_normal
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_drop_allows_when_capacity_unlimited() {
+        let mut dropper = TailDrop::new(0, CapacityUnit::Packets);
+
+        assert!(!dropper.should_drop(128, 0, 0));
+        assert!(!dropper.should_drop(128, 0, 10));
+    }
+
+    #[test]
+    fn tail_drop_rejects_when_packet_capacity_exceeded() {
+        let mut dropper = TailDrop::new(2, CapacityUnit::Packets);
+
+        assert!(dropper.should_drop(128, 0, 2));
+        assert!(!dropper.should_drop(128, 0, 1));
+    }
+
+    #[test]
+    fn tail_drop_rejects_when_byte_capacity_exceeded() {
+        let mut dropper = TailDrop::new(256, CapacityUnit::Bytes);
+
+        assert!(dropper.should_drop(200, 100, 1));
+        assert!(!dropper.should_drop(100, 100, 1));
+    }
+
+    #[test]
+    fn red_accepts_when_capacity_unlimited() {
+        let mut dropper = Red::new(0, CapacityUnit::Packets, 0.5, 0.75, 0.2);
+
+        assert!(!dropper.should_drop(128, 0, 100));
+    }
+
+    #[test]
+    fn red_drops_when_queue_overflows_capacity() {
+        let mut dropper = Red::new(3, CapacityUnit::Packets, 0.5, 0.75, 0.2);
+
+        assert!(dropper.should_drop(128, 0, 3));
+    }
+
+    #[test]
+    fn red_does_not_drop_below_min_threshold() {
+        let mut dropper = Red::new(10, CapacityUnit::Packets, 0.5, 0.75, 0.2);
+
+        // queue length remains below min threshold (0.5 * capacity = 5)
+        for queue_length in 0..5 {
+            assert!(
+                !dropper.should_drop(128, 0, queue_length),
+                "Packets below minimum threshold should not be dropped (queue length {queue_length})"
+            );
+        }
+    }
+}

@@ -98,7 +98,99 @@ impl SchedulerQueue for WrrQueue {
     }
 
     fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        let mut flow_weights = self.flow_weights.write().unwrap();
-        flow_weights.insert(flow_id, weight);
+       let mut flow_weights = self.flow_weights.write().unwrap();
+       flow_weights.insert(flow_id, weight);
+   }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_packet(flow_id: FlowId, size: usize) -> Packet {
+        Packet {
+            flow_id,
+            packet_size: size,
+            buf: vec![0; size.max(1)],
+        }
+    }
+
+    #[test]
+    fn enqueue_initializes_flow_queue_and_is_not_empty() {
+        let queue = WrrQueue::new(4);
+
+        assert!(queue.is_empty());
+        assert_eq!(queue.queue_len(1), 0);
+
+        queue.enqueue(make_packet(1, 64)).unwrap();
+
+        assert!(!queue.is_empty());
+        assert_eq!(queue.queue_len(1), 1);
+        assert_eq!(queue.queue_len(999), 0);
+    }
+
+    #[test]
+    fn collect_packets_respects_flow_weights() {
+        let queue = WrrQueue::new(6);
+
+        queue.set_flow_weight(1, 2);
+        queue.set_flow_weight(2, 1);
+
+        for _ in 0..5 {
+            queue.enqueue(make_packet(1, 64)).unwrap();
+        }
+
+        for _ in 0..3 {
+            queue.enqueue(make_packet(2, 64)).unwrap();
+        }
+
+        let mut batch = Vec::new();
+        queue.collect_packets(&mut batch);
+
+        let flow_ids: Vec<FlowId> = batch.into_iter().map(|p| p.flow_id).collect();
+        assert_eq!(flow_ids.len(), 6);
+
+        let expected_weights = [(1u128, 2usize), (2u128, 1usize)];
+        let chunk_size: usize = expected_weights.iter().map(|(_, weight)| *weight).sum();
+        assert_eq!(chunk_size, 3);
+
+        for chunk in flow_ids.chunks(chunk_size) {
+            assert_eq!(chunk.len(), chunk_size);
+            for (flow, weight) in expected_weights.iter() {
+                let count = chunk.iter().filter(|&&id| id == *flow).count();
+                assert_eq!(
+                    count, *weight,
+                    "Each scheduling round should emit {weight} packets for flow {flow}"
+                );
+            }
+        }
+
+        assert_eq!(
+            queue.queue_len(1),
+            1,
+            "One packet should remain in flow 1 after two rounds"
+        );
+        assert_eq!(
+            queue.queue_len(2),
+            1,
+            "One packet should remain in flow 2 after two rounds"
+        );
+    }
+
+    #[test]
+    fn collect_packets_single_flow_dequeues_all_packets_by_weight() {
+        let queue = WrrQueue::new(9);
+        queue.set_flow_weight(7, 3);
+
+        for _ in 0..9 {
+            queue.enqueue(make_packet(7, 64)).unwrap();
+        }
+
+        let mut batch = Vec::new();
+        queue.collect_packets(&mut batch);
+
+        assert_eq!(batch.len(), 9);
+        assert!(batch.iter().all(|p| p.flow_id == 7));
+        assert!(queue.is_empty());
     }
 }
