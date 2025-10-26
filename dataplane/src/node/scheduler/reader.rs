@@ -96,16 +96,19 @@ impl SchedulerReader {
                 self.scheduler_type
             );
         } else {
-            // notifies the writer task if it is not a TCP packet, or if it is SYN, FIN, RST, or ACK
-            // if it is a TCP packet, it is stored in the queue for a while before being consumed by the writer task
-            if is_tcp_data {
-                if queue_len > 2 {
-                    // if the queue length is over a threshold, it notifies the consumer task that a packet has arrived
-                    // and the queue becomes 'non-empty' now
+            // notifies the writer task if it is not a TCP data packet (e.g., if it is SYN, FIN, RST, or pure ACK)
+            // if it is a TCP data packet, it is stored in the queue for a while before being consumed by the
+            // writer task
+            if !is_tcp_data {
+                self.queues_not_empty.notify_one();
+            } else {
+                let updated_queue_len = queue_len + 1;
+
+                // if the queue length exceeds over a threshold or when we just transitioned from an empty
+                // queue, notify the consumer task that a packet has arrived and the queue becomes 'non-empty' now
+                if queue_len == 0 || updated_queue_len > 2 {
                     self.queues_not_empty.notify_one();
                 }
-            } else {
-                self.queues_not_empty.notify_one();
             }
         }
     }
@@ -117,7 +120,7 @@ mod tests {
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     use crate::node::FlowId;
 
@@ -153,10 +156,7 @@ mod tests {
             }
 
             self.queue_len_value.fetch_add(1, Ordering::SeqCst);
-            self.enqueued_flows
-                .lock()
-                .unwrap()
-                .push(packet.flow_id);
+            self.enqueued_flows.lock().unwrap().push(packet.flow_id);
             Ok(())
         }
 
@@ -195,7 +195,12 @@ mod tests {
     }
 
     impl PacketDrop for RecordingDrop {
-        fn should_drop(&mut self, packet_size: usize, byte_size: usize, queue_length: usize) -> bool {
+        fn should_drop(
+            &mut self,
+            packet_size: usize,
+            byte_size: usize,
+            queue_length: usize,
+        ) -> bool {
             self.calls
                 .lock()
                 .unwrap()
