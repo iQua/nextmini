@@ -9,6 +9,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::provider::limits::Limits;
+#[cfg(feature = "quic_per_flow")]
+use s2n_quic::connection::{Handle as QuicHandle, StreamAcceptor};
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{client, Client, Server};
@@ -22,6 +24,11 @@ use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
+#[cfg(feature = "quic_per_flow")]
+use ahash::AHashMap;
+#[cfg(feature = "quic_per_flow")]
+use tokio::sync::mpsc;
+// no JoinHandle needed
 
 pub struct QuicServer {
     config: LocalConfig,
@@ -103,7 +110,8 @@ impl QuicServer {
             let config = self.config.clone();
             let processors = self.processors.clone();
 
-            info!("Connection accepted from {:?}.", connection.remote_addr());
+            let remote_addr_snapshot = connection.remote_addr();
+            info!("Connection accepted from {:?}.", remote_addr_snapshot);
 
             if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
                 let mut node_id_buf: [u8; 8] = [0; 8];
@@ -118,7 +126,7 @@ impl QuicServer {
 
                 info!("Incoming connection from node {}...", remote_node_id);
 
-                // handles an inbound connection from a new client (stream-based)
+                #[cfg(not(feature = "quic_per_flow"))]
                 let network_interface = NetworkInterfaceHandle::new(
                     config.clone(),
                     NetworkStream::Quic(stream),
@@ -128,17 +136,55 @@ impl QuicServer {
                 )
                 .await;
 
+                #[cfg(feature = "quic_per_flow")]
+                let network_interface = {
+                    let (handle, mut acceptor): (QuicHandle, StreamAcceptor) = connection.split();
+
+                    // accept per-flow bidirectional streams and spawn a reader per stream
+                    let proc_clone = processors.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            match acceptor.accept_bidirectional_stream().await {
+                                Ok(Some(stream)) => {
+                                    let (rx, _tx) = stream.split();
+                                    let mut reader = QuicReader::new(rx, proc_clone.clone());
+                                    tokio::spawn(async move {
+                                        reader.run().await;
+                                    });
+                                }
+                                Ok(None) => break,
+                                Err(e) => {
+                                    error!("Error accepting QUIC stream: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+
+                    NetworkInterfaceHandle::new(
+                        config.clone(),
+                        NetworkStream::QuicConn(handle),
+                        processors.clone(),
+                        self.reporter.clone(),
+                        remote_node_id,
+                    )
+                    .await
+                };
+
                 // creates the scheduler handle
                 let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
                 // adds the scheduler to send packets to the new node
                 if let Err(e) = processors.add_node(remote_node_id, scheduler) {
+                    let remote_addr_for_log =
+                        remote_addr_snapshot.unwrap_or_else(|_| "unknown:0".parse().unwrap());
                     error!(
                         "Failed to add node {} with address {}: {}",
                         remote_node_id,
-                        connection.remote_addr().unwrap(),
+                        remote_addr_for_log,
                         e
                     );
+                    #[cfg(not(feature = "quic_per_flow"))]
                     connection.close(0u32.into());
                     continue;
                 }
@@ -156,6 +202,7 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
+    #[cfg(not(feature = "quic_per_flow"))]
     pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
         let client = Client::builder()
             // For clients, configure the trusted server certificate instead of presenting one.
@@ -232,6 +279,88 @@ impl QuicClient {
 
         stream
     }
+    
+    #[cfg(feature = "quic_per_flow")]
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+    ) -> (QuicHandle, BidirectionalStream) {
+        let client = Client::builder()
+            // For clients, configure the trusted server certificate instead of presenting one.
+            .with_tls(Path::new("server_cert.pem"))
+            .expect("Failed to set TLS configuration")
+            .with_io("0.0.0.0:0")
+            .expect("Failed to bind the client")
+            .with_limits({
+                let limits = Limits::default();
+                let limits = limits
+                    .with_data_window(64 * 1024 * 1024)
+                    .expect("invalid data window");
+                let limits = limits
+                    .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                    .expect("invalid bidi local window");
+                let limits = limits
+                    .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                    .expect("invalid bidi remote window");
+                limits
+                    .with_max_send_buffer_size(64 * 1024 * 1024)
+                    .expect("invalid send buffer")
+            })
+            .expect("Failed to set QUIC limits")
+            .start()
+            .expect("Failed to start client");
+
+        let mut retry_count = 0;
+        const MAX_RETRY: usize = 10;
+
+        let mut connection = loop {
+            let addr: SocketAddr = remote_addr.parse().unwrap();
+            let connect = client::Connect::new(addr).with_server_name("Nextmini");
+
+            match client.connect(connect).await {
+                Ok(mut connection) => {
+                    connection
+                        .keep_alive(true)
+                        .expect("Unable to keep the connection alive");
+                    break connection;
+                }
+                Err(e) => {
+                    info!(
+                        "Failed to initiate quic connection to {addr}, error: {e} retrying in 1 second"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+
+            retry_count += 1;
+
+            if retry_count >= MAX_RETRY {
+                panic!(
+                    "Maximum retry reached to establish a QUIC connection to {}. Aborting.",
+                    addr
+                );
+            }
+        };
+
+        let mut stream = connection
+            .open_bidirectional_stream()
+            .await
+            .expect("Failed to establish handshake stream");
+
+        info!("Connecting to node {} with QUIC...", remote_node_id);
+
+        let local_node_id = self.config.node_id;
+
+        stream
+            .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
+            .await
+            .expect("Failed to send local node id to the node");
+
+        info!("Connected to node {} with QUIC.", remote_node_id);
+
+        (connection.handle(), stream)
+    }
 }
 
 /// An actor that reads packets from a QUIC stream.
@@ -306,6 +435,112 @@ impl QuicWriter {
 
             // advances the slices to skip the written data
             IoSlice::advance_slices(&mut slices, written_this_call);
+        }
+
+        Ok(())
+    }
+}
+
+// A per-flow multiplexing QUIC writer using one QUIC send stream per inner flow.
+#[cfg(feature = "quic_per_flow")]
+struct FlowBatch {
+    packets: Vec<Packet>,
+    close: bool,
+}
+
+#[cfg(feature = "quic_per_flow")]
+pub struct QuicMuxWriter {
+    handle: QuicHandle,
+    flows: AHashMap<crate::node::FlowId, mpsc::Sender<FlowBatch>>, // per-flow worker channels
+}
+
+#[cfg(feature = "quic_per_flow")]
+impl QuicMuxWriter {
+    pub fn new(handle: QuicHandle) -> Self {
+        Self {
+            handle,
+            flows: AHashMap::default(),
+        }
+    }
+
+    async fn spawn_flow_task(mut handle: QuicHandle) -> mpsc::Sender<FlowBatch> {
+        let (tx, mut rx) = mpsc::channel::<FlowBatch>(64);
+        tokio::spawn(async move {
+            let mut send = match handle.open_send_stream().await {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to open QUIC send stream: {}", e);
+                    return;
+                }
+            };
+
+            while let Some(batch) = rx.recv().await {
+                if !batch.packets.is_empty() {
+                    let mut io_slices: Vec<IoSlice> = batch
+                        .packets
+                        .iter()
+                        .map(|p| IoSlice::new(&p.buf[0..p.packet_size]))
+                        .collect();
+
+                    let mut slices = io_slices.as_mut_slice();
+                    while !slices.is_empty() {
+                        match send.write_vectored(slices).await {
+                            Ok(0) => {
+                                error!("write_vectored returned 0 on per-flow stream");
+                                break;
+                            }
+                            Ok(written) => IoSlice::advance_slices(&mut slices, written),
+                            Err(e) => {
+                                error!("QUIC per-flow write error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if batch.close {
+                    let _ = send.close();
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        tx
+    }
+
+    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        let mut grouped: AHashMap<crate::node::FlowId, Vec<Packet>> = AHashMap::default();
+        for p in packets.into_iter() {
+            grouped.entry(p.flow_id).or_default().push(p);
+        }
+
+        for (flow_id, mut group) in grouped.into_iter() {
+            let close = group.iter().any(|p| p.is_tcp_fin_or_rst());
+            let tx = match self.flows.get(&flow_id) {
+                Some(tx) => tx.clone(),
+                None => {
+                    let tx = Self::spawn_flow_task(self.handle.clone()).await;
+                    self.flows.insert(flow_id, tx.clone());
+                    tx
+                }
+            };
+            if tx
+                .send(FlowBatch {
+                    packets: group.drain(..).collect(),
+                    close,
+                })
+                .await
+                .is_err()
+            {
+                self.flows.remove(&flow_id);
+            }
+            if close {
+                self.flows.remove(&flow_id);
+            }
         }
 
         Ok(())

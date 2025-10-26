@@ -10,6 +10,8 @@ use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
+#[cfg(feature = "quic_per_flow")]
+use crate::node::network::quic::QuicMuxWriter;
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -17,11 +19,15 @@ use crate::node::processor::ProcessorHandle;
 pub enum NetworkStream {
     Tcp(TcpStream),
     Quic(BidirectionalStream),
+    #[cfg(feature = "quic_per_flow")]
+    QuicConn(s2n_quic::connection::Handle),
 }
 
 pub enum ProtocolWriter {
     Tcp(TcpWriter),
     Quic(QuicWriter),
+    #[cfg(feature = "quic_per_flow")]
+    QuicMux(QuicMuxWriter),
 }
 
 impl ProtocolWriter {
@@ -30,6 +36,8 @@ impl ProtocolWriter {
         match self {
             ProtocolWriter::Tcp(writer) => writer.write_packets(packets).await,
             ProtocolWriter::Quic(writer) => writer.write_packets(packets).await,
+            #[cfg(feature = "quic_per_flow")]
+            ProtocolWriter::QuicMux(writer) => writer.write_packets(packets).await,
         }
     }
 }
@@ -150,11 +158,22 @@ impl NetworkInterface {
                     config: self.config.clone(),
                 };
 
-                let quic_stream = quic_client
-                    .connect(remote_node_id, remote_addr.as_str())
-                    .await;
+                #[cfg(not(feature = "quic_per_flow"))]
+                {
+                    let quic_stream = quic_client
+                        .connect(remote_node_id, remote_addr.as_str())
+                        .await;
+                    self.init(NetworkStream::Quic(quic_stream))
+                }
 
-                self.init(NetworkStream::Quic(quic_stream))
+                #[cfg(feature = "quic_per_flow")]
+                {
+                    let (handle, _handshake_stream) =
+                        quic_client.connect(remote_node_id, remote_addr.as_str()).await;
+                    // We don't attach a reader to the handshake stream here; the server side
+                    // accept loop will start per-flow readers.
+                    self.init(NetworkStream::QuicConn(handle))
+                }
             }
         }
     }
@@ -184,6 +203,13 @@ impl NetworkInterface {
                 });
 
                 ProtocolWriter::Quic(quic_writer)
+            }
+            #[cfg(feature = "quic_per_flow")]
+            NetworkStream::QuicConn(handle) => {
+                // No reader spawned here; the server runs a global accept loop spawning
+                // per-flow readers. We only need a per-flow multiplexing writer.
+                let quic_writer = QuicMuxWriter::new(handle);
+                ProtocolWriter::QuicMux(quic_writer)
             }
         }
     }
