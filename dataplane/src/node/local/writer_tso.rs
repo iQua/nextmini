@@ -131,7 +131,7 @@ impl SequentialLocalWriter {
 
     pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(100);
+        let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -166,7 +166,7 @@ impl SequentialLocalWriter {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (100 milliseconds)
+                // sends to the TUN device anyway every once in a while (50 milliseconds)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
@@ -289,6 +289,8 @@ impl ConcurrentLocalWriterProducer {
                             if was_empty {
                                 let mut active_flows = self.active_flows.lock().await;
                                 active_flows.insert(flow_id);
+                                // notifies the consumer immediately when a previously-empty flow gets its first pkt
+                                self.queue_not_empty.notify_one();
                             }
 
                             // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
@@ -321,7 +323,7 @@ struct ConcurrentLocalWriterConsumer {
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(100);
+        let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -371,7 +373,7 @@ impl ConcurrentLocalWriterConsumer {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (100 milliseconds)
+                // sends to the TUN device anyway every once in a while (50 milliseconds)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();

@@ -49,6 +49,11 @@ impl TcpMaxServer {
                 }
             };
 
+            // Reduce latency on the outer TCP tunnel.
+            if let Err(e) = stream.set_nodelay(true) {
+                warn!("Failed to set TCP_NODELAY on accepted MAX stream: {}", e);
+            }
+
             // reads the first byte to determine the protocol
             if let Err(e) = stream.read_exact(&mut first_byte).await {
                 error!("Failed to read first byte: {}", e);
@@ -213,6 +218,11 @@ impl TcpMaxClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
+                    // Reduce latency on the outer TCP tunnel.
+                    if let Err(e) = stream.set_nodelay(true) {
+                        warn!("Failed to set TCP_NODELAY on MAX client stream: {}", e);
+                    }
+
                     // after requesting a remote connection, it writes the first byte 0x06 into the stream,
                     // which indicates that it is a TCP max connection
                     stream
@@ -280,6 +290,14 @@ impl TcpMaxClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(stream) => {
+                    // Reduce latency on the outer TCP tunnel.
+                    if let Err(e) = stream.set_nodelay(true) {
+                        warn!(
+                            "Failed to set TCP_NODELAY on MAX client stream (no header): {}",
+                            e
+                        );
+                    }
+
                     info!("Connected to {} without max header.", remote_addr);
 
                     return stream;

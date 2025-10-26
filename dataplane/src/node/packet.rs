@@ -28,24 +28,40 @@ impl Packet {
         BigEndian::read_u32(&self.buf[tcp_offset + 4..tcp_offset + 8])
     }
 
+    /// Returns `true` if this is a TCP packet **with non-zero payload** and no SYN/FIN/RST.
+    /// Previously we excluded any packet with the ACK flag set, which misclassified
+    /// normal ACK+data segments as "non-data".
     pub fn is_tcp_data(&self) -> bool {
+        // checks if it is tcp
+        if self.buf[9] != 6 {
+            return false;
+        }
+
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
         let tcp_offset = ip_header_len;
 
-        // checks if the packet is TCP by examining the protocol field in the IP header (offset 9)
-        let is_tcp = self.buf[9] == 6; // 6 is the protocol number for TCP
-
-        // extracts TCP flags from the TCP header (offset +13 contains the flags byte)
+        // checks TCP flags - exclude SYN/FIN/RST
         let tcp_flags = self.buf[tcp_offset + 13];
+        let is_syn = (tcp_flags & 0x02) != 0;
+        let is_fin = (tcp_flags & 0x01) != 0;
+        let is_rst = (tcp_flags & 0x04) != 0;
 
-        // checks specific TCP flags
-        let is_syn = is_tcp && (tcp_flags & 0x02) != 0; // SYN flag is bit 1
-        let is_fin = is_tcp && (tcp_flags & 0x01) != 0; // FIN flag is bit 0
-        let is_rst = is_tcp && (tcp_flags & 0x04) != 0; // RST flag is bit 2
-        let is_ack = is_tcp && (tcp_flags & 0x10) != 0; // ACK flag is bit 4
+        if is_syn || is_fin || is_rst {
+            return false;
+        }
 
-        is_tcp && !is_syn && !is_fin && !is_rst && !is_ack
+        // extracts total length from IP header (bytes 2-3)
+        let total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
+
+        // extracts TCP header length from data offset field (upper 4 bits of byte 12 in TCP header)
+        let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
+        let tcp_header_len = tcp_data_offset * 4;
+
+        // calculates payload size
+        let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);
+
+        payload_size > 0
     }
 
     pub fn is_tcp_fin_or_rst(&self) -> bool {
@@ -60,30 +76,6 @@ impl Packet {
 
         // checks if FIN or RST flag is set
         (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
-    }
-
-    /// Checks if this TCP packet has payload (non-zero data length).
-    pub fn has_tcp_payload(&self) -> bool {
-        // checks if it is tcp
-        if self.buf[9] != 6 {
-            return false;
-        }
-
-        let ihl = (self.buf[0] & 0x0F) as usize;
-        let ip_header_len = ihl * 4;
-
-        // extracts total length from IP header (bytes 2-3)
-        let total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
-
-        // extracts TCP header length from data offset field (upper 4 bits of byte 12 in TCP header)
-        let tcp_offset = ip_header_len;
-        let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
-        let tcp_header_len = tcp_data_offset * 4;
-
-        // calculates payload size
-        let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);
-
-        payload_size > 0
     }
 
     fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {

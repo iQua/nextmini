@@ -218,6 +218,8 @@ impl ConcurrentLocalWriterProducer {
                             if was_empty {
                                 let mut active_flows = self.active_flows.lock().await;
                                 active_flows.insert(flow_id);
+                                // notifies the consumer immediately when a previously-empty flow gets its first pkt
+                                self.queue_not_empty.notify_one();
                             }
 
                             // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
