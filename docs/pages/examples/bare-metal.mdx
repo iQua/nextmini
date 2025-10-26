@@ -15,14 +15,20 @@ cargo build --release -p controller
 cargo build --release -p nextmini
 ```
 
-### Step 2: Deploy Controller
+### Step 2: Start Database (One-time)
 
 ```bash
-cd examples/bare-metal
-uv run deploy_controller.py
+./start-database.sh
 ```
 
-### Step 3: Setup SSH (One-time)
+### Step 3: Deploy Controller
+
+```bash
+cd examples/bare-metal/controller
+./deploy.sh
+```
+
+### Step 4: Setup SSH (One-time)
 
 ```bash
 # Install keychain
@@ -32,7 +38,14 @@ sudo apt-get install keychain
 eval $(keychain --eval ~/nextmini/examples/bare-metal/deploy/ssh/id_rsa)
 ```
 
-### Step 4: Configure Nodes
+### Step 5: Configure
+
+Edit `controller/config.toml`:
+```toml
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 2 }
+```
 
 Edit `deploy/hosts.txt`:
 ```
@@ -45,16 +58,24 @@ Edit `deploy/node.toml`:
 controller_addr = "ws://206.12.89.244:3000"
 ```
 
-### Step 5: Deploy Nodes
+### Step 6: Deploy Nodes
 
 ```bash
 cd examples/bare-metal/deploy
 ./deploy.sh
 ```
 
-### Step 6: Stop Nodes
+### Step 7: Manage Services
 
+**Stop nodes:**
 ```bash
+cd examples/bare-metal/deploy
+./stop.sh
+```
+
+**Stop controller:**
+```bash
+cd examples/bare-metal/controller
 ./stop.sh
 ```
 
