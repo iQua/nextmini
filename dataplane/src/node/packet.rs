@@ -146,16 +146,16 @@ mod tests {
     fn is_tcp_data_true_for_ack_with_payload() {
         // ACK with payload -> should be considered data
         let p = make_tcp_packet(0x10 /* ACK */, 64);
-        assert!(p.is_tcp_data(), "ACK+payload must be treated as data");
-        assert!(p.has_tcp_payload(), "sanity: payload should be detected");
+        assert!(p.is_tcp_data(), "ACK + payload must be treated as data.");
+        assert!(p.has_tcp_payload(), "Sanity: payload should be detected.");
     }
 
     #[test]
     fn is_tcp_data_false_for_pure_ack() {
         // Pure ACK (no payload) -> not data
         let p = make_tcp_packet(0x10 /* ACK */, 0);
-        assert!(!p.is_tcp_data(), "pure ACK must not be treated as data");
-        assert!(!p.has_tcp_payload(), "sanity: no payload");
+        assert!(!p.is_tcp_data(), "Pure ACK must not be treated as data.");
+        assert!(!p.has_tcp_payload(), "Sanity: no payload.");
     }
 
     #[test]
@@ -164,8 +164,8 @@ mod tests {
         let p = make_tcp_packet(0x11 /* FIN|ACK */, 32);
         assert!(
             p.is_tcp_data(),
-            "FIN with payload should be treated as data"
+            "FIN with payload should be treated as data."
         );
-        assert!(p.has_tcp_payload(), "sanity: payload should be detected");
+        assert!(p.has_tcp_payload(), "Sanity: payload should be detected.");
     }
 }
