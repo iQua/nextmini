@@ -58,6 +58,11 @@ impl TcpServer {
                 }
             };
 
+            // disables Nagle's algorithm to reduce extra latency in the outer TCP
+            if let Err(e) = stream.set_nodelay(true) {
+                warn!("Failed to set TCP_NODELAY on accepted stream: {}", e);
+            }
+
             if let Err(e) = stream.read_exact(&mut node_id_buf).await {
                 error!("Failed to read node ID: {}", e);
                 continue;
@@ -117,6 +122,11 @@ impl TcpClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
+                    // disables Nagle's algorithm to reduce extra latency in the outer TCP
+                    if let Err(e) = stream.set_nodelay(true) {
+                        warn!("Failed to set TCP_NODELAY on client stream: {}", e);
+                    }
+
                     let local_node_id = self.config.node_id; // gets the updated local node_id
 
                     stream

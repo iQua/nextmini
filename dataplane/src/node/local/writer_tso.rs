@@ -131,7 +131,7 @@ impl SequentialLocalWriter {
 
     pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(100);
+        let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -166,7 +166,7 @@ impl SequentialLocalWriter {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (100 milliseconds)
+                // sends to the TUN device anyway every once in a while (50 milliseconds)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
@@ -268,8 +268,8 @@ impl ConcurrentLocalWriterProducer {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         let flow_id = packet.flow_id;
 
-                        // sends the packet out to the TUN device if it is not a TCP packet, or if it is SYN, FIN,
-                        // RST, or ACK
+                        // sends the packet out to the TUN device if it is not a TCP data packet, including
+                        // the cases where it is SYN, FIN, RST, or pure ACK packet
                         if !packet.is_tcp_data() {
                             if let Err(e) = batch_writer.write(&mut vec![packet]).await {
                                 error!("Failed to send packet to TUN device: {:?}", e);
@@ -278,7 +278,7 @@ impl ConcurrentLocalWriterProducer {
                             continue;
                         }
 
-                        // if it is a TCP packet, it is sequenced and stored in the queue
+                        // only when it is a TCP packet, it is reordered when needed and stored in the queue
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
                         {
                             let mut queue_map = self.queue_map.lock().await;
@@ -289,11 +289,11 @@ impl ConcurrentLocalWriterProducer {
                             if was_empty {
                                 let mut active_flows = self.active_flows.lock().await;
                                 active_flows.insert(flow_id);
-                            }
-
+                                // notifies the consumer immediately when a previously-empty flow gets its first pkt
+                                self.queue_not_empty.notify_one();
+                            } else if heap.len() > self.config.reorder_tolerance {
                             // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
                             // guaranteed to be consumed in a relatively ordered manner
-                            if heap.len() > self.config.reorder_tolerance {
                                 self.queue_not_empty.notify_one();
                             }
                         }
@@ -321,7 +321,7 @@ struct ConcurrentLocalWriterConsumer {
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(100);
+        let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -371,7 +371,7 @@ impl ConcurrentLocalWriterConsumer {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (100 milliseconds)
+                // sends to the TUN device anyway every once in a while (50 milliseconds)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
