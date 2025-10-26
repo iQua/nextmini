@@ -58,7 +58,7 @@ impl TcpServer {
                 }
             };
 
-            // Reduce latency on the outer TCP tunnel.
+            // disables Nagle's algorithm to reduce extra latency in the outer TCP
             if let Err(e) = stream.set_nodelay(true) {
                 warn!("Failed to set TCP_NODELAY on accepted stream: {}", e);
             }
@@ -122,7 +122,7 @@ impl TcpClient {
         loop {
             match TcpStream::connect(remote_addr).await {
                 Ok(mut stream) => {
-                    // Reduce latency on the outer TCP tunnel.
+                    // disables Nagle's algorithm to reduce extra latency in the outer TCP
                     if let Err(e) = stream.set_nodelay(true) {
                         warn!("Failed to set TCP_NODELAY on client stream: {}", e);
                     }
