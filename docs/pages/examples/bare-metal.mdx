@@ -6,18 +6,7 @@ This guide demonstrates **native binary deployment** on bare metal or virtual ma
 
 ## Quick Start
 
-Add `"examples/bare-metal/ring-emu"` to `/nextmini/Cargo.toml`.
-
-### Scenario
-- Controller: `206.12.89.244` (Physical Machine 1)
-- Node 1: Physical Machine 2
-- Node 2: Physical Machine 3
-
-All nodes use port `8080` (no conflict).
-
----
-
-### Step 1: Build (Once)
+### Step 1: Build
 
 ```bash
 cd nextmini
@@ -26,97 +15,47 @@ cargo build --release -p controller
 cargo build --release -p nextmini
 ```
 
-### Step 2: Deploy Controller (206.12.89.244)
+### Step 2: Deploy Controller
 
 ```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py *.sh
+cd examples/bare-metal
 uv run deploy_controller.py
 ```
 
-### Step 3: Deploy Nodes (with SSH setup)
-
-**Important:** Check your network interface first:
-```bash
-ip addr show | grep "state UP"
-# Example output: ens3, eth0, etc.
-```
-
-**Node Machine 1:**
-```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface ens3
-```
-
-The script will show SSH setup command at the end. **Copy and run it** to enable ring all-reduce testing.
-
-**Node Machine 2:**
-```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface ens3
-```
-
-Again, **copy and run the SSH setup command** shown at the end.
-
-**Note:** Replace `ens3` with your actual interface name if different.
-
-### Step 4: Verify
+### Step 3: Setup SSH (One-time)
 
 ```bash
-# Controller log
-tail -f ~/nextmini/examples/bare-metal/controller-deploy/controller.log
+# Install keychain
+sudo apt-get install keychain
 
-# Node logs (on each node machine)
-tail -f ~/nextmini/examples/bare-metal/node1-deploy/node1.log
-tail -f ~/nextmini/examples/bare-metal/node2-deploy/node2.log
+# Load SSH key
+eval $(keychain --eval ~/nextmini/examples/bare-metal/deploy/ssh/id_rsa)
 ```
 
-Look for:
+### Step 4: Configure Nodes
+
+Edit `deploy/hosts.txt`:
 ```
-INFO controller: Node 1 successfully inserted into node_ws. Total nodes now: 1.
-INFO controller: Node 2 successfully inserted into node_ws. Total nodes now: 2.
-INFO controller::new_node: All 2 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
-INFO controller::new_node: All dataplane nodes have connected. It takes XX.XX seconds since the first node arrived.
+1|root@157.180.84.40|157.180.84.40
+2|ubuntu@206.12.91.229|206.12.91.229
 ```
 
-### Step 5: Test with Ring All-Reduce (Optional)
+Edit `deploy/node.toml`:
+```toml
+controller_addr = "ws://206.12.89.244:3000"
+```
+
+### Step 5: Deploy Nodes
 
 ```bash
-# Build ringallreduce (once)
-cd ~/nextmini
-cargo build --release -p ringallreduce-routes
-
-# Run test
-cd ~/nextmini/examples/bare-metal
-./run_ring.sh
+cd examples/bare-metal/deploy
+./deploy.sh
 ```
 
-Or test with iperf3:
-
-**On Node 2 machine:**
-```bash
-iperf3 -s
-```
-
-**On Node 1 machine:**
-```bash
-# Test to Node 2's TUN IP
-iperf3 -c 10.0.0.1
-
-# Example output:
-# [ ID] Interval           Transfer     Bitrate
-# [  5]   0.00-10.00  sec  XXX MBytes  XXX Mbits/sec
-```
-
-The traffic will go through Nextmini's TUN interface and appear in controller logs as flows.
-
-### Step 6: Cleanup
+### Step 6: Stop Nodes
 
 ```bash
-cd ~/nextmini/examples/bare-metal
-uv run cleanup.py
+./stop.sh
 ```
 
 ---
