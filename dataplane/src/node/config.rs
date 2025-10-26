@@ -220,7 +220,7 @@ pub struct LocalConfig {
     pub local_netmask: Ipv4Addr,
 
     /// The transport protocol: TCP or QUIC.
-    #[default(Protocol::Tcp)]
+    #[default(Protocol::Quic)]
     #[arg(long, value_enum)]
     pub protocol: Protocol,
 
