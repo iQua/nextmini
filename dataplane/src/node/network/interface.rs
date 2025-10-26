@@ -12,6 +12,8 @@ use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 #[cfg(feature = "quic_per_flow")]
 use crate::node::network::quic::QuicMuxWriter;
+#[cfg(feature = "quic_datagram")]
+use crate::node::network::quic::{QuicDatagramReader, QuicDatagramWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -21,6 +23,8 @@ pub enum NetworkStream {
     Quic(BidirectionalStream),
     #[cfg(feature = "quic_per_flow")]
     QuicConn(s2n_quic::connection::Handle),
+    #[cfg(feature = "quic_datagram")]
+    QuicDatagram(s2n_quic::connection::Handle),
 }
 
 pub enum ProtocolWriter {
@@ -28,6 +32,8 @@ pub enum ProtocolWriter {
     Quic(QuicWriter),
     #[cfg(feature = "quic_per_flow")]
     QuicMux(QuicMuxWriter),
+    #[cfg(feature = "quic_datagram")]
+    QuicDatagram(QuicDatagramWriter),
 }
 
 impl ProtocolWriter {
@@ -38,6 +44,8 @@ impl ProtocolWriter {
             ProtocolWriter::Quic(writer) => writer.write_packets(packets).await,
             #[cfg(feature = "quic_per_flow")]
             ProtocolWriter::QuicMux(writer) => writer.write_packets(packets).await,
+            #[cfg(feature = "quic_datagram")]
+            ProtocolWriter::QuicDatagram(writer) => writer.write_packets(packets).await,
         }
     }
 }
@@ -158,7 +166,7 @@ impl NetworkInterface {
                     config: self.config.clone(),
                 };
 
-                #[cfg(not(feature = "quic_per_flow"))]
+                #[cfg(all(not(feature = "quic_per_flow"), not(feature = "quic_datagram")))]
                 {
                     let quic_stream = quic_client
                         .connect(remote_node_id, remote_addr.as_str())
@@ -166,13 +174,20 @@ impl NetworkInterface {
                     self.init(NetworkStream::Quic(quic_stream))
                 }
 
-                #[cfg(feature = "quic_per_flow")]
+                #[cfg(all(feature = "quic_per_flow", not(feature = "quic_datagram")))]
                 {
                     let (handle, _handshake_stream) =
                         quic_client.connect(remote_node_id, remote_addr.as_str()).await;
                     // We don't attach a reader to the handshake stream here; the server side
                     // accept loop will start per-flow readers.
                     self.init(NetworkStream::QuicConn(handle))
+                }
+
+                #[cfg(feature = "quic_datagram")]
+                {
+                    let (handle, _handshake_stream) =
+                        quic_client.connect(remote_node_id, remote_addr.as_str()).await;
+                    self.init(NetworkStream::QuicDatagram(handle))
                 }
             }
         }
@@ -210,6 +225,17 @@ impl NetworkInterface {
                 // per-flow readers. We only need a per-flow multiplexing writer.
                 let quic_writer = QuicMuxWriter::new(handle);
                 ProtocolWriter::QuicMux(quic_writer)
+            }
+            #[cfg(feature = "quic_datagram")]
+            NetworkStream::QuicDatagram(handle) => {
+                let mut dgram_reader = QuicDatagramReader::new(handle.clone(), self.processors.clone());
+                let dgram_writer = QuicDatagramWriter::new(handle);
+
+                tokio::spawn(async move {
+                    dgram_reader.run().await;
+                });
+
+                ProtocolWriter::QuicDatagram(dgram_writer)
             }
         }
     }

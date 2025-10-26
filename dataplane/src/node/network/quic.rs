@@ -11,10 +11,12 @@ use s2n_quic::provider::congestion_controller;
 use s2n_quic::provider::limits::Limits;
 #[cfg(feature = "quic_per_flow")]
 use s2n_quic::connection::{Handle as QuicHandle, StreamAcceptor};
+#[cfg(feature = "quic_datagram")]
+use s2n_quic::provider::datagram::default::{Endpoint as DatagramEndpoint, Receiver as DatagramReceiver, Sender as DatagramSender};
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{client, Client, Server};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
@@ -53,57 +55,102 @@ impl QuicServer {
         let server_addr: SocketAddr = addr.parse().unwrap();
 
         let mut server = match self.config.quic_congestion_control {
-            CongestionControl::Cubic => Server::builder()
-                .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
-                .expect("Failed to set TLS config")
-                .with_congestion_controller(congestion_controller::Cubic::default())
-                .expect("Failed to set congestion controller")
-                .with_io(server_addr)
-                .expect("Failed to bind to address")
-                .with_limits({
-                    let limits = Limits::default();
-                    let limits = limits
-                        // Increase flow-control and send buffers for high BDP paths
-                        .with_data_window(64 * 1024 * 1024)
-                        .expect("invalid data window");
-                    let limits = limits
-                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
-                        .expect("invalid bidi local window");
-                    let limits = limits
-                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
-                        .expect("invalid bidi remote window");
-                    limits
-                        .with_max_send_buffer_size(64 * 1024 * 1024)
-                        .expect("invalid send buffer")
-                })
-                .expect("Failed to set QUIC limits")
-                .start()
-                .expect("Failed to start server"),
-            CongestionControl::Bbr => Server::builder()
-                .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
-                .expect("Failed to set TLS config")
-                .with_congestion_controller(congestion_controller::Bbr::default())
-                .expect("Failed to set congestion controller")
-                .with_io(server_addr)
-                .expect("Failed to bind to address")
-                .with_limits({
-                    let limits = Limits::default();
-                    let limits = limits
-                        .with_data_window(64 * 1024 * 1024)
-                        .expect("invalid data window");
-                    let limits = limits
-                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
-                        .expect("invalid bidi local window");
-                    let limits = limits
-                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
-                        .expect("invalid bidi remote window");
-                    limits
-                        .with_max_send_buffer_size(64 * 1024 * 1024)
-                        .expect("invalid send buffer")
-                })
-                .expect("Failed to set QUIC limits")
-                .start()
-                .expect("Failed to start server"),
+            CongestionControl::Cubic => {
+                let builder = Server::builder()
+                    .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
+                    .expect("Failed to set TLS config")
+                    .with_congestion_controller(congestion_controller::Cubic::default())
+                    .expect("Failed to set congestion controller")
+                    .with_io(server_addr)
+                    .expect("Failed to bind to address");
+
+                let builder = {
+                    #[cfg(feature = "quic_datagram")]
+                    {
+                        let dgram = DatagramEndpoint::builder()
+                            .with_recv_capacity(2048)
+                            .expect("Failed to set datagram recv capacity")
+                            .with_send_capacity(2048)
+                            .expect("Failed to set datagram send capacity")
+                            .build()
+                            .expect("Failed to build datagram endpoint");
+                        builder
+                            .with_datagram(dgram)
+                            .expect("Failed to enable datagrams on server")
+                    }
+                    #[cfg(not(feature = "quic_datagram"))]
+                    {
+                        builder
+                    }
+                };
+
+                let builder = builder.with_limits({
+                        let limits = Limits::default();
+                        let limits = limits
+                            .with_data_window(64 * 1024 * 1024)
+                            .expect("invalid data window");
+                        let limits = limits
+                            .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi local window");
+                        let limits = limits
+                            .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi remote window");
+                        limits
+                            .with_max_send_buffer_size(64 * 1024 * 1024)
+                            .expect("invalid send buffer")
+                    })
+                .expect("Failed to set QUIC limits");
+
+                builder.start().expect("Failed to start server")
+            }
+            CongestionControl::Bbr => {
+                let builder = Server::builder()
+                    .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
+                    .expect("Failed to set TLS config")
+                    .with_congestion_controller(congestion_controller::Bbr::default())
+                    .expect("Failed to set congestion controller")
+                    .with_io(server_addr)
+                    .expect("Failed to bind to address");
+
+                let builder = {
+                    #[cfg(feature = "quic_datagram")]
+                    {
+                        let dgram = DatagramEndpoint::builder()
+                            .with_recv_capacity(2048)
+                            .expect("Failed to set datagram recv capacity")
+                            .with_send_capacity(2048)
+                            .expect("Failed to set datagram send capacity")
+                            .build()
+                            .expect("Failed to build datagram endpoint");
+                        builder
+                            .with_datagram(dgram)
+                            .expect("Failed to enable datagrams on server")
+                    }
+                    #[cfg(not(feature = "quic_datagram"))]
+                    {
+                        builder
+                    }
+                };
+
+                let builder = builder.with_limits({
+                        let limits = Limits::default();
+                        let limits = limits
+                            .with_data_window(64 * 1024 * 1024)
+                            .expect("invalid data window");
+                        let limits = limits
+                            .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi local window");
+                        let limits = limits
+                            .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi remote window");
+                        limits
+                            .with_max_send_buffer_size(64 * 1024 * 1024)
+                            .expect("invalid send buffer")
+                    })
+                .expect("Failed to set QUIC limits");
+
+                builder.start().expect("Failed to start server")
+            }
         };
 
         while let Some(mut connection) = server.accept().await {
@@ -126,7 +173,7 @@ impl QuicServer {
 
                 info!("Incoming connection from node {}...", remote_node_id);
 
-                #[cfg(not(feature = "quic_per_flow"))]
+                #[cfg(all(not(feature = "quic_datagram"), not(feature = "quic_per_flow")))]
                 let network_interface = NetworkInterfaceHandle::new(
                     config.clone(),
                     NetworkStream::Quic(stream),
@@ -136,7 +183,7 @@ impl QuicServer {
                 )
                 .await;
 
-                #[cfg(feature = "quic_per_flow")]
+                #[cfg(all(not(feature = "quic_datagram"), feature = "quic_per_flow"))]
                 let network_interface = {
                     let (handle, mut acceptor): (QuicHandle, StreamAcceptor) = connection.split();
 
@@ -164,6 +211,25 @@ impl QuicServer {
                     NetworkInterfaceHandle::new(
                         config.clone(),
                         NetworkStream::QuicConn(handle),
+                        processors.clone(),
+                        self.reporter.clone(),
+                        remote_node_id,
+                    )
+                    .await
+                };
+
+                #[cfg(feature = "quic_datagram")]
+                let network_interface = {
+                    let handle = connection.handle();
+                    // Start datagram receiver task
+                    let mut dgram_reader = QuicDatagramReader::new(handle.clone(), processors.clone());
+                    tokio::spawn(async move {
+                        dgram_reader.run().await;
+                    });
+
+                    NetworkInterfaceHandle::new(
+                        config.clone(),
+                        NetworkStream::QuicDatagram(handle),
                         processors.clone(),
                         self.reporter.clone(),
                         remote_node_id,
@@ -202,7 +268,7 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    #[cfg(not(feature = "quic_per_flow"))]
+    #[cfg(all(not(feature = "quic_datagram"), not(feature = "quic_per_flow")))]
     pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
         let client = Client::builder()
             // For clients, configure the trusted server certificate instead of presenting one.
@@ -280,7 +346,7 @@ impl QuicClient {
         stream
     }
     
-    #[cfg(feature = "quic_per_flow")]
+    #[cfg(all(not(feature = "quic_datagram"), feature = "quic_per_flow"))]
     pub async fn connect(
         &self,
         remote_node_id: usize,
@@ -310,6 +376,102 @@ impl QuicClient {
             .expect("Failed to set QUIC limits")
             .start()
             .expect("Failed to start client");
+
+        let mut retry_count = 0;
+        const MAX_RETRY: usize = 10;
+
+        let mut connection = loop {
+            let addr: SocketAddr = remote_addr.parse().unwrap();
+            let connect = client::Connect::new(addr).with_server_name("Nextmini");
+
+            match client.connect(connect).await {
+                Ok(mut connection) => {
+                    connection
+                        .keep_alive(true)
+                        .expect("Unable to keep the connection alive");
+                    break connection;
+                }
+                Err(e) => {
+                    info!(
+                        "Failed to initiate quic connection to {addr}, error: {e} retrying in 1 second"
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+
+            retry_count += 1;
+
+            if retry_count >= MAX_RETRY {
+                panic!(
+                    "Maximum retry reached to establish a QUIC connection to {}. Aborting.",
+                    addr
+                );
+            }
+        };
+
+        let mut stream = connection
+            .open_bidirectional_stream()
+            .await
+            .expect("Failed to establish handshake stream");
+
+        info!("Connecting to node {} with QUIC...", remote_node_id);
+
+        let local_node_id = self.config.node_id;
+
+        stream
+            .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
+            .await
+            .expect("Failed to send local node id to the node");
+
+        info!("Connected to node {} with QUIC.", remote_node_id);
+
+        (connection.handle(), stream)
+    }
+
+    #[cfg(feature = "quic_datagram")]
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+    ) -> (s2n_quic::connection::Handle, BidirectionalStream) {
+        let builder = Client::builder()
+            .with_tls(Path::new("server_cert.pem"))
+            .expect("Failed to set TLS configuration")
+            .with_io("0.0.0.0:0")
+            .expect("Failed to bind the client");
+
+        let builder = {
+            let dgram = DatagramEndpoint::builder()
+                .with_recv_capacity(2048)
+                .expect("Failed to set datagram recv capacity")
+                .with_send_capacity(2048)
+                .expect("Failed to set datagram send capacity")
+                .build()
+                .expect("Failed to build datagram endpoint");
+            builder
+                .with_datagram(dgram)
+                .expect("Failed to enable datagrams on client")
+        };
+
+        let builder = builder
+            .with_limits({
+                let limits = Limits::default();
+                let limits = limits
+                    .with_data_window(64 * 1024 * 1024)
+                    .expect("invalid data window");
+                let limits = limits
+                    .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                    .expect("invalid bidi local window");
+                let limits = limits
+                    .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                    .expect("invalid bidi remote window");
+                limits
+                    .with_max_send_buffer_size(64 * 1024 * 1024)
+                    .expect("invalid send buffer")
+            })
+            .expect("Failed to set QUIC limits");
+
+        let client = builder.start().expect("Failed to start client");
 
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
@@ -435,6 +597,105 @@ impl QuicWriter {
 
             // advances the slices to skip the written data
             IoSlice::advance_slices(&mut slices, written_this_call);
+        }
+
+        Ok(())
+    }
+}
+
+// QUIC datagram reader/writer for TUN payloads (unreliable, unordered).
+#[cfg(feature = "quic_datagram")]
+pub struct QuicDatagramReader {
+    handle: s2n_quic::connection::Handle,
+    processors: ProcessorHandle,
+}
+
+#[cfg(feature = "quic_datagram")]
+impl QuicDatagramReader {
+    pub fn new(handle: s2n_quic::connection::Handle, processors: ProcessorHandle) -> Self {
+        Self { handle, processors }
+    }
+
+    pub async fn run(&mut self) {
+        loop {
+            let recv_result = futures::future::poll_fn(|cx| {
+                match self
+                    .handle
+                    .datagram_mut(|recv: &mut DatagramReceiver| recv.poll_recv_datagram(cx))
+                {
+                    Ok(core::task::Poll::Ready(Ok(bytes))) => core::task::Poll::Ready(Ok(bytes)),
+                    Ok(core::task::Poll::Ready(Err(_))) => core::task::Poll::Ready(Err(())),
+                    Ok(core::task::Poll::Pending) => core::task::Poll::Pending,
+                    Err(_) => core::task::Poll::Ready(Err(())),
+                }
+            })
+            .await;
+
+            match recv_result {
+                Ok(dat) => {
+                    let buf = dat.to_vec();
+                    if buf.len() < 20 {
+                        warn!("QUIC datagram too small to be IPv4, dropping: {} bytes", buf.len());
+                        continue;
+                    }
+                    let msg_len = ((buf[2] as usize) << 8) | (buf[3] as usize);
+                    if msg_len > buf.len() || msg_len < 20 || msg_len > RECEIVE_BUF_SIZE {
+                        warn!(
+                            "Invalid IPv4 total length in QUIC datagram: {} (buf len {}), dropping",
+                            msg_len,
+                            buf.len()
+                        );
+                        continue;
+                    }
+                    let packet = Packet::new(msg_len, buf);
+                    self.processors.process_packet(packet);
+                }
+                Err(err) => {
+                    warn!("QUIC datagram receive error: {:?}", err);
+                    tokio::task::yield_now().await;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "quic_datagram")]
+pub struct QuicDatagramWriter {
+    handle: s2n_quic::connection::Handle,
+}
+
+#[cfg(feature = "quic_datagram")]
+impl QuicDatagramWriter {
+    pub fn new(handle: s2n_quic::connection::Handle) -> Self {
+        Self { handle }
+    }
+
+    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        for packet in packets.into_iter() {
+            let bytes = Bytes::copy_from_slice(&packet.buf[0..packet.packet_size]);
+            let send_res = self
+                .handle
+                .datagram_mut(|sender: &mut DatagramSender| sender.send_datagram(bytes));
+
+            match send_res {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::Other, format!(
+                        "QUIC datagram queue full or unsupported: {:?}",
+                        e
+                    )));
+                }
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("QUIC datagram sender unavailable: {:?}", e),
+                    ));
+                }
+            }
         }
 
         Ok(())

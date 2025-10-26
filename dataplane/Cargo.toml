@@ -47,3 +47,6 @@ default = []
 # Enable per-flow QUIC streams: one QUIC send stream per inner FlowId,
 # and a stream-accept loop for receiving per-flow streams on the server.
 quic_per_flow = []
+# Enable QUIC DATAGRAM transport for TUN payloads (RFC 9221). This requires
+# the s2n-quic "unstable-provider-datagram" feature.
+quic_datagram = ["s2n-quic/unstable-provider-datagram"]
