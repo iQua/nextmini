@@ -94,7 +94,7 @@ impl FlowStatsReporterHandle {
 
     /// Report packet-related flow stats: app flow start and flow finish (if FIN/RST).
     pub fn report_packet(&self, packet: &Packet) {
-        // checks and reports if flow finished (FIN/RST)
+        // checks and reports if a flow has finished (FIN/RST)
         if packet.is_tcp_fin_or_rst() {
             self.report_flow_finished(packet.flow_id, None);
         } else if packet.is_tcp_data() {
