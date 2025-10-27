@@ -34,8 +34,7 @@ impl Device for VirtualDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.medium = Medium::Ip; // needs IP packet format
-        // Use effective_tun_mtu() so QUIC DATAGRAM mode clamps to a safe payload (e.g. 1150 bytes).
-        caps.max_transmission_unit = self.config.effective_tun_mtu() as usize;
+        caps.max_transmission_unit = self.config.mtu as usize;
         caps
     }
 }

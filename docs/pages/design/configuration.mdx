@@ -1,141 +1,22 @@
-## QUIC Transport Modes, No‑CC, and TUN Performance
+## QUIC Transport Basics
 
-### Overview
-
-The dataplane supports three QUIC transport modes for carrying TUN (IP) traffic over the network, plus an optional “no‑CC” configuration:
-
-- `single-stream`: one reliable QUIC stream for all packets
-- `per-flow`: one reliable QUIC send stream per inner TCP flow
-- `datagram`: QUIC DATAGRAMs (RFC 9221), unreliable/unordered
-- `no‑CC` (optional): disables QUIC congestion control (use only in controlled environments)
+The dataplane currently exposes a single QUIC transport mode that sends all TUN traffic over one reliable stream.
 
 ### Runtime Configuration
 
-All options are set in the dataplane config (TOML/CLI). Example TOML:
+All tuning happens through the standard dataplane configuration (`config.toml` or CLI flags):
 
 ```
 protocol = "quic"
 
-# Transport mode for TUN payloads
-# single-stream | per-flow | datagram
-quic_transport_mode = "datagram"
-
-# QUIC congestion control algorithm
-# bbr | cubic | disabled
+# QUIC congestion control algorithm (bbr | cubic)
 quic_congestion_control = "bbr"
 ```
 
-CLI flags (examples):
+Use `--quic-congestion-control cubic` on the CLI to switch away from the default BBR controller.
 
-- --quic-transport-mode datagram
-- --quic-congestion-control cubic
+### Operational Notes
 
-## Build Features (Capabilities)
-
-Some modes require enabling features at build time because they rely on s2n‑quic unstable providers:
-
-- quic_per_flow: per-flow QUIC streams
-- quic_datagram: QUIC DATAGRAM provider (RFC 9221)
-- quic_no_cc: custom (no‑op) congestion controller provider
-
-Examples:
-
-```
-cargo build --release -p nextmini --features quic_per_flow
-cargo build --release -p nextmini --features quic_datagram
-cargo build --release -p nextmini --features quic_no_cc
-# combine:
-cargo build --release -p nextmini --features "quic_datagram,quic_no_cc"
-```
-
-If the selected runtime mode is not compiled, the dataplane logs a warning and falls back to single-stream.
-
-## Mode Behavior and Trade‑offs
-
-- single-stream
-  - One reliable, in-order QUIC stream carries all TUN packets.
-  - Pros: simplest; minimal stream bookkeeping.
-  - Cons: head‑of‑line (HOL) blocking across all flows; double reliability (inner TCP + outer QUIC) and double CC.
-
-- per-flow
-  - One reliable QUIC send stream per inner TCP flow; both sides accept per‑flow streams.
-  - Pros: reduces cross‑flow HOL; loss on one flow doesn’t stall others.
-  - Cons: still reliable and congestion‑controlled by QUIC; multiple streams to manage.
-
-- datagram
-  - QUIC DATAGRAM frames (RFC 9221) negotiated by max_datagram_frame_size.
-  - Pros: no retransmissions and no stream HOL; avoids double reliability (inner TCP handles it); minimal per‑flow state.
-  - Cons: still congestion‑controlled by QUIC unless you also select no‑CC; datagrams can be dropped/reordered.
-
-## No‑CC (Disabled Congestion Control)
-
-Selecting quic_congestion_control = "disabled" (requires --features quic_no_cc) swaps in a no‑op congestion controller:
-
-- QUIC no longer paces or backs off based on loss.
-- Use only in controlled environments and pair with the scheduler/token bucket to avoid overdriving the link.
-- Recommended pairing for TCP tunneling on WAN: datagram + disabled (with rate shaping) to avoid both double reliability and double CC.
-
-Build/Run example:
-
-```
-cargo build --release -p nextmini --features "quic_datagram,quic_no_cc"
-RUST_LOG=info ./target/release/nextmini --quic-transport-mode datagram --quic-congestion-control disabled
-```
-
-## Iperf3 Tips
-
-- Defaults: single TCP stream (-P 1), 10 seconds (-t 10), port 5201.
-- For a single TCP flow: single-stream + no‑CC is adequate; per‑flow adds little.
-- For multiple parallel streams (-P > 1): per‑flow + no‑CC is usually better than single‑stream + no‑CC (less cross‑flow HOL).
-- Best overall for TCP tunneling on WAN: datagram (+/- no‑CC). Datagrams avoid double reliability and stream HOL; with no‑CC, use token buckets to cap send rate.
-- Tune MTU to avoid fragmentation; ensure TUN and QUIC PMTUD work on the path.
-
-## Tuning Notes
-
-- QUIC limits: the code increases flow‑control and send buffer sizes to accommodate high‑BDP paths (64 MiB windows/buffer).
-- Linux TUN: multi‑queue and GRO/TSO enabled; writer batch flush tuned for low latency and reasonable CPU.
-- Metrics overhead: per‑packet flow metrics are aggregated; keep the report interval as configured to reduce overhead during high PPS testing.
-
-### QUIC DATAGRAM: Queue Sizing & Heartbeat
-
-These knobs improve stability and throughput in pure‑DATAGRAM deployments, especially on high‑BDP WAN paths:
-
-- `quic_dgram_send_capacity` / `quic_dgram_recv_capacity`
-  - Size of the QUIC DATAGRAM send/receive queues (count of datagrams).
-  - Larger values help absorb bursts and sustain higher steady‑state rates over long RTTs.
-  - Defaults to `16384` each. Tune up for high‑throughput links; watch memory and CPU.
-
-- `quic_dgram_heartbeat_secs`
-  - Interval (seconds) to send a 1‑byte, ack‑eliciting frame on the handshake stream when in DATAGRAM mode.
-  - Prevents idle timeouts (common ~30–60s) on pure‑datagram workloads, since DATAGRAM frames are not ack‑eliciting.
-  - Default `15` seconds. Shorten a bit on lossy paths; avoid overly aggressive intervals.
-
-Notes:
-- The server side also enables QUIC keepalives (`keep_alive(true)`), complementing the heartbeat.
-- The inner IPv4 payload is conservatively clamped to 1150 bytes in DATAGRAM mode to avoid PMTU black‑holing.
-
-## Security and Interop
-
-- QUIC adds TLS 1.3 encryption; expect a small header/CPU overhead vs raw UDP.
-- DATAGRAM mode still negotiates at handshake; both endpoints must advertise support.
-- no‑CC mode is intentionally non‑standard; do not deploy on the open Internet without external policing.
-
-## Operational Guidance
-
-1) Choose a transport mode:
-   - datagram for best TCP‑over‑QUIC throughput and jitter (recommended for WAN).
-   - per‑flow if you need reliable streams but want to reduce cross‑flow HOL.
-   - single‑stream only for simple setups.
-
-2) Choose congestion control:
-   - Keep BBR/CUBIC for fairness/safety unless you are in a lab and can shape rate externally.
-   - If using disabled, configure token buckets to cap at (link_rate × utilization_target).
-
-3) Validate with iperf3:
-   - Test both single stream (-P 1) and parallel (-P N) to observe HOL effects.
-   - Capture drops and latency under load; adjust token bucket and MTU accordingly.
-
-## Fallback Behavior
-
-- If quic_transport_mode requests per-flow or datagram but the binary is not compiled with the corresponding feature, the dataplane logs a warning and falls back to single-stream.
-- Handshake always uses one initial stream for node identification; it is not used for data in per‑flow or datagram modes.
+- The server keeps QUIC keep-alives enabled so idle tunnels stay established.
+- MTU handling relies on the `mtu` field in `LocalConfig`; adjust it there if the path requires a smaller packet size.
+- Endpoints log connection failures and retry automatically (up to 10 attempts) before aborting. Review the dataplane logs for the remote address and failure reason if a node cannot join.

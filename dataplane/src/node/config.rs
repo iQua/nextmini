@@ -16,19 +16,6 @@ use nextmini_messages::{
 use crate::node::scheduler::drop::DropStrategy;
 use crate::node::{FlowId, FlowIdExt, NodeId, NodeIdExt};
 
-/// QUIC transport mode: how the TUN payloads are carried over QUIC.
-#[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum QuicTransportMode {
-    /// Single reliable stream for all packets (HOL across all flows).
-    #[default]
-    SingleStream,
-    /// One QUIC send stream per inner TCP flow; reduces HOL across flows.
-    PerFlow,
-    /// QUIC DATAGRAMs (RFC 9221): unreliable, unordered frames (still congestion-controlled).
-    Datagram,
-}
-
 /// The choice of congestion control algorithm in QUIC. Only BBR and CUBIC are supported by s2n-quic.
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -36,8 +23,6 @@ pub enum CongestionControl {
     #[default]
     Bbr,
     Cubic,
-    /// Disable QUIC congestion control (requires quic_no_cc build feature). Use with caution.
-    Disabled,
 }
 
 /// The processing mode for processing packets
@@ -198,27 +183,6 @@ pub struct LocalConfig {
     #[default(CongestionControl::Bbr)]
     #[arg(long, value_enum)]
     pub quic_congestion_control: CongestionControl,
-
-    /// QUIC transport mode selection.
-    #[default(QuicTransportMode::SingleStream)]
-    #[arg(long, value_enum)]
-    pub quic_transport_mode: QuicTransportMode,
-
-    /// QUIC DATAGRAM send queue capacity (number of datagrams).
-    #[default(16384)]
-    #[arg(long)]
-    pub quic_dgram_send_capacity: usize,
-
-    /// QUIC DATAGRAM receive queue capacity (number of datagrams).
-    #[default(16384)]
-    #[arg(long)]
-    pub quic_dgram_recv_capacity: usize,
-
-    /// Heartbeat interval (seconds) for ack‑eliciting keepalives on the handshake stream
-    /// when using QUIC DATAGRAM (prevents idle timeouts on pure‑datagram workloads).
-    #[default(15)]
-    #[arg(long)]
-    pub quic_dgram_heartbeat_secs: u64,
 
     /// The local network address.
     #[default(default_local_address())]
@@ -630,39 +594,6 @@ impl LocalConfig {
             Err(e) => {
                 error!("Error receiving the message: {}", e);
             }
-        }
-    }
-}
-
-impl LocalConfig {
-    /// Returns an MTU that is safe for the selected transport.
-    /// When using the QUIC DATAGRAM mode, we conservatively clamp the MTU so the inner IPv4
-    /// packets fit inside the QUIC UDP payload on WAN paths (min QUIC UDP payload ~1200B).
-    /// This avoids path-MTU black holing that can collapse throughput.
-    pub fn effective_tun_mtu(&self) -> u16 {
-        // Conservative safe payload for QUIC DATAGRAM (IPv4 total length) on WAN paths.
-        // 1150 leaves headroom for QUIC/TLS framing within the 1200B minimum UDP payload.
-        const SAFE_QUIC_DGRAM_PAYLOAD: u16 = 1150;
-
-        if self.protocol == Protocol::Quic
-            && self.quic_transport_mode == QuicTransportMode::Datagram
-        {
-            let cfg_mtu = self.mtu as u16;
-            cfg_mtu.min(SAFE_QUIC_DGRAM_PAYLOAD)
-        } else {
-            self.mtu as u16
-        }
-    }
-
-    /// Returns a reorder tolerance suited for the transport. For QUIC DATAGRAM we
-    /// tolerate more reordering to reduce dupACK storms under WAN loss.
-    pub fn effective_reorder_tolerance(&self) -> usize {
-        if self.protocol == Protocol::Quic
-            && self.quic_transport_mode == QuicTransportMode::Datagram
-        {
-            self.reorder_tolerance.max(32)
-        } else {
-            self.reorder_tolerance
         }
     }
 }

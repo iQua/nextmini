@@ -41,13 +41,3 @@ tokio-splice = "0.2"
 nix = { version = "0.30", features = ["sched", "hostname", "fs"] }
 rtnetlink = "0.18"
 once_cell = "1"
-
-[features]
-default = []
-# Enable per-flow QUIC streams: one QUIC send stream per inner FlowId,
-# and a stream-accept loop for receiving per-flow streams on the server.
-quic_per_flow = []
-# Enable QUIC DATAGRAM transport for TUN payloads (RFC 9221). This requires
-# the s2n-quic "unstable-provider-datagram" feature.
-quic_datagram = ["s2n-quic/unstable-provider-datagram"]
-quic_no_cc = ["s2n-quic/unstable-congestion-controller"]

@@ -131,9 +131,7 @@ impl SequentialLocalWriter {
 
     pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        // Use a small flush timeout to avoid excessive CPU spin while keeping latency low.
-        // 1ms is a good compromise for WAN scenarios.
-        let batch_timeout = Duration::from_millis(1);
+        let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -168,7 +166,7 @@ impl SequentialLocalWriter {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (1 millisecond)
+                // sends to the TUN device anyway every once in a while (50 milliseconds)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
@@ -217,14 +215,13 @@ impl Ord for SequencedPacket {
 }
 
 pub struct ConcurrentLocalWriterProducer {
+    config: LocalConfig,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
     device: Arc<AsyncDevice>,
     queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     queue_not_empty: Arc<Notify>,
-    // cache the effective reorder tolerance
-    reorder_tolerance: usize,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -251,16 +248,14 @@ impl ConcurrentLocalWriterProducer {
             consumer.run().await;
         });
 
-        let reorder_tolerance = config.effective_reorder_tolerance();
-
         Self {
+            config,
             shutdown_receiver,
             packet_receiver,
             device,
             queue_map,
             active_flows,
             queue_not_empty,
-            reorder_tolerance,
         }
     }
 
@@ -296,7 +291,7 @@ impl ConcurrentLocalWriterProducer {
                                 active_flows.insert(flow_id);
                                 // notifies the consumer immediately when a previously-empty flow gets its first pkt
                                 self.queue_not_empty.notify_one();
-                            } else if heap.len() > self.reorder_tolerance {
+                            } else if heap.len() > self.config.reorder_tolerance {
                             // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
                             // guaranteed to be consumed in a relatively ordered manner
                                 self.queue_not_empty.notify_one();
@@ -326,7 +321,6 @@ struct ConcurrentLocalWriterConsumer {
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        // flushes very frequently to keep latency low when batching for GRO/TSO
         let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
@@ -377,7 +371,7 @@ impl ConcurrentLocalWriterConsumer {
                         }
                     }
                 }
-                // periodically flushes to the TUN device every 50 microseconds
+                // sends to the TUN device anyway every once in a while (50 milliseconds)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
