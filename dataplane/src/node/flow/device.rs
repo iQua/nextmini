@@ -79,11 +79,12 @@ mod tests {
     use crate::node::NodeIdExt;
 
     fn make_test_config() -> LocalConfig {
-        let mut config = LocalConfig::default();
-        config.node_id = 1;
-        config.num_packet_processors = 1;
-        config.channel_capacity = 16;
-        config
+        LocalConfig {
+            node_id: 1,
+            num_packet_processors: 1,
+            channel_capacity: 16,
+            ..Default::default()
+        }
     }
 
     fn build_virtual_device(config: LocalConfig) -> (VirtualDevice, mpsc::Sender<Packet>) {
@@ -172,8 +173,8 @@ mod tests {
         let dst_ip = config
             .node_id
             .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let src_ip = (config.node_id + 1)
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let src_ip =
+            (config.node_id + 1).ip_addr(config.user_space_base_addr, config.local_netmask);
         let dst_port = config.user_space_server_port;
         let src_port = 4100;
         let (mut device, _) = build_virtual_device(config);

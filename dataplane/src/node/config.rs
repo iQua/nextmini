@@ -250,7 +250,7 @@ pub struct LocalConfig {
     pub operating_mode: OperatingMode,
 
     /// Reorder tolerance for the multipath mode.
-    #[default(4)]
+    #[default(1)]
     #[arg(long)]
     pub reorder_tolerance: usize,
 
