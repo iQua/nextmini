@@ -5,7 +5,7 @@ use tokio::time::Duration;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info};
-use tun_rs::{AsyncDevice, GROTable, VIRTIO_NET_HDR_LEN};
+use tun_rs::{AsyncDevice, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
 use crate::node::FlowId;
 use crate::node::config::{Feature, LocalConfig};
@@ -294,7 +294,7 @@ impl ConcurrentLocalWriterProducer {
 
                         // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
                         // guaranteed to be consumed in a relatively ordered manner
-                        if heap.len() > self.config.reorder_tolerance {
+                        if heap.len() >= self.config.reorder_tolerance {
                             self.queue_not_empty.notify_one();
                         }
                     }
@@ -323,8 +323,6 @@ impl ConcurrentLocalWriterConsumer {
         let mut pending_packets: Vec<Packet> = Vec::new();
         let batch_timeout = Duration::from_millis(1);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
-        // Flush threshold to avoid waiting for all flows to drain
-        const BATCH_FLUSH_THRESHOLD: usize = 64;
 
         loop {
             tokio::select! {
@@ -362,8 +360,8 @@ impl ConcurrentLocalWriterConsumer {
                             let packet = sp.packet;
                             pending_packets.push(packet);
 
-                            // Proactively flush in the hot path to ensure progress under load.
-                            if pending_packets.len() >= BATCH_FLUSH_THRESHOLD {
+                            // proactively flushes in the hot path to ensure progress under load
+                            if pending_packets.len() >= IDEAL_BATCH_SIZE {
                                 let _ = batch_writer.write(&mut pending_packets).await;
                                 pending_packets.clear();
                             }

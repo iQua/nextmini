@@ -225,7 +225,7 @@ impl ConcurrentLocalWriterProducer {
 
                         // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
                         // guaranteed to be consumed in a relatively ordered manner
-                        if heap.len() > self.config.reorder_tolerance {
+                        if heap.len() >= self.config.reorder_tolerance {
                             self.queue_not_empty.notify_one();
                         }
                     }
