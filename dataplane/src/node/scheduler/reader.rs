@@ -101,6 +101,8 @@ impl SchedulerReader {
             return;
         }
 
+        let is_tcp_data = packet.is_tcp_data();
+
         if self.queue.enqueue(packet).is_err() {
             self.packets_dropped += 1;
             self.drops_since_last_log += 1;
@@ -118,11 +120,19 @@ impl SchedulerReader {
                 self.last_drop_log = now;
             }
         } else {
-            let updated_queue_len = queue_len + 1;
-
-            // If the queue just transitioned from empty, or exceeds a small threshold, notify the consumer.
-            if queue_len == 0 || updated_queue_len > 3 {
+            // notifies the writer task if it is not a TCP data packet (e.g., if it is SYN, FIN, RST, or pure ACK)
+            // if it is a TCP data packet, it is stored in the queue for a while before being consumed by the
+            // writer task
+            if !is_tcp_data {
                 self.queues_not_empty.notify_one();
+            } else {
+                let updated_queue_len = queue_len + 1;
+
+                // if the queue length exceeds over a threshold or when we just transitioned from an empty
+                // queue, notify the consumer task that a packet has arrived and the queue becomes 'non-empty' now
+                if queue_len == 0 || updated_queue_len > 2 {
+                    self.queues_not_empty.notify_one();
+                }
             }
         }
     }
@@ -224,7 +234,9 @@ mod tests {
     }
 
     fn make_tcp_packet(flow_id: FlowId, flags: u8) -> Packet {
-        let packet_size = 40;
+        // Build a TCP packet with payload so it is treated as TCP data.
+        // IPv4 header (20) + TCP header (20) + payload (20) = 60 bytes total.
+        let packet_size = 60;
         let mut buf = vec![0; packet_size];
 
         // IPv4 header with TCP protocol marker.
@@ -302,7 +314,7 @@ mod tests {
 
         let recorded = calls.lock().unwrap();
         assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0], (40, 3, 3));
+        assert_eq!(recorded[0], (60, 3, 3));
     }
 
     #[tokio::test]
@@ -345,7 +357,10 @@ mod tests {
     #[tokio::test]
     async fn enqueue_tcp_data_below_threshold_does_not_notify() {
         let queue = Arc::new(MockQueue::new());
-        queue.set_queue_len(2);
+        // With the new logic, notification occurs when the queue was empty
+        // or when updated_len > 2. Set initial len to 1 so updated_len = 2
+        // remains below the threshold and does not notify.
+        queue.set_queue_len(1);
 
         let notify = Arc::new(Notify::new());
         let (dropper, _) = RecordingDrop::new(false);

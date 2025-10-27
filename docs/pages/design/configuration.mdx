@@ -96,6 +96,24 @@ RUST_LOG=info ./target/release/nextmini --quic-transport-mode datagram --quic-co
 - Linux TUN: multi‑queue and GRO/TSO enabled; writer batch flush tuned for low latency and reasonable CPU.
 - Metrics overhead: per‑packet flow metrics are aggregated; keep the report interval as configured to reduce overhead during high PPS testing.
 
+### QUIC DATAGRAM: Queue Sizing & Heartbeat
+
+These knobs improve stability and throughput in pure‑DATAGRAM deployments, especially on high‑BDP WAN paths:
+
+- `quic_dgram_send_capacity` / `quic_dgram_recv_capacity`
+  - Size of the QUIC DATAGRAM send/receive queues (count of datagrams).
+  - Larger values help absorb bursts and sustain higher steady‑state rates over long RTTs.
+  - Defaults to `16384` each. Tune up for high‑throughput links; watch memory and CPU.
+
+- `quic_dgram_heartbeat_secs`
+  - Interval (seconds) to send a 1‑byte, ack‑eliciting frame on the handshake stream when in DATAGRAM mode.
+  - Prevents idle timeouts (common ~30–60s) on pure‑datagram workloads, since DATAGRAM frames are not ack‑eliciting.
+  - Default `15` seconds. Shorten a bit on lossy paths; avoid overly aggressive intervals.
+
+Notes:
+- The server side also enables QUIC keepalives (`keep_alive(true)`), complementing the heartbeat.
+- The inner IPv4 payload is conservatively clamped to 1150 bytes in DATAGRAM mode to avoid PMTU black‑holing.
+
 ## Security and Interop
 
 - QUIC adds TLS 1.3 encryption; expect a small header/CPU overhead vs raw UDP.

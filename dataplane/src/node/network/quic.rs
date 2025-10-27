@@ -1274,7 +1274,8 @@ impl QuicMuxWriter {
                 }
 
                 if batch.close {
-                    let _ = send.close();
+                    // Close the QUIC send stream; ignore errors but await completion.
+                    let _ = send.close().await;
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -1305,7 +1306,7 @@ impl QuicMuxWriter {
             };
             if tx
                 .send(FlowBatch {
-                    packets: group.drain(..).collect(),
+                    packets: std::mem::take(&mut group),
                     close,
                 })
                 .await
