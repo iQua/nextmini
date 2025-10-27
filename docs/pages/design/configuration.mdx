@@ -41,11 +41,11 @@ Some modes require enabling features at build time because they rely on s2n‑qu
 Examples:
 
 ```
-cargo run -p nextmini --features quic_per_flow
-cargo run -p nextmini --features quic_datagram
-cargo run -p nextmini --features quic_no_cc
+cargo build --release -p nextmini --features quic_per_flow
+cargo build --release -p nextmini --features quic_datagram
+cargo build --release -p nextmini --features quic_no_cc
 # combine:
-cargo build -p nextmini --features "quic_datagram,quic_no_cc"
+cargo build --release -p nextmini --features "quic_datagram,quic_no_cc"
 ```
 
 If the selected runtime mode is not compiled, the dataplane logs a warning and falls back to single-stream.
