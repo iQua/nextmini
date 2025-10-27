@@ -279,12 +279,13 @@ impl ConcurrentLocalWriterProducer {
                         // only when it is a TCP packet, it is reordered when needed and stored in the queue
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
 
-                        // adds packet to queue
-                        {
+                        // adds packet to queue and get the queue length
+                        let queue_len = {
                             let mut queue_map = self.queue_map.lock().await;
                             let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
                             heap.push(sequenced_packet);
-                        }
+                            heap.len()
+                        };
 
                         // ensures the flow is tracked when we add a TCP data packet
                         {
@@ -294,7 +295,7 @@ impl ConcurrentLocalWriterProducer {
 
                         // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
                         // guaranteed to be consumed in a relatively ordered manner
-                        if heap.len() >= self.config.reorder_tolerance {
+                        if queue_len >= self.config.reorder_tolerance {
                             self.queue_not_empty.notify_one();
                         }
                     }
