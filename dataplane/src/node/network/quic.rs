@@ -1092,7 +1092,7 @@ impl QuicDatagramReader {
                         continue;
                     }
                     let msg_len = ((buf[2] as usize) << 8) | (buf[3] as usize);
-                    if msg_len > buf.len() || msg_len < 20 || msg_len > RECEIVE_BUF_SIZE {
+                    if msg_len > buf.len() || !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
                         warn!(
                             "Invalid IPv4 total length in QUIC datagram: {} (buf len {}), dropping",
                             msg_len,
