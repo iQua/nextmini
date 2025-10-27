@@ -364,7 +364,7 @@ pub struct QuicClient {
 pub enum QuicConnectOutcome {
     SingleStream(BidirectionalStream),
     #[cfg(feature = "quic_per_flow")]
-    PerFlow(s2n_quic::connection::Handle, BidirectionalStream),
+    PerFlow(s2n_quic::connection::Handle, s2n_quic::connection::StreamAcceptor),
     #[cfg(feature = "quic_datagram")]
     Datagram(s2n_quic::connection::Handle, BidirectionalStream),
 }
@@ -462,49 +462,118 @@ impl QuicClient {
         &self,
         remote_node_id: usize,
         remote_addr: &str,
-    ) -> (QuicHandle, BidirectionalStream) {
-        let client = Client::builder()
-            // For clients, configure the trusted server certificate instead of presenting one.
-            .with_tls(Path::new("server_cert.pem"))
-            .expect("Failed to set TLS configuration")
-            .with_congestion_controller({
-                match self.config.quic_congestion_control {
-                    CcMode::Cubic => congestion_controller::Cubic::default(),
-                    CcMode::Bbr => congestion_controller::Bbr::default(),
-                    CcMode::Disabled => {
-                        #[cfg(feature = "quic_no_cc")]
-                        {
-                            no_cc::NoopCcEndpoint
-                        }
-                        #[cfg(not(feature = "quic_no_cc"))]
-                        {
-                            warn!("quic_no_cc not compiled; falling back to BBR");
-                            congestion_controller::Bbr::default()
-                        }
-                    }
+    ) -> (QuicHandle, StreamAcceptor) {
+        let client = match self.config.quic_congestion_control {
+            CcMode::Cubic => Client::builder()
+                .with_tls(Path::new("server_cert.pem"))
+                .expect("Failed to set TLS configuration")
+                .with_congestion_controller(congestion_controller::Cubic::default())
+                .expect("Failed to set congestion controller")
+                .with_io("0.0.0.0:0")
+                .expect("Failed to bind the client")
+                .with_limits({
+                    let limits = Limits::default();
+                    let limits = limits
+                        .with_data_window(64 * 1024 * 1024)
+                        .expect("invalid data window");
+                    let limits = limits
+                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi local window");
+                    let limits = limits
+                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi remote window");
+                    limits
+                        .with_max_send_buffer_size(64 * 1024 * 1024)
+                        .expect("invalid send buffer")
+                })
+                .expect("Failed to set QUIC limits")
+                .start()
+                .expect("Failed to start client"),
+            CcMode::Bbr => Client::builder()
+                .with_tls(Path::new("server_cert.pem"))
+                .expect("Failed to set TLS configuration")
+                .with_congestion_controller(congestion_controller::Bbr::default())
+                .expect("Failed to set congestion controller")
+                .with_io("0.0.0.0:0")
+                .expect("Failed to bind the client")
+                .with_limits({
+                    let limits = Limits::default();
+                    let limits = limits
+                        .with_data_window(64 * 1024 * 1024)
+                        .expect("invalid data window");
+                    let limits = limits
+                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi local window");
+                    let limits = limits
+                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                        .expect("invalid bidi remote window");
+                    limits
+                        .with_max_send_buffer_size(64 * 1024 * 1024)
+                        .expect("invalid send buffer")
+                })
+                .expect("Failed to set QUIC limits")
+                .start()
+                .expect("Failed to start client"),
+            CcMode::Disabled => {
+                #[cfg(feature = "quic_no_cc")]
+                {
+                    Client::builder()
+                        .with_tls(Path::new("server_cert.pem"))
+                        .expect("Failed to set TLS configuration")
+                        .with_congestion_controller(no_cc::NoopCcEndpoint)
+                        .expect("Failed to set congestion controller")
+                        .with_io("0.0.0.0:0")
+                        .expect("Failed to bind the client")
+                        .with_limits({
+                            let limits = Limits::default();
+                            let limits = limits
+                                .with_data_window(64 * 1024 * 1024)
+                                .expect("invalid data window");
+                            let limits = limits
+                                .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi local window");
+                            let limits = limits
+                                .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi remote window");
+                            limits
+                                .with_max_send_buffer_size(64 * 1024 * 1024)
+                                .expect("invalid send buffer")
+                        })
+                        .expect("Failed to set QUIC limits")
+                        .start()
+                        .expect("Failed to start client")
                 }
-            })
-            .expect("Failed to set congestion controller")
-            .with_io("0.0.0.0:0")
-            .expect("Failed to bind the client")
-            .with_limits({
-                let limits = Limits::default();
-                let limits = limits
-                    .with_data_window(64 * 1024 * 1024)
-                    .expect("invalid data window");
-                let limits = limits
-                    .with_bidirectional_local_data_window(64 * 1024 * 1024)
-                    .expect("invalid bidi local window");
-                let limits = limits
-                    .with_bidirectional_remote_data_window(64 * 1024 * 1024)
-                    .expect("invalid bidi remote window");
-                limits
-                    .with_max_send_buffer_size(64 * 1024 * 1024)
-                    .expect("invalid send buffer")
-            })
-            .expect("Failed to set QUIC limits")
-            .start()
-            .expect("Failed to start client");
+                #[cfg(not(feature = "quic_no_cc"))]
+                {
+                    warn!("quic_no_cc not compiled; falling back to BBR");
+                    Client::builder()
+                        .with_tls(Path::new("server_cert.pem"))
+                        .expect("Failed to set TLS configuration")
+                        .with_congestion_controller(congestion_controller::Bbr::default())
+                        .expect("Failed to set congestion controller")
+                        .with_io("0.0.0.0:0")
+                        .expect("Failed to bind the client")
+                        .with_limits({
+                            let limits = Limits::default();
+                            let limits = limits
+                                .with_data_window(64 * 1024 * 1024)
+                                .expect("invalid data window");
+                            let limits = limits
+                                .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi local window");
+                            let limits = limits
+                                .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi remote window");
+                            limits
+                                .with_max_send_buffer_size(64 * 1024 * 1024)
+                                .expect("invalid send buffer")
+                        })
+                        .expect("Failed to set QUIC limits")
+                        .start()
+                        .expect("Failed to start client")
+                }
+            }
+        };
 
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
@@ -554,7 +623,9 @@ impl QuicClient {
 
         info!("Connected to node {} with QUIC.", remote_node_id);
 
-        (connection.handle(), stream)
+        // Split for handle + per-flow acceptor after handshake
+        let (handle, acceptor) = connection.split();
+        (handle, acceptor)
     }
 
     #[cfg(feature = "quic_datagram")]
@@ -686,8 +757,8 @@ impl QuicClient {
             QuicTransportMode::PerFlow => {
                 #[cfg(feature = "quic_per_flow")]
                 {
-                    let (h, s) = self.connect_per_flow(remote_node_id, remote_addr).await;
-                    QuicConnectOutcome::PerFlow(h, s)
+                    let (h, a) = self.connect_per_flow(remote_node_id, remote_addr).await;
+                    QuicConnectOutcome::PerFlow(h, a)
                 }
                 #[cfg(not(feature = "quic_per_flow"))]
                 {
@@ -735,7 +806,7 @@ impl QuicReader {
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-        if msg_len < 20 || msg_len > RECEIVE_BUF_SIZE {
+        if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid IPv4 total length: {}", msg_len),

@@ -25,6 +25,8 @@ pub enum NetworkStream {
     Quic(BidirectionalStream),
     #[cfg(feature = "quic_per_flow")]
     QuicConn(s2n_quic::connection::Handle),
+    #[cfg(feature = "quic_per_flow")]
+    QuicConnAccept(s2n_quic::connection::Handle, s2n_quic::connection::StreamAcceptor),
     #[cfg(feature = "quic_datagram")]
     QuicDatagram(s2n_quic::connection::Handle),
 }
@@ -176,7 +178,9 @@ impl NetworkInterface {
                     match outcome {
                         QuicConnectOutcome::SingleStream(s) => self.init(NetworkStream::Quic(s)),
                         #[cfg(feature = "quic_per_flow")]
-                        QuicConnectOutcome::PerFlow(h, _) => self.init(NetworkStream::QuicConn(h)),
+                        QuicConnectOutcome::PerFlow(h, a) => {
+                            self.init(NetworkStream::QuicConnAccept(h, a))
+                        }
                         #[cfg(feature = "quic_datagram")]
                         QuicConnectOutcome::Datagram(h, _) => {
                             self.init(NetworkStream::QuicDatagram(h))
@@ -224,6 +228,30 @@ impl NetworkInterface {
             NetworkStream::QuicConn(handle) => {
                 // No reader spawned here; the server runs a global accept loop spawning
                 // per-flow readers. We only need a per-flow multiplexing writer.
+                let quic_writer = QuicMuxWriter::new(handle);
+                ProtocolWriter::QuicMux(quic_writer)
+            }
+            #[cfg(feature = "quic_per_flow")]
+            NetworkStream::QuicConnAccept(handle, mut acceptor) => {
+                let processors = self.processors.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match acceptor.accept_bidirectional_stream().await {
+                            Ok(Some(stream)) => {
+                                let (rx, _tx) = stream.split();
+                                let mut reader = QuicReader::new(rx, processors.clone());
+                                tokio::spawn(async move {
+                                    reader.run().await;
+                                });
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                tracing::error!("client accept error: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                });
                 let quic_writer = QuicMuxWriter::new(handle);
                 ProtocolWriter::QuicMux(quic_writer)
             }
