@@ -243,93 +243,91 @@ sudo lsof -ti:8080 | xargs sudo kill -9
 
 ---
 
-## Configuration Files
+## Ring All-Reduce Benchmark
 
-### Controller Config (`controller-config.toml`)
+Test collective communication performance using ring all-reduce algorithm. Two test modes available:
 
-```toml
-protocol = "tcp"
+### 1. Nextmini Network Test
 
-[topology]
-type = "full_mesh"
-full_mesh_config = { n_nodes = 2 }
+Test performance through Nextmini overlay using TUN interfaces with 10.0.0.x addresses.
 
-[[routes]]
-route = [[1, 2]]
-
-[[routes]]
-route = [[2, 1]]
-
-[db]
-user = "pgusr"
-password = "pgpwrd"
-host = "127.0.0.1"
-port = "5432"
-database = "nextmini"
-```
-
-### Node Config (Auto-generated)
-
-```toml
-private_network_interface = "ens3"
-private_network_name = "net1"
-num_tun_queues = 1
-num_packet_processors = 4
-channel_capacity = 4000
-queue_capacity = 3000
-feature = "concurrent"
-
-controller_addr = "ws://206.12.89.244:3000"
-node_id = 1
-public_network_port = "8080"
-```
-
----
-
-## Deployment Architecture
-
-```
-Physical Machine 1 (206.12.89.244)
-├── PostgreSQL (Docker, port 5432)
-└── Controller (port 3000)
-        │
-        ├─ Node 1 (Machine 2, port 8080)
-        └─ Node 2 (Machine 3, port 8080)
-```
-
-**Key Point:** Each node runs on a separate machine, so all nodes can use the same port 8080.
-
----
-
-## Advanced Topics
-
-### Customizing Routes
-
-Edit `controller-config.toml` before deploying:
-
-```toml
-# Example: Add more routes
-[[routes]]
-route = [[1, 2]]
-
-[[routes]]
-route = [[2, 1]]
-```
-
-Then redeploy controller:
+Prerequisites:
 ```bash
-uv run cleanup.py
-uv run deploy_controller.py
+# Build the benchmark binary
+cd ~/nextmini/examples/bare-metal/ring-emu
+cargo build --release
+
+# Ensure Controller and Dataplane nodes are running
+cd ~/nextmini/examples/bare-metal/controller
+./deploy.sh
+
+cd ~/nextmini/examples/bare-metal/dataplane
+./deploy.sh
 ```
 
-### Changing Number of Nodes
+Configure hosts:
 
-Edit `controller-config.toml`:
-```toml
-[topology]
-full_mesh_config = { n_nodes = 3 }  # Change to 3 nodes
+Edit `ring-emu/ssh_hosts.txt`:
+```
+root@157.180.84.40
+root@174.138.23.4
+root@134.209.191.238
+root@134.199.159.159
 ```
 
-Deploy additional nodes with higher node IDs.
+Edit `ring-emu/ring.txt` with TUN IPs, check with `ip addr show utun` on each node:
+```
+10.0.0.1:9000
+10.0.0.2:9000
+10.0.0.3:9000
+10.0.0.4:9000
+```
+
+Run test:
+```bash
+cd ~/nextmini/examples/bare-metal/ring-emu
+./run_ring.sh
+```
+
+### 2. Physical Network Test
+
+Test performance on raw physical networkfor baseline comparison.
+
+Prerequisites:
+```bash
+# Build the benchmark binary (same as above)
+cd ~/nextmini/examples/bare-metal/ring-emu
+cargo build --release
+```
+
+Configure hosts:
+
+Edit `physical/ssh_hosts.txt`:
+```
+root@157.180.84.40
+root@174.138.23.4
+root@134.209.191.238
+root@134.199.159.159
+```
+
+Run test:
+```bash
+cd ~/nextmini/examples/bare-metal/physical
+./run_physical.sh
+```
+
+### Cleanup
+
+Kill all ring processes on remote hosts:
+
+```bash
+# For Nextmini test
+cd ~/nextmini/examples/bare-metal/ring-emu
+uv run cleanup_ring.py
+
+# For Physical test
+cd ~/nextmini/examples/bare-metal/physical
+uv run cleanup_ring.py
+```
 
 ---

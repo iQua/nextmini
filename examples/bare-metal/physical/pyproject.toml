@@ -1,0 +1,6 @@
+[project]
+name = "physical-ring-launcher"
+version = "0.1.0"
+description = "Physical network ring all-reduce launcher"
+requires-python = "==3.13.*"    
+dependencies = []
