@@ -145,13 +145,14 @@ impl Ord for SequencedPacket {
 }
 
 pub struct ConcurrentLocalWriterProducer {
-    config: LocalConfig,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
     device: Arc<AsyncDevice>,
     queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     queue_not_empty: Arc<Notify>,
+    // cache the effective reorder tolerance
+    reorder_tolerance: usize,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -178,14 +179,16 @@ impl ConcurrentLocalWriterProducer {
             consumer.run().await;
         });
 
+        let reorder_tolerance = config.effective_reorder_tolerance();
+
         Self {
-            config,
             shutdown_receiver,
             packet_receiver,
             device,
             queue_map,
             active_flows,
             queue_not_empty,
+            reorder_tolerance,
         }
     }
 
@@ -221,7 +224,7 @@ impl ConcurrentLocalWriterProducer {
 
                                 // notifies the consumer immediately when a previously empty flow gets its first packet
                                 self.queue_not_empty.notify_one();
-                            } else if heap.len() > self.config.reorder_tolerance {
+                            } else if heap.len() > self.reorder_tolerance {
                             // notifies the consumer after the queue has accumulated packets beyond a threshold, so packets
                             // are guaranteed to be consumed in a relatively ordered manner
                                 self.queue_not_empty.notify_one();

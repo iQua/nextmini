@@ -204,6 +204,22 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub quic_transport_mode: QuicTransportMode,
 
+    /// QUIC DATAGRAM send queue capacity (number of datagrams).
+    #[default(16384)]
+    #[arg(long)]
+    pub quic_dgram_send_capacity: usize,
+
+    /// QUIC DATAGRAM receive queue capacity (number of datagrams).
+    #[default(16384)]
+    #[arg(long)]
+    pub quic_dgram_recv_capacity: usize,
+
+    /// Heartbeat interval (seconds) for ack‑eliciting keepalives on the handshake stream
+    /// when using QUIC DATAGRAM (prevents idle timeouts on pure‑datagram workloads).
+    #[default(15)]
+    #[arg(long)]
+    pub quic_dgram_heartbeat_secs: u64,
+
     /// The local network address.
     #[default(default_local_address())]
     #[arg(skip)]
@@ -635,6 +651,18 @@ impl LocalConfig {
             cfg_mtu.min(SAFE_QUIC_DGRAM_PAYLOAD)
         } else {
             self.mtu as u16
+        }
+    }
+
+    /// Returns a reorder tolerance suited for the transport. For QUIC DATAGRAM we
+    /// tolerate more reordering to reduce dupACK storms under WAN loss.
+    pub fn effective_reorder_tolerance(&self) -> usize {
+        if self.protocol == Protocol::Quic
+            && self.quic_transport_mode == QuicTransportMode::Datagram
+        {
+            self.reorder_tolerance.max(32)
+        } else {
+            self.reorder_tolerance
         }
     }
 }

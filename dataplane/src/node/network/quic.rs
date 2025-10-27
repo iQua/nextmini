@@ -20,6 +20,21 @@ use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
 use tracing::{error, info, warn};
 
+// Helper: spawn an ack‑eliciting heartbeat on a QUIC send stream.
+#[cfg(feature = "quic_datagram")]
+fn spawn_quic_stream_heartbeat(mut tx: SendStream, interval: Duration) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+            // 1-byte write is enough to elicit ACKs and reset idle timeout.
+            if let Err(e) = tx.send(Bytes::from_static(&[0u8])).await {
+                warn!("QUIC heartbeat stopped (send failed): {}", e);
+                break;
+            }
+        }
+    });
+}
+
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl as CcMode;
 use crate::node::config::{LocalConfig, QuicTransportMode};
@@ -70,9 +85,9 @@ impl QuicServer {
                     #[cfg(feature = "quic_datagram")]
                     {
                         let dgram = DatagramEndpoint::builder()
-                            .with_recv_capacity(2048)
+                            .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                             .expect("Failed to set datagram recv capacity")
-                            .with_send_capacity(2048)
+                            .with_send_capacity(self.config.quic_dgram_send_capacity)
                             .expect("Failed to set datagram send capacity")
                             .build()
                             .expect("Failed to build datagram endpoint");
@@ -119,9 +134,9 @@ impl QuicServer {
                     #[cfg(feature = "quic_datagram")]
                     {
                         let dgram = DatagramEndpoint::builder()
-                            .with_recv_capacity(2048)
+                            .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                             .expect("Failed to set datagram recv capacity")
-                            .with_send_capacity(2048)
+                            .with_send_capacity(self.config.quic_dgram_send_capacity)
                             .expect("Failed to set datagram send capacity")
                             .build()
                             .expect("Failed to build datagram endpoint");
@@ -178,9 +193,9 @@ impl QuicServer {
                     #[cfg(feature = "quic_datagram")]
                     {
                         let dgram = DatagramEndpoint::builder()
-                            .with_recv_capacity(2048)
+                            .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                             .expect("Failed to set datagram recv capacity")
-                            .with_send_capacity(2048)
+                            .with_send_capacity(self.config.quic_dgram_send_capacity)
                             .expect("Failed to set datagram send capacity")
                             .build()
                             .expect("Failed to build datagram endpoint");
@@ -217,6 +232,8 @@ impl QuicServer {
         };
 
         while let Some(mut connection) = server.accept().await {
+            // Ensure server side also emits keepalive PINGs if the peer goes quiet.
+            let _ = connection.keep_alive(true);
             let config = self.config.clone();
             let processors = self.processors.clone();
 
@@ -301,6 +318,12 @@ impl QuicServer {
                     QuicTransportMode::Datagram => {
                         #[cfg(feature = "quic_datagram")]
                         {
+                            // Keep the handshake stream open and send periodic ack‑eliciting heartbeats.
+                            let (_rx, tx) = stream.split();
+                            spawn_quic_stream_heartbeat(
+                                tx,
+                                Duration::from_secs(config.quic_dgram_heartbeat_secs),
+                            );
                             let handle = connection.handle();
                             let mut dgram_reader =
                                 QuicDatagramReader::new(handle.clone(), processors.clone());
@@ -637,13 +660,13 @@ impl QuicClient {
         &self,
         remote_node_id: usize,
         remote_addr: &str,
-    ) -> (s2n_quic::connection::Handle, BidirectionalStream) {
+    ) -> s2n_quic::connection::Handle {
         let client = match self.config.quic_congestion_control {
             CcMode::Cubic => {
                 let dgram = DatagramEndpoint::builder()
-                    .with_recv_capacity(2048)
+                    .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                     .expect("Failed to set datagram recv capacity")
-                    .with_send_capacity(2048)
+                    .with_send_capacity(self.config.quic_dgram_send_capacity)
                     .expect("Failed to set datagram send capacity")
                     .build()
                     .expect("Failed to build datagram endpoint");
@@ -676,9 +699,9 @@ impl QuicClient {
             }
             CcMode::Bbr => {
                 let dgram = DatagramEndpoint::builder()
-                    .with_recv_capacity(2048)
+                    .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                     .expect("Failed to set datagram recv capacity")
-                    .with_send_capacity(2048)
+                    .with_send_capacity(self.config.quic_dgram_send_capacity)
                     .expect("Failed to set datagram send capacity")
                     .build()
                     .expect("Failed to build datagram endpoint");
@@ -713,9 +736,9 @@ impl QuicClient {
                 #[cfg(feature = "quic_no_cc")]
                 {
                     let dgram = DatagramEndpoint::builder()
-                        .with_recv_capacity(2048)
+                        .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                         .expect("Failed to set datagram recv capacity")
-                        .with_send_capacity(2048)
+                        .with_send_capacity(self.config.quic_dgram_send_capacity)
                         .expect("Failed to set datagram send capacity")
                         .build()
                         .expect("Failed to build datagram endpoint");
@@ -750,9 +773,9 @@ impl QuicClient {
                 {
                     warn!("quic_no_cc not compiled; falling back to BBR");
                     let dgram = DatagramEndpoint::builder()
-                        .with_recv_capacity(2048)
+                        .with_recv_capacity(self.config.quic_dgram_recv_capacity)
                         .expect("Failed to set datagram recv capacity")
-                        .with_send_capacity(2048)
+                        .with_send_capacity(self.config.quic_dgram_send_capacity)
                         .expect("Failed to set datagram send capacity")
                         .build()
                         .expect("Failed to build datagram endpoint");
@@ -834,7 +857,25 @@ impl QuicClient {
 
         info!("Connected to node {} with QUIC.", remote_node_id);
 
-        (connection.handle(), stream)
+        info!("Connecting to node {} with QUIC...", remote_node_id);
+
+        let local_node_id = self.config.node_id;
+
+        stream
+            .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
+            .await
+            .expect("Failed to send local node id to the node");
+
+        info!("Connected to node {} with QUIC.", remote_node_id);
+
+        // Keep the handshake stream open and send periodic ack‑eliciting heartbeats.
+        let (_rx, tx) = stream.split();
+        spawn_quic_stream_heartbeat(
+            tx,
+            Duration::from_secs(self.config.quic_dgram_heartbeat_secs),
+        );
+
+        connection.handle()
     }
 
     // Unified connect that returns a runtime-selected outcome
@@ -864,7 +905,7 @@ impl QuicClient {
             QuicTransportMode::Datagram => {
                 #[cfg(feature = "quic_datagram")]
                 {
-                    let (h, _s) = self.connect_datagram(remote_node_id, remote_addr).await;
+                    let h = self.connect_datagram(remote_node_id, remote_addr).await;
                     QuicConnectOutcome::Datagram(h, ())
                 }
                 #[cfg(not(feature = "quic_datagram"))]

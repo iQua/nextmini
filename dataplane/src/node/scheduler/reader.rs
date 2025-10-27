@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant as StdInstant};
 
 use tokio::sync::{Notify, mpsc};
 use tracing::warn;
@@ -19,6 +20,10 @@ pub struct SchedulerReader {
     capacity: usize,
     receiver: mpsc::Receiver<SchedulerReaderMessage>,
     scheduler_type: SchedulingDiscipline,
+    // rate-limited logging
+    last_drop_log: StdInstant,
+    drop_log_interval: Duration,
+    drops_since_last_log: usize,
 }
 
 impl SchedulerReader {
@@ -38,6 +43,9 @@ impl SchedulerReader {
             capacity,
             receiver,
             scheduler_type,
+            last_drop_log: StdInstant::now(),
+            drop_log_interval: Duration::from_millis(500),
+            drops_since_last_log: 0,
         }
     }
 
@@ -73,42 +81,48 @@ impl SchedulerReader {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
+            self.drops_since_last_log += 1;
 
-            warn!(
-                "{:?}: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
-                self.scheduler_type,
-                packet.flow_id,
-                packet.packet_size,
-                queue_len,
-                self.capacity,
-                self.packets_dropped
-            );
+            // aggregate + rate-limit logging
+            let now = StdInstant::now();
+            if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
+                warn!(
+                    "{:?}: dropped {} packets in the last {:?} (queue len: {}/{}, total dropped: {})",
+                    self.scheduler_type,
+                    self.drops_since_last_log,
+                    self.drop_log_interval,
+                    queue_len,
+                    self.capacity,
+                    self.packets_dropped
+                );
+                self.drops_since_last_log = 0;
+                self.last_drop_log = now;
+            }
             return;
         }
 
-        let is_tcp_data = packet.is_tcp_data();
-
         if self.queue.enqueue(packet).is_err() {
             self.packets_dropped += 1;
+            self.drops_since_last_log += 1;
 
-            warn!(
-                "{:?}: Scheduler dropped a packet as the queue is full.",
-                self.scheduler_type
-            );
+            let now = StdInstant::now();
+            if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
+                warn!(
+                    "{:?}: queue full — dropped {} packets in the last {:?} (capacity: {})",
+                    self.scheduler_type,
+                    self.drops_since_last_log,
+                    self.drop_log_interval,
+                    self.capacity
+                );
+                self.drops_since_last_log = 0;
+                self.last_drop_log = now;
+            }
         } else {
-            // notifies the writer task if it is not a TCP data packet (e.g., if it is SYN, FIN, RST, or pure ACK)
-            // if it is a TCP data packet, it is stored in the queue for a while before being consumed by the
-            // writer task
-            if !is_tcp_data {
-                self.queues_not_empty.notify_one();
-            } else {
-                let updated_queue_len = queue_len + 1;
+            let updated_queue_len = queue_len + 1;
 
-                // if the queue length exceeds over a threshold or when we just transitioned from an empty
-                // queue, notify the consumer task that a packet has arrived and the queue becomes 'non-empty' now
-                if queue_len == 0 || updated_queue_len > 2 {
-                    self.queues_not_empty.notify_one();
-                }
+            // If the queue just transitioned from empty, or exceeds a small threshold, notify the consumer.
+            if queue_len == 0 || updated_queue_len > 3 {
+                self.queues_not_empty.notify_one();
             }
         }
     }
