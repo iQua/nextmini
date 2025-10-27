@@ -617,3 +617,24 @@ impl LocalConfig {
         }
     }
 }
+
+impl LocalConfig {
+    /// Returns an MTU that is safe for the selected transport.
+    /// When using the QUIC DATAGRAM mode, we conservatively clamp the MTU so the inner IPv4
+    /// packets fit inside the QUIC UDP payload on WAN paths (min QUIC UDP payload ~1200B).
+    /// This avoids path-MTU black holing that can collapse throughput.
+    pub fn effective_tun_mtu(&self) -> u16 {
+        // Conservative safe payload for QUIC DATAGRAM (IPv4 total length) on WAN paths.
+        // 1150 leaves headroom for QUIC/TLS framing within the 1200B minimum UDP payload.
+        const SAFE_QUIC_DGRAM_PAYLOAD: u16 = 1150;
+
+        if self.protocol == Protocol::Quic
+            && self.quic_transport_mode == QuicTransportMode::Datagram
+        {
+            let cfg_mtu = self.mtu as u16;
+            cfg_mtu.min(SAFE_QUIC_DGRAM_PAYLOAD)
+        } else {
+            self.mtu as u16
+        }
+    }
+}

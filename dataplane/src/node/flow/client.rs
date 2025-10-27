@@ -307,10 +307,10 @@ impl UserSpaceClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::FlowIdExt;
     use crate::node::controller::interface::ControllerInterfaceHandle;
     use crate::node::processor::ProcessorMessage;
-    use crate::node::FlowIdExt;
-    use tokio::time::{sleep, timeout, Duration};
+    use tokio::time::{Duration, sleep, timeout};
 
     fn make_test_config() -> LocalConfig {
         let mut config = LocalConfig::default();
@@ -336,14 +336,12 @@ mod tests {
     }
 
     fn expected_flow_id(config: &LocalConfig, flow: &Flow, client_port: u16) -> FlowId {
-        let client_ip =
-            config
-                .node_id
-                .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let server_ip =
-            flow
-                .dst_node_id
-                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let client_ip = config
+            .node_id
+            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let server_ip = flow
+            .dst_node_id
+            .ip_addr(config.user_space_base_addr, config.local_netmask);
 
         ((u32::from(server_ip) as u128) << 96)
             | ((u32::from(client_ip) as u128) << 64)
@@ -370,8 +368,7 @@ mod tests {
         // allow spawned client thread to progress
         sleep(Duration::from_millis(10)).await;
 
-        let expected_flow_id =
-            expected_flow_id(&config, &flow, config.user_space_client_port + 1);
+        let expected_flow_id = expected_flow_id(&config, &flow, config.user_space_client_port + 1);
 
         let mut saw_connect = false;
         let mut saw_weight = false;
@@ -429,8 +426,10 @@ mod tests {
 
         for _ in 0..4 {
             if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await {
-                if matches!(msg.expect("processor channel open"), ProcessorMessage::SetFlowWeight(..))
-                {
+                if matches!(
+                    msg.expect("processor channel open"),
+                    ProcessorMessage::SetFlowWeight(..)
+                ) {
                     saw_weight_message = true;
                     break;
                 }

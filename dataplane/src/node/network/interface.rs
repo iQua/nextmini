@@ -9,11 +9,11 @@ use nextmini_messages::Protocol;
 use crate::node::NodeId;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
-use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 #[cfg(any(feature = "quic_datagram", feature = "quic_per_flow"))]
 use crate::node::network::quic::QuicConnectOutcome;
 #[cfg(feature = "quic_per_flow")]
 use crate::node::network::quic::QuicMuxWriter;
+use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 #[cfg(feature = "quic_datagram")]
 use crate::node::network::quic::{QuicDatagramReader, QuicDatagramWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
@@ -26,7 +26,10 @@ pub enum NetworkStream {
     #[cfg(feature = "quic_per_flow")]
     QuicConn(s2n_quic::connection::Handle),
     #[cfg(feature = "quic_per_flow")]
-    QuicConnAccept(s2n_quic::connection::Handle, s2n_quic::connection::StreamAcceptor),
+    QuicConnAccept(
+        s2n_quic::connection::Handle,
+        s2n_quic::connection::StreamAcceptor,
+    ),
     #[cfg(feature = "quic_datagram")]
     QuicDatagram(s2n_quic::connection::Handle),
 }
@@ -257,7 +260,8 @@ impl NetworkInterface {
             }
             #[cfg(feature = "quic_datagram")]
             NetworkStream::QuicDatagram(handle) => {
-                let mut dgram_reader = QuicDatagramReader::new(handle.clone(), self.processors.clone());
+                let mut dgram_reader =
+                    QuicDatagramReader::new(handle.clone(), self.processors.clone());
                 let dgram_writer = QuicDatagramWriter::new(handle);
 
                 tokio::spawn(async move {

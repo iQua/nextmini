@@ -172,8 +172,8 @@ mod tests {
         let dst_ip = config
             .node_id
             .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let src_ip = (config.node_id + 1)
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let src_ip =
+            (config.node_id + 1).ip_addr(config.user_space_base_addr, config.local_netmask);
         let dst_port = config.user_space_server_port;
         let src_port = 4100;
         let (mut device, _) = build_virtual_device(config);

@@ -7,20 +7,22 @@ use std::io::IoSlice;
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use s2n_quic::provider::congestion_controller;
-use s2n_quic::provider::limits::Limits;
 #[cfg(feature = "quic_per_flow")]
 use s2n_quic::connection::{Handle as QuicHandle, StreamAcceptor};
+use s2n_quic::provider::congestion_controller;
 #[cfg(feature = "quic_datagram")]
-use s2n_quic::provider::datagram::default::{Endpoint as DatagramEndpoint, Receiver as DatagramReceiver, Sender as DatagramSender};
+use s2n_quic::provider::datagram::default::{
+    Endpoint as DatagramEndpoint, Receiver as DatagramReceiver, Sender as DatagramSender,
+};
+use s2n_quic::provider::limits::Limits;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
-use s2n_quic::{client, Client, Server};
+use s2n_quic::{Client, Server, client};
 use tracing::{error, info, warn};
 
 use crate::node::RECEIVE_BUF_SIZE;
-use crate::node::config::{LocalConfig, QuicTransportMode};
 use crate::node::config::CongestionControl as CcMode;
+use crate::node::config::{LocalConfig, QuicTransportMode};
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
@@ -84,7 +86,8 @@ impl QuicServer {
                     }
                 };
 
-                let builder = builder.with_limits({
+                let builder = builder
+                    .with_limits({
                         let limits = Limits::default();
                         let limits = limits
                             .with_data_window(64 * 1024 * 1024)
@@ -99,7 +102,7 @@ impl QuicServer {
                             .with_max_send_buffer_size(64 * 1024 * 1024)
                             .expect("invalid send buffer")
                     })
-                .expect("Failed to set QUIC limits");
+                    .expect("Failed to set QUIC limits");
 
                 builder.start().expect("Failed to start server")
             }
@@ -132,7 +135,8 @@ impl QuicServer {
                     }
                 };
 
-                let builder = builder.with_limits({
+                let builder = builder
+                    .with_limits({
                         let limits = Limits::default();
                         let limits = limits
                             .with_data_window(64 * 1024 * 1024)
@@ -147,7 +151,7 @@ impl QuicServer {
                             .with_max_send_buffer_size(64 * 1024 * 1024)
                             .expect("invalid send buffer")
                     })
-                .expect("Failed to set QUIC limits");
+                    .expect("Failed to set QUIC limits");
 
                 builder.start().expect("Failed to start server")
             }
@@ -190,22 +194,23 @@ impl QuicServer {
                     }
                 };
 
-                let builder = builder.with_limits({
-                    let limits = Limits::default();
-                    let limits = limits
-                        .with_data_window(64 * 1024 * 1024)
-                        .expect("invalid data window");
-                    let limits = limits
-                        .with_bidirectional_local_data_window(64 * 1024 * 1024)
-                        .expect("invalid bidi local window");
-                    let limits = limits
-                        .with_bidirectional_remote_data_window(64 * 1024 * 1024)
-                        .expect("invalid bidi remote window");
-                    limits
-                        .with_max_send_buffer_size(64 * 1024 * 1024)
-                        .expect("invalid send buffer")
-                })
-                .expect("Failed to set QUIC limits");
+                let builder = builder
+                    .with_limits({
+                        let limits = Limits::default();
+                        let limits = limits
+                            .with_data_window(64 * 1024 * 1024)
+                            .expect("invalid data window");
+                        let limits = limits
+                            .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi local window");
+                        let limits = limits
+                            .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi remote window");
+                        limits
+                            .with_max_send_buffer_size(64 * 1024 * 1024)
+                            .expect("invalid send buffer")
+                    })
+                    .expect("Failed to set QUIC limits");
 
                 builder.start().expect("Failed to start server")
             }
@@ -282,9 +287,7 @@ impl QuicServer {
                         }
                         #[cfg(not(feature = "quic_per_flow"))]
                         {
-                            warn!(
-                                "quic_per_flow not compiled; falling back to single stream mode"
-                            );
+                            warn!("quic_per_flow not compiled; falling back to single stream mode");
                             NetworkInterfaceHandle::new(
                                 config.clone(),
                                 NetworkStream::Quic(stream),
@@ -316,9 +319,7 @@ impl QuicServer {
                         }
                         #[cfg(not(feature = "quic_datagram"))]
                         {
-                            warn!(
-                                "quic_datagram not compiled; falling back to single stream mode"
-                            );
+                            warn!("quic_datagram not compiled; falling back to single stream mode");
                             NetworkInterfaceHandle::new(
                                 config.clone(),
                                 NetworkStream::Quic(stream),
@@ -340,9 +341,7 @@ impl QuicServer {
                         remote_addr_snapshot.unwrap_or_else(|_| "unknown:0".parse().unwrap());
                     error!(
                         "Failed to add node {} with address {}: {}",
-                        remote_node_id,
-                        remote_addr_for_log,
-                        e
+                        remote_node_id, remote_addr_for_log, e
                     );
                     #[cfg(not(feature = "quic_per_flow"))]
                     connection.close(0u32.into());
@@ -361,10 +360,14 @@ pub struct QuicClient {
     pub config: LocalConfig,
 }
 
+#[cfg(any(feature = "quic_datagram", feature = "quic_per_flow"))]
 pub enum QuicConnectOutcome {
     SingleStream(BidirectionalStream),
     #[cfg(feature = "quic_per_flow")]
-    PerFlow(s2n_quic::connection::Handle, s2n_quic::connection::StreamAcceptor),
+    PerFlow(
+        s2n_quic::connection::Handle,
+        s2n_quic::connection::StreamAcceptor,
+    ),
     #[cfg(feature = "quic_datagram")]
     Datagram(s2n_quic::connection::Handle, ()),
 }
@@ -918,7 +921,10 @@ pub struct QuicWriter {
 // No-op congestion controller (disables QUIC CC). Use in controlled env only.
 #[cfg(feature = "quic_no_cc")]
 mod no_cc {
-    use s2n_quic::provider::congestion_controller::{CongestionController, Endpoint as CcEndpoint, PathInfo, Publisher, RandomGenerator, RttEstimator, Timestamp};
+    use s2n_quic::provider::congestion_controller::{
+        CongestionController, Endpoint as CcEndpoint, PathInfo, Publisher, RandomGenerator,
+        RttEstimator, Timestamp,
+    };
     use std::fmt::Debug;
 
     #[derive(Debug, Default, Clone, Copy)]
@@ -927,10 +933,18 @@ mod no_cc {
     impl CongestionController for NoopCc {
         type PacketInfo = ();
 
-        fn congestion_window(&self) -> u32 { u32::MAX }
-        fn bytes_in_flight(&self) -> u32 { 0 }
-        fn is_congestion_limited(&self) -> bool { false }
-        fn requires_fast_retransmission(&self) -> bool { false }
+        fn congestion_window(&self) -> u32 {
+            u32::MAX
+        }
+        fn bytes_in_flight(&self) -> u32 {
+            0
+        }
+        fn is_congestion_limited(&self) -> bool {
+            false
+        }
+        fn requires_fast_retransmission(&self) -> bool {
+            false
+        }
         fn on_packet_sent<Pub: Publisher>(
             &mut self,
             _time_sent: Timestamp,
@@ -938,14 +952,17 @@ mod no_cc {
             _app_limited: Option<bool>,
             _rtt_estimator: &RttEstimator,
             _publisher: &mut Pub,
-        ) -> Self::PacketInfo { () }
+        ) -> Self::PacketInfo {
+            ()
+        }
         fn on_rtt_update<Pub: Publisher>(
             &mut self,
             _time_sent: Timestamp,
             _now: Timestamp,
             _rtt_estimator: &RttEstimator,
             _publisher: &mut Pub,
-        ) {}
+        ) {
+        }
         fn on_ack<Pub: Publisher>(
             &mut self,
             _newest_acked_time_sent: Timestamp,
@@ -955,7 +972,8 @@ mod no_cc {
             _random_generator: &mut dyn RandomGenerator,
             _ack_receive_time: Timestamp,
             _publisher: &mut Pub,
-        ) {}
+        ) {
+        }
         fn on_packet_lost<Pub: Publisher>(
             &mut self,
             _lost_bytes: u32,
@@ -965,23 +983,35 @@ mod no_cc {
             _random_generator: &mut dyn RandomGenerator,
             _timestamp: Timestamp,
             _publisher: &mut Pub,
-        ) {}
+        ) {
+        }
         fn on_explicit_congestion<Pub: Publisher>(
             &mut self,
             _ce_count: u64,
             _event_time: Timestamp,
             _publisher: &mut Pub,
-        ) {}
+        ) {
+        }
         fn on_mtu_update<Pub: Publisher>(&mut self, _max_data_size: u16, _publisher: &mut Pub) {}
-        fn on_packet_discarded<Pub: Publisher>(&mut self, _bytes_sent: usize, _publisher: &mut Pub) {}
-        fn earliest_departure_time(&self) -> Option<Timestamp> { None }
+        fn on_packet_discarded<Pub: Publisher>(
+            &mut self,
+            _bytes_sent: usize,
+            _publisher: &mut Pub,
+        ) {
+        }
+        fn earliest_departure_time(&self) -> Option<Timestamp> {
+            None
+        }
     }
 
     #[derive(Debug, Default)]
     pub struct NoopCcEndpoint;
     impl CcEndpoint for NoopCcEndpoint {
         type CongestionController = NoopCc;
-        fn new_congestion_controller(&mut self, _path_info: PathInfo) -> Self::CongestionController {
+        fn new_congestion_controller(
+            &mut self,
+            _path_info: PathInfo,
+        ) -> Self::CongestionController {
             NoopCc
         }
     }
@@ -1055,7 +1085,10 @@ impl QuicDatagramReader {
                 Ok(dat) => {
                     let buf = dat.to_vec();
                     if buf.len() < 20 {
-                        warn!("QUIC datagram too small to be IPv4, dropping: {} bytes", buf.len());
+                        warn!(
+                            "QUIC datagram too small to be IPv4, dropping: {} bytes",
+                            buf.len()
+                        );
                         continue;
                     }
                     let msg_len = ((buf[2] as usize) << 8) | (buf[3] as usize);
@@ -1089,35 +1122,55 @@ impl QuicDatagramWriter {
     pub fn new(handle: s2n_quic::connection::Handle) -> Self {
         Self { handle }
     }
-
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         if packets.is_empty() {
             return Ok(());
         }
 
+        // Conservative safe payload for QUIC DATAGRAM (IPv4 total length).
+        // Matches the clamp used on the TUN side to avoid PMTU black holes.
+        const SAFE_QUIC_DGRAM_PAYLOAD: usize = 1150;
+
+        let mut any_sent = false;
+
         for packet in packets.into_iter() {
+            if packet.packet_size > SAFE_QUIC_DGRAM_PAYLOAD {
+                // Defensive: we should not see these after the MTU clamp; skip to avoid wedging.
+                warn!(
+                    "Skipping oversize IPv4 packet for QUIC DATAGRAM: {} bytes > {}",
+                    packet.packet_size, SAFE_QUIC_DGRAM_PAYLOAD
+                );
+                continue;
+            }
+
             let bytes = Bytes::copy_from_slice(&packet.buf[0..packet.packet_size]);
             let send_res = self
                 .handle
                 .datagram_mut(|sender: &mut DatagramSender| sender.send_datagram(bytes));
 
             match send_res {
-                Ok(Ok(())) => {}
+                Ok(Ok(())) => {
+                    any_sent = true;
+                }
                 Ok(Err(e)) => {
-                    return Err(std::io::Error::new(std::io::ErrorKind::Other, format!(
-                        "QUIC datagram queue full or unsupported: {:?}",
+                    // Queue full/unsupported; log and continue instead of bailing the whole batch.
+                    warn!(
+                        "QUIC datagram send rejected (queue full/unsupported): {:?}",
                         e
-                    )));
+                    );
                 }
                 Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("QUIC datagram sender unavailable: {:?}", e),
-                    ));
+                    // Sender temporarily unavailable; log and continue to avoid stalling.
+                    warn!("QUIC datagram sender unavailable: {:?}", e);
                 }
             }
         }
 
+        // We deliberately return Ok even if none were sent in this round, letting upstream
+        // backoff/retry without treating it as a fatal channel error.
+        if !any_sent {
+            tokio::task::yield_now().await;
+        }
         Ok(())
     }
 }

@@ -115,10 +115,11 @@ impl LocalInterfaceHandle {
     #[cfg(not(target_os = "linux"))]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
+        let effective_mtu = config.effective_tun_mtu();
 
         let dev = DeviceBuilder::new()
             .ipv4(config.local_address, ipv4_prefix, None)
-            .mtu(config.mtu as u16)
+            .mtu(effective_mtu)
             .build_async()
             .expect("Failed to create tun device");
 
@@ -137,11 +138,12 @@ impl LocalInterfaceHandle {
 
         let if_name = config.tun_interface_name.clone();
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
+        let effective_mtu = config.effective_tun_mtu();
 
         let dev = DeviceBuilder::new()
             .name(&if_name)
             .ipv4(config.local_address, ipv4_prefix, None)
-            .mtu(config.mtu as u16)
+            .mtu(effective_mtu)
             .multi_queue(true) // enables multi-queue support
             .offload(true) // enables TSO support
             .build_async()
@@ -184,7 +186,7 @@ mod tests {
     use super::*;
     use crate::node::FlowId;
     use crate::node::FlowIdExt;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     fn flow_id_for_bucket(bucket: usize, capacity: usize) -> FlowId {
         for candidate in 0u128..50_000u128 {

@@ -242,14 +242,12 @@ mod tests {
     }
 
     fn make_flow_id(config: &LocalConfig, flow: &Flow, src_port: u16) -> FlowId {
-        let src_ip =
-            flow
-                .src_node_id
-                .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let dst_ip =
-            flow
-                .dst_node_id
-                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let src_ip = flow
+            .src_node_id
+            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let dst_ip = flow
+            .dst_node_id
+            .ip_addr(config.user_space_base_addr, config.local_netmask);
         let dst_port = config.user_space_server_port;
 
         ((u32::from(src_ip) as u128) << 96)
