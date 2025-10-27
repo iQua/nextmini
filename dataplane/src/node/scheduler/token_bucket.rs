@@ -117,3 +117,64 @@ impl TokenBucket {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio::time::Duration;
+
+    fn make_packet(size: usize) -> Packet {
+        Packet {
+            flow_id: 1,
+            packet_size: size,
+            buf: vec![0; size.max(1)],
+        }
+    }
+
+    #[test]
+    fn update_tokens_refills_bucket_without_exceeding_capacity() {
+        let spec = TokenBucketSpec {
+            rate: 100,
+            bucket_size: 500,
+        };
+        let mut bucket = TokenBucket::new(spec);
+
+        // Consume 400 tokens, leaving 100 remaining.
+        bucket.consume_tokens(&make_packet(400));
+        assert_eq!(bucket.tokens, 100);
+
+        // Pretend 4 seconds have elapsed.
+        bucket.last_update = bucket
+            .last_update
+            .checked_sub(Duration::from_secs(4))
+            .expect("last_update is always after the zero instant");
+        bucket.update_tokens();
+
+        assert_eq!(
+            bucket.tokens, 500,
+            "Token bucket should refill to its capacity after sufficient time"
+        );
+    }
+
+    #[test]
+    fn update_tokens_without_time_progress_does_not_add_tokens() {
+        let spec = TokenBucketSpec {
+            rate: 100,
+            bucket_size: 500,
+        };
+        let mut bucket = TokenBucket::new(spec);
+
+        bucket.consume_tokens(&make_packet(200));
+        assert_eq!(bucket.tokens, 300);
+
+        // Update tokens multiple times without advancing time.
+        bucket.update_tokens();
+        bucket.update_tokens();
+
+        assert_eq!(
+            bucket.tokens, 300,
+            "Token count should remain unchanged if no time has advanced"
+        );
+    }
+}

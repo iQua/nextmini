@@ -6,89 +6,7 @@ This guide demonstrates **native binary deployment** on bare metal or virtual ma
 
 ## Quick Start
 
-You have **two deployment options**:
-
-1. **Automated Deployment** (Recommended) - One-command deployment via SSH
-2. **Manual Deployment** - Step-by-step deployment on each machine
-
----
-
-## Option 1: Automated Deployment (Recommended)
-
-Deploy to multiple remote VMs using a single script with SSH/SCP.
-
-### Quick view
-
-```bash
-cd ~/nextmini/examples/bare-metal/auto-deploy
-vim controller-config.toml  
-vim nodes.conf
-./deploy-controller.sh       
-./deploy-all.sh
-
-# To clean:
-./cleanup.sh
-```
-
-### Step 1: Deploy Controller
-
-```bash
-cd nextmini/examples/bare-metal/auto-deploy
-./deploy-controller.sh
-```
-
-### Step 2: Configure Node List
-
-Edit `nodes.conf` with your node information:
-
-```bash
-# Controller Configuration
-CONTROLLER_IP=206.12.89.244    # Controller's public IP
-CONTROLLER_PORT=3000
-
-# SSH Configuration
-SSH_KEY=ssh/id_rsa             # Path to SSH private key
-REMOTE_DEPLOY_DIR=/root/nextmini-node
-
-# Node List
-# Format: NODE_ID|NODE_IP:SSH_PORT|INTERFACE|DATAPLANE_PORT
-1|69.30.85.191:22113|eth0|8080
-2|69.30.85.219:22079|eth0|8080
-```
-
-### Step 3: Deploy All Nodes
-
-```bash
-./deploy-all.sh
-```
-
-**Done.** All nodes are deployed and connected to the controller.
-
-### Verify Deployment
-
-```bash
-# View controller logs
-tail -f ../controller-deploy/controller.log
-
-# View remote node logs (SSH to node)
-ssh -i ssh/id_rsa -p 22113 root@69.30.85.191
-tail -f /root/nextmini-node/node.log
-```
-
----
-
-## Option 2: Manual Deployment
-
-### Scenario
-- Controller: `206.12.89.244` (Physical Machine 1)
-- Node 1: Physical Machine 2
-- Node 2: Physical Machine 3
-
-All nodes use port `8080` (no conflict).
-
----
-
-### Step 1: Build (Once)
+### Step 1: Build
 
 ```bash
 cd nextmini
@@ -97,152 +15,76 @@ cargo build --release -p controller
 cargo build --release -p nextmini
 ```
 
-### Step 2: Deploy Controller (206.12.89.244)
+### Step 2: Start Database (One-time)
 
 ```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py *.sh
-uv run deploy_controller.py --public-ip
+./start-database.sh
 ```
 
-### Step 3: Deploy Nodes (with SSH setup)
-
-**Important:** Check your network interface first:
-```bash
-ip addr show | grep "state UP"
-# Example output: ens3, eth0, etc.
-```
-
-**Node Machine 1:**
-```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface ens3
-```
-
-The script will show SSH setup command at the end. **Copy and run it** to enable ring all-reduce testing.
-
-**Node Machine 2:**
-```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface ens3
-```
-
-Again, **copy and run the SSH setup command** shown at the end.
-
-**Note:** Replace `ens3` with your actual interface name if different.
-
-### Step 4: Verify
+### Step 3: Deploy Controller
 
 ```bash
-# Controller log
-tail -f ~/nextmini/examples/bare-metal/controller-deploy/controller.log
-
-# Node logs (on each node machine)
-tail -f ~/nextmini/examples/bare-metal/node1-deploy/node1.log
-tail -f ~/nextmini/examples/bare-metal/node2-deploy/node2.log
+cd examples/bare-metal/controller
+./deploy.sh
 ```
 
-Look for:
-```
-INFO controller: Node 1 successfully inserted into node_ws. Total nodes now: 1.
-INFO controller: Node 2 successfully inserted into node_ws. Total nodes now: 2.
-INFO controller::new_node: All 2 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
-INFO controller::new_node: All dataplane nodes have connected. It takes XX.XX seconds since the first node arrived.
-```
-
-### Step 5: Test with Ring All-Reduce (Optional)
-
-**Prerequisites:** Controller and all nodes must be running and connected (verify Step 4 logs first).
+### Step 4: Setup SSH (One-time)
 
 ```bash
-# Build ringallreduce (once)
-cd ~/nextmini/examples/bare-metal/ring-emu
-cargo build --release
+# Install keychain
+sudo apt-get install keychain
 
-# Run test
-cd ~/nextmini/examples/bare-metal
-./run_ring.sh
+# Load SSH key
+eval $(keychain --eval ~/nextmini/examples/bare-metal/dataplane/ssh/id_rsa)
 ```
 
-Or test with iperf3:
-
-**On Node 2 machine:**
-```bash
-iperf3 -s
+Or add to ~/.bashrc for permanent setup:
+```
+echo 'eval $(keychain --eval --quiet ~/nextmini/examples/bare-metal/dataplane/ssh/id_rsa)' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-**On Node 1 machine:**
-```bash
-# Test to Node 2's TUN IP
-iperf3 -c 10.0.0.1
+Enter passphrase once, it will persist across terminal sessions.
 
-# Example output:
-# [ ID] Interval           Transfer     Bitrate
-# [  5]   0.00-10.00  sec  XXX MBytes  XXX Mbits/sec
+### Step 5: Configure
+
+Edit `controller/config.toml`:
+```toml
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 2 }
 ```
 
-The traffic will go through Nextmini's TUN interface and appear in controller logs as flows.
-
-### Step 6: Cleanup
-
-```bash
-cd ~/nextmini/examples/bare-metal
-uv run cleanup.py
+Edit `dataplane/hosts.txt`:
+```
+1|root@157.180.84.40|157.180.84.40
+2|ubuntu@206.12.91.229|206.12.91.229
 ```
 
----
-
-## Digital Ocean Deployment (5 Nodes)
-
-**Note:** You can use the automated deployment method (Option 1) for Digital Ocean VMs too! Just add all 5 nodes to `nodes.conf` and run `./deploy-all.sh`.
-
-### Manual Method (with public ip address)
-
-### Deploy Nodes on Each VM
-
-**On VM 1 (143.110.246.15) - Node 1:**
-```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 1 --interface eth0
+Edit `dataplane/node.toml`:
+```toml
+controller_addr = "ws://206.12.89.244:3000"
 ```
 
-**On VM 2 (165.227.232.28) - Node 2:**
+### Step 6: Deploy Nodes
+
 ```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 2 --interface eth0
+cd examples/bare-metal/dataplane
+./deploy.sh
 ```
 
-**On VM 3 (134.209.198.44) - Node 3:**
+### Step 7: Manage Services
+
+**Stop nodes:**
 ```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 3 --interface eth0
+cd examples/bare-metal/dataplane
+./stop.sh
 ```
 
-**On VM 4 (134.199.168.42) - Node 4:**
+**Stop controller:**
 ```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 4 --interface eth0
-```
-
-**On VM 5 (165.22.175.12) - Node 5:**
-```bash
-cd ~/nextmini/examples/bare-metal
-chmod +x *.py
-uv run deploy_node.py --controller-ip 206.12.89.244 --node-id 5 --interface eth0
-```
-
-### Verify All Nodes Connected
-
-On the controller VM, check the logs:
-
-```bash
-tail -f ~/nextmini/examples/bare-metal/controller-deploy/controller.log
+cd examples/bare-metal/controller
+./stop.sh
 ```
 
 ---
@@ -250,83 +92,18 @@ tail -f ~/nextmini/examples/bare-metal/controller-deploy/controller.log
 ## Prerequisites
 
 ### All Machines
-
-Before deploying Nextmini, install the following on **every machine** (controller and dataplane nodes):
-
-#### 1. Install Rust Toolchain
-
-```bash
-# Install rustup (Rust installer)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-
-# Load Rust environment
-source "$HOME/.cargo/env"
-
-# Verify installation
-rustc --version
-cargo --version
-```
-
-#### 2. Install Build Tools
-
-```bash
-# Ubuntu/Debian (Digital Ocean droplets)
-sudo apt update
-sudo apt install -y build-essential pkg-config libssl-dev
-
-# Verify installation
-gcc --version
-```
-
-These tools are required because Rust dependencies include C libraries that need compilation.
-
-#### 3. Install uv (Python Package Manager)
-
-```bash
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Add to PATH for future sessions
-echo '' >> ~/.bashrc
-echo '# uv package manager' >> ~/.bashrc
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-
-# Load uv in current session
-export PATH="$HOME/.local/bin:$PATH"
-
-# Verify installation
-uv --version
-```
-
-**Note:** If you open a new terminal and `uv` is not found, run:
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-Or start a fresh shell session: `exec bash`
-
-#### 4. Network Connectivity
-- Ensure all machines can communicate with each other
-- Check firewall rules allow traffic between nodes
+- Rust toolchain: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- Build tools: `build-essential`, `pkg-config`, `libssl-dev`
+- Python 3.13 and uv: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Network connectivity between all machines
 
 ### Controller Machine (206.12.89.244)
+- Docker for PostgreSQL
+- Port 3000 open for incoming connections
 
-Additional requirements for the controller:
-
-#### Install Docker (for PostgreSQL)
-
-```bash
-# Install Docker
-curl -fsSL https://get.docker.com -o get-docker.sh
-sudo sh get-docker.sh
-
-# Allow current user to run Docker without sudo
-sudo usermod -aG docker $USER
-newgrp docker
-
-# Verify installation
-docker --version
-docker ps
-```
+### Dataplane Machines
+- Root/sudo access (for TUN device)
+- Port 8080 open for node-to-node communication
 
 ---
 
@@ -556,45 +333,3 @@ full_mesh_config = { n_nodes = 3 }  # Change to 3 nodes
 Deploy additional nodes with higher node IDs.
 
 ---
-
-## Notes
-
-- Each node on a **separate machine** can use the **same port** (8080)
-- Controller IP must be the **actual network IP**, not localhost
-- TLS certificates are self-signed (generated by cert-gen)
-- PostgreSQL runs in Docker on controller machine
-- Logs are in `*-deploy/*.log` files
-- Database container name: `nextmini-database`
-
-## Baseline ringallreduce
-
-To run the baseline rar:
-
-Check SSH:
-
-```bash
-ls -la ~/.ssh/id_*.pub 2>&1 | head -5
-
-cat ~/.ssh/id_ed25519.pub
-```
-
-Enter the following on other 2 physical machines:
-
-```bash
-mkdir -p ~/.ssh
-echo "<ssh-ed25519 Change the key>" >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
-```
-
-```bash
-cd ~/nextmini/examples/bare-metal
-
-uv run launch_physical.py \
-  --hosts 192.168.196.67 192.168.196.80 \
-  --ssh-hosts 206.12.95.232 206.12.91.229 \
-  --port 9000 \
-  --len 104857 \
-  --init rank \
-  --reps 10 \
-  --verify
-```

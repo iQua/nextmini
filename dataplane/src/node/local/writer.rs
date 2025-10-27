@@ -196,8 +196,8 @@ impl ConcurrentLocalWriterProducer {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         let flow_id = packet.flow_id;
 
-                        // sends the packet out to the TUN device if it is not a TCP packet, or if it is SYN, FIN,
-                        // RST, or ACK
+                        // sends the packet out to the TUN device if it is not a TCP data packet, including
+                        // the cases where it is SYN, FIN, RST, or pure ACK packet
                         if !packet.is_tcp_data() {
                             let buf = &packet.buf[0..packet.packet_size];
                             if let Err(e) = self.device.send(buf).await {
@@ -207,24 +207,27 @@ impl ConcurrentLocalWriterProducer {
                             continue;
                         }
 
-                        // if it is a TCP packet, it is sequenced and stored in the queue
+                        // only when it is a TCP packet, it is reordered when needed and stored in the queue
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
-                        {
+
+                        // adds this packet to the queue and check if we should notify while holding the lock
+                        let should_notify = {
                             let mut queue_map = self.queue_map.lock().await;
                             let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
-                            let was_empty = heap.is_empty();
                             heap.push(sequenced_packet);
+                            heap.len() >= self.config.reorder_tolerance
+                        };
 
-                            if was_empty {
-                                let mut active_flows = self.active_flows.lock().await;
-                                active_flows.insert(flow_id);
-                            }
+                        // ensures the flow is tracked when we add a TCP data packet
+                        {
+                            let mut active_flows = self.active_flows.lock().await;
+                            active_flows.insert(flow_id);
+                        }
 
-                            // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
-                            // guaranteed to be consumed in a relatively ordered manner
-                            if heap.len() > self.config.reorder_tolerance {
-                                self.queue_not_empty.notify_one();
-                            }
+                        // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
+                        // guaranteed to be consumed in a relatively ordered manner
+                        if should_notify {
+                            self.queue_not_empty.notify_one();
                         }
                     }
                 }
@@ -275,14 +278,28 @@ impl ConcurrentLocalWriterConsumer {
                             let packet = sp.packet;
                             let buf = &packet.buf[0..packet.packet_size];
 
-                            let _ = self.device.send(buf).await;
-
-                            let queue_map = self.queue_map.lock().await;
-                            if let Some(heap) = queue_map.get(&flow_id) {
-                                if heap.is_empty() {
-                                    let mut active_flows = self.active_flows.lock().await;
-                                    active_flows.remove(&flow_id);
+                            // Try non-blocking send first, fall back to async send if needed
+                            if let Err(_) = self.device.try_send(buf) {
+                                if let Err(e) = self.device.send(buf).await {
+                                    error!(
+                                        "Failed to write packet to the TUN device: {}. Dropped.",
+                                        e
+                                    );
                                 }
+                            }
+
+                            let is_empty = {
+                                let queue_map = self.queue_map.lock().await;
+                                if let Some(heap) = queue_map.get(&flow_id) {
+                                    heap.is_empty()
+                                } else {
+                                    true
+                                }
+                            };
+
+                            if is_empty {
+                                let mut active_flows = self.active_flows.lock().await;
+                                active_flows.remove(&flow_id);
                             }
                         } else {
                             let mut active_flows = self.active_flows.lock().await;

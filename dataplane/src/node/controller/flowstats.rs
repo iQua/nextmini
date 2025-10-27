@@ -94,10 +94,10 @@ impl FlowStatsReporterHandle {
 
     /// Report packet-related flow stats: app flow start and flow finish (if FIN/RST).
     pub fn report_packet(&self, packet: &Packet) {
-        // checks and reports if flow finished (FIN/RST)
+        // checks and reports if a flow has finished (FIN/RST)
         if packet.is_tcp_fin_or_rst() {
             self.report_flow_finished(packet.flow_id, None);
-        } else if packet.has_tcp_payload() {
+        } else if packet.is_tcp_data() {
             // only reports app flow start for packets with payload; ignores zero-payload ACKs
             self.report_app_flow(packet.flow_id);
         }
@@ -616,12 +616,10 @@ impl FlowStore {
 
     #[cfg(test)]
     fn has_finished_app_entry(&self, flow_id: FlowId) -> bool {
-        self.entries
-            .get(&flow_id)
-            .map_or(false, |entry| match entry {
-                FlowEntry::App(app_entry) => matches!(app_entry.stage, AppStage::Finished),
-                _ => false,
-            })
+        self.entries.get(&flow_id).is_some_and(|entry| match entry {
+            FlowEntry::App(app_entry) => matches!(app_entry.stage, AppStage::Finished),
+            _ => false,
+        })
     }
 }
 

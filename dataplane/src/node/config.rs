@@ -234,7 +234,7 @@ pub struct LocalConfig {
     pub local_netmask: Ipv4Addr,
 
     /// The transport protocol: TCP or QUIC.
-    #[default(Protocol::Tcp)]
+    #[default(Protocol::Quic)]
     #[arg(long, value_enum)]
     pub protocol: Protocol,
 
@@ -264,7 +264,7 @@ pub struct LocalConfig {
     pub operating_mode: OperatingMode,
 
     /// Reorder tolerance for the multipath mode.
-    #[default(4)]
+    #[default(1)]
     #[arg(long)]
     pub reorder_tolerance: usize,
 

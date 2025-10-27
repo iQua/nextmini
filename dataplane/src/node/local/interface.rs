@@ -183,7 +183,7 @@ mod tests {
     use super::*;
     use crate::node::FlowId;
     use crate::node::FlowIdExt;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     fn flow_id_for_bucket(bucket: usize, capacity: usize) -> FlowId {
         for candidate in 0u128..50_000u128 {
@@ -245,14 +245,10 @@ mod tests {
             .try_recv()
             .expect("flow mapped to bucket 1 should reach second sender");
 
-        let packet_a = match msg_a {
-            LocalInterfaceMessage::WritePacket(packet) => packet,
-        };
+        let LocalInterfaceMessage::WritePacket(packet_a) = msg_a;
         assert_eq!(packet_a.flow_id, flow_id_a);
 
-        let packet_b = match msg_b {
-            LocalInterfaceMessage::WritePacket(packet) => packet,
-        };
+        let LocalInterfaceMessage::WritePacket(packet_b) = msg_b;
         assert_eq!(packet_b.flow_id, flow_id_b);
 
         assert!(
