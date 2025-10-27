@@ -366,11 +366,12 @@ pub enum QuicConnectOutcome {
     #[cfg(feature = "quic_per_flow")]
     PerFlow(s2n_quic::connection::Handle, s2n_quic::connection::StreamAcceptor),
     #[cfg(feature = "quic_datagram")]
-    Datagram(s2n_quic::connection::Handle, BidirectionalStream),
+    Datagram(s2n_quic::connection::Handle, ()),
 }
 
 impl QuicClient {
     // Backward-compatible single-stream connect
+    #[cfg(all(not(feature = "quic_datagram"), not(feature = "quic_per_flow")))]
     pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
         self.connect_single(remote_node_id, remote_addr).await
     }
@@ -634,62 +635,153 @@ impl QuicClient {
         remote_node_id: usize,
         remote_addr: &str,
     ) -> (s2n_quic::connection::Handle, BidirectionalStream) {
-        let builder = Client::builder()
-            .with_tls(Path::new("server_cert.pem"))
-            .expect("Failed to set TLS configuration")
-            .with_congestion_controller({
-                match self.config.quic_congestion_control {
-                    CcMode::Cubic => congestion_controller::Cubic::default(),
-                    CcMode::Bbr => congestion_controller::Bbr::default(),
-                    CcMode::Disabled => {
-                        #[cfg(feature = "quic_no_cc")]
-                        {
-                            no_cc::NoopCcEndpoint
-                        }
-                        #[cfg(not(feature = "quic_no_cc"))]
-                        {
-                            warn!("quic_no_cc not compiled; falling back to BBR");
-                            congestion_controller::Bbr::default()
-                        }
-                    }
+        let client = match self.config.quic_congestion_control {
+            CcMode::Cubic => {
+                let dgram = DatagramEndpoint::builder()
+                    .with_recv_capacity(2048)
+                    .expect("Failed to set datagram recv capacity")
+                    .with_send_capacity(2048)
+                    .expect("Failed to set datagram send capacity")
+                    .build()
+                    .expect("Failed to build datagram endpoint");
+                let builder = Client::builder()
+                    .with_tls(Path::new("server_cert.pem"))
+                    .expect("Failed to set TLS configuration")
+                    .with_congestion_controller(congestion_controller::Cubic::default())
+                    .expect("Failed to set congestion controller")
+                    .with_io("0.0.0.0:0")
+                    .expect("Failed to bind the client")
+                    .with_datagram(dgram)
+                    .expect("Failed to enable datagrams on client")
+                    .with_limits({
+                        let limits = Limits::default();
+                        let limits = limits
+                            .with_data_window(64 * 1024 * 1024)
+                            .expect("invalid data window");
+                        let limits = limits
+                            .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi local window");
+                        let limits = limits
+                            .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi remote window");
+                        limits
+                            .with_max_send_buffer_size(64 * 1024 * 1024)
+                            .expect("invalid send buffer")
+                    })
+                    .expect("Failed to set QUIC limits");
+                builder.start().expect("Failed to start client")
+            }
+            CcMode::Bbr => {
+                let dgram = DatagramEndpoint::builder()
+                    .with_recv_capacity(2048)
+                    .expect("Failed to set datagram recv capacity")
+                    .with_send_capacity(2048)
+                    .expect("Failed to set datagram send capacity")
+                    .build()
+                    .expect("Failed to build datagram endpoint");
+                let builder = Client::builder()
+                    .with_tls(Path::new("server_cert.pem"))
+                    .expect("Failed to set TLS configuration")
+                    .with_congestion_controller(congestion_controller::Bbr::default())
+                    .expect("Failed to set congestion controller")
+                    .with_io("0.0.0.0:0")
+                    .expect("Failed to bind the client")
+                    .with_datagram(dgram)
+                    .expect("Failed to enable datagrams on client")
+                    .with_limits({
+                        let limits = Limits::default();
+                        let limits = limits
+                            .with_data_window(64 * 1024 * 1024)
+                            .expect("invalid data window");
+                        let limits = limits
+                            .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi local window");
+                        let limits = limits
+                            .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                            .expect("invalid bidi remote window");
+                        limits
+                            .with_max_send_buffer_size(64 * 1024 * 1024)
+                            .expect("invalid send buffer")
+                    })
+                    .expect("Failed to set QUIC limits");
+                builder.start().expect("Failed to start client")
+            }
+            CcMode::Disabled => {
+                #[cfg(feature = "quic_no_cc")]
+                {
+                    let dgram = DatagramEndpoint::builder()
+                        .with_recv_capacity(2048)
+                        .expect("Failed to set datagram recv capacity")
+                        .with_send_capacity(2048)
+                        .expect("Failed to set datagram send capacity")
+                        .build()
+                        .expect("Failed to build datagram endpoint");
+                    let builder = Client::builder()
+                        .with_tls(Path::new("server_cert.pem"))
+                        .expect("Failed to set TLS configuration")
+                        .with_congestion_controller(no_cc::NoopCcEndpoint)
+                        .expect("Failed to set congestion controller")
+                        .with_io("0.0.0.0:0")
+                        .expect("Failed to bind the client")
+                        .with_datagram(dgram)
+                        .expect("Failed to enable datagrams on client")
+                        .with_limits({
+                            let limits = Limits::default();
+                            let limits = limits
+                                .with_data_window(64 * 1024 * 1024)
+                                .expect("invalid data window");
+                            let limits = limits
+                                .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi local window");
+                            let limits = limits
+                                .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi remote window");
+                            limits
+                                .with_max_send_buffer_size(64 * 1024 * 1024)
+                                .expect("invalid send buffer")
+                        })
+                        .expect("Failed to set QUIC limits");
+                    builder.start().expect("Failed to start client")
                 }
-            })
-            .expect("Failed to set congestion controller")
-            .with_io("0.0.0.0:0")
-            .expect("Failed to bind the client");
-
-        let builder = {
-            let dgram = DatagramEndpoint::builder()
-                .with_recv_capacity(2048)
-                .expect("Failed to set datagram recv capacity")
-                .with_send_capacity(2048)
-                .expect("Failed to set datagram send capacity")
-                .build()
-                .expect("Failed to build datagram endpoint");
-            builder
-                .with_datagram(dgram)
-                .expect("Failed to enable datagrams on client")
+                #[cfg(not(feature = "quic_no_cc"))]
+                {
+                    warn!("quic_no_cc not compiled; falling back to BBR");
+                    let dgram = DatagramEndpoint::builder()
+                        .with_recv_capacity(2048)
+                        .expect("Failed to set datagram recv capacity")
+                        .with_send_capacity(2048)
+                        .expect("Failed to set datagram send capacity")
+                        .build()
+                        .expect("Failed to build datagram endpoint");
+                    let builder = Client::builder()
+                        .with_tls(Path::new("server_cert.pem"))
+                        .expect("Failed to set TLS configuration")
+                        .with_congestion_controller(congestion_controller::Bbr::default())
+                        .expect("Failed to set congestion controller")
+                        .with_io("0.0.0.0:0")
+                        .expect("Failed to bind the client")
+                        .with_datagram(dgram)
+                        .expect("Failed to enable datagrams on client")
+                        .with_limits({
+                            let limits = Limits::default();
+                            let limits = limits
+                                .with_data_window(64 * 1024 * 1024)
+                                .expect("invalid data window");
+                            let limits = limits
+                                .with_bidirectional_local_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi local window");
+                            let limits = limits
+                                .with_bidirectional_remote_data_window(64 * 1024 * 1024)
+                                .expect("invalid bidi remote window");
+                            limits
+                                .with_max_send_buffer_size(64 * 1024 * 1024)
+                                .expect("invalid send buffer")
+                        })
+                        .expect("Failed to set QUIC limits");
+                    builder.start().expect("Failed to start client")
+                }
+            }
         };
-
-        let builder = builder
-            .with_limits({
-                let limits = Limits::default();
-                let limits = limits
-                    .with_data_window(64 * 1024 * 1024)
-                    .expect("invalid data window");
-                let limits = limits
-                    .with_bidirectional_local_data_window(64 * 1024 * 1024)
-                    .expect("invalid bidi local window");
-                let limits = limits
-                    .with_bidirectional_remote_data_window(64 * 1024 * 1024)
-                    .expect("invalid bidi remote window");
-                limits
-                    .with_max_send_buffer_size(64 * 1024 * 1024)
-                    .expect("invalid send buffer")
-            })
-            .expect("Failed to set QUIC limits");
-
-        let client = builder.start().expect("Failed to start client");
 
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
@@ -769,8 +861,8 @@ impl QuicClient {
             QuicTransportMode::Datagram => {
                 #[cfg(feature = "quic_datagram")]
                 {
-                    let (h, s) = self.connect_datagram(remote_node_id, remote_addr).await;
-                    QuicConnectOutcome::Datagram(h, s)
+                    let (h, _s) = self.connect_datagram(remote_node_id, remote_addr).await;
+                    QuicConnectOutcome::Datagram(h, ())
                 }
                 #[cfg(not(feature = "quic_datagram"))]
                 {
@@ -826,7 +918,6 @@ pub struct QuicWriter {
 // No-op congestion controller (disables QUIC CC). Use in controlled env only.
 #[cfg(feature = "quic_no_cc")]
 mod no_cc {
-    use super::*;
     use s2n_quic::provider::congestion_controller::{CongestionController, Endpoint as CcEndpoint, PathInfo, Publisher, RandomGenerator, RttEstimator, Timestamp};
     use std::fmt::Debug;
 
