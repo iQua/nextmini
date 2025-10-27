@@ -994,7 +994,6 @@ mod no_cc {
             _rtt_estimator: &RttEstimator,
             _publisher: &mut Pub,
         ) -> Self::PacketInfo {
-            
         }
         fn on_rtt_update<Pub: Publisher>(
             &mut self,
