@@ -313,13 +313,14 @@ mod tests {
     use tokio::time::{Duration, sleep, timeout};
 
     fn make_test_config() -> LocalConfig {
-        let mut config = LocalConfig::default();
-        config.node_id = 1;
-        config.num_packet_processors = 1;
-        config.channel_capacity = 32;
-        config.user_space_client_port = 4000;
-        config.user_space_server_port = 5000;
-        config
+        LocalConfig {
+            node_id: 1,
+            num_packet_processors: 1,
+            channel_capacity: 32,
+            user_space_client_port: 4000,
+            user_space_server_port: 5000,
+            ..Default::default()
+        }
     }
 
     fn make_flow(dst_node_id: usize, weight: Option<usize>) -> Flow {
@@ -425,14 +426,14 @@ mod tests {
         let mut saw_weight_message = false;
 
         for _ in 0..4 {
-            if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await {
-                if matches!(
+            if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await
+                && matches!(
                     msg.expect("processor channel open"),
                     ProcessorMessage::SetFlowWeight(..)
-                ) {
-                    saw_weight_message = true;
-                    break;
-                }
+                )
+            {
+                saw_weight_message = true;
+                break;
             }
         }
 

@@ -220,12 +220,13 @@ mod tests {
     use std::time::Duration;
 
     fn make_test_config() -> LocalConfig {
-        let mut config = LocalConfig::default();
-        config.node_id = 2;
-        config.num_packet_processors = 1;
-        config.channel_capacity = 16;
-        config.user_space_server_port = 5000;
-        config
+        LocalConfig {
+            node_id: 2,
+            num_packet_processors: 1,
+            channel_capacity: 16,
+            user_space_server_port: 5000,
+            ..Default::default()
+        }
     }
 
     fn make_flow(src_node_id: usize, dst_node_id: usize, rate: Option<usize>) -> Flow {
