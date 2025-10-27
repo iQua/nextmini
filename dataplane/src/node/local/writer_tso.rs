@@ -5,7 +5,7 @@ use tokio::time::Duration;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tracing::{error, info};
-use tun_rs::{AsyncDevice, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
+use tun_rs::{AsyncDevice, GROTable, VIRTIO_NET_HDR_LEN};
 
 use crate::node::FlowId;
 use crate::node::config::{Feature, LocalConfig};
@@ -131,7 +131,7 @@ impl SequentialLocalWriter {
 
     pub async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(50);
+        let batch_timeout = Duration::from_millis(1);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
         loop {
@@ -159,14 +159,12 @@ impl SequentialLocalWriter {
                             }
                         }
 
-                        // sends packets if the buffer reaches IDEAL_BATCH_SIZE
-                        if pending_packets.len() >= IDEAL_BATCH_SIZE {
-                            let _ = batch_writer.write(&mut pending_packets).await;
-                            pending_packets.clear();
-                        }
+                        // sends packets
+                        let _ = batch_writer.write(&mut pending_packets).await;
+                        pending_packets.clear();
                     }
                 }
-                // sends to the TUN device anyway every once in a while (50 milliseconds)
+                // sends to the TUN device anyway every once in a while (1 millisecond)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
@@ -280,22 +278,24 @@ impl ConcurrentLocalWriterProducer {
 
                         // only when it is a TCP packet, it is reordered when needed and stored in the queue
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
+
+                        // adds packet to queue
                         {
                             let mut queue_map = self.queue_map.lock().await;
                             let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
-                            let was_empty = heap.is_empty();
                             heap.push(sequenced_packet);
+                        }
 
-                            if was_empty {
-                                let mut active_flows = self.active_flows.lock().await;
-                                active_flows.insert(flow_id);
-                                // notifies the consumer immediately when a previously-empty flow gets its first pkt
-                                self.queue_not_empty.notify_one();
-                            } else if heap.len() > self.config.reorder_tolerance {
-                            // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
-                            // guaranteed to be consumed in a relatively ordered manner
-                                self.queue_not_empty.notify_one();
-                            }
+                        // ensures the flow is tracked when we add a TCP data packet
+                        {
+                            let mut active_flows = self.active_flows.lock().await;
+                            active_flows.insert(flow_id);
+                        }
+
+                        // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
+                        // guaranteed to be consumed in a relatively ordered manner
+                        if heap.len() > self.config.reorder_tolerance {
+                            self.queue_not_empty.notify_one();
                         }
                     }
                 }
@@ -321,8 +321,10 @@ struct ConcurrentLocalWriterConsumer {
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
-        let batch_timeout = Duration::from_micros(50);
+        let batch_timeout = Duration::from_millis(1);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
+        // Flush threshold to avoid waiting for all flows to drain
+        const BATCH_FLUSH_THRESHOLD: usize = 64;
 
         loop {
             tokio::select! {
@@ -360,18 +362,37 @@ impl ConcurrentLocalWriterConsumer {
                             let packet = sp.packet;
                             pending_packets.push(packet);
 
-                            // sends packets if the buffer reaches IDEAL_BATCH_SIZE
-                            if pending_packets.len() >= IDEAL_BATCH_SIZE {
+                            // Proactively flush in the hot path to ensure progress under load.
+                            if pending_packets.len() >= BATCH_FLUSH_THRESHOLD {
                                 let _ = batch_writer.write(&mut pending_packets).await;
                                 pending_packets.clear();
+                            }
+
+                            // checks if the queue is now empty after popping
+                            let is_empty = {
+                                let queue_map = self.queue_map.lock().await;
+                                if let Some(heap) = queue_map.get(&flow_id) {
+                                    heap.is_empty()
+                                } else {
+                                    true
+                                }
+                            };
+
+                            if is_empty {
+                                let mut active_flows = self.active_flows.lock().await;
+                                active_flows.remove(&flow_id);
                             }
                         } else {
                             let mut active_flows = self.active_flows.lock().await;
                             active_flows.remove(&flow_id);
                         }
                     }
+
+                    // sends packets
+                    let _ = batch_writer.write(&mut pending_packets).await;
+                    pending_packets.clear();
                 }
-                // sends to the TUN device anyway every once in a while (50 milliseconds)
+                // sends to the TUN device anyway every once in a while (1 millisecond)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
