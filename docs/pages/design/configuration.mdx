@@ -41,9 +41,9 @@ Some modes require enabling features at build time because they rely on s2n‑qu
 Examples:
 
 ```
-cargo run -p dataplane --features quic_per_flow
-cargo run -p dataplane --features quic_datagram
-cargo run -p dataplane --features quic_no_cc
+cargo run -p nextmini --features quic_per_flow
+cargo run -p nextmini --features quic_datagram
+cargo run -p nextmini --features quic_no_cc
 # combine:
 cargo build -p nextmini --features "quic_datagram,quic_no_cc"
 ```
@@ -121,4 +121,3 @@ RUST_LOG=info ./target/release/nextmini --quic-transport-mode datagram --quic-co
 
 - If quic_transport_mode requests per-flow or datagram but the binary is not compiled with the corresponding feature, the dataplane logs a warning and falls back to single-stream.
 - Handshake always uses one initial stream for node identification; it is not used for data in per‑flow or datagram modes.
-
