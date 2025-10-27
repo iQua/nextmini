@@ -20,12 +20,16 @@ impl Packet {
     }
 
     pub fn seq_num(&self) -> u32 {
+        if self.buf.len() < 20 || (self.buf[0] >> 4) != 4 {
+            return 0;
+        }
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
-        let tcp_offset = ip_header_len;
-
+        if self.buf.len() < ip_header_len + 8 {
+            return 0;
+        }
         // extracts the sequence number from the TCP header
-        BigEndian::read_u32(&self.buf[tcp_offset + 4..tcp_offset + 8])
+        BigEndian::read_u32(&self.buf[ip_header_len + 4..ip_header_len + 8])
     }
 
     // Is this packet a TCP data packet with non-zero TCP payload?
@@ -42,13 +46,16 @@ impl Packet {
 
     // Is this packet a TCP FIN or RST?
     pub fn is_tcp_fin_or_rst(&self) -> bool {
-        // checks if it is tcp
-        if self.buf[9] != 6 {
+        // Must be TCP and long enough for flags byte.
+        if self.buf.len() < 20 || self.buf[9] != 6 {
             return false;
         }
 
         let ihl = (self.buf[0] & 0x0F) as usize;
         let tcp_offset = ihl * 4;
+        if self.buf.len() <= tcp_offset + 13 {
+            return false;
+        }
         let tcp_flags = self.buf[tcp_offset + 13];
 
         // checks if FIN or RST flag is set
@@ -57,13 +64,17 @@ impl Packet {
 
     /// Does this TCP packet have payload (non-zero data length)?
     pub fn has_tcp_payload(&self) -> bool {
-        // checks if it is tcp
-        if self.buf[9] != 6 {
+        // must be IPv4 TCP
+        if self.buf.len() < 20 || self.buf[9] != 6 {
             return false;
         }
 
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
+        if self.buf.len() < ip_header_len + 14 {
+            // not enough for a minimal TCP header with flags/offset
+            return false;
+        }
 
         // extracts total length from IP header (bytes 2-3)
         let total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
@@ -72,6 +83,11 @@ impl Packet {
         let tcp_offset = ip_header_len;
         let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
         let tcp_header_len = tcp_data_offset * 4;
+
+        // guards against malformed headers that claim a tiny offset
+        if tcp_header_len < 20 || ip_header_len + tcp_header_len > self.buf.len() {
+            return false;
+        }
 
         // calculates payload size
         let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);

@@ -326,6 +326,7 @@ struct ConcurrentLocalWriterConsumer {
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         let mut pending_packets: Vec<Packet> = Vec::new();
+        // flushes very frequently to keep latency low when batching for GRO/TSO
         let batch_timeout = Duration::from_micros(50);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
 
@@ -376,7 +377,7 @@ impl ConcurrentLocalWriterConsumer {
                         }
                     }
                 }
-                // sends to the TUN device anyway every once in a while (50 milliseconds)
+                // periodically flushes to the TUN device every 50 microseconds
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();

@@ -20,20 +20,7 @@ use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
 use tracing::{error, info, warn};
 
-// Helper: spawn an ack‑eliciting heartbeat on a QUIC send stream.
-#[cfg(feature = "quic_datagram")]
-fn spawn_quic_stream_heartbeat(mut tx: SendStream, interval: Duration) {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(interval).await;
-            // 1-byte write is enough to elicit ACKs and reset idle timeout.
-            if let Err(e) = tx.send(Bytes::from_static(&[0u8])).await {
-                warn!("QUIC heartbeat stopped (send failed): {}", e);
-                break;
-            }
-        }
-    });
-}
+// Stream-based heartbeats removed for QUIC DATAGRAM; rely on keep_alive PINGs instead.
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl as CcMode;
@@ -841,6 +828,7 @@ impl QuicClient {
             }
         };
 
+        // Use a tiny handshake stream only to convey the local node id once.
         let mut stream = connection
             .open_bidirectional_stream()
             .await
@@ -849,31 +837,15 @@ impl QuicClient {
         info!("Connecting to node {} with QUIC...", remote_node_id);
 
         let local_node_id = self.config.node_id;
-
         stream
             .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
             .await
             .expect("Failed to send local node id to the node");
-
         info!("Connected to node {} with QUIC.", remote_node_id);
 
-        info!("Connecting to node {} with QUIC...", remote_node_id);
-
-        let local_node_id = self.config.node_id;
-
-        stream
-            .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
-            .await
-            .expect("Failed to send local node id to the node");
-
-        info!("Connected to node {} with QUIC.", remote_node_id);
-
-        // Keep the handshake stream open and send periodic ack‑eliciting heartbeats.
+        // Close the handshake stream immediately; rely on connection keep‑alive PINGs.
         let (_rx, tx) = stream.split();
-        spawn_quic_stream_heartbeat(
-            tx,
-            Duration::from_secs(self.config.quic_dgram_heartbeat_secs),
-        );
+        let _ = tx.close();
 
         connection.handle()
     }
@@ -1171,7 +1143,10 @@ impl QuicDatagramWriter {
         // Matches the clamp used on the TUN side to avoid PMTU black holes.
         const SAFE_QUIC_DGRAM_PAYLOAD: usize = 1150;
 
+        // Backpressure control: if the QUIC DATAGRAM sender is saturated, yield/sleep
+        // to allow acks and pacing to catch up instead of busy-looping and dropping.
         let mut any_sent = false;
+        let mut consec_backpressure = 0usize;
 
         for packet in packets.into_iter() {
             if packet.packet_size > SAFE_QUIC_DGRAM_PAYLOAD {
@@ -1191,17 +1166,28 @@ impl QuicDatagramWriter {
             match send_res {
                 Ok(Ok(())) => {
                     any_sent = true;
+                    consec_backpressure = 0;
                 }
                 Ok(Err(e)) => {
-                    // Queue full/unsupported; log and continue instead of bailing the whole batch.
+                    // Queue full/unsupported; cooperatively back off.
+                    consec_backpressure = consec_backpressure.saturating_add(1);
                     warn!(
                         "QUIC datagram send rejected (queue full/unsupported): {:?}",
                         e
                     );
+                    if consec_backpressure % 64 == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                    if consec_backpressure >= 256 {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        consec_backpressure = 0;
+                    }
                 }
                 Err(e) => {
-                    // Sender temporarily unavailable; log and continue to avoid stalling.
+                    // Sender temporarily unavailable; yield and continue.
+                    consec_backpressure = consec_backpressure.saturating_add(1);
                     warn!("QUIC datagram sender unavailable: {:?}", e);
+                    tokio::task::yield_now().await;
                 }
             }
         }
