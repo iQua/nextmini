@@ -202,6 +202,64 @@ sudo lsof -ti:8080 | xargs sudo kill -9
 
 ---
 
+## Fly.io as Relay Nodes
+
+Use Fly.io nodes as relay-only, VM nodes as endpoints. Traffic flows: VM → Fly.io relay → VM.
+
+### Prerequisites
+
+```bash
+curl -L https://fly.io/install.sh | sh
+flyctl auth login
+```
+
+### Deploy
+
+- Controller:
+```bash
+cd examples/bare-metal/controller
+# Edit config.toml: remove or comment [routing] protocol = "shortest_path"
+./deploy.sh
+```
+
+- VM Nodes:
+```bash
+cd examples/bare-metal/dataplane
+./deploy.sh
+```
+
+- Fly.io Relay Nodes:
+```bash
+cd examples/bare-metal/vm-fly
+# Change the node_id
+./deploy-flyio-relay.py --controller-ip <CONTROLLER_IP> --node-ids 2 4 6 8
+```
+
+### Verify
+
+Check logs:
+```bash
+# Controller
+tail -f examples/bare-metal/controller/controller.log
+
+# Fly.io nodes
+flyctl logs -a nextmini-relay-2
+flyctl logs -a nextmini-relay-4
+flyctl logs -a nextmini-relay-6
+flyctl logs -a nextmini-relay-8
+```
+
+### Cleanup
+
+```bash
+flyctl apps destroy nextmini-relay-2 --yes
+flyctl apps destroy nextmini-relay-4 --yes
+flyctl apps destroy nextmini-relay-6 --yes
+flyctl apps destroy nextmini-relay-8 --yes
+```
+
+---
+
 ## Ring All-Reduce Benchmark
 
 Test collective communication performance using ring all-reduce algorithm. Two test modes available:
