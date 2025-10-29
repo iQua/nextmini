@@ -238,18 +238,18 @@ def generate_random_flow(max_nodes: int = 2) -> dict:
 
     if flow_type == "bytes":
         flow["flow_len_bytes"] = random.randint(
-            100_000, 1_000_000
-        )  # 100KB to 1MB
+            5_000_000, 20_000_000
+        )  # 5MB to 20MB
         flow["flow_len_duration"] = None
         flow["flow_rate"] = None  # Let dataplane use default rate
     else:
         flow["flow_len_bytes"] = None
         flow["flow_len_duration"] = round(
-            random.uniform(2.0, 5.0), 2
-        )  # 2 to 5 seconds
+            random.uniform(3.0, 8.0), 2
+        )  # 3 to 8 seconds
         flow["flow_rate"] = random.randint(
-            500_000, 2_000_000
-        )  # 0.5-2 Mbps for duration flows
+            1_000_000, 3_000_000
+        )  # 1-3 Mbps for duration flows
 
     return flow
 
