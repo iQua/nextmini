@@ -460,10 +460,10 @@ impl LocalConfig {
                         match addr {
                             Addr::V6(ipv6) => {
                                 let ipv6_str = ipv6.ip.to_string();
-                                if ipv6_str.starts_with("fdaa:") || ipv6_str.starts_with("fd") {
-                                    if ipv6addr.is_empty() || ipv6_str.starts_with("fdaa:") {
-                                        ipv6addr = ipv6_str;
-                                    }
+                                if (ipv6_str.starts_with("fdaa:") || ipv6_str.starts_with("fd"))
+                                    && (ipv6addr.is_empty() || ipv6_str.starts_with("fdaa:"))
+                                {
+                                    ipv6addr = ipv6_str;
                                 }
                             }
                             Addr::V4(ipv4) => {
@@ -568,10 +568,10 @@ impl LocalConfig {
                         match addr {
                             Addr::V6(ipv6) => {
                                 let ipv6_str = ipv6.ip.to_string();
-                                if ipv6_str.starts_with("fdaa:") || ipv6_str.starts_with("fd") {
-                                    if ipv6addr.is_empty() || ipv6_str.starts_with("fdaa:") {
-                                        ipv6addr = ipv6_str;
-                                    }
+                                if (ipv6_str.starts_with("fdaa:") || ipv6_str.starts_with("fd"))
+                                    && (ipv6addr.is_empty() || ipv6_str.starts_with("fdaa:"))
+                                {
+                                    ipv6addr = ipv6_str;
                                 }
                             }
                             Addr::V4(ipv4) => {
