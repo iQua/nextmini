@@ -18,7 +18,7 @@ def main():
         for i in range(1, args.num_nodes + 1):
             f.write(f"baseline-ring-{i}.internal:{args.port}\n")
     
-    print(f"✅ Generated ring.txt for {args.num_nodes} nodes")
+    print(f"Generated ring.txt for {args.num_nodes} nodes")
     print(f"   Port: {args.port}")
 
 if __name__ == "__main__":

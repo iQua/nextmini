@@ -26,7 +26,7 @@ async def cleanup_node(app_name: str):
 
 async def cleanup_all_nodes(num_nodes: int):
     """Cleanup ringallreduce processes on all baseline nodes."""
-    print("🧹 Step 1/3: Cleaning up old ringallreduce processes...")
+    print("Step 1/3: Cleaning up old ringallreduce processes...")
     
     tasks = []
     for i in range(1, num_nodes + 1):
@@ -36,9 +36,9 @@ async def cleanup_all_nodes(num_nodes: int):
     # Execute all cleanup tasks concurrently
     await asyncio.gather(*tasks, return_exceptions=True)
     
-    print("⏳ Waiting for ports to be released...")
+    print("Waiting for ports to be released...")
     await asyncio.sleep(3)
-    print("✅ Cleanup complete")
+    print("Cleanup complete")
 
 
 async def trigger_node(app_name: str, rank: int, length: int, reps: int, init: str, verify: bool):
@@ -122,7 +122,7 @@ async def main():
     
     print()
     print("=" * 60)
-    print("✅ All done!")
+    print("All done!")
     print("=" * 60)
 
 

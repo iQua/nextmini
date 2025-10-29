@@ -35,15 +35,15 @@ def check_flyctl():
     """Verify flyctl is installed and authenticated."""
     result = run(["flyctl", "version"], check=False)
     if result.returncode != 0:
-        print("❌ flyctl not found. Install: https://fly.io/docs/hands-on/install-flyctl/")
+        print("flyctl not found. Install: https://fly.io/docs/hands-on/install-flyctl/")
         sys.exit(1)
     
     result = run(["flyctl", "auth", "whoami"], check=False)
     if result.returncode != 0:
-        print("❌ Not logged in to Fly.io. Run: flyctl auth login")
+        print("Not logged in to Fly.io. Run: flyctl auth login")
         sys.exit(1)
     
-    print("✅ flyctl authenticated")
+    print("flyctl authenticated")
 
 
 def deploy_node(node_num: int, region: str, memory: str, cpu_kind: str, cpus: int, script_dir: pathlib.Path):
@@ -96,7 +96,7 @@ def deploy_node(node_num: int, region: str, memory: str, cpu_kind: str, cpus: in
         if temp_dockerfile.exists():
             temp_dockerfile.unlink()
     
-    print(f"✅ {app_name} deployed")
+    print(f"{app_name} deployed")
     
     return app_name
 
@@ -163,7 +163,7 @@ def main():
         time.sleep(2)  # Brief pause between deployments
     
     print("\n" + "="*60)
-    print("✅ All baseline nodes deployed!")
+    print("All baseline nodes deployed!")
     print("="*60)
     print(f"\nDeployed apps: {', '.join(deployed_apps)}")
     print(f"\n Next steps:")

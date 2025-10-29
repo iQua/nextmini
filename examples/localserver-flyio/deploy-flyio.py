@@ -235,7 +235,7 @@ def main():
     # Summary
     print()
     print("=" * 60)
-    print("✅ All nodes deployed successfully!")
+    print("All nodes deployed successfully!")
     print("=" * 60)
     print()
     print("Deployed Applications:")

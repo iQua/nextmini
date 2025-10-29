@@ -13,7 +13,7 @@ import sys
 
 def destroy_app(app_name: str):
     """Destroy a single app."""
-    print(f"  🗑️  Destroying {app_name}...")
+    print(f"   Destroying {app_name}...")
     result = subprocess.run(
         ["flyctl", "apps", "destroy", app_name, "--yes"],
         capture_output=True,
@@ -21,13 +21,13 @@ def destroy_app(app_name: str):
         check=False
     )
     if result.returncode == 0:
-        print(f"  ✅ {app_name} destroyed")
+        print(f"  {app_name} destroyed")
         return True
     elif "Could not find App" in result.stderr or "not found" in result.stderr:
-        print(f"  ⚠️  {app_name} not found (skipping)")
+        print(f"  {app_name} not found (skipping)")
         return True
     else:
-        print(f"  ❌ Failed to destroy {app_name}: {result.stderr}")
+        print(f"  Failed to destroy {app_name}: {result.stderr}")
         return False
 
 
@@ -37,7 +37,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("🗑️  Destroying Baseline Ring Nodes")
+    print("Destroying Baseline Ring Nodes")
     print("=" * 60)
     print(f"   Nodes: {args.num_nodes}")
     print()
@@ -50,7 +50,7 @@ def main():
     
     print()
     print("=" * 60)
-    print(f"✅ Destroyed {success_count}/{args.num_nodes} apps")
+    print(f"Destroyed {success_count}/{args.num_nodes} apps")
     print("=" * 60)
 
 
