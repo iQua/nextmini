@@ -9,7 +9,7 @@ name = "nextmini"
 path = "src/main.rs"
 
 [lib]
-name = "rust_nextmini"
+name = "nextmini"
 crate-type = ["cdylib"]
 
 [dependencies]
