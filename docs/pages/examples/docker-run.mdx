@@ -1,19 +1,12 @@
 # Running Nextmini Dataplane with Docker
 
-This guide explains how to build, push, and run the Nextmini dataplane as a Docker container across multiple physical machines with the same .
+This guide explains how to build, push, and run the Nextmini dataplane as a Docker container across multiple physical machines with the same dataplane image.
 
 ## Overview
 
-## Prerequisites
-
-- Docker installed on all machines
-- A running Nextmini controller
-- Network connectivity between all machines
-- Open port 8080 on all dataplane nodes (or custom port specified in config)
-
 ## Step 1: Build and Push to Docker Hub
 
-On your development machine:
+On the development machine:
 
 ```bash
 cd /path/to/nextmini/dataplane
@@ -70,8 +63,6 @@ On each machine where you want to run a dataplane node:
 sudo docker login
 ```
 
-**Tip**: For production, create a read-only access token at https://hub.docker.com → Account Settings → Security → New Access Token
-
 ### Pull the Image
 
 ```bash
@@ -91,9 +82,9 @@ sudo docker run -d \
   ./nextmini --config-path config.toml ws://<controller-ip>:3000
 ```
 
-**Important flags**:
+Some important flags:
 - `--privileged` and `--cap-add=NET_ADMIN`: Required for creating TUN devices
-- `-p 8080:8080`: **Critical** - Maps container port to host port so other nodes can connect
+- `-p 8080:8080`: Maps container port to host port so other nodes can connect
 - `-v $(pwd)/config.toml:/var/nextmini/config.toml`: Mounts your config file
 - `--config-path config.toml`: Specifies the config file path
 - `ws://<controller-ip>:3000`: Controller WebSocket address
@@ -121,7 +112,7 @@ node_id = 1
 # Run
 sudo docker run -d --name nextmini-node --privileged --cap-add=NET_ADMIN \
   -p 8080:8080 -v $(pwd)/config.toml:/var/nextmini/config.toml \
-  myuser/nextmini-dataplane:v1.0.0 \
+  myuser/nextmini-dataplane:v1.0.0 \ # where myuser is your Docker Hub username
   ./nextmini --config-path config.toml ws://206.12.89.244:3000
 ```
 
