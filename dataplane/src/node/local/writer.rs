@@ -171,7 +171,6 @@ impl ConcurrentLocalWriterProducer {
             active_flows: active_flows.clone(),
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
-            // NEW
             reorder_tolerance: config.reorder_tolerance,
             expected_seq: HashMap::new(),
         };
