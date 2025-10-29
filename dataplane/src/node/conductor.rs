@@ -1,7 +1,6 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
-use std::net::IpAddr;
 use tracing::info;
 
 use nextmini_messages::Protocol;
@@ -14,20 +13,6 @@ use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::processor::ProcessorHandle;
-
-/// Helper function to format bind address with port, handling both IPv4 and IPv6.
-/// Returns "[::]:port" for IPv6 or "0.0.0.0:port" for IPv4.
-fn format_bind_address(network_addr: &str, port: &str) -> String {
-    if let Ok(ip_addr) = network_addr.parse::<IpAddr>() {
-        match ip_addr {
-            IpAddr::V6(_) => format!("[::]:{}", port),
-            IpAddr::V4(_) => format!("0.0.0.0:{}", port),
-        }
-    } else {
-        // If we can't parse it, default to IPv4 for backward compatibility.
-        format!("0.0.0.0:{}", port)
-    }
-}
 
 pub struct Conductor {
     config: LocalConfig,
@@ -99,13 +84,8 @@ impl Conductor {
                         self.reporter.clone(),
                     );
 
-                    let max_server_port_str = max_server_port.to_string();
-                    let tcp_max_server_addr = format_bind_address(
-                        &self.config.private_network_addr,
-                        &max_server_port_str,
-                    );
-                    let tcp_server_addr =
-                        format_bind_address(&self.config.private_network_addr, &public_port);
+                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
+                    let tcp_server_addr = format!("{}:{}", "0.0.0.0", public_port);
 
                     tokio::select! {
                         _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
@@ -123,15 +103,9 @@ impl Conductor {
                         self.reporter.clone(),
                     );
 
-                    let tcp_server_public_addr =
-                        format_bind_address(&self.config.private_network_addr, &public_port);
-                    let tcp_server_private_addr =
-                        format_bind_address(&self.config.private_network_addr, &private_port);
-                    let max_server_port_str = max_server_port.to_string();
-                    let tcp_max_server_addr = format_bind_address(
-                        &self.config.private_network_addr,
-                        &max_server_port_str,
-                    );
+                    let tcp_server_public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    let tcp_server_private_addr = format!("{}:{}", "0.0.0.0", private_port);
+                    let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
 
                     tokio::select! {
                         _ = tcp_server_public.start_listening(&tcp_server_public_addr) => {},
@@ -147,9 +121,9 @@ impl Conductor {
                         self.processors.clone(),
                         self.reporter.clone(),
                     );
-                    let quic_addr =
-                        format_bind_address(&self.config.private_network_addr, &public_port);
-                    quic_server.start_listening(&quic_addr).await;
+                    quic_server
+                        .start_listening(&format!("{}:{}", "0.0.0.0", public_port))
+                        .await;
                 } else {
                     let mut quic_server_public = QuicServer::new(
                         self.config.clone(),
@@ -162,10 +136,8 @@ impl Conductor {
                         self.reporter.clone(),
                     );
 
-                    let public_addr =
-                        format_bind_address(&self.config.private_network_addr, &public_port);
-                    let private_addr =
-                        format_bind_address(&self.config.private_network_addr, &private_port);
+                    let public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    let private_addr = format!("{}:{}", "0.0.0.0", private_port);
 
                     tokio::select! {
                         _ = quic_server_public.start_listening(&public_addr) => {},
