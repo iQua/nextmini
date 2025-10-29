@@ -171,6 +171,9 @@ impl ConcurrentLocalWriterProducer {
             active_flows: active_flows.clone(),
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
+            // NEW
+            reorder_tolerance: config.reorder_tolerance,
+            expected_seq: HashMap::new(),
         };
 
         tokio::spawn(async move {
@@ -248,6 +251,8 @@ struct ConcurrentLocalWriterConsumer {
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     device: Arc<AsyncDevice>,
     queue_not_empty: Arc<Notify>,
+    reorder_tolerance: usize,
+    expected_seq: HashMap<FlowId, u32>,
 }
 
 impl ConcurrentLocalWriterConsumer {
@@ -265,45 +270,88 @@ impl ConcurrentLocalWriterConsumer {
                             }
                         };
 
-                        let sequenced_packet = {
-                            let mut queue_map = self.queue_map.lock().await;
-                            if let Some(heap) = queue_map.get_mut(&flow_id) {
-                                heap.pop()
+                        // snapshot top seq and heap length
+                        let (top_seq_opt, heap_len) = {
+                            let queue_map = self.queue_map.lock().await;
+                            if let Some(heap) = queue_map.get(&flow_id) {
+                                (heap.peek().map(|sp| sp.seq), heap.len())
                             } else {
-                                None
+                                (None, 0)
                             }
                         };
 
-                        if let Some(sp) = sequenced_packet {
-                            let packet = sp.packet;
-                            let buf = &packet.buf[0..packet.packet_size];
-
-                            // Try non-blocking send first, fall back to async send if needed
-                            if let Err(_) = self.device.try_send(buf) {
-                                if let Err(e) = self.device.send(buf).await {
-                                    error!(
-                                        "Failed to write packet to the TUN device: {}. Dropped.",
-                                        e
-                                    );
-                                }
-                            }
-
-                            let is_empty = {
-                                let queue_map = self.queue_map.lock().await;
-                                if let Some(heap) = queue_map.get(&flow_id) {
-                                    heap.is_empty()
-                                } else {
-                                    true
-                                }
-                            };
-
-                            if is_empty {
+                        // nothing buffered for this flow
+                        let top_seq = match top_seq_opt {
+                            Some(s) => s,
+                            None => {
                                 let mut active_flows = self.active_flows.lock().await;
                                 active_flows.remove(&flow_id);
+                                self.expected_seq.remove(&flow_id);
+                                continue;
                             }
-                        } else {
-                            let mut active_flows = self.active_flows.lock().await;
-                            active_flows.remove(&flow_id);
+                        };
+
+                        // establish expected seq once enough packets have accumulated
+                        if !self.expected_seq.contains_key(&flow_id) {
+                            if heap_len >= self.reorder_tolerance {
+                                self.expected_seq.insert(flow_id, top_seq);
+                            } else {
+                                // wait for more before starting delivery
+                                continue;
+                            }
+                        }
+
+                        // drain contiguous prefix
+                        loop {
+                            let maybe_sp = {
+                                let mut queue_map = self.queue_map.lock().await;
+                                if let Some(heap) = queue_map.get_mut(&flow_id) {
+                                    if let Some(peek) = heap.peek() {
+                                        if let Some(expected) = self.expected_seq.get(&flow_id) {
+                                            if peek.seq == *expected {
+                                                heap.pop()
+                                            } else {
+                                                None
+                                            }
+                                        } else { None }
+                                    } else { None }
+                                } else { None }
+                            };
+
+                            if let Some(sp) = maybe_sp {
+                                let packet = sp.packet;
+
+                                // advance expected by this packet's TCP payload length (wrap-aware)
+                                let payload = packet.tcp_payload_len() as u32;
+                                let old_expected = self.expected_seq[&flow_id];
+                                let next_expected = old_expected.wrapping_add(payload);
+                                self.expected_seq.insert(flow_id, next_expected);
+
+                                let buf = &packet.buf[0..packet.packet_size];
+                                if let Err(_) = self.device.try_send(buf) {
+                                    if let Err(e) = self.device.send(buf).await {
+                                        error!(
+                                            "Failed to write packet to the TUN device: {}. Dropped.",
+                                            e
+                                        );
+                                    }
+                                }
+
+                                // retire flow if heap emptied
+                                let is_empty = {
+                                    let queue_map = self.queue_map.lock().await;
+                                    queue_map.get(&flow_id).map_or(true, |h| h.is_empty())
+                                };
+                                if is_empty {
+                                    let mut active_flows = self.active_flows.lock().await;
+                                    active_flows.remove(&flow_id);
+                                    self.expected_seq.remove(&flow_id);
+                                    break;
+                                }
+                            } else {
+                                // gap encountered
+                                break;
+                            }
                         }
                     }
                 }
