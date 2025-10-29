@@ -410,7 +410,7 @@ impl ConcurrentLocalWriterConsumer {
                                     let packet = sp.packet;
                                     let payload = packet.tcp_payload_len() as u32;
 
-                                    // advance expected by payload length (wrap-aware)
+                                    // advances the expected sequence number by payload length (wrap-aware)
                                     let next_expected = self.expected_seq[&flow_id].wrapping_add(payload);
                                     self.expected_seq.insert(flow_id, next_expected);
 
@@ -423,7 +423,7 @@ impl ConcurrentLocalWriterConsumer {
                                         pending_packets.clear();
                                     }
 
-                                    // If the heap is empty now, retire the flow
+                                    // if the heap is empty now, retire the flow
                                     let is_empty = {
                                         let q = self.queue_map.lock().await;
                                         q.get(&flow_id).is_none_or(|h| h.is_empty())
@@ -436,7 +436,7 @@ impl ConcurrentLocalWriterConsumer {
                                         break;
                                     }
                                 } else {
-                                    // cannot progress on this flow (gap)
+                                    // gap encountered, cannot progress on this flow
                                     break;
                                 }
                             }
@@ -447,7 +447,7 @@ impl ConcurrentLocalWriterConsumer {
                         }
                     }
 
-                    // send any accumulated packets
+                    // sends any accumulated packets
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
                 }

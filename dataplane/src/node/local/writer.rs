@@ -290,7 +290,7 @@ impl ConcurrentLocalWriterConsumer {
                             }
                         };
 
-                        // establish expected seq once enough packets have accumulated
+                        // establishes expected seq once enough packets have accumulated
                         if !self.expected_seq.contains_key(&flow_id) {
                             if heap_len >= self.reorder_tolerance {
                                 self.expected_seq.insert(flow_id, top_seq);
@@ -300,7 +300,7 @@ impl ConcurrentLocalWriterConsumer {
                             }
                         }
 
-                        // drain contiguous prefix
+                        // drains contiguous prefix
                         loop {
                             let maybe_sp = {
                                 let mut queue_map = self.queue_map.lock().await;
@@ -320,7 +320,7 @@ impl ConcurrentLocalWriterConsumer {
                             if let Some(sp) = maybe_sp {
                                 let packet = sp.packet;
 
-                                // advance expected by this packet's TCP payload length (wrap-aware)
+                                // advances the expected sequence number by payload length (wrap-aware)
                                 let payload = packet.tcp_payload_len() as u32;
                                 let old_expected = self.expected_seq[&flow_id];
                                 let next_expected = old_expected.wrapping_add(payload);
@@ -336,7 +336,7 @@ impl ConcurrentLocalWriterConsumer {
                                     }
                                 }
 
-                                // retire flow if heap emptied
+                                // if the heap is empty now, retire the flow
                                 let is_empty = {
                                     let queue_map = self.queue_map.lock().await;
                                     queue_map.get(&flow_id).map_or(true, |h| h.is_empty())
