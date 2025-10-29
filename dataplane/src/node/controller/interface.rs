@@ -1,6 +1,7 @@
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
+use std::net::IpAddr;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, interval, timeout};
@@ -20,6 +21,18 @@ use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
+
+/// Helper function to format address with port, handling both IPv4 and IPv6.
+fn format_addr_with_port(addr: &str, port: &str) -> String {
+    if let Ok(ip_addr) = addr.parse::<IpAddr>() {
+        match ip_addr {
+            IpAddr::V6(_) => format!("[{}]:{}", addr, port),
+            IpAddr::V4(_) => format!("{}:{}", addr, port),
+        }
+    } else {
+        format!("{}:{}", addr, port)
+    }
+}
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -138,12 +151,14 @@ impl ControllerInterfaceHandle {
 
         let startup_msg = DataplaneToController::StartUp {
             private_network_name: config.private_network_name.clone(),
-            private_network_addr: config.private_network_addr.clone()
-                + ":"
-                + &config.private_network_port.clone(),
-            public_network_addr: config.public_network_addr.clone()
-                + ":"
-                + &config.public_network_port.clone(),
+            private_network_addr: format_addr_with_port(
+                &config.private_network_addr,
+                &config.private_network_port,
+            ),
+            public_network_addr: format_addr_with_port(
+                &config.public_network_addr,
+                &config.public_network_port,
+            ),
             node_id: config.node_id.to_string().parse().ok(),
         };
 

@@ -12,25 +12,36 @@ pub struct Packet {
 
 impl Packet {
     pub fn new(packet_size: usize, buf: PacketBuf) -> Self {
+        // compute flow_id based only on the valid portion of the buffer
+        let flow_id = if packet_size <= buf.len() {
+            Self::get_flow_id_from_buf(&buf[..packet_size])
+        } else {
+            // fallback: if packet_size is inconsistent, treat as invalid
+            flow::INVALID_FLOW_ID
+        };
         Self {
-            flow_id: Self::get_flow_id_from_buf(&buf),
+            flow_id,
             packet_size,
             buf,
         }
     }
 
     pub fn seq_num(&self) -> u32 {
+        if self.packet_size < 20 || (self.buf[0] >> 4) != 4 {
+            return 0;
+        }
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
-        let tcp_offset = ip_header_len;
-
+        if self.packet_size < ip_header_len + 8 {
+            return 0;
+        }
         // extracts the sequence number from the TCP header
-        BigEndian::read_u32(&self.buf[tcp_offset + 4..tcp_offset + 8])
+        BigEndian::read_u32(&self.buf[ip_header_len + 4..ip_header_len + 8])
     }
 
     // Is this packet a TCP data packet with non-zero TCP payload?
     pub fn is_tcp_data(&self) -> bool {
-        if self.buf.len() < 20 || (self.buf[0] >> 4) != 4 {
+        if self.packet_size < 20 || (self.buf[0] >> 4) != 4 {
             return false;
         }
         if self.buf[9] != 6 {
@@ -42,13 +53,16 @@ impl Packet {
 
     // Is this packet a TCP FIN or RST?
     pub fn is_tcp_fin_or_rst(&self) -> bool {
-        // checks if it is tcp
-        if self.buf[9] != 6 {
+        // Must be TCP and long enough for flags byte.
+        if self.packet_size < 20 || self.buf[9] != 6 {
             return false;
         }
 
         let ihl = (self.buf[0] & 0x0F) as usize;
         let tcp_offset = ihl * 4;
+        if self.packet_size <= tcp_offset + 13 {
+            return false;
+        }
         let tcp_flags = self.buf[tcp_offset + 13];
 
         // checks if FIN or RST flag is set
@@ -57,21 +71,34 @@ impl Packet {
 
     /// Does this TCP packet have payload (non-zero data length)?
     pub fn has_tcp_payload(&self) -> bool {
-        // checks if it is tcp
-        if self.buf[9] != 6 {
+        // must be IPv4 TCP
+        if self.packet_size < 20 || self.buf[9] != 6 {
             return false;
         }
 
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
+        if self.packet_size < ip_header_len + 14 {
+            // not enough for a minimal TCP header with flags/offset
+            return false;
+        }
 
         // extracts total length from IP header (bytes 2-3)
-        let total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
+        let mut total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
+        // clamp to the actually received byte count
+        if total_length > self.packet_size {
+            total_length = self.packet_size;
+        }
 
         // extracts TCP header length from data offset field (upper 4 bits of byte 12 in TCP header)
         let tcp_offset = ip_header_len;
         let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
         let tcp_header_len = tcp_data_offset * 4;
+
+        // guards against malformed headers that claim a tiny offset
+        if tcp_header_len < 20 || ip_header_len + tcp_header_len > self.packet_size {
+            return false;
+        }
 
         // calculates payload size
         let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);
@@ -79,7 +106,7 @@ impl Packet {
         payload_size > 0
     }
 
-    fn get_flow_id_from_buf(buf: &PacketBuf) -> FlowId {
+    fn get_flow_id_from_buf(buf: &[u8]) -> FlowId {
         if buf.len() < 20 || buf[0] >> 4 != 4 {
             return flow::INVALID_FLOW_ID;
         }
@@ -101,8 +128,9 @@ impl Packet {
     #[cfg(target_os = "linux")]
     pub fn from_slice(packet_size: usize, slice: &[u8]) -> Self {
         let buf = slice[..packet_size].to_vec();
+        let flow_id = Self::get_flow_id_from_buf(&buf);
         Self {
-            flow_id: Self::get_flow_id_from_buf(&buf),
+            flow_id,
             packet_size,
             buf,
         }

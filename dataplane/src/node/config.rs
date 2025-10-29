@@ -25,6 +25,15 @@ pub enum CongestionControl {
     Cubic,
 }
 
+/// IP version for network addresses
+#[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum IpVersion {
+    #[default]
+    Ipv4,
+    Ipv6,
+}
+
 /// The processing mode for processing packets
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -81,6 +90,11 @@ pub struct LocalConfig {
     #[default("eth0".to_string())]
     #[arg(long)]
     pub private_network_interface: String,
+
+    /// IP version for network addresses (ipv4 or ipv6)
+    #[default(IpVersion::Ipv4)]
+    #[arg(long)]
+    pub ip_version: IpVersion,
 
     /// The port to use for communicating between nodes on the same network.
     #[default("8080".to_string())]
@@ -250,7 +264,7 @@ pub struct LocalConfig {
     pub operating_mode: OperatingMode,
 
     /// Reorder tolerance for the multipath mode.
-    #[default(4)]
+    #[default(1)]
     #[arg(long)]
     pub reorder_tolerance: usize,
 
@@ -419,8 +433,10 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
-        // sets the private ipv4 address of the network interface for the private network
-        // Defined by RFC 1918, private IP addresses fall within the following ranges:
+        // sets the private network address of the interface.
+        // Supports both IPv4 and IPv6 addresses.
+        // For IPv6, prioritizes Fly.io private network addresses (fdaa: prefix) or other ULA ranges (fc00::/7).
+        // For IPv4, uses RFC 1918 private addresses:
         // 10.0.0.0 - 10.255.255.255 (10.0.0.0/8)
         // 172.16.0.0 - 172.31.255.255 (172.16.0.0/12)
         // 192.168.0.0 - 192.168.255.255 (192.168.0.0/16)
@@ -432,53 +448,106 @@ impl LocalConfig {
                 "Failed to get the network interfaces. This is like due to the lack of privileges.",
             );
 
+            let mut ipv6addr = String::new();
             let mut ipv4addr = String::new();
 
             // iterates over the list of network interfaces to find the one matching the specified name,
             // such as 'eth0'
             for itf in network_interfaces.iter() {
                 if itf.name == itf_name {
-                    // for the matching interface, iterates over its associated addresses, looking for an
-                    // ipv4 address
+                    // for the matching interface, iterates over its associated addresses
                     for addr in itf.addr.iter() {
-                        if let Addr::V4(ipv4) = addr {
-                            ipv4addr = ipv4.ip.to_string();
+                        match addr {
+                            Addr::V6(ipv6) => {
+                                let ipv6_str = ipv6.ip.to_string();
+                                if (ipv6_str.starts_with("fdaa:") || ipv6_str.starts_with("fd"))
+                                    && (ipv6addr.is_empty() || ipv6_str.starts_with("fdaa:"))
+                                {
+                                    ipv6addr = ipv6_str;
+                                }
+                            }
+                            Addr::V4(ipv4) => {
+                                if ipv4addr.is_empty() {
+                                    ipv4addr = ipv4.ip.to_string();
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // obtains the ipv4 address of the dataplane node
-            cfgs.private_network_addr = ipv4addr;
+            // Choose IP version based on ip_version configuration.
+            match cfgs.ip_version {
+                IpVersion::Ipv4 => {
+                    if !ipv4addr.is_empty() {
+                        cfgs.private_network_addr = ipv4addr.clone();
+                        info!(
+                            "Using IPv4 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    } else if !ipv6addr.is_empty() {
+                        cfgs.private_network_addr = ipv6addr.clone();
+                        info!(
+                            "Using IPv6 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    }
+                }
+                IpVersion::Ipv6 => {
+                    if !ipv6addr.is_empty() {
+                        cfgs.private_network_addr = ipv6addr.clone();
+                        info!(
+                            "Using IPv6 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    } else if !ipv4addr.is_empty() {
+                        cfgs.private_network_addr = ipv4addr.clone();
+                        info!(
+                            "Using IPv4 address for private network: {}",
+                            cfgs.private_network_addr
+                        );
+                    }
+                }
+            }
 
-            // computes the node_id from private_network_addr using external_base_addr
-            if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
-                let ip = u32::from(real_ip);
-                // external_base_addr is used to compute the node_id
-                // as it has the same prefix with the private_network_addr
-                let base = u32::from(cfgs.external_base_addr);
-                let computed_node_id = (ip - base) as NodeId;
-                if computed_node_id != 0 && cfgs.node_id == 0 {
-                    cfgs.node_id = computed_node_id;
-                    info!(
-                        "From real IP {} using external_base_addr, node_id is: {}.",
-                        cfgs.private_network_addr, cfgs.node_id
+            if cfgs.node_id == 0 {
+                if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
+                    let ip = u32::from(real_ip);
+                    // external_base_addr is used to compute the node_id
+                    // as it has the same prefix with the private_network_addr
+                    let base = u32::from(cfgs.external_base_addr);
+                    let computed_node_id = (ip - base) as NodeId;
+                    if computed_node_id != 0 {
+                        cfgs.node_id = computed_node_id;
+                        info!(
+                            "Computed node_id from IPv4 address {} using external_base_addr: node_id = {}",
+                            cfgs.private_network_addr, cfgs.node_id
+                        );
+                    }
+                }
+            } else {
+                info!(
+                    "Using configured node_id: {}, network address: {}",
+                    cfgs.node_id, cfgs.private_network_addr
+                );
+            }
+
+            if cfgs.node_id == 0 && cfgs.private_network_addr.parse::<Ipv4Addr>().is_err() {
+                if cfgs.private_network_addr.is_empty() {
+                    error!(
+                        "No network address found on interface {}. Please configure private_network_addr manually.",
+                        itf_name
                     );
-                } else if cfgs.node_id != 0 {
+                } else {
                     info!(
-                        "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
-                        cfgs.node_id, computed_node_id, cfgs.private_network_addr
+                        "Using non-IPv4 address ({}). Node ID must be explicitly configured.",
+                        cfgs.private_network_addr
                     );
                 }
-            } else if !cfgs.private_network_addr.is_empty() {
-                error!(
-                    "Failed to parse private_network_addr as Ipv4Addr: {}.",
-                    cfgs.private_network_addr
-                );
             }
         }
 
-        // sets the ipv4 address of the network interface for the public network
+        // sets the public network address of the interface, supporting IPv4 and IPv6.
         if cfgs.public_network_addr.is_empty() {
             let itf_name = cfgs.public_network_interface.clone();
 
@@ -487,23 +556,67 @@ impl LocalConfig {
                 "Failed to get the network interfaces. This is like due to the lack of privileges.",
             );
 
+            let mut ipv6addr = String::new();
             let mut ipv4addr = String::new();
 
             // iterates over the list of network interfaces to find the one matching the specified name,
             // such as 'eth0'
             for itf in network_interfaces.iter() {
                 if itf.name == itf_name {
-                    // for the matching interface, iterates over its associated addresses, looking for an
-                    // ipv4 address
+                    // for the matching interface, iterates over its associated addresses
                     for addr in itf.addr.iter() {
-                        if let Addr::V4(ipv4) = addr {
-                            ipv4addr = ipv4.ip.to_string();
+                        match addr {
+                            Addr::V6(ipv6) => {
+                                let ipv6_str = ipv6.ip.to_string();
+                                if (ipv6_str.starts_with("fdaa:") || ipv6_str.starts_with("fd"))
+                                    && (ipv6addr.is_empty() || ipv6_str.starts_with("fdaa:"))
+                                {
+                                    ipv6addr = ipv6_str;
+                                }
+                            }
+                            Addr::V4(ipv4) => {
+                                if ipv4addr.is_empty() {
+                                    ipv4addr = ipv4.ip.to_string();
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            cfgs.public_network_addr = ipv4addr;
+            // Choose IP version based on ip_version configuration
+            match cfgs.ip_version {
+                IpVersion::Ipv4 => {
+                    if !ipv4addr.is_empty() {
+                        cfgs.public_network_addr = ipv4addr;
+                        info!(
+                            "Using IPv4 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    } else if !ipv6addr.is_empty() {
+                        cfgs.public_network_addr = ipv6addr;
+                        info!(
+                            "Using IPv6 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    }
+                }
+                IpVersion::Ipv6 => {
+                    if !ipv6addr.is_empty() {
+                        cfgs.public_network_addr = ipv6addr;
+                        info!(
+                            "Using IPv6 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    } else if !ipv4addr.is_empty() {
+                        cfgs.public_network_addr = ipv4addr;
+                        info!(
+                            "Using IPv4 address for public network: {}",
+                            cfgs.public_network_addr
+                        );
+                    }
+                }
+            }
         }
 
         // sets the number of packet processors to the number of threads if it is 0
