@@ -66,12 +66,10 @@ impl QuicServer {
         };
 
         while let Some(mut connection) = server.accept().await {
-            let _ = connection.keep_alive(true);
             let config = self.config.clone();
             let processors = self.processors.clone();
 
-            let remote_addr_snapshot = connection.remote_addr();
-            info!("Connection accepted from {:?}.", remote_addr_snapshot);
+            info!("Connection accepted from {:?}.", connection.remote_addr());
 
             if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
                 let mut node_id_buf: [u8; 8] = [0; 8];
@@ -101,13 +99,11 @@ impl QuicServer {
 
                 // adds the scheduler to send packets to the new node
                 if let Err(e) = processors.add_node(remote_node_id, scheduler) {
-                    let remote_addr_for_log = remote_addr_snapshot
-                        .as_ref()
-                        .map(|addr| addr.to_string())
-                        .unwrap_or_else(|_| "unknown:0".to_string());
                     error!(
                         "Failed to add node {} with address {}: {}",
-                        remote_node_id, remote_addr_for_log, e
+                        remote_node_id,
+                        connection.remote_addr().unwrap(),
+                        e
                     );
                     connection.close(0u32.into());
                     continue;
@@ -128,7 +124,7 @@ pub struct QuicClient {
 impl QuicClient {
     pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
         let client = Client::builder()
-            .with_tls(Path::new("server_cert.pem"))
+            .with_tls((Path::new("server_cert.pem"), Path::new("server_key.pem")))
             .expect("Failed to set TLS configuration")
             .with_io("0.0.0.0:0")
             .expect("Failed to bind the client")
@@ -211,12 +207,6 @@ impl QuicReader {
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-        if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid IPv4 total length: {}", msg_len),
-            ));
-        }
         self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
         Ok(Packet::new(msg_len, buf))

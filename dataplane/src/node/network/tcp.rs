@@ -187,12 +187,6 @@ impl TcpReader {
         self.stream.read_exact(&mut buf[0..4]).await?;
 
         let msg_len = buf[2] as usize * 256 + buf[3] as usize;
-        if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid IPv4 total length: {}", msg_len),
-            ));
-        }
         self.stream.read_exact(&mut buf[4..msg_len]).await?;
 
         Ok(Packet::new(msg_len, buf))

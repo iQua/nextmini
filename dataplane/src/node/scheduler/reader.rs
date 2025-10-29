@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant as StdInstant};
 
 use tokio::sync::{Notify, mpsc};
 use tracing::warn;
@@ -20,10 +19,6 @@ pub struct SchedulerReader {
     capacity: usize,
     receiver: mpsc::Receiver<SchedulerReaderMessage>,
     scheduler_type: SchedulingDiscipline,
-    // rate-limited logging
-    last_drop_log: StdInstant,
-    drop_log_interval: Duration,
-    drops_since_last_log: usize,
 }
 
 impl SchedulerReader {
@@ -43,9 +38,6 @@ impl SchedulerReader {
             capacity,
             receiver,
             scheduler_type,
-            last_drop_log: StdInstant::now(),
-            drop_log_interval: Duration::from_millis(500),
-            drops_since_last_log: 0,
         }
     }
 
@@ -81,23 +73,16 @@ impl SchedulerReader {
         // the case that this packet will be dropped
         if should_drop_packet {
             self.packets_dropped += 1;
-            self.drops_since_last_log += 1;
 
-            // aggregate + rate-limit logging
-            let now = StdInstant::now();
-            if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
-                warn!(
-                    "{:?}: dropped {} packets in the last {:?} (queue len: {}/{}, total dropped: {})",
-                    self.scheduler_type,
-                    self.drops_since_last_log,
-                    self.drop_log_interval,
-                    queue_len,
-                    self.capacity,
-                    self.packets_dropped
-                );
-                self.drops_since_last_log = 0;
-                self.last_drop_log = now;
-            }
+            warn!(
+                "{:?}: Scheduler dropped a packet for flow {} (size: {}). Queue length: {}/{}, packets dropped: {}",
+                self.scheduler_type,
+                packet.flow_id,
+                packet.packet_size,
+                queue_len,
+                self.capacity,
+                self.packets_dropped
+            );
             return;
         }
 
@@ -105,20 +90,11 @@ impl SchedulerReader {
 
         if self.queue.enqueue(packet).is_err() {
             self.packets_dropped += 1;
-            self.drops_since_last_log += 1;
 
-            let now = StdInstant::now();
-            if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
-                warn!(
-                    "{:?}: queue full — dropped {} packets in the last {:?} (capacity: {})",
-                    self.scheduler_type,
-                    self.drops_since_last_log,
-                    self.drop_log_interval,
-                    self.capacity
-                );
-                self.drops_since_last_log = 0;
-                self.last_drop_log = now;
-            }
+            warn!(
+                "{:?}: Scheduler dropped a packet as the queue is full.",
+                self.scheduler_type
+            );
         } else {
             // notifies the writer task if it is not a TCP data packet (e.g., if it is SYN, FIN, RST, or pure ACK)
             // if it is a TCP data packet, it is stored in the queue for a while before being consumed by the
@@ -205,10 +181,8 @@ mod tests {
         calls: Arc<Mutex<Vec<(usize, usize, usize)>>>,
     }
 
-    type CallRecord = Arc<Mutex<Vec<(usize, usize, usize)>>>;
-
     impl RecordingDrop {
-        fn new(response: bool) -> (Self, CallRecord) {
+        fn new(response: bool) -> (Self, Arc<Mutex<Vec<(usize, usize, usize)>>>) {
             let calls = Arc::new(Mutex::new(Vec::new()));
             (
                 Self {
@@ -236,9 +210,7 @@ mod tests {
     }
 
     fn make_tcp_packet(flow_id: FlowId, flags: u8) -> Packet {
-        // Build a TCP packet with payload so it is treated as TCP data.
-        // IPv4 header (20) + TCP header (20) + payload (20) = 60 bytes total.
-        let packet_size = 60;
+        let packet_size = 40;
         let mut buf = vec![0; packet_size];
 
         // IPv4 header with TCP protocol marker.
@@ -254,7 +226,7 @@ mod tests {
 
         Packet {
             flow_id,
-            packet_size,
+            packet_size: packet_size as usize,
             buf,
         }
     }
@@ -271,7 +243,7 @@ mod tests {
 
         Packet {
             flow_id,
-            packet_size,
+            packet_size: packet_size as usize,
             buf,
         }
     }
@@ -316,7 +288,7 @@ mod tests {
 
         let recorded = calls.lock().unwrap();
         assert_eq!(recorded.len(), 1);
-        assert_eq!(recorded[0], (60, 3, 3));
+        assert_eq!(recorded[0], (40, 3, 3));
     }
 
     #[tokio::test]
@@ -359,10 +331,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_tcp_data_below_threshold_does_not_notify() {
         let queue = Arc::new(MockQueue::new());
-        // With the new logic, notification occurs when the queue was empty
-        // or when updated_len > 2. Set initial len to 1 so updated_len = 2
-        // remains below the threshold and does not notify.
-        queue.set_queue_len(1);
+        queue.set_queue_len(2);
 
         let notify = Arc::new(Notify::new());
         let (dropper, _) = RecordingDrop::new(false);

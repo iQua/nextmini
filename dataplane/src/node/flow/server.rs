@@ -220,13 +220,12 @@ mod tests {
     use std::time::Duration;
 
     fn make_test_config() -> LocalConfig {
-        LocalConfig {
-            node_id: 2,
-            num_packet_processors: 1,
-            channel_capacity: 16,
-            user_space_server_port: 5000,
-            ..Default::default()
-        }
+        let mut config = LocalConfig::default();
+        config.node_id = 2;
+        config.num_packet_processors = 1;
+        config.channel_capacity = 16;
+        config.user_space_server_port = 5000;
+        config
     }
 
     fn make_flow(src_node_id: usize, dst_node_id: usize, rate: Option<usize>) -> Flow {
@@ -243,12 +242,14 @@ mod tests {
     }
 
     fn make_flow_id(config: &LocalConfig, flow: &Flow, src_port: u16) -> FlowId {
-        let src_ip = flow
-            .src_node_id
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let dst_ip = flow
-            .dst_node_id
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let src_ip =
+            flow
+                .src_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let dst_ip =
+            flow
+                .dst_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
         let dst_port = config.user_space_server_port;
 
         ((u32::from(src_ip) as u128) << 96)

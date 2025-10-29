@@ -307,20 +307,19 @@ impl UserSpaceClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::FlowIdExt;
     use crate::node::controller::interface::ControllerInterfaceHandle;
     use crate::node::processor::ProcessorMessage;
-    use tokio::time::{Duration, sleep, timeout};
+    use crate::node::FlowIdExt;
+    use tokio::time::{sleep, timeout, Duration};
 
     fn make_test_config() -> LocalConfig {
-        LocalConfig {
-            node_id: 1,
-            num_packet_processors: 1,
-            channel_capacity: 32,
-            user_space_client_port: 4000,
-            user_space_server_port: 5000,
-            ..Default::default()
-        }
+        let mut config = LocalConfig::default();
+        config.node_id = 1;
+        config.num_packet_processors = 1;
+        config.channel_capacity = 32;
+        config.user_space_client_port = 4000;
+        config.user_space_server_port = 5000;
+        config
     }
 
     fn make_flow(dst_node_id: usize, weight: Option<usize>) -> Flow {
@@ -337,12 +336,14 @@ mod tests {
     }
 
     fn expected_flow_id(config: &LocalConfig, flow: &Flow, client_port: u16) -> FlowId {
-        let client_ip = config
-            .node_id
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
-        let server_ip = flow
-            .dst_node_id
-            .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let client_ip =
+            config
+                .node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
+        let server_ip =
+            flow
+                .dst_node_id
+                .ip_addr(config.user_space_base_addr, config.local_netmask);
 
         ((u32::from(server_ip) as u128) << 96)
             | ((u32::from(client_ip) as u128) << 64)
@@ -369,7 +370,8 @@ mod tests {
         // allow spawned client thread to progress
         sleep(Duration::from_millis(10)).await;
 
-        let expected_flow_id = expected_flow_id(&config, &flow, config.user_space_client_port + 1);
+        let expected_flow_id =
+            expected_flow_id(&config, &flow, config.user_space_client_port + 1);
 
         let mut saw_connect = false;
         let mut saw_weight = false;
@@ -426,14 +428,12 @@ mod tests {
         let mut saw_weight_message = false;
 
         for _ in 0..4 {
-            if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await
-                && matches!(
-                    msg.expect("processor channel open"),
-                    ProcessorMessage::SetFlowWeight(..)
-                )
-            {
-                saw_weight_message = true;
-                break;
+            if let Ok(msg) = timeout(Duration::from_millis(200), broadcast_rx.recv()).await {
+                if matches!(msg.expect("processor channel open"), ProcessorMessage::SetFlowWeight(..))
+                {
+                    saw_weight_message = true;
+                    break;
+                }
             }
         }
 

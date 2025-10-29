@@ -98,9 +98,9 @@ impl SchedulerQueue for WrrQueue {
     }
 
     fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        let mut flow_weights = self.flow_weights.write().unwrap();
-        flow_weights.insert(flow_id, weight);
-    }
+       let mut flow_weights = self.flow_weights.write().unwrap();
+       flow_weights.insert(flow_id, weight);
+   }
 }
 
 #[cfg(test)]

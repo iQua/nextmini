@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -18,31 +17,6 @@ use crate::WebSocketWriter;
 use crate::config::Config;
 use crate::models::{DbFlow, Node};
 use crate::utils::build_flows_for_node;
-
-/// Helper function to parse and reconstruct address with a new port, supporting IPv4 and IPv6.
-fn replace_port(addr: &str, new_port: u16) -> String {
-    if let Ok(socket_addr) = addr.parse::<SocketAddr>() {
-        match socket_addr.ip() {
-            IpAddr::V6(ip) => format!("[{}]:{}", ip, new_port),
-            IpAddr::V4(ip) => format!("{}:{}", ip, new_port),
-        }
-    } else if let Ok(ip_addr) = addr.parse::<IpAddr>() {
-        match ip_addr {
-            IpAddr::V6(ip) => format!("[{}]:{}", ip, new_port),
-            IpAddr::V4(ip) => format!("{}:{}", ip, new_port),
-        }
-    } else if addr.contains('[') {
-        let ip_part = addr
-            .split(']')
-            .next()
-            .unwrap_or(addr)
-            .trim_start_matches('[');
-        format!("[{}]:{}", ip_part, new_port)
-    } else {
-        let ip_part = addr.split(':').next().unwrap_or(addr);
-        format!("{}:{}", ip_part, new_port)
-    }
-}
 
 // Event to be sent when a new node has connected to the controller.
 #[derive(Debug, Clone)]
@@ -242,7 +216,9 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
                 node.public_network_addr.clone()
             };
 
-            let remote_addr = replace_port(&remote_addr, config.max_server_port);
+            // replace the port with the Tcp max server port
+            let remote_ip = remote_addr.split(':').next().unwrap();
+            let remote_addr = format!("{}:{}", remote_ip, config.max_server_port);
 
             let msg = ControllerToDataplane::AddNodeAddress {
                 remote_node_id: node.id as usize,

@@ -616,10 +616,12 @@ impl FlowStore {
 
     #[cfg(test)]
     fn has_finished_app_entry(&self, flow_id: FlowId) -> bool {
-        self.entries.get(&flow_id).is_some_and(|entry| match entry {
-            FlowEntry::App(app_entry) => matches!(app_entry.stage, AppStage::Finished),
-            _ => false,
-        })
+        self.entries
+            .get(&flow_id)
+            .map_or(false, |entry| match entry {
+                FlowEntry::App(app_entry) => matches!(app_entry.stage, AppStage::Finished),
+                _ => false,
+            })
     }
 }
 

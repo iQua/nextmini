@@ -59,7 +59,11 @@ mod tests {
     fn enqueue_and_collect_follows_fifo_order() {
         let queue = FifoQueue::new(4);
 
-        let packets = [make_packet(1, 64), make_packet(2, 128), make_packet(3, 256)];
+        let packets = [
+            make_packet(1, 64),
+            make_packet(2, 128),
+            make_packet(3, 256),
+        ];
 
         for packet in packets {
             queue.enqueue(packet).unwrap();
