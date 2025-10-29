@@ -377,17 +377,14 @@ impl ConcurrentLocalWriterConsumer {
                             };
 
                             // establishes the expected sequence once enough packets have accumulated
-                            let expected = if let Some(v) = self.expected_seq.get(&flow_id).copied() {
-                                v
-                            } else {
+                            if !self.expected_seq.contains_key(&flow_id) {
                                 if heap_len >= self.reorder_tolerance {
                                     self.expected_seq.insert(flow_id, top_seq);
-                                    top_seq
                                 } else {
-                                    // waits for more packets before starting delivery
+                                    // wait for more before starting delivery
                                     continue;
                                 }
-                            };
+                            }
 
                             // drains contiguous prefix
                             loop {
@@ -429,7 +426,7 @@ impl ConcurrentLocalWriterConsumer {
                                     // If the heap is empty now, retire the flow
                                     let is_empty = {
                                         let q = self.queue_map.lock().await;
-                                        q.get(&flow_id).map_or(true, |h| h.is_empty())
+                                        q.get(&flow_id).is_none_or(|h| h.is_empty())
                                     };
 
                                     if is_empty {
