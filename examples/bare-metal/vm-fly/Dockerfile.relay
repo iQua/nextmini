@@ -30,10 +30,8 @@ COPY messages ./messages
 COPY controller ./controller
 COPY dataplane ./dataplane
 COPY cert-gen ./cert-gen
-COPY examples/localserver-flyio/ring-emu ./ring-emu
 
 RUN cargo build --release -p nextmini
-RUN cargo build --release --manifest-path ring-emu/Cargo.toml
 
 # Runtime stage - minimal Alpine image with TUN support
 FROM alpine:latest AS runtime
@@ -45,12 +43,10 @@ RUN apk add --no-cache ca-certificates libgcc iproute2 iptables
 # Copy dataplane binary
 COPY --from=builder /app/target/release/nextmini /usr/local/bin/nextmini
 
-# Copy ringallreduce binary for testing
-COPY --from=builder /app/ring-emu/target/release/ringallreduce /usr/local/bin/ringallreduce
-
-# Prepare ring-test directory and files (avoid runtime SSH copy)
-RUN mkdir -p /tmp/ring-test
-COPY examples/localserver-flyio/ring-emu/ring.txt /tmp/ring-test/ring.txt
+# Copy TLS certificates (required for QUIC)
+# Need to add this!
+COPY server_cert.pem /app/server_cert.pem
+COPY server_key.pem /app/server_key.pem
 
 # Config file will be mounted at runtime via fly.toml [files] section
 
@@ -58,5 +54,6 @@ ENV RUST_LOG=info
 
 EXPOSE 8080
 
-# Run nextmini dataplane (ringallreduce launched via SSH)
+# Run nextmini dataplane
 ENTRYPOINT ["/usr/local/bin/nextmini"]
+

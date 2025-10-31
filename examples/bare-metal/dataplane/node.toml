@@ -1,5 +1,6 @@
 # Change to the real ip controller_addr.
 controller_addr = "ws://206.12.89.244:3000"
+ip_version = "ipv4"
 num_tun_queues = 1
 num_packet_processors = 4
 channel_capacity = 4000

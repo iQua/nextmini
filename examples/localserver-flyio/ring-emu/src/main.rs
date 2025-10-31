@@ -90,9 +90,9 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("rank {} failed to bind {}", args.rank, my))?;
 
-    // Wait 3 seconds to let all nodes bind before attempting connections
-    println!("[rank {}] waiting 3s for all nodes to bind...", args.rank);
-    sleep(Duration::from_secs(3)).await;
+    // Wait 1 second to let all nodes bind before attempting connections
+    println!("[rank {}] waiting 1s for all nodes to bind...", args.rank);
+    sleep(Duration::from_secs(1)).await;
 
     let mut right_stream = connect_with_retry(right, args.retry_ms, args.rank).await?;
     right_stream.set_nodelay(true)?;

@@ -1,0 +1,147 @@
+# Running Nextmini Dataplane with Docker
+
+This guide explains how to build, push, and run the Nextmini dataplane as a Docker container across multiple physical machines with the same dataplane image.
+
+## Overview
+
+## Step 1: Build and Push to Docker Hub
+
+On the development machine:
+
+```bash
+cd /path/to/nextmini/dataplane
+chmod +x build-and-push.sh
+./build-and-push.sh <your-dockerhub-username> v1.0.0
+```
+
+### Making the Repository Private
+
+1. Visit https://hub.docker.com
+2. Navigate to your `nextmini-dataplane` repository
+3. Go to Settings → Make Private
+
+## Step 2: Prepare Configuration
+
+Create a `config.toml` file for each dataplane node. **Key requirement**: You must explicitly specify IP addresses.
+
+### Example config.toml
+
+```toml
+# Explicitly specify the host machine's IP addresses
+private_network_addr = "10.0.0.11"        # Private/internal network IP
+public_network_addr = "125.253.72.201"    # Public/external network IP
+
+# Network and performance settings
+private_network_name = "net1"
+num_tun_queues = 1
+num_packet_processors = 4
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+
+# Optional: Manually set node ID
+node_id = 1
+```
+
+### Finding Your IP Addresses
+
+```bash
+# Public IP
+curl ifconfig.me
+
+# Private IP (check your network interfaces)
+ip addr show
+```
+
+## Step 3: Deploy on Each Machine
+
+### Login to Docker Hub
+
+On each machine where you want to run a dataplane node:
+
+```bash
+sudo docker login
+```
+
+### Pull the Image
+
+```bash
+sudo docker pull <your-dockerhub-username>/nextmini-dataplane:v1.0.0
+```
+
+### Run the Container
+
+```bash
+sudo docker run -d \
+  --name nextmini-node \
+  --privileged \
+  --cap-add=NET_ADMIN \
+  -p 8080:8080 \
+  -v $(pwd)/config.toml:/var/nextmini/config.toml \
+  <your-dockerhub-username>/nextmini-dataplane:v1.0.0 \
+  ./nextmini --config-path config.toml ws://<controller-ip>:3000
+```
+
+Some important flags:
+- `--privileged` and `--cap-add=NET_ADMIN`: Required for creating TUN devices
+- `-p 8080:8080`: Maps container port to host port so other nodes can connect
+- `-v $(pwd)/config.toml:/var/nextmini/config.toml`: Mounts your config file
+- `--config-path config.toml`: Specifies the config file path
+- `ws://<controller-ip>:3000`: Controller WebSocket address
+
+## Step 4: Verify and Test
+
+### Check Container Status
+
+```bash
+sudo docker ps
+sudo docker logs -f nextmini-node
+```
+
+## Multi-Node Deployment Example
+
+### Setup: 2 Nodes
+
+**Node 1** (125.253.72.201):
+```bash
+# config.toml
+private_network_addr = "10.0.0.11"
+public_network_addr = "125.253.72.201"
+node_id = 1
+
+# Run
+sudo docker run -d --name nextmini-node --privileged --cap-add=NET_ADMIN \
+  -p 8080:8080 -v $(pwd)/config.toml:/var/nextmini/config.toml \
+  myuser/nextmini-dataplane:v1.0.0 \ # where myuser is your Docker Hub username
+  ./nextmini --config-path config.toml ws://206.12.89.244:3000
+```
+
+**Node 2** (142.150.238.6):
+```bash
+# config.toml
+private_network_addr = "128.100.241.24"
+public_network_addr = "142.150.238.6"
+node_id = 2
+
+# Run（Or without sudo, depending on the env setting）
+sudo docker run -d --name nextmini-node --privileged --cap-add=NET_ADMIN \
+  -p 8080:8080 -v $(pwd)/config.toml:/var/nextmini/config.toml \
+  myuser/nextmini-dataplane:v1.0.0 \
+  ./nextmini --config-path config.toml ws://206.12.89.244:3000
+```
+
+## Updating the Image
+
+To deploy a new version:
+
+```bash
+# Build and push new version
+cd dataplane
+./build-and-push.sh myuser v1.0.1
+
+# On each node
+sudo docker stop nextmini-node
+sudo docker rm nextmini-node
+sudo docker pull myuser/nextmini-dataplane:v1.0.1
+sudo docker run -d ... myuser/nextmini-dataplane:v1.0.1 ...
+```

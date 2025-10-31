@@ -1,7 +1,4 @@
 /controller/**/*.js
-/dataplane/target
-/messages/target
-/controller/target
 /controller/node_modules
 .vscode
 test.txt
@@ -10,15 +7,21 @@ bigfile.zip
 lightning_logs/
 **/*.der
 **/Cargo.lock
-/target
 **/.venv
 **/uv.lock
 **/__pycache__
 **/server_cert.pem
 **/server_key.pem
 
+# Rust build artifacts - match all target directories
+target/
+**/target/
+
+# Deployment directories
 **/controller-deploy/
 **/node*-deploy/
+
+# Log and backup files
 *.log
 *.bak
 *~

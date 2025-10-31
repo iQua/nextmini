@@ -1,0 +1,10 @@
+baseline-ring-1.internal:9000
+baseline-ring-2.internal:9000
+baseline-ring-3.internal:9000
+baseline-ring-4.internal:9000
+baseline-ring-5.internal:9000
+baseline-ring-6.internal:9000
+baseline-ring-7.internal:9000
+baseline-ring-8.internal:9000
+baseline-ring-9.internal:9000
+baseline-ring-10.internal:9000
