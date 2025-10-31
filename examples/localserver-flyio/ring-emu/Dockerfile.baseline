@@ -1,0 +1,33 @@
+# Baseline Dockerfile for ring-emu testing (no nextmini overlay)
+# This is for bare-metal performance testing on Fly.io native network
+
+FROM rust:alpine AS builder
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache musl-dev
+
+# Copy only ring-emu source
+COPY ring-emu/Cargo.toml ring-emu/Cargo.lock ./
+COPY ring-emu/src ./src
+
+# Build ringallreduce binary
+RUN cargo build --release
+
+# Runtime stage - minimal Alpine image
+FROM alpine:latest
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache ca-certificates
+
+# Copy ringallreduce binary
+COPY --from=builder /app/target/release/ringallreduce /usr/local/bin/ringallreduce
+
+# Pre-create directory and copy ring.txt (pre-configured for N nodes)
+RUN mkdir -p /tmp/ring-baseline
+COPY ring-emu/ring.txt /tmp/ring-baseline/ring.txt
+
+# Keep container running, SSH will trigger ringallreduce directly
+CMD ["sleep", "infinity"]
+

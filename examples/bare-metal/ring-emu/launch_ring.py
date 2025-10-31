@@ -173,7 +173,8 @@ async def main():
     # Normalize paths used on remote
     remote_dir_clean = remote_dir.rstrip('/')
     remote_ring_path = f"{remote_dir_clean}/{args.remote_ring_name}"
-    remote_bin_path = f"{remote_dir_clean}/ringallreduce"
+    remote_bin_name = args.bin.name  # Use actual binary filename
+    remote_bin_path = f"{remote_dir_clean}/{remote_bin_name}"
 
     # 1) Prepare remote directories and copy artifacts
     if not args.no_copy:
