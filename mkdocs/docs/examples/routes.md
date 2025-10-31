@@ -1,0 +1,140 @@
+# Defining the Network Topology and Routes
+
+The example in `examples/routes` shows how the network topology and routes can be defined in the controller's configuration file.
+
+To build and run this example in the `examples/routes` directory:
+
+```bash
+docker compose build; docker compose up
+```
+
+To start, run an `iperf3` server in `node4`:
+
+```bash
+docker exec -it node4 /bin/bash
+```
+
+```bash
+node4:/var/nextmini# iperf3 -s
+```
+
+Similarly, run the `iperf3` client in `node1` to connect to `node4`, with its Nextmini IP address `10.0.0.4`:
+
+```bash
+docker exec -it node1 /bin/bash
+```
+
+```bash
+node1:/var/nextmini# iperf3 -c 10.0.0.4
+```
+
+To stop the Docker containers:
+
+```bash
+docker compose down
+```
+
+### Defining the Network Topology
+
+The network topology is defined in the `[topology]` section of the configuration file. Four types of topologies are supported: `full_mesh`, `ring`, `fat_tree`, and `torus`, each with its own configuration parameters:
+
+```toml
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 4 }
+```
+
+```toml
+[topology]
+type = "ring"
+ring_config = { n_nodes = 4 }
+```
+
+```toml
+[topology]
+type = "fat_tree"
+fat_tree_config = { k = 4 }
+```
+
+```toml
+[topology]
+type = "torus"
+ring_config = { dim = 3, n = 4 }
+```
+
+Alternatively, one can choose to define the edges in the network topology directly:
+
+```toml
+[topology]
+edges = [[1, 2], [2, 4], [1, 3], [3, 4]]
+```
+
+Nextmini's controller uses the network topology to determine which neighbouring nodes a new node should connect with when it joins. The dataplane only establishes TCP or QUIC connections between neighbouring nodes in the network topology.
+
+### Defining the Routing Protocol or Custom Routes
+
+So far, the shortest path routing protocol is supported by Nextmini's controller to compute the routes between any source-destination pair:
+
+```toml
+[routing]
+protocol = "shortest_path"
+```
+
+If the routing protocol is not defined, one can choose to define all the routes using the configuration file instead. There are two different alternatives to define custom routes between a source node and a destination node using the controller's configuration file (typically named `controller-config.toml`). If the route is a simple path with a sequence of nodes, it can be defined as follows:
+
+```toml
+[[routes]]
+route = [1, 2, 3, 4]
+```
+
+Alternatively, if the route is a Directed Acyclic Graph (that may involve multiple paths), it can be defined as:
+
+```toml
+[[routes]]
+route = [[1, 2], [2, 4], [1, 3], [3, 4]]
+```
+
+Nextmini's controller will read these routes, and automatically compute the node IDs for the source and destination.
+
+### Example: Defining a Ring Topology with the Shortest Path Protocol
+
+Copy and paste the following lines into the `controller-config.toml` file in the `examples/routes` directory.
+
+```toml
+protocol = "tcp"
+
+[topology]
+type = "ring"
+ring_config = { n_nodes = 4 }
+
+[routing]
+protocol = "shortest_path"
+```
+
+With this configuration, Nextmini will create all the routes, such as `1 → 2`, `2 → 3`, `3 → 4`, `4 → 1`.
+
+To view the exact routes created and stored in the database, open a new terminal and run:
+
+```bash
+docker exec -it postgres psql -U pgusr -d nextmini -c "SELECT * FROM routes ORDER BY src_node_id, dst_node_id;"
+```
+
+Example output you can see in the terminal:
+
+```shell
+ route_id | src_node_id | dst_node_id |      edges
+----------+-------------+-------------+------------------
+        1 |           1 |           2 | [[1, 2]]
+        2 |           1 |           3 | [[1, 2], [2, 3]]
+        3 |           1 |           4 | [[1, 4]]
+        4 |           2 |           1 | [[2, 1]]
+        5 |           2 |           3 | [[2, 3]]
+        6 |           2 |           4 | [[2, 3], [3, 4]]
+        7 |           3 |           1 | [[3, 2], [2, 1]]
+        8 |           3 |           2 | [[3, 2]]
+        9 |           3 |           4 | [[3, 4]]
+       10 |           4 |           1 | [[4, 1]]
+       11 |           4 |           2 | [[4, 1], [1, 2]]
+       12 |           4 |           3 | [[4, 3]]
+(12 rows)
+```
