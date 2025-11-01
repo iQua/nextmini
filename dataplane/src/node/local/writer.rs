@@ -31,21 +31,14 @@ impl LocalWriter {
                 packet_receiver,
             )),
             Feature::Concurrent => {
-                let delay = match config.delay_tolerance {
-                    0 => None,
-                    micros => Some(Duration::from_micros(micros)),
-                };
-                let backlog = if config.backlog_tolerance == 0 {
-                    0
-                } else {
-                    config.backlog_tolerance.min(usize::MAX as u64) as usize
-                };
+                let (enforce, gap_timeout, backlog) = config.reorder_tolerances();
                 LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
                     device,
                     shutdown_receiver,
                     packet_receiver,
-                    delay,
+                    gap_timeout,
                     backlog,
+                    enforce,
                 )))
             }
         }
@@ -164,8 +157,7 @@ pub struct ConcurrentLocalWriterProducer {
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
     gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
-    gap_timeout: Option<Duration>,
-    backlog_tolerance: usize,
+    enforce_order: bool,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -175,6 +167,7 @@ impl ConcurrentLocalWriterProducer {
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
         gap_timeout: Option<Duration>,
         backlog_tolerance: usize,
+        enforce_order: bool,
     ) -> Self {
         let queue_map = Arc::new(Mutex::new(HashMap::new()));
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
@@ -182,22 +175,25 @@ impl ConcurrentLocalWriterProducer {
         let expected_seq_map = Arc::new(Mutex::new(HashMap::new()));
         let gap_deadlines = Arc::new(Mutex::new(HashMap::new()));
 
-        let consumer = ConcurrentLocalWriterConsumer {
-            shutdown_receiver: shutdown_receiver.resubscribe(),
-            queue_map: queue_map.clone(),
-            active_flows: active_flows.clone(),
-            device: device.clone(),
-            queue_not_empty: queue_not_empty.clone(),
-            expected_seq_map: expected_seq_map.clone(),
-            gap_deadlines: gap_deadlines.clone(),
-            gap_timeout,
-            backlog_tolerance,
-        };
+        if enforce_order {
+            let consumer = ConcurrentLocalWriterConsumer {
+                shutdown_receiver: shutdown_receiver.resubscribe(),
+                queue_map: queue_map.clone(),
+                active_flows: active_flows.clone(),
+                device: device.clone(),
+                queue_not_empty: queue_not_empty.clone(),
+                expected_seq_map: expected_seq_map.clone(),
+                gap_deadlines: gap_deadlines.clone(),
+                gap_timeout,
+                backlog_tolerance,
+                enforce_order,
+            };
 
-        tokio::spawn(async move {
-            let mut consumer = consumer;
-            consumer.run().await;
-        });
+            tokio::spawn(async move {
+                let mut consumer = consumer;
+                consumer.run().await;
+            });
+        }
 
         Self {
             shutdown_receiver,
@@ -208,8 +204,7 @@ impl ConcurrentLocalWriterProducer {
             queue_not_empty,
             expected_seq_map,
             gap_deadlines,
-            gap_timeout,
-            backlog_tolerance,
+            enforce_order,
         }
     }
 
@@ -221,27 +216,29 @@ impl ConcurrentLocalWriterProducer {
                         let flow_id = packet.flow_id;
 
                         if !packet.is_tcp_data() {
-                            if packet.is_tcp_syn() {
-                                let start = packet.seq_num().wrapping_add(1);
-                                let mut exp = self.expected_seq_map.lock().await;
-                                exp.insert(flow_id, start);
+                            if self.enforce_order {
+                                if packet.is_tcp_syn() {
+                                    let start = packet.seq_num().wrapping_add(1);
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    exp.insert(flow_id, start);
 
-                                let mut active = self.active_flows.lock().await;
-                                active.insert(flow_id);
+                                    let mut active = self.active_flows.lock().await;
+                                    active.insert(flow_id);
 
-                                let mut deadlines = self.gap_deadlines.lock().await;
-                                deadlines.remove(&flow_id);
-                            } else if packet.is_tcp_fin_or_rst() {
-                                let fin_next = packet.seq_num().wrapping_add(1);
-                                let mut exp = self.expected_seq_map.lock().await;
-                                exp.entry(flow_id).and_modify(|e| {
-                                    if SequencedPacket::seq_less(*e, fin_next) {
-                                        *e = fin_next;
-                                    }
-                                }).or_insert(fin_next);
+                                    let mut deadlines = self.gap_deadlines.lock().await;
+                                    deadlines.remove(&flow_id);
+                                } else if packet.is_tcp_fin_or_rst() {
+                                    let fin_next = packet.seq_num().wrapping_add(1);
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    exp.entry(flow_id).and_modify(|e| {
+                                        if SequencedPacket::seq_less(*e, fin_next) {
+                                            *e = fin_next;
+                                        }
+                                    }).or_insert(fin_next);
 
-                                let mut deadlines = self.gap_deadlines.lock().await;
-                                deadlines.remove(&flow_id);
+                                    let mut deadlines = self.gap_deadlines.lock().await;
+                                    deadlines.remove(&flow_id);
+                                }
                             }
 
                             // Send immediately to TUN
@@ -255,6 +252,16 @@ impl ConcurrentLocalWriterProducer {
                         }
 
                         // Enqueue TCP data
+                        if !self.enforce_order {
+                            let buf = &packet.buf[0..packet.packet_size];
+                            if let Err(_) = self.device.try_send(buf) {
+                                if let Err(e) = self.device.send(buf).await {
+                                    error!("Failed to write packet to the TUN device: {}. Dropped.", e);
+                                }
+                            }
+                            continue;
+                        }
+
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
                         {
                             let mut q = self.queue_map.lock().await;
@@ -281,6 +288,7 @@ impl ConcurrentLocalWriterProducer {
 }
 
 struct ConcurrentLocalWriterConsumer {
+    enforce_order: bool,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
@@ -294,6 +302,10 @@ struct ConcurrentLocalWriterConsumer {
 
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
+        if !self.enforce_order {
+            return;
+        }
+
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
@@ -334,11 +346,11 @@ impl ConcurrentLocalWriterConsumer {
                                     }
                                 };
 
-                                let expected = {
-                                    let mut exp = self.expected_seq_map.lock().await;
-                                    match exp.get(&flow_id).copied() {
-                                        Some(e) => e,
-                                        None => {
+                        let expected = {
+                            let mut exp = self.expected_seq_map.lock().await;
+                            match exp.get(&flow_id).copied() {
+                                Some(e) => e,
+                                None => {
                                             exp.insert(flow_id, top_seq);
                                             top_seq
                                         }
@@ -368,10 +380,7 @@ impl ConcurrentLocalWriterConsumer {
                                         let buf = &packet.buf[0..packet.packet_size];
                                         if let Err(_) = self.device.try_send(buf) {
                                             if let Err(e) = self.device.send(buf).await {
-                                                error!(
-                                                    "Failed to write stale packet to the TUN device: {}. Dropped.",
-                                                    e
-                                                );
+                                                error!("Failed to write stale packet to the TUN device: {}. Dropped.", e);
                                             }
                                         }
 
@@ -382,7 +391,7 @@ impl ConcurrentLocalWriterConsumer {
                                     break;
                                 }
 
-                                if self.backlog_tolerance > 0 && self.gap_timeout.is_none() && top_seq != expected {
+                                if self.backlog_tolerance > 0 && top_seq != expected {
                                     let backlog_len = {
                                         let q = self.queue_map.lock().await;
                                         q.get(&flow_id).map(|h| h.len()).unwrap_or(0)
