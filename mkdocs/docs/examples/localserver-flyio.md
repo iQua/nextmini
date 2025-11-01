@@ -2,7 +2,6 @@
 
 This deployment configuration runs the **Controller and PostgreSQL locally** (on your physical/virtual server) while deploying **Dataplane nodes to Fly.io**.
 
-
 ## Architecture
 
 ```
@@ -26,7 +25,7 @@ Local Server (like 206.12.89.244)       Fly.io (edge)
 ### 1. Start Local Controller
 
 ```bash
-cd /home/ubuntu/nextmini/examples/localserver-flyio
+cd /home/ubuntu/nextmini/examples/sim-flyio
 uv run start-controller.py
 ```
 
