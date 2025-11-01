@@ -3,8 +3,8 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
-use tokio::time::Duration;
-use tracing::{error, info};
+use tokio::time::{Duration, Instant};
+use tracing::{error, info, warn};
 use tun_rs::{AsyncDevice, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 
 use crate::node::FlowId;
@@ -207,6 +207,9 @@ impl Ord for SequencedPacket {
     }
 }
 
+// Allow out-of-order delivery after a short pause so a missing segment does not stall a flow forever.
+const GAP_TIMEOUT_MS: u64 = 5;
+
 pub struct ConcurrentLocalWriterProducer {
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -215,6 +218,7 @@ pub struct ConcurrentLocalWriterProducer {
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
+    gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -227,6 +231,7 @@ impl ConcurrentLocalWriterProducer {
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
         let queue_not_empty = Arc::new(Notify::new());
         let expected_seq_map = Arc::new(Mutex::new(HashMap::new()));
+        let gap_deadlines = Arc::new(Mutex::new(HashMap::new()));
 
         let consumer = ConcurrentLocalWriterConsumer {
             shutdown_receiver: shutdown_receiver.resubscribe(),
@@ -235,6 +240,7 @@ impl ConcurrentLocalWriterProducer {
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
             expected_seq_map: expected_seq_map.clone(),
+            gap_deadlines: gap_deadlines.clone(),
         };
 
         tokio::spawn(async move {
@@ -249,8 +255,8 @@ impl ConcurrentLocalWriterProducer {
             queue_map,
             active_flows,
             queue_not_empty,
-
             expected_seq_map,
+            gap_deadlines,
         }
     }
 
@@ -272,6 +278,9 @@ impl ConcurrentLocalWriterProducer {
 
                                 let mut active = self.active_flows.lock().await;
                                 active.insert(flow_id);
+
+                                let mut deadlines = self.gap_deadlines.lock().await;
+                                deadlines.remove(&flow_id);
                             } else if packet.is_tcp_fin_or_rst() {
                                 // do not remove expectation; FIN may arrive out of order
                                 let fin_next = packet.seq_num().wrapping_add(1);
@@ -282,6 +291,9 @@ impl ConcurrentLocalWriterProducer {
                                         *e = fin_next;
                                     }
                                 }).or_insert(fin_next);
+
+                                let mut deadlines = self.gap_deadlines.lock().await;
+                                deadlines.remove(&flow_id);
                             }
 
                             // forwards control packets immediately
@@ -324,6 +336,7 @@ struct ConcurrentLocalWriterConsumer {
     device: Arc<AsyncDevice>,
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
+    gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
 }
 
 impl ConcurrentLocalWriterConsumer {
@@ -331,6 +344,7 @@ impl ConcurrentLocalWriterConsumer {
         let mut pending_packets: Vec<Packet> = Vec::new();
         let batch_timeout = Duration::from_millis(1);
         let mut batch_writer = BatchLocalWriter::new(self.device.clone());
+        let gap_timeout = Duration::from_millis(GAP_TIMEOUT_MS);
 
         loop {
             tokio::select! {
@@ -357,96 +371,175 @@ impl ConcurrentLocalWriterConsumer {
                         let mut progressed_any = false;
 
                         for flow_id in flow_ids {
-                            // peeks smallest seq for flow
-                            let top_seq_opt = {
-                                let q = self.queue_map.lock().await;
-                                q.get(&flow_id).and_then(|h| h.peek().map(|sp| sp.seq))
-                            };
+                            'per_flow: loop {
+                                let top_seq_opt = {
+                                    let q = self.queue_map.lock().await;
+                                    q.get(&flow_id).and_then(|h| h.peek().map(|sp| sp.seq))
+                                };
 
-                            let top_seq = match top_seq_opt {
-                                Some(s) => s,
-                                None => {
-                                    let mut active = self.active_flows.lock().await;
-                                    active.remove(&flow_id);
-                                    continue;
-                                }
-                            };
-
-                            // expected (create lazily only if missing)
-                            let expected = {
-                                let mut exp = self.expected_seq_map.lock().await;
-                                match exp.get(&flow_id).copied() {
-                                    Some(e) => e,
-                                    None => { exp.insert(flow_id, top_seq); top_seq }
-                                }
-                            };
-
-                            // drops stale (< expected) so they don't block progress
-                            {
-                                let mut q = self.queue_map.lock().await;
-                                if let Some(h) = q.get_mut(&flow_id) {
-                                    while let Some(peek) = h.peek() {
-                                        if SequencedPacket::seq_less(peek.seq, expected) {
-                                            h.pop();
-                                        } else { break; }
+                                let top_seq = match top_seq_opt {
+                                    Some(s) => s,
+                                    None => {
+                                        let mut active = self.active_flows.lock().await;
+                                        active.remove(&flow_id);
+                                        {
+                                            let mut deadlines = self.gap_deadlines.lock().await;
+                                            deadlines.remove(&flow_id);
+                                        }
+                                        break 'per_flow;
                                     }
-                                }
-                            }
+                                };
 
-                            // pops next in-order (== current expected)
-                            let maybe_sp = {
-                                let mut q = self.queue_map.lock().await;
-                                if let Some(h) = q.get_mut(&flow_id) {
-                                    if let Some(peek) = h.peek() {
+                                let expected = {
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    match exp.get(&flow_id).copied() {
+                                        Some(e) => e,
+                                        None => { exp.insert(flow_id, top_seq); top_seq }
+                                    }
+                                };
+
+                                loop {
+                                    let maybe_stale = {
+                                        let mut q = self.queue_map.lock().await;
+                                        if let Some(h) = q.get_mut(&flow_id) {
+                                            if let Some(peek) = h.peek() {
+                                                if SequencedPacket::seq_less(peek.seq, expected) {
+                                                    h.pop()
+                                                } else { None }
+                                            } else { None }
+                                        } else { None }
+                                    };
+
+                                    if let Some(stale) = maybe_stale {
+                                        pending_packets.push(stale.packet);
+                                        progressed_any = true;
+
+                                        if pending_packets.len() >= IDEAL_BATCH_SIZE {
+                                            let _ = batch_writer.write(&mut pending_packets).await;
+                                            pending_packets.clear();
+                                        }
+
+                                        continue 'per_flow;
+                                    }
+
+                                    break;
+                                }
+
+                                if top_seq == expected {
+                                    let maybe_sp = {
+                                        let mut q = self.queue_map.lock().await;
+                                        if let Some(h) = q.get_mut(&flow_id) {
+                                            h.pop()
+                                        } else { None }
+                                    };
+
+                                    if let Some(sp) = maybe_sp {
+                                        let packet = sp.packet;
+
                                         let exp_now = {
                                             let exp = self.expected_seq_map.lock().await;
                                             *exp.get(&flow_id).unwrap_or(&expected)
                                         };
-                                        if peek.seq == exp_now { h.pop() } else { None }
-                                    } else { None }
-                                } else { None }
-                            };
+                                        let payload = packet.tcp_payload_len() as u32;
+                                        let fin_inc = if packet.is_tcp_fin_or_rst() { 1 } else { 0 };
+                                        let next_expected = exp_now.wrapping_add(payload + fin_inc);
+                                        {
+                                            let mut exp = self.expected_seq_map.lock().await;
+                                            let e = exp.entry(flow_id).or_insert(next_expected);
+                                            if SequencedPacket::seq_less(*e, next_expected) {
+                                                *e = next_expected;
+                                            }
+                                        }
 
-                            if let Some(sp) = maybe_sp {
-                                let packet = sp.packet;
+                                        pending_packets.push(packet);
+                                        {
+                                            let mut deadlines = self.gap_deadlines.lock().await;
+                                            deadlines.remove(&flow_id);
+                                        }
+                                        progressed_any = true;
 
-                                // advances from the authoritative expected (exp_now), not the older snapshot.
-                                let exp_now = {
-                                    let exp = self.expected_seq_map.lock().await;
-                                    *exp.get(&flow_id).unwrap_or(&expected)
-                                };
-                                let payload = packet.tcp_payload_len() as u32;
-                                let fin_inc = if packet.is_tcp_fin_or_rst() { 1 } else { 0 };
-                                let next_expected = exp_now.wrapping_add(payload + fin_inc);
+                                        if pending_packets.len() >= IDEAL_BATCH_SIZE {
+                                            let _ = batch_writer.write(&mut pending_packets).await;
+                                            pending_packets.clear();
+                                        }
+
+                                        let is_empty = {
+                                            let q = self.queue_map.lock().await;
+                                            match q.get(&flow_id) {
+                                                Some(h) => h.is_empty(),
+                                                None => true,
+                                            }
+                                        };
+                                        if is_empty {
+                                            let mut active = self.active_flows.lock().await;
+                                            active.remove(&flow_id);
+                                            {
+                                                let mut deadlines = self.gap_deadlines.lock().await;
+                                                deadlines.remove(&flow_id);
+                                            }
+                                        }
+
+                                        continue 'per_flow;
+                                    } else {
+                                        break 'per_flow;
+                                    }
+                                }
+
+                                if SequencedPacket::seq_less(top_seq, expected) {
+                                    let mut q = self.queue_map.lock().await;
+                                    if let Some(h) = q.get_mut(&flow_id) {
+                                        h.pop();
+                                    }
+                                    progressed_any = true;
+                                    continue 'per_flow;
+                                }
+
+                                let now = Instant::now();
+                                let mut arm_timer = false;
+                                let mut advance_expected = false;
                                 {
-                                    let mut exp = self.expected_seq_map.lock().await;
-                                    let e = exp.entry(flow_id).or_insert(next_expected);
-                                    if SequencedPacket::seq_less(*e, next_expected) {
-                                        *e = next_expected;
+                                    let mut deadlines = self.gap_deadlines.lock().await;
+                                    match deadlines.get(&flow_id).copied() {
+                                        Some(deadline) => {
+                                            if now >= deadline {
+                                                deadlines.remove(&flow_id);
+                                                advance_expected = true;
+                                            }
+                                        }
+                                        None => {
+                                            deadlines.insert(flow_id, now + gap_timeout);
+                                            arm_timer = true;
+                                        }
                                     }
                                 }
 
-                                pending_packets.push(packet);
-                                progressed_any = true;
-
-                                if pending_packets.len() >= IDEAL_BATCH_SIZE {
-                                    let _ = batch_writer.write(&mut pending_packets).await;
-                                    pending_packets.clear();
+                                if arm_timer {
+                                    let notify = self.queue_not_empty.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(gap_timeout).await;
+                                        notify.notify_one();
+                                    });
                                 }
 
-                                // if heap is empty, just mark flow inactive; DO NOT drop expectation.
-                                let is_empty = {
-                                    let q = self.queue_map.lock().await;
-                                    match q.get(&flow_id) {
-                                        Some(h) => h.is_empty(),
-                                        None => true,
+                                if advance_expected {
+                                    {
+                                        let mut exp = self.expected_seq_map.lock().await;
+                                        let entry = exp.entry(flow_id).or_insert(top_seq);
+                                        if SequencedPacket::seq_less(*entry, top_seq) || *entry == top_seq {
+                                            *entry = top_seq;
+                                        }
                                     }
-                                };
-                                if is_empty {
-                                    let mut active = self.active_flows.lock().await;
-                                    active.remove(&flow_id);
-                                    // keeps expected_seq_map entry to avoid regressions on late packets
+                                    warn!(
+                                        flow_id = ?flow_id,
+                                        expected = expected,
+                                        next_in_queue = top_seq,
+                                        "Gap timer expired; advancing expected sequence."
+                                    );
+                                    progressed_any = true;
+                                    continue 'per_flow;
                                 }
+
+                                break 'per_flow;
                             }
                         }
 
