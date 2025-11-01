@@ -12,6 +12,7 @@ use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
+use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
 
 pub struct Conductor {
@@ -142,6 +143,37 @@ impl Conductor {
                     tokio::select! {
                         _ = quic_server_public.start_listening(&public_addr) => {},
                         _ = quic_server_private.start_listening(&private_addr) => {},
+                    }
+                }
+            }
+            Protocol::Udp => {
+                if public_port == private_port {
+                    let mut udp_server = UdpServer::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    );
+
+                    let udp_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    udp_server.start_listening(&udp_addr).await;
+                } else {
+                    let mut udp_server_public = UdpServer::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    );
+                    let mut udp_server_private = UdpServer::new(
+                        self.config.clone(),
+                        self.processors.clone(),
+                        self.reporter.clone(),
+                    );
+
+                    let public_addr = format!("{}:{}", "0.0.0.0", public_port);
+                    let private_addr = format!("{}:{}", "0.0.0.0", private_port);
+
+                    tokio::select! {
+                        _ = udp_server_public.start_listening(&public_addr) => {},
+                        _ = udp_server_private.start_listening(&private_addr) => {},
                     }
                 }
             }

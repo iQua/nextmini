@@ -11,17 +11,20 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
+use crate::node::network::udp::{UdpClient, UdpReader, UdpStream, UdpWriter};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
 pub enum NetworkStream {
     Tcp(TcpStream),
     Quic(BidirectionalStream),
+    Udp(UdpStream),
 }
 
 pub enum ProtocolWriter {
     Tcp(TcpWriter),
     Quic(QuicWriter),
+    Udp(UdpWriter),
 }
 
 impl ProtocolWriter {
@@ -30,6 +33,7 @@ impl ProtocolWriter {
         match self {
             ProtocolWriter::Tcp(writer) => writer.write_packets(packets).await,
             ProtocolWriter::Quic(writer) => writer.write_packets(packets).await,
+            ProtocolWriter::Udp(writer) => writer.write_packets(packets).await,
         }
     }
 }
@@ -156,6 +160,17 @@ impl NetworkInterface {
 
                 self.init(NetworkStream::Quic(quic_stream))
             }
+            Protocol::Udp => {
+                let udp_client = UdpClient {
+                    config: self.config.clone(),
+                };
+
+                let udp_stream = udp_client
+                    .connect(remote_node_id, remote_addr.as_str())
+                    .await;
+
+                self.init(NetworkStream::Udp(udp_stream))
+            }
         }
     }
 
@@ -184,6 +199,16 @@ impl NetworkInterface {
                 });
 
                 ProtocolWriter::Quic(quic_writer)
+            }
+            NetworkStream::Udp(udp_stream) => {
+                let mut udp_reader = UdpReader::new(udp_stream.receiver, self.processors.clone());
+                let udp_writer = UdpWriter::new(udp_stream.socket, udp_stream.remote_addr);
+
+                tokio::spawn(async move {
+                    udp_reader.run().await;
+                });
+
+                ProtocolWriter::Udp(udp_writer)
             }
         }
     }
