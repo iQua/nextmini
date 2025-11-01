@@ -338,10 +338,9 @@ impl ConcurrentLocalWriterConsumer {
 
                             if let Some(packet) = maybe_packet {
                                 // advances the expected sequence number by payload length (wrap-aware)
-                                // SYN and FIN flags each consume one sequence number even with zero payload
                                 let payload = packet.tcp_payload_len() as u32;
-                                let syn_fin_adjust = if packet.has_tcp_syn_or_fin() { 1 } else { 0 };
-                                let next_expected = self.expected_seq[&flow_id].wrapping_add(payload + syn_fin_adjust);
+                                let old_expected = self.expected_seq[&flow_id];
+                                let next_expected = old_expected.wrapping_add(payload);
                                 self.expected_seq.insert(flow_id, next_expected);
 
                                 let buf = &packet.buf[0..packet.packet_size];

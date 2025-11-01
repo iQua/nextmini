@@ -69,25 +69,6 @@ impl Packet {
         (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
     }
 
-    /// Does this TCP packet have the SYN or FIN flag set?
-    /// These flags consume one sequence number even when payload is zero.
-    pub fn has_tcp_syn_or_fin(&self) -> bool {
-        // Must be TCP and long enough for flags byte.
-        if self.packet_size < 20 || self.buf[9] != 6 {
-            return false;
-        }
-
-        let ihl = (self.buf[0] & 0x0F) as usize;
-        let tcp_offset = ihl * 4;
-        if self.packet_size <= tcp_offset + 13 {
-            return false;
-        }
-        let tcp_flags = self.buf[tcp_offset + 13];
-
-        // checks if SYN (0x02) or FIN (0x01) flag is set
-        (tcp_flags & 0x02) != 0 || (tcp_flags & 0x01) != 0
-    }
-
     /// Returns the TCP payload length in bytes for IPv4/TCP packets.
     /// Returns 0 if the packet is not IPv4/TCP or is malformed.
     pub fn tcp_payload_len(&self) -> usize {

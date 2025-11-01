@@ -417,10 +417,8 @@ impl ConcurrentLocalWriterConsumer {
                                                 // if duplicates existed, drop the rest
                                                 drop(vec_pkts);
 
-                                                // SYN and FIN flags each consume one sequence number even with zero payload
                                                 let payload = packet.tcp_payload_len() as u32;
-                                                let syn_fin_adjust = if packet.has_tcp_syn_or_fin() { 1 } else { 0 };
-                                                let next_expected = expected.wrapping_add(payload + syn_fin_adjust);
+                                                let next_expected = expected.wrapping_add(payload);
                                                 self.expected_seq.insert(flow_id, next_expected);
 
                                                 pending_packets.push(packet);
