@@ -51,6 +51,23 @@ impl Packet {
         self.has_tcp_payload()
     }
 
+    /// Is this packet a TCP SYN?
+    pub fn is_tcp_syn(&self) -> bool {
+        // must be TCP and long enough for flags byte
+        if self.packet_size < 20 || self.buf[9] != 6 {
+            return false;
+        }
+
+        let ihl = (self.buf[0] & 0x0F) as usize;
+        let tcp_offset = ihl * 4;
+        if self.packet_size <= tcp_offset + 13 {
+            return false;
+        }
+
+        let tcp_flags = self.buf[tcp_offset + 13];
+        (tcp_flags & 0x02) != 0 // SYN
+    }
+
     // Is this packet a TCP FIN or RST?
     pub fn is_tcp_fin_or_rst(&self) -> bool {
         // Must be TCP and long enough for flags byte.

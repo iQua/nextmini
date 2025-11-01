@@ -249,11 +249,6 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub operating_mode: OperatingMode,
 
-    /// Reorder tolerance for the multipath mode.
-    #[default(1)]
-    #[arg(long)]
-    pub reorder_tolerance: usize,
-
     /// The flow config received from controller.
     #[default(vec![Flow {
         controller_id: None,

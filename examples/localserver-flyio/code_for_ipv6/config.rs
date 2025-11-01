@@ -2,9 +2,9 @@ use std::net::Ipv4Addr;
 
 use tokio_tungstenite::tungstenite::{Error, Message};
 
-use clap_serde_derive::ClapSerde;
 use clap_serde_derive::clap;
 use clap_serde_derive::clap::Parser;
+use clap_serde_derive::ClapSerde;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
 use tracing::{error, info, warn};
@@ -248,11 +248,6 @@ pub struct LocalConfig {
     #[default(OperatingMode::Normal)]
     #[arg(skip)]
     pub operating_mode: OperatingMode,
-
-    /// Reorder tolerance for the multipath mode.
-    #[default(4)]
-    #[arg(long)]
-    pub reorder_tolerance: usize,
 
     /// The flow config received from controller.
     #[default(vec![Flow {

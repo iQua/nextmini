@@ -30,14 +30,9 @@ impl LocalWriter {
                 shutdown_receiver,
                 packet_receiver,
             )),
-            Feature::Concurrent => {
-                LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
-                    config,
-                    device,
-                    shutdown_receiver,
-                    packet_receiver,
-                )))
-            }
+            Feature::Concurrent => LocalWriter::Concurrent(Box::new(
+                ConcurrentLocalWriterProducer::new(device, shutdown_receiver, packet_receiver),
+            )),
         }
     }
 
@@ -213,18 +208,17 @@ impl Ord for SequencedPacket {
 }
 
 pub struct ConcurrentLocalWriterProducer {
-    config: LocalConfig,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
     device: Arc<AsyncDevice>,
     queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     queue_not_empty: Arc<Notify>,
+    expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
 }
 
 impl ConcurrentLocalWriterProducer {
     pub fn new(
-        config: LocalConfig,
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -232,6 +226,7 @@ impl ConcurrentLocalWriterProducer {
         let queue_map = Arc::new(Mutex::new(HashMap::new()));
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
         let queue_not_empty = Arc::new(Notify::new());
+        let expected_seq_map = Arc::new(Mutex::new(HashMap::new()));
 
         let consumer = ConcurrentLocalWriterConsumer {
             shutdown_receiver: shutdown_receiver.resubscribe(),
@@ -239,8 +234,7 @@ impl ConcurrentLocalWriterProducer {
             active_flows: active_flows.clone(),
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
-            reorder_tolerance: config.reorder_tolerance,
-            expected_seq: HashMap::new(),
+            expected_seq_map: expected_seq_map.clone(),
         };
 
         tokio::spawn(async move {
@@ -249,13 +243,14 @@ impl ConcurrentLocalWriterProducer {
         });
 
         Self {
-            config,
             shutdown_receiver,
             packet_receiver,
             device,
             queue_map,
             active_flows,
             queue_not_empty,
+
+            expected_seq_map,
         }
     }
 
@@ -268,38 +263,39 @@ impl ConcurrentLocalWriterProducer {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         let flow_id = packet.flow_id;
 
-                        // sends the packet out to the TUN device if it is not a TCP data packet, including
-                        // the cases where it is SYN, FIN, RST, or pure ACK packet
                         if !packet.is_tcp_data() {
-                            if let Err(e) = batch_writer.write(&mut vec![packet]).await {
-                                error!("Failed to send packet to TUN device: {:?}", e);
+                            // seed on SYN; cleanup on FIN/RST
+                            if packet.is_tcp_syn() {
+                                let start = packet.seq_num().wrapping_add(1);
+                                let mut exp = self.expected_seq_map.lock().await;
+                                exp.insert(flow_id, start);
+
+                                let mut active = self.active_flows.lock().await;
+                                active.insert(flow_id);
+                            } else if packet.is_tcp_fin_or_rst() {
+                                let mut exp = self.expected_seq_map.lock().await;
+                                exp.remove(&flow_id);
                             }
 
+                            let mut single = vec![packet];
+                            if let Err(e) = batch_writer.write(&mut single).await {
+                                error!("Failed to send packet to TUN device: {:?}", e);
+                            }
                             continue;
                         }
 
-                        // only when it is a TCP packet, it is reordered when needed and stored in the queue
+                        // data -> enqueue
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
-
-                        // adds packet to queue and check if we should notify while holding the lock
-                        let should_notify = {
-                            let mut queue_map = self.queue_map.lock().await;
-                            let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
-                            heap.push(sequenced_packet);
-                            heap.len() >= self.config.reorder_tolerance
-                        };
-
-                        // ensures the flow is tracked when we add a TCP data packet
                         {
-                            let mut active_flows = self.active_flows.lock().await;
-                            active_flows.insert(flow_id);
+                            let mut q = self.queue_map.lock().await;
+                            let heap = q.entry(flow_id).or_insert_with(BinaryHeap::new);
+                            heap.push(sequenced_packet);
                         }
-
-                        // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
-                        // guaranteed to be consumed in a relatively ordered manner
-                        if should_notify {
-                            self.queue_not_empty.notify_one();
+                        {
+                            let mut active = self.active_flows.lock().await;
+                            active.insert(flow_id);
                         }
+                        self.queue_not_empty.notify_one();
                     }
                 }
                 msg = self.shutdown_receiver.recv() => {
@@ -319,8 +315,7 @@ struct ConcurrentLocalWriterConsumer {
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     device: Arc<AsyncDevice>,
     queue_not_empty: Arc<Notify>,
-    reorder_tolerance: usize,
-    expected_seq: HashMap<FlowId, u32>,
+    expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
 }
 
 impl ConcurrentLocalWriterConsumer {
@@ -341,13 +336,11 @@ impl ConcurrentLocalWriterConsumer {
                     }
                 }
                 _ = self.queue_not_empty.notified() => {
-                    // drains packets as long as we can make progress on any flow
                     loop {
                         let flow_ids: Vec<FlowId> = {
                             let active = self.active_flows.lock().await;
                             active.iter().copied().collect()
                         };
-
                         if flow_ids.is_empty() {
                             break;
                         }
@@ -355,7 +348,6 @@ impl ConcurrentLocalWriterConsumer {
                         let mut progressed_any = false;
 
                         for flow_id in flow_ids {
-                            // snapshot the top sequence and current heap length
                             let (top_seq_opt, heap_len) = {
                                 let q = self.queue_map.lock().await;
                                 if let Some(h) = q.get(&flow_id) {
@@ -365,79 +357,87 @@ impl ConcurrentLocalWriterConsumer {
                                 }
                             };
 
-                            // if there are no packets, clean up this flow
                             let top_seq = match top_seq_opt {
                                 Some(s) => s,
                                 None => {
                                     let mut active = self.active_flows.lock().await;
                                     active.remove(&flow_id);
-                                    self.expected_seq.remove(&flow_id);
                                     continue;
                                 }
                             };
 
-                            // establishes the expected sequence once enough packets have accumulated
-                            if !self.expected_seq.contains_key(&flow_id) {
-                                if heap_len >= self.reorder_tolerance {
-                                    self.expected_seq.insert(flow_id, top_seq);
-                                } else {
-                                    // wait for more before starting delivery
-                                    continue;
+                            // expected from SYN
+                            let expected = {
+                                let mut exp = self.expected_seq_map.lock().await;
+
+                                match exp.get(&flow_id).copied() {
+                                    Some(e) => e,
+                                    None => {
+                                        exp.insert(flow_id, top_seq);
+                                        top_seq
+                                    }
+                                }
+                            };
+
+                            // drop stale retransmissions
+                            {
+                                let mut q = self.queue_map.lock().await;
+                                if let Some(h) = q.get_mut(&flow_id) {
+                                    while let Some(peek) = h.peek() {
+                                        if SequencedPacket::seq_less(peek.seq, expected) {
+                                            h.pop();
+                                        } else {
+                                            break;
+                                        }
+                                    }
                                 }
                             }
 
-                            // drains contiguous prefix
-                            loop {
-                                // only pops the next packet if next exactly matches expected
-                                let maybe_sp = {
-                                    let mut q = self.queue_map.lock().await;
-                                    if let Some(h) = q.get_mut(&flow_id) {
-                                        if let Some(peek) = h.peek() {
-                                            if peek.seq == self.expected_seq[&flow_id] {
-                                                h.pop()
-                                            } else {
-                                                None
-                                            }
-                                        } else {
-                                            None
-                                        }
-                                    } else {
-                                        None
-                                    }
+                            // pop next-in-order
+                            let maybe_sp = {
+                                let mut q = self.queue_map.lock().await;
+                                if let Some(h) = q.get_mut(&flow_id) {
+                                    if let Some(peek) = h.peek() {
+                                        let exp_now = {
+                                            let exp = self.expected_seq_map.lock().await;
+                                            *exp.get(&flow_id).unwrap_or(&expected)
+                                        };
+
+                                        println!("Expected = {exp_now}, seq = {0}", peek.seq);
+
+                                        if peek.seq == exp_now { h.pop() } else { None }
+                                    } else { None }
+                                } else { None }
+                            };
+
+                            if let Some(sp) = maybe_sp {
+                                let packet = sp.packet;
+                                let payload = packet.tcp_payload_len() as u32;
+                                let fin_inc = if packet.is_tcp_fin_or_rst() { 1 } else { 0 };
+                                let next_expected = expected.wrapping_add(payload + fin_inc);
+                                {
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    exp.insert(flow_id, next_expected);
+                                }
+
+                                pending_packets.push(packet);
+                                progressed_any = true;
+
+                                if pending_packets.len() >= IDEAL_BATCH_SIZE {
+                                    let _ = batch_writer.write(&mut pending_packets).await;
+                                    pending_packets.clear();
+                                }
+
+                                // retire flow if empty
+                                let is_empty = {
+                                    let q = self.queue_map.lock().await;
+                                    q.get(&flow_id).map_or(true, |h| h.is_empty())
                                 };
-
-                                if let Some(sp) = maybe_sp {
-                                    let packet = sp.packet;
-                                    let payload = packet.tcp_payload_len() as u32;
-
-                                    // advances the expected sequence number by payload length (wrap-aware)
-                                    let next_expected = self.expected_seq[&flow_id].wrapping_add(payload);
-                                    self.expected_seq.insert(flow_id, next_expected);
-
-                                    pending_packets.push(packet);
-                                    progressed_any = true;
-
-                                    // proactive flush under load
-                                    if pending_packets.len() >= IDEAL_BATCH_SIZE {
-                                        let _ = batch_writer.write(&mut pending_packets).await;
-                                        pending_packets.clear();
-                                    }
-
-                                    // if the heap is empty now, retire the flow
-                                    let is_empty = {
-                                        let q = self.queue_map.lock().await;
-                                        q.get(&flow_id).is_none_or(|h| h.is_empty())
-                                    };
-
-                                    if is_empty {
-                                        let mut active = self.active_flows.lock().await;
-                                        active.remove(&flow_id);
-                                        self.expected_seq.remove(&flow_id);
-                                        break;
-                                    }
-                                } else {
-                                    // gap encountered, cannot progress on this flow
-                                    break;
+                                if is_empty {
+                                    let mut active = self.active_flows.lock().await;
+                                    active.remove(&flow_id);
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    exp.remove(&flow_id);
                                 }
                             }
                         }
@@ -447,11 +447,12 @@ impl ConcurrentLocalWriterConsumer {
                         }
                     }
 
-                    // sends any accumulated packets
-                    let _ = batch_writer.write(&mut pending_packets).await;
-                    pending_packets.clear();
+                    // flush any accumulated packets
+                    if !pending_packets.is_empty() {
+                        let _ = batch_writer.write(&mut pending_packets).await;
+                        pending_packets.clear();
+                    }
                 }
-                // periodic flush of pending batch (does not override in-order gating)
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();

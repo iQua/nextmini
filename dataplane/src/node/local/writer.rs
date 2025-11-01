@@ -18,7 +18,6 @@ pub enum LocalWriter {
 
 impl LocalWriter {
     pub fn new(
-        config: LocalConfig,
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -29,14 +28,9 @@ impl LocalWriter {
                 shutdown_receiver,
                 packet_receiver,
             )),
-            Feature::Concurrent => {
-                LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
-                    config,
-                    device,
-                    shutdown_receiver,
-                    packet_receiver,
-                )))
-            }
+            Feature::Concurrent => LocalWriter::Concurrent(Box::new(
+                ConcurrentLocalWriterProducer::new(device, shutdown_receiver, packet_receiver),
+            )),
         }
     }
 
@@ -145,18 +139,17 @@ impl Ord for SequencedPacket {
 }
 
 pub struct ConcurrentLocalWriterProducer {
-    config: LocalConfig,
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
     device: Arc<AsyncDevice>,
     queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     queue_not_empty: Arc<Notify>,
+    expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
 }
 
 impl ConcurrentLocalWriterProducer {
     fn new(
-        config: LocalConfig,
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -164,6 +157,7 @@ impl ConcurrentLocalWriterProducer {
         let queue_map = Arc::new(Mutex::new(HashMap::new()));
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
         let queue_not_empty = Arc::new(Notify::new());
+        let expected_seq_map = Arc::new(Mutex::new(HashMap::new()));
 
         let consumer = ConcurrentLocalWriterConsumer {
             shutdown_receiver: shutdown_receiver.resubscribe(),
@@ -171,8 +165,7 @@ impl ConcurrentLocalWriterProducer {
             active_flows: active_flows.clone(),
             device: device.clone(),
             queue_not_empty: queue_not_empty.clone(),
-            reorder_tolerance: config.reorder_tolerance,
-            expected_seq: HashMap::new(),
+            expected_seq_map: expected_seq_map.clone(),
         };
 
         tokio::spawn(async move {
@@ -181,13 +174,13 @@ impl ConcurrentLocalWriterProducer {
         });
 
         Self {
-            config,
             shutdown_receiver,
             packet_receiver,
             device,
             queue_map,
             active_flows,
             queue_not_empty,
+            expected_seq_map,
         }
     }
 
@@ -198,39 +191,49 @@ impl ConcurrentLocalWriterProducer {
                     if let Some(LocalInterfaceMessage::WritePacket(packet)) = msg {
                         let flow_id = packet.flow_id;
 
-                        // sends the packet out to the TUN device if it is not a TCP data packet, including
-                        // the cases where it is SYN, FIN, RST, or pure ACK packet
+                        // Non-data (SYN/FIN/RST/ACK-only) are forwarded immediately,
+                        // but we also seed/cleanup expected sequence on control packets.
                         if !packet.is_tcp_data() {
-                            let buf = &packet.buf[0..packet.packet_size];
-                            if let Err(e) = self.device.send(buf).await {
-                                error!("Failed to send packet to TUN device: {:?}", e);
+                            // Seed expected from SYN so we don't accidentally
+                            // "skip ahead" and later drop the first data segment.
+                            if packet.is_tcp_syn() {
+                                let start = packet.seq_num().wrapping_add(1); // SYN consumes 1
+                                let mut exp = self.expected_seq_map.lock().await;
+                                exp.insert(flow_id, start);
+
+                                // Track flow so consumer will consider it once data arrives.
+                                let mut active = self.active_flows.lock().await;
+                                active.insert(flow_id);
+                            } else if packet.is_tcp_fin_or_rst() {
+                                // Tear down expectation to avoid leaking state.
+                                let mut exp = self.expected_seq_map.lock().await;
+                                exp.remove(&flow_id);
                             }
 
+                            // Send immediately to TUN.
+                            let buf = &packet.buf[0..packet.packet_size];
+                            if let Err(_) = self.device.try_send(buf) {
+                                if let Err(e) = self.device.send(buf).await {
+                                    error!("Failed to write packet to the TUN device: {}. Dropped.", e);
+                                }
+                            }
                             continue;
                         }
 
-                        // only when it is a TCP packet, it is reordered when needed and stored in the queue
+                        // TCP data: enqueue for potential reordering.
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
 
-                        // adds this packet to the queue and check if we should notify while holding the lock
-                        let should_notify = {
-                            let mut queue_map = self.queue_map.lock().await;
-                            let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
-                            heap.push(sequenced_packet);
-                            heap.len() >= self.config.reorder_tolerance
-                        };
-
-                        // ensures the flow is tracked when we add a TCP data packet
                         {
-                            let mut active_flows = self.active_flows.lock().await;
-                            active_flows.insert(flow_id);
+                            let mut q = self.queue_map.lock().await;
+                            let heap = q.entry(flow_id).or_insert_with(BinaryHeap::new);
+                            heap.push(sequenced_packet);
+                        }
+                        {
+                            let mut active = self.active_flows.lock().await;
+                            active.insert(flow_id);
                         }
 
-                        // notifies the consumer that the queue has accumulated packets beyond a threshold, so packets are
-                        // guaranteed to be consumed in a relatively ordered manner
-                        if should_notify {
-                            self.queue_not_empty.notify_one();
-                        }
+                        self.queue_not_empty.notify_one();
                     }
                 }
                 msg = self.shutdown_receiver.recv() => {
@@ -250,69 +253,94 @@ struct ConcurrentLocalWriterConsumer {
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     device: Arc<AsyncDevice>,
     queue_not_empty: Arc<Notify>,
-    reorder_tolerance: usize,
-    expected_seq: HashMap<FlowId, u32>,
+    expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
 }
 
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
         loop {
             tokio::select! {
+                msg = self.shutdown_receiver.recv() => {
+                    if let Ok(ShutdownMessage::Shutdown) = msg {
+                        info!("ConcurrentLocalWriter consumer received shutdown signal, stopping...");
+                        break;
+                    }
+                }
                 _ = self.queue_not_empty.notified() => {
+                    // drain while we can make progress on any flow
                     loop {
-                        let flow_id = {
-                            let active_flows = self.active_flows.lock().await;
-                            if let Some(&flow_id) = active_flows.iter().next() {
-                                flow_id
-                            } else {
-                                break;
-                            }
+                        let flow_ids: Vec<FlowId> = {
+                            let active = self.active_flows.lock().await;
+                            active.iter().copied().collect()
                         };
-
-                        // snapshot top seq and heap length
-                        let (top_seq_opt, heap_len) = {
-                            let queue_map = self.queue_map.lock().await;
-                            if let Some(heap) = queue_map.get(&flow_id) {
-                                (heap.peek().map(|sp| sp.seq), heap.len())
-                            } else {
-                                (None, 0)
-                            }
-                        };
-
-                        // nothing buffered for this flow
-                        let top_seq = match top_seq_opt {
-                            Some(s) => s,
-                            None => {
-                                let mut active_flows = self.active_flows.lock().await;
-                                active_flows.remove(&flow_id);
-                                self.expected_seq.remove(&flow_id);
-                                continue;
-                            }
-                        };
-
-                        // establishes expected seq once enough packets have accumulated
-                        if !self.expected_seq.contains_key(&flow_id) {
-                            if heap_len >= self.reorder_tolerance {
-                                self.expected_seq.insert(flow_id, top_seq);
-                            } else {
-                                // wait for more before starting delivery
-                                continue;
-                            }
+                        if flow_ids.is_empty() {
+                            break;
                         }
 
-                        // drains contiguous prefix
-                        loop {
+                        let mut progressed_any = false;
+
+                        for flow_id in flow_ids {
+                            // snapshot heap top & len
+                            let (top_seq_opt, heap_len) = {
+                                let q = self.queue_map.lock().await;
+                                if let Some(h) = q.get(&flow_id) {
+                                    (h.peek().map(|sp| sp.seq), h.len())
+                                } else {
+                                    (None, 0)
+                                }
+                            };
+
+                            let top_seq = match top_seq_opt {
+                                Some(s) => s,
+                                None => {
+                                    let mut active = self.active_flows.lock().await;
+                                    active.remove(&flow_id);
+                                    // expected will be removed when the flow empties;
+                                    // no-op if already absent.
+                                    continue;
+                                }
+                            };
+
+                            // get or lazily establish expected seq
+                            let expected = {
+                                let mut exp = self.expected_seq_map.lock().await;
+                                match exp.get(&flow_id).copied() {
+                                    Some(e) => e,
+                                    None => {
+                                        exp.insert(flow_id, top_seq);
+                                        top_seq
+                                    }
+                                }
+                            };
+
+                            // drop stale (< expected) so they don't block progress
+                            {
+                                let mut q = self.queue_map.lock().await;
+                                if let Some(h) = q.get_mut(&flow_id) {
+                                    while let Some(peek) = h.peek() {
+                                        if SequencedPacket::seq_less(peek.seq, expected) {
+                                            h.pop();
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // pop next in-order segment (== expected)
                             let maybe_sp = {
-                                let mut queue_map = self.queue_map.lock().await;
-                                if let Some(heap) = queue_map.get_mut(&flow_id) {
-                                    if let Some(peek) = heap.peek() {
-                                        if let Some(expected) = self.expected_seq.get(&flow_id) {
-                                            if peek.seq == *expected {
-                                                heap.pop()
-                                            } else {
-                                                None
-                                            }
-                                        } else { None }
+                                let mut q = self.queue_map.lock().await;
+                                if let Some(h) = q.get_mut(&flow_id) {
+                                    if let Some(peek) = h.peek() {
+                                        let exp_now = {
+                                            let exp = self.expected_seq_map.lock().await;
+                                            *exp.get(&flow_id).unwrap_or(&expected)
+                                        };
+                                        if peek.seq == exp_now {
+                                            h.pop()
+                                        } else {
+                                            None
+                                        }
                                     } else { None }
                                 } else { None }
                             };
@@ -320,44 +348,42 @@ impl ConcurrentLocalWriterConsumer {
                             if let Some(sp) = maybe_sp {
                                 let packet = sp.packet;
 
-                                // advances the expected sequence number by payload length (wrap-aware)
+                                // compute next expected
                                 let payload = packet.tcp_payload_len() as u32;
-                                let old_expected = self.expected_seq[&flow_id];
-                                let next_expected = old_expected.wrapping_add(payload);
-                                self.expected_seq.insert(flow_id, next_expected);
+                                let fin_inc = if packet.is_tcp_fin_or_rst() { 1 } else { 0 };
+                                let next_expected = expected.wrapping_add(payload + fin_inc);
+                                {
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    exp.insert(flow_id, next_expected);
+                                }
 
+                                // send to TUN
                                 let buf = &packet.buf[0..packet.packet_size];
                                 if let Err(_) = self.device.try_send(buf) {
                                     if let Err(e) = self.device.send(buf).await {
-                                        error!(
-                                            "Failed to write packet to the TUN device: {}. Dropped.",
-                                            e
-                                        );
+                                        error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                                     }
                                 }
 
-                                // if the heap is empty now, retire the flow
+                                progressed_any = true;
+
+                                // retire flow if heap emptied
                                 let is_empty = {
-                                    let queue_map = self.queue_map.lock().await;
-                                    queue_map.get(&flow_id).map_or(true, |h| h.is_empty())
+                                    let q = self.queue_map.lock().await;
+                                    q.get(&flow_id).map_or(true, |h| h.is_empty())
                                 };
                                 if is_empty {
-                                    let mut active_flows = self.active_flows.lock().await;
-                                    active_flows.remove(&flow_id);
-                                    self.expected_seq.remove(&flow_id);
-                                    break;
+                                    let mut active = self.active_flows.lock().await;
+                                    active.remove(&flow_id);
+                                    let mut exp = self.expected_seq_map.lock().await;
+                                    exp.remove(&flow_id);
                                 }
-                            } else {
-                                // gap encountered
-                                break;
                             }
                         }
-                    }
-                }
-                msg = self.shutdown_receiver.recv() => {
-                    if let Ok(ShutdownMessage::Shutdown) = msg {
-                        info!("ConcurrentLocalWriter consumer received shutdown signal, stopping...");
-                        break;
+
+                        if !progressed_any {
+                            break;
+                        }
                     }
                 }
             }
