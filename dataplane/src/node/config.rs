@@ -179,8 +179,8 @@ pub struct LocalConfig {
     #[arg(long)]
     pub restart_on_disconnect: bool,
 
-    /// Maximum milliseconds to hold a flow waiting for a missing TCP segment before emitting newer data.
-    #[default(5)]
+    /// Maximum microseconds to hold a flow waiting for a missing TCP segment before emitting newer data.
+    #[default(500)]
     #[arg(long)]
     pub delay_tolerance: u64,
 

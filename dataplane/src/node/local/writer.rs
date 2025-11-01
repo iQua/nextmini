@@ -31,12 +31,11 @@ impl LocalWriter {
                 packet_receiver,
             )),
             Feature::Concurrent => {
-                let delay = Duration::from_millis(config.delay_tolerance);
                 LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
                     device,
                     shutdown_receiver,
                     packet_receiver,
-                    delay,
+                    Duration::from_micros(config.delay_tolerance),
                 )))
             }
         }
@@ -155,7 +154,6 @@ pub struct ConcurrentLocalWriterProducer {
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
     gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
-    gap_timeout: Duration,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -196,7 +194,6 @@ impl ConcurrentLocalWriterProducer {
             queue_not_empty,
             expected_seq_map,
             gap_deadlines,
-            gap_timeout,
         }
     }
 
