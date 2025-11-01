@@ -1,0 +1,49 @@
+protocol = "quic"
+
+[topology]
+type = "ring"
+ring_config = { n_nodes = 8 }
+
+# Forward routes
+# VM1 → Fly2 → VM3
+[[routes]]
+route = [[1, 2], [2, 3]]
+
+# VM3 → Fly4 → VM5
+[[routes]]
+route = [[3, 4], [4, 5]]
+
+# VM5 → Fly6 → VM7
+[[routes]]
+route = [[5, 6], [6, 7]]
+
+# VM7 → Fly8 → VM1
+[[routes]]
+route = [[7, 8], [8, 1]]
+
+# Reverse routes
+# VM3 → Fly2 → VM1
+[[routes]]
+route = [[3, 2], [2, 1]]
+
+# VM5 → Fly4 → VM3
+[[routes]]
+route = [[5, 4], [4, 3]]
+
+# VM7 → Fly6 → VM5
+[[routes]]
+route = [[7, 6], [6, 5]]
+
+# VM1 → Fly8 → VM7
+[[routes]]
+route = [[1, 8], [8, 7]]
+
+# [routing]
+# protocol = "shortest_path"
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "127.0.0.1"
+port = "5432"
+database = "nextmini"

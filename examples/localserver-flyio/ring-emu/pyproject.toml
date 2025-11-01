@@ -1,0 +1,6 @@
+[project]
+name = "ring-launcher"
+version = "0.1.0"
+description = "Ring all-reduce launcher via SSH"
+requires-python = "==3.13.*"
+dependencies = []

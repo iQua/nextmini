@@ -1,0 +1,68 @@
+site_name: Nextmini Documentation
+repo_url: https://github.com/iqua/nextmini
+repo_name: iqua/nextmini
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: Google Sans Code
+  palette:
+    # Light mode
+    - scheme: astral-light
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: astral-dark
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.footer
+    - navigation.instant
+    #- navigation.tabs
+    - content.code.copy
+    # - content.action.edit
+    # - content.action.view
+    - content.tooltips
+    - content.version # enables the version dropdown in the header
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.arithmatex:
+      generic: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/iqua/nextmini
+
+extra_javascript:
+  - javascripts/katex.js
+  - https://unpkg.com/katex@0/dist/katex.min.js
+  - https://unpkg.com/katex@0/dist/contrib/auto-render.min.js
+
+extra_css:
+  - https://unpkg.com/katex@0/dist/katex.min.css
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Design:
+      - Introduction: design/introduction.md
+      - Architecture: design/architecture.md
+      - Configuration Settings: design/configuration.md
+  - Examples:
+      - Simple: examples/simple.md
+      - PyTorch: examples/pytorch.md
+      - Waterfilling: examples/waterfilling.md
+      - Routes: examples/routes.md
+      - Namespace: examples/namespace.md
+      - Bare Metal: examples/bare-metal.md
+      - PyTorch on SBA: examples/pytorch-sba.md
+      - Ring All-Reduce on SBA: examples/ring_allreduce-sba.md
+      - Local Server + Fly.io: examples/localserver-flyio.md
