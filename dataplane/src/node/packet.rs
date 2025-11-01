@@ -51,6 +51,23 @@ impl Packet {
         self.has_tcp_payload()
     }
 
+    /// Is this packet a TCP SYN?
+    pub fn is_tcp_syn(&self) -> bool {
+        // must be TCP and long enough for flags byte
+        if self.packet_size < 20 || self.buf[9] != 6 {
+            return false;
+        }
+
+        let ihl = (self.buf[0] & 0x0F) as usize;
+        let tcp_offset = ihl * 4;
+        if self.packet_size <= tcp_offset + 13 {
+            return false;
+        }
+
+        let tcp_flags = self.buf[tcp_offset + 13];
+        (tcp_flags & 0x02) != 0 // SYN
+    }
+
     // Is this packet a TCP FIN or RST?
     pub fn is_tcp_fin_or_rst(&self) -> bool {
         // Must be TCP and long enough for flags byte.
@@ -69,41 +86,49 @@ impl Packet {
         (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
     }
 
-    /// Does this TCP packet have payload (non-zero data length)?
-    pub fn has_tcp_payload(&self) -> bool {
-        // must be IPv4 TCP
-        if self.packet_size < 20 || self.buf[9] != 6 {
-            return false;
+    /// Returns the TCP payload length in bytes for IPv4/TCP packets.
+    /// Returns 0 if the packet is not IPv4/TCP or is malformed.
+    pub fn tcp_payload_len(&self) -> usize {
+        // must be IPv4 and long enough for the base header
+        if self.packet_size < 20 || (self.buf[0] >> 4) != 4 {
+            return 0;
+        }
+        // protocol must be TCP
+        if self.buf[9] != 6 {
+            return 0;
         }
 
+        // IP header length (IHL) in 32-bit words
         let ihl = (self.buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
         if self.packet_size < ip_header_len + 14 {
-            // not enough for a minimal TCP header with flags/offset
-            return false;
+            // not enough for minimal TCP header fields we touch
+            return 0;
         }
 
-        // extracts total length from IP header (bytes 2-3)
+        // total length from IP header (bytes 2-3)
         let mut total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
-        // clamp to the actually received byte count
+        // clamp to actually received buffer
         if total_length > self.packet_size {
             total_length = self.packet_size;
         }
 
-        // extracts TCP header length from data offset field (upper 4 bits of byte 12 in TCP header)
+        // TCP header length (upper 4 bits of byte 12 in TCP header)
         let tcp_offset = ip_header_len;
         let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
         let tcp_header_len = tcp_data_offset * 4;
 
-        // guards against malformed headers that claim a tiny offset
+        // guard malformed TCP headers
         if tcp_header_len < 20 || ip_header_len + tcp_header_len > self.packet_size {
-            return false;
+            return 0;
         }
 
-        // calculates payload size
-        let payload_size = total_length.saturating_sub(ip_header_len + tcp_header_len);
+        total_length.saturating_sub(ip_header_len + tcp_header_len)
+    }
 
-        payload_size > 0
+    /// Does this TCP packet have payload (non-zero data length)?
+    pub fn has_tcp_payload(&self) -> bool {
+        self.tcp_payload_len() > 0
     }
 
     fn get_flow_id_from_buf(buf: &[u8]) -> FlowId {

@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use tokio_tungstenite::tungstenite::{Error, Message};
 
@@ -23,6 +24,45 @@ pub enum CongestionControl {
     #[default]
     Bbr,
     Cubic,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalConfig;
+    use std::time::Duration;
+
+    #[test]
+    fn default_reorder_tolerances_match_defaults() {
+        let cfg = LocalConfig::default();
+        let (enforce, gap, backlog) = cfg.reorder_tolerances();
+        assert!(enforce);
+        assert_eq!(gap, Some(Duration::from_micros(500)));
+        assert_eq!(backlog, 64);
+    }
+
+    #[test]
+    fn unordered_mode_disables_tolerances() {
+        let mut cfg = LocalConfig::default();
+        cfg.enforce_tcp_order = false;
+        cfg.delay_tolerance = 123;
+        cfg.backlog_tolerance = 99;
+
+        let (enforce, gap, backlog) = cfg.reorder_tolerances();
+        assert!(!enforce);
+        assert_eq!(gap, None);
+        assert_eq!(backlog, 0);
+    }
+
+    #[test]
+    fn zero_tolerances_disable_components() {
+        let mut cfg = LocalConfig::default();
+        cfg.delay_tolerance = 0;
+        cfg.backlog_tolerance = 0;
+
+        let (_, gap, backlog) = cfg.reorder_tolerances();
+        assert_eq!(gap, None);
+        assert_eq!(backlog, 0);
+    }
 }
 
 /// The processing mode for processing packets
@@ -179,6 +219,22 @@ pub struct LocalConfig {
     #[arg(long)]
     pub restart_on_disconnect: bool,
 
+    /// Maximum microseconds to hold a flow waiting for a missing TCP segment before emitting newer data.
+    #[default(500)]
+    #[arg(long)]
+    pub delay_tolerance: u64,
+
+    /// Maximum number of queued TCP data packets to tolerate before forcing delivery.
+    /// Set to 0 to disable backlog-based advancement.
+    #[default(64)]
+    #[arg(long)]
+    pub backlog_tolerance: u64,
+
+    /// If true, reorder TCP packets locally based on sequence numbers before delivery.
+    #[default(true)]
+    #[arg(long)]
+    pub enforce_tcp_order: bool,
+
     /// QUIC congestion control algorithm to use.
     #[default(CongestionControl::Bbr)]
     #[arg(long, value_enum)]
@@ -248,11 +304,6 @@ pub struct LocalConfig {
     #[default(OperatingMode::Normal)]
     #[arg(skip)]
     pub operating_mode: OperatingMode,
-
-    /// Reorder tolerance for the multipath mode.
-    #[default(1)]
-    #[arg(long)]
-    pub reorder_tolerance: usize,
 
     /// The flow config received from controller.
     #[default(vec![Flow {
@@ -379,6 +430,22 @@ impl LocalConfig {
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
         (src_node_id, dst_node_id)
+    }
+
+    /// Returns the effective settings for TCP reordering tolerance.
+    pub fn reorder_tolerances(&self) -> (bool, Option<Duration>, usize) {
+        let enforce = self.enforce_tcp_order;
+        let gap_timeout = match (enforce, self.delay_tolerance) {
+            (true, micros) if micros > 0 => Some(Duration::from_micros(micros)),
+            _ => None,
+        };
+        let backlog = if enforce && self.backlog_tolerance > 0 {
+            self.backlog_tolerance.min(usize::MAX as u64) as usize
+        } else {
+            0
+        };
+
+        (enforce, gap_timeout, backlog)
     }
 
     /// Parses config file from config.toml.
