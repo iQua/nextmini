@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
 use tokio::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tun_rs::AsyncDevice;
 
 use crate::node::FlowId;
@@ -413,13 +413,6 @@ impl ConcurrentLocalWriterConsumer {
                                             }
                                         }
 
-                                        warn!(
-                                            flow_id = ?flow_id,
-                                            backlog = backlog_len,
-                                            tolerance = self.backlog_tolerance,
-                                            "Backlog tolerance exceeded; advancing expected sequence."
-                                        );
-
                                         progressed_any = true;
                                     }
                                 }
@@ -534,12 +527,7 @@ impl ConcurrentLocalWriterConsumer {
                                             *entry = top_seq;
                                         }
                                     }
-                                    warn!(
-                                        flow_id = ?flow_id,
-                                        expected = expected,
-                                        next_in_queue = top_seq,
-                                        "Gap timer expired; advancing expected sequence."
-                                    );
+
                                     progressed_any = true;
                                     continue 'per_flow;
                                 }
