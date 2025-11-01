@@ -348,12 +348,14 @@ impl ConcurrentLocalWriterConsumer {
                         let mut progressed_any = false;
 
                         for flow_id in flow_ids {
-                            let (top_seq_opt, heap_len) = {
+                            // snapshots the top of the heap
+                            let top_seq_opt = {
                                 let q = self.queue_map.lock().await;
+
                                 if let Some(h) = q.get(&flow_id) {
-                                    (h.peek().map(|sp| sp.seq), h.len())
+                                    h.peek().map(|sp| sp.seq)
                                 } else {
-                                    (None, 0)
+                                    None
                                 }
                             };
 
@@ -431,7 +433,7 @@ impl ConcurrentLocalWriterConsumer {
                                 // retire flow if empty
                                 let is_empty = {
                                     let q = self.queue_map.lock().await;
-                                    q.get(&flow_id).map_or(true, |h| h.is_empty())
+                                    q.get(&flow_id).is_none_or(|h| h.is_empty())
                                 };
                                 if is_empty {
                                     let mut active = self.active_flows.lock().await;
