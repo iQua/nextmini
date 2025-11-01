@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify, broadcast, mpsc};
@@ -149,8 +149,7 @@ pub struct ConcurrentLocalWriterProducer {
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
     device: Arc<AsyncDevice>,
-    // Map flow -> ordered map of seq -> list of packets starting at that seq
-    queue_map: Arc<Mutex<HashMap<FlowId, BTreeMap<u32, Vec<Packet>>>>>,
+    queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     queue_not_empty: Arc<Notify>,
 }
@@ -210,17 +209,15 @@ impl ConcurrentLocalWriterProducer {
                             continue;
                         }
 
-                        // only when it is a TCP data packet, reorder when needed and store by sequence
-                        let seq = packet.seq_num();
+                        // only when it is a TCP packet, it is reordered when needed and stored in the queue
+                        let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
 
-                        // adds this packet to the per-flow ordered map and check if we should notify while holding the lock
+                        // adds this packet to the queue and check if we should notify while holding the lock
                         let should_notify = {
-                            let mut qm = self.queue_map.lock().await;
-                            let flow_map = qm.entry(flow_id).or_insert_with(BTreeMap::new);
-                            flow_map.entry(seq).or_insert_with(Vec::new).push(packet);
-                            // approximate readiness by total buffered unique sequences
-                            let buffered = flow_map.len();
-                            buffered >= self.config.reorder_tolerance
+                            let mut queue_map = self.queue_map.lock().await;
+                            let heap = queue_map.entry(flow_id).or_insert_with(BinaryHeap::new);
+                            heap.push(sequenced_packet);
+                            heap.len() >= self.config.reorder_tolerance
                         };
 
                         // ensures the flow is tracked when we add a TCP data packet
@@ -249,7 +246,7 @@ impl ConcurrentLocalWriterProducer {
 
 struct ConcurrentLocalWriterConsumer {
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
-    queue_map: Arc<Mutex<HashMap<FlowId, BTreeMap<u32, Vec<Packet>>>>>,
+    queue_map: Arc<Mutex<HashMap<FlowId, BinaryHeap<SequencedPacket>>>>,
     active_flows: Arc<Mutex<HashSet<FlowId>>>,
     device: Arc<AsyncDevice>,
     queue_not_empty: Arc<Notify>,
@@ -272,11 +269,11 @@ impl ConcurrentLocalWriterConsumer {
                             }
                         };
 
-                        // snapshot lowest seq and buffered length
-                        let (top_seq_opt, buffered_len) = {
+                        // snapshot top seq and heap length
+                        let (top_seq_opt, heap_len) = {
                             let queue_map = self.queue_map.lock().await;
-                            if let Some(m) = queue_map.get(&flow_id) {
-                                (m.keys().next().copied(), m.len())
+                            if let Some(heap) = queue_map.get(&flow_id) {
+                                (heap.peek().map(|sp| sp.seq), heap.len())
                             } else {
                                 (None, 0)
                             }
@@ -295,7 +292,7 @@ impl ConcurrentLocalWriterConsumer {
 
                         // establishes expected seq once enough packets have accumulated
                         if !self.expected_seq.contains_key(&flow_id) {
-                            if buffered_len >= self.reorder_tolerance {
+                            if heap_len >= self.reorder_tolerance {
                                 self.expected_seq.insert(flow_id, top_seq);
                             } else {
                                 // wait for more before starting delivery
@@ -305,38 +302,35 @@ impl ConcurrentLocalWriterConsumer {
 
                         // drains contiguous prefix
                         loop {
-                            let expected = match self.expected_seq.get(&flow_id) {
-                                Some(e) => *e,
-                                None => break,
-                            };
-
-                            // drop stale entries < expected, then deliver exactly expected if present
-                            let maybe_packet = {
-                                let mut qm = self.queue_map.lock().await;
-                                if let Some(m) = qm.get_mut(&flow_id) {
-                                    // drop stale
-                                    loop {
-                                        let first = m.keys().next().copied();
-                                        if let Some(seq) = first {
-                                            if SequencedPacket::seq_less(seq, expected) {
-                                                m.pop_first();
-                                                continue;
+                            let mut dropped_stale = false;
+                            let maybe_sp = {
+                                let mut queue_map = self.queue_map.lock().await;
+                                if let Some(heap) = queue_map.get_mut(&flow_id) {
+                                    if let Some(peek) = heap.peek() {
+                                        if let Some(expected) = self.expected_seq.get(&flow_id) {
+                                            if peek.seq == *expected {
+                                                heap.pop()
+                                            } else if SequencedPacket::seq_less(peek.seq, *expected) {
+                                                // stale/duplicate earlier than expected; drop to avoid HoL blocking
+                                                let _ = heap.pop();
+                                                dropped_stale = true;
+                                                None
+                                            } else {
+                                                None
                                             }
-                                        }
-                                        break;
-                                    }
-
-                                    if let Some(mut vec_pkts) = m.remove(&expected) {
-                                        vec_pkts.pop()
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
+                                        } else { None }
+                                    } else { None }
+                                } else { None }
                             };
 
-                            if let Some(packet) = maybe_packet {
+                            if dropped_stale {
+                                // continue draining after removing the stale entry
+                                continue;
+                            }
+
+                            if let Some(sp) = maybe_sp {
+                                let packet = sp.packet;
+
                                 // advances the expected sequence number by payload length (wrap-aware)
                                 let payload = packet.tcp_payload_len() as u32;
                                 let old_expected = self.expected_seq[&flow_id];
@@ -353,10 +347,10 @@ impl ConcurrentLocalWriterConsumer {
                                     }
                                 }
 
-                                // if the map is empty now, retire the flow
+                                // if the heap is empty now, retire the flow
                                 let is_empty = {
                                     let queue_map = self.queue_map.lock().await;
-                                    queue_map.get(&flow_id).map_or(true, |m| m.is_empty())
+                                    queue_map.get(&flow_id).map_or(true, |h| h.is_empty())
                                 };
                                 if is_empty {
                                     let mut active_flows = self.active_flows.lock().await;
@@ -385,7 +379,6 @@ impl ConcurrentLocalWriterConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BinaryHeap;
 
     #[test]
     fn seq_less_orders_increasing_values() {
