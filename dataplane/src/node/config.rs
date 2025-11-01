@@ -184,6 +184,12 @@ pub struct LocalConfig {
     #[arg(long)]
     pub delay_tolerance: u64,
 
+    /// Maximum number of queued TCP data packets to tolerate before forcing delivery.
+    /// Set to 0 to disable backlog-based advancement.
+    #[default(4)]
+    #[arg(long)]
+    pub backlog_tolerance: u64,
+
     /// QUIC congestion control algorithm to use.
     #[default(CongestionControl::Bbr)]
     #[arg(long, value_enum)]

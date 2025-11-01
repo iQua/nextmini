@@ -31,11 +31,21 @@ impl LocalWriter {
                 packet_receiver,
             )),
             Feature::Concurrent => {
+                let delay = match config.delay_tolerance {
+                    0 => None,
+                    micros => Some(Duration::from_micros(micros)),
+                };
+                let backlog = if config.backlog_tolerance == 0 {
+                    0
+                } else {
+                    config.backlog_tolerance.min(usize::MAX as u64) as usize
+                };
                 LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
                     device,
                     shutdown_receiver,
                     packet_receiver,
-                    Duration::from_micros(config.delay_tolerance),
+                    delay,
+                    backlog,
                 )))
             }
         }
@@ -154,6 +164,8 @@ pub struct ConcurrentLocalWriterProducer {
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
     gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
+    gap_timeout: Option<Duration>,
+    backlog_tolerance: usize,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -161,7 +173,8 @@ impl ConcurrentLocalWriterProducer {
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
-        gap_timeout: Duration,
+        gap_timeout: Option<Duration>,
+        backlog_tolerance: usize,
     ) -> Self {
         let queue_map = Arc::new(Mutex::new(HashMap::new()));
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
@@ -178,6 +191,7 @@ impl ConcurrentLocalWriterProducer {
             expected_seq_map: expected_seq_map.clone(),
             gap_deadlines: gap_deadlines.clone(),
             gap_timeout,
+            backlog_tolerance,
         };
 
         tokio::spawn(async move {
@@ -194,6 +208,8 @@ impl ConcurrentLocalWriterProducer {
             queue_not_empty,
             expected_seq_map,
             gap_deadlines,
+            gap_timeout,
+            backlog_tolerance,
         }
     }
 
@@ -272,7 +288,8 @@ struct ConcurrentLocalWriterConsumer {
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
     gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
-    gap_timeout: Duration,
+    gap_timeout: Option<Duration>,
+    backlog_tolerance: usize,
 }
 
 impl ConcurrentLocalWriterConsumer {
@@ -365,6 +382,33 @@ impl ConcurrentLocalWriterConsumer {
                                     break;
                                 }
 
+                                if self.backlog_tolerance > 0 && self.gap_timeout.is_none() && top_seq != expected {
+                                    let backlog_len = {
+                                        let q = self.queue_map.lock().await;
+                                        q.get(&flow_id).map(|h| h.len()).unwrap_or(0)
+                                    };
+                                    if backlog_len >= self.backlog_tolerance {
+                                        {
+                                            let mut deadlines = self.gap_deadlines.lock().await;
+                                            deadlines.remove(&flow_id);
+                                        }
+                                        {
+                                            let mut exp = self.expected_seq_map.lock().await;
+                                            let entry = exp.entry(flow_id).or_insert(top_seq);
+                                            if SequencedPacket::seq_less(*entry, top_seq) || *entry == top_seq {
+                                                *entry = top_seq;
+                                            }
+                                        }
+                                        warn!(
+                                            flow_id = ?flow_id,
+                                            backlog = backlog_len,
+                                            tolerance = self.backlog_tolerance,
+                                            "Backlog tolerance exceeded; advancing expected sequence."
+                                        );
+                                        progressed_any = true;
+                                    }
+                                }
+
                                 if top_seq == expected {
                                     let maybe_sp = {
                                         let mut q = self.queue_map.lock().await;
@@ -436,32 +480,32 @@ impl ConcurrentLocalWriterConsumer {
                                     continue 'per_flow;
                                 }
 
-                                let now = Instant::now();
-                                let mut arm_timer = false;
                                 let mut advance_expected = false;
-                                {
-                                    let mut deadlines = self.gap_deadlines.lock().await;
-                                    match deadlines.get(&flow_id).copied() {
-                                        Some(deadline) => {
-                                            if now >= deadline {
-                                                deadlines.remove(&flow_id);
-                                                advance_expected = true;
+                                if let Some(gap_timeout) = self.gap_timeout {
+                                    let now = Instant::now();
+                                    let mut arm_timer = false;
+                                    {
+                                        let mut deadlines = self.gap_deadlines.lock().await;
+                                        match deadlines.get(&flow_id).copied() {
+                                            Some(deadline) => {
+                                                if now >= deadline {
+                                                    deadlines.remove(&flow_id);
+                                                    advance_expected = true;
+                                                }
+                                            }
+                                            None => {
+                                                deadlines.insert(flow_id, now + gap_timeout);
+                                                arm_timer = true;
                                             }
                                         }
-                                        None => {
-                                            deadlines.insert(flow_id, now + self.gap_timeout);
-                                            arm_timer = true;
-                                        }
                                     }
-                                }
-
-                                if arm_timer {
-                                    let notify = self.queue_not_empty.clone();
-                                    let delay = self.gap_timeout;
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(delay).await;
-                                        notify.notify_one();
-                                    });
+                                    if arm_timer {
+                                        let notify = self.queue_not_empty.clone();
+                                        tokio::spawn(async move {
+                                            tokio::time::sleep(gap_timeout).await;
+                                            notify.notify_one();
+                                        });
+                                    }
                                 }
 
                                 if advance_expected {
