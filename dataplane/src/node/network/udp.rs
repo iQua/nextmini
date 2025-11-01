@@ -1,9 +1,11 @@
 use std::collections::HashMap;
+use std::future::pending;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use socket2::SockRef;
 use tokio::net::UdpSocket;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::node::RECEIVE_BUF_SIZE;
@@ -16,8 +18,10 @@ use crate::node::scheduler::sched::SchedulerHandle;
 
 const HANDSHAKE_MAGIC: u8 = 0xAA;
 const HANDSHAKE_LEN: usize = 1 + std::mem::size_of::<u64>();
+const SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_UDP_WORKERS: usize = 2;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct PeerState {
     sender: mpsc::Sender<Vec<u8>>,
     remote_node_id: usize,
@@ -44,97 +48,133 @@ impl UdpServer {
     }
 
     pub async fn start_listening(&mut self, addr: &str) {
-        let socket = match UdpSocket::bind(addr).await {
-            Ok(sock) => Arc::new(sock),
+        let raw_socket = match UdpSocket::bind(addr).await {
+            Ok(sock) => sock,
             Err(e) => {
                 error!("Failed to bind UDP socket on {addr}: {e}");
                 return;
             }
         };
 
-        let mut peers: HashMap<SocketAddr, PeerState> = HashMap::new();
+        configure_socket_buffers(&raw_socket);
 
-        loop {
-            let mut buf = vec![0u8; RECEIVE_BUF_SIZE];
-            let (len, remote_addr) = match socket.recv_from(&mut buf).await {
-                Ok(res) => res,
-                Err(e) => {
-                    warn!("UDP server recv_from failed: {e}");
-                    continue;
-                }
-            };
+        let socket = Arc::new(raw_socket);
+        let peers: Arc<Mutex<HashMap<SocketAddr, PeerState>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
-            buf.truncate(len);
+        let worker_count = determine_worker_count(self.config.num_packet_processors);
 
-            let is_handshake = buf.first() == Some(&HANDSHAKE_MAGIC) && buf.len() == HANDSHAKE_LEN;
+        for _ in 0..worker_count {
+            let socket = Arc::clone(&socket);
+            let peers = Arc::clone(&peers);
+            let config = self.config.clone();
+            let processors = self.processors.clone();
+            let reporter = self.reporter.clone();
 
-            if is_handshake {
-                let mut node_id_bytes = [0u8; std::mem::size_of::<u64>()];
-                node_id_bytes.copy_from_slice(&buf[1..]);
-                let remote_node_id = u64::from_be_bytes(node_id_bytes) as usize;
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; RECEIVE_BUF_SIZE];
+                loop {
+                    let (len, remote_addr) = match socket.recv_from(&mut buf).await {
+                        Ok(res) => res,
+                        Err(e) => {
+                            warn!("UDP server recv_from failed: {e}");
+                            continue;
+                        }
+                    };
 
-                if peers.contains_key(&remote_addr) {
-                    debug!(
-                        "UDP server received duplicate handshake from {remote_addr} (node {remote_node_id}), ignoring."
-                    );
-                    continue;
-                }
+                    if len == 0 {
+                        continue;
+                    }
 
-                let (sender, receiver) = mpsc::channel(self.config.channel_capacity);
-                let udp_stream = UdpStream::new(socket.clone(), remote_addr, receiver);
+                    let payload = &buf[..len];
+                    let is_handshake = payload[0] == HANDSHAKE_MAGIC && len == HANDSHAKE_LEN;
 
-                let network_interface = NetworkInterfaceHandle::new(
-                    self.config.clone(),
-                    NetworkStream::Udp(udp_stream),
-                    self.processors.clone(),
-                    self.reporter.clone(),
-                    remote_node_id,
-                )
-                .await;
+                    if is_handshake {
+                        let mut node_id_bytes = [0u8; std::mem::size_of::<u64>()];
+                        node_id_bytes.copy_from_slice(&payload[1..]);
+                        let remote_node_id = u64::from_be_bytes(node_id_bytes) as usize;
 
-                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+                        {
+                            let peers_guard = peers.lock().await;
+                            if peers_guard.contains_key(&remote_addr) {
+                                debug!(
+                                    "UDP server received duplicate handshake from {remote_addr} (node {remote_node_id}), ignoring."
+                                );
+                                continue;
+                            }
+                        }
 
-                if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
-                    error!(
-                        "Failed to add UDP peer {} (addr {}): {}",
-                        remote_node_id, remote_addr, e
-                    );
-                    continue;
-                }
+                        let (sender, receiver) = mpsc::channel(config.channel_capacity);
+                        let udp_stream = UdpStream::new(socket.clone(), remote_addr, receiver);
 
-                peers.insert(
-                    remote_addr,
-                    PeerState {
-                        sender,
-                        remote_node_id,
-                    },
-                );
+                        let network_interface = NetworkInterfaceHandle::new(
+                            config.clone(),
+                            NetworkStream::Udp(udp_stream),
+                            processors.clone(),
+                            reporter.clone(),
+                            remote_node_id,
+                        )
+                        .await;
 
-                info!(
-                    "UDP connection established with node {} at {}.",
-                    remote_node_id, remote_addr
-                );
-                continue;
-            }
+                        let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
-            if let Some(peer) = peers.get(&remote_addr) {
-                if buf.is_empty() {
-                    continue;
-                }
+                        if let Err(e) = processors.add_node(remote_node_id, scheduler) {
+                            error!(
+                                "Failed to add UDP peer {} (addr {}): {}",
+                                remote_node_id, remote_addr, e
+                            );
+                            continue;
+                        }
 
-                match peer.sender.try_send(buf) {
-                    Ok(()) => {}
-                    Err(e) => {
-                        warn!(
-                            "Dropping UDP packet from node {} (addr {}) due to channel backpressure: {}",
-                            peer.remote_node_id, remote_addr, e
+                        {
+                            let mut peers_guard = peers.lock().await;
+                            peers_guard.insert(
+                                remote_addr,
+                                PeerState {
+                                    sender: sender.clone(),
+                                    remote_node_id,
+                                },
+                            );
+                        }
+
+                        info!(
+                            "UDP connection established with node {} at {}.",
+                            remote_node_id, remote_addr
+                        );
+
+                        continue;
+                    }
+
+                    let peer_sender = {
+                        let peers_guard = peers.lock().await;
+                        peers_guard
+                            .get(&remote_addr)
+                            .map(|state| (state.sender.clone(), state.remote_node_id))
+                    };
+
+                    if let Some((sender, remote_node_id)) = peer_sender {
+                        let mut packet = Vec::with_capacity(len);
+                        packet.extend_from_slice(payload);
+
+                        if let Err(e) = sender.send(packet).await {
+                            warn!(
+                                "UDP packet delivery to node {} (addr {}) failed: {}",
+                                remote_node_id, remote_addr, e
+                            );
+
+                            let mut peers_guard = peers.lock().await;
+                            peers_guard.remove(&remote_addr);
+                        }
+                    } else {
+                        debug!(
+                            "UDP server received packet from unknown peer {remote_addr}, dropping."
                         );
                     }
                 }
-            } else {
-                debug!("UDP server received packet from unknown peer {remote_addr}, dropping.");
-            }
+            });
         }
+
+        pending::<()>().await;
     }
 }
 
@@ -150,6 +190,8 @@ impl UdpClient {
                 .await
                 .expect("Failed to bind UDP socket"),
         );
+
+        configure_socket_buffers(socket.as_ref());
 
         let remote_addr: SocketAddr = remote_addr.parse().expect("Invalid UDP remote address");
 
@@ -172,23 +214,23 @@ impl UdpClient {
         let socket_for_recv = socket.clone();
 
         tokio::spawn(async move {
-            loop {
-                let mut buf = vec![0u8; RECEIVE_BUF_SIZE];
-                match socket_for_recv.recv(&mut buf).await {
-                    Ok(len) => {
-                        buf.truncate(len);
-                        if buf.first() == Some(&HANDSHAKE_MAGIC) && buf.len() == HANDSHAKE_LEN {
-                            continue;
-                        }
+            let mut buf = vec![0u8; RECEIVE_BUF_SIZE];
+            while let Ok(len) = socket_for_recv.recv(&mut buf).await {
+                if len == 0 {
+                    continue;
+                }
 
-                        if packet_sender.send(buf).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("UDP client recv failed: {e}");
-                        break;
-                    }
+                let packet = &buf[..len];
+
+                if packet.first() == Some(&HANDSHAKE_MAGIC) && len == HANDSHAKE_LEN {
+                    continue;
+                }
+
+                let mut owned = Vec::with_capacity(len);
+                owned.extend_from_slice(packet);
+
+                if packet_sender.send(owned).await.is_err() {
+                    break;
                 }
             }
         });
@@ -278,4 +320,31 @@ impl UdpWriter {
 
         Ok(())
     }
+}
+
+fn configure_socket_buffers(socket: &UdpSocket) {
+    let sock_ref = SockRef::from(socket);
+
+    if let Err(e) = sock_ref.set_recv_buffer_size(SOCKET_BUFFER_BYTES) {
+        warn!(
+            "Failed to set UDP receive buffer size to {} bytes: {}",
+            SOCKET_BUFFER_BYTES, e
+        );
+    }
+
+    if let Err(e) = sock_ref.set_send_buffer_size(SOCKET_BUFFER_BYTES) {
+        warn!(
+            "Failed to set UDP send buffer size to {} bytes: {}",
+            SOCKET_BUFFER_BYTES, e
+        );
+    }
+}
+
+fn determine_worker_count(num_packet_processors: usize) -> usize {
+    if num_packet_processors == 0 {
+        DEFAULT_UDP_WORKERS
+    } else {
+        num_packet_processors
+    }
+    .max(1)
 }
