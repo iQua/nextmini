@@ -3,6 +3,7 @@ use std::future::pending;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use bytes::BytesMut;
 use socket2::SockRef;
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, mpsc};
@@ -12,7 +13,7 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::packet::Packet;
+use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
@@ -23,7 +24,7 @@ const DEFAULT_UDP_WORKERS: usize = 2;
 
 #[derive(Clone, Debug)]
 struct PeerState {
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<PacketBuf>,
     remote_node_id: usize,
 }
 
@@ -72,9 +73,16 @@ impl UdpServer {
             let reporter = self.reporter.clone();
 
             tokio::spawn(async move {
-                let mut buf = vec![0u8; RECEIVE_BUF_SIZE];
+                let mut recv_buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
                 loop {
-                    let (len, remote_addr) = match socket.recv_from(&mut buf).await {
+                    if recv_buf.capacity() < RECEIVE_BUF_SIZE {
+                        recv_buf.reserve(RECEIVE_BUF_SIZE - recv_buf.capacity());
+                    }
+                    unsafe {
+                        recv_buf.set_len(RECEIVE_BUF_SIZE);
+                    }
+
+                    let (len, remote_addr) = match socket.recv_from(&mut recv_buf[..]).await {
                         Ok(res) => res,
                         Err(e) => {
                             warn!("UDP server recv_from failed: {e}");
@@ -86,7 +94,12 @@ impl UdpServer {
                         continue;
                     }
 
-                    let payload = &buf[..len];
+                    unsafe {
+                        recv_buf.set_len(len);
+                    }
+
+                    let frame = PacketBuf::from_bytes_mut(recv_buf.split_to(len));
+                    let payload = frame.as_slice();
                     let is_handshake = payload[0] == HANDSHAKE_MAGIC && len == HANDSHAKE_LEN;
 
                     if is_handshake {
@@ -153,10 +166,7 @@ impl UdpServer {
                     };
 
                     if let Some((sender, remote_node_id)) = peer_sender {
-                        let mut packet = Vec::with_capacity(len);
-                        packet.extend_from_slice(payload);
-
-                        if let Err(e) = sender.send(packet).await {
+                        if let Err(e) = sender.send(frame).await {
                             warn!(
                                 "UDP packet delivery to node {} (addr {}) failed: {}",
                                 remote_node_id, remote_addr, e
@@ -214,23 +224,39 @@ impl UdpClient {
         let socket_for_recv = socket.clone();
 
         tokio::spawn(async move {
-            let mut buf = vec![0u8; RECEIVE_BUF_SIZE];
-            while let Ok(len) = socket_for_recv.recv(&mut buf).await {
-                if len == 0 {
-                    continue;
+            let mut recv_buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
+            loop {
+                if recv_buf.capacity() < RECEIVE_BUF_SIZE {
+                    recv_buf.reserve(RECEIVE_BUF_SIZE - recv_buf.capacity());
+                }
+                unsafe {
+                    recv_buf.set_len(RECEIVE_BUF_SIZE);
                 }
 
-                let packet = &buf[..len];
+                match socket_for_recv.recv(&mut recv_buf[..]).await {
+                    Ok(len) => {
+                        if len == 0 {
+                            continue;
+                        }
 
-                if packet.first() == Some(&HANDSHAKE_MAGIC) && len == HANDSHAKE_LEN {
-                    continue;
-                }
+                        unsafe {
+                            recv_buf.set_len(len);
+                        }
 
-                let mut owned = Vec::with_capacity(len);
-                owned.extend_from_slice(packet);
+                        if len == HANDSHAKE_LEN && recv_buf[0] == HANDSHAKE_MAGIC {
+                            recv_buf.truncate(0);
+                            continue;
+                        }
 
-                if packet_sender.send(owned).await.is_err() {
-                    break;
+                        let packet_buf = PacketBuf::from_bytes_mut(recv_buf.split_to(len));
+                        if packet_sender.send(packet_buf).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("UDP client recv failed: {e}");
+                        break;
+                    }
                 }
             }
         });
@@ -243,14 +269,14 @@ impl UdpClient {
 pub struct UdpStream {
     pub socket: Arc<UdpSocket>,
     pub remote_addr: SocketAddr,
-    pub receiver: mpsc::Receiver<Vec<u8>>,
+    pub receiver: mpsc::Receiver<PacketBuf>,
 }
 
 impl UdpStream {
     pub fn new(
         socket: Arc<UdpSocket>,
         remote_addr: SocketAddr,
-        receiver: mpsc::Receiver<Vec<u8>>,
+        receiver: mpsc::Receiver<PacketBuf>,
     ) -> Self {
         Self {
             socket,
@@ -262,12 +288,12 @@ impl UdpStream {
 
 /// Reads packets for a specific UDP peer from an in-memory queue.
 pub struct UdpReader {
-    receiver: mpsc::Receiver<Vec<u8>>,
+    receiver: mpsc::Receiver<PacketBuf>,
     processors: ProcessorHandle,
 }
 
 impl UdpReader {
-    pub fn new(receiver: mpsc::Receiver<Vec<u8>>, processors: ProcessorHandle) -> Self {
+    pub fn new(receiver: mpsc::Receiver<PacketBuf>, processors: ProcessorHandle) -> Self {
         Self {
             receiver,
             processors,
@@ -303,7 +329,7 @@ impl UdpWriter {
 
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> std::io::Result<()> {
         for packet in packets {
-            let slice = &packet.buf[..packet.packet_size];
+            let slice = packet.bytes();
             let written = self
                 .socket
                 .send_to(slice, self.remote_addr)

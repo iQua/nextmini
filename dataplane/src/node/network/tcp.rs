@@ -12,7 +12,7 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::packet::Packet;
+use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
@@ -183,17 +183,22 @@ impl TcpReader {
 
     /// Reads a single packet from the TCP connection.
     async fn read_packet(&mut self) -> Result<Packet> {
-        let mut buf = vec![0; RECEIVE_BUF_SIZE];
-        self.stream.read_exact(&mut buf[0..4]).await?;
+        let mut buf = PacketBuf::new();
+        buf.prepare_uninit(4);
+        self.stream.read_exact(buf.as_mut_slice()).await?;
 
-        let msg_len = buf[2] as usize * 256 + buf[3] as usize;
+        let header = buf.as_slice();
+        let msg_len = header[2] as usize * 256 + header[3] as usize;
         if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid IPv4 total length: {}", msg_len),
             ));
         }
-        self.stream.read_exact(&mut buf[4..msg_len]).await?;
+        buf.prepare_uninit(msg_len);
+        self.stream
+            .read_exact(&mut buf.as_mut_slice()[4..msg_len])
+            .await?;
 
         Ok(Packet::new(msg_len, buf))
     }
@@ -217,7 +222,7 @@ impl TcpWriter {
         // first creates IoSlice objects from packet buffers
         let mut io_slices: Vec<IoSlice> = packets
             .iter()
-            .map(|packet| IoSlice::new(&packet.buf[0..packet.packet_size]))
+            .map(|packet| IoSlice::new(packet.bytes()))
             .collect();
 
         let mut slices = io_slices.as_mut_slice();

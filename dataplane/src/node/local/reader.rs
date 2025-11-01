@@ -8,7 +8,7 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow;
 use crate::node::local::interface::ShutdownMessage;
-use crate::node::packet::Packet;
+use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 
 /// Reads packets asynchronously from a TUN device, and sends them out to the Processor for processing.
@@ -35,9 +35,10 @@ impl LocalReader {
     }
 
     pub async fn run(&mut self) {
-        let mut buf = [0; RECEIVE_BUF_SIZE];
-
         loop {
+            let mut packet_buf = PacketBuf::new();
+            let recv_slice = packet_buf.prepare_uninit(RECEIVE_BUF_SIZE);
+
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
                     if let Ok(ShutdownMessage::Shutdown) = msg {
@@ -46,7 +47,7 @@ impl LocalReader {
                     }
                 }
                 // reads from the local TUN device
-                result = self.device.recv(&mut buf) => {
+                result = self.device.recv(recv_slice) => {
                     let n = match result {
                         Ok(n) => n,
                         Err(e) => {
@@ -63,7 +64,8 @@ impl LocalReader {
                         continue;
                     }
 
-                    let packet = Packet::new(n, buf.to_vec());
+                    packet_buf.truncate(n);
+                    let packet = Packet::new(n, packet_buf);
 
                     // checks if packet creation was successful
                     if packet.flow_id == flow::INVALID_FLOW_ID {

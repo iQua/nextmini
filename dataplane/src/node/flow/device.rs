@@ -6,7 +6,7 @@ use smoltcp::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::node::config::LocalConfig;
-use crate::node::packet::Packet;
+use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 
 pub struct VirtualDevice {
@@ -46,7 +46,7 @@ impl RxToken for PacketRxToken {
     where
         F: FnOnce(&[u8]) -> R,
     {
-        f(&self.0.buf[0..self.0.packet_size])
+        f(self.0.bytes())
     }
 }
 
@@ -57,8 +57,10 @@ impl TxToken for PacketTxToken {
     where
         F: FnOnce(&mut [u8]) -> R,
     {
-        let mut buf = vec![0; len];
-        let result = f(&mut buf);
+        let mut buf = PacketBuf::new();
+        let write_slice = buf.prepare_uninit(len);
+        let result = f(write_slice);
+        buf.truncate(len);
         let packet = Packet::new(len, buf);
 
         // uses non-blocking send() to send the outbound packet
@@ -126,7 +128,7 @@ mod tests {
         // TCP data offset (header length = 5 * 4 = 20 bytes)
         buf[32] = 0x50;
 
-        Packet::new(total_len, buf)
+        Packet::from_vec(buf)
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -150,7 +152,7 @@ mod tests {
             4001,
             5000,
         );
-        let expected = packet.buf[0..packet.packet_size].to_vec();
+        let expected = packet.bytes().to_vec();
         sender
             .try_send(packet)
             .expect("packet should be enqueued successfully");
