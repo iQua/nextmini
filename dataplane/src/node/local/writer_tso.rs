@@ -301,8 +301,9 @@ impl ConcurrentLocalWriterProducer {
                                     // do not remove expectation; FIN may arrive out of order
                                     let fin_next = packet.seq_num().wrapping_add(1);
                                     let mut exp = self.expected_seq_map.lock().await;
+
                                     exp.entry(flow_id).and_modify(|e| {
-                                        // keep it monotonic in TCP sequence space
+                                        // keeps it monotonic in TCP sequence space
                                         if SequencedPacket::seq_less(*e, fin_next) {
                                             *e = fin_next;
                                         }
@@ -313,19 +314,22 @@ impl ConcurrentLocalWriterProducer {
                                 }
                             }
 
-                            // forwards control packets immediately
+                            // forwards control packets immediately to the TUN interface
                             let mut single = vec![packet];
                             if let Err(e) = batch_writer.write(&mut single).await {
                                 error!("Failed to send packet to TUN device: {:?}", e);
                             }
+
                             continue;
                         }
 
+                        // sends inbound packets immediately if we are not enforcing TCP order
                         if !self.enforce_order {
                             let mut single = vec![packet];
                             if let Err(e) = batch_writer.write(&mut single).await {
                                 error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                             }
+
                             continue;
                         }
 
@@ -335,10 +339,12 @@ impl ConcurrentLocalWriterProducer {
                             let heap = q.entry(flow_id).or_insert_with(BinaryHeap::new);
                             heap.push(sequenced_packet);
                         }
+
                         {
                             let mut active = self.active_flows.lock().await;
                             active.insert(flow_id);
                         }
+
                         self.queue_not_empty.notify_one();
                     }
                 }
@@ -472,12 +478,14 @@ impl ConcurrentLocalWriterConsumer {
                                                 *entry = top_seq;
                                             }
                                         }
+
                                         warn!(
                                             flow_id = ?flow_id,
                                             backlog = backlog_len,
                                             tolerance = self.backlog_tolerance,
                                             "Backlog tolerance exceeded; advancing expected sequence."
                                         );
+
                                         progressed_any = true;
                                     }
                                 }
@@ -497,9 +505,11 @@ impl ConcurrentLocalWriterConsumer {
                                             let exp = self.expected_seq_map.lock().await;
                                             *exp.get(&flow_id).unwrap_or(&expected)
                                         };
+
                                         let payload = packet.tcp_payload_len() as u32;
                                         let fin_inc = if packet.is_tcp_fin_or_rst() { 1 } else { 0 };
                                         let next_expected = exp_now.wrapping_add(payload + fin_inc);
+
                                         {
                                             let mut exp = self.expected_seq_map.lock().await;
                                             let e = exp.entry(flow_id).or_insert(next_expected);
@@ -527,6 +537,7 @@ impl ConcurrentLocalWriterConsumer {
                                                 None => true,
                                             }
                                         };
+
                                         if is_empty {
                                             let mut active = self.active_flows.lock().await;
                                             active.remove(&flow_id);
@@ -554,6 +565,7 @@ impl ConcurrentLocalWriterConsumer {
                                 let now = Instant::now();
                                 let mut arm_timer = false;
                                 let mut advance_expected = false;
+
                                 {
                                     let mut deadlines = self.gap_deadlines.lock().await;
                                     match deadlines.get(&flow_id).copied() {

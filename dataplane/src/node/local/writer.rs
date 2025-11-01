@@ -241,17 +241,18 @@ impl ConcurrentLocalWriterProducer {
                                 }
                             }
 
-                            // Send immediately to TUN
+                            // sends the packet immediately to the TUN interface
                             let buf = &packet.buf[0..packet.packet_size];
                             if let Err(_) = self.device.try_send(buf) {
                                 if let Err(e) = self.device.send(buf).await {
                                     error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                                 }
                             }
+
                             continue;
                         }
 
-                        // Enqueue TCP data
+                        // sends the packet immediately to the TUN interface if we are not enforcing TCP order
                         if !self.enforce_order {
                             let buf = &packet.buf[0..packet.packet_size];
                             if let Err(_) = self.device.try_send(buf) {
@@ -259,10 +260,12 @@ impl ConcurrentLocalWriterProducer {
                                     error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                                 }
                             }
+
                             continue;
                         }
 
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
+
                         {
                             let mut q = self.queue_map.lock().await;
                             let heap = q.entry(flow_id).or_insert_with(BinaryHeap::new);
@@ -396,6 +399,7 @@ impl ConcurrentLocalWriterConsumer {
                                         let q = self.queue_map.lock().await;
                                         q.get(&flow_id).map(|h| h.len()).unwrap_or(0)
                                     };
+
                                     if backlog_len >= self.backlog_tolerance {
                                         {
                                             let mut deadlines = self.gap_deadlines.lock().await;
@@ -408,12 +412,14 @@ impl ConcurrentLocalWriterConsumer {
                                                 *entry = top_seq;
                                             }
                                         }
+
                                         warn!(
                                             flow_id = ?flow_id,
                                             backlog = backlog_len,
                                             tolerance = self.backlog_tolerance,
                                             "Backlog tolerance exceeded; advancing expected sequence."
                                         );
+
                                         progressed_any = true;
                                     }
                                 }
@@ -489,10 +495,10 @@ impl ConcurrentLocalWriterConsumer {
                                     continue 'per_flow;
                                 }
 
-                                let mut advance_expected = false;
                                 if let Some(gap_timeout) = self.gap_timeout {
                                     let now = Instant::now();
                                     let mut arm_timer = false;
+
                                     {
                                         let mut deadlines = self.gap_deadlines.lock().await;
                                         match deadlines.get(&flow_id).copied() {
@@ -508,6 +514,7 @@ impl ConcurrentLocalWriterConsumer {
                                             }
                                         }
                                     }
+
                                     if arm_timer {
                                         let notify = self.queue_not_empty.clone();
                                         tokio::spawn(async move {
@@ -516,6 +523,8 @@ impl ConcurrentLocalWriterConsumer {
                                         });
                                     }
                                 }
+
+                                let mut advance_expected = false;
 
                                 if advance_expected {
                                     {
