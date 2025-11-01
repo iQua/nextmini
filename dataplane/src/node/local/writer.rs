@@ -30,9 +30,15 @@ impl LocalWriter {
                 shutdown_receiver,
                 packet_receiver,
             )),
-            Feature::Concurrent => LocalWriter::Concurrent(Box::new(
-                ConcurrentLocalWriterProducer::new(device, shutdown_receiver, packet_receiver),
-            )),
+            Feature::Concurrent => {
+                let delay = Duration::from_millis(config.delay_tolerance);
+                LocalWriter::Concurrent(Box::new(ConcurrentLocalWriterProducer::new(
+                    device,
+                    shutdown_receiver,
+                    packet_receiver,
+                    delay,
+                )))
+            }
         }
     }
 
@@ -140,9 +146,6 @@ impl Ord for SequencedPacket {
     }
 }
 
-// Allow out-of-order delivery after a short pause so a missing segment does not stall a flow forever.
-const GAP_TIMEOUT_MS: u64 = 5;
-
 pub struct ConcurrentLocalWriterProducer {
     shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
     packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
@@ -152,6 +155,7 @@ pub struct ConcurrentLocalWriterProducer {
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
     gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
+    gap_timeout: Duration,
 }
 
 impl ConcurrentLocalWriterProducer {
@@ -159,6 +163,7 @@ impl ConcurrentLocalWriterProducer {
         device: Arc<AsyncDevice>,
         shutdown_receiver: broadcast::Receiver<ShutdownMessage>,
         packet_receiver: mpsc::Receiver<LocalInterfaceMessage>,
+        gap_timeout: Duration,
     ) -> Self {
         let queue_map = Arc::new(Mutex::new(HashMap::new()));
         let active_flows = Arc::new(Mutex::new(HashSet::new()));
@@ -174,6 +179,7 @@ impl ConcurrentLocalWriterProducer {
             queue_not_empty: queue_not_empty.clone(),
             expected_seq_map: expected_seq_map.clone(),
             gap_deadlines: gap_deadlines.clone(),
+            gap_timeout,
         };
 
         tokio::spawn(async move {
@@ -190,6 +196,7 @@ impl ConcurrentLocalWriterProducer {
             queue_not_empty,
             expected_seq_map,
             gap_deadlines,
+            gap_timeout,
         }
     }
 
@@ -268,12 +275,11 @@ struct ConcurrentLocalWriterConsumer {
     queue_not_empty: Arc<Notify>,
     expected_seq_map: Arc<Mutex<HashMap<FlowId, u32>>>,
     gap_deadlines: Arc<Mutex<HashMap<FlowId, Instant>>>,
+    gap_timeout: Duration,
 }
 
 impl ConcurrentLocalWriterConsumer {
     async fn run(&mut self) {
-        let gap_timeout = Duration::from_millis(GAP_TIMEOUT_MS);
-
         loop {
             tokio::select! {
                 msg = self.shutdown_receiver.recv() => {
@@ -446,7 +452,7 @@ impl ConcurrentLocalWriterConsumer {
                                             }
                                         }
                                         None => {
-                                            deadlines.insert(flow_id, now + gap_timeout);
+                                            deadlines.insert(flow_id, now + self.gap_timeout);
                                             arm_timer = true;
                                         }
                                     }
@@ -454,8 +460,9 @@ impl ConcurrentLocalWriterConsumer {
 
                                 if arm_timer {
                                     let notify = self.queue_not_empty.clone();
+                                    let delay = self.gap_timeout;
                                     tokio::spawn(async move {
-                                        tokio::time::sleep(gap_timeout).await;
+                                        tokio::time::sleep(delay).await;
                                         notify.notify_one();
                                     });
                                 }

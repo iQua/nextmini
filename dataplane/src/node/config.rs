@@ -179,6 +179,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub restart_on_disconnect: bool,
 
+    /// Maximum milliseconds to hold a flow waiting for a missing TCP segment before emitting newer data.
+    #[default(5)]
+    #[arg(long)]
+    pub delay_tolerance: u64,
+
     /// QUIC congestion control algorithm to use.
     #[default(CongestionControl::Bbr)]
     #[arg(long, value_enum)]
