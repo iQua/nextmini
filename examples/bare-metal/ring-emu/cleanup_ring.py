@@ -13,7 +13,7 @@ def run_cmd(cmd):
 
 def main():
     script_dir = Path(__file__).parent.resolve()
-    ssh_key = script_dir / "ssh" / "id_rsa"
+    ssh_key = script_dir.parent / "dataplane" / "ssh" / "id_rsa"
     ssh_hosts_file = script_dir / "ssh_hosts.txt"
     
     if not ssh_hosts_file.exists():
@@ -23,11 +23,11 @@ def main():
     with open(ssh_hosts_file, 'r') as f:
         hosts = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     
-    print("Cleaning up ringallreduce processes on all nodes...")
+    print(f"Cleaning up ringallreduce processes on {len(hosts)} nodes...")
     
     for host in hosts:
         print(f"  Cleaning {host}...", end=" ")
-        cmd = f"ssh -i {ssh_key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {host} 'pkill -9 ringallreduce 2>/dev/null; echo OK' 2>/dev/null"
+        cmd = f"ssh -i {ssh_key} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null {host} 'pkill -9 ringallreduce 2>/dev/null; rm -rf ~/ring-test 2>/dev/null; echo OK' 2>/dev/null"
         run_cmd(cmd)
         print("✓")
     

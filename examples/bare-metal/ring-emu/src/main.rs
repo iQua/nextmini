@@ -90,9 +90,9 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("rank {} failed to bind {}", args.rank, my))?;
 
-    // Wait 1 second to let all nodes bind before attempting connections
-    println!("[rank {}] waiting 1s for all nodes to bind...", args.rank);
-    sleep(Duration::from_secs(1)).await;
+    // Wait 3 seconds to let all nodes bind before attempting connections
+    println!("[rank {}] waiting 3s for all nodes to bind...", args.rank);
+    sleep(Duration::from_secs(3)).await;
 
     let mut right_stream = connect_with_retry(right, args.retry_ms, args.rank).await?;
     right_stream.set_nodelay(true)?;
@@ -214,10 +214,11 @@ async fn reduce_scatter(
             chunk_idx: send_idx as u32,
             payload,
         };
-        send_msg(right, &msg).await?;
-
-        // Receive neighbor contribution for recv_idx and add in-place
-        let incoming = recv_msg(left).await?;
+        
+        // Concurrently send and receive to avoid deadlock
+        let send_future = send_msg(right, &msg);
+        let recv_future = recv_msg(left);
+        let (_send_result, incoming) = tokio::try_join!(send_future, recv_future)?;
         match incoming {
             Msg::Data {
                 phase: Phase::ReduceScatter,
@@ -268,10 +269,11 @@ async fn all_gather(
             chunk_idx: send_idx as u32,
             payload,
         };
-        send_msg(right, &msg).await?;
-
-        // Receive the next reduced chunk we need to store
-        let incoming = recv_msg(left).await?;
+        
+        // Concurrently send and receive to avoid deadlock
+        let send_future = send_msg(right, &msg);
+        let recv_future = recv_msg(left);
+        let (_send_result, incoming) = tokio::try_join!(send_future, recv_future)?;
         match incoming {
             Msg::Data {
                 phase: Phase::AllGather,

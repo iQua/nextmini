@@ -1,0 +1,24 @@
+# Fly.io configuration for baseline ring-emu testing
+# Template: replace {NODE_NUM} with actual node number
+
+app = '{APP_NAME}'
+primary_region = 'sjc'
+
+[build]
+  dockerfile = 'Dockerfile.baseline'
+
+[env]
+  RUST_LOG = 'info'
+
+# No exposed ports needed - we'll use flyctl ssh to launch tests
+# Nodes communicate via Fly.io 6PN (IPv6 Private Network)
+
+[experimental]
+  # Enable IPv6 private networking
+  private_network = true
+
+[[vm]]
+  cpu_kind = '{CPU_KIND}'
+  cpus = {CPUS}
+  memory = '{MEMORY}'
+

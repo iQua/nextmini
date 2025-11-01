@@ -93,7 +93,7 @@ def create_fly_config(template_path, output_path, app_name, config_path):
         f.write(content)
 
 
-def deploy_node(repo_root, script_dir, public_ip, node_id):
+def deploy_node(repo_root, script_dir, public_ip, node_id, vm_size=None):
     """Deploy a single dataplane node."""
     app_name = f"nextmini-node-{node_id}"
 
@@ -147,21 +147,27 @@ def deploy_node(repo_root, script_dir, public_ip, node_id):
     abs_fly_config = os.path.abspath(tmp_fly_config)
     abs_dockerfile = os.path.abspath(str(script_dir / "Dockerfile.dataplane"))
 
-    run_command(
-        [
-            "flyctl",
-            "deploy",
-            "--config",
-            abs_fly_config,
-            "--dockerfile",
-            abs_dockerfile,
-            "--build-arg",
-            "CARGO_PROFILE=release",
-            "--app",
-            app_name,
-            "--ha=false",
-        ]
-    )
+    deploy_cmd = [
+        "flyctl",
+        "deploy",
+        "--config",
+        abs_fly_config,
+        "--dockerfile",
+        abs_dockerfile,
+        "--build-arg",
+        "CARGO_PROFILE=release",
+        "--app",
+        app_name,
+        "--ha=false",
+        "--no-public-ips",
+        "--yes",
+    ]
+    
+    # Add vm-size if specified
+    if vm_size:
+        deploy_cmd.extend(["--vm-size", vm_size])
+    
+    run_command(deploy_cmd)
 
     # Clean up temp files
     os.remove(tmp_node_config)
@@ -190,6 +196,11 @@ def main():
     parser.add_argument(
         "--region", default="iad", help="Fly.io region (default: iad)"
     )
+    parser.add_argument(
+        "--vm-size",
+        default=None,
+        help="Fly.io VM size (e.g., shared-cpu-1x, performance-2x, default: shared-cpu-1x)",
+    )
 
     args = parser.parse_args()
 
@@ -200,6 +211,7 @@ def main():
     print(f"Controller IP:  {args.public_ip}")
     print(f"Number of Nodes: {args.nodes}")
     print(f"Region:         {args.region}")
+    print(f"VM Size:        {args.vm_size or 'shared-cpu-1x (default)'}")
     print()
 
     # Pre-flight checks
@@ -214,7 +226,7 @@ def main():
     deployed_apps = []
     for i in range(1, args.nodes + 1):
         try:
-            app_name = deploy_node(repo_root, script_dir, args.public_ip, i)
+            app_name = deploy_node(repo_root, script_dir, args.public_ip, i, args.vm_size)
             deployed_apps.append(app_name)
         except Exception as e:
             print(f"Failed to deploy node {i}: {e}")
@@ -223,7 +235,7 @@ def main():
     # Summary
     print()
     print("=" * 60)
-    print("✅ All nodes deployed successfully!")
+    print("All nodes deployed successfully!")
     print("=" * 60)
     print()
     print("Deployed Applications:")
@@ -234,6 +246,9 @@ def main():
     print("   1. Check controller logs: docker compose logs -f controller")
     print(f"   2. Check node logs: flyctl logs -a {deployed_apps[0]}")
     print("   3. Monitor status: flyctl status -a <app-name>")
+    print("   4. SSH into a node:")
+    for app in deployed_apps:
+        print(f"      flyctl ssh console -a {app}")
     print()
     print("Cleanup:")
     for app in deployed_apps:
