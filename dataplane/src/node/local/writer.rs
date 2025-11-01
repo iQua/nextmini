@@ -302,7 +302,6 @@ impl ConcurrentLocalWriterConsumer {
 
                         // drains contiguous prefix
                         loop {
-                            let mut dropped_stale = false;
                             let maybe_sp = {
                                 let mut queue_map = self.queue_map.lock().await;
                                 if let Some(heap) = queue_map.get_mut(&flow_id) {
@@ -310,11 +309,6 @@ impl ConcurrentLocalWriterConsumer {
                                         if let Some(expected) = self.expected_seq.get(&flow_id) {
                                             if peek.seq == *expected {
                                                 heap.pop()
-                                            } else if SequencedPacket::seq_less(peek.seq, *expected) {
-                                                // stale/duplicate earlier than expected; drop to avoid HoL blocking
-                                                let _ = heap.pop();
-                                                dropped_stale = true;
-                                                None
                                             } else {
                                                 None
                                             }
@@ -322,11 +316,6 @@ impl ConcurrentLocalWriterConsumer {
                                     } else { None }
                                 } else { None }
                             };
-
-                            if dropped_stale {
-                                // continue draining after removing the stale entry
-                                continue;
-                            }
 
                             if let Some(sp) = maybe_sp {
                                 let packet = sp.packet;

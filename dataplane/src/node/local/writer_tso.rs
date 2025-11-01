@@ -388,20 +388,13 @@ impl ConcurrentLocalWriterConsumer {
 
                             // drains contiguous prefix
                             loop {
-                                // decide whether to deliver the next packet, drop a stale one, or stop on a gap
-                                let mut dropped_stale = false;
+                                // only pops the next packet if next exactly matches expected
                                 let maybe_sp = {
                                     let mut q = self.queue_map.lock().await;
                                     if let Some(h) = q.get_mut(&flow_id) {
                                         if let Some(peek) = h.peek() {
-                                            let expected = self.expected_seq[&flow_id];
-                                            if peek.seq == expected {
+                                            if peek.seq == self.expected_seq[&flow_id] {
                                                 h.pop()
-                                            } else if SequencedPacket::seq_less(peek.seq, expected) {
-                                                // stale/duplicate earlier than expected; drop it to avoid HoL blocking
-                                                let _ = h.pop();
-                                                dropped_stale = true;
-                                                None
                                             } else {
                                                 None
                                             }
@@ -412,12 +405,6 @@ impl ConcurrentLocalWriterConsumer {
                                         None
                                     }
                                 };
-
-                                if dropped_stale {
-                                    // we made progress by discarding a stale packet; keep draining
-                                    progressed_any = true;
-                                    continue;
-                                }
 
                                 if let Some(sp) = maybe_sp {
                                     let packet = sp.packet;
