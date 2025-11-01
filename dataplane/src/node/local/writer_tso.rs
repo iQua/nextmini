@@ -264,7 +264,7 @@ impl ConcurrentLocalWriterProducer {
                         let flow_id = packet.flow_id;
 
                         if !packet.is_tcp_data() {
-                            // seed on SYN; cleanup on FIN/RST
+                            // seeds on SYN; keep expectation monotonic on FIN/RST
                             if packet.is_tcp_syn() {
                                 let start = packet.seq_num().wrapping_add(1);
                                 let mut exp = self.expected_seq_map.lock().await;
@@ -273,10 +273,18 @@ impl ConcurrentLocalWriterProducer {
                                 let mut active = self.active_flows.lock().await;
                                 active.insert(flow_id);
                             } else if packet.is_tcp_fin_or_rst() {
+                                // do not remove expectation; FIN may arrive out of order
+                                let fin_next = packet.seq_num().wrapping_add(1);
                                 let mut exp = self.expected_seq_map.lock().await;
-                                exp.remove(&flow_id);
+                                exp.entry(flow_id).and_modify(|e| {
+                                    // keep it monotonic in TCP sequence space
+                                    if SequencedPacket::seq_less(*e, fin_next) {
+                                        *e = fin_next;
+                                    }
+                                }).or_insert(fin_next);
                             }
 
+                            // forwards control packets immediately
                             let mut single = vec![packet];
                             if let Err(e) = batch_writer.write(&mut single).await {
                                 error!("Failed to send packet to TUN device: {:?}", e);
@@ -284,7 +292,7 @@ impl ConcurrentLocalWriterProducer {
                             continue;
                         }
 
-                        // data -> enqueue
+                        // TCP data -> enqueue
                         let sequenced_packet = SequencedPacket { seq: packet.seq_num(), packet };
                         {
                             let mut q = self.queue_map.lock().await;
@@ -337,6 +345,7 @@ impl ConcurrentLocalWriterConsumer {
                 }
                 _ = self.queue_not_empty.notified() => {
                     loop {
+                        // snapshots active flows
                         let flow_ids: Vec<FlowId> = {
                             let active = self.active_flows.lock().await;
                             active.iter().copied().collect()
@@ -348,15 +357,10 @@ impl ConcurrentLocalWriterConsumer {
                         let mut progressed_any = false;
 
                         for flow_id in flow_ids {
-                            // snapshots the top of the heap
+                            // peeks smallest seq for flow
                             let top_seq_opt = {
                                 let q = self.queue_map.lock().await;
-
-                                if let Some(h) = q.get(&flow_id) {
-                                    h.peek().map(|sp| sp.seq)
-                                } else {
-                                    None
-                                }
+                                q.get(&flow_id).and_then(|h| h.peek().map(|sp| sp.seq))
                             };
 
                             let top_seq = match top_seq_opt {
@@ -368,34 +372,28 @@ impl ConcurrentLocalWriterConsumer {
                                 }
                             };
 
-                            // expected from SYN
+                            // expected (create lazily only if missing)
                             let expected = {
                                 let mut exp = self.expected_seq_map.lock().await;
-
                                 match exp.get(&flow_id).copied() {
                                     Some(e) => e,
-                                    None => {
-                                        exp.insert(flow_id, top_seq);
-                                        top_seq
-                                    }
+                                    None => { exp.insert(flow_id, top_seq); top_seq }
                                 }
                             };
 
-                            // drop stale retransmissions
+                            // drops stale (< expected) so they don't block progress
                             {
                                 let mut q = self.queue_map.lock().await;
                                 if let Some(h) = q.get_mut(&flow_id) {
                                     while let Some(peek) = h.peek() {
                                         if SequencedPacket::seq_less(peek.seq, expected) {
                                             h.pop();
-                                        } else {
-                                            break;
-                                        }
+                                        } else { break; }
                                     }
                                 }
                             }
 
-                            // pop next-in-order
+                            // pops next in-order (== current expected)
                             let maybe_sp = {
                                 let mut q = self.queue_map.lock().await;
                                 if let Some(h) = q.get_mut(&flow_id) {
@@ -404,9 +402,6 @@ impl ConcurrentLocalWriterConsumer {
                                             let exp = self.expected_seq_map.lock().await;
                                             *exp.get(&flow_id).unwrap_or(&expected)
                                         };
-
-                                        println!("Expected = {exp_now}, seq = {0}", peek.seq);
-
                                         if peek.seq == exp_now { h.pop() } else { None }
                                     } else { None }
                                 } else { None }
@@ -414,12 +409,21 @@ impl ConcurrentLocalWriterConsumer {
 
                             if let Some(sp) = maybe_sp {
                                 let packet = sp.packet;
+
+                                // advances from the authoritative expected (exp_now), not the older snapshot.
+                                let exp_now = {
+                                    let exp = self.expected_seq_map.lock().await;
+                                    *exp.get(&flow_id).unwrap_or(&expected)
+                                };
                                 let payload = packet.tcp_payload_len() as u32;
                                 let fin_inc = if packet.is_tcp_fin_or_rst() { 1 } else { 0 };
-                                let next_expected = expected.wrapping_add(payload + fin_inc);
+                                let next_expected = exp_now.wrapping_add(payload + fin_inc);
                                 {
                                     let mut exp = self.expected_seq_map.lock().await;
-                                    exp.insert(flow_id, next_expected);
+                                    let e = exp.entry(flow_id).or_insert(next_expected);
+                                    if SequencedPacket::seq_less(*e, next_expected) {
+                                        *e = next_expected;
+                                    }
                                 }
 
                                 pending_packets.push(packet);
@@ -430,31 +434,35 @@ impl ConcurrentLocalWriterConsumer {
                                     pending_packets.clear();
                                 }
 
-                                // retire flow if empty
+                                // if heap is empty, just mark flow inactive; DO NOT drop expectation.
                                 let is_empty = {
                                     let q = self.queue_map.lock().await;
-                                    q.get(&flow_id).is_none_or(|h| h.is_empty())
+                                    match q.get(&flow_id) {
+                                        Some(h) => h.is_empty(),
+                                        None => true,
+                                    }
                                 };
                                 if is_empty {
                                     let mut active = self.active_flows.lock().await;
                                     active.remove(&flow_id);
-                                    let mut exp = self.expected_seq_map.lock().await;
-                                    exp.remove(&flow_id);
+                                    // keeps expected_seq_map entry to avoid regressions on late packets
                                 }
                             }
                         }
 
                         if !progressed_any {
+                            // no in-order progress possible right now
                             break;
                         }
                     }
 
-                    // flush any accumulated packets
+                    // flushes any accumulated packets
                     if !pending_packets.is_empty() {
                         let _ = batch_writer.write(&mut pending_packets).await;
                         pending_packets.clear();
                     }
                 }
+                // periodic flush
                 _ = tokio::time::sleep(batch_timeout), if !pending_packets.is_empty() => {
                     let _ = batch_writer.write(&mut pending_packets).await;
                     pending_packets.clear();
