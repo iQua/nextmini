@@ -81,7 +81,7 @@ impl BatchLocalWriter {
         for packet in packets.iter() {
             let mut buf = vec![0; VIRTIO_NET_HDR_LEN + packet.packet_size];
             buf[VIRTIO_NET_HDR_LEN..VIRTIO_NET_HDR_LEN + packet.packet_size]
-                .copy_from_slice(&packet.buf[..packet.packet_size]);
+                .copy_from_slice(packet.bytes());
 
             self.packet_buffers.push(buf);
         }
@@ -102,7 +102,7 @@ impl BatchLocalWriter {
             Err(e) => {
                 // if batch sending fails, falls back to sending packets individually
                 for packet in packets.drain(..) {
-                    let buf = &packet.buf[0..packet.packet_size];
+                    let buf = packet.bytes();
                     let _ = self.device.send(buf).await;
                 }
 

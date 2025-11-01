@@ -1,124 +1,238 @@
+use std::ops::Deref;
+use std::sync::Mutex;
+
 use byteorder::{BigEndian, ByteOrder};
+use bytes::BytesMut;
+use once_cell::sync::Lazy;
 
 use crate::node::flow;
-use crate::node::{FlowId, PacketBuf};
+use crate::node::{FlowId, RECEIVE_BUF_SIZE};
+
+static PACKET_BUFFER_POOL: Lazy<Mutex<Vec<BytesMut>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// A reusable packet buffer backed by a global pool.
+#[derive(Debug)]
+pub struct PacketBuf {
+    buf: Option<BytesMut>,
+    pooled: bool,
+}
+
+impl PacketBuf {
+    /// Acquires a buffer from the global pool, allocating on demand.
+    pub fn new() -> Self {
+        let mut pool = PACKET_BUFFER_POOL.lock().unwrap();
+        let mut buf = pool
+            .pop()
+            .unwrap_or_else(|| BytesMut::with_capacity(RECEIVE_BUF_SIZE));
+        buf.truncate(0);
+        PacketBuf {
+            buf: Some(buf),
+            pooled: true,
+        }
+    }
+
+    /// Wraps an existing vector without copying the contents.
+    pub fn from_vec(vec: Vec<u8>) -> Self {
+        let mut bytes = BytesMut::with_capacity(vec.len());
+        bytes.extend_from_slice(&vec);
+        PacketBuf {
+            buf: Some(bytes),
+            pooled: false,
+        }
+    }
+
+    /// Wraps an existing BytesMut (used internally for zero-copy splits).
+    pub fn from_bytes_mut(bytes: BytesMut) -> Self {
+        PacketBuf {
+            buf: Some(bytes),
+            pooled: false,
+        }
+    }
+
+    /// Ensures the buffer has space for `len` bytes and exposes them as a slice.
+    /// The returned slice may contain uninitialised data; callers must fully
+    /// overwrite it before using.
+    pub fn prepare_uninit(&mut self, len: usize) -> &mut [u8] {
+        let buf = self.buf.as_mut().expect("packet buffer already released");
+        if buf.capacity() < len {
+            buf.reserve(len - buf.capacity());
+        }
+        let current_len = buf.len();
+        if len > current_len {
+            unsafe {
+                buf.set_len(len);
+            }
+        } else {
+            buf.truncate(len);
+        }
+        buf.as_mut()
+    }
+
+    /// Shrinks the logical length to `len`.
+    pub fn truncate(&mut self, len: usize) {
+        if let Some(buf) = self.buf.as_mut() {
+            buf.truncate(len);
+        }
+    }
+
+    /// Returns the current length of valid data.
+    pub fn len(&self) -> usize {
+        self.buf.as_ref().map(|b| b.len()).unwrap_or(0)
+    }
+
+    /// Provides read-only access to the stored bytes.
+    pub fn as_slice(&self) -> &[u8] {
+        self.deref()
+    }
+
+    /// Provides mutable access to the currently initialised bytes.
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.buf
+            .as_mut()
+            .expect("packet buffer already released")
+            .as_mut()
+    }
+}
+
+impl Deref for PacketBuf {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.buf.as_ref().map(|b| b.as_ref()).unwrap_or(&[])
+    }
+}
+
+impl Drop for PacketBuf {
+    fn drop(&mut self) {
+        if self.pooled {
+            if let Some(mut buf) = self.buf.take() {
+                buf.truncate(0);
+                if buf.capacity() > RECEIVE_BUF_SIZE * 4 {
+                    buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
+                }
+                PACKET_BUFFER_POOL.lock().unwrap().push(buf);
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Packet {
     pub flow_id: FlowId,
     pub packet_size: usize,
-    pub buf: PacketBuf,
+    buffer: PacketBuf,
 }
 
 impl Packet {
-    pub fn new(packet_size: usize, buf: PacketBuf) -> Self {
-        // compute flow_id based only on the valid portion of the buffer
-        let flow_id = if packet_size <= buf.len() {
-            Self::get_flow_id_from_buf(&buf[..packet_size])
+    pub fn new(packet_size: usize, mut buffer: PacketBuf) -> Self {
+        if buffer.len() > packet_size {
+            buffer.truncate(packet_size);
+        }
+        let actual_size = buffer.len().min(packet_size);
+        let flow_id = if actual_size <= buffer.len() {
+            Self::get_flow_id_from_buf(&buffer[..actual_size])
         } else {
-            // fallback: if packet_size is inconsistent, treat as invalid
             flow::INVALID_FLOW_ID
         };
         Self {
             flow_id,
-            packet_size,
-            buf,
+            packet_size: actual_size,
+            buffer,
         }
     }
 
+    /// Convenience constructor for tests.
+    pub fn from_vec(vec: Vec<u8>) -> Self {
+        let len = vec.len();
+        Packet::new(len, PacketBuf::from_vec(vec))
+    }
+
+    /// Returns a read-only view over the packet payload.
+    pub fn bytes(&self) -> &[u8] {
+        &self.buffer[..self.packet_size]
+    }
+
     pub fn seq_num(&self) -> u32 {
-        if self.packet_size < 20 || (self.buf[0] >> 4) != 4 {
+        let buf = self.bytes();
+        if self.packet_size < 20 || (buf[0] >> 4) != 4 {
             return 0;
         }
-        let ihl = (self.buf[0] & 0x0F) as usize;
+        let ihl = (buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
         if self.packet_size < ip_header_len + 8 {
             return 0;
         }
-        // extracts the sequence number from the TCP header
-        BigEndian::read_u32(&self.buf[ip_header_len + 4..ip_header_len + 8])
+        BigEndian::read_u32(&buf[ip_header_len + 4..ip_header_len + 8])
     }
 
-    // Is this packet a TCP data packet with non-zero TCP payload?
     pub fn is_tcp_data(&self) -> bool {
-        if self.packet_size < 20 || (self.buf[0] >> 4) != 4 {
+        let buf = self.bytes();
+        if self.packet_size < 20 || (buf[0] >> 4) != 4 {
             return false;
         }
-        if self.buf[9] != 6 {
-            return false; // not TCP
+        if buf[9] != 6 {
+            return false;
         }
 
         self.has_tcp_payload()
     }
 
-    /// Is this packet a TCP SYN?
     pub fn is_tcp_syn(&self) -> bool {
-        // must be TCP and long enough for flags byte
-        if self.packet_size < 20 || self.buf[9] != 6 {
+        let buf = self.bytes();
+        if self.packet_size < 20 || buf[9] != 6 {
             return false;
         }
 
-        let ihl = (self.buf[0] & 0x0F) as usize;
+        let ihl = (buf[0] & 0x0F) as usize;
         let tcp_offset = ihl * 4;
         if self.packet_size <= tcp_offset + 13 {
             return false;
         }
 
-        let tcp_flags = self.buf[tcp_offset + 13];
-        (tcp_flags & 0x02) != 0 // SYN
+        let tcp_flags = buf[tcp_offset + 13];
+        (tcp_flags & 0x02) != 0
     }
 
-    // Is this packet a TCP FIN or RST?
     pub fn is_tcp_fin_or_rst(&self) -> bool {
-        // Must be TCP and long enough for flags byte.
-        if self.packet_size < 20 || self.buf[9] != 6 {
+        let buf = self.bytes();
+        if self.packet_size < 20 || buf[9] != 6 {
             return false;
         }
 
-        let ihl = (self.buf[0] & 0x0F) as usize;
+        let ihl = (buf[0] & 0x0F) as usize;
         let tcp_offset = ihl * 4;
         if self.packet_size <= tcp_offset + 13 {
             return false;
         }
-        let tcp_flags = self.buf[tcp_offset + 13];
+        let tcp_flags = buf[tcp_offset + 13];
 
-        // checks if FIN or RST flag is set
         (tcp_flags & 0x01) != 0 || (tcp_flags & 0x04) != 0
     }
 
-    /// Returns the TCP payload length in bytes for IPv4/TCP packets.
-    /// Returns 0 if the packet is not IPv4/TCP or is malformed.
     pub fn tcp_payload_len(&self) -> usize {
-        // must be IPv4 and long enough for the base header
-        if self.packet_size < 20 || (self.buf[0] >> 4) != 4 {
+        let buf = self.bytes();
+        if self.packet_size < 20 || (buf[0] >> 4) != 4 {
             return 0;
         }
-        // protocol must be TCP
-        if self.buf[9] != 6 {
+        if buf[9] != 6 {
             return 0;
         }
 
-        // IP header length (IHL) in 32-bit words
-        let ihl = (self.buf[0] & 0x0F) as usize;
+        let ihl = (buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
         if self.packet_size < ip_header_len + 14 {
-            // not enough for minimal TCP header fields we touch
             return 0;
         }
 
-        // total length from IP header (bytes 2-3)
-        let mut total_length = BigEndian::read_u16(&self.buf[2..4]) as usize;
-        // clamp to actually received buffer
+        let mut total_length = BigEndian::read_u16(&buf[2..4]) as usize;
         if total_length > self.packet_size {
             total_length = self.packet_size;
         }
 
-        // TCP header length (upper 4 bits of byte 12 in TCP header)
         let tcp_offset = ip_header_len;
-        let tcp_data_offset = ((self.buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
+        let tcp_data_offset = ((buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
         let tcp_header_len = tcp_data_offset * 4;
 
-        // guard malformed TCP headers
         if tcp_header_len < 20 || ip_header_len + tcp_header_len > self.packet_size {
             return 0;
         }
@@ -126,7 +240,6 @@ impl Packet {
         total_length.saturating_sub(ip_header_len + tcp_header_len)
     }
 
-    /// Does this TCP packet have payload (non-zero data length)?
     pub fn has_tcp_payload(&self) -> bool {
         self.tcp_payload_len() > 0
     }
@@ -149,16 +262,9 @@ impl Packet {
         (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
     }
 
-    /// for TSO support: avoids copying the buffer
     #[cfg(target_os = "linux")]
     pub fn from_slice(packet_size: usize, slice: &[u8]) -> Self {
-        let buf = slice[..packet_size].to_vec();
-        let flow_id = Self::get_flow_id_from_buf(&buf);
-        Self {
-            flow_id,
-            packet_size,
-            buf,
-        }
+        Self::from_vec(slice[..packet_size].to_vec())
     }
 }
 
@@ -174,52 +280,41 @@ mod tests {
 
         let mut buf = vec![0u8; total_len];
 
-        // IPv4 header (IHL=5)
         buf[0] = 0x45;
         BigEndian::write_u16(&mut buf[2..4], total_len as u16);
-        buf[8] = 64; // TTL
-        buf[9] = 6; // TCP
-        // src/dst ip
+        buf[8] = 64;
+        buf[9] = 6;
         buf[12..16].copy_from_slice(&Ipv4Addr::new(10, 0, 0, 1).octets());
         buf[16..20].copy_from_slice(&Ipv4Addr::new(10, 0, 0, 2).octets());
 
-        // TCP header
         let tcp_off = ip_hlen;
-        BigEndian::write_u16(&mut buf[tcp_off..tcp_off + 2], 4000); // src port
-        BigEndian::write_u16(&mut buf[tcp_off + 2..tcp_off + 4], 5000); // dst port
-        BigEndian::write_u32(&mut buf[tcp_off + 4..tcp_off + 8], 1); // seq
-        // data offset = 5 (20 bytes), NS/CWR/ECE=0
+        BigEndian::write_u16(&mut buf[tcp_off..tcp_off + 2], 4000);
+        BigEndian::write_u16(&mut buf[tcp_off + 2..tcp_off + 4], 5000);
+        BigEndian::write_u32(&mut buf[tcp_off + 4..tcp_off + 8], 1);
         buf[tcp_off + 12] = 0x50;
         buf[tcp_off + 13] = flags;
 
-        // payload already zero-initialized
-        Packet::new(total_len, buf)
+        Packet::from_vec(buf)
     }
 
     #[test]
     fn is_tcp_data_true_for_ack_with_payload() {
-        // ACK with payload -> should be considered data
-        let p = make_tcp_packet(0x10 /* ACK */, 64);
-        assert!(p.is_tcp_data(), "ACK + payload must be treated as data.");
-        assert!(p.has_tcp_payload(), "Sanity: payload should be detected.");
+        let p = make_tcp_packet(0x10, 64);
+        assert!(p.is_tcp_data());
+        assert!(p.has_tcp_payload());
     }
 
     #[test]
     fn is_tcp_data_false_for_pure_ack() {
-        // Pure ACK (no payload) -> not data
-        let p = make_tcp_packet(0x10 /* ACK */, 0);
-        assert!(!p.is_tcp_data(), "Pure ACK must not be treated as data.");
-        assert!(!p.has_tcp_payload(), "Sanity: no payload.");
+        let p = make_tcp_packet(0x10, 0);
+        assert!(!p.is_tcp_data());
+        assert!(!p.has_tcp_payload());
     }
 
     #[test]
     fn is_tcp_data_true_for_fin_with_payload() {
-        // FIN can be piggybacked with data; treat as data if payload present
-        let p = make_tcp_packet(0x11 /* FIN|ACK */, 32);
-        assert!(
-            p.is_tcp_data(),
-            "FIN with payload should be treated as data."
-        );
-        assert!(p.has_tcp_payload(), "Sanity: payload should be detected.");
+        let p = make_tcp_packet(0x11, 32);
+        assert!(p.is_tcp_data());
+        assert!(p.has_tcp_payload());
     }
 }

@@ -93,7 +93,7 @@ impl SequentialLocalWriter {
                         }
 
                         for packet in buffer {
-                            let buf = &packet.buf[0..packet.packet_size];
+                            let buf = packet.bytes();
                             if let Err(_) = self.device.try_send(buf) {
                                 if let Err(e) = self.device.send(buf).await {
                                     error!(
@@ -242,7 +242,7 @@ impl ConcurrentLocalWriterProducer {
                             }
 
                             // sends the packet immediately to the TUN interface
-                            let buf = &packet.buf[0..packet.packet_size];
+                            let buf = packet.bytes();
                             if let Err(_) = self.device.try_send(buf) {
                                 if let Err(e) = self.device.send(buf).await {
                                     error!("Failed to write packet to the TUN device: {}. Dropped.", e);
@@ -254,7 +254,7 @@ impl ConcurrentLocalWriterProducer {
 
                         // sends the packet immediately to the TUN interface if we are not enforcing TCP order
                         if !self.enforce_order {
-                            let buf = &packet.buf[0..packet.packet_size];
+                            let buf = packet.bytes();
                             if let Err(_) = self.device.try_send(buf) {
                                 if let Err(e) = self.device.send(buf).await {
                                     error!("Failed to write packet to the TUN device: {}. Dropped.", e);
@@ -380,7 +380,7 @@ impl ConcurrentLocalWriterConsumer {
 
                                     if let Some(stale) = maybe_stale {
                                         let packet = stale.packet;
-                                        let buf = &packet.buf[0..packet.packet_size];
+                                        let buf = packet.bytes();
                                         if let Err(_) = self.device.try_send(buf) {
                                             if let Err(e) = self.device.send(buf).await {
                                                 error!("Failed to write stale packet to the TUN device: {}. Dropped.", e);
@@ -443,7 +443,7 @@ impl ConcurrentLocalWriterConsumer {
                                             }
                                         }
 
-                                        let buf = &packet.buf[0..packet.packet_size];
+                                        let buf = packet.bytes();
                                         if let Err(_) = self.device.try_send(buf) {
                                             if let Err(e) = self.device.send(buf).await {
                                                 error!("Failed to write packet to the TUN device: {}. Dropped.", e);

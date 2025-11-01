@@ -6,7 +6,8 @@ use s2n_quic::stream::BidirectionalStream;
 
 use nextmini_messages::Protocol;
 
-use crate::node::NodeId;
+use ahash::AHashMap;
+
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
@@ -14,6 +15,7 @@ use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::network::udp::{UdpClient, UdpReader, UdpStream, UdpWriter};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::{FlowId, NodeId};
 
 pub enum NetworkStream {
     Tcp(TcpStream),
@@ -99,22 +101,27 @@ impl NetworkInterfaceHandle {
 
     // Sends packets in batch through the network interface.
     pub async fn send(&mut self, packets: Vec<Packet>) -> Result<(), Error> {
-        let mut flow_metrics: Vec<FlowMetric> = Vec::new();
+        let mut aggregates: AHashMap<FlowId, usize> = AHashMap::default();
 
         for packet in packets.iter() {
-            let metric = FlowMetric {
-                flow_id: packet.flow_id,
-                local_node_id: self.local_id,
-                remote_node_id: self.remote_node_id,
-                bytes: packet.packet_size,
-            };
-
-            flow_metrics.push(metric);
+            *aggregates.entry(packet.flow_id).or_default() += packet.packet_size;
         }
 
         self.writer.write_packets(packets).await?;
 
-        self.reporter.send(flow_metrics);
+        if !aggregates.is_empty() {
+            let mut flow_metrics = Vec::with_capacity(aggregates.len());
+            for (flow_id, bytes) in aggregates {
+                flow_metrics.push(FlowMetric {
+                    flow_id,
+                    local_node_id: self.local_id,
+                    remote_node_id: self.remote_node_id,
+                    bytes,
+                });
+            }
+
+            self.reporter.send(flow_metrics);
+        }
 
         Ok(())
     }
