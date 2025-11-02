@@ -116,13 +116,14 @@ impl Deref for PacketBuf {
 impl Drop for PacketBuf {
     fn drop(&mut self) {
         if self.pooled
-            && let Some(mut buf) = self.buf.take() {
-                buf.truncate(0);
-                if buf.capacity() > RECEIVE_BUF_SIZE * 4 {
-                    buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
-                }
-                PACKET_BUFFER_POOL.lock().unwrap().push(buf);
+            && let Some(mut buf) = self.buf.take()
+        {
+            buf.truncate(0);
+            if buf.capacity() > RECEIVE_BUF_SIZE * 4 {
+                buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
             }
+            PACKET_BUFFER_POOL.lock().unwrap().push(buf);
+        }
     }
 }
 
