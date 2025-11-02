@@ -112,15 +112,11 @@ pub enum OperatingMode {
 /// How a dataplane route forwards traffic.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RouteForwardingMode {
+    #[default]
     Unicast,
     Multicast,
-}
-
-impl Default for RouteForwardingMode {
-    fn default() -> Self {
-        RouteForwardingMode::Unicast
-    }
 }
 
 impl RouteForwardingMode {
