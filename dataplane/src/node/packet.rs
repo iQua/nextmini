@@ -279,6 +279,13 @@ impl Packet {
     }
 }
 
+impl Clone for Packet {
+    fn clone(&self) -> Self {
+        // Duplicate the underlying bytes; flow_id will be recomputed consistently.
+        Packet::from_vec(self.bytes().to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

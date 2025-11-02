@@ -204,4 +204,6 @@ pub struct RoutingTableEntry {
     pub next_hops: Vec<usize>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
+    #[serde(default)]
+    pub multicast: bool,
 }

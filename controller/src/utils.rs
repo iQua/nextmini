@@ -141,6 +141,46 @@ fn create_graph_with_mapping(
     (node_ids, node_map, graph)
 }
 
+fn route_has_multiple_destinations(route: &Route) -> bool {
+    if route.edges.is_empty() {
+        return false;
+    }
+
+    let (_node_ids, node_map, graph) = create_graph_with_mapping(&route.edges);
+    let Some(&src_idx) = node_map.get(&route.src_node_id) else {
+        return false;
+    };
+
+    let mut reachable = HashSet::new();
+    let mut stack = vec![src_idx];
+    while let Some(node_idx) = stack.pop() {
+        if !reachable.insert(node_idx) {
+            continue;
+        }
+        for neighbor in graph.neighbors_directed(node_idx, Direction::Outgoing) {
+            stack.push(neighbor);
+        }
+    }
+
+    let mut dst_count = 0;
+    for node_idx in reachable {
+        let outgoing = graph
+            .neighbors_directed(node_idx, Direction::Outgoing)
+            .count();
+        let incoming = graph
+            .neighbors_directed(node_idx, Direction::Incoming)
+            .count();
+        if outgoing == 0 && incoming > 0 {
+            dst_count += 1;
+            if dst_count > 1 {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Builds routes from topology edges using the specified routing protocol.
 pub fn build_routes_from_topology(
     edges: &[(u32, u32)],
@@ -267,6 +307,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     );
 
     for route in &routes {
+        let is_multicast = route_has_multiple_destinations(route);
         // finds next hops for the current node using PetGraph
         let mut next_hops: Vec<usize> = Vec::new();
 
@@ -301,6 +342,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             next_hops,
             src_node_id: route.src_node_id as usize,
             dst_node_id: route.dst_node_id as usize,
+            multicast: is_multicast,
         });
     }
 
@@ -316,8 +358,8 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         // logs each routing table entry for debugging
         for e in &route_entries {
             debug!(
-                "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?}",
-                node_id, e.route_id, e.src_node_id, e.dst_node_id, e.next_hops
+                "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?} multicast={}",
+                node_id, e.route_id, e.src_node_id, e.dst_node_id, e.next_hops, e.multicast
             );
         }
 

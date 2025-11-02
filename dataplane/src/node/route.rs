@@ -10,6 +10,18 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RouteForwardingMode {
+    Unicast,
+    Multicast,
+}
+
+impl RouteForwardingMode {
+    fn is_multicast(self) -> bool {
+        matches!(self, RouteForwardingMode::Multicast)
+    }
+}
+
 /// The routing table in the dataplane.
 #[derive(Clone)]
 pub struct RoutingTable {
@@ -24,6 +36,9 @@ pub struct RoutingTable {
     /// Route ID -> candidate next hops
     route_next_hop: AHashMap<usize, Vec<NodeId>>,
 
+    /// Route ID -> forwarding mode (unicast vs multicast)
+    route_forward_mode: AHashMap<usize, RouteForwardingMode>,
+
     /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
 
@@ -35,6 +50,7 @@ impl RoutingTable {
     pub fn new(config: LocalConfig) -> Self {
         Self {
             route_next_hop: AHashMap::default(),
+            route_forward_mode: AHashMap::default(),
             available_routes: AHashMap::default(),
             local_id: config.node_id,
             config,
@@ -48,6 +64,7 @@ impl RoutingTable {
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         // clears existing data
         self.route_next_hop.clear();
+        self.route_forward_mode.clear();
         self.available_routes.clear();
         self.cache.clear();
 
@@ -56,6 +73,14 @@ impl RoutingTable {
             // route ID → next hops
             self.route_next_hop
                 .insert(route.route_id, route.next_hops.clone());
+            self.route_forward_mode.insert(
+                route.route_id,
+                if route.multicast {
+                    RouteForwardingMode::Multicast
+                } else {
+                    RouteForwardingMode::Unicast
+                },
+            );
 
             // installs route based on node IDs for both TUN and user space
             let node_id_pair = (route.src_node_id, route.dst_node_id);
@@ -66,8 +91,12 @@ impl RoutingTable {
                 .push(route.route_id);
 
             debug!(
-                "RoutingTable: Installed route {} (node {} → node {}), next hops: {:?}.",
-                route.route_id, route.src_node_id, route.dst_node_id, route.next_hops
+                "RoutingTable: Installed route {} (node {} → node {}), next hops: {:?}, multicast: {}.",
+                route.route_id,
+                route.src_node_id,
+                route.dst_node_id,
+                route.next_hops,
+                route.multicast
             );
         }
     }
@@ -158,51 +187,87 @@ impl RoutingTable {
         Some(selected_route_id)
     }
 
-    /// Obtains the next hop by the flow ID.
+    fn resolve_route_id_for_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<usize, String> {
+        if flow_id == flow::INVALID_FLOW_ID {
+            return Err("No route can be selected.".to_string());
+        }
+
+        match self.select_route_for_flow(flow_id, flowstats_reporter) {
+            Some(id) if id != INVALID => Ok(id),
+            Some(_) => Err("No route can be selected.".to_string()),
+            None => Err(format!(
+                "No route is found for flow {}: the routing table may be misconfigured.",
+                flow_id
+            )),
+        }
+    }
+
+    fn next_hops_for_route(&self, route_id: usize, flow_id: FlowId) -> Result<Vec<NodeId>, String> {
+        if let Some(next_hops) = self.route_next_hop.get(&route_id) {
+            if next_hops.contains(&INVALID) {
+                return Err(format!(
+                    "Route {} is not available on this node (next_hop = INVALID).",
+                    route_id
+                ));
+            }
+            Ok(next_hops.clone())
+        } else {
+            Err(format!(
+                "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
+                route_id, flow_id
+            ))
+        }
+    }
+
+    fn route_forward_mode(&self, route_id: usize) -> RouteForwardingMode {
+        self.route_forward_mode
+            .get(&route_id)
+            .copied()
+            .unwrap_or(RouteForwardingMode::Unicast)
+    }
+
+    fn pick_single_hop(next_hops: &[NodeId]) -> Result<NodeId, String> {
+        match next_hops.len() {
+            0 => Err("No next hop(s) available.".to_string()),
+            1 => Ok(next_hops[0]),
+            len => Ok(next_hops[rand::rng().random_range(0..len)]),
+        }
+    }
+
+    pub fn is_multicast_for_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<bool, String> {
+        let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
+        Ok(self.route_forward_mode(route_id).is_multicast())
+    }
+
+    /// Returns *all* candidate next hops for the selected route at this node.
+    /// If multiple next hops are present, the caller is expected to duplicate the packet
+    /// to each next hop (multicast). If a single hop is present, this degenerates to unicast.
+    pub fn get_next_hops_by_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<Vec<NodeId>, String> {
+        let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
+        self.next_hops_for_route(route_id, flow_id)
+    }
+
+    /// Backward-compatible helper: pick a single next hop (random if >1).
+    /// Prefer calling `get_next_hops_by_flow` for multicast/broadcast support.
     pub fn get_next_hop_by_flow(
         &mut self,
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
     ) -> Result<NodeId, String> {
-        // selects the route ID for a new flow
-        if let Some(route_id) = self.select_route_for_flow(flow_id, flowstats_reporter) {
-            if route_id == INVALID {
-                // No route can be possible as the flow ID is not valid.
-                // perhaps a non-IPv4 packet? Drops the packet without forwarding it.
-                return Err("No route can be selected.".to_string());
-            }
-
-            // gets the next hop by route ID
-            if let Some(next_hops) = self.route_next_hop.get(&route_id) {
-                if next_hops.contains(&INVALID) {
-                    // unless the routing table changes dynamically at runtime, the next hop should
-                    // never be invalid, as the source only sends out packets via valid routes only,
-                    // and the same flow ID always hashes to the same route ID with consistent hashing
-                    panic!(
-                        "Route {} is not available on this node (next_hop = INVALID).",
-                        route_id
-                    );
-                }
-
-                if next_hops.len() > 1 {
-                    // randomizes the choice between all possible next hops
-                    let idx = rand::rng().random_range(0..next_hops.len());
-                    Ok(next_hops[idx])
-                } else {
-                    // selects the only choice as the next hop
-                    Ok(next_hops[0])
-                }
-            } else {
-                Err(format!(
-                    "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
-                    route_id, flow_id
-                ))
-            }
-        } else {
-            Err(format!(
-                "No route is found for flow {}: the routing table may be misconfigured.",
-                flow_id
-            ))
-        }
+        let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
+        let next_hops = self.next_hops_for_route(route_id, flow_id)?;
+        Self::pick_single_hop(&next_hops)
     }
 }

@@ -620,12 +620,50 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
+        let reporter = self.flowstats_reporter.as_ref();
         match self
             .routing_table
-            .get_next_hop_by_flow(packet_flow_id, self.flowstats_reporter.as_ref())
+            .is_multicast_for_flow(packet_flow_id, reporter)
         {
-            Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
-            Err(e) => error!("Error getting the next hop: {}", e),
+            Ok(true) => match self
+                .routing_table
+                .get_next_hops_by_flow(packet_flow_id, reporter)
+            {
+                Ok(next_hops) => {
+                    if next_hops.is_empty() {
+                        error!("No next hops available for flow {}.", packet_flow_id);
+                        return;
+                    }
+
+                    let last = next_hops.len() - 1;
+                    let mut primary_packet = Some(packet);
+                    for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
+                        let pkt = if idx == last {
+                            primary_packet
+                                .take()
+                                .expect("packet already dispatched to last hop")
+                        } else {
+                            primary_packet
+                                .as_ref()
+                                .expect("packet missing during multicast fan-out")
+                                .clone()
+                        };
+                        self.send_packet(pkt, next_hop_id).await;
+                    }
+                }
+                Err(e) => error!("Error getting the next hops: {}", e),
+            },
+            Ok(false) => match self
+                .routing_table
+                .get_next_hop_by_flow(packet_flow_id, reporter)
+            {
+                Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
+                Err(e) => error!("Error getting the next hop: {}", e),
+            },
+            Err(e) => error!(
+                "Error determining multicast for flow {}: {}",
+                packet_flow_id, e
+            ),
         }
     }
 
