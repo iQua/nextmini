@@ -252,11 +252,9 @@ mod tests {
         buf[tcp_offset + 12] = 0x50;
         buf[tcp_offset + 13] = flags;
 
-        Packet {
-            flow_id,
-            packet_size,
-            buf,
-        }
+        let mut packet = Packet::from_vec(buf);
+        packet.flow_id = flow_id;
+        packet
     }
 
     fn make_non_tcp_packet(flow_id: FlowId) -> Packet {
@@ -269,11 +267,9 @@ mod tests {
         buf[tcp_offset + 12] = 0x50;
         buf[tcp_offset + 13] = 0;
 
-        Packet {
-            flow_id,
-            packet_size,
-            buf,
-        }
+        let mut packet = Packet::from_vec(buf);
+        packet.flow_id = flow_id;
+        packet
     }
 
     fn build_reader(

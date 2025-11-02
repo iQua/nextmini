@@ -108,11 +108,10 @@ mod tests {
     use super::*;
 
     fn make_packet(flow_id: FlowId, size: usize) -> Packet {
-        Packet {
-            flow_id,
-            packet_size: size,
-            buf: vec![0; size.max(1)],
-        }
+        let mut packet = Packet::from_vec(vec![0; size.max(1)]);
+        packet.flow_id = flow_id;
+        packet.packet_size = size;
+        packet
     }
 
     #[test]

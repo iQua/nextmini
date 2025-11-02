@@ -198,11 +198,9 @@ mod tests {
     }
 
     fn packet_with_flow_id(flow_id: FlowId) -> Packet {
-        Packet {
-            flow_id,
-            packet_size: 0,
-            buf: Vec::new(),
-        }
+        let mut packet = Packet::from_vec(Vec::new());
+        packet.flow_id = flow_id;
+        packet
     }
 
     #[tokio::test(flavor = "current_thread")]

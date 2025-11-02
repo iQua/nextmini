@@ -581,14 +581,10 @@ mod tests {
         let sequences = [u32::MAX - 1, 0, 1, 500, u32::MAX];
 
         for &seq in &sequences {
-            heap.push(SequencedPacket {
-                seq,
-                packet: Packet {
-                    flow_id: seq as u128,
-                    packet_size: 0,
-                    buf: Vec::new(),
-                },
-            });
+            let mut packet = Packet::from_vec(Vec::new());
+            packet.flow_id = seq as u128;
+            packet.packet_size = 0;
+            heap.push(SequencedPacket { seq, packet });
         }
 
         let mut result = Vec::new();

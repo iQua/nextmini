@@ -125,11 +125,10 @@ mod tests {
     use tokio::time::Duration;
 
     fn make_packet(size: usize) -> Packet {
-        Packet {
-            flow_id: 1,
-            packet_size: size,
-            buf: vec![0; size.max(1)],
-        }
+        let mut packet = Packet::from_vec(vec![0; size.max(1)]);
+        packet.flow_id = 1;
+        packet.packet_size = size;
+        packet
     }
 
     #[test]
