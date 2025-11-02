@@ -1,9 +1,10 @@
 /// Defines message enums for controller-dataplane communication.
+use std::fmt;
+use std::net::Ipv4Addr;
+
 use clap::ValueEnum;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::net::Ipv4Addr;
 
 mod ip_ser;
 
