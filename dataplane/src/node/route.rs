@@ -130,7 +130,7 @@ impl RoutingTable {
 
             Ok(RouteDecision::Multicast(hops.to_vec()))
         } else {
-            let hop = Self::pick_single_hop(&hops)?;
+            let hop = Self::pick_single_hop(hops)?;
 
             Ok(RouteDecision::Unicast(hop))
         }
