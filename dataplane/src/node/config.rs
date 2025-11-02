@@ -226,7 +226,7 @@ pub struct LocalConfig {
 
     /// Maximum number of queued TCP data packets to tolerate before forcing delivery.
     /// Set to 0 to disable backlog-based advancement.
-    #[default(64)]
+    #[default(0)]
     #[arg(long)]
     pub backlog_tolerance: u64,
 
