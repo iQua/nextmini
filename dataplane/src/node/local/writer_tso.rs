@@ -434,31 +434,27 @@ impl ConcurrentLocalWriterConsumer {
                                     }
                                 };
 
-                                loop {
-                                    let maybe_stale = {
-                                        let mut q = self.queue_map.lock().await;
-                                        if let Some(h) = q.get_mut(&flow_id) {
-                                            if let Some(peek) = h.peek() {
-                                                if SequencedPacket::seq_less(peek.seq, expected) {
-                                                    h.pop()
-                                                } else { None }
+                                let maybe_stale = {
+                                    let mut q = self.queue_map.lock().await;
+                                    if let Some(h) = q.get_mut(&flow_id) {
+                                        if let Some(peek) = h.peek() {
+                                            if SequencedPacket::seq_less(peek.seq, expected) {
+                                                h.pop()
                                             } else { None }
                                         } else { None }
-                                    };
+                                    } else { None }
+                                };
 
-                                    if let Some(stale) = maybe_stale {
-                                        pending_packets.push(stale.packet);
-                                        progressed_any = true;
+                                if let Some(stale) = maybe_stale {
+                                    pending_packets.push(stale.packet);
+                                    progressed_any = true;
 
-                                        if pending_packets.len() >= IDEAL_BATCH_SIZE {
-                                            let _ = batch_writer.write(&mut pending_packets).await;
-                                            pending_packets.clear();
-                                        }
-
-                                        continue 'per_flow;
+                                    if pending_packets.len() >= IDEAL_BATCH_SIZE {
+                                        let _ = batch_writer.write(&mut pending_packets).await;
+                                        pending_packets.clear();
                                     }
 
-                                    break;
+                                    continue 'per_flow;
                                 }
 
                                 if self.enforce_order && self.backlog_tolerance > 0 && top_seq != expected {
@@ -577,15 +573,14 @@ impl ConcurrentLocalWriterConsumer {
                                     }
                                 }
 
-                                if arm_timer {
-                                    if let Some(timeout) = self.gap_timeout {
+                                if arm_timer
+                                    && let Some(timeout) = self.gap_timeout {
                                         let notify = self.queue_not_empty.clone();
                                         tokio::spawn(async move {
                                             tokio::time::sleep(timeout).await;
                                             notify.notify_one();
                                         });
                                     }
-                                }
 
                                 if advance_expected {
                                     {

@@ -17,6 +17,12 @@ pub struct PacketBuf {
     pooled: bool,
 }
 
+impl Default for PacketBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PacketBuf {
     /// Acquires a buffer from the global pool, allocating on demand.
     pub fn new() -> Self {
@@ -80,6 +86,11 @@ impl PacketBuf {
         self.buf.as_ref().map(|b| b.len()).unwrap_or(0)
     }
 
+    /// Indicates whether the buffer currently holds any bytes.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Provides read-only access to the stored bytes.
     pub fn as_slice(&self) -> &[u8] {
         self.deref()
@@ -104,15 +115,14 @@ impl Deref for PacketBuf {
 
 impl Drop for PacketBuf {
     fn drop(&mut self) {
-        if self.pooled {
-            if let Some(mut buf) = self.buf.take() {
+        if self.pooled
+            && let Some(mut buf) = self.buf.take() {
                 buf.truncate(0);
                 if buf.capacity() > RECEIVE_BUF_SIZE * 4 {
                     buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
                 }
                 PACKET_BUFFER_POOL.lock().unwrap().push(buf);
             }
-        }
     }
 }
 
@@ -129,10 +139,10 @@ impl Packet {
             buffer.truncate(packet_size);
         }
         let actual_size = buffer.len().min(packet_size);
-        let flow_id = if actual_size <= buffer.len() {
-            Self::get_flow_id_from_buf(&buffer[..actual_size])
-        } else {
+        let flow_id = if buffer.is_empty() {
             flow::INVALID_FLOW_ID
+        } else {
+            Self::get_flow_id_from_buf(&buffer[..actual_size])
         };
         Self {
             flow_id,
