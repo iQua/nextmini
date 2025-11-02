@@ -1,45 +1,36 @@
-# Nextmini Documentation
+# Nextmini Documentation (MkDocs)
 
-This directory contains the latest documentation for the Nextmini project.
+This directory contains the Nextmini documentation built with [MkDocs](https://www.mkdocs.org/) and [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/).
 
-# Building the website
+## Installation
 
-To install Nextra and Next.js after installing [Bun](https://bun.sh/docs/installation), run:
+To install Material for MkDocs, run:
 
-```shell
-bun add next react react-dom nextra nextra-theme-docs steps geist sharp
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install mkdocs-material
 ```
 
-To start the development server, run:
+## Usage
 
-```shell
-bun run dev
+### Development Server
+
+To serve the website for development, run:
+
+```bash
+mkdocs serve
 ```
 
-Then point the browser to `http://localhost:3000` to view the website.
+Then open your browser to `http://127.0.0.1:8000/`
 
-To build the static website, run:
+### Build Static Site
 
-```shell
-bun run build
+To compile it to a static website, run:
+
+```bash
+mkdocs build
 ```
 
-To update all the dependencies, run:
+The static website will be available in the `site/` directory.
 
-```shell
-bun update
-```
-
-To update `bun` itself, run:
-
-```shell
-bun upgrade
-```
-
-To serve the static website, run:
-
-```shell
-npx serve@latest out
-```
-
-Before deploying the static website, one may optionally configure `basepath` in `next.config.js` to match the deployment URL. For example, if the website is deployed at `https://www.eecg.toronto.edu/~bli/nextmini`, the `basepath` should be set to `/~bli/nextmini`.
