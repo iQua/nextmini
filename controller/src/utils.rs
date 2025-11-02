@@ -8,7 +8,7 @@ use tracing::{debug, info};
 
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, NodeSpec, OperatingMode, Protocol,
-    RoutingTableEntry, SchedulingDiscipline,
+    RouteForwardingMode, RoutingTableEntry, SchedulingDiscipline,
 };
 
 use crate::config;
@@ -307,7 +307,11 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
     );
 
     for route in &routes {
-        let is_multicast = route_has_multiple_destinations(route);
+        let forward_mode = if route_has_multiple_destinations(route) {
+            RouteForwardingMode::Multicast
+        } else {
+            RouteForwardingMode::Unicast
+        };
         // finds next hops for the current node using PetGraph
         let mut next_hops: Vec<usize> = Vec::new();
 
@@ -342,7 +346,7 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
             next_hops,
             src_node_id: route.src_node_id as usize,
             dst_node_id: route.dst_node_id as usize,
-            multicast: is_multicast,
+            forward_mode,
         });
     }
 
@@ -358,8 +362,8 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         // logs each routing table entry for debugging
         for e in &route_entries {
             debug!(
-                "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?} multicast={}",
-                node_id, e.route_id, e.src_node_id, e.dst_node_id, e.next_hops, e.multicast
+                "RoutingTableEntry node {}: route_id={} src={} dst={} next_hops={:?} mode={:?}",
+                node_id, e.route_id, e.src_node_id, e.dst_node_id, e.next_hops, e.forward_mode
             );
         }
 

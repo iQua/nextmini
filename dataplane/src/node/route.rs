@@ -3,30 +3,23 @@ use jumphash::JumpHasher;
 use rand::Rng;
 use tracing::debug;
 
-use nextmini_messages::{INVALID, RoutingTableEntry};
+use nextmini_messages::{INVALID, RouteForwardingMode, RoutingTableEntry};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RouteForwardingMode {
-    Unicast,
-    Multicast,
-}
-
-impl RouteForwardingMode {
-    /// Indicates whether this route is multicast-capable.
-    fn is_multicast(self) -> bool {
-        matches!(self, RouteForwardingMode::Multicast)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteDecision {
     Unicast(NodeId),
     Multicast(Vec<NodeId>),
+}
+
+#[derive(Clone, Debug)]
+struct RouteInfo {
+    next_hops: Vec<NodeId>,
+    mode: RouteForwardingMode,
 }
 
 /// The routing table in the dataplane.
@@ -40,11 +33,8 @@ pub struct RoutingTable {
     /// Source-destination node ID pair -> available route IDs
     available_routes: AHashMap<(NodeId, NodeId), Vec<usize>>,
 
-    /// Route ID -> candidate next hops
-    route_next_hop: AHashMap<usize, Vec<NodeId>>,
-
-    /// Route ID -> forwarding mode (unicast vs multicast)
-    route_forward_mode: AHashMap<usize, RouteForwardingMode>,
+    /// Route ID -> routing metadata
+    routes: AHashMap<usize, RouteInfo>,
 
     /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
@@ -57,8 +47,7 @@ impl RoutingTable {
     /// Creates a routing table for the provided local configuration.
     pub fn new(config: LocalConfig) -> Self {
         Self {
-            route_next_hop: AHashMap::default(),
-            route_forward_mode: AHashMap::default(),
+            routes: AHashMap::default(),
             available_routes: AHashMap::default(),
             local_id: config.node_id,
             config,
@@ -71,22 +60,18 @@ impl RoutingTable {
     /// Installs all the routes received from the controller.
     pub fn install_routes(&mut self, routes: Vec<RoutingTableEntry>) {
         // clears existing data
-        self.route_next_hop.clear();
-        self.route_forward_mode.clear();
+        self.routes.clear();
         self.available_routes.clear();
         self.cache.clear();
 
         // builds the routing table from routes
         for route in routes {
             // route ID → next hops
-            self.route_next_hop
-                .insert(route.route_id, route.next_hops.clone());
-            self.route_forward_mode.insert(
+            self.routes.insert(
                 route.route_id,
-                if route.multicast {
-                    RouteForwardingMode::Multicast
-                } else {
-                    RouteForwardingMode::Unicast
+                RouteInfo {
+                    next_hops: route.next_hops.clone(),
+                    mode: route.forward_mode,
                 },
             );
 
@@ -99,12 +84,12 @@ impl RoutingTable {
                 .push(route.route_id);
 
             debug!(
-                "RoutingTable: Installed route {} (node {} → node {}), next hops: {:?}, multicast: {}.",
+                "RoutingTable: Installed route {} (node {} → node {}), next hops: {:?}, mode: {:?}.",
                 route.route_id,
                 route.src_node_id,
                 route.dst_node_id,
                 route.next_hops,
-                route.multicast
+                route.forward_mode
             );
         }
     }
@@ -121,18 +106,20 @@ impl RoutingTable {
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
     ) -> Result<RouteDecision, String> {
         let route_id = self.select_route_for_flow(flow_id, flowstats_reporter)?;
-        let hops = self.next_hops_for_route(route_id)?;
+        let info = self.route_info(route_id)?;
 
-        if self.route_forward_mode(route_id).is_multicast() {
-            if hops.is_empty() {
-                return Err("No next hop(s) available.".to_string());
+        match info.mode {
+            RouteForwardingMode::Multicast => {
+                if info.next_hops.is_empty() {
+                    Err("No next hop(s) available.".to_string())
+                } else {
+                    Ok(RouteDecision::Multicast(info.next_hops.clone()))
+                }
             }
-
-            Ok(RouteDecision::Multicast(hops.to_vec()))
-        } else {
-            let hop = Self::pick_single_hop(&hops)?;
-
-            Ok(RouteDecision::Unicast(hop))
+            RouteForwardingMode::Unicast => {
+                let hop = Self::pick_single_hop(&info.next_hops)?;
+                Ok(RouteDecision::Unicast(hop))
+            }
         }
     }
 
@@ -201,31 +188,23 @@ impl RoutingTable {
         Ok(selected_route_id)
     }
 
-    /// Retrieves the next-hop candidates for the given route identifier.
-    fn next_hops_for_route(&self, route_id: usize) -> Result<&[NodeId], String> {
-        let Some(next_hops) = self.route_next_hop.get(&route_id) else {
-            return Err(format!(
+    /// Retrieves the stored routing metadata for the given route identifier.
+    fn route_info(&self, route_id: usize) -> Result<&RouteInfo, String> {
+        let info = self.routes.get(&route_id).ok_or_else(|| {
+            format!(
                 "No next hop is found for route id {}: routing inconsistency detected.",
                 route_id
-            ));
-        };
+            )
+        })?;
 
-        if next_hops.contains(&INVALID) {
+        if info.next_hops.contains(&INVALID) {
             return Err(format!(
                 "Route {} is not available on this node (next_hop = INVALID).",
                 route_id
             ));
         }
 
-        Ok(next_hops.as_slice())
-    }
-
-    /// Looks up whether the given route forwards via unicast or multicast.
-    fn route_forward_mode(&self, route_id: usize) -> RouteForwardingMode {
-        self.route_forward_mode
-            .get(&route_id)
-            .copied()
-            .unwrap_or(RouteForwardingMode::Unicast)
+        Ok(info)
     }
 
     /// Picks a single next hop from a candidate list (random when multiple options exist).

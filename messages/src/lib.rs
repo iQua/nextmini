@@ -1,6 +1,8 @@
 /// Defines message enums for controller-dataplane communication.
 use clap::ValueEnum;
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::net::Ipv4Addr;
 
 mod ip_ser;
@@ -107,6 +109,77 @@ pub enum OperatingMode {
     Max,
 }
 
+/// How a dataplane route forwards traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RouteForwardingMode {
+    Unicast,
+    Multicast,
+}
+
+impl Default for RouteForwardingMode {
+    fn default() -> Self {
+        RouteForwardingMode::Unicast
+    }
+}
+
+impl RouteForwardingMode {
+    pub fn is_multicast(self) -> bool {
+        matches!(self, RouteForwardingMode::Multicast)
+    }
+}
+
+fn default_route_forwarding_mode() -> RouteForwardingMode {
+    RouteForwardingMode::Unicast
+}
+
+fn deserialize_forward_mode<'de, D>(deserializer: D) -> Result<RouteForwardingMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct RouteForwardingModeVisitor;
+
+    impl<'de> Visitor<'de> for RouteForwardingModeVisitor {
+        type Value = RouteForwardingMode;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter
+                .write_str("a route forwarding mode (\"unicast\", \"multicast\", or a boolean)")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            match value.to_ascii_lowercase().as_str() {
+                "unicast" => Ok(RouteForwardingMode::Unicast),
+                "multicast" => Ok(RouteForwardingMode::Multicast),
+                other => Err(E::unknown_variant(other, &["unicast", "multicast"])),
+            }
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+
+        fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(if v {
+                RouteForwardingMode::Multicast
+            } else {
+                RouteForwardingMode::Unicast
+            })
+        }
+    }
+
+    deserializer.deserialize_any(RouteForwardingModeVisitor)
+}
+
 /// The node specification for a dataplane node.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -204,6 +277,9 @@ pub struct RoutingTableEntry {
     pub next_hops: Vec<usize>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
-    #[serde(default)]
-    pub multicast: bool,
+    #[serde(
+        default = "default_route_forwarding_mode",
+        deserialize_with = "deserialize_forward_mode"
+    )]
+    pub forward_mode: RouteForwardingMode,
 }
