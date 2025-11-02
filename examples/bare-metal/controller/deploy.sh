@@ -7,7 +7,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # Check if database is running, start if not
 if ! docker ps | grep -q nextmini-database; then
     echo "Starting PostgreSQL database..."
-    "$REPO_ROOT/start-database.sh"
+    # cd to REPO_ROOT before starting database (so it can find .env)
+    (cd "$REPO_ROOT" && ./start-database.sh)
     sleep 5
 else
     echo "Database already running."
