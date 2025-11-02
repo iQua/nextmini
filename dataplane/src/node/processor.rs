@@ -6,6 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use ahash::AHashMap;
+use rand::Rng;
 use tokio;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -623,18 +624,15 @@ impl Processor {
         let reporter = self.flowstats_reporter.as_ref();
         match self
             .routing_table
-            .is_multicast_for_flow(packet_flow_id, reporter)
+            .route_info_for_flow(packet_flow_id, reporter)
         {
-            Ok(true) => match self
-                .routing_table
-                .get_next_hops_by_flow(packet_flow_id, reporter)
-            {
-                Ok(next_hops) => {
-                    if next_hops.is_empty() {
-                        error!("No next hops available for flow {}.", packet_flow_id);
-                        return;
-                    }
+            Ok((is_multicast, next_hops)) => {
+                if next_hops.is_empty() {
+                    error!("No next hops available for flow {}.", packet_flow_id);
+                    return;
+                }
 
+                if is_multicast {
                     let last = next_hops.len() - 1;
                     let mut primary_packet = Some(packet);
                     for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
@@ -650,20 +648,17 @@ impl Processor {
                         };
                         self.send_packet(pkt, next_hop_id).await;
                     }
+                } else {
+                    let hop = if next_hops.len() == 1 {
+                        next_hops[0]
+                    } else {
+                        let idx = rand::rng().random_range(0..next_hops.len());
+                        next_hops[idx]
+                    };
+                    self.send_packet(packet, hop).await;
                 }
-                Err(e) => error!("Error getting the next hops: {}", e),
-            },
-            Ok(false) => match self
-                .routing_table
-                .get_next_hop_by_flow(packet_flow_id, reporter)
-            {
-                Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
-                Err(e) => error!("Error getting the next hop: {}", e),
-            },
-            Err(e) => error!(
-                "Error determining multicast for flow {}: {}",
-                packet_flow_id, e
-            ),
+            }
+            Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
         }
     }
 

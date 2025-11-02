@@ -238,36 +238,24 @@ impl RoutingTable {
         }
     }
 
-    pub fn is_multicast_for_flow(
+    pub fn route_info_for_flow(
         &mut self,
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
-    ) -> Result<bool, String> {
+    ) -> Result<(bool, Vec<NodeId>), String> {
         let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
-        Ok(self.route_forward_mode(route_id).is_multicast())
+        let hops = self.next_hops_for_route(route_id, flow_id)?;
+        let is_multicast = self.route_forward_mode(route_id).is_multicast();
+        Ok((is_multicast, hops))
     }
 
-    /// Returns *all* candidate next hops for the selected route at this node.
-    /// If multiple next hops are present, the caller is expected to duplicate the packet
-    /// to each next hop (multicast). If a single hop is present, this degenerates to unicast.
-    pub fn get_next_hops_by_flow(
-        &mut self,
-        flow_id: FlowId,
-        flowstats_reporter: Option<&FlowStatsReporterHandle>,
-    ) -> Result<Vec<NodeId>, String> {
-        let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
-        self.next_hops_for_route(route_id, flow_id)
-    }
-
-    /// Backward-compatible helper: pick a single next hop (random if >1).
-    /// Prefer calling `get_next_hops_by_flow` for multicast/broadcast support.
+    /// Pick a single next hop (random if >1).
     pub fn get_next_hop_by_flow(
         &mut self,
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
     ) -> Result<NodeId, String> {
-        let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
-        let next_hops = self.next_hops_for_route(route_id, flow_id)?;
+        let (_, next_hops) = self.route_info_for_flow(flow_id, flowstats_reporter)?;
         Self::pick_single_hop(&next_hops)
     }
 }
