@@ -117,10 +117,9 @@ impl RoutingTable {
                 }
             }
             RouteForwardingMode::Unicast => {
-                let hop = Self::pick_single_hop(&info.next_hops)?;
+                let hop = Self::pick_single_hop(info.next_hops)?;
                 Ok(RouteDecision::Unicast(hop))
             }
-        }
     }
 
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
