@@ -17,9 +17,16 @@ enum RouteForwardingMode {
 }
 
 impl RouteForwardingMode {
+    /// Indicates whether this route is multicast-capable.
     fn is_multicast(self) -> bool {
         matches!(self, RouteForwardingMode::Multicast)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RouteDecision {
+    Unicast(NodeId),
+    Multicast(Vec<NodeId>),
 }
 
 /// The routing table in the dataplane.
@@ -47,6 +54,7 @@ pub struct RoutingTable {
 }
 
 impl RoutingTable {
+    /// Creates a routing table for the provided local configuration.
     pub fn new(config: LocalConfig) -> Self {
         Self {
             route_next_hop: AHashMap::default(),
@@ -106,28 +114,55 @@ impl RoutingTable {
         self.config.extract_node_ids_from_flow(flow_id)
     }
 
+    /// Makes a routing decision: multicast or unicast, and the actual next hop(s).
+    pub fn route_decision_for_flow(
+        &mut self,
+        flow_id: FlowId,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<RouteDecision, String> {
+        let route_id = self.select_route_for_flow(flow_id, flowstats_reporter)?;
+        let hops = self.next_hops_for_route(route_id)?;
+
+        if self.route_forward_mode(route_id).is_multicast() {
+            if hops.is_empty() {
+                return Err("No next hop(s) available.".to_string());
+            }
+
+            Ok(RouteDecision::Multicast(hops.to_vec()))
+        } else {
+            let hop = Self::pick_single_hop(&hops)?;
+
+            Ok(RouteDecision::Unicast(hop))
+        }
+    }
+
     /// Selects a route ID for a flow at each node, performing load balancing using a consistent hash
     /// when multiple routes are available between the same source and destination nodes.
     pub fn select_route_for_flow(
         &mut self,
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
-    ) -> Option<usize> {
+    ) -> Result<usize, String> {
         if flow_id == flow::INVALID_FLOW_ID {
             // the flow ID cannot be successfully extracted, no routing is possible
-            return Some(INVALID);
+            return Err("No route can be selected.".to_string());
         }
 
         // checks the cache first
         if let Some(route_id) = self.cache.get(&flow_id) {
-            return Some(*route_id);
+            return Ok(*route_id);
         }
 
         // obtains the source-destination node ID pair as the key for the available routes
         let node_id_pair = self.extract_node_ids_from_flow(flow_id);
 
         // gets the available routes for this source-destination pair
-        let available_routes = self.available_routes.get(&node_id_pair)?;
+        let available_routes = self.available_routes.get(&node_id_pair).ok_or_else(|| {
+            format!(
+                "No route is found for flow {}: the routing table may be misconfigured.",
+                flow_id
+            )
+        })?;
 
         // uses jump hash to select among the available routes
         let selected_route_id = if available_routes.len() == 1 {
@@ -151,28 +186,7 @@ impl RoutingTable {
         // stores the selected route into the cache
         self.cache.insert(flow_id, selected_route_id);
 
-        // reports route assignment to the controller only for app flows from the source node
-        if let Some(flowstats_reporter) = flowstats_reporter {
-            let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
-
-            // only reports for app flows (not user space flows)
-            // user space flows use a dedicated server port (check both directions)
-            let is_app_flow = flow_id.dst_port() != self.config.user_space_server_port
-                && flow_id.src_port() != self.config.user_space_server_port;
-
-            debug!(
-                "Route selection: flow_id={:?}, src_node={}, local_id={}, is_app_flow={}, route={}",
-                flow_id, src_node_id, self.local_id, is_app_flow, selected_route_id
-            );
-
-            if src_node_id == self.local_id && is_app_flow {
-                flowstats_reporter.report_route_assigned(flow_id, selected_route_id);
-                debug!(
-                    "Reported route assignment: flow_id={:?}, route_id={}",
-                    flow_id, selected_route_id
-                );
-            }
-        }
+        self.report_route_assignment(flow_id, selected_route_id, flowstats_reporter);
 
         debug!(
             "Route ID {} is selected for source {}:{} → destination {}:{} from {} available routes.",
@@ -184,45 +198,29 @@ impl RoutingTable {
             available_routes.len()
         );
 
-        Some(selected_route_id)
+        Ok(selected_route_id)
     }
 
-    fn resolve_route_id_for_flow(
-        &mut self,
-        flow_id: FlowId,
-        flowstats_reporter: Option<&FlowStatsReporterHandle>,
-    ) -> Result<usize, String> {
-        if flow_id == flow::INVALID_FLOW_ID {
-            return Err("No route can be selected.".to_string());
+    /// Retrieves the next-hop candidates for the given route identifier.
+    fn next_hops_for_route(&self, route_id: usize) -> Result<&[NodeId], String> {
+        let Some(next_hops) = self.route_next_hop.get(&route_id) else {
+            return Err(format!(
+                "No next hop is found for route id {}: routing inconsistency detected.",
+                route_id
+            ));
+        };
+
+        if next_hops.contains(&INVALID) {
+            return Err(format!(
+                "Route {} is not available on this node (next_hop = INVALID).",
+                route_id
+            ));
         }
 
-        match self.select_route_for_flow(flow_id, flowstats_reporter) {
-            Some(id) if id != INVALID => Ok(id),
-            Some(_) => Err("No route can be selected.".to_string()),
-            None => Err(format!(
-                "No route is found for flow {}: the routing table may be misconfigured.",
-                flow_id
-            )),
-        }
+        Ok(next_hops.as_slice())
     }
 
-    fn next_hops_for_route(&self, route_id: usize, flow_id: FlowId) -> Result<Vec<NodeId>, String> {
-        if let Some(next_hops) = self.route_next_hop.get(&route_id) {
-            if next_hops.contains(&INVALID) {
-                return Err(format!(
-                    "Route {} is not available on this node (next_hop = INVALID).",
-                    route_id
-                ));
-            }
-            Ok(next_hops.clone())
-        } else {
-            Err(format!(
-                "No next hop is found for route id {} on flow {}: routing inconsistency detected.",
-                route_id, flow_id
-            ))
-        }
-    }
-
+    /// Looks up whether the given route forwards via unicast or multicast.
     fn route_forward_mode(&self, route_id: usize) -> RouteForwardingMode {
         self.route_forward_mode
             .get(&route_id)
@@ -230,6 +228,7 @@ impl RoutingTable {
             .unwrap_or(RouteForwardingMode::Unicast)
     }
 
+    /// Picks a single next hop from a candidate list (random when multiple options exist).
     fn pick_single_hop(next_hops: &[NodeId]) -> Result<NodeId, String> {
         match next_hops.len() {
             0 => Err("No next hop(s) available.".to_string()),
@@ -238,24 +237,47 @@ impl RoutingTable {
         }
     }
 
-    pub fn route_info_for_flow(
-        &mut self,
+    /// Emits a route-assignment notification to the controller when appropriate.
+    fn report_route_assignment(
+        &self,
         flow_id: FlowId,
+        route_id: usize,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
-    ) -> Result<(bool, Vec<NodeId>), String> {
-        let route_id = self.resolve_route_id_for_flow(flow_id, flowstats_reporter)?;
-        let hops = self.next_hops_for_route(route_id, flow_id)?;
-        let is_multicast = self.route_forward_mode(route_id).is_multicast();
-        Ok((is_multicast, hops))
+    ) {
+        let Some(flowstats_reporter) = flowstats_reporter else {
+            return;
+        };
+
+        let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
+
+        // only reports for app flows (not user space flows)
+        // user space flows use a dedicated server port (check both directions)
+        let is_app_flow = flow_id.dst_port() != self.config.user_space_server_port
+            && flow_id.src_port() != self.config.user_space_server_port;
+
+        debug!(
+            "Route selection: flow_id={:?}, src_node={}, local_id={}, is_app_flow={}, route={}",
+            flow_id, src_node_id, self.local_id, is_app_flow, route_id
+        );
+
+        if src_node_id == self.local_id && is_app_flow {
+            flowstats_reporter.report_route_assigned(flow_id, route_id);
+            debug!(
+                "Reported route assignment: flow_id={:?}, route_id={}",
+                flow_id, route_id
+            );
+        }
     }
 
-    /// Pick a single next hop (random if >1).
+    /// Pick a single next hop (random if > 1) in TCP max mode, used by the Connector.
     pub fn get_next_hop_by_flow(
         &mut self,
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
     ) -> Result<NodeId, String> {
-        let (_, next_hops) = self.route_info_for_flow(flow_id, flowstats_reporter)?;
-        Self::pick_single_hop(&next_hops)
+        match self.route_decision_for_flow(flow_id, flowstats_reporter)? {
+            RouteDecision::Unicast(hop) => Ok(hop),
+            RouteDecision::Multicast(hops) => Self::pick_single_hop(&hops),
+        }
     }
 }

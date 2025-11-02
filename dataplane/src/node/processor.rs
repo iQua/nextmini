@@ -6,7 +6,6 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use rand::Rng;
 use tokio;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -25,7 +24,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
-use crate::node::route::RoutingTable;
+use crate::node::route::{RouteDecision, RoutingTable};
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -617,47 +616,40 @@ impl Processor {
         }
     }
 
-    /// Processes inbound packets for outbound delivery
+    /// Processes inbound packets for outbound delivery.
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
         let reporter = self.flowstats_reporter.as_ref();
         match self
             .routing_table
-            .route_info_for_flow(packet_flow_id, reporter)
+            .route_decision_for_flow(packet_flow_id, reporter)
         {
-            Ok((is_multicast, next_hops)) => {
+            Ok(RouteDecision::Multicast(next_hops)) => {
                 if next_hops.is_empty() {
                     error!("No next hops available for flow {}.", packet_flow_id);
                     return;
                 }
 
-                if is_multicast {
-                    let last = next_hops.len() - 1;
-                    let mut primary_packet = Some(packet);
-                    for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
-                        let pkt = if idx == last {
-                            primary_packet
-                                .take()
-                                .expect("packet already dispatched to last hop")
-                        } else {
-                            primary_packet
-                                .as_ref()
-                                .expect("packet missing during multicast fan-out")
-                                .clone()
-                        };
-                        self.send_packet(pkt, next_hop_id).await;
-                    }
-                } else {
-                    let hop = if next_hops.len() == 1 {
-                        next_hops[0]
+                let last = next_hops.len() - 1;
+                let mut primary_packet = Some(packet);
+
+                for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
+                    let pkt = if idx == last {
+                        primary_packet
+                            .take()
+                            .expect("packet already dispatched to last hop")
                     } else {
-                        let idx = rand::rng().random_range(0..next_hops.len());
-                        next_hops[idx]
+                        primary_packet
+                            .as_ref()
+                            .expect("packet missing during multicast fan-out")
+                            .clone()
                     };
-                    self.send_packet(packet, hop).await;
+
+                    self.send_packet(pkt, next_hop_id).await;
                 }
             }
+            Ok(RouteDecision::Unicast(next_hop)) => self.send_packet(packet, next_hop).await,
             Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
         }
     }
