@@ -37,7 +37,8 @@ mod tests {
         let (enforce, gap, backlog) = cfg.reorder_tolerances();
         assert!(enforce);
         assert_eq!(gap, Some(Duration::from_micros(500)));
-        assert_eq!(backlog, 64);
+        // Default backlog tolerance is disabled (0) when enforcement is enabled.
+        assert_eq!(backlog, 0);
     }
 
     #[test]
