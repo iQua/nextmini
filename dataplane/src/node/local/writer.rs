@@ -94,14 +94,13 @@ impl SequentialLocalWriter {
 
                         for packet in buffer {
                             let buf = packet.bytes();
-                            if let Err(_) = self.device.try_send(buf) {
-                                if let Err(e) = self.device.send(buf).await {
+                            if self.device.try_send(buf).is_err()
+                                && let Err(e) = self.device.send(buf).await {
                                     error!(
                                         "Failed to write packet to the TUN device: {}. Dropped.",
                                         e
                                     );
                                 }
-                            }
                         };
                     }
                 }
@@ -243,11 +242,10 @@ impl ConcurrentLocalWriterProducer {
 
                             // sends the packet immediately to the TUN interface
                             let buf = packet.bytes();
-                            if let Err(_) = self.device.try_send(buf) {
-                                if let Err(e) = self.device.send(buf).await {
+                            if self.device.try_send(buf).is_err()
+                                && let Err(e) = self.device.send(buf).await {
                                     error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                                 }
-                            }
 
                             continue;
                         }
@@ -255,11 +253,10 @@ impl ConcurrentLocalWriterProducer {
                         // sends the packet immediately to the TUN interface if we are not enforcing TCP order
                         if !self.enforce_order {
                             let buf = packet.bytes();
-                            if let Err(_) = self.device.try_send(buf) {
-                                if let Err(e) = self.device.send(buf).await {
+                            if self.device.try_send(buf).is_err()
+                                && let Err(e) = self.device.send(buf).await {
                                     error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                                 }
-                            }
 
                             continue;
                         }
@@ -360,38 +357,33 @@ impl ConcurrentLocalWriterConsumer {
                                     }
                                 };
 
-                                loop {
-                                    let maybe_stale = {
-                                        let mut q = self.queue_map.lock().await;
-                                        if let Some(h) = q.get_mut(&flow_id) {
-                                            if let Some(peek) = h.peek() {
-                                                if SequencedPacket::seq_less(peek.seq, expected) {
-                                                    h.pop()
-                                                } else {
-                                                    None
-                                                }
+                                let maybe_stale = {
+                                    let mut q = self.queue_map.lock().await;
+                                    if let Some(h) = q.get_mut(&flow_id) {
+                                        if let Some(peek) = h.peek() {
+                                            if SequencedPacket::seq_less(peek.seq, expected) {
+                                                h.pop()
                                             } else {
                                                 None
                                             }
                                         } else {
                                             None
                                         }
-                                    };
+                                    } else {
+                                        None
+                                    }
+                                };
 
-                                    if let Some(stale) = maybe_stale {
-                                        let packet = stale.packet;
-                                        let buf = packet.bytes();
-                                        if let Err(_) = self.device.try_send(buf) {
-                                            if let Err(e) = self.device.send(buf).await {
-                                                error!("Failed to write stale packet to the TUN device: {}. Dropped.", e);
-                                            }
+                                if let Some(stale) = maybe_stale {
+                                    let packet = stale.packet;
+                                    let buf = packet.bytes();
+                                    if self.device.try_send(buf).is_err()
+                                        && let Err(e) = self.device.send(buf).await {
+                                            error!("Failed to write stale packet to the TUN device: {}. Dropped.", e);
                                         }
 
-                                        progressed_any = true;
-                                        continue 'per_flow;
-                                    }
-
-                                    break;
+                                    progressed_any = true;
+                                    continue 'per_flow;
                                 }
 
                                 if self.backlog_tolerance > 0 && top_seq != expected {
@@ -444,11 +436,10 @@ impl ConcurrentLocalWriterConsumer {
                                         }
 
                                         let buf = packet.bytes();
-                                        if let Err(_) = self.device.try_send(buf) {
-                                            if let Err(e) = self.device.send(buf).await {
+                                        if self.device.try_send(buf).is_err()
+                                            && let Err(e) = self.device.send(buf).await {
                                                 error!("Failed to write packet to the TUN device: {}. Dropped.", e);
                                             }
-                                        }
 
                                         {
                                             let mut deadlines = self.gap_deadlines.lock().await;
