@@ -43,10 +43,12 @@ mod tests {
 
     #[test]
     fn unordered_mode_disables_tolerances() {
-        let mut cfg = LocalConfig::default();
-        cfg.enforce_tcp_order = false;
-        cfg.delay_tolerance = 123;
-        cfg.backlog_tolerance = 99;
+        let cfg = LocalConfig {
+            enforce_tcp_order: false,
+            delay_tolerance: 123,
+            backlog_tolerance: 99,
+            ..Default::default()
+        };
 
         let (enforce, gap, backlog) = cfg.reorder_tolerances();
         assert!(!enforce);
@@ -56,9 +58,11 @@ mod tests {
 
     #[test]
     fn zero_tolerances_disable_components() {
-        let mut cfg = LocalConfig::default();
-        cfg.delay_tolerance = 0;
-        cfg.backlog_tolerance = 0;
+        let cfg = LocalConfig {
+            delay_tolerance: 0,
+            backlog_tolerance: 0,
+            ..Default::default()
+        };
 
         let (_, gap, backlog) = cfg.reorder_tolerances();
         assert_eq!(gap, None);
