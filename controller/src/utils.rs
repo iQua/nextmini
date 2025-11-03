@@ -330,9 +330,24 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         }
 
         if next_hops.is_empty() {
-            // if the node is the destination, we add it to the next hops
-            if route.dst_node_id == node_id {
-                next_hops = vec![node_id as usize]; // local delivery
+            // determines whether this node should perform local delivery by checking
+            // if it's a leaf node (sink) in the route's edge graph.
+            let (_node_ids, node_map, graph) = create_graph_with_mapping(&route.edges);
+
+            if let Some(&node_idx) = node_map.get(&node_id) {
+                let outgoing_count = graph
+                    .neighbors_directed(node_idx, Direction::Outgoing)
+                    .count();
+                let incoming_count = graph
+                    .neighbors_directed(node_idx, Direction::Incoming)
+                    .count();
+
+                // sinks in the route graph should deliver packets locally
+                if outgoing_count == 0 && incoming_count > 0 {
+                    next_hops = vec![node_id as usize];
+                } else {
+                    next_hops = vec![INVALID];
+                }
             } else {
                 // this node does not belong to this route, but we still need to create
                 // a routing table entry with INVALID to maintain consistency across all
@@ -593,6 +608,31 @@ mod tests {
             assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
             // Node 3 is a destination, should have next_hop to itself
             assert_eq!(entry.next_hops, vec![3]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_multicast_second_destination() {
+        // Test multicast routing table for the second destination node (not in dst_node_id)
+        // This test verifies the fix for the multicast bug where only the first destination
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3, // dst_node_id only records the first destination
+            edges: vec![(1, 2), (2, 3), (2, 4)], // but edges include path to node 4
+        }];
+
+        let result = build_routes_for_node(routes, 4); // Test node 4
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.route_id, 1);
+            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
+            assert_eq!(entry.next_hops, vec![4]);
         } else {
             panic!("Expected InstallRoutes message.");
         }
