@@ -469,6 +469,19 @@ mod tests {
     }
 
     #[test]
+    fn test_route_has_multiple_destinations_dag_different_edge_order() {
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 4,
+            edges: vec![(1, 2), (2, 4), (1, 3), (3, 4)],
+        };
+
+        // Same result: still unicast (only one final destination)
+        assert!(!route_has_multiple_destinations(&route));
+    }
+
+    #[test]
     fn test_route_has_multiple_destinations_diamond_with_multiple_dsts() {
         // Diamond with multiple destinations
         let route = Route {
