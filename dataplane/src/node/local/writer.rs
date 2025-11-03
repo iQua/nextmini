@@ -488,6 +488,8 @@ impl ConcurrentLocalWriterConsumer {
                                     continue 'per_flow;
                                 }
 
+                                let mut advance_expected = false;
+
                                 if let Some(gap_timeout) = self.gap_timeout {
                                     let now = Instant::now();
                                     let mut arm_timer = false;
@@ -516,8 +518,6 @@ impl ConcurrentLocalWriterConsumer {
                                         });
                                     }
                                 }
-
-                                let mut advance_expected = false;
 
                                 if advance_expected {
                                     {

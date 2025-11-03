@@ -2,6 +2,9 @@ use ahash::AHashMap;
 use tokio;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+#[cfg(not(target_os = "linux"))]
+use tokio::io::copy_bidirectional;
+#[cfg(target_os = "linux")]
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info};
 
@@ -212,9 +215,9 @@ impl Connector {
                 tcp_max_client.connect_without_header(&next_hop_addr).await
             };
 
-            // spawns a task to perform zero-copy bidirectional splicing between inbound and outbound streams
+            // spawns a task to splice data between inbound and outbound streams (zero-copy on Linux)
             tokio::spawn(async move {
-                match zero_copy_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
+                match splice_bidirectional(&mut inbound_stream, &mut outbound_stream).await {
                     Ok((upstream_bytes, downstream_bytes)) => {
                         info!(
                             "Spliced connection for flow {} to {} (upstream: {} bytes, downstream: {} bytes).",
@@ -228,4 +231,20 @@ impl Connector {
             });
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn splice_bidirectional(
+    inbound_stream: &mut TcpStream,
+    outbound_stream: &mut TcpStream,
+) -> std::io::Result<(u64, u64)> {
+    zero_copy_bidirectional(inbound_stream, outbound_stream).await
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn splice_bidirectional(
+    inbound_stream: &mut TcpStream,
+    outbound_stream: &mut TcpStream,
+) -> std::io::Result<(u64, u64)> {
+    copy_bidirectional(inbound_stream, outbound_stream).await
 }
