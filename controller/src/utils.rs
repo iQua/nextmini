@@ -372,3 +372,308 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Route;
+
+    #[test]
+    fn test_route_has_multiple_destinations_unicast_linear() {
+        // Linear path: 1 -> 2 -> 3
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3)],
+        };
+
+        assert!(!route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_unicast_single_hop() {
+        // Direct path: 1 -> 2
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 2,
+            edges: vec![(1, 2)],
+        };
+
+        assert!(!route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_multicast_simple() {
+        // Multicast: 1 -> 2, then 2 -> 3 and 2 -> 4
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 3, // Primary destination
+            edges: vec![(1, 2), (2, 3), (2, 4)],
+        };
+
+        assert!(route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_multicast_complex() {
+        // Complex multicast tree
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 5,
+            edges: vec![(1, 2), (2, 3), (2, 4), (3, 5), (4, 6)],
+        };
+
+        assert!(route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_multicast_three_branches() {
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3), (2, 4), (2, 5)],
+        };
+
+        assert!(route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_empty_edges() {
+        // Empty route
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 2,
+            edges: vec![],
+        };
+
+        assert!(!route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_dag_with_reconvergence() {
+        // DAG with reconvergence (still unicast since only one final destination)
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 4,
+            edges: vec![(1, 2), (1, 3), (2, 4), (3, 4)],
+        };
+
+        assert!(!route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_diamond_with_multiple_dsts() {
+        // Diamond with multiple destinations
+        let route = Route {
+            route_id: 0,
+            src_node_id: 1,
+            dst_node_id: 4,
+            edges: vec![(1, 2), (1, 3), (2, 4), (3, 5)],
+        };
+
+        assert!(route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_build_routes_for_node_unicast_mode() {
+        // Test that unicast routes get RouteForwardingMode::Unicast
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3)],
+        }];
+
+        let result = build_routes_for_node(routes, 1);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.route_id, 1);
+            assert_eq!(entry.src_node_id, 1);
+            assert_eq!(entry.dst_node_id, 3);
+            assert!(matches!(entry.forward_mode, RouteForwardingMode::Unicast));
+            // Node 1 is the source, should have next_hop to node 2
+            assert_eq!(entry.next_hops, vec![2]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_multicast_mode() {
+        // Test that multicast routes get RouteForwardingMode::Multicast
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3), (2, 4)], // Multicast to both 3 and 4
+        }];
+
+        let result = build_routes_for_node(routes, 1);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.route_id, 1);
+            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
+            // Node 1 should have next_hop to node 2
+            assert_eq!(entry.next_hops, vec![2]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_multicast_intermediate_node() {
+        // Test multicast routing table for intermediate node with multiple next hops
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3), (2, 4)],
+        }];
+
+        let result = build_routes_for_node(routes, 2);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.route_id, 1);
+            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
+            // Node 2 is the branch point, should have next_hops to both 3 and 4
+            let mut next_hops = entry.next_hops.clone();
+            next_hops.sort();
+            assert_eq!(next_hops, vec![3, 4]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_multicast_destination() {
+        // Test multicast routing table for a destination node
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3), (2, 4)],
+        }];
+
+        let result = build_routes_for_node(routes, 3);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.route_id, 1);
+            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
+            // Node 3 is a destination, should have next_hop to itself
+            assert_eq!(entry.next_hops, vec![3]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_not_in_route() {
+        // Test routing table for a node not in the route
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3)],
+        }];
+
+        let result = build_routes_for_node(routes, 5); // Node 5 is not in the route
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 1);
+            let entry = &entries[0];
+            assert_eq!(entry.route_id, 1);
+            // Node 5 is not in the route, should have INVALID next_hop
+            assert_eq!(entry.next_hops, vec![INVALID]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_multiple_routes_mixed() {
+        // Test with both unicast and multicast routes
+        let routes = vec![
+            Route {
+                route_id: 1,
+                src_node_id: 1,
+                dst_node_id: 3,
+                edges: vec![(1, 2), (2, 3)], // Unicast
+            },
+            Route {
+                route_id: 2,
+                src_node_id: 1,
+                dst_node_id: 4,
+                edges: vec![(1, 2), (2, 4), (2, 5)], // Multicast
+            },
+        ];
+
+        let result = build_routes_for_node(routes, 2);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            assert_eq!(entries.len(), 2);
+
+            // Check first route (unicast)
+            let unicast_entry = &entries[0];
+            assert_eq!(unicast_entry.route_id, 1);
+            assert!(matches!(
+                unicast_entry.forward_mode,
+                RouteForwardingMode::Unicast
+            ));
+            assert_eq!(unicast_entry.next_hops, vec![3]);
+
+            // Check second route (multicast)
+            let multicast_entry = &entries[1];
+            assert_eq!(multicast_entry.route_id, 2);
+            assert!(matches!(
+                multicast_entry.forward_mode,
+                RouteForwardingMode::Multicast
+            ));
+            let mut next_hops = multicast_entry.next_hops.clone();
+            next_hops.sort();
+            assert_eq!(next_hops, vec![4, 5]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_create_graph_with_mapping() {
+        // Test the internal graph creation function
+        let edges = vec![(3, 1), (1, 2), (2, 5)];
+        let (node_ids, node_map, graph) = create_graph_with_mapping(&edges);
+
+        // Node IDs should be sorted
+        assert_eq!(node_ids, vec![1, 2, 3, 5]);
+
+        // Each node should be in the map
+        assert!(node_map.contains_key(&1));
+        assert!(node_map.contains_key(&2));
+        assert!(node_map.contains_key(&3));
+        assert!(node_map.contains_key(&5));
+
+        // Graph should have correct number of nodes and edges
+        assert_eq!(graph.node_count(), 4);
+        assert_eq!(graph.edge_count(), 3);
+    }
+}
