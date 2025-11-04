@@ -760,7 +760,7 @@ impl Processor {
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
-        let mut packet = packet;
+        let packet = packet;
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
@@ -773,11 +773,14 @@ impl Processor {
                 }
                 return;
             } else {
-                if let Some(ref py_if) = self.python_interface {
-                    match py_if.deliver(packet).await {
-                        Ok(()) => return,
-                        Err(returned_packet) => {
-                            packet = returned_packet;
+                #[cfg(feature = "python-api")]
+                {
+                    if let Some(ref py_if) = self.python_interface {
+                        match py_if.deliver(packet).await {
+                            Ok(()) => return,
+                            Err(returned_packet) => {
+                                packet = returned_packet;
+                            }
                         }
                     }
                 }
