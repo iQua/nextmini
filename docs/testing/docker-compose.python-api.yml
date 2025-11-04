@@ -13,8 +13,9 @@ services:
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 30
+      start_period: 30s
     volumes:
       - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
