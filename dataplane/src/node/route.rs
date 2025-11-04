@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use jumphash::JumpHasher;
 use rand::Rng;
+use smallvec::SmallVec;
 use std::net::Ipv4Addr;
 use tracing::debug;
 
@@ -42,6 +43,9 @@ pub struct RoutingTable {
     /// Cache for flow to route ID mappings
     cache: AHashMap<FlowId, usize>,
 }
+
+const INLINE_HOPS: usize = 4;
+pub type HopBuffer = SmallVec<[NodeId; INLINE_HOPS]>;
 
 impl RoutingTable {
     /// Creates a routing table for the provided local configuration.
@@ -178,7 +182,7 @@ impl RoutingTable {
         &mut self,
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
-    ) -> Result<Vec<NodeId>, String> {
+    ) -> Result<HopBuffer, String> {
         if flow_id == flow::INVALID_FLOW_ID {
             // the flow ID cannot be successfully extracted, no routing is possible
             return Err("No route can be selected.".to_string());
@@ -188,11 +192,7 @@ impl RoutingTable {
         if let Some(route_id) = self.cache.get(&flow_id)
             && let Some(next_hops) = self.route_next_hop.get(route_id)
         {
-            if next_hops.contains(&INVALID) {
-                return Err(format!("Route {} invalid at this node", route_id));
-            }
-
-            return Ok(next_hops.clone());
+            return Self::copy_next_hops(*route_id, next_hops);
         }
 
         let key = self
@@ -225,11 +225,7 @@ impl RoutingTable {
             .get(&route_id)
             .ok_or_else(|| format!("No next hops found for route {}", route_id))?;
 
-        if hops.contains(&INVALID) {
-            return Err(format!("Route {} invalid at this node", route_id));
-        }
-
-        Ok(hops.clone())
+        Self::copy_next_hops(route_id, hops)
     }
 
     /// Picks a single next hop from a candidate list (random when multiple options exist).
@@ -282,12 +278,21 @@ impl RoutingTable {
         let hops = self.get_next_hops_by_flow(flow_id, flowstats_reporter)?;
         Self::pick_single_hop(&hops)
     }
+
+    fn copy_next_hops(route_id: usize, source: &[NodeId]) -> Result<HopBuffer, String> {
+        if source.contains(&INVALID) {
+            return Err(format!("Route {} invalid at this node", route_id));
+        }
+
+        Ok(HopBuffer::from_slice(source))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::node::config::LocalConfig;
+    use nextmini_messages::RouteForwardingMode;
 
     fn make_flow_id(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, src_port: u16, dst_port: u16) -> FlowId {
         ((u32::from(src_ip) as u128) << 96)
@@ -336,7 +341,7 @@ mod tests {
             .get_next_hops_by_flow(flow_id, None)
             .expect("multicast next hops should be available");
 
-        assert_eq!(hops, vec![3, 4]);
+        assert_eq!(&hops[..], &[3, 4]);
     }
 
     #[test]
@@ -371,7 +376,7 @@ mod tests {
         let first = table
             .get_next_hops_by_flow(flow_id, None)
             .expect("initial multicast hop");
-        assert_eq!(first, vec![5]);
+        assert_eq!(&first[..], &[5]);
 
         table.install_group_routes(
             9,
@@ -387,6 +392,48 @@ mod tests {
         let updated = table
             .get_next_hops_by_flow(flow_id, None)
             .expect("updated multicast hop");
-        assert_eq!(updated, vec![6]);
+        assert_eq!(&updated[..], &[6]);
+    }
+
+    #[test]
+    fn unicast_lookup_stays_inline() {
+        let config = make_config(2);
+        let mut table = RoutingTable::new(config.clone());
+
+        table.install_routes(vec![RoutingTableEntry {
+            route_id: 10,
+            src_node_id: 2,
+            dst_node_id: 3,
+            next_hops: vec![7],
+            forward_mode: RouteForwardingMode::Unicast,
+        }]);
+
+        let flow_id = make_flow_id(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(10, 0, 0, 3),
+            1234,
+            config.user_space_server_port + 1,
+        );
+
+        let hops = table
+            .get_next_hops_by_flow(flow_id, None)
+            .expect("unicast hop should resolve");
+
+        assert_eq!(&hops[..], &[7]);
+        assert!(
+            !hops.spilled(),
+            "unicast hop allocation escaped inline buffer"
+        );
+
+        // ensure cached path also stays inline
+        let hops_cached = table
+            .get_next_hops_by_flow(flow_id, None)
+            .expect("cached unicast hop should resolve");
+
+        assert_eq!(&hops_cached[..], &[7]);
+        assert!(
+            !hops_cached.spilled(),
+            "cached unicast hop allocation escaped inline buffer"
+        );
     }
 }

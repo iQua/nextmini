@@ -39,6 +39,7 @@ flume = "0.11"
 smoltcp = "0.12"
 once_cell = "1"
 socket2 = { version = "0.6", default-features = false, features = ["all"] }
+smallvec = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-splice = "0.2"
