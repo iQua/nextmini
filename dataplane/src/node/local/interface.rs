@@ -27,11 +27,13 @@ use crate::node::local::reader::LocalReader;
 use crate::node::local::writer::LocalWriter;
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
+#[cfg_attr(feature = "python-api", allow(dead_code))]
 #[derive(Clone)]
 pub enum ShutdownMessage {
     Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
 }
 
+#[cfg_attr(feature = "python-api", allow(dead_code))]
 pub enum LocalInterfaceMessage {
     WritePacket(Packet), // the processor sends a packet to the application via the local interface
 }

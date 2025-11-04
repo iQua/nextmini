@@ -164,6 +164,7 @@ impl Packet {
         &self.buffer[..self.packet_size]
     }
 
+    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn seq_num(&self) -> u32 {
         let buf = self.bytes();
         if self.packet_size < 20 || (buf[0] >> 4) != 4 {
@@ -189,6 +190,7 @@ impl Packet {
         self.has_tcp_payload()
     }
 
+    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn is_tcp_syn(&self) -> bool {
         let buf = self.bytes();
         if self.packet_size < 20 || buf[9] != 6 {
@@ -205,6 +207,7 @@ impl Packet {
         (tcp_flags & 0x02) != 0
     }
 
+    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn is_tcp_fin_or_rst(&self) -> bool {
         let buf = self.bytes();
         if self.packet_size < 20 || buf[9] != 6 {
@@ -334,7 +337,7 @@ impl Packet {
         (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", not(feature = "python-api")))]
     pub fn from_slice(packet_size: usize, slice: &[u8]) -> Self {
         Self::from_vec(slice[..packet_size].to_vec())
     }
