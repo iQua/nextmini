@@ -741,8 +741,7 @@ async fn handle_connection(
                             continue;
                         };
 
-                        if let Err(e) = add_group_member(&db_pool, group_id as i32, node_id).await
-                        {
+                        if let Err(e) = add_group_member(&db_pool, group_id as i32, node_id).await {
                             error!("Node {} failed to join group {}: {}", node_id, group_id, e);
                         } else {
                             info!("Node {} joined multicast group {}.", node_id, group_id);

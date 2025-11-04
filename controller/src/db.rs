@@ -12,13 +12,13 @@ use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 
-use crate::{NodeWriterMap, WebSocketWriter};
 use crate::config;
 use crate::models::{DbFlow, DbRoute, Group, GroupMember, Route};
 use crate::utils::{
     allocate_multicast_ip, build_flows_for_node, build_group_routes_for_node,
     build_routes_for_node, merge_all_routes,
 };
+use crate::{NodeWriterMap, WebSocketWriter};
 use nextmini_messages::{ControllerToDataplane, GroupRoutingTableEntry};
 use tracing::{error, info, warn};
 
@@ -478,10 +478,7 @@ pub async fn upsert_group_routes(
     Ok(())
 }
 
-pub async fn setup_route_notification(
-    db_pool: Arc<Pool<Postgres>>,
-    node_ws: NodeWriterMap,
-) {
+pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
     // creates the notification function and trigger
     let flow_table_name = "routes";
 
