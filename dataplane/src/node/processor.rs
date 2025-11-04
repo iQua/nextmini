@@ -166,21 +166,10 @@ impl ProcessorHandle {
     pub async fn update_group_directory(&self, groups: Vec<GroupDirectoryEntry>) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::UpdateGroupDirectory(groups.clone()))
+            .send(ProcessorMessage::UpdateGroupDirectory(groups))
         {
             error!(
                 "Error sending the UpdateGroupDirectory message to the processors: {}",
-                e
-            );
-        };
-
-        if let Err(e) = self
-            .connector_message_sender()
-            .send(ConnectorMessage::UpdateGroupDirectory(groups))
-            .await
-        {
-            error!(
-                "Error sending the UpdateGroupDirectory message to the connector: {}",
                 e
             );
         }
@@ -197,26 +186,11 @@ impl ProcessorHandle {
             .send(ProcessorMessage::UpdateGroupRoutes {
                 group_id,
                 src_node_id,
-                routes: routes.clone(),
+                routes,
             })
         {
             error!(
                 "Error sending the UpdateGroupRoutes message to the processors: {}",
-                e
-            );
-        };
-
-        if let Err(e) = self
-            .connector_message_sender()
-            .send(ConnectorMessage::UpdateGroupRoutes {
-                group_id,
-                src_node_id,
-                routes,
-            })
-            .await
-        {
-            error!(
-                "Error sending the UpdateGroupRoutes message to the connector: {}",
                 e
             );
         }
