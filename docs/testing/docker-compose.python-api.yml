@@ -18,7 +18,7 @@ services:
       timeout: 3s
       retries: 30
     volumes:
-      - ../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       python_api:
         ipv4_address: 172.31.0.2
@@ -36,8 +36,8 @@ services:
     volumes:
       - ../..:/workspace:cached
       - ./configs/controller.toml:/var/nextmini/config.toml
-    working_dir: /workspace
-    command: /bin/bash -c "sleep 5 && /var/nextmini/controller --config /var/nextmini/config.toml"
+    working_dir: /var/nextmini
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
     networks:
       python_api:
         ipv4_address: 172.31.0.3
