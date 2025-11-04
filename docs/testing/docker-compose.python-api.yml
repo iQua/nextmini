@@ -44,7 +44,7 @@ services:
     ports:
       - "3000:3000"
 
-  receiver-shell:
+  receiver:
     build:
       context: ../..
       dockerfile: docs/testing/scripts/Dockerfile.harness
@@ -55,16 +55,26 @@ services:
       - controller
     volumes:
       - ../..:/workspace:cached
+      - ./artifacts:/workspace/tmp
     working_dir: /workspace
     environment:
-      NEXTMINI_CONFIG: /workspace/docs/testing/configs/node_receiver.toml
-      NEXTMINI_DST_NODE: "1"
+      WAIT_FOR: controller:3000
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
     networks:
       python_api:
         ipv4_address: 172.31.0.4
-    command: sleep infinity
+    command:
+      - bash
+      - -lc
+      - >
+        docs/testing/scripts/run_harness.sh receiver docs/testing/configs/node_receiver.toml
+        --src-node-id ${RECEIVER_SRC_ID:-1}
+        --expected ${RECEIVER_EXPECTED:-20}
+        --timeout-ms ${RECEIVER_TIMEOUT_MS:-5000}
+        --summary-json ${RECEIVER_SUMMARY:-/workspace/tmp/receiver-summary.json}
+        --output-dir ${RECEIVER_OUTPUT_DIR:-/workspace/tmp/receiver_payloads}
 
-  sender-shell:
+  sender:
     build:
       context: ../..
       dockerfile: docs/testing/scripts/Dockerfile.harness
@@ -75,14 +85,25 @@ services:
       - controller
     volumes:
       - ../..:/workspace:cached
+      - ./artifacts:/workspace/tmp
     working_dir: /workspace
     environment:
-      NEXTMINI_CONFIG: /workspace/docs/testing/configs/node_sender.toml
-      NEXTMINI_DST_NODE: "2"
+      WAIT_FOR: controller:3000
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
     networks:
       python_api:
         ipv4_address: 172.31.0.5
-    command: sleep infinity
+    command:
+      - bash
+      - -lc
+      - >
+        docs/testing/scripts/run_harness.sh sender docs/testing/configs/node_sender.toml
+        --src-node-id ${SENDER_SRC_ID:-1}
+        --dst-node-id ${SENDER_DST_ID:-2}
+        --count ${SENDER_COUNT:-20}
+        --batch ${SENDER_BATCH:-1}
+        --size ${SENDER_SIZE:-32768}
+        --sleep-ms ${SENDER_SLEEP_MS:-50}
 
 networks:
   python_api:

@@ -58,46 +58,29 @@ payloads to `/tmp/nextmini_py/` for verification).
 
 ### 1.5 Harness Quickstart
 
-1. Build and launch the integration stack (controller + Postgres + two harness shells):
+1. Launch the full stack (Postgres, controller, receiver + sender harness containers):
 
    ```bash
-   docker compose -f docs/testing/docker-compose.python-api.yml up --build -d
+   docker compose -f docs/testing/docker-compose.python-api.yml up --build receiver sender
    ```
 
-2. Inside the receiver shell, install Maturin, build `nextmini_py`, and start the async
-   listener:
+   The receiver waits for the controller (`WAIT_FOR=controller:3000`) before starting the async
+   listener. Default parameters send 20 payloads of 32 KiB with 50 ms spacing.
+
+2. Inspect results under `docs/testing/artifacts/`:
+
+   - `receiver-summary.json` contains packet counts, byte totals, and timing.
+   - `receiver_payloads/` holds raw payload dumps when `--output-dir` is enabled.
+
+3. Customise runs via environment overrides, for example:
 
    ```bash
-   docker compose exec python-api-receiver bash
-   pip install --upgrade pip maturin
-   maturin develop --maturin-extra-args="--profile release" -m python-api/Cargo.toml
-   python3 docs/testing/scripts/recv_harness.py \
-     --config docs/testing/configs/node_receiver.toml \
-     --src-node-id 1 \
-     --expected 10 \
-     --summary-json /workspace/tmp/recv-summary.json \
-     --output-dir /workspace/tmp/recv_payloads
+   RECEIVER_EXPECTED=100 SENDER_COUNT=100 SENDER_SIZE=1048576 \
+     docker compose -f docs/testing/docker-compose.python-api.yml up receiver sender
    ```
 
-3. In a separate terminal, exec into the sender shell, build/install the wheel (if not
-   already built), and drive payload injection:
-
-   ```bash
-   docker compose exec python-api-sender bash
-   pip install --upgrade pip maturin
-   maturin develop --maturin-extra-args="--profile release" -m python-api/Cargo.toml
-   python3 docs/testing/scripts/send_harness.py \
-     --config docs/testing/configs/node_sender.toml \
-     --src-node-id 1 \
-     --dst-node-id 2 \
-     --count 10 \
-     --size 32768 \
-     --sleep-ms 50
-   ```
-
-4. The receiver writes payload binaries (optional) plus a summary JSON file with per-packet
-   timestamps/lengths. Use these artifacts to populate the validation tables once the multi-node
-   harness is available.
+   Additional knobs: `SENDER_SLEEP_MS`, `RECEIVER_TIMEOUT_MS`, `SENDER_BATCH`, etc. Both harness
+   services exit once their work completes; rerun `docker compose up` to perform another scenario.
 
 ## 2. Benchmark Plan
 
@@ -130,7 +113,7 @@ Measure Python injection overhead vs. existing user-space/TUN path. Metrics:
 
 ## 3. Outstanding Actions
 
-- [ ] Provision reproducible multi-node environment (docker or VM).
+- [x] Provision reproducible multi-node environment (docker or VM). *(2025-11-04 – LilacLake: docker-compose overlay)*
 - [x] Implement send/receive harness scripts (see §1.4). *(2025-11-04 – LilacLake)*
 - [ ] Automate results upload to shared storage.
 - [ ] Schedule regression benchmark in CI once environment is available.
