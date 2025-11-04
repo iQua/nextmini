@@ -185,15 +185,14 @@ impl RoutingTable {
         }
 
         // checks the cache first
-        if let Some(route_id) = self.cache.get(&flow_id) {
-            if let Some(next_hops) = self.route_next_hop.get(route_id) {
+        if let Some(route_id) = self.cache.get(&flow_id)
+            && let Some(next_hops) = self.route_next_hop.get(route_id) {
                 if next_hops.contains(&INVALID) {
                     return Err(format!("Route {} invalid at this node", route_id));
                 }
 
                 return Ok(next_hops.clone());
             }
-        }
 
         let key = self
             .key_for_flow(flow_id)
@@ -297,9 +296,10 @@ mod tests {
     }
 
     fn make_config(node_id: NodeId) -> LocalConfig {
-        let mut cfg = LocalConfig::default();
-        cfg.node_id = node_id;
-        cfg
+        LocalConfig {
+            node_id,
+            ..Default::default()
+        }
     }
 
     #[test]

@@ -206,7 +206,7 @@ impl Connector {
 
             self.schedulers
                 .entry(flow_id)
-                .or_insert_with(AHashMap::default)
+                .or_default()
                 .insert(next_hop_id, scheduler);
         }
     }
@@ -238,7 +238,7 @@ impl Connector {
             let (src_node_id, _) = self.routing_table.extract_node_ids_from_flow(flow_id);
             self.schedulers
                 .entry(flow_id.reverse())
-                .or_insert_with(AHashMap::default)
+                .or_default()
                 .insert(src_node_id, scheduler);
         } else {
             // handles flows that need to be forwarded to the next hop as a relay node

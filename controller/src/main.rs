@@ -102,7 +102,7 @@ async fn handle_connection(
     write: WebSocketWriter,
     db_pool: Arc<Pool<Postgres>>,
     config: Config,
-    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    node_ws: NodeWriterMap,
     new_node_connected_sender: broadcast::Sender<NodeConnectedEvent>,
 ) {
     let write_arc = Arc::new(Mutex::new(write));
@@ -680,7 +680,7 @@ async fn handle_connection(
                         };
 
                         match create_group(
-                            &*db_pool,
+                            &db_pool,
                             &label,
                             node_id,
                             config.multicast_pool_base,
@@ -716,7 +716,7 @@ async fn handle_connection(
                                     }
 
                                     if let Err(e) =
-                                        broadcast_group_directory(&*db_pool, &node_ws).await
+                                        broadcast_group_directory(&db_pool, &node_ws).await
                                     {
                                         error!(
                                             "Failed to broadcast group directory after creating group {}: {}",
@@ -741,7 +741,7 @@ async fn handle_connection(
                             continue;
                         };
 
-                        if let Err(e) = add_group_member(&*db_pool, group_id as i32, node_id).await
+                        if let Err(e) = add_group_member(&db_pool, group_id as i32, node_id).await
                         {
                             error!("Node {} failed to join group {}: {}", node_id, group_id, e);
                         } else {
@@ -755,7 +755,7 @@ async fn handle_connection(
                         };
 
                         if let Err(e) =
-                            remove_group_member(&*db_pool, group_id as i32, node_id).await
+                            remove_group_member(&db_pool, group_id as i32, node_id).await
                         {
                             error!("Node {} failed to leave group {}: {}", node_id, group_id, e);
                         } else {
@@ -786,7 +786,7 @@ async fn handle_connection(
 
 async fn broadcast_group_directory(
     db_pool: &Pool<Postgres>,
-    node_ws: &Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    node_ws: &NodeWriterMap,
 ) -> AnyResult<()> {
     let groups = load_group_directory(db_pool).await?;
     let mut entries = Vec::with_capacity(groups.len());

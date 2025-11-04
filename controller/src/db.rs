@@ -1,10 +1,10 @@
 /// Implements database initialization and notification setup.
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::Result as AnyResult;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 
 use futures_util::{SinkExt, StreamExt};
@@ -12,7 +12,7 @@ use sqlx::postgres::PgListener;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
 
-use crate::WebSocketWriter;
+use crate::{NodeWriterMap, WebSocketWriter};
 use crate::config;
 use crate::models::{DbFlow, DbRoute, Group, GroupMember, Route};
 use crate::utils::{
@@ -480,9 +480,7 @@ pub async fn upsert_group_routes(
 
 pub async fn setup_route_notification(
     db_pool: Arc<Pool<Postgres>>,
-
-    // a hashmap from the node ID to its corresponding WebSocket sink
-    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    node_ws: NodeWriterMap,
 ) {
     // creates the notification function and trigger
     let flow_table_name = "routes";
@@ -621,10 +619,7 @@ pub async fn setup_route_notification(
     });
 }
 
-pub async fn setup_group_notification(
-    db_pool: Arc<Pool<Postgres>>,
-    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
-) {
+pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
     let mut listener = PgListener::connect_with(&db_pool)
         .await
         .expect("Failed to connect listener for multicast groups");
@@ -640,7 +635,7 @@ pub async fn setup_group_notification(
                 Ok(notif) => {
                     let payload = notif.payload();
                     let parsed = serde_json::from_str::<serde_json::Value>(payload)
-                        .unwrap_or_else(|_| serde_json::Value::Null);
+                        .unwrap_or(serde_json::Value::Null);
                     let group_id_opt = parsed
                         .get("group_id")
                         .and_then(|v| v.as_str())
@@ -668,7 +663,7 @@ pub async fn setup_group_notification(
 async fn recompute_and_push_group_routes(
     group_id: i32,
     db_pool: &Pool<Postgres>,
-    node_ws: &Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    node_ws: &NodeWriterMap,
 ) -> AnyResult<()> {
     let Some(group) = sqlx::query_as::<_, Group>(
         "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
@@ -754,7 +749,7 @@ async fn recompute_and_push_group_routes(
     let dag_json = serde_json::to_value(
         dag_edges
             .iter()
-            .map(|(a, b)| [*a as u32, *b as u32])
+            .map(|(a, b)| [(*a), (*b)])
             .collect::<Vec<[u32; 2]>>(),
     )?;
     upsert_group_routes(db_pool, group_id, group.src_node_id, dag_json).await?;
@@ -822,12 +817,7 @@ async fn recompute_and_push_group_routes(
     Ok(())
 }
 
-pub async fn setup_flow_notification(
-    db_pool: Arc<Pool<Postgres>>,
-
-    // a hashmap from the node ID to its corresponding WebSocket sink
-    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
-) {
+pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
     // creates the flow notification function and trigger
     let create_flow_function_sql = r#"
         CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
