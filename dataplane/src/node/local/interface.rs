@@ -1,10 +1,10 @@
-use std::net::Ipv4Addr;
-
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error};
 #[cfg(not(feature = "python-api"))]
 use tracing::info;
 
+#[cfg(not(feature = "python-api"))]
+use std::net::Ipv4Addr;
 #[cfg(not(feature = "python-api"))]
 use std::sync::Arc;
 #[cfg(not(feature = "python-api"))]
@@ -134,7 +134,7 @@ impl LocalInterfaceHandle {
     }
 
     /// Converts a netmask tuple to prefix length. Used in 'LocalInterfaceHandle::create_tun_device()'.
-    #[cfg_attr(feature = "python-api", allow(dead_code))]
+    #[cfg(not(feature = "python-api"))]
     fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
         let mask_u32 = u32::from_be_bytes(mask.octets());
         mask_u32.count_ones() as u8
@@ -209,7 +209,7 @@ impl LocalInterfaceHandle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "python-api")))]
 mod tests {
     use super::*;
     use crate::node::FlowId;
