@@ -31,16 +31,26 @@ fi
 export PYTHONUNBUFFERED=1
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  pip install --upgrade pip maturin
+  # Install uv if not available
+  if ! command -v uv &> /dev/null; then
+    pip install uv
+  fi
+  
+  # Create virtual environment with uv
+  uv venv .venv
+  source .venv/bin/activate
+  
+  # Install maturin and build
+  uv pip install maturin
   maturin develop --release -m python-api/Cargo.toml
 fi
 
 case "${role}" in
   receiver)
-    exec python3 docs/testing/scripts/recv_harness.py --config "${config_path}" "$@"
+    exec python docs/testing/scripts/recv_harness.py --config "${config_path}" "$@"
     ;;
   sender)
-    exec python3 docs/testing/scripts/send_harness.py --config "${config_path}" "$@"
+    exec python docs/testing/scripts/send_harness.py --config "${config_path}" "$@"
     ;;
   *)
     echo "Unknown role: ${role}" >&2
