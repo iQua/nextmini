@@ -406,6 +406,13 @@ fn default_netmask() -> Ipv4Addr {
 }
 
 impl LocalConfig {
+    /// Creates a `LocalConfig` from a TOML string while applying ClapSerde defaults.
+    #[cfg(feature = "python-api")]
+    pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
+        let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
+        Ok(LocalConfig::from(&mut opt))
+    }
+
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);

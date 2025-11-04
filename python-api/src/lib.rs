@@ -96,8 +96,9 @@ impl Dataplane {
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read config: {e}")))?;
-        let cfg: LocalConfig = toml::from_str(&toml_str)
+        let mut cfg = LocalConfig::from_toml_str(&toml_str)
             .map_err(|e| PyRuntimeError::new_err(format!("failed to parse config: {e}")))?;
+        cfg.config_path = config_path.to_string();
 
         let conductor = rt().block_on(async { Conductor::new(cfg.clone()).await });
         let processor = conductor.processor_handle();
