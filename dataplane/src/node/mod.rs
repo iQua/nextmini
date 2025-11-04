@@ -9,6 +9,7 @@ pub mod namespace;
 pub mod network;
 pub mod packet;
 pub mod processor;
+pub mod python;
 pub mod route;
 pub mod scheduler;
 

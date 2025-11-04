@@ -28,6 +28,14 @@ from transformers import (
 
 LOGGER = logging.getLogger(__name__)
 
+try:
+    import nextmini_py as nm
+except Exception:
+    nm = None
+    LOGGER.warning(
+        "nextmini_py extension not available; Python dataplane integration disabled."
+    )
+
 
 def main():
     parser = _get_parser()
@@ -44,6 +52,24 @@ def main():
     # Helpful to log this information when running on multiple nodes to make sure all nodes have the same environment.
     LOGGER.info(os.environ)
     LOGGER.info(args)
+
+    dp = None
+    dst_node = None
+    if nm and os.environ.get("NEXTMINI_CONFIG") and os.environ.get("NEXTMINI_DST_NODE"):
+        cfg_path = os.environ["NEXTMINI_CONFIG"]
+        try:
+            dst_node = int(os.environ["NEXTMINI_DST_NODE"])
+        except ValueError:
+            LOGGER.error("NEXTMINI_DST_NODE must be an integer; skipping dataplane hookup.")
+            dst_node = None
+        else:
+            try:
+                dp = nm.Dataplane(cfg_path)
+                LOGGER.info("Nextmini Python dataplane enabled (dst_node=%s).", dst_node)
+            except Exception as exc:
+                LOGGER.error("Failed to launch Nextmini dataplane: %s", exc)
+                dp = None
+                dst_node = None
 
     # Default to CPU; use distributed CPU training if launched with multiple processes
     device = torch.device("cpu")
@@ -178,6 +204,13 @@ def main():
             with timers["update"]:
                 optimizer.step()
                 lr_scheduler.step()
+
+            if dp is not None and dst_node is not None:
+                loss_val = outputs.loss.detach().float().cpu().numpy()
+                try:
+                    dp.send_to_node(dst_node, memoryview(loss_val))
+                except Exception as exc:
+                    LOGGER.error("Failed to send dataplane payload: %s", exc)
 
             state["global_step"] += 1
             state["epoch_step"] += 1

@@ -109,9 +109,9 @@ impl Conductor {
                     let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
 
                     tokio::select! {
-                        _ = tcp_server_public.start_listening(&tcp_server_public_addr) => {},
-                        _ = tcp_server_private.start_listening(&tcp_server_private_addr) => {},
-                        _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
+                                    _ = tcp_server_public.start_listening(&tcp_server_public_addr) => {},
+                                    _ = tcp_server_private.start_listening(&tcp_server_private_addr) => {},
+                                    _ = tcp_max_server.start_listening(&tcp_max_server_addr) => {},
                     }
                 }
             }
@@ -178,5 +178,15 @@ impl Conductor {
                 }
             }
         }
+    }
+
+    /// Returns a clone of the processor handle so external callers can attach additional interfaces.
+    pub fn processor_handle(&self) -> ProcessorHandle {
+        self.processors.clone()
+    }
+
+    /// Exposes the loaded `LocalConfig`, useful when bridging with language bindings.
+    pub fn local_config(&self) -> LocalConfig {
+        self.config.clone()
     }
 }

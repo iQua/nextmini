@@ -27,6 +27,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
+use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
@@ -56,6 +57,7 @@ pub enum ProcessorMessage {
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
+    ConnectPythonInterface(PythonInterfaceHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +121,19 @@ impl ProcessorHandle {
         {
             error!(
                 "Error connecting the client handle to the processors: {}.",
+                e
+            );
+        };
+    }
+
+    /// Connects the in-process Python interface so local packets can be delivered directly.
+    pub fn connect_python_interface(&self, interface: PythonInterfaceHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectPythonInterface(interface))
+        {
+            error!(
+                "Error sending the ConnectPythonInterface message to the processors: {}",
                 e
             );
         };
@@ -576,6 +591,9 @@ struct Processor {
 
     // a unified hashmap for schedulers in normal mode
     schedulers: AHashMap<NodeId, SchedulerHandle>,
+
+    // optional in-process Python delivery path
+    python_interface: Option<PythonInterfaceHandle>,
 }
 
 impl Processor {
@@ -594,6 +612,7 @@ impl Processor {
             flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
+            python_interface: None,
         }
     }
 
@@ -666,6 +685,9 @@ impl Processor {
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
             }
+            ProcessorMessage::ConnectPythonInterface(interface) => {
+                self.python_interface = Some(interface);
+            }
         }
     }
 
@@ -730,6 +752,7 @@ impl Processor {
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+        let mut packet = packet;
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             // local delivery: use the destination IP address to distinguish between the TUN interface
@@ -740,7 +763,17 @@ impl Processor {
                 } else {
                     error!("The local interface has not yet been connected.");
                 }
+                return;
             } else {
+                if let Some(ref py_if) = self.python_interface {
+                    match py_if.deliver(packet).await {
+                        Ok(()) => return,
+                        Err(returned_packet) => {
+                            packet = returned_packet;
+                        }
+                    }
+                }
+
                 let flow_id = packet.flow_id;
 
                 let dest = self.user_space_sender(flow_id);
