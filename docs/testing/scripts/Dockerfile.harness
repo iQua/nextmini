@@ -1,8 +1,19 @@
-FROM rust:slim-bullseye
+FROM python:3.13-alpine
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv pkg-config libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install Rust and build dependencies
+RUN apk update \
+    && apk upgrade --no-cache \
+    && apk add --no-cache \
+        bash \
+        curl \
+        build-base \
+        openssl-dev \
+        openssl \
+        ca-certificates
+
+# Install Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /workspace
 
