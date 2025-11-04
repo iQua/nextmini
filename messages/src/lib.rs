@@ -11,6 +11,27 @@ mod ip_ser;
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
 
+/// Identifier for a multicast group allocated by the controller.
+pub type GroupId = usize;
+
+/// Directory entry mapping a multicast group id to its allocated IP.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GroupDirectoryEntry {
+    pub group_id: GroupId,
+    #[serde(with = "ip_ser")]
+    pub group_ip: Ipv4Addr,
+}
+
+/// Routing table entry describing multicast fan-out from a node.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GroupRoutingTableEntry {
+    /// Route identifier equals the multicast group id for now.
+    pub route_id: usize,
+    pub next_hops: Vec<usize>,
+    pub src_node_id: usize,
+    pub group_id: GroupId,
+}
+
 /// Types of messages used to communicate from the dataplane to the controller.
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -35,6 +56,15 @@ pub enum DataplaneToController {
     },
     RouteAssigned {
         assignments: Vec<RouteAssignment>,
+    },
+    CreateGroup {
+        label: String,
+    },
+    JoinGroup {
+        group_id: GroupId,
+    },
+    LeaveGroup {
+        group_id: GroupId,
     },
 }
 
@@ -264,6 +294,20 @@ pub enum ControllerToDataplane {
     },
     AddFlows {
         flows: Vec<Flow>,
+    },
+    GroupCreated {
+        group_id: GroupId,
+        #[serde(with = "ip_ser")]
+        group_ip: Ipv4Addr,
+        src_node_id: usize,
+    },
+    InstallGroupDirectory {
+        groups: Vec<GroupDirectoryEntry>,
+    },
+    InstallGroupRoutes {
+        group_id: GroupId,
+        src_node_id: usize,
+        routes: Vec<GroupRoutingTableEntry>,
     },
 }
 

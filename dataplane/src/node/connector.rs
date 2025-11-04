@@ -1,14 +1,14 @@
 use ahash::AHashMap;
 use tokio;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 #[cfg(not(target_os = "linux"))]
 use tokio::io::copy_bidirectional;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 #[cfg(target_os = "linux")]
 use tokio_splice::zero_copy_bidirectional;
 use tracing::{error, info};
 
-use nextmini_messages::RoutingTableEntry;
+use nextmini_messages::{GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, RoutingTableEntry};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -22,6 +22,12 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 pub enum ConnectorMessage {
     AddNodeAddress(NodeId, String),
     UpdateRoutingTable(Vec<RoutingTableEntry>),
+    UpdateGroupDirectory(Vec<GroupDirectoryEntry>),
+    UpdateGroupRoutes {
+        group_id: GroupId,
+        src_node_id: NodeId,
+        routes: Vec<GroupRoutingTableEntry>,
+    },
     ConnectTcpMaxClient(Box<TcpMaxClient>),
     InboundMaxRequest(FlowId, TcpStream),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
@@ -43,8 +49,8 @@ pub struct Connector {
     /// the remote node addresses
     node_addresses: AHashMap<NodeId, String>,
 
-    /// a hashmap for the schedulers in max mode
-    schedulers: AHashMap<FlowId, SchedulerHandle>,
+    /// a hashmap for schedulers per flow per next hop in max mode
+    schedulers: AHashMap<FlowId, AHashMap<NodeId, SchedulerHandle>>,
 
     /// optional flow stats reporter for route reporting
     flowstats_reporter: Option<FlowStatsReporterHandle>,
@@ -102,6 +108,17 @@ impl Connector {
             ConnectorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
+            ConnectorMessage::UpdateGroupDirectory(groups) => {
+                self.routing_table.install_group_directory(groups);
+            }
+            ConnectorMessage::UpdateGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            } => {
+                self.routing_table
+                    .install_group_routes(group_id, src_node_id, routes);
+            }
             ConnectorMessage::InboundMaxRequest(flow_id, stream) => {
                 self.handle_inbound_request(flow_id, stream).await;
             }
@@ -115,49 +132,82 @@ impl Connector {
     async fn process_packet(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
 
-        // sends directly when the TCP max connection is already established, or initiates a new connection
-        if let Some(scheduler) = self.schedulers.get(&flow_id) {
-            // if the scheduler is already initialized at the source node, sends the packet to the next hop directly
-            scheduler.send(packet);
-        } else {
-            // if the scheduler is not initialized, initiates a new connection for the first packet of the flow
+        let next_hops = match self
+            .routing_table
+            .get_next_hops_by_flow(flow_id, self.flowstats_reporter.as_ref())
+        {
+            Ok(hops) => hops,
+            Err(e) => {
+                error!("Error getting the next hops: {}", e);
+                return;
+            }
+        };
 
-            // obtains the next hop id from the routing table
-            let next_hop_id = match self
-                .routing_table
-                .get_next_hop_by_flow(flow_id, self.flowstats_reporter.as_ref())
-            {
-                Ok(next_hop_id) => next_hop_id,
-                Err(e) => {
-                    error!("Error getting the next hop: {}", e);
-                    return;
-                }
+        if next_hops.is_empty() {
+            error!("No next hops available for flow {}.", flow_id);
+            return;
+        }
+
+        let last_index = next_hops.len() - 1;
+        let mut primary_packet = Some(packet);
+
+        for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
+            if next_hop_id == self.routing_table.local_id {
+                // Connector handles remote forwarding only; local delivery stays with the processor.
+                continue;
+            }
+
+            let outbound_packet = if idx == last_index {
+                primary_packet
+                    .take()
+                    .expect("packet already dispatched to last hop")
+            } else {
+                primary_packet
+                    .as_ref()
+                    .expect("packet missing during multicast fan-out")
+                    .clone()
             };
 
-            // obtains the remote address for the next hop node
+            if let Some(existing) = self
+                .schedulers
+                .get(&flow_id)
+                .and_then(|map| map.get(&next_hop_id))
+            {
+                existing.send(outbound_packet);
+                continue;
+            }
+
             let remote_addr = match self.node_addresses.get(&next_hop_id) {
                 Some(addr) => addr.clone(),
                 None => {
                     error!("No remote address found for node id: {}", next_hop_id);
-                    return;
+                    continue;
                 }
             };
 
-            let tcp_max_client = self.tcp_max_client.as_ref().unwrap();
+            let tcp_max_client = match self.tcp_max_client.as_ref() {
+                Some(client) => client,
+                None => {
+                    error!(
+                        "TCP Max client not yet connected; dropping packet for {}.",
+                        flow_id
+                    );
+                    continue;
+                }
+            };
 
-            // establishes a TCP max connection to the next-hop node
-            let stream = tcp_max_client.connect(packet.flow_id, &remote_addr).await;
+            let stream = tcp_max_client.connect(flow_id, &remote_addr).await;
 
-            // initializes a scheduler which is then stored and used for all subsequent packets in that flow
             let scheduler = tcp_max_client
                 .initialize_scheduler(stream, next_hop_id)
                 .await;
 
-            // sends the first packet of the flow with the new scheduler
-            scheduler.send(packet);
+            scheduler.send(outbound_packet);
 
-            // stores the flow id to the scheduler into hashmap for sending subsequent packets
-            self.schedulers.insert(flow_id, scheduler);
+            self.schedulers
+                .entry(flow_id)
+                .or_insert_with(AHashMap::default)
+                .insert(next_hop_id, scheduler);
         }
     }
 
@@ -185,7 +235,11 @@ impl Connector {
 
             // reverses the flow ID and stores it in a hashmap from flow IDs to schedulers. This is for sending
             // response packets from the destination node to the source node
-            self.schedulers.insert(flow_id.reverse(), scheduler);
+            let (src_node_id, _) = self.routing_table.extract_node_ids_from_flow(flow_id);
+            self.schedulers
+                .entry(flow_id.reverse())
+                .or_insert_with(AHashMap::default)
+                .insert(src_node_id, scheduler);
         } else {
             // handles flows that need to be forwarded to the next hop as a relay node
 

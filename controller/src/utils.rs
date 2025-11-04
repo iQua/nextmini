@@ -4,11 +4,12 @@ use std::net::Ipv4Addr;
 
 use petgraph::Direction;
 use petgraph::graph::DiGraph;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, NodeSpec, OperatingMode, Protocol,
-    RouteForwardingMode, RoutingTableEntry, SchedulingDiscipline,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, GroupId, GroupRoutingTableEntry, INVALID,
+    NodeSpec, OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry,
+    SchedulingDiscipline,
 };
 
 use crate::config;
@@ -234,6 +235,117 @@ pub fn build_routes_from_topology(
     }
 }
 
+/// Allocates a deterministic multicast IP address within the configured pool.
+pub fn allocate_multicast_ip(base_addr: Ipv4Addr, mask: Ipv4Addr, ordinal: u32) -> Ipv4Addr {
+    let network = u32::from(base_addr) & u32::from(mask);
+    let host_mask = !u32::from(mask);
+
+    if host_mask == 0 {
+        warn!(
+            "Multicast mask {} does not provide host space; reusing base {}",
+            mask, base_addr
+        );
+        return base_addr;
+    }
+
+    let offset = (ordinal.saturating_sub(1)) & host_mask;
+    Ipv4Addr::from(network | offset)
+}
+
+/// Compute a multicast DAG by unioning shortest paths from src to each member.
+#[allow(dead_code)]
+pub fn compute_group_tree_edges(
+    src_node_id: u32,
+    member_node_ids: &[u32],
+    undirected_edges: &[(u32, u32)],
+) -> Vec<(u32, u32)> {
+    if member_node_ids.is_empty() || undirected_edges.is_empty() {
+        return Vec::new();
+    }
+
+    let mut bidirectional = Vec::with_capacity(undirected_edges.len() * 2);
+    for &(a, b) in undirected_edges {
+        bidirectional.push((a, b));
+        bidirectional.push((b, a));
+    }
+
+    let (_node_ids, node_map, graph) = create_graph_with_mapping(&bidirectional);
+    let Some(&src_idx) = node_map.get(&src_node_id) else {
+        warn!(
+            "Source node {} missing from topology, unable to compute multicast DAG.",
+            src_node_id
+        );
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::new();
+    let mut dag = Vec::new();
+    let mut shortest_path = routing::ShortestPath::new(graph.clone());
+
+    for &member in member_node_ids {
+        if member == src_node_id {
+            continue;
+        }
+
+        let Some(&dst_idx) = node_map.get(&member) else {
+            warn!(
+                "Member node {} missing from topology; skipping in multicast tree.",
+                member
+            );
+            continue;
+        };
+
+        let path = shortest_path.compute_route(src_idx, dst_idx);
+        for window in path.windows(2) {
+            let from = graph[window[0]];
+            let to = graph[window[1]];
+            if seen.insert((from, to)) {
+                dag.push((from, to));
+            }
+        }
+    }
+
+    dag
+}
+
+/// Build per-node multicast routing entries including local delivery for members.
+#[allow(dead_code)]
+pub fn build_group_routes_for_node(
+    group_id: GroupId,
+    src_node_id: u32,
+    dag_edges: &[(u32, u32)],
+    node_id: u32,
+    member_node_ids: &HashSet<u32>,
+) -> Option<GroupRoutingTableEntry> {
+    if dag_edges.is_empty() && !member_node_ids.contains(&node_id) {
+        return None;
+    }
+
+    let (_node_ids, node_map, graph) = create_graph_with_mapping(dag_edges);
+
+    let mut next_hops = Vec::new();
+    if let Some(&node_idx) = node_map.get(&node_id) {
+        for neighbor in graph.neighbors_directed(node_idx, Direction::Outgoing) {
+            next_hops.push(graph[neighbor] as usize);
+        }
+    }
+
+    if member_node_ids.contains(&node_id) {
+        next_hops.push(node_id as usize);
+    }
+
+    if next_hops.is_empty() {
+        return None;
+    }
+
+    Some(GroupRoutingTableEntry {
+        route_id: group_id,
+        next_hops,
+        src_node_id: src_node_id as usize,
+        group_id,
+    })
+}
+
 /// Merge all routes from configuration (both custom and topology-generated).
 pub fn merge_all_routes(config: &config::Config) -> RouteCollection {
     let mut routes: RouteCollection = Vec::new();
@@ -392,6 +504,39 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
 mod tests {
     use super::*;
     use crate::models::Route;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_compute_group_tree_edges_union_shortest_paths() {
+        let dag =
+            compute_group_tree_edges(1, &[3, 4, 5], &[(1, 2), (2, 3), (2, 4), (4, 5), (5, 6)]);
+
+        let expected: HashSet<(u32, u32)> = [(1, 2), (2, 3), (2, 4), (4, 5)].into_iter().collect();
+        let actual: HashSet<(u32, u32)> = dag.into_iter().collect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_multicast_group_routes_include_member_delivery() {
+        let dag_edges = vec![(1, 2), (2, 3), (2, 4)];
+        let mut members = HashSet::new();
+        members.insert(3);
+        members.insert(4);
+
+        let branch_entry =
+            build_group_routes_for_node(7, 1, &dag_edges, 2, &members).expect("branch node");
+        let mut next_hops = branch_entry.next_hops.clone();
+        next_hops.sort();
+        assert_eq!(next_hops, vec![3, 4]);
+
+        let leaf_entry =
+            build_group_routes_for_node(7, 1, &dag_edges, 3, &members).expect("member leaf");
+        assert_eq!(leaf_entry.next_hops, vec![3]);
+
+        let non_member = build_group_routes_for_node(7, 1, &dag_edges, 5, &members);
+        assert!(non_member.is_none());
+    }
 
     #[test]
     fn test_route_has_multiple_destinations_unicast_linear() {
@@ -728,5 +873,46 @@ mod tests {
         // Graph should have correct number of nodes and edges
         assert_eq!(graph.node_count(), 4);
         assert_eq!(graph.edge_count(), 3);
+    }
+
+    #[test]
+    fn test_allocate_multicast_ip_advances_within_pool() {
+        let base = Ipv4Addr::new(239, 255, 0, 0);
+        let mask = Ipv4Addr::new(255, 255, 0, 0);
+
+        let first = allocate_multicast_ip(base, mask, 1);
+        let second = allocate_multicast_ip(base, mask, 2);
+        let wrap = allocate_multicast_ip(base, mask, 256 * 2);
+
+        assert_eq!(first, Ipv4Addr::new(239, 255, 0, 0));
+        assert_eq!(second, Ipv4Addr::new(239, 255, 0, 1));
+        assert_eq!(wrap, Ipv4Addr::new(239, 255, 1, 255));
+    }
+
+    #[test]
+    fn test_compute_group_tree_edges_handles_multiple_branches() {
+        let edges = vec![(1, 2), (2, 3), (2, 4), (4, 5)];
+        let dag = compute_group_tree_edges(1, &[3, 5], &edges);
+        let dag_set: HashSet<(u32, u32)> = dag.into_iter().collect();
+
+        let expected = HashSet::from_iter([(1, 2), (2, 3), (2, 4), (4, 5)]);
+        assert_eq!(dag_set, expected);
+    }
+
+    #[test]
+    fn test_build_group_routes_for_node_includes_local_delivery() {
+        let dag_edges = vec![(1, 2), (2, 3), (2, 4)];
+        let member_nodes = HashSet::from_iter([3u32]);
+
+        let src_entry = build_group_routes_for_node(7, 1, &dag_edges, 1, &member_nodes).unwrap();
+        assert_eq!(src_entry.next_hops, vec![2]);
+
+        let member_entry = build_group_routes_for_node(7, 1, &dag_edges, 3, &member_nodes).unwrap();
+        assert_eq!(member_entry.next_hops, vec![3]);
+
+        assert!(
+            build_group_routes_for_node(7, 1, &dag_edges, 5, &member_nodes).is_none(),
+            "Non-participants should not receive route entries"
+        );
     }
 }

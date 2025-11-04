@@ -341,6 +341,43 @@ impl ControllerToDataplaneReceiver {
                 }
             }
 
+            ControllerToDataplane::GroupCreated {
+                group_id,
+                group_ip,
+                src_node_id,
+            } => {
+                info!(
+                    "Registered multicast group {} ({}) owned by node {}.",
+                    group_id, group_ip, src_node_id
+                );
+            }
+
+            ControllerToDataplane::InstallGroupDirectory { groups } => {
+                info!(
+                    "Installing multicast group directory ({} entries) on node {}.",
+                    groups.len(),
+                    self.config.node_id
+                );
+                self.processors.update_group_directory(groups).await;
+            }
+
+            ControllerToDataplane::InstallGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            } => {
+                info!(
+                    "Installing multicast routes for group {} from src {} on node {} ({} entries).",
+                    group_id,
+                    src_node_id,
+                    self.config.node_id,
+                    routes.len()
+                );
+                self.processors
+                    .update_group_routes(group_id, src_node_id, routes)
+                    .await;
+            }
+
             _ => error!("Received a message with an unknown type from the controller."),
         }
     }

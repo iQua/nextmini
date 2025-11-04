@@ -37,8 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         #[cfg(not(target_os = "linux"))]
         {
             return Err(
-                "Running multiple dataplane nodes with network namespaces requires Linux."
-                    .into(),
+                "Running multiple dataplane nodes with network namespaces requires Linux.".into(),
             );
         }
     }

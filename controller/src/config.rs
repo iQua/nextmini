@@ -131,6 +131,14 @@ pub struct Config {
     #[serde(default = "default_external_base_addr")]
     pub external_base_addr: Ipv4Addr,
 
+    /// Base multicast pool for (S,G) group allocation.
+    #[serde(default = "default_multicast_pool_base")]
+    pub multicast_pool_base: Ipv4Addr,
+
+    /// Netmask applied to multicast pool.
+    #[serde(default = "default_multicast_pool_mask")]
+    pub multicast_pool_mask: Ipv4Addr,
+
     /// The port for the connection-on-demand TCP server operating in both normal and max mode to listen on
     #[serde(default = "default_max_server_port")]
     pub max_server_port: u16,
@@ -205,6 +213,14 @@ fn default_external_base_addr() -> Ipv4Addr {
     Ipv4Addr::new(172, 16, 8, 3)
 }
 
+fn default_multicast_pool_base() -> Ipv4Addr {
+    Ipv4Addr::new(239, 255, 0, 0)
+}
+
+fn default_multicast_pool_mask() -> Ipv4Addr {
+    Ipv4Addr::new(255, 255, 0, 0)
+}
+
 /// The default transport protocol: QUIC
 fn default_protocol() -> Protocol {
     Protocol::Quic
@@ -269,6 +285,8 @@ impl Default for Config {
             net_mask: default_net_mask(),
             user_space_base_addr: default_user_space_base_addr(),
             external_base_addr: default_external_base_addr(),
+            multicast_pool_base: default_multicast_pool_base(),
+            multicast_pool_mask: default_multicast_pool_mask(),
             max_server_port: default_max_server_port(),
             protocol: default_protocol(),
             routes: Vec::new(),

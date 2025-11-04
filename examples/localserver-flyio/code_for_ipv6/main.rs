@@ -670,6 +670,24 @@ async fn handle_connection(
                             }
                         }
                     }
+                    DataplaneToController::CreateGroup { label } => {
+                        warn!(
+                            "CreateGroup \"{}\" received in demo controller; multicast not implemented in example.",
+                            label
+                        );
+                    }
+                    DataplaneToController::JoinGroup { group_id } => {
+                        warn!(
+                            "JoinGroup {} received in demo controller; multicast not implemented in example.",
+                            group_id
+                        );
+                    }
+                    DataplaneToController::LeaveGroup { group_id } => {
+                        warn!(
+                            "LeaveGroup {} received in demo controller; multicast not implemented in example.",
+                            group_id
+                        );
+                    }
                 }
             }
             Ok(Message::Ping(_)) => {

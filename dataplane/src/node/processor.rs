@@ -13,7 +13,10 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
+use nextmini_messages::{
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
+    TokenBucketSpec,
+};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::connector::Connector;
@@ -24,7 +27,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
-use crate::node::route::{RouteDecision, RoutingTable};
+use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
@@ -36,6 +39,12 @@ pub enum ProcessorPacket {
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
+    UpdateGroupDirectory(Vec<GroupDirectoryEntry>),
+    UpdateGroupRoutes {
+        group_id: GroupId,
+        src_node_id: NodeId,
+        routes: Vec<GroupRoutingTableEntry>,
+    },
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectServerHandle(Box<UserSpaceServerHandle>),
@@ -149,6 +158,65 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the connector: {}",
+                e
+            );
+        }
+    }
+
+    pub async fn update_group_directory(&self, groups: Vec<GroupDirectoryEntry>) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::UpdateGroupDirectory(groups.clone()))
+        {
+            error!(
+                "Error sending the UpdateGroupDirectory message to the processors: {}",
+                e
+            );
+        };
+
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::UpdateGroupDirectory(groups))
+            .await
+        {
+            error!(
+                "Error sending the UpdateGroupDirectory message to the connector: {}",
+                e
+            );
+        }
+    }
+
+    pub async fn update_group_routes(
+        &self,
+        group_id: GroupId,
+        src_node_id: NodeId,
+        routes: Vec<GroupRoutingTableEntry>,
+    ) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::UpdateGroupRoutes {
+                group_id,
+                src_node_id,
+                routes: routes.clone(),
+            })
+        {
+            error!(
+                "Error sending the UpdateGroupRoutes message to the processors: {}",
+                e
+            );
+        };
+
+        if let Err(e) = self
+            .connector_message_sender()
+            .send(ConnectorMessage::UpdateGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            })
+            .await
+        {
+            error!(
+                "Error sending the UpdateGroupRoutes message to the connector: {}",
                 e
             );
         }
@@ -584,6 +652,17 @@ impl Processor {
             ProcessorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
+            ProcessorMessage::UpdateGroupDirectory(groups) => {
+                self.routing_table.install_group_directory(groups);
+            }
+            ProcessorMessage::UpdateGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            } => {
+                self.routing_table
+                    .install_group_routes(group_id, src_node_id, routes);
+            }
             ProcessorMessage::AddNode(node_id, scheduler) => {
                 self.schedulers.insert(node_id, scheduler);
             }
@@ -623,9 +702,9 @@ impl Processor {
         let reporter = self.flowstats_reporter.as_ref();
         match self
             .routing_table
-            .route_decision_for_flow(packet_flow_id, reporter)
+            .get_next_hops_by_flow(packet_flow_id, reporter)
         {
-            Ok(RouteDecision::Multicast(next_hops)) => {
+            Ok(next_hops) => {
                 if next_hops.is_empty() {
                     error!("No next hops available for flow {}.", packet_flow_id);
                     return;
@@ -649,7 +728,6 @@ impl Processor {
                     self.send_packet(pkt, next_hop_id).await;
                 }
             }
-            Ok(RouteDecision::Unicast(next_hop)) => self.send_packet(packet, next_hop).await,
             Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
         }
     }
