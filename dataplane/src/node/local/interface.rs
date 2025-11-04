@@ -1,9 +1,12 @@
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
+#[cfg(not(feature = "python-api"))]
+use tracing::info;
 
+#[cfg(not(feature = "python-api"))]
+use std::sync::Arc;
 #[cfg(not(feature = "python-api"))]
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
@@ -13,14 +16,14 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "python-api"), target_os = "linux"))]
 use crate::node::local::reader_tso::LocalReader;
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "python-api"), target_os = "linux"))]
 use crate::node::local::writer_tso::LocalWriter;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(feature = "python-api"), not(target_os = "linux")))]
 use crate::node::local::reader::LocalReader;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(feature = "python-api"), not(target_os = "linux")))]
 use crate::node::local::writer::LocalWriter;
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
@@ -50,6 +53,8 @@ impl LocalInterfaceHandle {
         {
             let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
             debug!("python-api feature enabled; skipping TUN interface initialization.");
+            let _ = processor;
+            let _ = flowstats_reporter;
             return Self {
                 shutdown_sender,
                 write_senders: Vec::new(),
@@ -129,6 +134,7 @@ impl LocalInterfaceHandle {
     }
 
     /// Converts a netmask tuple to prefix length. Used in 'LocalInterfaceHandle::create_tun_device()'.
+    #[cfg_attr(feature = "python-api", allow(dead_code))]
     fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
         let mask_u32 = u32::from_be_bytes(mask.octets());
         mask_u32.count_ones() as u8
