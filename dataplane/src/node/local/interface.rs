@@ -2,7 +2,9 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info};
+use tracing::{debug, error, info};
+
+#[cfg(not(feature = "python-api"))]
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
@@ -44,50 +46,71 @@ impl LocalInterfaceHandle {
         processor: ProcessorHandle,
         flowstats_reporter: FlowStatsReporterHandle,
     ) -> Self {
-        // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
-        // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
-        let tun_devices = Self::create_tun_devices(config.clone());
-
-        // a broadcast channel for sending the shutdown signal to both local interface readers and writers
-        let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
-
-        let mut write_senders = Vec::with_capacity(tun_devices.len());
-
-        for dev in tun_devices.iter() {
-            // for each LocalWriter, creates its MPSC channel
-            let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
-            write_senders.push(write_sender);
-
-            let mut reader = LocalReader::new(
-                dev.clone(),
-                shutdown_sender.subscribe(),
-                processor.clone(),
-                flowstats_reporter.clone(),
-            );
-
-            tokio::spawn(async move {
-                reader.run().await;
-            });
-
-            let mut writer = LocalWriter::new(
-                config.clone(),
-                dev.clone(),
-                shutdown_sender.subscribe(),
-                write_receiver,
-            );
-
-            tokio::spawn(async move {
-                writer.run().await;
-            });
+        #[cfg(feature = "python-api")]
+        {
+            let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
+            debug!("python-api feature enabled; skipping TUN interface initialization.");
+            return Self {
+                shutdown_sender,
+                write_senders: Vec::new(),
+            };
         }
 
-        Self {
-            shutdown_sender,
-            write_senders,
+        #[cfg(not(feature = "python-api"))]
+        {
+            // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
+            // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
+            let tun_devices = Self::create_tun_devices(config.clone());
+
+            // a broadcast channel for sending the shutdown signal to both local interface readers and writers
+            let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
+
+            let mut write_senders = Vec::with_capacity(tun_devices.len());
+
+            for dev in tun_devices.iter() {
+                // for each LocalWriter, creates its MPSC channel
+                let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
+                write_senders.push(write_sender);
+
+                let mut reader = LocalReader::new(
+                    dev.clone(),
+                    shutdown_sender.subscribe(),
+                    processor.clone(),
+                    flowstats_reporter.clone(),
+                );
+
+                tokio::spawn(async move {
+                    reader.run().await;
+                });
+
+                let mut writer = LocalWriter::new(
+                    config.clone(),
+                    dev.clone(),
+                    shutdown_sender.subscribe(),
+                    write_receiver,
+                );
+
+                tokio::spawn(async move {
+                    writer.run().await;
+                });
+            }
+
+            Self {
+                shutdown_sender,
+                write_senders,
+            }
         }
     }
 
     pub fn write_packet(&self, packet: Packet) {
+        if self.write_senders.is_empty() {
+            debug!(
+                "Local interface disabled (python-api); dropping packet with flow {}.",
+                packet.flow_id
+            );
+            return;
+        }
+
         let idx = packet.flow_id.hash(self.write_senders.len());
         let sender = &self.write_senders[idx];
 
@@ -112,6 +135,7 @@ impl LocalInterfaceHandle {
     }
 
     /// Creates local TUN devices for communicating with the application.
+    #[cfg(not(feature = "python-api"))]
     #[cfg(not(target_os = "linux"))]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
@@ -130,6 +154,7 @@ impl LocalInterfaceHandle {
     }
 
     /// Creates local TUN devices for communicating with the application.
+    #[cfg(not(feature = "python-api"))]
     #[cfg(target_os = "linux")]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
         let num_queues = config.num_tun_queues;
