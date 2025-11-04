@@ -12,6 +12,9 @@ Below is a **comprehensive plan** followed by the concrete code edits you can dr
 - 2025-11-04 – BrownSnow: Drafted integration & benchmark validation plan (`docs/testing/python_api_validation.md`); waiting on multi-node harness before execution.
 - 2025-11-04 – PurpleMountain: Authored documentation (`docs/examples/pytorch_python_api.md`) and recorded testing status (unit suite passing).
 - 2025-11-04 – PurpleMountain: Blocked on integration/benchmark items until a multi-node harness + shared fixture is available; follow-up action opened in Testing section.
+- 2025-11-04 – LilacLake: Restored the PyO3 0.27 + `pyo3-async-runtimes` stack (replacing the temporary `pyo3-asyncio` fallback), added a macOS `-undefined dynamic_lookup` build script, and confirmed `cargo build` completes cleanly again.
+- 2025-11-04 – LilacLake: Added `docs/testing/scripts/{send_harness,recv_harness}.py`, docker-compose scaffolding, and per-node configs to unblock the integration test harness workstream.
+- 2025-11-04 – RedSnow: Feature-gated the dataplane helpers consumed by `nextmini_py`, annotated python-only entry points to silence false-positive dead-code lints, and verified `cargo build --workspace` plus `cargo check --workspace --all-features` run warning-free.
 
 ### 1) Objectives & scope
 
@@ -88,7 +91,8 @@ Below is a **comprehensive plan** followed by the concrete code edits you can dr
 ---
 
 ### 7) Testing strategy  
-_Status (2025-11-04 – PurpleMountain): Unit tests landed (`cargo test -p nextmini packet::tests`). Integration topology + throughput benchmarks remain TODO—blocked on unavailable multi-node harness and shared fixture; tracked as follow-up action item._
+_Status (2025-11-04 – PurpleMountain): Unit tests landed (`cargo test -p nextmini packet::tests`)._
+_Status (2025-11-04 – LilacLake): Added Python harness scripts + docker-compose scaffolding; still awaiting a reusable multi-node environment before executing the end-to-end plan._
 
 **Unit tests (Rust)**
 
@@ -96,7 +100,7 @@ _Status (2025-11-04 – PurpleMountain): Unit tests landed (`cargo test -p nextm
 * PythonInterfaceHandle registration/delivery happy path & drop-on-full.
 
 **Integration tests** (TODO – needs multi-node harness & deterministic fixtures)
-_Status (2025-11-04 – BrownSnow): Validation plan captured in `docs/testing/python_api_validation.md`; awaiting environment setup._
+_Status (2025-11-04 – LilacLake): Validation plan updated with harness quickstart; requires provisioning the multi-node environment to run the scripts._
 
 * Two-node topology: Node A (Python send) → Node B (Python receive).
 * Validate throughput across sizes (1KB, 32KB, 256KB, 1MB).

@@ -27,6 +27,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
+#[cfg(feature = "python-api")]
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
@@ -57,6 +58,8 @@ pub enum ProcessorMessage {
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
+    #[cfg(feature = "python-api")]
+    #[allow(dead_code)] // Only constructed through the PyO3 bridge.
     ConnectPythonInterface(PythonInterfaceHandle),
 }
 
@@ -127,6 +130,8 @@ impl ProcessorHandle {
     }
 
     /// Connects the in-process Python interface so local packets can be delivered directly.
+    #[cfg(feature = "python-api")]
+    #[allow(dead_code)] // Invoked from the optional Python extension.
     pub fn connect_python_interface(&self, interface: PythonInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -593,6 +598,7 @@ struct Processor {
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 
     // optional in-process Python delivery path
+    #[cfg(feature = "python-api")]
     python_interface: Option<PythonInterfaceHandle>,
 }
 
@@ -612,6 +618,7 @@ impl Processor {
             flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
+            #[cfg(feature = "python-api")]
             python_interface: None,
         }
     }
@@ -685,6 +692,7 @@ impl Processor {
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
             }
+            #[cfg(feature = "python-api")]
             ProcessorMessage::ConnectPythonInterface(interface) => {
                 self.python_interface = Some(interface);
             }

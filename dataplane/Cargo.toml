@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 default-run = "nextmini"
 
+[features]
+default = []
+python-api = []
+
 [[bin]]
 name = "nextmini"
 path = "src/main.rs"

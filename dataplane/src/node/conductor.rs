@@ -181,12 +181,18 @@ impl Conductor {
     }
 
     /// Returns a clone of the processor handle so external callers can attach additional interfaces.
+    #[cfg(feature = "python-api")]
+    #[allow(dead_code)]
     pub fn processor_handle(&self) -> ProcessorHandle {
+        // Used by the optional `nextmini_py` extension to wire the in-process interface.
         self.processors.clone()
     }
 
     /// Exposes the loaded `LocalConfig`, useful when bridging with language bindings.
+    #[cfg(feature = "python-api")]
+    #[allow(dead_code)]
     pub fn local_config(&self) -> LocalConfig {
+        // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
         self.config.clone()
     }
 }

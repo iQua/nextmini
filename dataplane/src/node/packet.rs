@@ -257,6 +257,8 @@ impl Packet {
     }
 
     /// Compute the flow identifier directly from the IPv4+TCP tuple.
+    #[cfg(feature = "python-api")]
+    #[allow(dead_code)]
     pub fn flow_id_from_parts(
         src_ip: Ipv4Addr,
         src_port: u16,
@@ -278,6 +280,8 @@ impl Packet {
 
     /// Construct a minimal IPv4/TCP packet that wraps the provided payload.
     /// Checksums are omitted—the overlay stack guarantees integrity.
+    #[cfg(feature = "python-api")]
+    #[allow(dead_code)]
     pub fn build_ipv4_tcp_packet(
         src_ip: Ipv4Addr,
         src_port: u16,
@@ -393,6 +397,7 @@ mod tests {
         assert!(p.has_tcp_payload());
     }
 
+    #[cfg(feature = "python-api")]
     #[test]
     fn flow_id_from_parts_matches_packet_flow_id() {
         let src_ip = Ipv4Addr::new(10, 0, 0, 1);
@@ -406,6 +411,7 @@ mod tests {
         assert_eq!(flow_from_parts, packet.flow_id);
     }
 
+    #[cfg(feature = "python-api")]
     #[test]
     fn build_ipv4_tcp_packet_copies_payload() {
         let payload = vec![1u8, 2, 3, 4, 5];

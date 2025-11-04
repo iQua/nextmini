@@ -1,6 +1,6 @@
 # Python API Validation & Benchmark Plan
 
-Last updated: 2025-11-04 (BrownSnow)
+Last updated: 2025-11-04 (LilacLake – added harness scripts and docker-compose overlay)
 
 The Python dataplane bridge landed in `python-api/`. Integration coverage is still
 blocked on a multi-node harness, so this document captures the test matrix and
@@ -48,11 +48,56 @@ payloads to `/tmp/nextmini_py/` for verification).
 
 ### 1.4 Automation TODO
 
-- Add `docs/testing/scripts/recv_harness.py` (simple asyncio consumer).
-- Provide docker compose overlay that instantiates the two dataplane nodes plus
-  controller.
-- Capture artifacts (loss CSV, tensor checksum) and push to S3 bucket for CI
+- [x] Add `docs/testing/scripts/recv_harness.py` (simple asyncio consumer) and
+  `docs/testing/scripts/send_harness.py` for deterministic payload injection. *(2025-11-04 – LilacLake)*
+- [x] Provide docker compose overlay (`docs/testing/docker-compose.python-api.yml`)
+  plus per-node configs under `docs/testing/configs/` to launch controller +
+  two harness shells in one command. *(2025-11-04 – LilacLake)*
+- [ ] Capture artifacts (loss CSV, tensor checksum) and push to S3 bucket for CI
   consumption.
+
+### 1.5 Harness Quickstart
+
+1. Build and launch the integration stack (controller + Postgres + two harness shells):
+
+   ```bash
+   docker compose -f docs/testing/docker-compose.python-api.yml up --build -d
+   ```
+
+2. Inside the receiver shell, install Maturin, build `nextmini_py`, and start the async
+   listener:
+
+   ```bash
+   docker compose exec python-api-receiver bash
+   pip install --upgrade pip maturin
+   maturin develop --maturin-extra-args="--profile release" -m python-api/Cargo.toml
+   python3 docs/testing/scripts/recv_harness.py \
+     --config docs/testing/configs/node_receiver.toml \
+     --src-node-id 1 \
+     --expected 10 \
+     --summary-json /workspace/tmp/recv-summary.json \
+     --output-dir /workspace/tmp/recv_payloads
+   ```
+
+3. In a separate terminal, exec into the sender shell, build/install the wheel (if not
+   already built), and drive payload injection:
+
+   ```bash
+   docker compose exec python-api-sender bash
+   pip install --upgrade pip maturin
+   maturin develop --maturin-extra-args="--profile release" -m python-api/Cargo.toml
+   python3 docs/testing/scripts/send_harness.py \
+     --config docs/testing/configs/node_sender.toml \
+     --src-node-id 1 \
+     --dst-node-id 2 \
+     --count 10 \
+     --size 32768 \
+     --sleep-ms 50
+   ```
+
+4. The receiver writes payload binaries (optional) plus a summary JSON file with per-packet
+   timestamps/lengths. Use these artifacts to populate the validation tables once the multi-node
+   harness is available.
 
 ## 2. Benchmark Plan
 
@@ -86,7 +131,7 @@ Measure Python injection overhead vs. existing user-space/TUN path. Metrics:
 ## 3. Outstanding Actions
 
 - [ ] Provision reproducible multi-node environment (docker or VM).
-- [ ] Implement send/receive harness scripts (see §1.4).
+- [x] Implement send/receive harness scripts (see §1.4). *(2025-11-04 – LilacLake)*
 - [ ] Automate results upload to shared storage.
 - [ ] Schedule regression benchmark in CI once environment is available.
 
