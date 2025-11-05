@@ -1,13 +1,9 @@
-use tokio::sync::{broadcast, mpsc};
-use tracing::{debug, error};
-#[cfg(not(feature = "python-api"))]
-use tracing::info;
-
-#[cfg(not(feature = "python-api"))]
+#[cfg(not(target_os = "linux"))]
 use std::net::Ipv4Addr;
-#[cfg(not(feature = "python-api"))]
 use std::sync::Arc;
-#[cfg(not(feature = "python-api"))]
+
+use tokio::sync::{broadcast, mpsc};
+use tracing::{debug, error, info};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
@@ -16,24 +12,22 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 
-#[cfg(all(not(feature = "python-api"), target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use crate::node::local::reader_tso::LocalReader;
-#[cfg(all(not(feature = "python-api"), target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use crate::node::local::writer_tso::LocalWriter;
 
-#[cfg(all(not(feature = "python-api"), not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 use crate::node::local::reader::LocalReader;
-#[cfg(all(not(feature = "python-api"), not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 use crate::node::local::writer::LocalWriter;
 
 /// Message types for LocalInterface, which manages the LocalReader and LocalWriter actors.
-#[cfg_attr(feature = "python-api", allow(dead_code))]
 #[derive(Clone)]
 pub enum ShutdownMessage {
     Shutdown, // shuts down LocalInterface gracefully, stopping all LocalReader and LocalWriter actors
 }
 
-#[cfg_attr(feature = "python-api", allow(dead_code))]
 pub enum LocalInterfaceMessage {
     WritePacket(Packet), // the processor sends a packet to the application via the local interface
 }
@@ -51,10 +45,12 @@ impl LocalInterfaceHandle {
         processor: ProcessorHandle,
         flowstats_reporter: FlowStatsReporterHandle,
     ) -> Self {
-        #[cfg(feature = "python-api")]
-        {
-            let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
-            debug!("python-api feature enabled; skipping TUN interface initialization.");
+        let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
+
+        if !config.enable_local_interface {
+            debug!(
+                "Local interface disabled via configuration; skipping TUN interface initialization."
+            );
             let _ = processor;
             let _ = flowstats_reporter;
             return Self {
@@ -63,56 +59,50 @@ impl LocalInterfaceHandle {
             };
         }
 
-        #[cfg(not(feature = "python-api"))]
-        {
-            // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
-            // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
-            let tun_devices = Self::create_tun_devices(config.clone());
+        // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
+        // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
+        let tun_devices = Self::create_tun_devices(config.clone());
 
-            // a broadcast channel for sending the shutdown signal to both local interface readers and writers
-            let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
+        let mut write_senders = Vec::with_capacity(tun_devices.len());
 
-            let mut write_senders = Vec::with_capacity(tun_devices.len());
+        for dev in tun_devices.iter() {
+            // for each LocalWriter, creates its MPSC channel
+            let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
+            write_senders.push(write_sender);
 
-            for dev in tun_devices.iter() {
-                // for each LocalWriter, creates its MPSC channel
-                let (write_sender, write_receiver) = mpsc::channel(config.channel_capacity);
-                write_senders.push(write_sender);
+            let mut reader = LocalReader::new(
+                dev.clone(),
+                shutdown_sender.subscribe(),
+                processor.clone(),
+                flowstats_reporter.clone(),
+            );
 
-                let mut reader = LocalReader::new(
-                    dev.clone(),
-                    shutdown_sender.subscribe(),
-                    processor.clone(),
-                    flowstats_reporter.clone(),
-                );
+            tokio::spawn(async move {
+                reader.run().await;
+            });
 
-                tokio::spawn(async move {
-                    reader.run().await;
-                });
+            let mut writer = LocalWriter::new(
+                config.clone(),
+                dev.clone(),
+                shutdown_sender.subscribe(),
+                write_receiver,
+            );
 
-                let mut writer = LocalWriter::new(
-                    config.clone(),
-                    dev.clone(),
-                    shutdown_sender.subscribe(),
-                    write_receiver,
-                );
+            tokio::spawn(async move {
+                writer.run().await;
+            });
+        }
 
-                tokio::spawn(async move {
-                    writer.run().await;
-                });
-            }
-
-            Self {
-                shutdown_sender,
-                write_senders,
-            }
+        Self {
+            shutdown_sender,
+            write_senders,
         }
     }
 
     pub fn write_packet(&self, packet: Packet) {
         if self.write_senders.is_empty() {
             debug!(
-                "Local interface disabled (python-api); dropping packet with flow {}.",
+                "Local interface disabled; dropping packet with flow {}.",
                 packet.flow_id
             );
             return;
@@ -136,14 +126,12 @@ impl LocalInterfaceHandle {
     }
 
     /// Converts a netmask tuple to prefix length. Used in 'LocalInterfaceHandle::create_tun_device()'.
-    #[cfg(not(feature = "python-api"))]
     fn mask_to_prefix(mask: Ipv4Addr) -> u8 {
         let mask_u32 = u32::from_be_bytes(mask.octets());
         mask_u32.count_ones() as u8
     }
 
     /// Creates local TUN devices for communicating with the application.
-    #[cfg(not(feature = "python-api"))]
     #[cfg(not(target_os = "linux"))]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
         let ipv4_prefix = Self::mask_to_prefix(config.local_netmask);
@@ -162,7 +150,6 @@ impl LocalInterfaceHandle {
     }
 
     /// Creates local TUN devices for communicating with the application.
-    #[cfg(not(feature = "python-api"))]
     #[cfg(target_os = "linux")]
     pub fn create_tun_devices(config: LocalConfig) -> Vec<Arc<AsyncDevice>> {
         let num_queues = config.num_tun_queues;
@@ -211,7 +198,7 @@ impl LocalInterfaceHandle {
     }
 }
 
-#[cfg(all(test, not(feature = "python-api")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::node::FlowId;

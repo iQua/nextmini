@@ -14,15 +14,15 @@ pub struct PythonInterfaceHandle {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // Methods are exercised from the optional `nextmini_py` crate.
 struct Inner {
     // Capacity is consumed through the async registration API exposed to the Python bridge.
+    #[allow(dead_code)] // Only read when the python bindings register flows.
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>,
 }
 
 impl PythonInterfaceHandle {
-    #[allow(dead_code)] // External callers construct the handle from Python.
+    #[allow(dead_code)] // Constructed from the python bindings crate.
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -32,7 +32,7 @@ impl PythonInterfaceHandle {
         }
     }
 
-    #[allow(dead_code)] // Registration happens through PyO3 bindings.
+    #[allow(dead_code)] // Invoked from the python bindings crate.
     pub async fn register_receiver(&self, flow_id: FlowId) -> mpsc::Receiver<Packet> {
         let (tx, rx) = mpsc::channel(self.inner.capacity);
         let mut map = self.inner.senders.lock().await;
@@ -40,13 +40,13 @@ impl PythonInterfaceHandle {
         rx
     }
 
-    #[allow(dead_code)] // Deregistration is handled on the Python side.
+    #[allow(dead_code)] // Invoked from the python bindings crate.
     pub async fn unregister_receiver(&self, flow_id: FlowId) {
         let mut map = self.inner.senders.lock().await;
         map.remove(&flow_id);
     }
 
-    #[allow(dead_code)] // Queried from the Python bindings to short-circuit deliveries.
+    #[allow(dead_code)] // Invoked from the python bindings crate.
     pub async fn has_receiver(&self, flow_id: FlowId) -> bool {
         self.inner.senders.lock().await.contains_key(&flow_id)
     }

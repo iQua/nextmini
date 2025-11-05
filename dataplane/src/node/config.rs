@@ -171,6 +171,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub auto_add_nat: bool,
 
+    /// Enables the kernel-backed local interface (TUN). Disable when embedding the dataplane in-process.
+    #[default(true)]
+    #[arg(long)]
+    pub enable_local_interface: bool,
+
     /// This is not used in metrics collector.
     /// The interval at which metrics are collected and sent to the controller.
     #[default(5)]
@@ -407,8 +412,7 @@ fn default_netmask() -> Ipv4Addr {
 
 impl LocalConfig {
     /// Creates a `LocalConfig` from a TOML string while applying ClapSerde defaults.
-    #[cfg(feature = "python-api")]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Parsed from the python bindings crate.
     pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
         let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
         Ok(LocalConfig::from(&mut opt))
@@ -446,7 +450,6 @@ impl LocalConfig {
     }
 
     /// Returns the effective settings for TCP reordering tolerance.
-    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn reorder_tolerances(&self) -> (bool, Option<Duration>, usize) {
         let enforce = self.enforce_tcp_order;
         let gap_timeout = match (enforce, self.delay_tolerance) {

@@ -164,7 +164,6 @@ impl Packet {
         &self.buffer[..self.packet_size]
     }
 
-    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn seq_num(&self) -> u32 {
         let buf = self.bytes();
         if self.packet_size < 20 || (buf[0] >> 4) != 4 {
@@ -190,7 +189,6 @@ impl Packet {
         self.has_tcp_payload()
     }
 
-    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn is_tcp_syn(&self) -> bool {
         let buf = self.bytes();
         if self.packet_size < 20 || buf[9] != 6 {
@@ -207,7 +205,6 @@ impl Packet {
         (tcp_flags & 0x02) != 0
     }
 
-    #[cfg_attr(feature = "python-api", allow(dead_code))]
     pub fn is_tcp_fin_or_rst(&self) -> bool {
         let buf = self.bytes();
         if self.packet_size < 20 || buf[9] != 6 {
@@ -260,8 +257,7 @@ impl Packet {
     }
 
     /// Compute the flow identifier directly from the IPv4+TCP tuple.
-    #[cfg(feature = "python-api")]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Only constructed through the python bindings crate.
     pub fn flow_id_from_parts(
         src_ip: Ipv4Addr,
         src_port: u16,
@@ -283,8 +279,7 @@ impl Packet {
 
     /// Construct a minimal IPv4/TCP packet that wraps the provided payload.
     /// Checksums are omitted—the overlay stack guarantees integrity.
-    #[cfg(feature = "python-api")]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Only constructed through the python bindings crate.
     pub fn build_ipv4_tcp_packet(
         src_ip: Ipv4Addr,
         src_port: u16,
@@ -337,7 +332,7 @@ impl Packet {
         (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
     }
 
-    #[cfg(all(target_os = "linux", not(feature = "python-api")))]
+    #[cfg(target_os = "linux")]
     pub fn from_slice(packet_size: usize, slice: &[u8]) -> Self {
         Self::from_vec(slice[..packet_size].to_vec())
     }
@@ -400,7 +395,6 @@ mod tests {
         assert!(p.has_tcp_payload());
     }
 
-    #[cfg(feature = "python-api")]
     #[test]
     fn flow_id_from_parts_matches_packet_flow_id() {
         let src_ip = Ipv4Addr::new(10, 0, 0, 1);
@@ -414,7 +408,6 @@ mod tests {
         assert_eq!(flow_from_parts, packet.flow_id);
     }
 
-    #[cfg(feature = "python-api")]
     #[test]
     fn build_ipv4_tcp_packet_copies_payload() {
         let payload = vec![1u8, 2, 3, 4, 5];

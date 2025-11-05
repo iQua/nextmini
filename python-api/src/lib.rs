@@ -55,15 +55,12 @@ impl PacketReceiver {
         let inner = self.inner.clone();
         let fut = async move {
             match timeout_ms {
-                Some(ms) => match tokio::time::timeout(
+                Some(ms) => tokio::time::timeout(
                     std::time::Duration::from_millis(ms),
                     inner.lock().await.recv(),
                 )
                 .await
-                {
-                    Ok(opt) => opt,
-                    Err(_) => None,
-                },
+                .unwrap_or_default(),
                 None => inner.lock().await.recv().await,
             }
         };
@@ -96,8 +93,9 @@ impl Dataplane {
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read config: {e}")))?;
-        let initial_cfg = LocalConfig::from_toml_str(&toml_str)
+        let mut initial_cfg = LocalConfig::from_toml_str(&toml_str)
             .map_err(|e| PyRuntimeError::new_err(format!("failed to parse config: {e}")))?;
+        initial_cfg.enable_local_interface = false;
 
         let conductor = rt().block_on(async { Conductor::new(initial_cfg.clone()).await });
         let processor = conductor.processor_handle();

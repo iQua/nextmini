@@ -14,7 +14,7 @@ use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct TcpMaxServer {
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Retained for runtime scheduler initialization.
     config: LocalConfig,
     processors: ProcessorHandle,
 }
