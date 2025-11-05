@@ -1,4 +1,3 @@
-#[cfg(not(target_os = "linux"))]
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
