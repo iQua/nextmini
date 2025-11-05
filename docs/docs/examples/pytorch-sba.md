@@ -128,6 +128,16 @@ sh train_vgg16.sh
 
 To train different variants of resnet, simply simply change the `--type` command line argument in `train_resnet.sh` on the manager instance.
 
+### Optional: Emit metrics via the Python dataplane API
+
+If you want these SBA scenarios to stream intermediate loss/activation tensors through Nextmini (instead of relying solely on TUN delivery), follow the steps in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
+
+1. Install the `nextmini_py` wheel on the swarm nodes.
+2. Set `NEXTMINI_CONFIG=/var/nextmini/node-config.toml` (or the appropriate mounted path) and `NEXTMINI_DST_NODE=<target node id>` before invoking the training scripts.
+3. The provided `gpt2.py` and other helpers already gate the Python bridge behind those variables; once set, they publish metrics each step and log errors without aborting the job.
+
+A companion receiver (launched on another trainer or analytics node) can call `rx.recv()` to ingest the payloads for dashboards or adaptive schedulers.
+
 ### Clean up
 
 To clean up the dataplane worker nodes: use the command below:

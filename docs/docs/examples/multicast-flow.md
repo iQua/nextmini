@@ -105,13 +105,12 @@ The controller recomputes the DAG, persists the new edge set, and sends `Install
 - `cargo check --workspace`
 - `cargo test -p controller compute_group_tree_edges`
 - `cargo test -p controller build_group_routes_for_node_includes_local_delivery`
-- Dataplane unit tests covering routing-table lookups (pending as of 2025-11-04).
-- Integration test (pending) that drives membership churn via Postgres and verifies dataplane fan-out logs.
+- `cargo test -p dataplane returns_multicast_next_hops_from_group_routes`
+- Follow the integration recipe in `docs/testing/python_api_validation.md` to exercise membership churn once the docker-compose harness is available.
 
 ---
 
 ## Next Steps
 
-- Finalize controller message wiring for `CreateGroup/JoinGroup/LeaveGroup` once DB triggers are deployed.
-- Add dataplane unit tests for the routing table’s multicast path.
-- Document operational runbooks (failover, cleanup timers) once the feature is exercised in dev clusters.
+- Automate the Postgres-backed integration test so group membership churn runs in CI.
+- Add operational guidance (failover procedures, idle group garbage collection/ACLs) once exercised in dev clusters—track progress in `docs/docs/design/multicast-groups.md#operational-notes`.
