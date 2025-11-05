@@ -503,13 +503,20 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
+        cfgs.populate_runtime_defaults();
+
+        cfgs
+    }
+
+    /// Populates runtime-derived defaults such as interface addresses when they are missing.
+    pub fn populate_runtime_defaults(&mut self) {
         // sets the private ipv4 address of the network interface for the private network
         // Defined by RFC 1918, private IP addresses fall within the following ranges:
         // 10.0.0.0 - 10.255.255.255 (10.0.0.0/8)
         // 172.16.0.0 - 172.31.255.255 (172.16.0.0/12)
         // 192.168.0.0 - 192.168.255.255 (192.168.0.0/16)
-        if cfgs.private_network_addr.is_empty() {
-            let itf_name = cfgs.private_network_interface.clone();
+        if self.private_network_addr.is_empty() {
+            let itf_name = self.private_network_interface.clone();
 
             // retrieves a list of all private network interfaces available on the system
             let network_interfaces = NetworkInterface::show().expect(
@@ -533,38 +540,38 @@ impl LocalConfig {
             }
 
             // obtains the ipv4 address of the dataplane node
-            cfgs.private_network_addr = ipv4addr;
+            self.private_network_addr = ipv4addr;
 
             // computes the node_id from private_network_addr using external_base_addr
-            if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
+            if let Ok(real_ip) = self.private_network_addr.parse::<Ipv4Addr>() {
                 let ip = u32::from(real_ip);
                 // external_base_addr is used to compute the node_id
                 // as it has the same prefix with the private_network_addr
-                let base = u32::from(cfgs.external_base_addr);
+                let base = u32::from(self.external_base_addr);
                 let computed_node_id = (ip - base) as NodeId;
-                if computed_node_id != 0 && cfgs.node_id == 0 {
-                    cfgs.node_id = computed_node_id;
+                if computed_node_id != 0 && self.node_id == 0 {
+                    self.node_id = computed_node_id;
                     info!(
                         "From real IP {} using external_base_addr, node_id is: {}.",
-                        cfgs.private_network_addr, cfgs.node_id
+                        self.private_network_addr, self.node_id
                     );
-                } else if cfgs.node_id != 0 {
+                } else if self.node_id != 0 {
                     info!(
                         "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
-                        cfgs.node_id, computed_node_id, cfgs.private_network_addr
+                        self.node_id, computed_node_id, self.private_network_addr
                     );
                 }
-            } else if !cfgs.private_network_addr.is_empty() {
+            } else if !self.private_network_addr.is_empty() {
                 error!(
                     "Failed to parse private_network_addr as Ipv4Addr: {}.",
-                    cfgs.private_network_addr
+                    self.private_network_addr
                 );
             }
         }
 
         // sets the ipv4 address of the network interface for the public network
-        if cfgs.public_network_addr.is_empty() {
-            let itf_name = cfgs.public_network_interface.clone();
+        if self.public_network_addr.is_empty() {
+            let itf_name = self.public_network_interface.clone();
 
             // retrieves a list of all public network interfaces available on the system
             let network_interfaces = NetworkInterface::show().expect(
@@ -587,15 +594,13 @@ impl LocalConfig {
                 }
             }
 
-            cfgs.public_network_addr = ipv4addr;
+            self.public_network_addr = ipv4addr;
         }
 
         // sets the number of packet processors to the number of threads if it is 0
-        if cfgs.num_packet_processors == 0 {
-            cfgs.num_packet_processors = num_cpus::get();
+        if self.num_packet_processors == 0 {
+            self.num_packet_processors = num_cpus::get();
         }
-
-        cfgs
     }
 
     /// Initializes the config for the namespace nodes.

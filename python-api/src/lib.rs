@@ -96,6 +96,8 @@ impl Dataplane {
         let mut initial_cfg = LocalConfig::from_toml_str(&toml_str)
             .map_err(|e| PyRuntimeError::new_err(format!("failed to parse config: {e}")))?;
         initial_cfg.enable_local_interface = false;
+        initial_cfg.config_path = config_path.to_string();
+        initial_cfg.populate_runtime_defaults();
 
         let conductor = rt().block_on(async { Conductor::new(initial_cfg.clone()).await });
         let processor = conductor.processor_handle();
