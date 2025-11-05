@@ -96,6 +96,10 @@ class MLTrainer:
             dst_port=src_port,  # Reverse: worker's src becomes our dst
         )
         
+        # Wait for routes to be fully established in dataplane
+        print(f"[Trainer] Waiting for routes to be fully established...")
+        time.sleep(10)  # Give dataplane time to install and activate routes
+        
         print(f"[Trainer] Ready to send tensors!")
     
     def generate_gradient(self, size: tuple, iteration: int) -> torch.Tensor:
@@ -295,6 +299,12 @@ def main():
             iterations=args.iterations,
             verify=not args.no_verify
         )
+        # Don't exit - keep nextmini node alive
+        print("\n[Trainer] Training complete. Dataplane node remains active.")
+        print("[Trainer] Press Ctrl+C to exit.")
+        # Keep the process alive
+        import signal
+        signal.pause()
     except KeyboardInterrupt:
         print("\n[Trainer] Interrupted by user")
         sys.exit(0)

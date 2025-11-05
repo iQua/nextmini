@@ -273,6 +273,12 @@ def main():
             dst_port=args.dst_port,
         )
         worker.run_worker_loop(max_iterations=args.max_iterations)
+        # Don't exit - keep nextmini node alive  
+        print("\n[Worker] Processing complete. Dataplane node remains active.")
+        print("[Worker] Press Ctrl+C to exit.")
+        # Keep the process alive
+        import signal
+        signal.pause()
     except KeyboardInterrupt:
         print("\n[Worker] Interrupted by user")
         sys.exit(0)
