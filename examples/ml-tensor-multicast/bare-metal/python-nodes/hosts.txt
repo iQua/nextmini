@@ -1,0 +1,4 @@
+# node_id | ssh_target (user@host[:port]) | local_ip | role | port
+1|ubuntu@206.12.95.232|206.12.95.232|trainer|8080
+2|ubuntu@206.12.91.229|206.12.91.229|worker|8080
+
