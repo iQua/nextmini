@@ -25,7 +25,7 @@ if str(_EXAMPLE_DIR) not in sys.path:
 
 try:
     from torch_serializer import serialize_tensor, deserialize_tensor
-    import nextmini_py as nm
+    from nextmini_py import Dataplane, FrozenBuffer
 except ImportError as e:
     print(f"ERROR: Failed to import required modules: {e}")
     print("\nMake sure to:")
@@ -84,7 +84,7 @@ class MLTrainer:
         print(f"[Trainer] Ports: {src_port} → {dst_port}")
         
         # Initialize Dataplane (multicast API)
-        self.dataplane = nm.Dataplane(config_path)
+        self.dataplane = Dataplane(config_path)
         self.worker_node_id = worker_node_id
         self.src_port = src_port
         self.dst_port = dst_port
@@ -131,10 +131,13 @@ class MLTrainer:
         data = serialize_tensor(tensor)
         data_len = len(data)
         
+        # Wrap in FrozenBuffer for efficient transmission
+        frozen = FrozenBuffer(data)
+        
         # Send via Dataplane (multicast API uses node_id, not IP)
         self.dataplane.send_to_node(
             dst_node_id=self.worker_node_id,
-            payload=memoryview(data),
+            frozen=frozen,
             src_port=self.src_port,
             dst_port=self.dst_port,
         )

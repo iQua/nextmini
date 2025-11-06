@@ -1,11 +1,12 @@
+mod buffer;
+
 use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::prelude::PyAnyMethods;
 use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyIterator, PyModule};
+use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
@@ -17,6 +18,8 @@ use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::PythonInterfaceHandle;
 use nextmini::node::{NodeId, NodeIdExt};
 
+pub use crate::buffer::FrozenBuffer;
+
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 
 fn rt() -> &'static tokio::runtime::Runtime {
@@ -27,20 +30,6 @@ fn rt() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("unable to create tokio runtime for nextmini_py")
     })
-}
-
-fn payload_to_vec(payload: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
-    if let Ok(bytes) = payload.cast::<PyBytes>() {
-        return Ok(bytes.as_bytes().to_vec());
-    }
-
-    let tobytes = payload.call_method0("tobytes").map_err(|_| {
-        PyRuntimeError::new_err("payload must expose a contiguous buffer via `tobytes()`")
-    })?;
-    let bytes = tobytes
-        .cast::<PyBytes>()
-        .map_err(|_| PyRuntimeError::new_err("`tobytes()` must return `bytes`"))?;
-    Ok(bytes.as_bytes().to_vec())
 }
 
 #[pyclass]
@@ -160,15 +149,16 @@ impl Dataplane {
         )
     }
 
-    #[pyo3(signature = (dst_node_id, payload, src_port=None, dst_port=None))]
+    #[pyo3(signature = (dst_node_id, frozen, src_port=None, dst_port=None))]
     fn send_to_node(
         &self,
         dst_node_id: usize,
-        payload: &Bound<'_, PyAny>,
+        frozen: FrozenBuffer,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<()> {
-        let body = payload_to_vec(payload)?;
+        // Clone Bytes (zero-copy reference counting)
+        let body = frozen.inner.clone();
 
         let src_ip = self.cfg.user_space_address;
         let dst_ip =
@@ -181,26 +171,26 @@ impl Dataplane {
         Ok(())
     }
 
-    #[pyo3(signature = (dst_node_id, payloads, src_port=None, dst_port=None))]
+    #[pyo3(signature = (dst_node_id, frozen_buffers, src_port=None, dst_port=None))]
     fn send_batch_to_node(
         &self,
         dst_node_id: usize,
-        payloads: &Bound<'_, PyAny>,
+        frozen_buffers: Vec<FrozenBuffer>,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<()> {
-        let iter = PyIterator::from_object(payloads)?;
-        for item in iter {
-            let obj = item?;
-            self.send_to_node(dst_node_id, &obj, src_port, dst_port)?;
+        for frozen in frozen_buffers {
+            self.send_to_node(dst_node_id, frozen, src_port, dst_port)?;
         }
         Ok(())
     }
+
 }
 
 #[pymodule]
 fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dataplane>()?;
     m.add_class::<PacketReceiver>()?;
+    m.add_class::<FrozenBuffer>()?;
     Ok(())
 }
