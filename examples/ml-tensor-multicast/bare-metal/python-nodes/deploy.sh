@@ -144,7 +144,7 @@ ssh -q "$WORKER_HOST" "cd $REMOTE_DIR && bash -c 'nohup .venv/bin/python -u work
   --max-iterations $ITERATIONS \
   > worker.log 2>&1 & echo \$! > worker.pid' && exit 0"
 
-sleep 2
+sleep 8  # Wait longer for routes to be fully established (controller + dataplane processing)
 
 # Start trainer
 ssh -q "$TRAINER_HOST" "cd $REMOTE_DIR && bash -c 'nohup .venv/bin/python -u trainer.py \
