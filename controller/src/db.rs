@@ -15,8 +15,7 @@ use sqlx::{Pool, Postgres, Row};
 use crate::config;
 use crate::models::{DbFlow, DbRoute, Group, GroupMember, Route};
 use crate::utils::{
-    allocate_multicast_ip, build_flows_for_node, build_group_routes_for_node,
-    build_routes_for_node, merge_all_routes,
+    build_flows_for_node, build_group_routes_for_node, build_routes_for_node, merge_all_routes,
 };
 use crate::{NodeWriterMap, WebSocketWriter};
 use nextmini_messages::{ControllerToDataplane, GroupRoutingTableEntry};
@@ -357,17 +356,14 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
 
 pub async fn create_group(
     db_pool: &Pool<Postgres>,
+    group_id: usize,
     label: &str,
     src_node_id: usize,
     base_addr: Ipv4Addr,
-    mask: Ipv4Addr,
 ) -> AnyResult<Group> {
-    let mut tx = db_pool.begin().await?;
-    let next_id: i64 = sqlx::query_scalar("SELECT nextval('groups_id_seq')")
-        .fetch_one(&mut *tx)
-        .await?;
-
-    let group_ip = allocate_multicast_ip(base_addr, mask, next_id as u32);
+    // Calculate group_ip from group_id (deterministic)
+    let base_ip = u32::from(base_addr);
+    let group_ip = Ipv4Addr::from(base_ip.wrapping_add(group_id as u32));
     let group_ip_string = group_ip.to_string();
 
     let group = sqlx::query_as::<_, Group>(
@@ -377,14 +373,13 @@ pub async fn create_group(
         RETURNING id, label, src_node_id, group_ip
         "#,
     )
-    .bind(next_id as i32)
+    .bind(group_id as i32)
     .bind(label)
     .bind(src_node_id as i32)
     .bind(&group_ip_string)
-    .fetch_one(&mut *tx)
+    .fetch_one(db_pool)
     .await?;
 
-    tx.commit().await?;
     Ok(group)
 }
 
@@ -423,19 +418,6 @@ pub async fn remove_group_member(
     .execute(db_pool)
     .await?;
     Ok(())
-}
-
-pub async fn load_group_directory(db_pool: &Pool<Postgres>) -> AnyResult<Vec<Group>> {
-    let groups = sqlx::query_as::<_, Group>(
-        r#"
-        SELECT id, label, src_node_id, group_ip
-        FROM groups
-        ORDER BY id
-        "#,
-    )
-    .fetch_all(db_pool)
-    .await?;
-    Ok(groups)
 }
 
 pub async fn load_group_members(

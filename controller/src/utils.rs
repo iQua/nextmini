@@ -33,6 +33,8 @@ pub struct StartupResponseParams {
     pub virtual_base_addr: Ipv4Addr,
     pub user_space_base_addr: Ipv4Addr,
     pub external_base_addr: Ipv4Addr,
+    pub multicast_pool_base: Ipv4Addr,
+    pub multicast_pool_mask: Ipv4Addr,
     pub max_server_port: u16,
     pub protocol: Protocol,
     pub scheduler_type: SchedulingDiscipline,
@@ -47,6 +49,8 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
         virtual_base_addr,
         user_space_base_addr,
         external_base_addr,
+        multicast_pool_base,
+        multicast_pool_mask,
         max_server_port,
         protocol,
         scheduler_type,
@@ -66,6 +70,8 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
         virtual_base_addr,
         user_space_base_addr,
         external_base_addr,
+        multicast_pool_base,
+        multicast_pool_mask,
         max_server_port,
         protocol,
         scheduler_type,
@@ -233,23 +239,6 @@ pub fn build_routes_from_topology(
             routes
         }
     }
-}
-
-/// Allocates a deterministic multicast IP address within the configured pool.
-pub fn allocate_multicast_ip(base_addr: Ipv4Addr, mask: Ipv4Addr, ordinal: u32) -> Ipv4Addr {
-    let network = u32::from(base_addr) & u32::from(mask);
-    let host_mask = !u32::from(mask);
-
-    if host_mask == 0 {
-        warn!(
-            "Multicast mask {} does not provide host space; reusing base {}",
-            mask, base_addr
-        );
-        return base_addr;
-    }
-
-    let offset = (ordinal.saturating_sub(1)) & host_mask;
-    Ipv4Addr::from(network | offset)
 }
 
 /// Compute a multicast DAG by unioning shortest paths from src to each member.
@@ -876,17 +865,18 @@ mod tests {
     }
 
     #[test]
-    fn test_allocate_multicast_ip_advances_within_pool() {
+    fn test_group_id_to_ip_calculation() {
+        // New simplified design: group_ip = base + group_id
         let base = Ipv4Addr::new(239, 255, 0, 0);
-        let mask = Ipv4Addr::new(255, 255, 0, 0);
+        let base_u32 = u32::from(base);
 
-        let first = allocate_multicast_ip(base, mask, 1);
-        let second = allocate_multicast_ip(base, mask, 2);
-        let wrap = allocate_multicast_ip(base, mask, 256 * 2);
+        let group_ip_1 = Ipv4Addr::from(base_u32 + 1);
+        let group_ip_2 = Ipv4Addr::from(base_u32 + 2);
+        let group_ip_520 = Ipv4Addr::from(base_u32 + 520);
 
-        assert_eq!(first, Ipv4Addr::new(239, 255, 0, 0));
-        assert_eq!(second, Ipv4Addr::new(239, 255, 0, 1));
-        assert_eq!(wrap, Ipv4Addr::new(239, 255, 1, 255));
+        assert_eq!(group_ip_1, Ipv4Addr::new(239, 255, 0, 1));
+        assert_eq!(group_ip_2, Ipv4Addr::new(239, 255, 0, 2));
+        assert_eq!(group_ip_520, Ipv4Addr::new(239, 255, 2, 8));
     }
 
     #[test]

@@ -285,6 +285,16 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub local_netmask: Ipv4Addr,
 
+    /// The multicast pool base address for group IP allocation.
+    #[default(default_multicast_pool_base())]
+    #[arg(skip)]
+    pub multicast_pool_base: Ipv4Addr,
+
+    /// The multicast pool netmask.
+    #[default(default_multicast_pool_mask())]
+    #[arg(skip)]
+    pub multicast_pool_mask: Ipv4Addr,
+
     /// The transport protocol: TCP or QUIC.
     #[default(Protocol::Quic)]
     #[arg(long, value_enum)]
@@ -410,6 +420,14 @@ fn default_netmask() -> Ipv4Addr {
     Ipv4Addr::new(255, 255, 255, 0)
 }
 
+fn default_multicast_pool_base() -> Ipv4Addr {
+    Ipv4Addr::new(239, 255, 0, 0)
+}
+
+fn default_multicast_pool_mask() -> Ipv4Addr {
+    Ipv4Addr::new(255, 255, 0, 0)
+}
+
 impl LocalConfig {
     /// Creates a `LocalConfig` from a TOML string while applying ClapSerde defaults.
     #[allow(dead_code)] // Parsed from the python bindings crate.
@@ -418,8 +436,22 @@ impl LocalConfig {
         Ok(LocalConfig::from(&mut opt))
     }
 
+    /// Checks if an IP address belongs to the multicast pool.
+    pub fn is_multicast_ip(&self, ip: Ipv4Addr) -> bool {
+        let ip_u32 = u32::from(ip);
+        let base_u32 = u32::from(self.multicast_pool_base);
+        let mask_u32 = u32::from(self.multicast_pool_mask);
+        (ip_u32 & mask_u32) == (base_u32 & mask_u32)
+    }
+
     /// Converts IP address to node ID, supporting both TUN and user space networks.
+    /// Returns INVALID for multicast IPs (which don't correspond to a specific node).
     pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
+        // Check multicast first - multicast IPs don't correspond to nodes
+        if self.is_multicast_ip(ip) {
+            return nextmini_messages::INVALID;
+        }
+
         let ip_addr = u32::from(ip);
         let netmask = u32::from(self.local_netmask);
 
@@ -644,6 +676,8 @@ impl LocalConfig {
                         virtual_base_addr,
                         user_space_base_addr,
                         external_base_addr,
+                        multicast_pool_base,
+                        multicast_pool_mask,
                         max_server_port,
                         protocol,
                         scheduler_type,
@@ -656,6 +690,8 @@ impl LocalConfig {
                         self.virtual_base_addr = virtual_base_addr;
                         self.user_space_base_addr = user_space_base_addr;
                         self.external_base_addr = external_base_addr;
+                        self.multicast_pool_base = multicast_pool_base;
+                        self.multicast_pool_mask = multicast_pool_mask;
                         // calculates the local, user space and external addresses for the node
                         self.local_address = node_id.ip_addr(virtual_base_addr, net_mask);
                         self.user_space_address = node_id.ip_addr(user_space_base_addr, net_mask);
