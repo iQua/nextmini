@@ -21,20 +21,22 @@ while IFS='|' read -r NODE_ID HOST_SPEC LOCAL_IP ROLE PORT _; do
     echo "--- Cleaning up node $NODE_ID ($HOST_SPEC) ---"
     
     ssh "$HOST_SPEC" bash <<'CLEANUP'
-        # Kill Python processes
+        # Kill Python processes (use broader patterns to catch all)
         echo "  Stopping Python processes..."
-        pkill -f "python3.*receiver.py" 2>/dev/null || true
-        pkill -f "python3.*sender.py" 2>/dev/null || true
-        pkill -f "venv/bin/python" 2>/dev/null || true
+        pkill -9 -f "receiver.py" 2>/dev/null || true
+        pkill -9 -f "sender.py" 2>/dev/null || true
+        pkill -9 -f "python.*receiver" 2>/dev/null || true
+        pkill -9 -f "python.*sender" 2>/dev/null || true
         
         # Kill nextmini dataplane processes
         echo "  Stopping nextmini dataplane processes..."
-        sudo pkill -f "nextmini.*--node-id" 2>/dev/null || true
-        sudo pkill -f "./nextmini" 2>/dev/null || true
-        sudo pkill nextmini 2>/dev/null || true
+        sudo pkill -9 -f "nextmini.*--node-id" 2>/dev/null || true
+        sudo pkill -9 -f "./nextmini" 2>/dev/null || true
+        sudo pkill -9 nextmini 2>/dev/null || true
         
-        # Clean up PID files and logs (optional)
+        # Clean up PID files
         rm -f ~/multicast-test/*.pid 2>/dev/null || true
+        rm -f \$HOME/multicast-test/*.pid 2>/dev/null || true
         
         echo "  Done."
 CLEANUP

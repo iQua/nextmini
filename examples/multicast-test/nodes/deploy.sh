@@ -9,7 +9,7 @@ HOSTS_FILE="$SCRIPT_DIR/hosts.txt"
 
 # Configuration
 CONTROLLER_ADDR=${CONTROLLER_ADDR:-"ws://206.12.89.244:3000"}
-REMOTE_DIR=${REMOTE_DIR:-"/root/multicast-test"}
+REMOTE_DIR=${REMOTE_DIR:-"\$HOME/multicast-test"}
 GROUP_ID=${GROUP_ID:-520}
 
 if [[ ! -f "$HOSTS_FILE" ]]; then
@@ -105,19 +105,38 @@ public_network_port = "$LOCAL_PORT"
 enable_local_interface = false
 CONFIG
     
-    # Setup Python environment
-    echo "Setting up Python environment on node $NODE_ID..."
+
+
+
+    # Setup Python environment with uv
+    echo "Setting up uv environment on node $NODE_ID..."
     ssh "$HOST_SPEC" "bash -s" <<REMOTE_SETUP
         set -euo pipefail
+        
+        # Install uv if not present
+        if ! command -v uv &> /dev/null && [[ ! -f \$HOME/.local/bin/uv ]]; then
+            echo "Installing uv..."
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+        fi
+        
+        # Ensure uv is in PATH
+        export PATH="\$HOME/.local/bin:\$PATH"
+        
+        # Use home directory for uv cache (default is ~/.cache/uv)
+        export UV_CACHE_DIR="\$HOME/.cache/uv"
+        mkdir -p "\$UV_CACHE_DIR"
+        
+        # Create/update venv in multicast-test directory
         cd $REMOTE_DIR
+        uv venv --python python3.13 .venv
         
-        # Create venv
-        python3 -m venv venv
-        source venv/bin/activate
+        # Install dependencies (no torch needed for multicast-test)
+        echo "Installing dependencies..."
+        uv pip install toml
         
-        # Install dependencies
-        pip install -q --upgrade pip
-        pip install -q $WHEEL_NAME
+        # Install nextmini_py wheel
+        echo "Installing nextmini_py wheel..."
+        uv pip install $WHEEL_NAME --force-reinstall
         
         echo "✅ Environment ready"
 REMOTE_SETUP
@@ -127,15 +146,4 @@ done
 
 echo ""
 echo "=== Deployment Complete ==="
-echo ""
-echo "Directory structure on each node:"
-echo "  $REMOTE_DIR/"
-echo "    ├── config.py"
-echo "    ├── sender.py"
-echo "    ├── receiver.py"
-echo "    ├── node-config.toml (auto-generated)"
-echo "    ├── venv/"
-echo "    └── $WHEEL_NAME"
-echo ""
-echo "See QUICKSTART.md for next steps"
 
