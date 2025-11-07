@@ -14,8 +14,7 @@ use tokio::sync::mpsc;
 use tracing::{error, warn};
 
 use nextmini_messages::{
-    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
-    TokenBucketSpec,
+    GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry, TokenBucketSpec,
 };
 
 use crate::node::config::{Feature, LocalConfig};
@@ -40,7 +39,6 @@ pub enum ProcessorPacket {
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
-    UpdateGroupDirectory(Vec<GroupDirectoryEntry>),
     UpdateGroupRoutes {
         group_id: GroupId,
         src_node_id: NodeId,
@@ -175,18 +173,6 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the connector: {}",
-                e
-            );
-        }
-    }
-
-    pub async fn update_group_directory(&self, groups: Vec<GroupDirectoryEntry>) {
-        if let Err(e) = self
-            .broadcast_sender()
-            .send(ProcessorMessage::UpdateGroupDirectory(groups))
-        {
-            error!(
-                "Error sending the UpdateGroupDirectory message to the processors: {}",
                 e
             );
         }
@@ -389,11 +375,12 @@ impl SequentialProcHandle {
         let idx = packet.flow_id.hash(self.packet_senders.len());
         let sender = &self.packet_senders[idx];
 
-        let packet_flow_id = packet.flow_id;
-        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+        // ip_to_node_id returns INVALID for multicast IPs, which will never equal node_id
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+        let is_local_delivery = dst_node_id == self.config.node_id;
 
         // sends through the processor for local delivery
-        if dst_node_id == self.config.node_id {
+        if is_local_delivery {
             if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
                 warn!(
                     "SequentialProcHandle: Error sending a packet to the processor: {}.",
@@ -478,11 +465,12 @@ impl ConcurrentProcHandle {
     }
 
     pub fn process_packet(&self, packet: Packet) {
-        let packet_flow_id = packet.flow_id;
-        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+        // ip_to_node_id returns INVALID for multicast IPs, which will never equal node_id
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+        let is_local_delivery = dst_node_id == self.config.node_id;
 
         // sends through the processor for local delivery
-        if dst_node_id == self.config.node_id {
+        if is_local_delivery {
             if let Err(e) = self
                 .packet_sender
                 .try_send(ProcessorPacket::ProcessPacket(packet))
@@ -646,9 +634,6 @@ impl Processor {
         match msg {
             ProcessorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
-            }
-            ProcessorMessage::UpdateGroupDirectory(groups) => {
-                self.routing_table.install_group_directory(groups);
             }
             ProcessorMessage::UpdateGroupRoutes {
                 group_id,

@@ -8,7 +8,6 @@ mod topology;
 mod utils;
 
 use std::collections::{HashMap, HashSet};
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use futures_util::stream::{SplitSink, SplitStream};
@@ -21,13 +20,12 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
-use anyhow::Result as AnyResult;
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupDirectoryEntry};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::config::{Config, get_config};
 use crate::db::{
-    add_group_member, create_group, init_db, load_group_directory, remove_group_member,
-    setup_flow_notification, setup_group_notification, setup_route_notification,
+    add_group_member, create_group, init_db, remove_group_member, setup_flow_notification,
+    setup_group_notification, setup_route_notification,
 };
 use crate::models::{DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
@@ -218,6 +216,8 @@ async fn handle_connection(
                             virtual_base_addr: config.base_addr,
                             user_space_base_addr: config.user_space_base_addr,
                             external_base_addr: config.external_base_addr,
+                            multicast_pool_base: config.multicast_pool_base,
+                            multicast_pool_mask: config.multicast_pool_mask,
                             max_server_port: config.max_server_port,
                             protocol: config.protocol.clone(),
                             scheduler_type: config.scheduler_type,
@@ -673,7 +673,7 @@ async fn handle_connection(
                             }
                         }
                     }
-                    DataplaneToController::CreateGroup { label } => {
+                    DataplaneToController::CreateGroup { group_id, label } => {
                         let Some(node_id) = current_node_id else {
                             warn!("CreateGroup received before node registration; ignoring.");
                             continue;
@@ -681,58 +681,22 @@ async fn handle_connection(
 
                         match create_group(
                             &db_pool,
+                            group_id,
                             &label,
                             node_id,
                             config.multicast_pool_base,
-                            config.multicast_pool_mask,
                         )
                         .await
                         {
-                            Ok(group) => match group.group_ip.parse::<Ipv4Addr>() {
-                                Ok(group_ip) => {
-                                    let response = ControllerToDataplane::GroupCreated {
-                                        group_id: group.id as usize,
-                                        group_ip,
-                                        src_node_id: group.src_node_id as usize,
-                                    };
-
-                                    if let Err(e) = write_arc
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(
-                                            rmp_serde::to_vec(&response).unwrap(),
-                                        ))
-                                        .await
-                                    {
-                                        error!(
-                                            "Failed to send GroupCreated to node {}: {}",
-                                            node_id, e
-                                        );
-                                    } else {
-                                        info!(
-                                            "Created multicast group {} ({}) for node {}.",
-                                            group.id, group.group_ip, node_id
-                                        );
-                                    }
-
-                                    if let Err(e) =
-                                        broadcast_group_directory(&db_pool, &node_ws).await
-                                    {
-                                        error!(
-                                            "Failed to broadcast group directory after creating group {}: {}",
-                                            group.id, e
-                                        );
-                                    }
-                                }
-                                Err(e) => error!(
-                                    "Invalid group IP {} stored for group {}: {}",
-                                    group.group_ip, group.id, e
-                                ),
-                            },
-                            Err(e) => error!(
-                                "Failed to create multicast group \"{}\" for node {}: {}",
-                                label, node_id, e
-                            ),
+                            Ok(group) => {
+                                info!(
+                                    "Created multicast group {} ('{}', IP: {}) for node {}.",
+                                    group.id, group.label, group.group_ip, node_id
+                                );
+                            }
+                            Err(e) => {
+                                error!("Failed to create group {} ('{}'): {}", group_id, label, e);
+                            }
                         }
                     }
                     DataplaneToController::JoinGroup { group_id } => {
@@ -781,53 +745,4 @@ async fn handle_connection(
         info!("Connection closed for node {}.", node_id);
         node_ws.write().await.remove(&node_id);
     }
-}
-
-async fn broadcast_group_directory(
-    db_pool: &Pool<Postgres>,
-    node_ws: &NodeWriterMap,
-) -> AnyResult<()> {
-    let groups = load_group_directory(db_pool).await?;
-    let mut entries = Vec::with_capacity(groups.len());
-
-    for group in groups {
-        match group.group_ip.parse::<Ipv4Addr>() {
-            Ok(ip) => entries.push(GroupDirectoryEntry {
-                group_id: group.id as usize,
-                group_ip: ip,
-            }),
-            Err(e) => warn!(
-                "Skipping group {} due to invalid IP {}: {}",
-                group.id, group.group_ip, e
-            ),
-        }
-    }
-
-    let message = ControllerToDataplane::InstallGroupDirectory {
-        groups: entries.clone(),
-    };
-    let payload = rmp_serde::to_vec(&message)?;
-
-    let guard = node_ws.read().await;
-    for (node_id, sender) in guard.iter() {
-        if let Err(e) = sender
-            .lock()
-            .await
-            .send(Message::binary(payload.clone()))
-            .await
-        {
-            error!(
-                "Failed to send InstallGroupDirectory to node {}: {}",
-                node_id, e
-            );
-        } else {
-            info!(
-                "Broadcasted InstallGroupDirectory with {} entries to node {}.",
-                entries.len(),
-                node_id
-            );
-        }
-    }
-
-    Ok(())
 }
