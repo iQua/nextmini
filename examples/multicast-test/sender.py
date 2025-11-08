@@ -9,6 +9,8 @@ import time
 import argparse
 from pathlib import Path
 
+import torch
+
 # Add current directory to path for imports
 _EXAMPLE_DIR = Path(__file__).resolve().parent
 if str(_EXAMPLE_DIR) not in sys.path:
@@ -51,22 +53,15 @@ class MulticastSender:
         # Initialize Dataplane
         self.dataplane = Dataplane(config_path)
         
-        # Wait for all nodes to connect and routes to be established
-        print(f"[Sender] Waiting 5 seconds for all nodes to connect and routes to be established...")
-        time.sleep(5)
+        # Wait for routes to be established
+        print(f"[Sender] Waiting 3 seconds for routes...")
+        time.sleep(3)
         
         # Create multicast group (NEW SIMPLIFIED API!)
         print(f"[Sender] Creating multicast group {GROUP_TEST}...")
         self.dataplane.create_group(GROUP_TEST, "test-group")
         
-        print(f"[Sender] Group created!")
-        
-        # Wait MUCH longer for receivers to join the group and be ready
-        # Receivers wait 10s to see group exists, then join, then 2s to be ready = ~12s total
-        print(f"[Sender] Waiting 20 seconds for receivers to join the group and be ready...")
-        time.sleep(20)
-        
-        print(f"[Sender] Ready to send!")
+        print(f"[Sender] Group created! Ready to send.")
     
     def send_message(self, message: str, iteration: int):
         """Send a test message to the multicast group."""
@@ -127,12 +122,6 @@ def main():
     try:
         sender = MulticastSender(args.config)
         sender.run_test(args.iterations, args.interval)
-        
-        # Keep the connection alive after sending
-        print("\n[Sender] Test complete. Keeping connection alive...")
-        print("[Sender] Press Ctrl+C to exit")
-        while True:
-            time.sleep(1)
     except KeyboardInterrupt:
         print("\n[Sender] Interrupted by user")
     except Exception as e:

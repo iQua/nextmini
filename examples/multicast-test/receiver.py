@@ -72,10 +72,9 @@ class MulticastReceiver:
         self.dataplane = Dataplane(config_path)
         self.sender_node_id = sender_node_id
         
-        # Wait for all nodes to connect AND for sender to create the group
-        # Sender waits 5s then creates group, so we wait 10s to be safe
-        print(f"[Receiver] Waiting 10 seconds for all nodes and for sender to create group...")
-        time.sleep(10)
+        # Wait for routes to be established
+        print(f"[Receiver] Waiting 3 seconds for routes...")
+        time.sleep(3)
         
         # Join multicast group (NEW SIMPLIFIED API!)
         print(f"[Receiver] Joining multicast group {GROUP_TEST}...")
@@ -164,12 +163,9 @@ def main():
         receiver = MulticastReceiver(args.config, args.sender_node_id)
         received = receiver.run_test(args.iterations)
         
-        # Keep the connection alive after receiving
-        print(f"\n[Receiver] Test complete. Received {received}/{args.iterations} messages.")
-        print("[Receiver] Keeping connection alive...")
-        print("[Receiver] Press Ctrl+C to exit")
-        while True:
-            time.sleep(1)
+        # Exit with error if not all messages received
+        if received < args.iterations:
+            sys.exit(1)
             
     except KeyboardInterrupt:
         print("\n[Receiver] Interrupted by user")
