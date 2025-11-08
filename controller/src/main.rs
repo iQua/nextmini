@@ -27,12 +27,14 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupDirec
 use crate::config::{Config, get_config};
 use crate::db::{
     add_group_member, create_group, init_db, load_group_directory, load_group_members,
-    remove_group_member, setup_flow_notification, setup_group_notification, setup_route_notification,
+    remove_group_member, setup_flow_notification, setup_group_notification,
+    setup_route_notification,
 };
 use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
 use crate::utils::{
-    StartupResponseParams, build_group_routes_for_node, build_routes_for_node, build_startup_response,
+    StartupResponseParams, build_group_routes_for_node, build_routes_for_node,
+    build_startup_response,
 };
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
@@ -908,7 +910,8 @@ async fn send_group_routes_snapshot_to_node(
             continue;
         }
 
-        let dag_edges: Vec<(u32, u32)> = dag_raw.into_iter().map(|pair| (pair[0], pair[1])).collect();
+        let dag_edges: Vec<(u32, u32)> =
+            dag_raw.into_iter().map(|pair| (pair[0], pair[1])).collect();
         let members = load_group_members(db_pool, group_route.group_id).await?;
         let member_set: HashSet<u32> = members.iter().map(|m| m.node_id as u32).collect();
 

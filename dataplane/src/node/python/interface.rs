@@ -7,8 +7,8 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::warn;
 
 use crate::node::FlowId;
-use crate::node::packet::Packet;
 use crate::node::NodeId;
+use crate::node::packet::Packet;
 use nextmini_messages::GroupId;
 
 #[derive(Clone, Debug)]

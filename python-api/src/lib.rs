@@ -1,5 +1,6 @@
 mod buffer;
 
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
@@ -12,8 +13,8 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 use nextmini::node::conductor::Conductor;
-use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::config::LocalConfig;
+use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::PythonInterfaceHandle;
@@ -154,6 +155,31 @@ impl Dataplane {
         )
     }
 
+    #[pyo3(signature = (src_node_id, group_ip, src_port=None, dst_port=None))]
+    fn register_receiver_for_group(
+        &self,
+        py: Python<'_>,
+        src_node_id: usize,
+        group_ip: &str,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<Py<PacketReceiver>> {
+        let src_ip =
+            (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+        let dst_ip = parse_ipv4(group_ip)?;
+        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+        let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
+
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id));
+        Py::new(
+            py,
+            PacketReceiver {
+                inner: Arc::new(Mutex::new(rx)),
+            },
+        )
+    }
+
     #[pyo3(signature = (dst_node_id, frozen, src_port=None, dst_port=None))]
     fn send_to_node(
         &self,
@@ -168,6 +194,25 @@ impl Dataplane {
         let src_ip = self.cfg.user_space_address;
         let dst_ip =
             (dst_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+
+        let packet = Packet::build_ipv4_tcp_packet(src_ip, sp, dst_ip, dp, &body);
+        self.processor.process_packet(packet);
+        Ok(())
+    }
+
+    #[pyo3(signature = (dst_ip, frozen, src_port=None, dst_port=None))]
+    fn send_to_ip(
+        &self,
+        dst_ip: &str,
+        frozen: FrozenBuffer,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<()> {
+        let body = frozen.inner.clone();
+        let dst_ip = parse_ipv4(dst_ip)?;
+        let src_ip = self.cfg.user_space_address;
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
 
@@ -219,7 +264,6 @@ impl Dataplane {
         }
         Ok(())
     }
-
 }
 
 #[pymodule]
@@ -228,4 +272,9 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PacketReceiver>()?;
     m.add_class::<FrozenBuffer>()?;
     Ok(())
+}
+
+fn parse_ipv4(addr: &str) -> PyResult<Ipv4Addr> {
+    addr.parse::<Ipv4Addr>()
+        .map_err(|e| PyRuntimeError::new_err(format!("invalid IPv4 address \"{addr}\": {e}")))
 }
