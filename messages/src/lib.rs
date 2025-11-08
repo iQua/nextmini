@@ -14,14 +14,6 @@ pub const INVALID: usize = usize::MAX;
 /// Identifier for a multicast group allocated by the controller.
 pub type GroupId = usize;
 
-/// Directory entry mapping a multicast group id to its allocated IP.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct GroupDirectoryEntry {
-    pub group_id: GroupId,
-    #[serde(with = "ip_ser")]
-    pub group_ip: Ipv4Addr,
-}
-
 /// Routing table entry describing multicast fan-out from a node.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GroupRoutingTableEntry {
@@ -302,12 +294,10 @@ pub enum ControllerToDataplane {
     },
     GroupCreated {
         group_id: GroupId,
-        #[serde(with = "ip_ser")]
-        group_ip: Ipv4Addr,
         src_node_id: usize,
-    },
-    InstallGroupDirectory {
-        groups: Vec<GroupDirectoryEntry>,
+        label: String,
+        success: bool,
+        error_msg: Option<String>,
     },
     InstallGroupRoutes {
         group_id: GroupId,

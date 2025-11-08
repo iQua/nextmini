@@ -51,20 +51,28 @@ class MulticastSender:
         # Initialize Dataplane
         self.dataplane = Dataplane(config_path)
         
-        # Wait for all nodes to connect and routes to be established
-        print(f"[Sender] Waiting 5 seconds for all nodes to connect and routes to be established...")
-        time.sleep(5)
+        # Wait for controller connection
+        print(f"[Sender] Waiting for controller connection...")
+        time.sleep(3)
         
-        # Create multicast group (NEW SIMPLIFIED API!)
+        # Create multicast group and wait for broadcast confirmation
         print(f"[Sender] Creating multicast group {GROUP_TEST}...")
-        self.dataplane.create_group(GROUP_TEST, "test-group")
+        try:
+            success = self.dataplane.create_group_wait(
+                GROUP_TEST,
+                timeout_ms=10000  # 10 second timeout
+                # label defaults to "group-520"
+            )
+            if not success:
+                raise RuntimeError(f"Failed to create group {GROUP_TEST}")
+            print(f"[Sender] Group {GROUP_TEST} created successfully! (Broadcast confirmed)")
+        except Exception as e:
+            print(f"[Sender] ERROR: {e}")
+            raise
         
-        print(f"[Sender] Group created!")
-        
-        # Wait MUCH longer for receivers to join the group and be ready
-        # Receivers wait 10s to see group exists, then join, then 2s to be ready = ~12s total
-        print(f"[Sender] Waiting 20 seconds for receivers to join the group and be ready...")
-        time.sleep(20)
+        # Wait for receivers to join (minimal wait for routes to propagate)
+        print(f"[Sender] Waiting 5 seconds for receivers to join and routes to install...")
+        time.sleep(5)
         
         print(f"[Sender] Ready to send!")
     

@@ -72,17 +72,30 @@ class MulticastReceiver:
         self.dataplane = Dataplane(config_path)
         self.sender_node_id = sender_node_id
         
-        # Wait for all nodes to connect AND for sender to create the group
-        # Sender waits 5s then creates group, so we wait 10s to be safe
-        print(f"[Receiver] Waiting 10 seconds for all nodes and for sender to create group...")
-        time.sleep(10)
+        # Wait for controller connection
+        print(f"[Receiver] Waiting for controller connection...")
+        time.sleep(3)
         
-        # Join multicast group (NEW SIMPLIFIED API!)
+        # Wait for sender to create the group (using broadcast events)
+        print(f"[Receiver] Waiting for group {GROUP_TEST} to be created...")
+        try:
+            success = self.dataplane.wait_for_group_created(
+                GROUP_TEST,
+                timeout_ms=30000  # 30 second timeout
+            )
+            if not success:
+                raise RuntimeError(f"Group {GROUP_TEST} was not created in time")
+            print(f"[Receiver] Group {GROUP_TEST} exists! Now joining...")
+        except Exception as e:
+            print(f"[Receiver] ERROR: {e}")
+            raise
+        
+        # Join multicast group
         print(f"[Receiver] Joining multicast group {GROUP_TEST}...")
         self.dataplane.join_group(GROUP_TEST)
         
-        # Wait for group membership to propagate
-        print(f"[Receiver] Waiting 2 seconds for group membership...")
+        # Wait for routing tables to be installed
+        print(f"[Receiver] Waiting 2 seconds for routes to install...")
         time.sleep(2)
         
         # Register receiver for multicast packets (NEW SIMPLIFIED API!)

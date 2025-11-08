@@ -2,14 +2,14 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupId};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -21,11 +21,25 @@ use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
+/// group-related events for internal subscribers (e.g., Python API)
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum GroupEvent {
+    Created {
+        group_id: GroupId,
+        src_node_id: usize,
+        label: String,
+        success: bool,
+        error: Option<String>,
+    },
+}
+
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    group_event_sender: broadcast::Sender<GroupEvent>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
@@ -35,6 +49,9 @@ impl ControllerInterfaceHandle {
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+
+        // creates a broadcast channel for group events (capacity 100 events)
+        let (group_event_sender, _) = broadcast::channel(100);
 
         // connects to the controller over WebSockets
         let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
@@ -51,6 +68,7 @@ impl ControllerInterfaceHandle {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            group_event_sender: group_event_sender.clone(),
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
@@ -86,6 +104,7 @@ impl ControllerInterfaceHandle {
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
+            group_event_sender,
         };
 
         tokio::spawn(async move {
@@ -175,6 +194,12 @@ impl ControllerInterfaceHandle {
             );
         };
     }
+
+    /// subscribe to group events (for Python API)
+    #[allow(dead_code)]
+    pub fn subscribe_group_events(&self) -> broadcast::Receiver<GroupEvent> {
+        self.group_event_sender.subscribe()
+    }
 }
 
 #[cfg(test)]
@@ -183,12 +208,14 @@ impl ControllerInterfaceHandle {
         let config = LocalConfig::default();
         let processors = ProcessorHandle::new(config.clone());
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        let (group_event_sender, _) = broadcast::channel(100);
 
         (
             Self {
                 config,
                 processors,
                 northbridge_sender,
+                group_event_sender,
             },
             northbridge_receiver,
         )
@@ -236,6 +263,9 @@ pub struct ControllerToDataplaneReceiver {
     // handles for user-space TCP flows
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
+    
+    // broadcast channel for group events
+    group_event_sender: broadcast::Sender<GroupEvent>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -339,6 +369,50 @@ impl ControllerToDataplaneReceiver {
                     );
                     self.user_space_client.add_flows(client_flows);
                 }
+            }
+
+            ControllerToDataplane::GroupCreated {
+                group_id,
+                src_node_id,
+                label,
+                success,
+                error_msg,
+            } => {
+                let current_node_id = self.config.node_id;
+
+                if src_node_id == current_node_id {
+                    // this node created the group
+                    if success {
+                        info!(
+                            "Created multicast group {} ('{}') successfully.",
+                            group_id, label
+                        );
+                    } else {
+                        error!(
+                            "Failed to create multicast group {} ('{}'): {}.",
+                            group_id,
+                            label,
+                            error_msg.as_deref().unwrap_or("unknown error")
+                        );
+                    }
+                } else {
+                    // another node created the group
+                    if success {
+                        info!(
+                            "Multicast group {} ('{}') created by node {}.",
+                            group_id, label, src_node_id
+                        );
+                    }
+                }
+
+                // broadcast event to internal subscribers (Python API)
+                let _ = self.group_event_sender.send(GroupEvent::Created {
+                    group_id,
+                    src_node_id,
+                    label,
+                    success,
+                    error: error_msg,
+                });
             }
 
             ControllerToDataplane::InstallGroupRoutes {

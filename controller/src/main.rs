@@ -679,7 +679,7 @@ async fn handle_connection(
                             continue;
                         };
 
-                        match create_group(
+                        let (success, error_msg) = match create_group(
                             &db_pool,
                             group_id,
                             &label,
@@ -693,10 +693,26 @@ async fn handle_connection(
                                     "Created multicast group {} ('{}', IP: {}) for node {}.",
                                     group.id, group.label, group.group_ip, node_id
                                 );
+                                (true, None)
                             }
                             Err(e) => {
                                 error!("Failed to create group {} ('{}'): {}", group_id, label, e);
+                                (false, Some(e.to_string()))
                             }
+                        };
+
+                        // broadcasts to all nodes
+                        if let Err(e) = broadcast_group_created(
+                            &node_ws,
+                            group_id,
+                            node_id,
+                            &label,
+                            success,
+                            error_msg,
+                        )
+                        .await
+                        {
+                            error!("Failed to broadcast GroupCreated for group {}: {}.", group_id, e);
                         }
                     }
                     DataplaneToController::JoinGroup { group_id } => {
@@ -745,4 +761,52 @@ async fn handle_connection(
         info!("Connection closed for node {}.", node_id);
         node_ws.write().await.remove(&node_id);
     }
+}
+
+/// Broadcast group created event to all connected nodes.
+async fn broadcast_group_created(
+    node_ws: &NodeWriterMap,
+    group_id: usize,
+    src_node_id: usize,
+    label: &str,
+    success: bool,
+    error_msg: Option<String>,
+) -> anyhow::Result<()> {
+    let message = ControllerToDataplane::GroupCreated {
+        group_id,
+        src_node_id,
+        label: label.to_string(),
+        success,
+        error_msg,
+    };
+    let payload = rmp_serde::to_vec(&message)?;
+
+    let guard = node_ws.read().await;
+    let mut broadcast_count = 0;
+    let mut failed_count = 0;
+
+    for (node_id, writer) in guard.iter() {
+        match writer
+            .lock()
+            .await
+            .send(Message::binary(payload.clone()))
+            .await
+        {
+            Ok(_) => broadcast_count += 1,
+            Err(e) => {
+                error!(
+                    "Failed to broadcast GroupCreated (group {}) to node {}: {}",
+                    group_id, node_id, e
+                );
+                failed_count += 1;
+            }
+        }
+    }
+
+    info!(
+        "Broadcasted GroupCreated (group {}, src_node {}, success={}) to {} nodes ({} failed).",
+        group_id, src_node_id, success, broadcast_count, failed_count
+    );
+
+    Ok(())
 }

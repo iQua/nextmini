@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
-use nextmini::node::controller::interface::ControllerInterfaceHandle;
+use nextmini::node::controller::interface::{ControllerInterfaceHandle, GroupEvent};
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::PythonInterfaceHandle;
@@ -190,15 +190,98 @@ impl Dataplane {
         Ok(())
     }
 
-    /// Creates a multicast group with user-specified group_id.
-    /// The group_ip will be calculated deterministically: multicast_pool_base + group_id.
-    fn create_group(&self, group_id: usize, label: &str) -> PyResult<()> {
+    /// Creates a multicast group and waits for broadcast confirmation.
+    /// Returns True if creation succeeded, False if timeout or creation failed.
+    /// If label is not provided, it defaults to "group-{group_id}".
+    #[pyo3(signature = (group_id, label=None, timeout_ms=10000))]
+    fn create_group_wait(
+        &self,
+        group_id: usize,
+        label: Option<&str>,
+        timeout_ms: u64,
+    ) -> PyResult<bool> {
+        let my_node_id = self.cfg.node_id;
+        let mut event_receiver = self.controller.subscribe_group_events();
+
+        // auto-generates label if not provided
+        let label = label
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("group-{}", group_id));
+
+        // sends create group message
         let msg = DataplaneToController::CreateGroup {
             group_id,
-            label: label.to_string(),
+            label: label.clone(),
         };
         rt().block_on(self.controller.send(msg));
-        Ok(())
+
+        // waits for broadcast confirmation (for my node)
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        match rt().block_on(async {
+            tokio::time::timeout(timeout, async {
+                loop {
+                    match event_receiver.recv().await {
+                        Ok(GroupEvent::Created {
+                            group_id: gid,
+                            src_node_id,
+                            success,
+                            error,
+                            ..
+                        }) if gid == group_id && src_node_id == my_node_id => {
+                            if !success {
+                                if let Some(err) = error {
+                                    eprintln!("Group creation failed: {}", err);
+                                }
+                            }
+                            return success;
+                        }
+                        Err(_) => return false,
+                        _ => continue,
+                    }
+                }
+            })
+            .await
+        }) {
+            Ok(success) => Ok(success),
+            Err(_) => Err(PyRuntimeError::new_err(format!(
+                "Timeout waiting for group {} creation confirmation after {}ms.",
+                group_id, timeout_ms
+            ))),
+        }
+    }
+
+    /// Waits for a multicast group to be created by another node.
+    /// Returns True if group was created, False if timeout.
+    #[pyo3(signature = (group_id, timeout_ms=30000))]
+    fn wait_for_group_created(&self, group_id: usize, timeout_ms: u64) -> PyResult<bool> {
+        let mut event_receiver = self.controller.subscribe_group_events();
+
+        // waits for group creation broadcast from any node
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        match rt().block_on(async {
+            tokio::time::timeout(timeout, async {
+                loop {
+                    match event_receiver.recv().await {
+                        Ok(GroupEvent::Created {
+                            group_id: gid,
+                            success,
+                            ..
+                        }) if gid == group_id && success => {
+                            return true;
+                        }
+                        Err(_) => return false,
+                        _ => continue,
+                    }
+                }
+            })
+            .await
+        }) {
+            Ok(created) => Ok(created),
+            Err(_) => Err(PyRuntimeError::new_err(format!(
+                "Timeout waiting for group {} creation after {}ms.",
+                group_id, timeout_ms
+            ))),
+        }
     }
 
     /// Joins an existing multicast group by group_id.
