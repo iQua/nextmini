@@ -5,9 +5,9 @@ use tracing::info;
 
 use nextmini_messages::Protocol;
 
+use super::controller::interface::ControllerInterfaceHandle;
 use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
-use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
@@ -26,6 +26,9 @@ pub struct Conductor {
 
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
+
+    /// controller interface handle for sending custom messages upstream
+    controller: ControllerInterfaceHandle,
 }
 
 impl Conductor {
@@ -46,6 +49,7 @@ impl Conductor {
             local_interface,
             processors,
             reporter,
+            controller: controller_interface,
         }
     }
 
@@ -192,5 +196,11 @@ impl Conductor {
     pub fn local_config(&self) -> LocalConfig {
         // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
         self.config.clone()
+    }
+
+    /// Exposes a controller handle so bindings can emit DataplaneToController messages.
+    #[allow(dead_code)]
+    pub fn controller_handle(&self) -> ControllerInterfaceHandle {
+        self.controller.clone()
     }
 }

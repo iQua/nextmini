@@ -26,12 +26,14 @@ use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupDirec
 
 use crate::config::{Config, get_config};
 use crate::db::{
-    add_group_member, create_group, init_db, load_group_directory, remove_group_member,
-    setup_flow_notification, setup_group_notification, setup_route_notification,
+    add_group_member, create_group, init_db, load_group_directory, load_group_members,
+    remove_group_member, setup_flow_notification, setup_group_notification, setup_route_notification,
 };
-use crate::models::{DbRoute, Node, Route};
+use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
-use crate::utils::{StartupResponseParams, build_routes_for_node, build_startup_response};
+use crate::utils::{
+    StartupResponseParams, build_group_routes_for_node, build_routes_for_node, build_startup_response,
+};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 pub type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -374,6 +376,15 @@ async fn handle_connection(
                             }
                         } else {
                             error!("No routes to install for node {}.", node_id);
+                        }
+
+                        if let Err(e) =
+                            send_multicast_state_to_node(&db_pool, node_id, &write_arc).await
+                        {
+                            error!(
+                                "Failed to send multicast state to node {} during startup: {}",
+                                node_id, e
+                            );
                         }
 
                         // as a new node connects, checks if all the expected nodes are now connected
@@ -787,21 +798,7 @@ async fn broadcast_group_directory(
     db_pool: &Pool<Postgres>,
     node_ws: &NodeWriterMap,
 ) -> AnyResult<()> {
-    let groups = load_group_directory(db_pool).await?;
-    let mut entries = Vec::with_capacity(groups.len());
-
-    for group in groups {
-        match group.group_ip.parse::<Ipv4Addr>() {
-            Ok(ip) => entries.push(GroupDirectoryEntry {
-                group_id: group.id as usize,
-                group_ip: ip,
-            }),
-            Err(e) => warn!(
-                "Skipping group {} due to invalid IP {}: {}",
-                group.id, group.group_ip, e
-            ),
-        }
-    }
+    let entries = load_group_directory_entries(db_pool).await?;
 
     let message = ControllerToDataplane::InstallGroupDirectory {
         groups: entries.clone(),
@@ -825,6 +822,122 @@ async fn broadcast_group_directory(
                 "Broadcasted InstallGroupDirectory with {} entries to node {}.",
                 entries.len(),
                 node_id
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_group_directory_entries(
+    db_pool: &Pool<Postgres>,
+) -> AnyResult<Vec<GroupDirectoryEntry>> {
+    let groups = load_group_directory(db_pool).await?;
+    let mut entries = Vec::with_capacity(groups.len());
+
+    for group in groups {
+        match group.group_ip.parse::<Ipv4Addr>() {
+            Ok(ip) => entries.push(GroupDirectoryEntry {
+                group_id: group.id as usize,
+                group_ip: ip,
+            }),
+            Err(e) => warn!(
+                "Skipping group {} due to invalid IP {}: {}",
+                group.id, group.group_ip, e
+            ),
+        }
+    }
+
+    Ok(entries)
+}
+
+async fn send_multicast_state_to_node(
+    db_pool: &Pool<Postgres>,
+    node_id: usize,
+    writer: &Arc<Mutex<WebSocketWriter>>,
+) -> AnyResult<()> {
+    send_group_directory_to_node(db_pool, node_id, writer).await?;
+    send_group_routes_snapshot_to_node(db_pool, node_id, writer).await?;
+    Ok(())
+}
+
+async fn send_group_directory_to_node(
+    db_pool: &Pool<Postgres>,
+    node_id: usize,
+    writer: &Arc<Mutex<WebSocketWriter>>,
+) -> AnyResult<()> {
+    let entries = load_group_directory_entries(db_pool).await?;
+    let message = ControllerToDataplane::InstallGroupDirectory {
+        groups: entries.clone(),
+    };
+    let payload = rmp_serde::to_vec(&message)?;
+
+    if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
+        error!(
+            "Failed to send InstallGroupDirectory to node {}: {}",
+            node_id, e
+        );
+    } else {
+        info!(
+            "Sent InstallGroupDirectory with {} entries to node {}.",
+            entries.len(),
+            node_id
+        );
+    }
+
+    Ok(())
+}
+
+async fn send_group_routes_snapshot_to_node(
+    db_pool: &Pool<Postgres>,
+    node_id: usize,
+    writer: &Arc<Mutex<WebSocketWriter>>,
+) -> AnyResult<()> {
+    let stored_routes =
+        sqlx::query_as::<_, DbGroupRoute>("SELECT group_id, src_node_id, edges FROM group_routes")
+            .fetch_all(db_pool)
+            .await?;
+
+    if stored_routes.is_empty() {
+        return Ok(());
+    }
+
+    for group_route in stored_routes {
+        let dag_raw: Vec<[u32; 2]> = serde_json::from_value(group_route.edges.clone())?;
+        if dag_raw.is_empty() {
+            continue;
+        }
+
+        let dag_edges: Vec<(u32, u32)> = dag_raw.into_iter().map(|pair| (pair[0], pair[1])).collect();
+        let members = load_group_members(db_pool, group_route.group_id).await?;
+        let member_set: HashSet<u32> = members.iter().map(|m| m.node_id as u32).collect();
+
+        let Some(entry) = build_group_routes_for_node(
+            group_route.group_id as usize,
+            group_route.src_node_id as u32,
+            &dag_edges,
+            node_id as u32,
+            &member_set,
+        ) else {
+            continue;
+        };
+
+        let message = ControllerToDataplane::InstallGroupRoutes {
+            group_id: group_route.group_id as usize,
+            src_node_id: group_route.src_node_id as usize,
+            routes: vec![entry],
+        };
+        let payload = rmp_serde::to_vec(&message)?;
+
+        if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
+            error!(
+                "Failed to send InstallGroupRoutes for group {} to node {}: {}",
+                group_route.group_id, node_id, e
+            );
+        } else {
+            info!(
+                "Sent InstallGroupRoutes snapshot for group {} to node {}.",
+                group_route.group_id, node_id
             );
         }
     }

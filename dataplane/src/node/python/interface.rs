@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use ahash::AHashMap;
@@ -7,6 +8,8 @@ use tracing::warn;
 
 use crate::node::FlowId;
 use crate::node::packet::Packet;
+use crate::node::NodeId;
+use nextmini_messages::GroupId;
 
 #[derive(Clone, Debug)]
 pub struct PythonInterfaceHandle {
@@ -72,6 +75,15 @@ impl PythonInterfaceHandle {
             Err(packet)
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum PythonEvent {
+    GroupCreated {
+        group_id: GroupId,
+        src_node_id: NodeId,
+        group_ip: Ipv4Addr,
+    },
 }
 
 #[cfg(test)]

@@ -16,3 +16,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "0.9"
 
 nextmini = { path = "../dataplane", package = "nextmini" }
+nextmini-messages = { path = "../messages", package = "nextmini-messages" }

@@ -105,11 +105,6 @@ impl RoutingTable {
         }
     }
 
-    /// Extracts source and destination node IDs from the flow ID.
-    pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
-        self.config.extract_node_ids_from_flow(flow_id)
-    }
-
     /// Installs or refreshes the multicast group directory.
     pub fn install_group_directory(&mut self, groups: Vec<GroupDirectoryEntry>) {
         self.group_dir.clear();
@@ -152,14 +147,17 @@ impl RoutingTable {
             return None;
         }
 
-        let (src_node, dst_node) = self.config.extract_node_ids_from_flow(flow_id);
         let dst_ip = flow_id.dst_ip();
-
         if let Some(&group_id) = self.group_dir.get(&dst_ip) {
-            Some(RouteKey::Multicast(src_node, group_id))
-        } else {
-            Some(RouteKey::Unicast(src_node, dst_node))
+            let src_node = self.config.ip_to_node_id(flow_id.src_ip());
+            if src_node == INVALID {
+                return None;
+            }
+            return Some(RouteKey::Multicast(src_node, group_id));
         }
+
+        let (src_node, dst_node) = self.config.extract_node_ids_from_flow(flow_id);
+        Some(RouteKey::Unicast(src_node, dst_node))
     }
 
     /// Selects a route id for the provided route key.
@@ -248,7 +246,10 @@ impl RoutingTable {
             return;
         };
 
-        let (src_node_id, _) = self.extract_node_ids_from_flow(flow_id);
+        let src_node_id = self.config.ip_to_node_id(flow_id.src_ip());
+        if src_node_id == INVALID {
+            return;
+        }
 
         // only reports for app flows (not user space flows)
         // user space flows use a dedicated server port (check both directions)

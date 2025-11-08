@@ -12,6 +12,7 @@ use tracing::{error, info, warn};
 
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, SchedulingDiscipline,
+    INVALID,
 };
 
 use crate::node::scheduler::drop::DropStrategy;
@@ -434,9 +435,7 @@ impl LocalConfig {
             }
             // binds the external client/server address to the node ID
             subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
-            _ => {
-                panic!("Detected unknown IP {}.", ip);
-            }
+            _ => INVALID,
         }
     }
 
@@ -446,6 +445,14 @@ impl LocalConfig {
         let dst_ip = flow_id.dst_ip();
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
+
+        if src_node_id == INVALID || dst_node_id == INVALID {
+            panic!(
+                "Detected unknown IP(s) in flow {} -> {}.",
+                src_ip, dst_ip
+            );
+        }
+
         (src_node_id, dst_node_id)
     }
 

@@ -12,11 +12,13 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
 use nextmini::node::conductor::Conductor;
+use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::config::LocalConfig;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::PythonInterfaceHandle;
 use nextmini::node::{NodeId, NodeIdExt};
+use nextmini_messages::DataplaneToController;
 
 pub use crate::buffer::FrozenBuffer;
 
@@ -73,6 +75,7 @@ struct Dataplane {
     cfg: LocalConfig,
     py_if: PythonInterfaceHandle,
     processor: ProcessorHandle,
+    controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
 }
 
@@ -92,6 +95,7 @@ impl Dataplane {
         let processor = conductor.processor_handle();
         let mut cfg = conductor.local_config();
         cfg.config_path = config_path.to_string();
+        let controller = conductor.controller_handle();
 
         let py_if = PythonInterfaceHandle::new(cfg.channel_capacity);
         processor.connect_python_interface(py_if.clone());
@@ -104,6 +108,7 @@ impl Dataplane {
             cfg,
             py_if,
             processor,
+            controller,
             _join: join,
         })
     }
@@ -168,6 +173,36 @@ impl Dataplane {
 
         let packet = Packet::build_ipv4_tcp_packet(src_ip, sp, dst_ip, dp, &body);
         self.processor.process_packet(packet);
+        Ok(())
+    }
+
+    #[pyo3(signature = (label))]
+    fn create_group(&self, label: String) -> PyResult<()> {
+        rt().block_on(async {
+            self.controller
+                .send(DataplaneToController::CreateGroup { label })
+                .await;
+        });
+        Ok(())
+    }
+
+    #[pyo3(signature = (group_id))]
+    fn join_group(&self, group_id: usize) -> PyResult<()> {
+        rt().block_on(async {
+            self.controller
+                .send(DataplaneToController::JoinGroup { group_id })
+                .await;
+        });
+        Ok(())
+    }
+
+    #[pyo3(signature = (group_id))]
+    fn leave_group(&self, group_id: usize) -> PyResult<()> {
+        rt().block_on(async {
+            self.controller
+                .send(DataplaneToController::LeaveGroup { group_id })
+                .await;
+        });
         Ok(())
     }
 
