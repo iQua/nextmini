@@ -51,10 +51,9 @@ class MulticastSender:
         # Initialize Dataplane
         self.dataplane = Dataplane(config_path)
         
-        # Wait for controller connection and all nodes to be ready
-        # Need to wait long enough for receivers to also start listening for group events
-        print(f"[Sender] Waiting for controller connection and all receivers to start listening...")
-        time.sleep(8)  # wait for all 4 nodes to connect AND receivers to start listening
+        # Wait for controller connection
+        print(f"[Sender] Waiting for controller connection...")
+        time.sleep(3)
         
         # Create multicast group and wait for broadcast confirmation
         print(f"[Sender] Creating multicast group {GROUP_TEST}...")
