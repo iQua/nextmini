@@ -78,6 +78,7 @@ impl PythonInterfaceHandle {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // Defined for the python bindings crate.
 pub enum PythonEvent {
     GroupCreated {
         group_id: GroupId,
