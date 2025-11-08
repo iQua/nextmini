@@ -703,14 +703,16 @@ async fn handle_connection(
 
                         // broadcasts to all nodes
                         if let Err(e) = broadcast_group_created(
-                            &node_ws, group_id, node_id, &label, success, error_msg,
+                            &node_ws,
+                            group_id,
+                            node_id,
+                            &label,
+                            success,
+                            error_msg,
                         )
                         .await
                         {
-                            error!(
-                                "Failed to broadcast GroupCreated for group {}: {}.",
-                                group_id, e
-                            );
+                            error!("Failed to broadcast GroupCreated for group {}: {}.", group_id, e);
                         }
                     }
                     DataplaneToController::JoinGroup { group_id } => {

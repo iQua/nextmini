@@ -1,7 +1,6 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
-use tokio::sync::broadcast;
 use tracing::info;
 
 use nextmini_messages::Protocol;
@@ -15,7 +14,6 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::python::interface::PythonEvent;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -34,13 +32,10 @@ pub struct Conductor {
 }
 
 impl Conductor {
-    pub async fn new(
-        config: LocalConfig,
-        python_event_sender: Option<broadcast::Sender<PythonEvent>>,
-    ) -> Self {
+    pub async fn new(config: LocalConfig) -> Self {
         // connects the processors with its downstream local interface writers to send packets out
         let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone(), python_event_sender).await;
+            ControllerInterfaceHandle::new(config.clone()).await;
 
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();

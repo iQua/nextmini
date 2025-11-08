@@ -348,7 +348,7 @@ fn child_process(args: ChildProcessArgs) -> isize {
         }
 
         // starts the conductor
-        let conductor = Conductor::new(config, None).await;
+        let conductor = Conductor::new(config).await;
         conductor.run().await;
 
         Ok::<(), Box<dyn std::error::Error>>(())

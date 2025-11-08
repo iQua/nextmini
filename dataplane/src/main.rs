@@ -70,7 +70,7 @@ async fn deploy(config: LocalConfig) {
 
     // spawns the Conductor task with the receiver
     tracker.spawn(async move {
-        let conductor = Conductor::new(config, None).await;
+        let conductor = Conductor::new(config).await;
         conductor.run().await;
     });
 

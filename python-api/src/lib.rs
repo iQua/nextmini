@@ -13,10 +13,10 @@ use tokio::sync::Mutex;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
-use nextmini::node::controller::interface::ControllerInterfaceHandle;
+use nextmini::node::controller::interface::{ControllerInterfaceHandle, GroupEvent};
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::python::interface::{PythonEvent, PythonInterfaceHandle};
+use nextmini::node::python::interface::PythonInterfaceHandle;
 use nextmini::node::{GroupId, GroupIdExt, NodeId, NodeIdExt};
 use nextmini_messages::DataplaneToController;
 
@@ -91,20 +91,13 @@ impl Dataplane {
         initial_cfg.config_path = config_path.to_string();
         initial_cfg.populate_runtime_defaults();
 
-        // Create PythonInterface first to get event sender
-        let py_if = PythonInterfaceHandle::new(initial_cfg.channel_capacity);
-        let python_event_sender = py_if.event_sender();
-
-        // Create conductor with python event sender
-        let conductor = rt().block_on(async {
-            Conductor::new(initial_cfg.clone(), Some(python_event_sender)).await
-        });
-
+        let conductor = rt().block_on(async { Conductor::new(initial_cfg.clone()).await });
         let processor = conductor.processor_handle();
         let controller = conductor.controller_handle();
         let mut cfg = conductor.local_config();
         cfg.config_path = config_path.to_string();
 
+        let py_if = PythonInterfaceHandle::new(cfg.channel_capacity);
         processor.connect_python_interface(py_if.clone());
 
         let join = rt().spawn(async move {
@@ -208,7 +201,7 @@ impl Dataplane {
         timeout_ms: u64,
     ) -> PyResult<bool> {
         let my_node_id = self.cfg.node_id;
-        let mut event_receiver = self.py_if.subscribe_events();
+        let mut event_receiver = self.controller.subscribe_group_events();
 
         // auto-generates label if not provided
         let label = label
@@ -228,7 +221,7 @@ impl Dataplane {
             tokio::time::timeout(timeout, async {
                 loop {
                     match event_receiver.recv().await {
-                        Ok(PythonEvent::GroupCreated {
+                        Ok(GroupEvent::Created {
                             group_id: gid,
                             src_node_id,
                             success,
@@ -261,7 +254,7 @@ impl Dataplane {
     /// Returns True if group was created, False if timeout.
     #[pyo3(signature = (group_id, timeout_ms=30000))]
     fn wait_for_group_created(&self, group_id: usize, timeout_ms: u64) -> PyResult<bool> {
-        let mut event_receiver = self.py_if.subscribe_events();
+        let mut event_receiver = self.controller.subscribe_group_events();
 
         // waits for group creation broadcast from any node
         let timeout = std::time::Duration::from_millis(timeout_ms);
@@ -269,7 +262,7 @@ impl Dataplane {
             tokio::time::timeout(timeout, async {
                 loop {
                     match event_receiver.recv().await {
-                        Ok(PythonEvent::GroupCreated {
+                        Ok(GroupEvent::Created {
                             group_id: gid,
                             success,
                             ..
