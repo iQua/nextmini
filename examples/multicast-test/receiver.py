@@ -72,9 +72,11 @@ class MulticastReceiver:
         self.dataplane = Dataplane(config_path)
         self.sender_node_id = sender_node_id
         
-        # Wait for controller connection
-        print(f"[Receiver] Waiting for controller connection...")
-        time.sleep(3)
+        # Start listening for group events IMMEDIATELY (before sleep)
+        # This is critical because broadcast channel doesn't save history!
+        print(f"[Receiver] Waiting for controller connection and listening for group events...")
+        # Note: wait_for_group_created() will handle both waiting and listening
+        # We removed the sleep(3) here to start listening as soon as possible
         
         # Wait for sender to create the group (using broadcast events)
         print(f"[Receiver] Waiting for group {GROUP_TEST} to be created...")
