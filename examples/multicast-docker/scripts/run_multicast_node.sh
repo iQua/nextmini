@@ -15,8 +15,8 @@ if [[ -n "${WAIT_FOR:-}" ]]; then
   wait_attempts="${WAIT_ATTEMPTS:-60}"
   echo "Waiting for ${wait_host}:${wait_port} (${wait_attempts} attempts)..." >&2
   for attempt in $(seq 1 "${wait_attempts}"); do
-    if bash -c "exec 3<>/dev/tcp/${wait_host}/${wait_port}" 2>/dev/null; then
-      exec 3>&-
+    # Use timeout with nc (netcat) to avoid WebSocket handshake errors
+    if timeout 1 bash -c "echo > /dev/tcp/${wait_host}/${wait_port}" 2>/dev/null; then
       echo "Controller reachable (attempt ${attempt})." >&2
       break
     fi

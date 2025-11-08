@@ -186,6 +186,10 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     dataplane.join_group(group_id)
     wait_for_membership(conninfo, group_id, args.node_id, args.member_timeout)
     log("Controller recorded membership; awaiting data plane routes.", args.quiet)
+    
+    # Give the dataplane a moment to install multicast routes
+    time.sleep(2)
+    log("Routes should be installed, starting to receive...", args.quiet)
 
     receiver = dataplane.register_receiver_for_group(
         src_node_id=args.source_node_id,
@@ -222,6 +226,15 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover - surfaced in docker logs
         log(f"ERROR: {exc}", quiet=False)
         return 1
+    
+    # Keep container running after completion
+    log("Task completed. Keeping container alive (press Ctrl+C to exit)...", quiet=False)
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        log("Received interrupt signal, exiting.", quiet=False)
+    
     return 0
 
 

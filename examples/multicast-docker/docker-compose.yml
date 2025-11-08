@@ -55,11 +55,11 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
-      - cargo-target-source:/workspace/target
     working_dir: /workspace
     environment:
       WAIT_FOR: controller:3000
-      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      SKIP_BUILD: "1"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
     command:
       - bash
       - -lc
@@ -91,11 +91,11 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
-      - cargo-target-receiver-a:/workspace/target
     working_dir: /workspace
     environment:
       WAIT_FOR: controller:3000
-      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      SKIP_BUILD: "1"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
     command:
       - bash
       - -lc
@@ -129,11 +129,11 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
-      - cargo-target-receiver-b:/workspace/target
     working_dir: /workspace
     environment:
       WAIT_FOR: controller:3000
-      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      SKIP_BUILD: "1"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
     command:
       - bash
       - -lc
@@ -162,7 +162,3 @@ networks:
       config:
         - subnet: 172.31.1.0/24
 
-volumes:
-  cargo-target-source:
-  cargo-target-receiver-a:
-  cargo-target-receiver-b:
