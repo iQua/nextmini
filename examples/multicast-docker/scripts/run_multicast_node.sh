@@ -40,9 +40,21 @@ fi
 
 source .venv/bin/activate
 
+uv pip install "psycopg[binary]" >/dev/null
+
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  uv pip install maturin "psycopg[binary]" >/dev/null
+  uv pip install maturin >/dev/null
   maturin develop --release -m python-api/Cargo.toml >/dev/null
+else
+  wheel_path="${NEXTMINI_PY_WHEEL:-}"
+  if [[ -z "${wheel_path}" ]]; then
+    wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+  fi
+  if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
+    echo "SKIP_BUILD=1 but nextmini_py wheel not found. Set NEXTMINI_PY_WHEEL to a valid path." >&2
+    exit 1
+  fi
+  uv pip install "${wheel_path}" >/dev/null
 fi
 
 exec python examples/multicast-docker/scripts/multicast_node.py \

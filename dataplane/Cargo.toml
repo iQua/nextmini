@@ -24,7 +24,6 @@ tun-rs = { version = "2", features = ["async"] }
 url = "2"
 clap-serde-derive = "0.2"
 num_cpus = "1"
-console-subscriber = "0.5"
 s2n-quic = "1"
 rand = "0.9"
 approx = "0.5"

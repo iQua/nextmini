@@ -55,6 +55,7 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
+      - cargo-target-source:/workspace/target
     working_dir: /workspace
     environment:
       WAIT_FOR: controller:3000
@@ -90,6 +91,7 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
+      - cargo-target-receiver-a:/workspace/target
     working_dir: /workspace
     environment:
       WAIT_FOR: controller:3000
@@ -127,6 +129,7 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
+      - cargo-target-receiver-b:/workspace/target
     working_dir: /workspace
     environment:
       WAIT_FOR: controller:3000
@@ -158,3 +161,8 @@ networks:
     ipam:
       config:
         - subnet: 172.31.1.0/24
+
+volumes:
+  cargo-target-source:
+  cargo-target-receiver-a:
+  cargo-target-receiver-b:
