@@ -9,7 +9,7 @@ use tokio_tungstenite::{
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupId};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -19,39 +19,26 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
+use crate::node::python::interface::PythonEvent;
 use crate::node::scheduler::sched::SchedulerHandle;
-
-/// group-related events for internal subscribers (e.g., Python API)
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub enum GroupEvent {
-    Created {
-        group_id: GroupId,
-        src_node_id: usize,
-        label: String,
-        success: bool,
-        error: Option<String>,
-    },
-}
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
-    group_event_sender: broadcast::Sender<GroupEvent>,
+    #[allow(dead_code)]
+    python_event_sender: Option<broadcast::Sender<PythonEvent>>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
+        python_event_sender: Option<broadcast::Sender<PythonEvent>>,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
-
-        // creates a broadcast channel for group events (capacity 100 events)
-        let (group_event_sender, _) = broadcast::channel(100);
 
         // connects to the controller over WebSockets
         let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
@@ -68,7 +55,7 @@ impl ControllerInterfaceHandle {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
-            group_event_sender: group_event_sender.clone(),
+            python_event_sender: python_event_sender.clone(),
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
@@ -104,7 +91,7 @@ impl ControllerInterfaceHandle {
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
-            group_event_sender,
+            python_event_sender,
         };
 
         tokio::spawn(async move {
@@ -194,12 +181,6 @@ impl ControllerInterfaceHandle {
             );
         };
     }
-
-    /// subscribe to group events (for Python API)
-    #[allow(dead_code)]
-    pub fn subscribe_group_events(&self) -> broadcast::Receiver<GroupEvent> {
-        self.group_event_sender.subscribe()
-    }
 }
 
 #[cfg(test)]
@@ -208,14 +189,13 @@ impl ControllerInterfaceHandle {
         let config = LocalConfig::default();
         let processors = ProcessorHandle::new(config.clone());
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
-        let (group_event_sender, _) = broadcast::channel(100);
 
         (
             Self {
                 config,
                 processors,
                 northbridge_sender,
-                group_event_sender,
+                python_event_sender: None,
             },
             northbridge_receiver,
         )
@@ -263,9 +243,9 @@ pub struct ControllerToDataplaneReceiver {
     // handles for user-space TCP flows
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
-    
-    // broadcast channel for group events
-    group_event_sender: broadcast::Sender<GroupEvent>,
+
+    // optional broadcast channel for python/application events
+    python_event_sender: Option<broadcast::Sender<PythonEvent>>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -405,14 +385,16 @@ impl ControllerToDataplaneReceiver {
                     }
                 }
 
-                // broadcast event to internal subscribers (Python API)
-                let _ = self.group_event_sender.send(GroupEvent::Created {
-                    group_id,
-                    src_node_id,
-                    label,
-                    success,
-                    error: error_msg,
-                });
+                // broadcast event to python/application layer if available
+                if let Some(sender) = &self.python_event_sender {
+                    let _ = sender.send(PythonEvent::GroupCreated {
+                        group_id,
+                        src_node_id,
+                        label,
+                        success,
+                        error: error_msg,
+                    });
+                }
             }
 
             ControllerToDataplane::InstallGroupRoutes {

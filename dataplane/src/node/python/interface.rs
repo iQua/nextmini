@@ -2,11 +2,25 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::warn;
 
 use crate::node::FlowId;
 use crate::node::packet::Packet;
+use nextmini_messages::GroupId;
+
+/// Events sent from dataplane to Python API or other application layers
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub enum PythonEvent {
+    GroupCreated {
+        group_id: GroupId,
+        src_node_id: usize,
+        label: String,
+        success: bool,
+        error: Option<String>,
+    },
+}
 
 #[derive(Clone, Debug)]
 pub struct PythonInterfaceHandle {
@@ -19,15 +33,20 @@ struct Inner {
     #[allow(dead_code)] // Only read when the python bindings register flows.
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>,
+    event_sender: broadcast::Sender<PythonEvent>,
 }
 
 impl PythonInterfaceHandle {
     #[allow(dead_code)] // Constructed from the python bindings crate.
     pub fn new(capacity: usize) -> Self {
+        // creates broadcast channel for events
+        let (event_sender, _) = broadcast::channel(100);
+
         Self {
             inner: Arc::new(Inner {
                 capacity,
                 senders: Mutex::new(AHashMap::new()),
+                event_sender,
             }),
         }
     }
@@ -71,6 +90,18 @@ impl PythonInterfaceHandle {
         } else {
             Err(packet)
         }
+    }
+
+    /// Subscribe to events from the dataplane.
+    #[allow(dead_code)]
+    pub fn subscribe_events(&self) -> broadcast::Receiver<PythonEvent> {
+        self.inner.event_sender.subscribe()
+    }
+
+    /// Get a clone of the event sender.
+    #[allow(dead_code)]
+    pub fn event_sender(&self) -> broadcast::Sender<PythonEvent> {
+        self.inner.event_sender.clone()
     }
 }
 
