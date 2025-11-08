@@ -58,7 +58,6 @@ pub enum DataplaneToController {
         assignments: Vec<RouteAssignment>,
     },
     CreateGroup {
-        group_id: GroupId,
         label: String,
     },
     JoinGroup {
@@ -273,10 +272,6 @@ pub enum ControllerToDataplane {
         user_space_base_addr: Ipv4Addr,
         #[serde(with = "ip_ser")]
         external_base_addr: Ipv4Addr,
-        #[serde(with = "ip_ser")]
-        multicast_pool_base: Ipv4Addr,
-        #[serde(with = "ip_ser")]
-        multicast_pool_mask: Ipv4Addr,
         max_server_port: u16,
         protocol: Protocol,
         scheduler_type: SchedulingDiscipline,

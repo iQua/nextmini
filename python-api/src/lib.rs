@@ -13,12 +13,10 @@ use tokio::sync::Mutex;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
-use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::PythonInterfaceHandle;
-use nextmini::node::{GroupId, GroupIdExt, NodeId, NodeIdExt};
-use nextmini_messages::DataplaneToController;
+use nextmini::node::{NodeId, NodeIdExt};
 
 pub use crate::buffer::FrozenBuffer;
 
@@ -75,7 +73,6 @@ struct Dataplane {
     cfg: LocalConfig,
     py_if: PythonInterfaceHandle,
     processor: ProcessorHandle,
-    controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
 }
 
@@ -93,7 +90,6 @@ impl Dataplane {
 
         let conductor = rt().block_on(async { Conductor::new(initial_cfg.clone()).await });
         let processor = conductor.processor_handle();
-        let controller = conductor.controller_handle();
         let mut cfg = conductor.local_config();
         cfg.config_path = config_path.to_string();
 
@@ -108,7 +104,6 @@ impl Dataplane {
             cfg,
             py_if,
             processor,
-            controller,
             _join: join,
         })
     }
@@ -190,83 +185,6 @@ impl Dataplane {
         Ok(())
     }
 
-    /// Creates a multicast group with user-specified group_id.
-    /// The group_ip will be calculated deterministically: multicast_pool_base + group_id.
-    fn create_group(&self, group_id: usize, label: &str) -> PyResult<()> {
-        let msg = DataplaneToController::CreateGroup {
-            group_id,
-            label: label.to_string(),
-        };
-        rt().block_on(self.controller.send(msg));
-        Ok(())
-    }
-
-    /// Joins an existing multicast group by group_id.
-    fn join_group(&self, group_id: usize) -> PyResult<()> {
-        let msg = DataplaneToController::JoinGroup { group_id };
-        rt().block_on(self.controller.send(msg));
-        Ok(())
-    }
-
-    /// Leaves a multicast group by group_id.
-    fn leave_group(&self, group_id: usize) -> PyResult<()> {
-        let msg = DataplaneToController::LeaveGroup { group_id };
-        rt().block_on(self.controller.send(msg));
-        Ok(())
-    }
-
-    /// Sends data to a multicast group using group_id.
-    /// The group_ip is calculated automatically: multicast_pool_base + group_id.
-    #[pyo3(signature = (group_id, frozen, src_port=None, dst_port=None))]
-    fn send_to_group(
-        &self,
-        group_id: usize,
-        frozen: FrozenBuffer,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<()> {
-        // Calculate group_ip from group_id (deterministic)
-        let group_ip = (group_id as GroupId).group_ip(self.cfg.multicast_pool_base);
-
-        let body = frozen.inner.clone();
-        let src_ip = self.cfg.user_space_address;
-        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-
-        let packet = Packet::build_ipv4_tcp_packet(src_ip, sp, group_ip, dp, &body);
-        self.processor.process_packet(packet);
-        Ok(())
-    }
-
-    /// Registers a receiver for multicast packets from a specific source to a group.
-    /// Returns a PacketReceiver that can be used to receive packets.
-    /// The group_ip is calculated automatically from group_id.
-    #[pyo3(signature = (group_id, src_node_id, src_port=None, dst_port=None))]
-    fn register_group_receiver(
-        &self,
-        py: Python<'_>,
-        group_id: usize,
-        src_node_id: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<Py<PacketReceiver>> {
-        // Calculate group_ip from group_id (deterministic)
-        let group_ip = (group_id as GroupId).group_ip(self.cfg.multicast_pool_base);
-
-        let src_ip =
-            (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
-        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-        let flow_id = Packet::flow_id_from_parts(src_ip, sp, group_ip, dp);
-
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id));
-        Py::new(
-            py,
-            PacketReceiver {
-                inner: Arc::new(Mutex::new(rx)),
-            },
-        )
-    }
 }
 
 #[pymodule]

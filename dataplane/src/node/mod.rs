@@ -20,10 +20,6 @@ use jumphash::JumpHasher;
 /// The node ID.
 pub type NodeId = usize;
 
-/// The group ID for multicast groups.
-#[allow(dead_code)] // Used by python-api crate
-pub type GroupId = usize;
-
 /// Converts a NodeId to a virtual IP address.
 pub trait NodeIdExt {
     /// Computes a new virtual IP address by adding the node ID to the base address.
@@ -52,22 +48,6 @@ impl NodeIdExt for NodeId {
         } else {
             Ipv4Addr::from(new_ip)
         }
-    }
-}
-
-/// Converts a GroupId to a multicast IP address.
-#[allow(dead_code)] // Used by python-api crate
-pub trait GroupIdExt {
-    /// Computes a multicast IP address by adding the group ID to the base address.
-    fn group_ip(&self, base_addr: Ipv4Addr) -> Ipv4Addr;
-}
-
-#[allow(dead_code)] // Used by python-api crate
-impl GroupIdExt for GroupId {
-    fn group_ip(&self, base_addr: Ipv4Addr) -> Ipv4Addr {
-        let base_ip = u32::from(base_addr);
-        let group_ip = base_ip.wrapping_add(*self as u32);
-        Ipv4Addr::from(group_ip)
     }
 }
 

@@ -5,7 +5,9 @@ use smallvec::SmallVec;
 use std::net::Ipv4Addr;
 use tracing::debug;
 
-use nextmini_messages::{GroupId, GroupRoutingTableEntry, INVALID, RoutingTableEntry};
+use nextmini_messages::{
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, RoutingTableEntry,
+};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -32,6 +34,9 @@ pub struct RoutingTable {
     /// Route ID -> next hops
     route_next_hop: AHashMap<usize, Vec<NodeId>>,
 
+    /// Multicast group directory (group_ip -> group_id)
+    group_dir: AHashMap<Ipv4Addr, GroupId>,
+
     /// Jump consistent hasher (Lamping and Veach, Google 2014)
     jump_hasher: JumpHasher,
 
@@ -48,6 +53,7 @@ impl RoutingTable {
         Self {
             available_routes: AHashMap::default(),
             route_next_hop: AHashMap::default(),
+            group_dir: AHashMap::default(),
             local_id: config.node_id,
             config,
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
@@ -104,11 +110,12 @@ impl RoutingTable {
         self.config.extract_node_ids_from_flow(flow_id)
     }
 
-    /// Calculates group_id from a multicast IP address.
-    fn group_id_from_ip(&self, ip: Ipv4Addr) -> GroupId {
-        let base_u32 = u32::from(self.config.multicast_pool_base);
-        let ip_u32 = u32::from(ip);
-        (ip_u32 - base_u32) as GroupId
+    /// Installs or refreshes the multicast group directory.
+    pub fn install_group_directory(&mut self, groups: Vec<GroupDirectoryEntry>) {
+        self.group_dir.clear();
+        for entry in groups {
+            self.group_dir.insert(entry.group_ip, entry.group_id);
+        }
     }
 
     /// Installs multicast routing information for a specific (src, group) pair.
@@ -145,17 +152,12 @@ impl RoutingTable {
             return None;
         }
 
+        let (src_node, dst_node) = self.config.extract_node_ids_from_flow(flow_id);
         let dst_ip = flow_id.dst_ip();
 
-        // Check if dst_ip is in multicast range FIRST (before trying to convert to node_id)
-        if self.config.is_multicast_ip(dst_ip) {
-            let group_id = self.group_id_from_ip(dst_ip);
-            let src_ip = flow_id.src_ip();
-            let src_node = self.config.ip_to_node_id(src_ip);
+        if let Some(&group_id) = self.group_dir.get(&dst_ip) {
             Some(RouteKey::Multicast(src_node, group_id))
         } else {
-            // Only extract node IDs if it's NOT a multicast address
-            let (src_node, dst_node) = self.config.extract_node_ids_from_flow(flow_id);
             Some(RouteKey::Unicast(src_node, dst_node))
         }
     }
@@ -308,18 +310,17 @@ mod tests {
 
     #[test]
     fn returns_multicast_next_hops_from_group_routes() {
-        let mut config = make_config(2);
-        // Set multicast pool to match the test group_ip
-        config.multicast_pool_base = Ipv4Addr::new(239, 255, 0, 0);
-        config.multicast_pool_mask = Ipv4Addr::new(255, 255, 0, 0);
+        let config = make_config(2);
         let mut table = RoutingTable::new(config.clone());
 
-        // Use a proper multicast IP (239.255.0.7 = base + group_id 7)
-        let group_id = 7;
-        let group_ip = Ipv4Addr::new(239, 255, 0, 7);
+        let group_ip = Ipv4Addr::new(10, 0, 0, 200);
+        table.install_group_directory(vec![GroupDirectoryEntry {
+            group_id: 7,
+            group_ip,
+        }]);
 
         table.install_group_routes(
-            group_id,
+            7,
             1,
             vec![GroupRoutingTableEntry {
                 route_id: 7,
@@ -345,15 +346,14 @@ mod tests {
 
     #[test]
     fn reinstalls_group_routes_clears_cached_selection() {
-        let mut config = make_config(2);
-        // Set multicast pool to match the test group_ip
-        config.multicast_pool_base = Ipv4Addr::new(239, 255, 0, 0);
-        config.multicast_pool_mask = Ipv4Addr::new(255, 255, 0, 0);
+        let config = make_config(2);
         let mut table = RoutingTable::new(config.clone());
 
-        // Use a proper multicast IP (239.255.0.9 = base + group_id 9)
-        let group_id = 9;
-        let group_ip = Ipv4Addr::new(239, 255, 0, 9);
+        let group_ip = Ipv4Addr::new(10, 0, 0, 180);
+        table.install_group_directory(vec![GroupDirectoryEntry {
+            group_id: 9,
+            group_ip,
+        }]);
 
         let flow_id = make_flow_id(
             Ipv4Addr::new(10, 0, 0, 1),
@@ -363,7 +363,7 @@ mod tests {
         );
 
         table.install_group_routes(
-            group_id,
+            9,
             1,
             vec![GroupRoutingTableEntry {
                 route_id: 9,
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(&first[..], &[5]);
 
         table.install_group_routes(
-            group_id,
+            9,
             1,
             vec![GroupRoutingTableEntry {
                 route_id: 9,

@@ -22,7 +22,7 @@ impl FrozenBuffer {
     fn __len__(&self) -> usize {
         self.inner.len()
     }
-
+    
     fn read<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner)
     }
@@ -79,3 +79,5 @@ impl FrozenBuffer {
         Self { inner: bytes }
     }
 }
+
+

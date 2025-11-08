@@ -341,6 +341,26 @@ impl ControllerToDataplaneReceiver {
                 }
             }
 
+            ControllerToDataplane::GroupCreated {
+                group_id,
+                group_ip,
+                src_node_id,
+            } => {
+                info!(
+                    "Registered multicast group {} ({}) owned by node {}.",
+                    group_id, group_ip, src_node_id
+                );
+            }
+
+            ControllerToDataplane::InstallGroupDirectory { groups } => {
+                info!(
+                    "Installing multicast group directory ({} entries) on node {}.",
+                    groups.len(),
+                    self.config.node_id
+                );
+                self.processors.update_group_directory(groups).await;
+            }
+
             ControllerToDataplane::InstallGroupRoutes {
                 group_id,
                 src_node_id,

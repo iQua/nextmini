@@ -1,6 +1,0 @@
-# Multicast test nodes
-# Format: NODE_ID | HOST | LOCAL_IP | ROLE | PORT
-1|ubuntu@206.12.88.93|206.12.88.93|sender|8080
-2|root@157.180.84.40|157.180.84.40|receiver|8080
-3|ubuntu@206.12.91.229|206.12.91.229|receiver|8080
-4|ubuntu@206.12.95.232|206.12.95.232|receiver|8080

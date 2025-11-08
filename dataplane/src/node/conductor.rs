@@ -24,9 +24,6 @@ pub struct Conductor {
     /// the processors
     processors: ProcessorHandle,
 
-    /// the controller interface for sending messages to controller
-    controller_interface: ControllerInterfaceHandle,
-
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
 }
@@ -48,7 +45,6 @@ impl Conductor {
             config,
             local_interface,
             processors,
-            controller_interface,
             reporter,
         }
     }
@@ -196,12 +192,5 @@ impl Conductor {
     pub fn local_config(&self) -> LocalConfig {
         // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
         self.config.clone()
-    }
-
-    /// Returns a clone of the controller interface handle for sending messages to controller.
-    #[allow(dead_code)] // Consumed by the python bindings crate.
-    pub fn controller_handle(&self) -> ControllerInterfaceHandle {
-        // Used by the optional `nextmini_py` extension to send control messages.
-        self.controller_interface.clone()
     }
 }
