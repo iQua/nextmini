@@ -33,18 +33,20 @@ struct Inner {
     #[allow(dead_code)] // Only read when the python bindings register flows.
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>,
-    // Event sender for broadcasting to the single event receiver
-    event_sender: Mutex<Option<mpsc::Sender<PythonEvent>>>,
+    event_sender: broadcast::Sender<PythonEvent>,
 }
 
 impl PythonInterfaceHandle {
     #[allow(dead_code)] // Constructed from the python bindings crate.
     pub fn new(capacity: usize) -> Self {
+        // creates broadcast channel for events
+        let (event_sender, _) = broadcast::channel(100);
+
         Self {
             inner: Arc::new(Inner {
                 capacity,
                 senders: Mutex::new(AHashMap::new()),
-                event_sender: Mutex::new(None),
+                event_sender,
             }),
         }
     }
@@ -90,22 +92,16 @@ impl PythonInterfaceHandle {
         }
     }
 
-    /// Register a single event receiver. This should be called once during initialization.
-    /// Returns the receiver and a sender that should be passed to ControllerInterface.
+    /// Subscribe to events from the dataplane.
     #[allow(dead_code)]
-    pub fn register_event_receiver(&self) -> (mpsc::Receiver<PythonEvent>, mpsc::Sender<PythonEvent>) {
-        let (tx, rx) = mpsc::channel(100);
-        let mut sender_lock = self.inner.event_sender.blocking_lock();
-        *sender_lock = Some(tx.clone());
-        (rx, tx)
+    pub fn subscribe_events(&self) -> broadcast::Receiver<PythonEvent> {
+        self.inner.event_sender.subscribe()
     }
 
-    /// Send an event to the registered receiver (used internally by ControllerInterface).
+    /// Get a clone of the event sender.
     #[allow(dead_code)]
-    pub async fn send_event(&self, event: PythonEvent) {
-        if let Some(sender) = self.inner.event_sender.lock().await.as_ref() {
-            let _ = sender.send(event).await;
-        }
+    pub fn event_sender(&self) -> broadcast::Sender<PythonEvent> {
+        self.inner.event_sender.clone()
     }
 }
 

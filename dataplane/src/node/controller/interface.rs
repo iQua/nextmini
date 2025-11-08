@@ -2,7 +2,7 @@ use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
@@ -28,14 +28,14 @@ pub struct ControllerInterfaceHandle {
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
     #[allow(dead_code)]
-    python_event_sender: Option<mpsc::Sender<PythonEvent>>,
+    python_event_sender: Option<broadcast::Sender<PythonEvent>>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-        python_event_sender: Option<mpsc::Sender<PythonEvent>>,
+        python_event_sender: Option<broadcast::Sender<PythonEvent>>,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
@@ -244,8 +244,8 @@ pub struct ControllerToDataplaneReceiver {
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
 
-    // optional mpsc channel for python/application events (single receiver)
-    python_event_sender: Option<mpsc::Sender<PythonEvent>>,
+    // optional broadcast channel for python/application events
+    python_event_sender: Option<broadcast::Sender<PythonEvent>>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -385,7 +385,7 @@ impl ControllerToDataplaneReceiver {
                     }
                 }
 
-                // sends event to python if available
+                // broadcast event to python/application layer if available
                 if let Some(sender) = &self.python_event_sender {
                     let _ = sender.send(PythonEvent::GroupCreated {
                         group_id,
@@ -393,7 +393,7 @@ impl ControllerToDataplaneReceiver {
                         label,
                         success,
                         error: error_msg,
-                    }).await;
+                    });
                 }
             }
 
