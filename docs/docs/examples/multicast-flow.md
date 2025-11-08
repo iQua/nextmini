@@ -83,7 +83,7 @@ The source application sends packets to `239.255.0.10`.
 
 - The dataplane recognizes the destination IP as a multicast group.
 - `get_next_hops_by_flow` returns all downstream next hops for `(src=1, group_id=7)`.
-- The processor clones packets for each hop; connectors in Max mode reuse per-hop scheduler channels.
+- The processor clones packets for each hop using the routing table’s next-hop list.
 - Leaf nodes that are group members see local delivery via their routing entry.
 
 ---

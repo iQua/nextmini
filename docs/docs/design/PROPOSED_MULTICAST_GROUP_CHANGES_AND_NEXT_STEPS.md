@@ -94,12 +94,6 @@ Triggers/Notifications:
   - If `dst_ip` in map: treat as multicast, key becomes `(S, G)`, replicate to **all** next hops returned.
   - If a hop equals local node id: deliver to TUN (local).
 
-**Operating modes**:
-- **Normal**: scheduler-based replication (already implemented).
-- **Max**: connector replicates to **all downstream next hops**; relays fan out upstream bytes to many peers (already scaffolded).
-
----
-
 ## Observability & Safety
 
 - Existing metrics aggregation works per-hop; aggregate bytes reflect replication.
@@ -723,16 +717,6 @@ impl Processor {
 
 ---
 
-File: dataplane/src/node/connector.rs
-Change: **(Plan hook) Ensure Max mode uses the same `get_next_hops_by_flow` replication for groups**
-
-```rs
-// In process_packet(...) use get_next_hops_by_flow(...) to obtain all next hops,
-// establish per-next-hop TCP Max schedulers once, then send clones to each.
-// (See prior multicast fan-out scaffolding added for Max mode.)
-```
-
----
 
 File: controller/src/config.rs
 Change: **(Plan hook) Optionally reserve a multicast address pool in controller config**
@@ -808,7 +792,7 @@ Controller recomputes DAG and pushes updated `InstallGroupRoutes`.
 
   * Dataplane conductor should route:
 
-    * `InstallGroupDirectory` → broadcast to processors/connectors (`UpdateGroupDirectory(groups)`).
+    * `InstallGroupDirectory` → broadcast to processors (`UpdateGroupDirectory(groups)`).
     * `InstallGroupRoutes` → broadcast (`UpdateGroupRoutes(group_id, src_node_id, entries)`).
   * Controller WS layer to accept `CreateGroup/JoinGroup/LeaveGroup`, allocate `group_ip`, persist, and trigger recompute.
 
@@ -819,4 +803,3 @@ Controller recomputes DAG and pushes updated `InstallGroupRoutes`.
 * **Incremental installs**: The `InstallGroupRoutes` is designed to be idempotent and can be sent only to nodes affected by a change to reduce churn.
 
 This plan is designed so that the **controller owns the multicast DAG** and the **dataplane merely follows next_hops**, keeping the fast-path simple and consistent with the existing unicast pipeline.
-

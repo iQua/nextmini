@@ -98,12 +98,6 @@ _Status — 2025-11-04 (OrangeBear): Pending kickoff; waiting on controller/mess
   - If `dst_ip` in map: treat as multicast, key becomes `(S, G)`, replicate to **all** next hops returned.
   - If a hop equals local node id: deliver to TUN (local).
 
-**Operating modes**:
-- **Normal**: scheduler-based replication (already implemented).
-- **Max**: connector replicates to **all downstream next hops**; relays fan out upstream bytes to many peers (already scaffolded).
-
----
-
 ## Observability & Safety
 
 - Existing metrics aggregation works per-hop; aggregate bytes reflect replication.
@@ -132,8 +126,8 @@ _Status — 2025-11-04 (RedBear & OrangeBear): Controller helpers now covered by
 ## Implementation Status (2025-11-04)
 
 - [ ] Messages/config/database scaffolding (RedBear) — in progress per agent mail, awaiting interface handoff.
-- [x] Dataplane routing table refactor and group directory plumbing (OrangeBear) — routing table internals rewritten with `RouteKey`/multicast cache; processor + connector now ingest `InstallGroupDirectory`/`InstallGroupRoutes` and fan out packets per hop.
-- [x] Processor/connector multicast fan-out updates (OrangeBear) — normal + Max paths now replicate per hop with cached schedulers.
+- [x] Dataplane routing table refactor and group directory plumbing (OrangeBear) — routing table internals rewritten with `RouteKey`/multicast cache; processors now ingest `InstallGroupDirectory`/`InstallGroupRoutes` and fan out packets per hop.
+- [x] Processor multicast fan-out updates (OrangeBear) — per-hop replication now uses cached schedulers.
 - [x] Controller DAG recompute helpers and notification wiring — helper utilities + unit tests landed; listener/recompute wiring still pending.
 - [ ] Docs/examples/test refresh — design + example docs added; unit/integration test expansion still pending.
 
@@ -141,4 +135,4 @@ _Status — 2025-11-04 (RedBear & OrangeBear): Controller helpers now covered by
 
 - ✅ **Dataplane unit coverage**: tests in `dataplane/src/node/route.rs` cover `install_group_directory`, `install_group_routes`, and multicast `get_next_hops_by_flow`.
 - **Controller integration**: scripted test to drive `CreateGroup`/`JoinGroup` against Postgres (requires live DB) and assert `InstallGroupRoutes` emission.
-- **Max mode soak**: stress test per-hop scheduler caching once Max-mode harness is ready.
+- **Fan-out soak**: stress test per-hop scheduler caching once the harness is ready.

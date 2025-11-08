@@ -74,9 +74,8 @@ The routing table stores:
 ### Packet Processing
 
 - **Processor** – uses `get_next_hops_by_flow` for every packet, cloning when multiple hops exist.
-- **Connector (Max mode)** – maintains scheduler handles per `(flow, next_hop)` so fan-out reuses connections.
 
-Both actors react to `InstallGroupDirectory` and `InstallGroupRoutes` messages.
+Processors react to `InstallGroupDirectory` and `InstallGroupRoutes` messages.
 
 ---
 
@@ -106,6 +105,6 @@ Unit tests cover helper logic (`compute_group_tree_edges`, `build_group_routes_f
 
 - Dataplane routing-table tests that validate group directory lookups.
 - Integration tests that drive membership changes via Postgres notifications.
-- Performance checks for fan-out under Max mode.
+- Performance checks for high-fan-out multicast branches.
 
 See `docs/docs/examples/multicast-flow.md` for an end-to-end walkthrough.
