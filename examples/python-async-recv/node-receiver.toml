@@ -1,0 +1,10 @@
+controller_addr = "ws://127.0.0.1:3000"
+private_network_interface = "lo"
+private_network_name = "python_async"
+node_id = 2
+n_nodes = 2
+num_tun_queues = 1
+num_packet_processors = 2
+channel_capacity = 1024
+queue_capacity = 1024
+feature = "concurrent"
