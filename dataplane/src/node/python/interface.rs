@@ -33,20 +33,18 @@ struct Inner {
     #[allow(dead_code)] // Only read when the python bindings register flows.
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>,
-    event_sender: broadcast::Sender<PythonEvent>,
+    // Event sender for broadcasting to the single event receiver
+    event_sender: Mutex<Option<mpsc::Sender<PythonEvent>>>,
 }
 
 impl PythonInterfaceHandle {
     #[allow(dead_code)] // Constructed from the python bindings crate.
     pub fn new(capacity: usize) -> Self {
-        // creates broadcast channel for events
-        let (event_sender, _) = broadcast::channel(100);
-
         Self {
             inner: Arc::new(Inner {
                 capacity,
                 senders: Mutex::new(AHashMap::new()),
-                event_sender,
+                event_sender: Mutex::new(None),
             }),
         }
     }
@@ -92,16 +90,22 @@ impl PythonInterfaceHandle {
         }
     }
 
-    /// Subscribe to events from the dataplane.
+    /// Register a single event receiver. This should be called once during initialization.
+    /// Returns the receiver and a sender that should be passed to ControllerInterface.
     #[allow(dead_code)]
-    pub fn subscribe_events(&self) -> broadcast::Receiver<PythonEvent> {
-        self.inner.event_sender.subscribe()
+    pub fn register_event_receiver(&self) -> (mpsc::Receiver<PythonEvent>, mpsc::Sender<PythonEvent>) {
+        let (tx, rx) = mpsc::channel(100);
+        let mut sender_lock = self.inner.event_sender.blocking_lock();
+        *sender_lock = Some(tx.clone());
+        (rx, tx)
     }
 
-    /// Get a clone of the event sender.
+    /// Send an event to the registered receiver (used internally by ControllerInterface).
     #[allow(dead_code)]
-    pub fn event_sender(&self) -> broadcast::Sender<PythonEvent> {
-        self.inner.event_sender.clone()
+    pub async fn send_event(&self, event: PythonEvent) {
+        if let Some(sender) = self.inner.event_sender.lock().await.as_ref() {
+            let _ = sender.send(event).await;
+        }
     }
 }
 

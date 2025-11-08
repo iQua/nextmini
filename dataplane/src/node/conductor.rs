@@ -1,7 +1,7 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::info;
 
 use nextmini_messages::Protocol;
@@ -36,7 +36,7 @@ pub struct Conductor {
 impl Conductor {
     pub async fn new(
         config: LocalConfig,
-        python_event_sender: Option<broadcast::Sender<PythonEvent>>,
+        python_event_sender: Option<mpsc::Sender<PythonEvent>>,
     ) -> Self {
         // connects the processors with its downstream local interface writers to send packets out
         let (controller_interface, reporter, flowstats_reporter) =
