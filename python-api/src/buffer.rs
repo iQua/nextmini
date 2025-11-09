@@ -1,6 +1,7 @@
 use std::ffi::{c_char, c_int, c_void};
 
 use bytes::Bytes;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
@@ -25,6 +26,35 @@ impl FrozenBuffer {
 
     fn read<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
         PyBytes::new(py, &self.inner)
+    }
+
+    #[pyo3(signature = (start, length=None))]
+    fn slice(&self, start: usize, length: Option<usize>) -> PyResult<Self> {
+        let total = self.inner.len();
+        if start > total {
+            return Err(PyValueError::new_err(format!(
+                "slice start {} exceeds buffer length {}",
+                start, total
+            )));
+        }
+
+        let end = match length {
+            Some(len) => start
+                .checked_add(len)
+                .ok_or_else(|| PyValueError::new_err("slice length overflow"))?,
+            None => total,
+        };
+
+        if end > total {
+            return Err(PyValueError::new_err(format!(
+                "slice end {} exceeds buffer length {}",
+                end, total
+            )));
+        }
+
+        Ok(Self {
+            inner: self.inner.slice(start..end),
+        })
     }
 
     unsafe fn __getbuffer__(

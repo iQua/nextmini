@@ -55,10 +55,12 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
+      - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
       SKIP_BUILD: "${SKIP_BUILD:-1}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      ARTIFACT_DIR: "/artifacts"
     command:
       - bash
       - -lc
@@ -76,6 +78,12 @@ services:
         --group-timeout ${GROUP_TIMEOUT:-120}
         --member-timeout ${MEMBER_TIMEOUT:-90}
         --expected-subscribers ${EXPECTED_SUBSCRIBERS:-2}
+        --chunk-size ${CHUNK_SIZE:-6144}
+        ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
+        ${TENSOR_PATH:+--tensor-path ${TENSOR_PATH}}
+        ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
+        ${VERIFY_CHECKSUM:+--verify-checksum}
+        --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
       multicast:
         ipv4_address: 172.31.1.10
@@ -92,10 +100,12 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
+      - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
       SKIP_BUILD: "${SKIP_BUILD:-1}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      ARTIFACT_DIR: "/artifacts"
     command:
       - bash
       - -lc
@@ -113,6 +123,13 @@ services:
         --group-timeout ${GROUP_TIMEOUT:-300}
         --member-timeout ${MEMBER_TIMEOUT:-240}
         --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
+        --chunk-size ${CHUNK_SIZE:-6144}
+        ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
+        ${SINK_PATH_A:+--sink-path ${SINK_PATH_A}}
+        ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
+        ${VERIFY_CHECKSUM:+--verify-checksum}
+        --artifact-dir ${ARTIFACT_DIR:-/artifacts}
+        --checksum-wait-seconds ${CHECKSUM_WAIT_SECONDS:-300}
     networks:
       multicast:
         ipv4_address: 172.31.1.11
@@ -129,10 +146,12 @@ services:
         condition: service_started
     volumes:
       - ../../:/workspace:cached
+      - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
       SKIP_BUILD: "${SKIP_BUILD:-1}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      ARTIFACT_DIR: "/artifacts"
     command:
       - bash
       - -lc
@@ -150,6 +169,13 @@ services:
         --group-timeout ${GROUP_TIMEOUT:-300}
         --member-timeout ${MEMBER_TIMEOUT:-240}
         --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
+        --chunk-size ${CHUNK_SIZE:-6144}
+        ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
+        ${SINK_PATH_B:+--sink-path ${SINK_PATH_B}}
+        ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
+        ${VERIFY_CHECKSUM:+--verify-checksum}
+        --artifact-dir ${ARTIFACT_DIR:-/artifacts}
+        --checksum-wait-seconds ${CHECKSUM_WAIT_SECONDS:-300}
     networks:
       multicast:
         ipv4_address: 172.31.1.12

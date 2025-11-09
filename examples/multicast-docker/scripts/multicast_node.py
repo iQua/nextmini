@@ -9,11 +9,13 @@ or receives multicast payloads depending on the assigned role.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import math
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Tuple
+from typing import Iterator, Tuple
 
 import psycopg
 
@@ -69,6 +71,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of payloads receivers should wait for.",
     )
     parser.add_argument(
+        "--expected-bytes",
+        type=int,
+        default=None,
+        help="Total bytes receivers should reconstruct when streaming tensors.",
+    )
+    parser.add_argument(
         "--receive-timeout-ms",
         type=int,
         default=5000,
@@ -103,6 +111,47 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2,
         help="Number of receivers that must subscribe before the source starts sending.",
+    )
+    parser.add_argument(
+        "--tensor-path",
+        type=Path,
+        default=None,
+        help="Optional tensor file to stream instead of random payloads.",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=6144,
+        help="Chunk size when splitting tensors (defaults to MTU-safe 6144 bytes).",
+    )
+    parser.add_argument(
+        "--sink-path",
+        type=Path,
+        default=None,
+        help="Where receivers should write the reconstructed tensor (optional).",
+    )
+    parser.add_argument(
+        "--verify-checksum",
+        action="store_true",
+        help="Compute SHA-256 of the stream and compare with the source output.",
+    )
+    parser.add_argument(
+        "--checksum-path",
+        type=Path,
+        default=None,
+        help="Shared checksum file path (defaults to <artifact_dir>/<group_label>.sha256).",
+    )
+    parser.add_argument(
+        "--checksum-wait-seconds",
+        type=int,
+        default=300,
+        help="Seconds receivers wait for the checksum file when verify mode is enabled.",
+    )
+    parser.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=Path("/artifacts"),
+        help="Directory used to persist tensors/checksums between containers.",
     )
     parser.add_argument("--quiet", action="store_true", help="Reduce log noise.")
     return parser.parse_args()
@@ -211,6 +260,38 @@ def ensure_ready_table(conninfo: str) -> None:
             )
 
 
+def chunk_count(total_bytes: int, chunk_size: int) -> int:
+    if total_bytes <= 0:
+        return 0
+    return math.ceil(total_bytes / chunk_size)
+
+
+def stream_tensor_chunks(path: Path, chunk_size: int) -> Iterator[bytes]:
+    if chunk_size <= 0:
+        raise ValueError("chunk-size must be positive")
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+def resolve_checksum_path(args: argparse.Namespace) -> Path:
+    if args.checksum_path is not None:
+        return args.checksum_path
+    return args.artifact_dir / f"{args.group_label}.sha256"
+
+
+def wait_for_checksum_file(path: Path, timeout: int) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return path.read_text().strip()
+        time.sleep(1)
+    raise TimeoutError(f"Timed out waiting for checksum file at {path}.")
+
+
 def mark_receiver_ready(conninfo: str, group_id: int, node_id: int) -> None:
     ensure_ready_table(conninfo)
     with psycopg.connect(conninfo) as conn:
@@ -234,6 +315,7 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
         dataplane, label=args.group_label, timeout=args.group_timeout, quiet=args.quiet
     )
 
+    ensure_ready_table(conninfo)
     wait_for_count(
         conninfo,
         group_id,
@@ -253,23 +335,74 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
         args.quiet,
     )
 
-    payload = os.urandom(args.payload_size)
-    frozen = FrozenBuffer(payload)
+    tensor_mode = args.tensor_path is not None
+    total_bytes = args.expected_bytes
+    if tensor_mode:
+        if not args.tensor_path.exists():
+            raise SystemExit(f"Tensor file {args.tensor_path} does not exist")
+        file_size = args.tensor_path.stat().st_size
+        total_bytes = total_bytes or file_size
+        if total_bytes <= 0:
+            raise SystemExit("Tensor file is empty; nothing to transmit.")
+        payload_goal = chunk_count(total_bytes, args.chunk_size)
+    else:
+        payload_goal = args.payload_count
+
     delay = args.sleep_ms / 1000 if args.sleep_ms else 0.0
 
-    for idx in range(1, args.payload_count + 1):
-        dataplane.send_to_ip(
-            group_ip,
-            frozen,
-            src_port=args.src_port,
-            dst_port=args.dst_port,
-        )
-        log(
-            f"[{idx}/{args.payload_count}] sent {len(payload)} bytes to {group_ip}",
-            args.quiet,
-        )
-        if delay:
-            time.sleep(delay)
+    if tensor_mode:
+        sha = hashlib.sha256() if args.verify_checksum else None
+        sent = 0
+        bytes_sent = 0
+        for chunk in stream_tensor_chunks(args.tensor_path, args.chunk_size):
+            if not chunk:
+                break
+            sent += 1
+            bytes_sent += len(chunk)
+            buffer = FrozenBuffer(chunk)
+            dataplane.send_to_ip(
+                group_ip,
+                buffer,
+                src_port=args.src_port,
+                dst_port=args.dst_port,
+            )
+            if sha:
+                sha.update(chunk)
+            log(
+                f"[{sent}/{payload_goal}] sent {len(chunk)} bytes to {group_ip}",
+                args.quiet,
+            )
+            if delay:
+                time.sleep(delay)
+
+        if sent != payload_goal:
+            log(
+                f"WARN: streamed {sent} chunks but expected {payload_goal}; check chunk-size/expected-bytes",
+                args.quiet,
+            )
+
+        if sha:
+            checksum_path = resolve_checksum_path(args)
+            checksum_path.parent.mkdir(parents=True, exist_ok=True)
+            checksum_path.write_text(sha.hexdigest() + "\n")
+            log(f"Wrote checksum to {checksum_path}", args.quiet)
+        log(f"Source streamed {bytes_sent} bytes from {args.tensor_path}", args.quiet)
+    else:
+        payload = os.urandom(args.payload_size)
+        frozen = FrozenBuffer(payload)
+        for idx in range(1, payload_goal + 1):
+            dataplane.send_to_ip(
+                group_ip,
+                frozen,
+                src_port=args.src_port,
+                dst_port=args.dst_port,
+            )
+            log(
+                f"[{idx}/{payload_goal}] sent {len(payload)} bytes to {group_ip}",
+                args.quiet,
+            )
+            if delay:
+                time.sleep(delay)
 
     log("Source finished sending multicast payloads.", args.quiet)
 
@@ -307,6 +440,12 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     mark_receiver_ready(conninfo, group_id, args.node_id)
     log("Routes confirmed, starting to receive...", args.quiet)
 
+    expected_chunks = args.expected
+    if args.expected_bytes:
+        expected_chunks = chunk_count(args.expected_bytes, args.chunk_size)
+        if expected_chunks == 0:
+            raise SystemExit("expected-bytes must be positive when provided.")
+
     receiver = dataplane.register_receiver_for_group(
         src_node_id=args.source_node_id,
         group_ip=group_ip,
@@ -315,21 +454,55 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     )
 
     received = 0
-    while received < args.expected:
+    sink_path = args.sink_path
+    if sink_path is None and args.artifact_dir:
+        suffix = args.node_id if args.node_id is not None else "receiver"
+        sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
+    if sink_path:
+        sink_path.parent.mkdir(parents=True, exist_ok=True)
+    sink_file = sink_path.open("wb") if sink_path else None
+    sha = hashlib.sha256() if args.verify_checksum else None
+    total_bytes = 0
+
+    while received < expected_chunks:
         payload = receiver.recv(timeout_ms=args.receive_timeout_ms)
         if payload is None:
             raise TimeoutError("Receiver timed out while waiting for multicast payloads.")
         received += 1
+        total_bytes += len(payload)
+        if sink_file:
+            sink_file.write(payload)
+        if sha:
+            sha.update(payload)
         log(
-            f"[{received}/{args.expected}] received {len(payload)} bytes from group {group_id}",
+            f"[{received}/{expected_chunks}] received {len(payload)} bytes from group {group_id}",
             args.quiet,
         )
+
+    if sink_file:
+        sink_file.flush()
+        sink_file.close()
+        log(f"Wrote reconstructed tensor to {sink_path} ({total_bytes} bytes)", args.quiet)
+
+    if sha:
+        checksum_path = resolve_checksum_path(args)
+        expected_digest = wait_for_checksum_file(checksum_path, args.checksum_wait_seconds)
+        digest = sha.hexdigest()
+        if digest != expected_digest:
+            raise RuntimeError(
+                f"Checksum mismatch: expected {expected_digest}, received {digest}."
+            )
+        log("Checksum verified successfully.", args.quiet)
 
     log("Receiver observed all expected multicast payloads.", args.quiet)
 
 
 def main() -> int:
     args = parse_args()
+    if args.chunk_size <= 0:
+        raise SystemExit("--chunk-size must be positive.")
+    if args.artifact_dir:
+        args.artifact_dir.mkdir(parents=True, exist_ok=True)
     conninfo = build_conninfo(args)
     try:
         if args.role == "source":
