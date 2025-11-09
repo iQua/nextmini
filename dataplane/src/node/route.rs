@@ -816,5 +816,13 @@ mod tests {
             // Should pick one of the three
             assert!(vec![10, 11, 12].contains(&hop));
         }
+
+        #[test]
+        fn copy_next_hops_rejects_invalid_nodes() {
+            let result = RoutingTable::copy_next_hops(123, &[1, 2, INVALID, 4]);
+
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("Route 123 invalid"));
+        }
     }
 }
