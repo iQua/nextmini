@@ -615,5 +615,69 @@ mod tests {
             assert!(result.is_ok());
             assert_eq!(result.unwrap().len(), 0);
         }
+
+        #[test]
+        fn install_group_routes_multiple_groups() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            let group_ip_1 = Ipv4Addr::new(239, 0, 0, 10);
+            let group_ip_2 = Ipv4Addr::new(239, 0, 0, 20);
+
+            table.install_group_directory(vec![
+                GroupDirectoryEntry {
+                    group_id: 10,
+                    group_ip: group_ip_1,
+                },
+                GroupDirectoryEntry {
+                    group_id: 20,
+                    group_ip: group_ip_2,
+                },
+            ]);
+
+            // Install routes for group 10
+            table.install_group_routes(
+                10,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 1000,
+                    next_hops: vec![2, 3],
+                    src_node_id: 1,
+                    group_id: 10,
+                }],
+            );
+
+            // Install routes for group 20
+            table.install_group_routes(
+                20,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 2000,
+                    next_hops: vec![4, 5],
+                    src_node_id: 1,
+                    group_id: 20,
+                }],
+            );
+
+            // Verify both groups are independently routable
+            let flow_1 = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                group_ip_1,
+                7000,
+                config.user_space_server_port,
+            );
+            let flow_2 = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                group_ip_2,
+                7001,
+                config.user_space_server_port,
+            );
+
+            let hops_1 = table.get_next_hops_by_flow(flow_1, None).unwrap();
+            let hops_2 = table.get_next_hops_by_flow(flow_2, None).unwrap();
+
+            assert_eq!(&hops_1[..], &[2, 3]);
+            assert_eq!(&hops_2[..], &[4, 5]);
+        }
     }
 }
