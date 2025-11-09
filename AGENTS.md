@@ -5,6 +5,8 @@
 - The workspace root (`Cargo.toml`) ties together the Rust crates in `messages/`, `dataplane/`, `controller/`, and `cert-gen/`; run commands from the root unless you are iterating on a single crate.
 - Control-plane logic and database integration live under `controller/src`, while dataplane actors, flow handling, and smoltcp code live in `dataplane/src`.
 - Shared message formats sit in `messages/src`, and TLS helper tooling is in `cert-gen/`.
+- The `python-api/` crate builds the `nextmini_py` PyO3 extension that embeds the dataplane; Python drivers in `examples/**` and `tools/**` assume the bindings are installed before they run.
+- Operational helpers (Terraform plans, routing calculators, monitoring UIs) live under `tools/`; most are Python-based wrappers over the bindings above.
 - Supplemental material is kept in `docs/` (design notes) and `examples/` (scenario templates); reference these before introducing new configuration knobs or demos.
 
 ## Build, Test, and Development Commands
@@ -14,6 +16,8 @@
 - `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` enforce formatting and linting; run both before publishing a branch.
 - `cargo test --workspace` executes unit and integration tests. The controller tests expect a Postgres instance—boot one locally with `./start-database.sh` before running the suite.
 - Use `RUST_LOG=info cargo run -p controller` and `cargo run -p dataplane` to launch the control and data components in dev mode; logs are critical for diagnosing flow-state issues.
+- Build the Python bindings with `pip install maturin` followed by `maturin build --release -m python-api/Cargo.toml` (or `maturin develop --release -m python-api/Cargo.toml` when iterating); install the produced `nextmini_py` wheel so Python-side tooling can import it.
+- Python projects in `examples/`, `tools/`, and `docs/` pin to CPython 3.13 via `pyproject.toml`; create virtualenvs with `uv venv` and install deps via `uv pip install ...` to stay consistent with the checked-in metadata.
 
 ## Coding Style & Naming Conventions
 
@@ -26,6 +30,18 @@
 - Co-locate tests in the owning module with `#[cfg(test)] mod tests` and use `#[tokio::test]` for async paths such as controller I/O.
 - Name tests after the behavior under test (e.g., `reports_flow_finished_for_user_space`) and mirror the crate path when adding files in `tests/`.
 - Keep fast-running unit tests in-tree; integration tests that require Postgres or network setup should document prerequisites in comments or the `docs/` tree.
+
+## Python Bindings & Tooling
+
+- The `python-api/src` crate exposes `nextmini_py::Dataplane`, `PacketReceiver`, and frozen buffer helpers so Python workloads can inject or tap flows in-process. Follow `docs/examples/pytorch_python_api.md` for end-to-end guidance.
+- Wheels are compiled with `pyo3`'s `abi3-py313` feature, so ensure CPython 3.13.* is active when running the `maturin build --release -m python-api/Cargo.toml` or `maturin develop --release -m python-api/Cargo.toml` commands listed above.
+- Most automation (`examples/pytorch`, `examples/multicast-*`, `tools/monitor`, routing utilities) dynamically import the module and expect a valid node config path plus the `NEXTMINI_CONFIG` / `NEXTMINI_DST_NODE` environment variables noted in the docs; keep those hooks intact when extending the scripts.
+- When writing new Python helpers, reuse the buffer adapters in `python-api/src/buffer.rs` and register flows via `Dataplane::register_receiver_*` instead of rolling bespoke socket glue—this keeps behavior aligned with the Rust dataplane.
+
+## Documentation Tooling
+
+- `docs/` hosts the MkDocs site. Bootstrap its environment with `uv venv && source .venv/bin/activate && uv pip install mkdocs-material`.
+- Run `mkdocs serve` for a live preview and `mkdocs build` to generate the static `site/` output; commit doc changes alongside the features they cover.
 
 ## Commit & Pull Request Guidelines
 
