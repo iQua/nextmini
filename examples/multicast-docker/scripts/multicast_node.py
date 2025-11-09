@@ -285,9 +285,27 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     wait_for_count(
         conninfo, group_id, target=0, timeout=args.member_timeout, specific_node=args.node_id
     )
-    log("Controller recorded membership; awaiting data plane routes.", args.quiet)
+    log("Controller recorded membership; waiting for local route install.", args.quiet)
+
+    if not dataplane.wait_for_local_membership(
+        group_id, timeout_ms=args.member_timeout * 1000
+    ):
+        raise TimeoutError("Timed out waiting for LocalMemberJoined event.")
+
+    routes = dataplane.wait_for_routes_installed(
+        group_id,
+        src_node_id=args.source_node_id,
+        timeout_ms=args.member_timeout * 1000,
+    )
+    if routes is None:
+        raise TimeoutError("Timed out waiting for GroupRoutesInstalled event.")
+
+    log(
+        f"Local multicast routes installed ({len(routes)} entries); marking receiver ready.",
+        args.quiet,
+    )
     mark_receiver_ready(conninfo, group_id, args.node_id)
-    log("Routes should be installed, starting to receive...", args.quiet)
+    log("Routes confirmed, starting to receive...", args.quiet)
 
     receiver = dataplane.register_receiver_for_group(
         src_node_id=args.source_node_id,

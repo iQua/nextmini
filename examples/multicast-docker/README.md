@@ -5,11 +5,16 @@ nodes) inside Docker to exercise the multicast APIs end-to-end. Each dataplane n
 runs in-process via `nextmini_py` and drives the control-plane by issuing
 `CreateGroup`/`JoinGroup` messages before sending or receiving payloads.
 
-`nextmini_py` now exposes a `group_is_ready()` helper that waits for the
-`GroupCreated` controller response. The source container calls this immediately
-after `CreateGroup` so it learns the `group_id`/`group_ip` without querying the
-database. Receivers still look up the group by label via Postgres so they can
-operate independently of the source.
+`nextmini_py` now exposes helpers that stream controller events into Python:
+
+- `group_is_ready()` – wait for the `GroupCreated` ack after issuing `CreateGroup`.
+- `wait_for_local_membership()` and `wait_for_routes_installed()` – receivers block
+  until the controller installs their local delivery entries before opening sockets.
+
+The source container calls `group_is_ready()` immediately after `CreateGroup`
+to learn the assigned `group_id`/`group_ip` without querying Postgres, while
+receivers use the membership/route helpers to know when the dataplane is ready
+to deliver multicast packets locally.
 
 ## Layout
 

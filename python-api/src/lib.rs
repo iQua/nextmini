@@ -259,27 +259,73 @@ impl Dataplane {
 
     #[pyo3(signature = (timeout_ms=None))]
     fn group_is_ready(&self, timeout_ms: Option<u64>) -> PyResult<Option<(usize, String, usize)>> {
-        let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+        let timeout = timeout_ms.map(Duration::from_millis);
+        let matched = self.wait_for_event_matching(timeout, |event| {
+            matches!(event, PythonEvent::GroupCreated { .. })
+        });
 
-        loop {
-            if let Some(dl) = deadline {
-                if Instant::now() >= dl {
-                    return Ok(None);
-                }
-            }
-
-            let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
-            let event = self.recv_event_with_timeout(remaining);
-            match event {
-                Some(PythonEvent::GroupCreated {
-                    group_id,
-                    src_node_id,
-                    group_ip,
-                }) => return Ok(Some((group_id, group_ip.to_string(), src_node_id))),
-                Some(_) => continue,
-                None => return Ok(None),
-            }
+        match matched {
+            Some(PythonEvent::GroupCreated {
+                group_id,
+                src_node_id,
+                group_ip,
+            }) => Ok(Some((group_id, group_ip.to_string(), src_node_id))),
+            _ => Ok(None),
         }
+    }
+
+    #[pyo3(signature = (group_id, timeout_ms=None))]
+    fn wait_for_local_membership(
+        &self,
+        group_id: usize,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<bool> {
+        let timeout = timeout_ms.map(Duration::from_millis);
+        let local_node = self.cfg.node_id;
+        let matched = self.wait_for_event_matching(timeout, |event| {
+            matches!(
+                event,
+                PythonEvent::LocalMemberJoined {
+                    group_id: gid,
+                    node_id
+                } if *gid == group_id && *node_id == local_node
+            )
+        });
+
+        Ok(matched.is_some())
+    }
+
+    #[pyo3(signature = (group_id, src_node_id=None, timeout_ms=None))]
+    fn wait_for_routes_installed(
+        &self,
+        group_id: usize,
+        src_node_id: Option<usize>,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<Option<Vec<(usize, Vec<usize>)>>> {
+        let timeout = timeout_ms.map(Duration::from_millis);
+        let matched = self.wait_for_event_matching(timeout, |event| {
+            matches!(
+                event,
+                PythonEvent::GroupRoutesInstalled {
+                    group_id: gid,
+                    src_node_id,
+                    ..
+                } if *gid == group_id && src_node_id.map_or(true, |target| target == *src_node_id)
+            )
+        });
+
+        let routes = matched.map(|event| {
+            if let PythonEvent::GroupRoutesInstalled { routes, .. } = event {
+                routes
+                    .into_iter()
+                    .map(|entry| (entry.route_id, entry.next_hops))
+                    .collect()
+            } else {
+                unreachable!("matched variant should be routes installed");
+            }
+        });
+
+        Ok(routes)
     }
 
     #[pyo3(signature = (dst_node_id, frozen_buffers, src_port=None, dst_port=None))]
@@ -298,6 +344,43 @@ impl Dataplane {
 }
 
 impl Dataplane {
+    fn wait_for_event_matching<F>(
+        &self,
+        timeout: Option<Duration>,
+        mut matcher: F,
+    ) -> Option<PythonEvent>
+    where
+        F: FnMut(&PythonEvent) -> bool,
+    {
+        let deadline = timeout.map(|dur| Instant::now() + dur);
+        let mut backlog = Vec::new();
+
+        loop {
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    self.requeue_events(backlog);
+                    return None;
+                }
+            }
+
+            let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
+            let event = match self.recv_event_with_timeout(remaining) {
+                Some(event) => event,
+                None => {
+                    self.requeue_events(backlog);
+                    return None;
+                }
+            };
+
+            if matcher(&event) {
+                self.requeue_events(backlog);
+                return Some(event);
+            } else {
+                backlog.push(event);
+            }
+        }
+    }
+
     fn recv_event_with_timeout(&self, timeout: Option<Duration>) -> Option<PythonEvent> {
         match timeout {
             Some(duration) => {
@@ -318,6 +401,12 @@ impl Dataplane {
         rt().block_on(async move {
             handle.publish_event(event).await;
         });
+    }
+
+    fn requeue_events(&self, backlog: Vec<PythonEvent>) {
+        for event in backlog.into_iter() {
+            self.emit_python_event(event);
+        }
     }
 }
 
