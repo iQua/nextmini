@@ -518,5 +518,65 @@ mod tests {
             assert_eq!(route_ids.len(), 1);
             assert_eq!(route_ids[0], 201);
         }
+
+        #[test]
+        fn install_group_routes_clears_cache() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            let group_ip = Ipv4Addr::new(239, 0, 0, 3);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 3,
+                group_ip,
+            }]);
+
+            // Create flow ID for testing
+            let flow_id = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                group_ip,
+                5000,
+                config.user_space_server_port,
+            );
+
+            // Install initial routes
+            table.install_group_routes(
+                3,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 300,
+                    next_hops: vec![5],
+                    src_node_id: 1,
+                    group_id: 3,
+                }],
+            );
+
+            // Populate cache
+            let first = table
+                .get_next_hops_by_flow(flow_id, None)
+                .expect("initial lookup");
+            assert_eq!(&first[..], &[5]);
+            assert!(table.cache.contains_key(&flow_id));
+
+            // Update routes
+            table.install_group_routes(
+                3,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 301,
+                    next_hops: vec![6],
+                    src_node_id: 1,
+                    group_id: 3,
+                }],
+            );
+
+            // Cache should be cleared
+            assert!(table.cache.is_empty());
+
+            // Next lookup should return updated route
+            let updated = table
+                .get_next_hops_by_flow(flow_id, None)
+                .expect("updated lookup");
+            assert_eq!(&updated[..], &[6]);
+        }
     }
 }
