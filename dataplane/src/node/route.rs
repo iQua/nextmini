@@ -840,5 +840,20 @@ mod tests {
             assert_eq!(first, second, "Same key should select same route");
             assert!(vec![2001, 2002, 2003].contains(&first.unwrap()));
         }
+        #[test]
+        fn pick_single_hop_chooses_from_multiple() {
+            let hops = vec![10, 20, 30, 40, 50];
+
+            // Sample multiple times to verify randomness works
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..100 {
+                let hop = RoutingTable::pick_single_hop(&hops).unwrap();
+                assert!(hops.contains(&hop));
+                seen.insert(hop);
+            }
+
+            // With 100 samples, should see at least 3 different values
+            assert!(seen.len() >= 3, "Random selection should vary");
+        }
     }
 }
