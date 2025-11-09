@@ -471,5 +471,52 @@ mod tests {
             assert_eq!(table.available_routes.get(&key).unwrap().len(), 1);
             assert_eq!(table.route_next_hop.get(&100).unwrap(), &vec![2, 3]);
         }
+
+        #[test]
+        fn install_group_routes_replaces_existing_membership() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            let group_ip = Ipv4Addr::new(239, 0, 0, 2);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 2,
+                group_ip,
+            }]);
+
+            // Install initial routes
+            table.install_group_routes(
+                2,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 200,
+                    next_hops: vec![2, 3],
+                    src_node_id: 1,
+                    group_id: 2,
+                }],
+            );
+
+            // Update routes with different members
+            table.install_group_routes(
+                2,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 201,
+                    next_hops: vec![2, 4],
+                    src_node_id: 1,
+                    group_id: 2,
+                }],
+            );
+
+            // Old route should be removed
+            assert!(table.route_next_hop.get(&200).is_none());
+
+            // New route should be active
+            assert_eq!(table.route_next_hop.get(&201).unwrap(), &vec![2, 4]);
+
+            let key = RouteKey::Multicast(1, 2);
+            let route_ids = table.available_routes.get(&key).unwrap();
+            assert_eq!(route_ids.len(), 1);
+            assert_eq!(route_ids[0], 201);
+        }
     }
 }
