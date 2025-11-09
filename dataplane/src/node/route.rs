@@ -578,5 +578,42 @@ mod tests {
                 .expect("updated lookup");
             assert_eq!(&updated[..], &[6]);
         }
+
+        #[test]
+        fn install_group_routes_with_empty_next_hops() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            let group_ip = Ipv4Addr::new(239, 0, 0, 4);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 4,
+                group_ip,
+            }]);
+
+            // Install route with no members
+            table.install_group_routes(
+                4,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 400,
+                    next_hops: vec![],
+                    src_node_id: 1,
+                    group_id: 4,
+                }],
+            );
+
+            let flow_id = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                group_ip,
+                6000,
+                config.user_space_server_port,
+            );
+
+            let result = table.get_next_hops_by_flow(flow_id, None);
+
+            // Should succeed but return empty hop list
+            assert!(result.is_ok());
+            assert_eq!(result.unwrap().len(), 0);
+        }
     }
 }
