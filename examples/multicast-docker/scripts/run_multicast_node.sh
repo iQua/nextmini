@@ -16,6 +16,32 @@ sleep 2
 
 export PYTHONUNBUFFERED=1
 
+cleanup_dir() {
+  local target="$1"
+  if [[ -z "${target}" ]]; then
+    return
+  fi
+  mkdir -p "${target}"
+  find "${target}" -mindepth 1 ! -name '.gitkeep' -exec rm -rf {} + 2>/dev/null || true
+}
+
+tensor_path_provided=0
+for arg in "$@"; do
+  case "${arg}" in
+    --tensor-path|--tensor-path=*)
+      tensor_path_provided=1
+      break
+      ;;
+  esac
+done
+
+if [[ "${role}" == "source" && "${CLEAN_SHARED_DIRS:-1}" == "1" ]]; then
+  cleanup_dir "${ARTIFACT_DIR:-/artifacts}"
+  if [[ "${tensor_path_provided}" == "0" ]]; then
+    cleanup_dir "${TENSOR_STAGE_DIR:-/workspace/tensors}"
+  fi
+fi
+
 if [[ ! -d .venv ]]; then
   python -m pip install --upgrade pip >/dev/null
   if ! command -v uv >/dev/null; then

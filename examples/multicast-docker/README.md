@@ -78,6 +78,11 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
 - `ARTIFACT_DIR` – shared volume for tensors, metadata, and checksums.
+- `CLEAN_SHARED_DIRS` – when `1` (default) the source container empties the shared
+  `artifacts/` directory before each run and, if no custom `--tensor-path` is provided,
+  also clears the tensor staging directory. Set to `0` to keep prior outputs.
+- `TENSOR_STAGE_DIR` – override for the tensor staging directory used during cleanup
+  (defaults to `/workspace/tensors`).
 
 ## Streaming Large Tensors
 
@@ -107,15 +112,17 @@ following knobs if needed:
   receivers.
 
 The repository already tracks empty `artifacts/` and `tensors/` directories, so you can
-run `docker compose up` without creating them manually. They persist between runs; delete
-their contents only if you want to free space or start fresh.
+run `docker compose up` without creating them manually. The source container will clear
+their contents automatically before each run (unless `CLEAN_SHARED_DIRS=0`), so you get
+a fresh slate without manual cleanup. Delete the directories entirely only if you want to
+recreate the bind mounts from scratch.
 
 ## Testing & Verification
 
 1. Pre-build the wheel via `cd python-api && maturin build --release`, or set `SKIP_BUILD=0`
    to compile in-container.
 2. From `examples/multicast-docker`, run `docker compose up` (the tracked `artifacts/`
-   and `tensors/` directories will be reused automatically).
+   and `tensors/` directories will be reused automatically and cleaned before each run).
 3. Tail the `source` and receiver logs (`docker compose logs -f source receiver_a receiver_b`)
    to confirm group readiness events, chunk counters, and checksum reports.
 4. After the run, inspect `artifacts/tensor-metadata.json`, `artifacts/receiver-*.bin`, and
