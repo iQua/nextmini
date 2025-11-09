@@ -68,8 +68,11 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 - `GROUP_TIMEOUT`, `MEMBER_TIMEOUT`, `RECEIVE_TIMEOUT_MS` – tweak the various waits when
   running on slower machines or remote builders.
 - `TENSOR_PATH` – optional path (inside the repo) to a tensor/binary blob that should be
-  multicast chunk-by-chunk. When set, also provide `EXPECTED_BYTES` (total byte count) and
-  optionally adjust `CHUNK_SIZE` (defaults to 6144 bytes).
+  multicast chunk-by-chunk. When omitted, the source auto-generates a ≈1 GB tensor at
+  `/workspace/tensors/tensor-auto-1g.pt` before every run.
+- `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
+  size when `TENSOR_PATH` is not provided.
+- `CHUNK_SIZE` – payload slice size (defaults to 6144 bytes to stay under the dataplane MTU).
 - `VERIFY_CHECKSUM` – set to `1` to have the source emit, and receivers verify, a
   SHA-256 checksum stored at `CHECKSUM_PATH` (defaults to `/artifacts/<group>.sha256`).
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
@@ -77,40 +80,31 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 
 ## Streaming Large Tensors
 
-To push the multicast flow with a 1 GB tensor:
-
-1. Generate the tensor once (PyTorch example shown below) and keep it under `tensors/`.
-2. Create `examples/multicast-docker/artifacts/` so Docker can mount it at `/artifacts`.
-3. Export `TENSOR_PATH`, `EXPECTED_BYTES`, and (optionally) `VERIFY_CHECKSUM=1` before
-   `docker compose up`.
+By default the source container auto-generates a ≈1 GB PyTorch tensor
+(`/workspace/tensors/tensor-auto-1g.pt`) before it starts the dataplane, records its size
+in `/artifacts/tensor-metadata.json`, and then streams it chunk-by-chunk to the multicast
+group. All you need is:
 
 ```bash
-# From the repo root
-python - <<'PY'
-import pathlib, torch
-torch.manual_seed(42)
-tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
-path = pathlib.Path("tensors") / "tensor-1g.pt"
-path.parent.mkdir(exist_ok=True)
-torch.save(tensor, path)
-PY
-
 cd examples/multicast-docker
-export TENSOR_PATH=/workspace/tensors/tensor-1g.pt
-export EXPECTED_BYTES=$(python - <<'PY'
-import os
-print(os.path.getsize("../tensors/tensor-1g.pt"))
-PY
-)
-export VERIFY_CHECKSUM=1
-export CHECKSUM_PATH=/artifacts/tensor-1g.sha256
+mkdir -p artifacts tensors  # shared volumes for tensors/checksums
+docker compose build
 docker compose up
 ```
 
-The source streams the tensor in `CHUNK_SIZE`-sized slices, writes/updates the checksum
-file under `/artifacts`, and each receiver rebuilds the stream under
-`/artifacts/receiver-<node_id>.bin` while verifying the digest. Tune `PAYLOAD_SLEEP_MS`
-and `CHUNK_SIZE` to trade throughput for CPU utilization.
+Each run downloads/install PyTorch (via `run_multicast_node.sh`), synthesizes the tensor,
+and then pushes it using `CHUNK_SIZE` (defaults to 6144 bytes). Receivers automatically
+load the metadata, wait for the checksum (`/artifacts/<group>.sha256`), reconstruct the
+stream under `/artifacts/receiver-<node_id>.bin`, and verify integrity. Adjust the
+following knobs if needed:
+
+- Set `VERIFY_CHECKSUM=1` to fail fast on data corruption.
+- Override `CHECKSUM_PATH` to write the digest elsewhere under `/artifacts`.
+- Provide a custom tensor via `TENSOR_PATH` (and optionally `EXPECTED_BYTES`) to skip
+  auto-generation.
+- Increase/decrease `CHUNK_SIZE` or `PAYLOAD_SLEEP_MS` to tune throughput.
+- Inspect `/artifacts/tensor-metadata.json` for the last tensor path/size broadcast to
+  receivers.
 
 ## Inspecting the Run
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import math
 import os
 import sys
@@ -27,6 +28,8 @@ except ImportError as exc:  # pragma: no cover - surfaced at launch time
         "nextmini_py is not installed. Build the wheel with `maturin build` (the "
         "run_multicast_node.sh helper bootstraps it automatically inside the container)."
     ) from exc
+
+METADATA_FILE = "tensor-metadata.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -119,6 +122,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional tensor file to stream instead of random payloads.",
     )
     parser.add_argument(
+        "--generate-tensor",
+        action="store_true",
+        help="Generate a tensor file (>=1GB) inside the container before streaming.",
+    )
+    parser.add_argument(
         "--chunk-size",
         type=int,
         default=6144,
@@ -146,6 +154,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=300,
         help="Seconds receivers wait for the checksum file when verify mode is enabled.",
+    )
+    parser.add_argument(
+        "--metadata-wait-seconds",
+        type=int,
+        default=300,
+        help="Seconds receivers wait for tensor metadata when auto-generation is enabled.",
     )
     parser.add_argument(
         "--artifact-dir",
@@ -283,6 +297,10 @@ def resolve_checksum_path(args: argparse.Namespace) -> Path:
     return args.artifact_dir / f"{args.group_label}.sha256"
 
 
+def metadata_path(args: argparse.Namespace) -> Path:
+    return args.artifact_dir / METADATA_FILE
+
+
 def wait_for_checksum_file(path: Path, timeout: int) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -290,6 +308,32 @@ def wait_for_checksum_file(path: Path, timeout: int) -> str:
             return path.read_text().strip()
         time.sleep(1)
     raise TimeoutError(f"Timed out waiting for checksum file at {path}.")
+
+
+def write_tensor_metadata(args: argparse.Namespace, tensor_path: Path, size: int) -> None:
+    if not args.artifact_dir:
+        return
+    meta = {"path": str(tensor_path), "bytes": size}
+    meta_path = metadata_path(args)
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps(meta))
+
+
+def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
+    if args.tensor_path is not None and args.expected_bytes is not None:
+        return
+    meta_path = metadata_path(args)
+    deadline = time.monotonic() + args.metadata_wait_seconds
+    while time.monotonic() < deadline:
+        if meta_path.exists():
+            data = json.loads(meta_path.read_text())
+            if args.tensor_path is None:
+                args.tensor_path = Path(data["path"])
+            if args.expected_bytes is None:
+                args.expected_bytes = int(data["bytes"])
+            return
+        time.sleep(1)
+    raise TimeoutError(f"Timed out waiting for tensor metadata at {meta_path}.")
 
 
 def mark_receiver_ready(conninfo: str, group_id: int, node_id: int) -> None:
@@ -308,6 +352,7 @@ def mark_receiver_ready(conninfo: str, group_id: int, node_id: int) -> None:
 
 
 def run_source(args: argparse.Namespace, conninfo: str) -> None:
+    generate_tensor_if_needed(args)
     dataplane = nm.Dataplane(str(args.config))
     log(f"Requesting multicast group '{args.group_label}'...", args.quiet)
     dataplane.create_group(args.group_label)
@@ -345,6 +390,7 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
         if total_bytes <= 0:
             raise SystemExit("Tensor file is empty; nothing to transmit.")
         payload_goal = chunk_count(total_bytes, args.chunk_size)
+        write_tensor_metadata(args, args.tensor_path, total_bytes)
     else:
         payload_goal = args.payload_count
 
@@ -410,6 +456,8 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
 def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     if args.node_id is None:
         raise SystemExit("Receiver role requires --node-id.")
+
+    load_tensor_metadata_if_needed(args)
 
     dataplane = nm.Dataplane(str(args.config))
     group_id, group_ip = wait_for_group(conninfo, args.group_label, args.group_timeout)
@@ -499,6 +547,8 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.tensor_path is None:
+        args.generate_tensor = True
     if args.chunk_size <= 0:
         raise SystemExit("--chunk-size must be positive.")
     if args.artifact_dir:
@@ -529,3 +579,31 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+def generate_tensor_if_needed(args: argparse.Namespace) -> Path | None:
+    if not args.generate_tensor:
+        return None
+
+    tensor_dir = args.tensor_path.parent if args.tensor_path else Path("/workspace/tensors")
+    tensor_dir.mkdir(parents=True, exist_ok=True)
+    output = tensor_dir / "tensor-auto-1g.pt"
+
+    log(f"Generating ~1GB tensor at {output}...", args.quiet)
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - only hits if torch missing in container
+        raise SystemExit(
+            "PyTorch is required for --generate-tensor but is not installed in this container."
+        ) from exc
+
+    torch.manual_seed(42)
+    # 256 * 1024 * 1024 * float32 ~= 1 GiB
+    tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(tensor, output)
+    size = output.stat().st_size
+    log(f"Generated tensor ({size} bytes).", args.quiet)
+
+    args.tensor_path = output
+    args.expected_bytes = size
+    write_tensor_metadata(args, output, size)
+    return output

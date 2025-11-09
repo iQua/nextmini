@@ -27,6 +27,7 @@ fi
 source .venv/bin/activate
 
 uv pip install "psycopg[binary]" >/dev/null
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu >/dev/null
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   uv pip install maturin >/dev/null
