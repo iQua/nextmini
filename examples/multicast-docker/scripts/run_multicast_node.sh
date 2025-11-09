@@ -18,6 +18,9 @@ if [[ -n "${WAIT_FOR:-}" ]]; then
     # Use timeout with nc (netcat) to avoid WebSocket handshake errors
     if timeout 1 bash -c "echo > /dev/tcp/${wait_host}/${wait_port}" 2>/dev/null; then
       echo "Controller reachable (attempt ${attempt})." >&2
+      if [[ "${WAIT_STABILIZE:-2}" != "0" ]]; then
+        sleep "${WAIT_STABILIZE:-2}" >&2
+      fi
       break
     fi
     sleep 1

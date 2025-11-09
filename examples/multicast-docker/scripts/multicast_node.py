@@ -137,23 +137,30 @@ def wait_for_group(conninfo: str, label: str, timeout: int) -> Tuple[int, str]:
 
 
 def wait_for_count(
-    conninfo: str, group_id: int, target: int, timeout: int, *, specific_node: int | None = None
+    conninfo: str,
+    group_id: int,
+    target: int,
+    timeout: int,
+    *,
+    specific_node: int | None = None,
+    ready_only: bool = False,
 ) -> None:
     deadline = time.monotonic() + timeout
     with psycopg.connect(conninfo) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
+            table = "group_members_ready" if ready_only else "group_members"
             while time.monotonic() < deadline:
                 if specific_node is not None:
                     cur.execute(
-                        "SELECT 1 FROM group_members WHERE group_id = %s AND node_id = %s",
+                        f"SELECT 1 FROM {table} WHERE group_id = %s AND node_id = %s",
                         (group_id, specific_node),
                     )
                     if cur.fetchone():
                         return
                 else:
                     cur.execute(
-                        "SELECT COUNT(*) FROM group_members WHERE group_id = %s",
+                        f"SELECT COUNT(*) FROM {table} WHERE group_id = %s",
                         (group_id,),
                     )
                     count = cur.fetchone()[0]
@@ -164,11 +171,41 @@ def wait_for_count(
 
     if specific_node is not None:
         raise TimeoutError(
-            f"Timed out waiting for node {specific_node} to appear in group_members for group {group_id}."
+            f"Timed out waiting for node {specific_node} in {table} for group {group_id}."
         )
     raise TimeoutError(
-        f"Timed out waiting for {target} subscribers in group_members for group {group_id}."
+        f"Timed out waiting for {target} rows in {table} for group {group_id}."
     )
+
+
+def ensure_ready_table(conninfo: str) -> None:
+    with psycopg.connect(conninfo) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS group_members_ready (
+                    group_id INT NOT NULL,
+                    node_id INT NOT NULL,
+                    PRIMARY KEY (group_id, node_id)
+                )
+                """
+            )
+
+
+def mark_receiver_ready(conninfo: str, group_id: int, node_id: int) -> None:
+    ensure_ready_table(conninfo)
+    with psycopg.connect(conninfo) as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO group_members_ready (group_id, node_id)
+                VALUES (%s, %s)
+                ON CONFLICT (group_id, node_id) DO NOTHING
+                """,
+                (group_id, node_id),
+            )
 
 
 def run_source(args: argparse.Namespace, conninfo: str) -> None:
@@ -185,8 +222,15 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
         timeout=args.member_timeout,
         specific_node=None,
     )
+    wait_for_count(
+        conninfo,
+        group_id,
+        target=args.expected_subscribers,
+        timeout=args.member_timeout,
+        ready_only=True,
+    )
     log(
-        f"Observed {args.expected_subscribers} subscriber(s); starting multicast sends.",
+        f"Observed {args.expected_subscribers} ready subscriber(s); starting multicast sends.",
         args.quiet,
     )
 
@@ -223,6 +267,7 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
         conninfo, group_id, target=0, timeout=args.member_timeout, specific_node=args.node_id
     )
     log("Controller recorded membership; awaiting data plane routes.", args.quiet)
+    mark_receiver_ready(conninfo, group_id, args.node_id)
     log("Routes should be installed, starting to receive...", args.quiet)
 
     receiver = dataplane.register_receiver_for_group(

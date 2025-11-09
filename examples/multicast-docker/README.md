@@ -35,7 +35,7 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 
 - `GROUP_LABEL` – label used when creating the multicast group (default `demo-multicast`).
 - `PAYLOAD_COUNT` / `PAYLOAD_SIZE` / `PAYLOAD_SLEEP_MS` – tune the source workload.
-- `EXPECTED_SUBSCRIBERS` – number of receivers that must join before the source starts sending (defaults to 2).
+- `EXPECTED_SUBSCRIBERS` – number of receivers that must be both joined and ready before the source starts sending (defaults to 2).
 - `RECEIVER_EXPECTED` – number of payloads each receiver waits for.
 - `GROUP_TIMEOUT`, `MEMBER_TIMEOUT`, `RECEIVE_TIMEOUT_MS` – tweak the various waits when
   running on slower machines or remote builders.
