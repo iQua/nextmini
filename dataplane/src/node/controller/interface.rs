@@ -369,12 +369,7 @@ impl ControllerToDataplaneReceiver {
                     group_id, group_ip, src_node_id
                 );
 
-                let maybe_python = {
-                    let guard = self.python_interface.lock().await;
-                    guard.clone()
-                };
-
-                if let Some(py_if) = maybe_python {
+                if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupCreated {
                             group_id,
@@ -391,7 +386,13 @@ impl ControllerToDataplaneReceiver {
                     groups.len(),
                     self.config.node_id
                 );
-                self.processors.update_group_directory(groups).await;
+                self.processors.update_group_directory(groups.clone()).await;
+
+                if let Some(py_if) = self.python_handle().await {
+                    py_if
+                        .publish_event(PythonEvent::GroupDirectoryUpdated { entries: groups })
+                        .await;
+                }
             }
 
             ControllerToDataplane::InstallGroupRoutes {
@@ -406,12 +407,37 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id,
                     routes.len()
                 );
+                let cloned_routes = routes.clone();
                 self.processors
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
+
+                if let Some(py_if) = self.python_handle().await {
+                    py_if
+                        .publish_event(PythonEvent::GroupRoutesInstalled {
+                            group_id,
+                            src_node_id,
+                            routes: cloned_routes.clone(),
+                        })
+                        .await;
+
+                    let node_id = self.config.node_id;
+                    for entry in &cloned_routes {
+                        if entry.next_hops.contains(&node_id) {
+                            py_if
+                                .publish_event(PythonEvent::LocalMemberJoined { group_id, node_id })
+                                .await;
+                            break;
+                        }
+                    }
+                }
             }
 
             _ => error!("Received a message with an unknown type from the controller."),
         }
+    }
+
+    async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
+        self.python_interface.lock().await.clone()
     }
 }

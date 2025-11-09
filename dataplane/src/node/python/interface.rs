@@ -9,7 +9,7 @@ use tracing::{error, warn};
 use crate::node::FlowId;
 use crate::node::NodeId;
 use crate::node::packet::Packet;
-use nextmini_messages::GroupId;
+use nextmini_messages::{GroupDirectoryEntry, GroupId, GroupRoutingTableEntry};
 
 #[derive(Clone, Debug)]
 pub struct PythonInterfaceHandle {
@@ -107,6 +107,22 @@ pub enum PythonEvent {
         src_node_id: NodeId,
         group_ip: Ipv4Addr,
     },
+    GroupDirectoryUpdated {
+        entries: Vec<GroupDirectoryEntry>,
+    },
+    GroupRoutesInstalled {
+        group_id: GroupId,
+        src_node_id: NodeId,
+        routes: Vec<GroupRoutingTableEntry>,
+    },
+    LocalMemberJoined {
+        group_id: GroupId,
+        node_id: NodeId,
+    },
+    LocalMemberLeft {
+        group_id: GroupId,
+        node_id: NodeId,
+    },
 }
 
 #[cfg(test)]
@@ -201,6 +217,7 @@ mod tests {
                 assert_eq!(src_node_id, 1);
                 assert_eq!(group_ip, Ipv4Addr::new(239, 255, 0, 10));
             }
+            other => panic!("unexpected event: {:?}", other),
         }
     }
 }

@@ -2,6 +2,7 @@ mod buffer;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use once_cell::sync::OnceCell;
 use pyo3::exceptions::PyRuntimeError;
@@ -249,30 +250,35 @@ impl Dataplane {
                 .send(DataplaneToController::LeaveGroup { group_id })
                 .await;
         });
+        self.emit_python_event(PythonEvent::LocalMemberLeft {
+            group_id,
+            node_id: self.cfg.node_id,
+        });
         Ok(())
     }
 
     #[pyo3(signature = (timeout_ms=None))]
     fn group_is_ready(&self, timeout_ms: Option<u64>) -> PyResult<Option<(usize, String, usize)>> {
-        let event = if let Some(ms) = timeout_ms {
-            let handle = self.py_if.clone();
-            rt().block_on(async {
-                tokio::time::timeout(std::time::Duration::from_millis(ms), handle.next_event())
-                    .await
-                    .ok()
-                    .flatten()
-            })
-        } else {
-            rt().block_on(self.py_if.next_event())
-        };
+        let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
 
-        match event {
-            Some(PythonEvent::GroupCreated {
-                group_id,
-                src_node_id,
-                group_ip,
-            }) => Ok(Some((group_id, group_ip.to_string(), src_node_id))),
-            _ => Ok(None),
+        loop {
+            if let Some(dl) = deadline {
+                if Instant::now() >= dl {
+                    return Ok(None);
+                }
+            }
+
+            let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
+            let event = self.recv_event_with_timeout(remaining);
+            match event {
+                Some(PythonEvent::GroupCreated {
+                    group_id,
+                    src_node_id,
+                    group_ip,
+                }) => return Ok(Some((group_id, group_ip.to_string(), src_node_id))),
+                Some(_) => continue,
+                None => return Ok(None),
+            }
         }
     }
 
@@ -288,6 +294,30 @@ impl Dataplane {
             self.send_to_node(dst_node_id, frozen, src_port, dst_port)?;
         }
         Ok(())
+    }
+}
+
+impl Dataplane {
+    fn recv_event_with_timeout(&self, timeout: Option<Duration>) -> Option<PythonEvent> {
+        match timeout {
+            Some(duration) => {
+                let handle = self.py_if.clone();
+                rt().block_on(async {
+                    tokio::time::timeout(duration, handle.next_event())
+                        .await
+                        .ok()
+                        .flatten()
+                })
+            }
+            None => rt().block_on(self.py_if.next_event()),
+        }
+    }
+
+    fn emit_python_event(&self, event: PythonEvent) {
+        let handle = self.py_if.clone();
+        rt().block_on(async move {
+            handle.publish_event(event).await;
+        });
     }
 }
 
