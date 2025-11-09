@@ -110,9 +110,9 @@ services:
         --node-id 2
         --source-node-id ${SOURCE_NODE_ID:-1}
         --expected ${RECEIVER_EXPECTED:-8}
-        --group-timeout ${GROUP_TIMEOUT:-120}
-        --member-timeout ${MEMBER_TIMEOUT:-90}
-        --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-5000}
+        --group-timeout ${GROUP_TIMEOUT:-300}
+        --member-timeout ${MEMBER_TIMEOUT:-240}
+        --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
     networks:
       multicast:
         ipv4_address: 172.31.1.11
@@ -147,9 +147,9 @@ services:
         --node-id 3
         --source-node-id ${SOURCE_NODE_ID:-1}
         --expected ${RECEIVER_EXPECTED:-8}
-        --group-timeout ${GROUP_TIMEOUT:-120}
-        --member-timeout ${MEMBER_TIMEOUT:-90}
-        --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-5000}
+        --group-timeout ${GROUP_TIMEOUT:-300}
+        --member-timeout ${MEMBER_TIMEOUT:-240}
+        --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
     networks:
       multicast:
         ipv4_address: 172.31.1.12
