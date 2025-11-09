@@ -88,7 +88,6 @@ group. All you need is:
 
 ```bash
 cd examples/multicast-docker
-mkdir -p artifacts tensors  # shared volumes for tensors/checksums
 docker compose build
 docker compose up
 ```
@@ -107,12 +106,16 @@ following knobs if needed:
 - Inspect `/artifacts/tensor-metadata.json` for the last tensor path/size broadcast to
   receivers.
 
+The repository already tracks empty `artifacts/` and `tensors/` directories, so you can
+run `docker compose up` without creating them manually. They persist between runs; delete
+their contents only if you want to free space or start fresh.
+
 ## Testing & Verification
 
 1. Pre-build the wheel via `cd python-api && maturin build --release`, or set `SKIP_BUILD=0`
    to compile in-container.
-2. From `examples/multicast-docker`, create the shared directories (`mkdir -p artifacts tensors`)
-   and run `docker compose up`.
+2. From `examples/multicast-docker`, run `docker compose up` (the tracked `artifacts/`
+   and `tensors/` directories will be reused automatically).
 3. Tail the `source` and receiver logs (`docker compose logs -f source receiver_a receiver_b`)
    to confirm group readiness events, chunk counters, and checksum reports.
 4. After the run, inspect `artifacts/tensor-metadata.json`, `artifacts/receiver-*.bin`, and
