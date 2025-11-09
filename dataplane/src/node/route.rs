@@ -749,6 +749,7 @@ mod tests {
 
             assert_eq!(key, Some(RouteKey::Multicast(1, 100)));
         }
+
         #[test]
         fn install_group_routes_multiple_routes_same_group() {
             let config = make_config(1);
@@ -786,6 +787,59 @@ mod tests {
             assert_eq!(route_ids.len(), 2);
             assert!(route_ids.contains(&2001));
             assert!(route_ids.contains(&2002));
+        }
+
+        #[test]
+        fn multicast_and_unicast_routes_coexist() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            // Install unicast route
+            table.install_routes(vec![RoutingTableEntry {
+                route_id: 5000,
+                src_node_id: 1,
+                dst_node_id: 2,
+                next_hops: vec![7],
+                forward_mode: RouteForwardingMode::Unicast,
+            }]);
+
+            // Install multicast route
+            let group_ip = Ipv4Addr::new(239, 5, 5, 5);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 500,
+                group_ip,
+            }]);
+
+            table.install_group_routes(
+                500,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 5001,
+                    next_hops: vec![8, 9],
+                    src_node_id: 1,
+                    group_id: 500,
+                }],
+            );
+
+            // Verify unicast flow
+            let unicast_flow = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                Ipv4Addr::new(10, 0, 0, 2),
+                10000,
+                config.user_space_server_port + 1,
+            );
+            let unicast_hops = table.get_next_hops_by_flow(unicast_flow, None).unwrap();
+            assert_eq!(&unicast_hops[..], &[7]);
+
+            // Verify multicast flow
+            let multicast_flow = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                group_ip,
+                10001,
+                config.user_space_server_port,
+            );
+            let multicast_hops = table.get_next_hops_by_flow(multicast_flow, None).unwrap();
+            assert_eq!(&multicast_hops[..], &[8, 9]);
         }
     }
 }
