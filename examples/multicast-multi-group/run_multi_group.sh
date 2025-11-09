@@ -35,12 +35,10 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     pip install --no-cache-dir uv
   fi
   uv venv .venv
-  # shellcheck disable=SC1091
   source .venv/bin/activate
   uv pip install maturin
   maturin develop --release -m python-api/Cargo.toml
 else
-  # Reuse an existing wheel if provided.
   wheel_path="${NEXTMINI_PY_WHEEL:-}"
   if [[ -z "${wheel_path}" ]]; then
     wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
@@ -52,9 +50,7 @@ else
   pip install "${wheel_path}"
 fi
 
-extra_args=("$@")
-
 exec python examples/multicast-multi-group/multi_group_demo.py \
   --role "${role}" \
   --config "${config_path}" \
-  "${extra_args[@]}"
+  "$@"
