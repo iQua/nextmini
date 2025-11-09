@@ -308,9 +308,10 @@ impl Dataplane {
                 event,
                 PythonEvent::GroupRoutesInstalled {
                     group_id: gid,
-                    src_node_id,
+                    src_node_id: event_src_node_id,
                     ..
-                } if *gid == group_id && src_node_id.map_or(true, |target| target == *src_node_id)
+                } if *gid == group_id
+                    && src_node_id.map_or(true, |target| target == *event_src_node_id)
             )
         });
 
