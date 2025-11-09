@@ -707,5 +707,24 @@ mod tests {
             // New mapping should be present
             assert_eq!(table.group_dir.get(&group_ip_new), Some(&51));
         }
+
+        #[test]
+        #[should_panic(expected = "Detected unknown IP")]
+        fn multicast_flow_without_group_directory_fails() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            // No group directory installed
+
+            let flow_id = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1),
+                Ipv4Addr::new(239, 0, 0, 99), // Unknown multicast IP
+                8000,
+                config.user_space_server_port,
+            );
+
+            // Should panic when trying to extract node IDs from unknown multicast IP
+            let _ = table.get_next_hops_by_flow(flow_id, None);
+        }
     }
 }
