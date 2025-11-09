@@ -98,6 +98,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional TCP destination port override.",
     )
+    parser.add_argument(
+        "--expected-subscribers",
+        type=int,
+        default=2,
+        help="Number of receivers that must subscribe before the source starts sending.",
+    )
     parser.add_argument("--quiet", action="store_true", help="Reduce log noise.")
     return parser.parse_args()
 
@@ -130,21 +136,38 @@ def wait_for_group(conninfo: str, label: str, timeout: int) -> Tuple[int, str]:
     raise TimeoutError(f"Timed out waiting for multicast group '{label}'.")
 
 
-def wait_for_membership(conninfo: str, group_id: int, node_id: int, timeout: int) -> None:
+def wait_for_count(
+    conninfo: str, group_id: int, target: int, timeout: int, *, specific_node: int | None = None
+) -> None:
     deadline = time.monotonic() + timeout
     with psycopg.connect(conninfo) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
             while time.monotonic() < deadline:
-                cur.execute(
-                    "SELECT 1 FROM group_members WHERE group_id = %s AND node_id = %s",
-                    (group_id, node_id),
-                )
-                if cur.fetchone():
-                    return
+                if specific_node is not None:
+                    cur.execute(
+                        "SELECT 1 FROM group_members WHERE group_id = %s AND node_id = %s",
+                        (group_id, specific_node),
+                    )
+                    if cur.fetchone():
+                        return
+                else:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM group_members WHERE group_id = %s",
+                        (group_id,),
+                    )
+                    count = cur.fetchone()[0]
+                    if count >= target:
+                        return
+
                 time.sleep(1)
+
+    if specific_node is not None:
+        raise TimeoutError(
+            f"Timed out waiting for node {specific_node} to appear in group_members for group {group_id}."
+        )
     raise TimeoutError(
-        f"Timed out waiting for node {node_id} to appear in group_members for group {group_id}."
+        f"Timed out waiting for {target} subscribers in group_members for group {group_id}."
     )
 
 
@@ -154,6 +177,18 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
     dataplane.create_group(args.group_label)
     group_id, group_ip = wait_for_group(conninfo, args.group_label, args.group_timeout)
     log(f"Group allocated: id={group_id} ip={group_ip}", args.quiet)
+
+    wait_for_count(
+        conninfo,
+        group_id,
+        target=args.expected_subscribers,
+        timeout=args.member_timeout,
+        specific_node=None,
+    )
+    log(
+        f"Observed {args.expected_subscribers} subscriber(s); starting multicast sends.",
+        args.quiet,
+    )
 
     payload = os.urandom(args.payload_size)
     frozen = FrozenBuffer(payload)
@@ -184,11 +219,10 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     group_id, group_ip = wait_for_group(conninfo, args.group_label, args.group_timeout)
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
-    wait_for_membership(conninfo, group_id, args.node_id, args.member_timeout)
+    wait_for_count(
+        conninfo, group_id, target=0, timeout=args.member_timeout, specific_node=args.node_id
+    )
     log("Controller recorded membership; awaiting data plane routes.", args.quiet)
-    
-    # Give the dataplane a moment to install multicast routes
-    time.sleep(2)
     log("Routes should be installed, starting to receive...", args.quiet)
 
     receiver = dataplane.register_receiver_for_group(

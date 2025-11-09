@@ -75,6 +75,8 @@ services:
         --payload-size ${PAYLOAD_SIZE:-1024}
         --sleep-ms ${PAYLOAD_SLEEP_MS:-250}
         --group-timeout ${GROUP_TIMEOUT:-120}
+        --member-timeout ${MEMBER_TIMEOUT:-90}
+        --expected-subscribers ${EXPECTED_SUBSCRIBERS:-2}
     networks:
       multicast:
         ipv4_address: 172.31.1.10
@@ -161,4 +163,3 @@ networks:
     ipam:
       config:
         - subnet: 172.31.1.0/24
-

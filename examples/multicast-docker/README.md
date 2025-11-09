@@ -26,14 +26,16 @@ docker compose up --abort-on-container-exit
 ```
 
 On first run, the Python harness containers build the `nextmini_py` extension, so the
-setup can take a couple of minutes. Once the source finishes transmitting and both
-receivers collect the configured payload count, every container exits cleanly.
+setup can take a couple of minutes. Once the source sees the required number of
+subscribers (defaults to 2) and finishes transmitting, both receivers stream the
+configured payload count and every container exits cleanly.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):
 
 - `GROUP_LABEL` – label used when creating the multicast group (default `demo-multicast`).
 - `PAYLOAD_COUNT` / `PAYLOAD_SIZE` / `PAYLOAD_SLEEP_MS` – tune the source workload.
+- `EXPECTED_SUBSCRIBERS` – number of receivers that must join before the source starts sending (defaults to 2).
 - `RECEIVER_EXPECTED` – number of payloads each receiver waits for.
 - `GROUP_TIMEOUT`, `MEMBER_TIMEOUT`, `RECEIVE_TIMEOUT_MS` – tweak the various waits when
   running on slower machines or remote builders.
