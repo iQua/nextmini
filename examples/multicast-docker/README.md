@@ -54,17 +54,16 @@ SKIP_BUILD=0 docker compose up
 This will build the `nextmini_py` extension inside each container using `maturin develop`.
 The first run will take a few minutes as the wheel is compiled.
 
-Once the source sees the required number of subscribers (defaults to 2) that are both
-joined and ready, it finishes transmitting. Both receivers stream the configured payload
-count and every container exits cleanly.
+Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor,
+waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and
+shuts down once the reconstructed outputs land in `artifacts/`.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):
 
 - `GROUP_LABEL` – label used when creating the multicast group (default `demo-multicast`).
-- `PAYLOAD_COUNT` / `PAYLOAD_SIZE` / `PAYLOAD_SLEEP_MS` – tune the source workload.
 - `EXPECTED_SUBSCRIBERS` – number of receivers that must be both joined and ready before the source starts sending (defaults to 2).
-- `RECEIVER_EXPECTED` – number of payloads each receiver waits for.
+- `RECEIVER_EXPECTED` – chunk count each receiver waits for (auto-derived from `EXPECTED_BYTES`).
 - `GROUP_TIMEOUT`, `MEMBER_TIMEOUT`, `RECEIVE_TIMEOUT_MS` – tweak the various waits when
   running on slower machines or remote builders.
 - `TENSOR_PATH` – optional path (inside the repo) to a tensor/binary blob that should be
@@ -73,10 +72,12 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
 - `CHUNK_SIZE` – payload slice size (defaults to 6144 bytes to stay under the dataplane MTU).
+- `PAYLOAD_SLEEP_MS` – optional pacing delay between chunks when you need to slow down the source.
 - `VERIFY_CHECKSUM` – set to `1` to have the source emit, and receivers verify, a
   SHA-256 checksum stored at `CHECKSUM_PATH` (defaults to `/artifacts/<group>.sha256`).
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
+- `ARTIFACT_DIR` – shared volume for tensors, metadata, and checksums.
 
 ## Streaming Large Tensors
 
@@ -105,6 +106,17 @@ following knobs if needed:
 - Increase/decrease `CHUNK_SIZE` or `PAYLOAD_SLEEP_MS` to tune throughput.
 - Inspect `/artifacts/tensor-metadata.json` for the last tensor path/size broadcast to
   receivers.
+
+## Testing & Verification
+
+1. Pre-build the wheel via `cd python-api && maturin build --release`, or set `SKIP_BUILD=0`
+   to compile in-container.
+2. From `examples/multicast-docker`, create the shared directories (`mkdir -p artifacts tensors`)
+   and run `docker compose up`.
+3. Tail the `source` and receiver logs (`docker compose logs -f source receiver_a receiver_b`)
+   to confirm group readiness events, chunk counters, and checksum reports.
+4. After the run, inspect `artifacts/tensor-metadata.json`, `artifacts/receiver-*.bin`, and
+   (when `VERIFY_CHECKSUM=1`) `/artifacts/<group>.sha256` to validate byte counts and digests.
 
 ## Inspecting the Run
 

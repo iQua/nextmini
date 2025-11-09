@@ -336,6 +336,36 @@ def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
     raise TimeoutError(f"Timed out waiting for tensor metadata at {meta_path}.")
 
 
+def generate_tensor_if_needed(args: argparse.Namespace) -> Path | None:
+    if not args.generate_tensor:
+        return None
+
+    tensor_dir = args.tensor_path.parent if args.tensor_path else Path("/workspace/tensors")
+    tensor_dir.mkdir(parents=True, exist_ok=True)
+    output = tensor_dir / "tensor-auto-1g.pt"
+
+    log(f"Generating ~1GB tensor at {output}...", args.quiet)
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - only hits if torch missing in container
+        raise SystemExit(
+            "PyTorch is required for --generate-tensor but is not installed in this container."
+        ) from exc
+
+    torch.manual_seed(42)
+    # 256 * 1024 * 1024 * float32 ~= 1 GiB
+    tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(tensor, output)
+    size = output.stat().st_size
+    log(f"Generated tensor ({size} bytes).", args.quiet)
+
+    args.tensor_path = output
+    args.expected_bytes = size
+    write_tensor_metadata(args, output, size)
+    return output
+
+
 def mark_receiver_ready(conninfo: str, group_id: int, node_id: int) -> None:
     ensure_ready_table(conninfo)
     with psycopg.connect(conninfo) as conn:
@@ -579,31 +609,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-def generate_tensor_if_needed(args: argparse.Namespace) -> Path | None:
-    if not args.generate_tensor:
-        return None
-
-    tensor_dir = args.tensor_path.parent if args.tensor_path else Path("/workspace/tensors")
-    tensor_dir.mkdir(parents=True, exist_ok=True)
-    output = tensor_dir / "tensor-auto-1g.pt"
-
-    log(f"Generating ~1GB tensor at {output}...", args.quiet)
-    try:
-        import torch
-    except ImportError as exc:  # pragma: no cover - only hits if torch missing in container
-        raise SystemExit(
-            "PyTorch is required for --generate-tensor but is not installed in this container."
-        ) from exc
-
-    torch.manual_seed(42)
-    # 256 * 1024 * 1024 * float32 ~= 1 GiB
-    tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(tensor, output)
-    size = output.stat().st_size
-    log(f"Generated tensor ({size} bytes).", args.quiet)
-
-    args.tensor_path = output
-    args.expected_bytes = size
-    write_tensor_metadata(args, output, size)
-    return output
