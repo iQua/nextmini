@@ -726,5 +726,28 @@ mod tests {
             // Should panic when trying to extract node IDs from unknown multicast IP
             let _ = table.get_next_hops_by_flow(flow_id, None);
         }
+
+        #[test]
+        fn multicast_route_key_uses_source_node_and_group_id() {
+            let config = make_config(2);
+            let mut table = RoutingTable::new(config.clone());
+
+            let group_ip = Ipv4Addr::new(239, 1, 1, 1);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 100,
+                group_ip,
+            }]);
+
+            let flow_id = make_flow_id(
+                Ipv4Addr::new(10, 0, 0, 1), // Node 1 as source
+                group_ip,
+                9000,
+                config.user_space_server_port,
+            );
+
+            let key = table.key_for_flow(flow_id);
+
+            assert_eq!(key, Some(RouteKey::Multicast(1, 100)));
+        }
     }
 }
