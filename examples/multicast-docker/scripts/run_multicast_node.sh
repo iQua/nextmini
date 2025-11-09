@@ -10,26 +10,9 @@ if [[ -z "${role}" || -z "${config_path}" ]]; then
   exit 2
 fi
 
-if [[ -n "${WAIT_FOR:-}" ]]; then
-  IFS=":" read -r wait_host wait_port <<< "${WAIT_FOR}"
-  wait_attempts="${WAIT_ATTEMPTS:-60}"
-  echo "Waiting for ${wait_host}:${wait_port} (${wait_attempts} attempts)..." >&2
-  for attempt in $(seq 1 "${wait_attempts}"); do
-    # Use timeout with nc (netcat) to avoid WebSocket handshake errors
-    if timeout 1 bash -c "echo > /dev/tcp/${wait_host}/${wait_port}" 2>/dev/null; then
-      echo "Controller reachable (attempt ${attempt})." >&2
-      if [[ "${WAIT_STABILIZE:-2}" != "0" ]]; then
-        sleep "${WAIT_STABILIZE:-2}" >&2
-      fi
-      break
-    fi
-    sleep 1
-    if [[ "${attempt}" == "${wait_attempts}" ]]; then
-      echo "Timed out waiting for ${wait_host}:${wait_port}" >&2
-      exit 1
-    fi
-  done
-fi
+# Sleep briefly to ensure controller is fully ready
+# (docker-compose depends_on handles the basic startup order)
+sleep 2
 
 export PYTHONUNBUFFERED=1
 

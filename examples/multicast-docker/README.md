@@ -19,16 +19,31 @@ runs in-process via `nextmini_py` and drives the control-plane by issuing
 
 ## Running the Example
 
+### Option 1: Pre-build the Python wheel (recommended for faster startup)
+
 ```bash
-cd examples/multicast-docker
+cd python-api
+maturin build --release
+cd ../examples/multicast-docker
 docker compose build
-docker compose up --abort-on-container-exit
+docker compose up
 ```
 
-On first run, the Python harness containers build the `nextmini_py` extension, so the
-setup can take a couple of minutes. Once the source sees the required number of
-subscribers (defaults to 2) and finishes transmitting, both receivers stream the
-configured payload count and every container exits cleanly.
+The pre-built wheel will be shared across all containers, significantly speeding up startup.
+
+### Option 2: Build inside containers
+
+```bash
+cd examples/multicast-docker
+SKIP_BUILD=0 docker compose up
+```
+
+This will build the `nextmini_py` extension inside each container using `maturin develop`.
+The first run will take a few minutes as the wheel is compiled.
+
+Once the source sees the required number of subscribers (defaults to 2) that are both
+joined and ready, it finishes transmitting. Both receivers stream the configured payload
+count and every container exits cleanly.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):
