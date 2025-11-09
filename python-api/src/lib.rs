@@ -17,7 +17,7 @@ use nextmini::node::config::LocalConfig;
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::python::interface::PythonInterfaceHandle;
+use nextmini::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use nextmini::node::{NodeId, NodeIdExt};
 use nextmini_messages::DataplaneToController;
 
@@ -100,6 +100,7 @@ impl Dataplane {
 
         let py_if = PythonInterfaceHandle::new(cfg.channel_capacity);
         processor.connect_python_interface(py_if.clone());
+        rt().block_on(controller.attach_python_interface(py_if.clone()));
 
         let join = rt().spawn(async move {
             conductor.run().await;
@@ -249,6 +250,30 @@ impl Dataplane {
                 .await;
         });
         Ok(())
+    }
+
+    #[pyo3(signature = (timeout_ms=None))]
+    fn group_is_ready(&self, timeout_ms: Option<u64>) -> PyResult<Option<(usize, String, usize)>> {
+        let event = if let Some(ms) = timeout_ms {
+            let handle = self.py_if.clone();
+            rt().block_on(async {
+                tokio::time::timeout(std::time::Duration::from_millis(ms), handle.next_event())
+                    .await
+                    .ok()
+                    .flatten()
+            })
+        } else {
+            rt().block_on(self.py_if.next_event())
+        };
+
+        match event {
+            Some(PythonEvent::GroupCreated {
+                group_id,
+                src_node_id,
+                group_ip,
+            }) => Ok(Some((group_id, group_ip.to_string(), src_node_id))),
+            _ => Ok(None),
+        }
     }
 
     #[pyo3(signature = (dst_node_id, frozen_buffers, src_port=None, dst_port=None))]

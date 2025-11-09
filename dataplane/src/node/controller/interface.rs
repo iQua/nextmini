@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
@@ -19,6 +21,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
+use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
 
 #[derive(Clone)]
@@ -26,6 +29,7 @@ pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
@@ -47,10 +51,13 @@ impl ControllerInterfaceHandle {
             northbridge_receiver,
         };
 
+        let python_interface = Arc::new(Mutex::new(None));
+
         let controller_interface = Self {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            python_interface: python_interface.clone(),
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
@@ -86,6 +93,7 @@ impl ControllerInterfaceHandle {
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
+            python_interface,
         };
 
         tokio::spawn(async move {
@@ -175,6 +183,12 @@ impl ControllerInterfaceHandle {
             );
         };
     }
+
+    #[allow(dead_code)]
+    pub async fn attach_python_interface(&self, interface: PythonInterfaceHandle) {
+        let mut guard = self.python_interface.lock().await;
+        *guard = Some(interface);
+    }
 }
 
 #[cfg(test)]
@@ -183,12 +197,14 @@ impl ControllerInterfaceHandle {
         let config = LocalConfig::default();
         let processors = ProcessorHandle::new(config.clone());
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        let python_interface = Arc::new(Mutex::new(None));
 
         (
             Self {
                 config,
                 processors,
                 northbridge_sender,
+                python_interface,
             },
             northbridge_receiver,
         )
@@ -236,6 +252,8 @@ pub struct ControllerToDataplaneReceiver {
     // handles for user-space TCP flows
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
+
+    python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -350,6 +368,21 @@ impl ControllerToDataplaneReceiver {
                     "Registered multicast group {} ({}) owned by node {}.",
                     group_id, group_ip, src_node_id
                 );
+
+                let maybe_python = {
+                    let guard = self.python_interface.lock().await;
+                    guard.clone()
+                };
+
+                if let Some(py_if) = maybe_python {
+                    py_if
+                        .publish_event(PythonEvent::GroupCreated {
+                            group_id,
+                            src_node_id,
+                            group_ip,
+                        })
+                        .await;
+                }
             }
 
             ControllerToDataplane::InstallGroupDirectory { groups } => {

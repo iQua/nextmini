@@ -4,7 +4,7 @@ use std::sync::Arc;
 use ahash::AHashMap;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc};
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::node::FlowId;
 use crate::node::NodeId;
@@ -22,15 +22,20 @@ struct Inner {
     #[allow(dead_code)] // Only read when the python bindings register flows.
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>,
+    event_tx: mpsc::Sender<PythonEvent>,
+    event_rx: Mutex<mpsc::Receiver<PythonEvent>>,
 }
 
 impl PythonInterfaceHandle {
     #[allow(dead_code)] // Constructed from the python bindings crate.
     pub fn new(capacity: usize) -> Self {
+        let (event_tx, event_rx) = mpsc::channel(capacity);
         Self {
             inner: Arc::new(Inner {
                 capacity,
                 senders: Mutex::new(AHashMap::new()),
+                event_tx,
+                event_rx: Mutex::new(event_rx),
             }),
         }
     }
@@ -74,6 +79,23 @@ impl PythonInterfaceHandle {
         } else {
             Err(packet)
         }
+    }
+
+    /// Pushes an event into the Python bridge, dropping if the consumer is unavailable.
+    pub async fn publish_event(&self, event: PythonEvent) {
+        if let Err(err) = self.inner.event_tx.send(event).await {
+            error!(
+                "PythonInterface: failed to publish event to Python: {}",
+                err
+            );
+        }
+    }
+
+    /// Returns the next event enqueued for Python consumers.
+    #[allow(dead_code)] // Called from the python bindings crate.
+    pub async fn next_event(&self) -> Option<PythonEvent> {
+        let mut rx = self.inner.event_rx.lock().await;
+        rx.recv().await
     }
 }
 
@@ -152,5 +174,33 @@ mod tests {
             &[1, 2, 3, 4],
         );
         assert!(handle.deliver(packet).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn roundtrips_group_created_event() {
+        let handle = PythonInterfaceHandle::new(4);
+        let event = PythonEvent::GroupCreated {
+            group_id: 7,
+            src_node_id: 1,
+            group_ip: Ipv4Addr::new(239, 255, 0, 10),
+        };
+
+        handle.publish_event(event.clone()).await;
+        let received = handle
+            .next_event()
+            .await
+            .expect("event should be delivered");
+
+        match received {
+            PythonEvent::GroupCreated {
+                group_id,
+                src_node_id,
+                group_ip,
+            } => {
+                assert_eq!(group_id, 7);
+                assert_eq!(src_node_id, 1);
+                assert_eq!(group_ip, Ipv4Addr::new(239, 255, 0, 10));
+            }
+        }
     }
 }
