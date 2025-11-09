@@ -749,5 +749,43 @@ mod tests {
 
             assert_eq!(key, Some(RouteKey::Multicast(1, 100)));
         }
+        #[test]
+        fn install_group_routes_multiple_routes_same_group() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            let group_ip = Ipv4Addr::new(239, 2, 2, 2);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 200,
+                group_ip,
+            }]);
+
+            // Install multiple routes for the same (src, group) pair
+            table.install_group_routes(
+                200,
+                1,
+                vec![
+                    GroupRoutingTableEntry {
+                        route_id: 2001,
+                        next_hops: vec![3],
+                        src_node_id: 1,
+                        group_id: 200,
+                    },
+                    GroupRoutingTableEntry {
+                        route_id: 2002,
+                        next_hops: vec![4],
+                        src_node_id: 1,
+                        group_id: 200,
+                    },
+                ],
+            );
+
+            let key = RouteKey::Multicast(1, 200);
+            let route_ids = table.available_routes.get(&key).unwrap();
+
+            assert_eq!(route_ids.len(), 2);
+            assert!(route_ids.contains(&2001));
+            assert!(route_ids.contains(&2002));
+        }
     }
 }
