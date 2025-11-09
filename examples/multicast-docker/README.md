@@ -21,6 +21,8 @@ runs in-process via `nextmini_py` and drives the control-plane by issuing
 
 ### Option 1: Pre-build the Python wheel (recommended for faster startup)
 
+Note: This has only been tested on arbutus. Needs to change the name and version for compatibility with other platforms.
+
 ```bash
 cd python-api
 maturin build --release
@@ -31,7 +33,7 @@ docker compose up
 
 The pre-built wheel will be shared across all containers, significantly speeding up startup.
 
-### Option 2: Build inside containers
+### Option 2: Build inside containers on any machines including MacOS.
 
 ```bash
 cd examples/multicast-docker
