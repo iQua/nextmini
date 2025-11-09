@@ -1,4 +1,4 @@
-# Multicast Multi-Group (TOML) Demo
+# Multicast Multi-Group
 
 This example shows how to drive several multicast groups from Python, exercise
 `leave_group`, and coordinate all runtime parameters via TOML files (no JSON or
@@ -85,17 +85,4 @@ Validation tips:
    `loss-stream.toml`, `loss-stream.ready.toml`, and `loss-stream.left.toml`.
 4. Re-run `docker compose logs -f receiver` to ensure the receiver prints
    “No payloads observed for 'loss-stream' post-leave,” verifying the `leave_group`
-   behavior.
-
-## What’s inside
-
-- `multi_group_demo.py` – main driver (source/receiver roles, TOML hand-off).
-- `run_multi_group.py` – helper used by Docker to build/install `nextmini_py`
-  and launch the script.
-- `docker-compose.yml` – orchestrates Postgres, controller, receiver, and source
-  containers on a dedicated bridge network.
-- `tmp/.gitkeep` – empty directory that becomes the shared state volume.
-
-The entire flow relies on TOML for configuration and coordination (dataplane
-configs, controller config, and the hand-off files between roles), making it
-easy to audit or modify without ad-hoc formats.
+   behaviour.
