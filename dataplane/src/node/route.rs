@@ -437,4 +437,39 @@ mod tests {
             "cached unicast hop allocation escaped inline buffer"
         );
     }
+
+    mod multicast_tests {
+        use super::*;
+
+        #[test]
+        fn install_group_routes_adds_members() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config.clone());
+
+            // Install group directory first
+            let group_ip = Ipv4Addr::new(239, 0, 0, 1);
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 1,
+                group_ip,
+            }]);
+
+            // Install routes for group 1 with two next-hop members
+            table.install_group_routes(
+                1,
+                1,
+                vec![GroupRoutingTableEntry {
+                    route_id: 100,
+                    next_hops: vec![2, 3],
+                    src_node_id: 1,
+                    group_id: 1,
+                }],
+            );
+
+            // Verify the route was installed
+            let key = RouteKey::Multicast(1, 1);
+            assert!(table.available_routes.contains_key(&key));
+            assert_eq!(table.available_routes.get(&key).unwrap().len(), 1);
+            assert_eq!(table.route_next_hop.get(&100).unwrap(), &vec![2, 3]);
+        }
+    }
 }
