@@ -679,5 +679,33 @@ mod tests {
             assert_eq!(&hops_1[..], &[2, 3]);
             assert_eq!(&hops_2[..], &[4, 5]);
         }
+
+        #[test]
+        fn install_group_directory_replaces_existing() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config);
+
+            let group_ip_old = Ipv4Addr::new(239, 0, 0, 50);
+            let group_ip_new = Ipv4Addr::new(239, 0, 0, 51);
+
+            // Install initial directory
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 50,
+                group_ip: group_ip_old,
+            }]);
+
+            assert_eq!(table.group_dir.get(&group_ip_old), Some(&50));
+
+            // Replace with new directory
+            table.install_group_directory(vec![GroupDirectoryEntry {
+                group_id: 51,
+                group_ip: group_ip_new,
+            }]);
+
+            // Old mapping should be gone
+            assert_eq!(table.group_dir.get(&group_ip_old), None);
+            // New mapping should be present
+            assert_eq!(table.group_dir.get(&group_ip_new), Some(&51));
+        }
     }
 }
