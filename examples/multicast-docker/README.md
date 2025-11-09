@@ -5,6 +5,12 @@ nodes) inside Docker to exercise the multicast APIs end-to-end. Each dataplane n
 runs in-process via `nextmini_py` and drives the control-plane by issuing
 `CreateGroup`/`JoinGroup` messages before sending or receiving payloads.
 
+`nextmini_py` now exposes a `group_is_ready()` helper that waits for the
+`GroupCreated` controller response. The source container calls this immediately
+after `CreateGroup` so it learns the `group_id`/`group_ip` without querying the
+database. Receivers still look up the group by label via Postgres so they can
+operate independently of the source.
+
 ## Layout
 
 - `controller-config.toml` – controller configuration with a three-node full-mesh and

@@ -178,6 +178,24 @@ def wait_for_count(
     )
 
 
+def await_group_ready_via_api(
+    dataplane: "nm.Dataplane", *, label: str, timeout: int, quiet: bool
+) -> Tuple[int, str]:
+    timeout_ms = max(timeout, 1) * 1000
+    event = dataplane.group_is_ready(timeout_ms=timeout_ms)
+    if event is None:
+        raise TimeoutError(
+            f"Timed out waiting for controller confirmation after CreateGroup '{label}'."
+        )
+
+    group_id, group_ip, src_node_id = event
+    log(
+        f"Controller reported group ready: id={group_id} ip={group_ip} (source node {src_node_id}).",
+        quiet,
+    )
+    return group_id, group_ip
+
+
 def ensure_ready_table(conninfo: str) -> None:
     with psycopg.connect(conninfo) as conn:
         conn.autocommit = True
@@ -212,8 +230,9 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
     dataplane = nm.Dataplane(str(args.config))
     log(f"Requesting multicast group '{args.group_label}'...", args.quiet)
     dataplane.create_group(args.group_label)
-    group_id, group_ip = wait_for_group(conninfo, args.group_label, args.group_timeout)
-    log(f"Group allocated: id={group_id} ip={group_ip}", args.quiet)
+    group_id, group_ip = await_group_ready_via_api(
+        dataplane, label=args.group_label, timeout=args.group_timeout, quiet=args.quiet
+    )
 
     wait_for_count(
         conninfo,
