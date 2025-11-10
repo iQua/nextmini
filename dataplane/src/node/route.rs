@@ -824,5 +824,36 @@ mod tests {
             assert!(result.is_err());
             assert!(result.unwrap_err().contains("Route 123 invalid"));
         }
+
+        #[test]
+        fn select_route_for_key_distributes_across_multiple_routes() {
+            let config = make_config(1);
+            let mut table = RoutingTable::new(config);
+
+            let key = RouteKey::Multicast(1, 200);
+            table.available_routes.insert(key, vec![2001, 2002, 2003]);
+
+            // Call multiple times to verify deterministic selection
+            let first = table.select_route_for_key(&key);
+            let second = table.select_route_for_key(&key);
+
+            assert_eq!(first, second, "Same key should select same route");
+            assert!(vec![2001, 2002, 2003].contains(&first.unwrap()));
+        }
+        #[test]
+        fn pick_single_hop_chooses_from_multiple() {
+            let hops = vec![10, 20, 30, 40, 50];
+
+            // Sample multiple times to verify randomness works
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..100 {
+                let hop = RoutingTable::pick_single_hop(&hops).unwrap();
+                assert!(hops.contains(&hop));
+                seen.insert(hop);
+            }
+
+            // With 100 samples, should see at least 3 different values
+            assert!(seen.len() >= 3, "Random selection should vary");
+        }
     }
 }
