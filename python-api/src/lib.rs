@@ -740,21 +740,40 @@ mod tests {
 
     #[test]
     fn build_segments_multi_fragment_sets_flags_and_counts() {
-        let payload = vec![0xBB; 3000];
-        let segments = build_py_payload_segments(&payload, 1000, 4096, 7).expect("segments");
-        assert_eq!(segments.len(), 3);
+        let payload: Vec<u8> = (0..3500).map(|i| (i % 256) as u8).collect();
+        let message_id = 7;
+        let segments =
+            build_py_payload_segments(&payload, 1000, 4096, message_id).expect("segments");
+        assert_eq!(segments.len(), 4);
 
         for (idx, fragment) in segments.iter().enumerate() {
             let (header, body) =
                 PyPayloadSegHeader::decode_from(fragment).expect("fragment header");
+
+            // Validate fragmentation flags
             assert!(header.is_fragmented());
             if idx == segments.len() - 1 {
                 assert!(header.is_last_fragment());
             } else {
                 assert!(!header.is_last_fragment());
             }
+
+            // Validate fragment indices
             assert_eq!(header.fragment_index, idx as u16);
             assert_eq!(header.fragment_count, segments.len() as u16);
+
+            // Validate consistent metadata across all fragments
+            assert_eq!(
+                header.message_id, message_id,
+                "message_id should be consistent"
+            );
+            assert_eq!(
+                header.total_len as usize,
+                payload.len(),
+                "total_len should match original payload"
+            );
+
+            // Validate body content
             let start = idx * 1000;
             let end = std::cmp::min(start + 1000, payload.len());
             assert_eq!(body, &payload[start..end]);
@@ -768,6 +787,93 @@ mod tests {
         assert!(err
             .to_string()
             .contains("exceeds configured limit of 5 bytes"));
+    }
+
+    #[test]
+    fn build_segments_empty_payload_creates_single_fragment() {
+        let payload = vec![];
+        let segments = build_py_payload_segments(&payload, 1024, 4096, 99).expect("segments");
+        assert_eq!(segments.len(), 1);
+        let (header, body) = PyPayloadSegHeader::decode_from(&segments[0]).expect("header");
+        assert!(!header.is_fragmented());
+        assert!(!header.is_last_fragment());
+        assert_eq!(header.message_id, 99);
+        assert_eq!(header.total_len, 0);
+        assert_eq!(header.fragment_count, 1);
+        assert_eq!(header.fragment_payload_len, 0);
+        assert_eq!(body.len(), 0);
+    }
+
+    #[test]
+    fn build_segments_exactly_at_chunk_boundary() {
+        let payload = vec![0xDD; 2000];
+        let segments = build_py_payload_segments(&payload, 1000, 4096, 15).expect("segments");
+        assert_eq!(segments.len(), 2);
+
+        let (first_header, first_body) =
+            PyPayloadSegHeader::decode_from(&segments[0]).expect("first");
+        assert!(first_header.is_fragmented());
+        assert!(!first_header.is_last_fragment());
+        assert_eq!(first_header.fragment_index, 0);
+        assert_eq!(first_header.fragment_count, 2);
+        assert_eq!(first_body.len(), 1000);
+
+        let (second_header, second_body) =
+            PyPayloadSegHeader::decode_from(&segments[1]).expect("second");
+        assert!(second_header.is_fragmented());
+        assert!(second_header.is_last_fragment());
+        assert_eq!(second_header.fragment_index, 1);
+        assert_eq!(second_body.len(), 1000);
+    }
+
+    #[test]
+    fn build_segments_errors_when_chunk_budget_is_zero() {
+        let payload = vec![0xEE; 100];
+        let err = build_py_payload_segments(&payload, 0, 4096, 1).unwrap_err();
+        assert!(err.to_string().contains("chunk budget is zero"));
+    }
+
+    #[test]
+    fn build_segments_errors_when_payload_exceeds_u32_max() {
+        let payload_size = (u32::MAX as usize) + 1;
+        let payload = vec![0xFF; payload_size];
+        let err = build_py_payload_segments(&payload, 1024, usize::MAX, 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds 4 GiB limit"));
+    }
+
+    #[test]
+    fn build_segments_errors_when_fragment_count_exceeds_u16_max() {
+        let chunk_budget = 1;
+        let payload_size = (u16::MAX as usize) + 1;
+        let payload = vec![0xAB; payload_size];
+        let err = build_py_payload_segments(&payload, chunk_budget, usize::MAX, 1).unwrap_err();
+        assert!(err.to_string().contains("exceeds the limit of 65535"));
+    }
+
+    #[test]
+    fn build_segments_last_fragment_can_be_partial() {
+        let payload = vec![0x11; 2100];
+        let segments = build_py_payload_segments(&payload, 1000, 4096, 8).expect("segments");
+        assert_eq!(segments.len(), 3);
+
+        let (last_header, last_body) = PyPayloadSegHeader::decode_from(&segments[2]).expect("last");
+        assert!(last_header.is_last_fragment());
+        assert_eq!(last_body.len(), 100);
+        assert_eq!(last_header.fragment_payload_len, 100);
+    }
+
+    #[test]
+    fn build_segments_reconstructed_payload_matches_original() {
+        let payload = (0..3500).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
+        let segments = build_py_payload_segments(&payload, 1000, 5000, 50).expect("segments");
+
+        let mut reconstructed = Vec::new();
+        for fragment in segments {
+            let (_, body) = PyPayloadSegHeader::decode_from(&fragment).expect("fragment");
+            reconstructed.extend_from_slice(body);
+        }
+
+        assert_eq!(reconstructed, payload);
     }
 }
 
