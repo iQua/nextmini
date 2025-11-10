@@ -227,4 +227,19 @@ mod tests {
             assert_eq!(buffer1.read(py).as_bytes(), buffer2.read(py).as_bytes());
         });
     }
+    #[test]
+    fn frozen_buffer_clone_shares_memory() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"0123456789");
+            let buffer1 = FrozenBuffer::new(&data);
+            let buffer2 = buffer1.clone();
+
+            // Both should point to the same memory address
+            assert_eq!(
+                buffer1.inner.as_ptr(),
+                buffer2.inner.as_ptr(),
+                "Clones should share the same underlying memory"
+            );
+        });
+    }
 }
