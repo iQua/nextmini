@@ -1,11 +1,16 @@
 mod buffer;
 
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::fs::{self, File};
+use std::io::{BufReader, Read, Write};
 use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use once_cell::sync::OnceCell;
 use pyo3::conversion::IntoPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -13,8 +18,11 @@ use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
+use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
@@ -210,6 +218,159 @@ impl From<RustPayloadDelivery> for PyPayloadDelivery {
                 RustPayloadFormat::RawPacket => "raw_packet".to_string(),
             },
         }
+    }
+}
+
+const CONTROL_STRUCT_LEN: usize = 9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlKind {
+    Ready = 1,
+    Ack = 2,
+    Repair = 3,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ControlMessage {
+    kind: ControlKind,
+    node_id: usize,
+    chunk_index: u64,
+}
+
+fn encode_control_payload(kind: ControlKind, node_id: usize, chunk_index: u64) -> Bytes {
+    let mut buf = [0u8; CONTROL_STRUCT_LEN];
+    buf[0] = kind as u8;
+    buf[1..5].copy_from_slice(&(node_id as u32).to_be_bytes());
+    buf[5..9].copy_from_slice(&(chunk_index as u32).to_be_bytes());
+    Bytes::copy_from_slice(&buf)
+}
+
+fn decode_control_payload(payload: &[u8]) -> PyResult<ControlMessage> {
+    if payload.len() < CONTROL_STRUCT_LEN {
+        return Err(PyRuntimeError::new_err("control payload too short"));
+    }
+    let kind = match payload[0] {
+        1 => ControlKind::Ready,
+        2 => ControlKind::Ack,
+        3 => ControlKind::Repair,
+        other => {
+            return Err(PyRuntimeError::new_err(format!(
+                "unknown control kind {other}"
+            )))
+        }
+    };
+    let node_id = u32::from_be_bytes(payload[1..5].try_into().unwrap()) as usize;
+    let chunk_index = u32::from_be_bytes(payload[5..9].try_into().unwrap()) as u64;
+    Ok(ControlMessage {
+        kind,
+        node_id,
+        chunk_index,
+    })
+}
+
+fn encode_chunk_payload(chunk_index: u64, chunk: &[u8]) -> Bytes {
+    let mut buf = BytesMut::with_capacity(12 + chunk.len());
+    buf.put_u64(chunk_index);
+    buf.put_u32(chunk.len() as u32);
+    buf.extend_from_slice(chunk);
+    buf.freeze()
+}
+
+fn decode_chunk_payload(bytes: &Bytes) -> PyResult<(u64, Bytes)> {
+    if bytes.len() < 12 {
+        return Err(PyRuntimeError::new_err("chunk payload shorter than header"));
+    }
+    let chunk_index = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+    let len = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
+    let end = 12 + len;
+    if end > bytes.len() {
+        return Err(PyRuntimeError::new_err("chunk payload truncated"));
+    }
+    Ok((chunk_index, bytes.slice(12..end)))
+}
+
+fn chunk_count(total_bytes: u64, chunk_size: usize) -> u64 {
+    if chunk_size == 0 {
+        return 0;
+    }
+    if total_bytes == 0 {
+        0
+    } else {
+        ((total_bytes + chunk_size as u64 - 1) / chunk_size as u64) as u64
+    }
+}
+
+#[pyclass]
+struct ReliableSendReport {
+    bytes_sent: u64,
+    chunks_sent: u64,
+    resends: u64,
+    duration_ms: u64,
+    checksum: Option<String>,
+}
+
+#[pymethods]
+impl ReliableSendReport {
+    #[getter]
+    fn bytes_sent(&self) -> u64 {
+        self.bytes_sent
+    }
+
+    #[getter]
+    fn chunks_sent(&self) -> u64 {
+        self.chunks_sent
+    }
+
+    #[getter]
+    fn resends(&self) -> u64 {
+        self.resends
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+
+    #[getter]
+    fn checksum(&self) -> Option<&str> {
+        self.checksum.as_deref()
+    }
+}
+
+#[pyclass]
+struct ReliableReceiveReport {
+    bytes_received: u64,
+    chunks_received: u64,
+    repairs_requested: u64,
+    duration_ms: u64,
+    checksum: Option<String>,
+}
+
+#[pymethods]
+impl ReliableReceiveReport {
+    #[getter]
+    fn bytes_received(&self) -> u64 {
+        self.bytes_received
+    }
+
+    #[getter]
+    fn chunks_received(&self) -> u64 {
+        self.chunks_received
+    }
+
+    #[getter]
+    fn repairs_requested(&self) -> u64 {
+        self.repairs_requested
+    }
+
+    #[getter]
+    fn duration_ms(&self) -> u64 {
+        self.duration_ms
+    }
+
+    #[getter]
+    fn checksum(&self) -> Option<&str> {
+        self.checksum.as_deref()
     }
 }
 
@@ -484,9 +645,680 @@ impl Dataplane {
         }
         Ok(())
     }
+
+    #[pyo3(signature = (
+        group_ip,
+        receiver_ids,
+        tensor_path,
+        *,
+        chunk_size=32768,
+        flow_window=256,
+        flow_poll_ms=100,
+        ready_timeout_ms=90_000,
+        src_port=None,
+        dst_port=None,
+        sleep_ms=0,
+        checksum_path=None,
+        write_checksum=false
+    ))]
+    fn send_file_reliable(
+        &self,
+        group_ip: &str,
+        receiver_ids: Vec<usize>,
+        tensor_path: &str,
+        chunk_size: usize,
+        flow_window: usize,
+        flow_poll_ms: u64,
+        ready_timeout_ms: u64,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        sleep_ms: u64,
+        checksum_path: Option<String>,
+        write_checksum: bool,
+    ) -> PyResult<ReliableSendReport> {
+        let group_ip = parse_ipv4(group_ip)?;
+        let tensor_path = PathBuf::from(tensor_path);
+        let checksum_path = checksum_path.map(PathBuf::from);
+        let src_port = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dst_port = dst_port.unwrap_or(self.cfg.user_space_server_port);
+        self.run_reliable_sender(
+            group_ip,
+            &receiver_ids,
+            &tensor_path,
+            chunk_size,
+            flow_window,
+            Duration::from_millis(flow_poll_ms),
+            Duration::from_millis(ready_timeout_ms),
+            src_port,
+            dst_port,
+            Duration::from_millis(sleep_ms),
+            checksum_path.as_deref(),
+            write_checksum,
+        )
+    }
+
+    #[pyo3(signature = (
+        group_ip,
+        source_node_id,
+        expected_bytes,
+        *,
+        chunk_size=32768,
+        receive_timeout_ms=5000,
+        src_port=None,
+        dst_port=None,
+        sink_path=None,
+        verify_checksum=false,
+        checksum_path=None
+    ))]
+    fn receive_file_reliable(
+        &self,
+        group_ip: &str,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        receive_timeout_ms: u64,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        sink_path: Option<String>,
+        verify_checksum: bool,
+        checksum_path: Option<String>,
+    ) -> PyResult<ReliableReceiveReport> {
+        let group_ip = parse_ipv4(group_ip)?;
+        let sink_path = sink_path.map(PathBuf::from);
+        let checksum_path = checksum_path.map(PathBuf::from);
+        let src_port = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dst_port = dst_port.unwrap_or(self.cfg.user_space_server_port);
+        self.run_reliable_receiver(
+            group_ip,
+            source_node_id,
+            expected_bytes,
+            chunk_size,
+            Duration::from_millis(receive_timeout_ms),
+            src_port,
+            dst_port,
+            sink_path.as_deref(),
+            verify_checksum,
+            checksum_path.as_deref(),
+        )
+    }
 }
 
 impl Dataplane {
+    fn run_reliable_sender(
+        &self,
+        group_ip: Ipv4Addr,
+        receiver_ids: &[usize],
+        tensor_path: &Path,
+        chunk_size: usize,
+        flow_window: usize,
+        poll_interval: Duration,
+        ready_timeout: Duration,
+        src_port: u16,
+        dst_port: u16,
+        sleep_gap: Duration,
+        checksum_path: Option<&Path>,
+        write_checksum: bool,
+    ) -> PyResult<ReliableSendReport> {
+        if receiver_ids.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "receiver_ids must contain at least one entry.",
+            ));
+        }
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+        if flow_window == 0 {
+            return Err(PyRuntimeError::new_err("flow_window must be positive."));
+        }
+        if write_checksum && checksum_path.is_none() {
+            return Err(PyRuntimeError::new_err(
+                "checksum_path is required when write_checksum is enabled.",
+            ));
+        }
+
+        let file = File::open(tensor_path).map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "failed to open tensor file {}: {e}",
+                tensor_path.display()
+            ))
+        })?;
+        let total_bytes = file
+            .metadata()
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to stat file: {e}")))?
+            .len();
+        if total_bytes == 0 {
+            return Err(PyRuntimeError::new_err("tensor file is empty."));
+        }
+        let total_chunks = chunk_count(total_bytes, chunk_size);
+        if total_chunks == 0 {
+            return Err(PyRuntimeError::new_err(
+                "computed zero chunks for provided tensor.",
+            ));
+        }
+
+        let mut reader = BufReader::new(file);
+        let mut buffer = vec![0u8; chunk_size];
+
+        let mut control_receivers =
+            self.register_control_receivers(receiver_ids, src_port, dst_port)?;
+        let mut ready_nodes = HashSet::new();
+        let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
+        let mut chunk_cache: HashMap<u64, Bytes> = HashMap::new();
+        let mut resend_queue: BTreeSet<u64> = BTreeSet::new();
+        let mut resends = 0u64;
+
+        let ready_deadline = if ready_timeout.is_zero() {
+            None
+        } else {
+            Some(Instant::now() + ready_timeout)
+        };
+        while ready_nodes.len() < receiver_ids.len() {
+            self.flush_control_messages(
+                &mut control_receivers,
+                poll_interval,
+                &mut ready_nodes,
+                &mut inflight,
+                &mut chunk_cache,
+                &mut resend_queue,
+                receiver_ids.len(),
+            )?;
+            if let Some(deadline) = ready_deadline {
+                if Instant::now() > deadline {
+                    return Err(PyRuntimeError::new_err(
+                        "timed out waiting for receivers to report ready state.",
+                    ));
+                }
+            }
+            if poll_interval.is_zero() {
+                thread::yield_now();
+            } else {
+                thread::sleep(poll_interval);
+            }
+        }
+
+        let mut chunk_index = 1u64;
+        let mut bytes_sent = 0u64;
+        let start = Instant::now();
+        let mut sha = if write_checksum {
+            Some(Sha256::new())
+        } else {
+            None
+        };
+
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to read tensor: {e}")))?;
+            if read == 0 {
+                break;
+            }
+
+            self.wait_for_window(
+                flow_window,
+                &mut inflight,
+                &mut control_receivers,
+                poll_interval,
+                &mut ready_nodes,
+                &mut chunk_cache,
+                &mut resend_queue,
+                receiver_ids.len(),
+            )?;
+
+            let payload = encode_chunk_payload(chunk_index, &buffer[..read]);
+            self.transmit_python_payload(
+                self.cfg.user_space_address,
+                group_ip,
+                src_port,
+                dst_port,
+                payload.clone(),
+            )?;
+            inflight.insert(chunk_index, HashSet::new());
+            chunk_cache.insert(chunk_index, payload);
+            bytes_sent += read as u64;
+            if let Some(digest) = sha.as_mut() {
+                digest.update(&buffer[..read]);
+            }
+
+            self.flush_control_messages(
+                &mut control_receivers,
+                Duration::from_millis(0),
+                &mut ready_nodes,
+                &mut inflight,
+                &mut chunk_cache,
+                &mut resend_queue,
+                receiver_ids.len(),
+            )?;
+            resends += self.process_resends(
+                &mut resend_queue,
+                &chunk_cache,
+                group_ip,
+                src_port,
+                dst_port,
+            )?;
+
+            if !sleep_gap.is_zero() {
+                thread::sleep(sleep_gap);
+            }
+            chunk_index += 1;
+        }
+
+        while !inflight.is_empty() {
+            self.flush_control_messages(
+                &mut control_receivers,
+                poll_interval,
+                &mut ready_nodes,
+                &mut inflight,
+                &mut chunk_cache,
+                &mut resend_queue,
+                receiver_ids.len(),
+            )?;
+            resends += self.process_resends(
+                &mut resend_queue,
+                &chunk_cache,
+                group_ip,
+                src_port,
+                dst_port,
+            )?;
+            if poll_interval.is_zero() {
+                thread::yield_now();
+            } else {
+                thread::sleep(poll_interval);
+            }
+        }
+
+        if bytes_sent != total_bytes {
+            return Err(PyRuntimeError::new_err(format!(
+                "bytes sent ({bytes_sent}) did not match tensor ({total_bytes})."
+            )));
+        }
+
+        let checksum_hex = if let Some(digest) = sha {
+            let hex = format!("{:x}", digest.finalize());
+            if let Some(path) = checksum_path {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "failed to create checksum parent dir {}: {e}",
+                            parent.display()
+                        ))
+                    })?;
+                }
+                fs::write(path, format!("{hex}\n")).map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "failed to write checksum file {}: {e}",
+                        path.display()
+                    ))
+                })?;
+            }
+            Some(hex)
+        } else {
+            None
+        };
+
+        Ok(ReliableSendReport {
+            bytes_sent,
+            chunks_sent: total_chunks,
+            resends,
+            duration_ms: start.elapsed().as_millis() as u64,
+            checksum: checksum_hex,
+        })
+    }
+
+    fn run_reliable_receiver(
+        &self,
+        group_ip: Ipv4Addr,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        receive_timeout: Duration,
+        src_port: u16,
+        dst_port: u16,
+        sink_path: Option<&Path>,
+        verify_checksum: bool,
+        checksum_path: Option<&Path>,
+    ) -> PyResult<ReliableReceiveReport> {
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+        if expected_bytes == 0 {
+            return Err(PyRuntimeError::new_err(
+                "expected_bytes must be greater than zero.",
+            ));
+        }
+        if verify_checksum && checksum_path.is_none() {
+            return Err(PyRuntimeError::new_err(
+                "checksum_path is required when verify_checksum is enabled.",
+            ));
+        }
+
+        let expected_chunks = chunk_count(expected_bytes, chunk_size);
+        if expected_chunks == 0 {
+            return Err(PyRuntimeError::new_err(
+                "computed zero chunks for expected bytes.",
+            ));
+        }
+
+        let src_ip = (source_node_id as NodeId)
+            .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+        let flow_id = Packet::flow_id_from_parts(src_ip, src_port, group_ip, dst_port);
+        let mut data_receiver = rt().block_on(self.py_if.register_receiver(flow_id, true));
+
+        self.send_control_signal(source_node_id, ControlKind::Ready, 0, src_port, dst_port)?;
+
+        let mut sink_file = if let Some(path) = sink_path {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "failed to create sink parent dir {}: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+            Some(File::create(path).map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "failed to create sink file {}: {e}",
+                    path.display()
+                ))
+            })?)
+        } else {
+            None
+        };
+
+        let mut pending_chunks: BTreeMap<u64, Bytes> = BTreeMap::new();
+        let mut expected_chunk = 1u64;
+        let mut bytes_received = 0u64;
+        let mut repairs_requested = 0u64;
+        let start = Instant::now();
+        let mut sha = if verify_checksum {
+            Some(Sha256::new())
+        } else {
+            None
+        };
+
+        while expected_chunk <= expected_chunks {
+            let maybe_delivery = self.recv_with_timeout(&mut data_receiver, receive_timeout)?;
+            let delivery = match maybe_delivery {
+                Some(delivery) => delivery,
+                None => {
+                    self.send_control_signal(
+                        source_node_id,
+                        ControlKind::Repair,
+                        expected_chunk,
+                        src_port,
+                        dst_port,
+                    )?;
+                    repairs_requested += 1;
+                    continue;
+                }
+            };
+
+            let payload = match delivery {
+                PythonDelivery::Payload(payload) => payload,
+                PythonDelivery::Raw(_) => {
+                    warn!("reliability receiver expected payload delivery but saw raw packet");
+                    continue;
+                }
+            };
+
+            let (chunk_index, chunk_bytes) = decode_chunk_payload(&payload.bytes)?;
+            self.send_control_signal(
+                source_node_id,
+                ControlKind::Ack,
+                chunk_index,
+                src_port,
+                dst_port,
+            )?;
+
+            if chunk_index < expected_chunk {
+                continue;
+            }
+            if chunk_index > expected_chunks {
+                warn!(
+                    "dropping chunk {} beyond expected target {}",
+                    chunk_index, expected_chunks
+                );
+                continue;
+            }
+
+            pending_chunks.insert(chunk_index, chunk_bytes);
+            loop {
+                match pending_chunks.remove(&expected_chunk) {
+                    Some(bytes) => {
+                        if let Some(file) = sink_file.as_mut() {
+                            file.write_all(bytes.as_ref()).map_err(|e| {
+                                PyRuntimeError::new_err(format!("failed to write sink bytes: {e}"))
+                            })?;
+                        }
+                        if let Some(digest) = sha.as_mut() {
+                            digest.update(bytes.as_ref());
+                        }
+                        bytes_received += bytes.len() as u64;
+                        expected_chunk += 1;
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        if let Some(file) = sink_file.as_mut() {
+            file.flush()
+                .map_err(|e| PyRuntimeError::new_err(format!("flush failed: {e}")))?;
+        }
+
+        let checksum_hex = if let Some(digest) = sha {
+            let hex = format!("{:x}", digest.finalize());
+            if let Some(path) = checksum_path {
+                let expected = fs::read_to_string(path).map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "failed to read checksum file {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                let expected = expected.trim();
+                if expected != hex {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "checksum mismatch: expected {expected}, received {hex}",
+                    )));
+                }
+            }
+            Some(hex)
+        } else {
+            None
+        };
+
+        Ok(ReliableReceiveReport {
+            bytes_received,
+            chunks_received: expected_chunks,
+            repairs_requested,
+            duration_ms: start.elapsed().as_millis() as u64,
+            checksum: checksum_hex,
+        })
+    }
+
+    fn register_control_receivers(
+        &self,
+        receiver_ids: &[usize],
+        src_port: u16,
+        dst_port: u16,
+    ) -> PyResult<HashMap<usize, mpsc::Receiver<PythonDelivery>>> {
+        let mut map = HashMap::new();
+        for node_id in receiver_ids {
+            let src_ip =
+                (*node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+            let dst_ip = self.cfg.user_space_address;
+            let flow_id = Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port);
+            let rx = rt().block_on(self.py_if.register_receiver(flow_id, true));
+            map.insert(*node_id, rx);
+        }
+        Ok(map)
+    }
+
+    fn wait_for_window(
+        &self,
+        flow_window: usize,
+        inflight: &mut BTreeMap<u64, HashSet<usize>>,
+        control_receivers: &mut HashMap<usize, mpsc::Receiver<PythonDelivery>>,
+        poll_interval: Duration,
+        ready_nodes: &mut HashSet<usize>,
+        chunk_cache: &mut HashMap<u64, Bytes>,
+        resend_queue: &mut BTreeSet<u64>,
+        receiver_count: usize,
+    ) -> PyResult<()> {
+        while inflight.len() >= flow_window {
+            self.flush_control_messages(
+                control_receivers,
+                poll_interval,
+                ready_nodes,
+                inflight,
+                chunk_cache,
+                resend_queue,
+                receiver_count,
+            )?;
+            if poll_interval.is_zero() {
+                thread::yield_now();
+            } else {
+                thread::sleep(poll_interval);
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_control_messages(
+        &self,
+        receivers: &mut HashMap<usize, mpsc::Receiver<PythonDelivery>>,
+        timeout: Duration,
+        ready_nodes: &mut HashSet<usize>,
+        inflight: &mut BTreeMap<u64, HashSet<usize>>,
+        chunk_cache: &mut HashMap<u64, Bytes>,
+        resend_queue: &mut BTreeSet<u64>,
+        receiver_count: usize,
+    ) -> PyResult<()> {
+        let events = self.poll_control_events(receivers, timeout)?;
+        for event in events {
+            match event.kind {
+                ControlKind::Ready => {
+                    ready_nodes.insert(event.node_id);
+                }
+                ControlKind::Ack => {
+                    if let Some(entry) = inflight.get_mut(&event.chunk_index) {
+                        entry.insert(event.node_id);
+                        if entry.len() == receiver_count {
+                            inflight.remove(&event.chunk_index);
+                            chunk_cache.remove(&event.chunk_index);
+                        }
+                    }
+                }
+                ControlKind::Repair => {
+                    if chunk_cache.contains_key(&event.chunk_index) {
+                        resend_queue.insert(event.chunk_index);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn poll_control_events(
+        &self,
+        receivers: &mut HashMap<usize, mpsc::Receiver<PythonDelivery>>,
+        timeout: Duration,
+    ) -> PyResult<Vec<ControlMessage>> {
+        let mut events = Vec::new();
+        for receiver in receivers.values_mut() {
+            if let Some(delivery) = self.recv_with_timeout(receiver, timeout)? {
+                events.push(self.control_from_delivery(delivery)?);
+            }
+            loop {
+                match receiver.try_recv() {
+                    Ok(delivery) => events.push(self.control_from_delivery(delivery)?),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+        Ok(events)
+    }
+
+    fn process_resends(
+        &self,
+        resend_queue: &mut BTreeSet<u64>,
+        chunk_cache: &HashMap<u64, Bytes>,
+        group_ip: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+    ) -> PyResult<u64> {
+        if resend_queue.is_empty() {
+            return Ok(0);
+        }
+        let indices: Vec<u64> = resend_queue.iter().copied().collect();
+        resend_queue.clear();
+        let mut resent = 0u64;
+        for chunk_index in indices {
+            if let Some(payload) = chunk_cache.get(&chunk_index) {
+                self.transmit_python_payload(
+                    self.cfg.user_space_address,
+                    group_ip,
+                    src_port,
+                    dst_port,
+                    payload.clone(),
+                )?;
+                resent += 1;
+            }
+        }
+        Ok(resent)
+    }
+
+    fn control_from_delivery(&self, delivery: PythonDelivery) -> PyResult<ControlMessage> {
+        match delivery {
+            PythonDelivery::Payload(payload) => decode_control_payload(payload.bytes.as_ref()),
+            PythonDelivery::Raw(_) => Err(PyRuntimeError::new_err(
+                "expected payload delivery for control channel",
+            )),
+        }
+    }
+
+    fn send_control_signal(
+        &self,
+        dst_node_id: usize,
+        kind: ControlKind,
+        chunk_index: u64,
+        src_port: u16,
+        dst_port: u16,
+    ) -> PyResult<()> {
+        let payload = encode_control_payload(kind, self.cfg.node_id, chunk_index);
+        let dst_ip =
+            (dst_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+        self.transmit_python_payload(
+            self.cfg.user_space_address,
+            dst_ip,
+            src_port,
+            dst_port,
+            payload,
+        )
+        .map(|_| ())
+    }
+
+    fn recv_with_timeout(
+        &self,
+        receiver: &mut mpsc::Receiver<PythonDelivery>,
+        timeout: Duration,
+    ) -> PyResult<Option<PythonDelivery>> {
+        if timeout.is_zero() {
+            return match receiver.try_recv() {
+                Ok(delivery) => Ok(Some(delivery)),
+                Err(TryRecvError::Empty) => Ok(None),
+                Err(TryRecvError::Disconnected) => Ok(None),
+            };
+        }
+
+        let fut = receiver.recv();
+        let result = rt().block_on(async { tokio::time::timeout(timeout, fut).await });
+        match result {
+            Ok(delivery) => Ok(delivery),
+            Err(_) => Ok(None),
+        }
+    }
+
     fn transmit_python_payload(
         &self,
         src_ip: Ipv4Addr,
@@ -888,6 +1720,8 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PacketReceiver>()?;
     m.add_class::<PyPayloadDelivery>()?;
     m.add_class::<FrozenBuffer>()?;
+    m.add_class::<ReliableSendReport>()?;
+    m.add_class::<ReliableReceiveReport>()?;
     Ok(())
 }
 
