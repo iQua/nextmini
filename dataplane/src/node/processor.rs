@@ -488,7 +488,7 @@ impl ConcurrentProcHandle {
                 .try_send(ProcessorPacket::ProcessPacket(packet))
             {
                 warn!(
-                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                    "ConcurrentProcHandle: Error sending a packet to the processor: {}.",
                     e
                 );
             }
@@ -501,7 +501,7 @@ impl ConcurrentProcHandle {
                         .try_send(ProcessorPacket::ProcessPacket(packet))
                     {
                         warn!(
-                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            "ConcurrentProcHandle: Error sending a packet to the processor: {}.",
                             e
                         );
                     }
@@ -512,7 +512,7 @@ impl ConcurrentProcHandle {
                         .try_send(ProcessorPacket::ProcessPacket(packet))
                     {
                         warn!(
-                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                            "ConcurrentProcHandle: Error sending a packet to the connector: {}.",
                             e
                         );
                     }

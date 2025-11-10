@@ -335,7 +335,7 @@ impl Dataplane {
         frozen: FrozenBuffer,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let body = frozen.inner.clone();
 
         let src_ip = self.cfg.user_space_address;
@@ -353,7 +353,7 @@ impl Dataplane {
         frozen: FrozenBuffer,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
         let body = frozen.inner.clone();
         let dst_ip = parse_ipv4(dst_ip)?;
         let src_ip = self.cfg.user_space_address;
@@ -489,16 +489,16 @@ impl Dataplane {
         src_port: u16,
         dst_port: u16,
         body: Bytes,
-    ) -> PyResult<()> {
+    ) -> PyResult<u64> {
+        let message_id = next_py_message_id();
         if !self.cfg.python_fragmentation_enabled {
             let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &body);
             self.processor.process_packet(packet);
-            return Ok(());
+            return Ok(message_id);
         }
 
         let chunk_budget = python_payload_budget(self.cfg.mtu)?;
         let max_message_bytes = self.cfg.python_fragmentation_max_message_bytes as usize;
-        let message_id = next_py_message_id();
 
         let fragments =
             build_py_payload_segments(body.as_ref(), chunk_budget, max_message_bytes, message_id)?;
@@ -508,7 +508,7 @@ impl Dataplane {
             self.processor.process_packet(packet);
         }
 
-        Ok(())
+        Ok(message_id)
     }
 
     fn wait_for_event_matching<F>(

@@ -13,10 +13,11 @@ import hashlib
 import json
 import math
 import os
+import struct
 import sys
 import time
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Dict, Iterator, List, Tuple
 
 import psycopg
 
@@ -30,6 +31,8 @@ except ImportError as exc:  # pragma: no cover - surfaced at launch time
     ) from exc
 
 METADATA_FILE = "tensor-metadata.json"
+CHUNK_HEADER = struct.Struct("!QI")
+CHUNK_HEADER_LEN = CHUNK_HEADER.size
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,6 +140,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=32768,
         help="Chunk size when splitting tensors (defaults to 32768 bytes).",
+    )
+    parser.add_argument(
+        "--flow-window",
+        type=int,
+        default=256,
+        help="Maximum number of in-flight chunks awaiting acknowledgements.",
+    )
+    parser.add_argument(
+        "--flow-poll-ms",
+        type=int,
+        default=100,
+        help="Milliseconds to wait before re-checking acknowledgements when the window is full.",
     )
     parser.add_argument(
         "--sink-path",
@@ -282,10 +297,160 @@ def ensure_ready_table(conninfo: str) -> None:
             )
 
 
+def ensure_transfer_tables(conn: psycopg.Connection) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tensor_chunk_acks (
+                group_label TEXT NOT NULL,
+                chunk_index INT NOT NULL,
+                receiver_node INT NOT NULL,
+                acked_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (group_label, chunk_index, receiver_node)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS tensor_chunk_acks_idx
+                ON tensor_chunk_acks(group_label, chunk_index)
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tensor_chunk_repairs (
+                group_label TEXT NOT NULL,
+                chunk_index INT NOT NULL,
+                receiver_node INT NOT NULL,
+                requested_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (group_label, chunk_index, receiver_node)
+            )
+            """
+        )
+
+
+def ack_chunk(
+    conn: psycopg.Connection, group_label: str, chunk_index: int, receiver_node: int
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tensor_chunk_acks (group_label, chunk_index, receiver_node)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (group_label, chunk_index, receiver_node)
+            DO UPDATE SET acked_at = NOW()
+            """,
+            (group_label, chunk_index, receiver_node),
+        )
+
+
+def request_repair(
+    conn: psycopg.Connection, group_label: str, chunk_index: int, receiver_node: int
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO tensor_chunk_repairs (group_label, chunk_index, receiver_node)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (group_label, chunk_index, receiver_node)
+            DO UPDATE SET requested_at = NOW()
+            """,
+            (group_label, chunk_index, receiver_node),
+        )
+
+
+def clear_repair_request(
+    conn: psycopg.Connection, group_label: str, chunk_index: int, receiver_node: int
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM tensor_chunk_repairs
+            WHERE group_label = %s AND chunk_index = %s AND receiver_node = %s
+            """,
+            (group_label, chunk_index, receiver_node),
+        )
+
+
+def _format_in_clause(values: List[int]) -> Tuple[str, List[int]]:
+    placeholders = ",".join(["%s"] * len(values))
+    return placeholders, values
+
+
+def fetch_acknowledged_chunks(
+    conn: psycopg.Connection,
+    group_label: str,
+    chunk_indices: List[int],
+    expected_receivers: int,
+) -> List[int]:
+    if not chunk_indices:
+        return []
+    placeholders, vals = _format_in_clause(chunk_indices)
+    query = f"""
+        SELECT chunk_index
+        FROM tensor_chunk_acks
+        WHERE group_label = %s AND chunk_index IN ({placeholders})
+        GROUP BY chunk_index
+        HAVING COUNT(*) >= %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, [group_label, *vals, expected_receivers])
+        rows = cur.fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def clear_completed_chunks(
+    conn: psycopg.Connection, group_label: str, chunk_indices: List[int]
+) -> None:
+    if not chunk_indices:
+        return
+    placeholders, vals = _format_in_clause(chunk_indices)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"DELETE FROM tensor_chunk_acks WHERE group_label = %s AND chunk_index IN ({placeholders})",
+            [group_label, *vals],
+        )
+        cur.execute(
+            f"DELETE FROM tensor_chunk_repairs WHERE group_label = %s AND chunk_index IN ({placeholders})",
+            [group_label, *vals],
+        )
+
+
+def fetch_pending_repairs(
+    conn: psycopg.Connection, group_label: str
+) -> List[Tuple[int, int]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT chunk_index, receiver_node
+            FROM tensor_chunk_repairs
+            WHERE group_label = %s
+            ORDER BY requested_at
+            """,
+            (group_label,),
+        )
+        return [(int(row[0]), int(row[1])) for row in cur.fetchall()]
+
 def chunk_count(total_bytes: int, chunk_size: int) -> int:
     if total_bytes <= 0:
         return 0
     return math.ceil(total_bytes / chunk_size)
+
+
+def encode_chunk(chunk_index: int, chunk: bytes) -> bytes:
+    return CHUNK_HEADER.pack(chunk_index, len(chunk)) + chunk
+
+
+def decode_chunk(payload: bytes) -> Tuple[int, bytes]:
+    if len(payload) < CHUNK_HEADER_LEN:
+        raise ValueError("payload shorter than chunk header")
+    chunk_index, length = CHUNK_HEADER.unpack(payload[:CHUNK_HEADER_LEN])
+    end = CHUNK_HEADER_LEN + length
+    if end > len(payload):
+        raise ValueError(
+            f"chunk {chunk_index} truncated (expected {length} bytes, saw {len(payload) - CHUNK_HEADER_LEN})"
+        )
+    return int(chunk_index), payload[CHUNK_HEADER_LEN:end]
 
 
 def stream_tensor_chunks(path: Path, chunk_size: int) -> Iterator[bytes]:
@@ -439,60 +604,126 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
         payload_goal = args.payload_count
 
     delay = args.sleep_ms / 1000 if args.sleep_ms else 0.0
+    chunk_window = max(1, args.flow_window)
+    poll_interval = max(1, args.flow_poll_ms) / 1000
 
-    if tensor_mode:
-        sha = hashlib.sha256() if args.verify_checksum else None
-        sent = 0
+    with psycopg.connect(conninfo) as transfer_conn:
+        transfer_conn.autocommit = True
+        ensure_transfer_tables(transfer_conn)
+
+        inflight: Dict[int, int] = {}
+        chunk_cache: Dict[int, bytes] = {}
+        sha = hashlib.sha256() if tensor_mode and args.verify_checksum else None
         bytes_sent = 0
-        for chunk in stream_tensor_chunks(args.tensor_path, args.chunk_size):
-            if not chunk:
-                break
-            sent += 1
-            bytes_sent += len(chunk)
-            buffer = FrozenBuffer(chunk)
-            dataplane.send_to_ip(
+
+        def flush_acks() -> None:
+            if not inflight:
+                return
+            acked = fetch_acknowledged_chunks(
+                transfer_conn,
+                args.group_label,
+                sorted(inflight.keys()),
+                args.expected_subscribers,
+            )
+            if not acked:
+                return
+            clear_completed_chunks(transfer_conn, args.group_label, acked)
+            for idx in acked:
+                inflight.pop(idx, None)
+                chunk_cache.pop(idx, None)
+
+        def handle_repairs() -> None:
+            pending = fetch_pending_repairs(transfer_conn, args.group_label)
+            if not pending:
+                return
+            for chunk_index, receiver_node in pending:
+                payload = chunk_cache.get(chunk_index)
+                if payload is None:
+                    log(
+                        f"WARN: receiver {receiver_node} requested chunk {chunk_index} but payload is no longer cached.",
+                        args.quiet,
+                    )
+                    clear_repair_request(
+                        transfer_conn, args.group_label, chunk_index, receiver_node
+                    )
+                    continue
+                message_id = dataplane.send_to_ip(
+                    group_ip,
+                    FrozenBuffer(payload),
+                    src_port=args.src_port,
+                    dst_port=args.dst_port,
+                )
+                clear_repair_request(
+                    transfer_conn, args.group_label, chunk_index, receiver_node
+                )
+                log(
+                    f"Resent chunk {chunk_index} for receiver {receiver_node} (message {message_id}).",
+                    args.quiet,
+                )
+
+        def wait_for_window() -> None:
+            while len(inflight) >= chunk_window:
+                flush_acks()
+                handle_repairs()
+                time.sleep(poll_interval)
+
+        def drain_window() -> None:
+            while inflight:
+                flush_acks()
+                handle_repairs()
+                time.sleep(poll_interval)
+
+        def send_chunk(chunk_index: int, chunk: bytes) -> None:
+            nonlocal bytes_sent
+            wait_for_window()
+            encoded = encode_chunk(chunk_index, chunk)
+            message_id = dataplane.send_to_ip(
                 group_ip,
-                buffer,
+                FrozenBuffer(encoded),
                 src_port=args.src_port,
                 dst_port=args.dst_port,
             )
+            inflight[chunk_index] = message_id
+            chunk_cache[chunk_index] = encoded
+            bytes_sent += len(chunk)
             if sha:
                 sha.update(chunk)
             log(
-                f"[{sent}/{payload_goal}] sent {len(chunk)} bytes to {group_ip}",
+                f"[{chunk_index}/{payload_goal}] sent {len(chunk)} bytes to {group_ip} (message {message_id}).",
                 args.quiet,
             )
             if delay:
                 time.sleep(delay)
+            flush_acks()
+            handle_repairs()
 
-        if sent != payload_goal:
-            log(
-                f"WARN: streamed {sent} chunks but expected {payload_goal}; check chunk-size/expected-bytes",
-                args.quiet,
-            )
+        if tensor_mode:
+            sent_chunks = 0
+            for chunk_index, chunk in enumerate(
+                stream_tensor_chunks(args.tensor_path, args.chunk_size), start=1
+            ):
+                if chunk_index > payload_goal:
+                    break
+                send_chunk(chunk_index, chunk)
+                sent_chunks += 1
+            if sent_chunks != payload_goal:
+                log(
+                    f"WARN: streamed {sent_chunks} chunks but expected {payload_goal}; check chunk-size/expected-bytes",
+                    args.quiet,
+                )
+        else:
+            for chunk_index in range(1, payload_goal + 1):
+                send_chunk(chunk_index, os.urandom(args.payload_size))
+
+        drain_window()
 
         if sha:
             checksum_path = resolve_checksum_path(args)
             checksum_path.parent.mkdir(parents=True, exist_ok=True)
             checksum_path.write_text(sha.hexdigest() + "\n")
             log(f"Wrote checksum to {checksum_path}", args.quiet)
-        log(f"Source streamed {bytes_sent} bytes from {args.tensor_path}", args.quiet)
-    else:
-        payload = os.urandom(args.payload_size)
-        frozen = FrozenBuffer(payload)
-        for idx in range(1, payload_goal + 1):
-            dataplane.send_to_ip(
-                group_ip,
-                frozen,
-                src_port=args.src_port,
-                dst_port=args.dst_port,
-            )
-            log(
-                f"[{idx}/{payload_goal}] sent {len(payload)} bytes to {group_ip}",
-                args.quiet,
-            )
-            if delay:
-                time.sleep(delay)
+        if tensor_mode:
+            log(f"Source streamed {bytes_sent} bytes from {args.tensor_path}", args.quiet)
 
     log("Source finished sending multicast payloads.", args.quiet)
 
@@ -547,9 +778,9 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
         group_ip=group_ip,
         src_port=args.src_port,
         dst_port=args.dst_port,
+        payload_only=True,
     )
 
-    received = 0
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:
         suffix = args.node_id if args.node_id is not None else "receiver"
@@ -560,22 +791,61 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     sha = hashlib.sha256() if args.verify_checksum else None
     total_bytes = 0
 
-    while received < expected_chunks:
-        payload = receiver.recv(timeout_ms=args.receive_timeout_ms)
-        if payload is None:
-            raise TimeoutError(
-                "Receiver timed out while waiting for multicast payloads."
-            )
-        received += 1
-        total_bytes += len(payload)
-        if sink_file:
-            sink_file.write(payload)
-        if sha:
-            sha.update(payload)
-        log(
-            f"[{received}/{expected_chunks}] received {len(payload)} bytes from group {group_id}",
-            args.quiet,
-        )
+    with psycopg.connect(conninfo) as transfer_conn:
+        transfer_conn.autocommit = True
+        ensure_transfer_tables(transfer_conn)
+
+        pending_chunks: Dict[int, bytes] = {}
+        expected_chunk = 1
+
+        def flush_ready_chunks() -> None:
+            nonlocal expected_chunk, total_bytes
+            while expected_chunk in pending_chunks:
+                chunk_bytes = pending_chunks.pop(expected_chunk)
+                if sink_file:
+                    sink_file.write(chunk_bytes)
+                if sha:
+                    sha.update(chunk_bytes)
+                total_bytes += len(chunk_bytes)
+                log(
+                    f"[{expected_chunk}/{expected_chunks}] committed {len(chunk_bytes)} bytes from group {group_id}",
+                    args.quiet,
+                )
+                expected_chunk += 1
+
+        while expected_chunk <= expected_chunks:
+            delivery = receiver.recv(timeout_ms=args.receive_timeout_ms)
+            if delivery is None:
+                request_repair(
+                    transfer_conn, args.group_label, expected_chunk, args.node_id
+                )
+                log(
+                    f"Timeout waiting for chunk {expected_chunk}; requested repair.",
+                    args.quiet,
+                )
+                continue
+
+            payload_bytes = delivery.payload
+            try:
+                chunk_index, chunk_data = decode_chunk(payload_bytes)
+            except ValueError as exc:
+                log(f"WARN: failed to decode chunk payload: {exc}", args.quiet)
+                continue
+
+            ack_chunk(transfer_conn, args.group_label, chunk_index, args.node_id)
+
+            if chunk_index > expected_chunks:
+                log(
+                    f"WARN: received chunk {chunk_index} beyond expected total {expected_chunks}; skipping.",
+                    args.quiet,
+                )
+                continue
+
+            if chunk_index < expected_chunk:
+                continue
+
+            pending_chunks[chunk_index] = chunk_data
+            flush_ready_chunks()
 
     if sink_file:
         sink_file.flush()
