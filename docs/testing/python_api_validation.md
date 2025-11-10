@@ -1,6 +1,6 @@
 # Python API Validation & Benchmark Plan
 
-Last updated: 2025-11-04 (LilacLake – added harness scripts and docker-compose overlay)
+Last updated: 2025-11-05 (FuchsiaPond – documentation pass, quickstart link added)
 
 The Python dataplane bridge landed in `python-api/`. Integration coverage is still
 blocked on a multi-node harness, so this document captures the test matrix and
@@ -55,6 +55,8 @@ payloads to `/tmp/nextmini_py/` for verification).
   two harness shells in one command. *(2025-11-04 – LilacLake)*
 - [ ] Capture artifacts (loss CSV, tensor checksum) and push to S3 bucket for CI
   consumption.
+- [ ] Mirror artifact summaries under `docs/testing/artifacts/latest/` during manual
+  dry runs so reviewers can inspect payloads without S3 access.
 
 ### 1.5 Harness Quickstart
 
@@ -72,6 +74,23 @@ payloads to `/tmp/nextmini_py/` for verification).
    - `receiver-summary.json` contains packet counts, byte totals, and timing.
    - `receiver_payloads/` holds raw payload dumps when `--output-dir` is enabled.
 
+   The helper script `docs/testing/scripts/run_harness.sh` accepts the same arguments the
+   docker-compose file passes. You can invoke it directly on a developer workstation once
+   the controller and dataplanes are running:
+
+   ```bash
+   bash docs/testing/scripts/run_harness.sh sender docs/testing/configs/node_sender.toml \
+     --src-node-id 1 --dst-node-id 2 --count 20 --size 32768
+   ```
+   
+   Receiver side:
+
+   ```bash
+   bash docs/testing/scripts/run_harness.sh receiver docs/testing/configs/node_receiver.toml \
+     --src-node-id 1 --expected 20 --summary-json /tmp/receiver-summary.json \
+     --output-dir /tmp/receiver_payloads
+   ```
+
 3. Customise runs via environment overrides, for example:
 
    ```bash
@@ -81,6 +100,22 @@ payloads to `/tmp/nextmini_py/` for verification).
 
    Additional knobs: `SENDER_SLEEP_MS`, `RECEIVER_TIMEOUT_MS`, `SENDER_BATCH`, etc. Both harness
    services exit once their work completes; rerun `docker compose up` to perform another scenario.
+
+4. Snapshot artifacts for review: copy `docs/testing/artifacts/receiver-summary.json`
+   and the payload directory into `docs/testing/artifacts/run-<date>/` before publishing
+   results upstream. This mirrors the outputs that will eventually land in S3.
+
+### 1.6 Docs & references
+
+- For developer-facing setup instructions, point reviewers to [Examples → PyTorch Python API](../examples/pytorch_python_api.md), which mirrors the wheel build and environment variables the harness expects (`NEXTMINI_CONFIG`, `NEXTMINI_DST_NODE`).
+- Update the doc above whenever harness flags or defaults change so the quickstart stays accurate.
+
+## 4. Automation roadmap
+
+- [ ] Persist `receiver-summary.json` and payload dumps as CI artifacts (target: Github Actions runner).
+- [ ] Ship a helper script that converts summary JSON into GitHub Step Summary / Markdown.
+- [ ] Push artifacts to the shared S3 bucket (`s3://nextmini-python-api-ci/`) after every scheduled run.
+- [ ] Gate the workflow on successful validation of scalar + batch + backpressure scenarios.
 
 ## 2. Benchmark Plan
 
@@ -116,6 +151,7 @@ Measure Python injection overhead vs. existing user-space/TUN path. Metrics:
 - [x] Provision reproducible multi-node environment (docker or VM). *(2025-11-04 – LilacLake: docker-compose overlay)*
 - [x] Implement send/receive harness scripts (see §1.4). *(2025-11-04 – LilacLake)*
 - [ ] Automate results upload to shared storage.
+  - Use `docs/testing/scripts/upload_artifacts.sh` (requires `AWS_S3_BUCKET`, `ARTIFACT_PATH`, optional `CI_RUN_ID`).
 - [ ] Schedule regression benchmark in CI once environment is available.
 
 Until the environment is ready, treat this document as the authoritative plan and

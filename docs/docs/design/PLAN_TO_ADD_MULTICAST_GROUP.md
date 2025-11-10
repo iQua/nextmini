@@ -1,67 +1,43 @@
-# Multicast Groups in Nextmini
+# Multicast Groups – Implementation Notes
 
-This document proposes an end-to-end design to add **multicast group** support to Nextmini. It enables a source node to create a group and send to a **group IP**, while any number of destination nodes can **join or leave** the group at any time. Packets are **replicated** along a multicast tree (a DAG), reusing the controller’s route representation and the dataplane’s packet scheduler.
-
----
-
-## Goals
-
-- **(S, G) semantics**: Each group `G` has exactly one **source node** `S`. Multiple groups can co-exist.
-- **Dynamic membership**: Destinations can join/leave `G` at any time. Controller updates the multicast tree and pushes new next-hops.
-- **Data path replication**: Dataplane **duplicates packets to all next hops** at each branching node (already supported by our multicast fan-out change).
-- **Backwards compatible**: Unicast routes and flows continue to work unchanged.
-- **Minimal control plane surface**: Add small set of messages & tables to manage groups and memberships.
-
-Non-goals (for the first iteration):
-- IGMP compatibility / L3 snooping on arbitrary apps (we’ll use a control message–based join/leave).
-- Multi-source groups (*,G). We implement (S,G) where S is the owner/creator.
+This note captures the practical details and verification status for the multicast work that landed in this branch. For the full design, see the canonical [`multicast-groups.md`](./multicast-groups.md) document now linked from the navigation.
 
 ---
 
-## High-Level Architecture
+## Implementation highlights
 
-1. **Group identity**  
-   - `group_id` (integer) and `group_ip` (IPv4 in a reserved range, e.g., `239.255.0.0/16` inside the virtual network).
-   - `group_ip` is where the source application sends traffic (TUN sees packets to `group_ip`).
-
-2. **Control-plane (Controller)**
-   - New DB tables: `groups`, `group_members`, `group_routes`.
-   - New WS protocol (MessagePack) messages for CreateGroup/JoinGroup/LeaveGroup and route installs.
-   - Tree computation: **Union of shortest paths** from `S` to each member, producing a **directed acyclic graph** (DAG) of edges.
-   - Per-node **next_hops** built from DAG; pushed via `InstallGroupRoutes`.
-
-3. **Dataplane**
-   - Maintains a **group directory** (map `group_ip -> group_id`) installed by controller.
-   - RoutingTable supports **two keys**:
-     - `Unicast(src_node, dst_node)`
-     - `Multicast(src_node, group_id)`
-   - Packet classification: if `dst_ip` ∈ group directory ⇒ multicast; else unicast.
-   - `get_next_hops_by_flow` returns **all next hops** for multicast; **Processor** duplicates packet to each next hop.
-   - Leaf nodes that are members receive **local-delivery** via `next_hops` containing the local node id. Non-members never have local delivery for that group.
-
-4. **Membership dynamics**
-   - **Join**: controller adds row to `group_members`, recomputes DAG, updates `group_routes`, and pushes `InstallGroupRoutes`.
-   - **Leave**: controller removes member, recomputes DAG. If no more members, routes become empty and the controller may optionally tear down the group.
+- **Controller**
+  - Persists group metadata in `groups`, `group_members`, and `group_routes`.
+  - Listens for `pg_notify('sync_group_routes', …)` to recompute multicast DAGs.
+  - Emits `GroupCreated`, `InstallGroupDirectory`, and `InstallGroupRoutes` messages using the existing MessagePack channel.
+- **Dataplane**
+  - Extends the routing table with `RouteKey::Multicast` and caches of `(src, group_id) → next_hops`.
+  - Branching happens inside the processor/connector; the Max profile reuses the same fan-out helpers as unicast.
+  - Local delivery is modeled as `next_hop == local_node_id`, so receivers automatically process group traffic.
+- **Messages**
+  - Directory entries map `group_ip → group_id`, letting the dataplane classify packets before consulting route caches.
+  - Route installs are incremental; repeated messages replace previous hop sets atomically.
 
 ---
 
-## Control Messages (summary)
+## Configuration & rollout tips
 
-_Status — 2025-11-04 (RedBear): Message enums landed; controller plumbing now emitting GroupCreated + directory broadcasts._
-
-- **Dataplane → Controller**
-  - `CreateGroup { label }` (from source)
-  - `JoinGroup { group_id }` (from any node)
-  - `LeaveGroup { group_id }`
-
-- **Controller → Dataplane**
-  - `GroupCreated { group_id, group_ip, src_node_id }` (to source)
-  - `InstallGroupDirectory { groups: [{group_id, group_ip}] }` (to all nodes; incremental updates supported)
-  - `InstallGroupRoutes { group_id, src_node_id, routes: [GroupRoutingTableEntry...] }` (to all nodes that appear in the DAG)
+- Reserve a multicast IP range in your controller config (`multicast_pool_base` / `multicast_pool_mask`) and document it for operators.
+- Deploy the controller before rolling out upgraded dataplanes—older dataplanes ignore the new messages safely.
+- Enable extra tracing with `RUST_LOG=info,controller::multicast=debug` when validating new topologies.
 
 ---
 
-## Data Model
+## Verification status (2025-11-05)
+
+- ✅ Controller helper unit tests cover DAG construction (`compute_group_tree_edges`) and per-node routing tables.
+- ✅ Dataplane unit tests exercise directory / route installs and packet fan-out.
+- 🔁 Integration harness: Postgres-backed join/leave scenarios are scripted but still need to run in CI (tracked in `docs/testing/python_api_validation.md`).
+- 🔁 Performance soak: Max-mode fan-out benchmarking pending once the shared multi-node harness is revived.
+
+---
+
+## Follow-up ideas
 
 _Status — 2025-11-04 (RedBear): Groups/members/routes tables + membership trigger committed; DAG recompute scaffold hooked up._
 
@@ -136,3 +112,6 @@ _Status — 2025-11-04 (RedBear & OrangeBear): Controller helpers now covered by
 - ✅ **Dataplane unit coverage**: tests in `dataplane/src/node/route.rs` cover `install_group_directory`, `install_group_routes`, and multicast `get_next_hops_by_flow`.
 - **Controller integration**: scripted test to drive `CreateGroup`/`JoinGroup` against Postgres (requires live DB) and assert `InstallGroupRoutes` emission.
 - **Fan-out soak**: stress test per-hop scheduler caching once the harness is ready.
+- Add automated clean-up for empty groups and stale directory entries.
+- Extend the CLI to surface active multicast groups for operators (`controller groups list`).
+- Evaluate QUIC datagram support for multicast to reduce duplication in high-throughput fan-out cases.
