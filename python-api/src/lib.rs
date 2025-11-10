@@ -1,10 +1,13 @@
 mod buffer;
 
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use once_cell::sync::OnceCell;
+use pyo3::conversion::IntoPyObject;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
@@ -16,9 +19,13 @@ use tokio::sync::Mutex;
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
-use nextmini::node::packet::Packet;
+use nextmini::node::packet::{Packet, PyPayloadSegHeader, PY_PAYLOAD_SEGMENT_HEADER_LEN};
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::python::interface::{PythonEvent, PythonInterfaceHandle};
+use nextmini::node::python::interface::{
+    DeliveryMode, FragmentTelemetry, PayloadDelivery as RustPayloadDelivery,
+    PayloadFormat as RustPayloadFormat, PythonDelivery, PythonEvent, PythonFragmentationPolicy,
+    PythonInterfaceHandle,
+};
 use nextmini::node::{NodeId, NodeIdExt};
 use nextmini_messages::DataplaneToController;
 
@@ -36,16 +43,25 @@ fn rt() -> &'static tokio::runtime::Runtime {
     })
 }
 
+const IPV4_HEADER_LEN: usize = 20;
+const TCP_HEADER_LEN: usize = 20;
+const PY_MIN_FRAGMENTATION_MTU: usize =
+    IPV4_HEADER_LEN + TCP_HEADER_LEN + PY_PAYLOAD_SEGMENT_HEADER_LEN + 1;
+
+static PY_MESSAGE_ID_SEQ: AtomicU64 = AtomicU64::new(1);
+
 #[pyclass]
 struct PacketReceiver {
-    inner: Arc<Mutex<mpsc::Receiver<nextmini::node::packet::Packet>>>,
+    mode: DeliveryMode,
+    inner: Arc<Mutex<mpsc::Receiver<PythonDelivery>>>,
 }
 
 #[pymethods]
 impl PacketReceiver {
     #[pyo3(signature = (timeout_ms=None))]
-    fn recv(&self, timeout_ms: Option<u64>, py: Python<'_>) -> PyResult<Option<Py<PyBytes>>> {
+    fn recv(&self, timeout_ms: Option<u64>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let inner = self.inner.clone();
+        let mode = self.mode;
         let fut = async move {
             match timeout_ms {
                 Some(ms) => tokio::time::timeout(
@@ -57,18 +73,136 @@ impl PacketReceiver {
                 None => inner.lock().await.recv().await,
             }
         };
-        let maybe_pkt = rt().block_on(fut);
-        Ok(maybe_pkt.map(|p| PyBytes::new(py, p.bytes()).unbind()))
+        let maybe_delivery = rt().block_on(fut);
+        maybe_delivery
+            .map(|delivery| delivery_to_pyobject(py, mode, delivery))
+            .transpose()
     }
 
     fn recv_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
+        let mode = self.mode;
         future_into_py(py, async move {
-            let mut guard = inner.lock().await;
-            let pkt = guard.recv().await;
-            drop(guard);
-            Ok(pkt.map(|p| p.bytes().to_vec()))
+            let delivery = inner.lock().await.recv().await;
+            Python::attach(|py| {
+                delivery
+                    .map(|delivery| delivery_to_pyobject(py, mode, delivery))
+                    .transpose()
+            })
         })
+    }
+}
+
+fn delivery_to_pyobject(
+    py: Python<'_>,
+    mode: DeliveryMode,
+    delivery: PythonDelivery,
+) -> PyResult<Py<PyAny>> {
+    match delivery {
+        PythonDelivery::Raw(packet) => {
+            if matches!(mode, DeliveryMode::PayloadOnly) {
+                warn_misrouted_payload();
+            }
+            let bytes = PyBytes::new(py, packet.bytes());
+            Ok(bytes.into_pyobject(py)?.unbind().into())
+        }
+        PythonDelivery::Payload(payload) => {
+            let obj = Py::new(py, PyPayloadDelivery::from(payload))?;
+            Ok(obj.into_pyobject(py)?.unbind().into())
+        }
+    }
+}
+
+fn warn_misrouted_payload() {
+    tracing::warn!(
+        "PythonInterface: received raw packet for a payload-only receiver; delivering raw bytes."
+    );
+}
+
+#[pyclass(name = "PayloadDelivery")]
+struct PyPayloadDelivery {
+    bytes: Vec<u8>,
+    flow_id: u128,
+    src_ip: String,
+    dst_ip: String,
+    src_port: u16,
+    dst_port: u16,
+    message_id: Option<u64>,
+    total_len: Option<u32>,
+    fragment_count: Option<u16>,
+    format: String,
+}
+
+#[pymethods]
+impl PyPayloadDelivery {
+    #[getter]
+    fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.bytes)
+    }
+
+    #[getter]
+    fn flow_id(&self) -> u128 {
+        self.flow_id
+    }
+
+    #[getter]
+    fn src_ip(&self) -> &str {
+        &self.src_ip
+    }
+
+    #[getter]
+    fn dst_ip(&self) -> &str {
+        &self.dst_ip
+    }
+
+    #[getter]
+    fn src_port(&self) -> u16 {
+        self.src_port
+    }
+
+    #[getter]
+    fn dst_port(&self) -> u16 {
+        self.dst_port
+    }
+
+    #[getter]
+    fn message_id(&self) -> Option<u64> {
+        self.message_id
+    }
+
+    #[getter]
+    fn total_len(&self) -> Option<u32> {
+        self.total_len
+    }
+
+    #[getter]
+    fn fragment_count(&self) -> Option<u16> {
+        self.fragment_count
+    }
+
+    #[getter]
+    fn payload_format(&self) -> &str {
+        &self.format
+    }
+}
+
+impl From<RustPayloadDelivery> for PyPayloadDelivery {
+    fn from(payload: RustPayloadDelivery) -> Self {
+        Self {
+            bytes: payload.bytes,
+            flow_id: payload.flow_id,
+            src_ip: payload.src_ip.to_string(),
+            dst_ip: payload.dst_ip.to_string(),
+            src_port: payload.src_port,
+            dst_port: payload.dst_port,
+            message_id: payload.message_id,
+            total_len: payload.total_len,
+            fragment_count: payload.fragment_count,
+            format: match payload.payload_format {
+                RustPayloadFormat::Payload => "payload".to_string(),
+                RustPayloadFormat::RawPacket => "raw_packet".to_string(),
+            },
+        }
     }
 }
 
@@ -99,7 +233,12 @@ impl Dataplane {
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
 
-        let py_if = PythonInterfaceHandle::new(cfg.channel_capacity);
+        let telemetry = FragmentTelemetry::new(controller.clone(), cfg.node_id);
+        let py_if = PythonInterfaceHandle::new(
+            cfg.channel_capacity,
+            PythonFragmentationPolicy::from(&cfg),
+            Some(telemetry),
+        );
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
 
@@ -133,13 +272,14 @@ impl Dataplane {
         Ok(Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp))
     }
 
-    #[pyo3(signature = (src_node_id, src_port=None, dst_port=None))]
+    #[pyo3(signature = (src_node_id, src_port=None, dst_port=None, payload_only=false))]
     fn register_receiver_from_node(
         &self,
         py: Python<'_>,
         src_node_id: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
+        payload_only: bool,
     ) -> PyResult<Py<PacketReceiver>> {
         let src_ip =
             (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
@@ -147,17 +287,22 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id));
+        let mode = if payload_only {
+            DeliveryMode::PayloadOnly
+        } else {
+            DeliveryMode::RawPacket
+        };
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id, mode));
         Py::new(
             py,
             PacketReceiver {
+                mode,
                 inner: Arc::new(Mutex::new(rx)),
             },
         )
     }
 
-    #[pyo3(signature = (src_node_id, group_ip, src_port=None, dst_port=None))]
+    #[pyo3(signature = (src_node_id, group_ip, src_port=None, dst_port=None, payload_only=false))]
     fn register_receiver_for_group(
         &self,
         py: Python<'_>,
@@ -165,6 +310,7 @@ impl Dataplane {
         group_ip: &str,
         src_port: Option<u16>,
         dst_port: Option<u16>,
+        payload_only: bool,
     ) -> PyResult<Py<PacketReceiver>> {
         let src_ip =
             (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
@@ -172,11 +318,16 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id));
+        let mode = if payload_only {
+            DeliveryMode::PayloadOnly
+        } else {
+            DeliveryMode::RawPacket
+        };
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id, mode));
         Py::new(
             py,
             PacketReceiver {
+                mode,
                 inner: Arc::new(Mutex::new(rx)),
             },
         )
@@ -190,7 +341,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<()> {
-        // Clone Bytes (zero-copy reference counting)
         let body = frozen.inner.clone();
 
         let src_ip = self.cfg.user_space_address;
@@ -198,10 +348,7 @@ impl Dataplane {
             (dst_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-
-        let packet = Packet::build_ipv4_tcp_packet(src_ip, sp, dst_ip, dp, &body);
-        self.processor.process_packet(packet);
-        Ok(())
+        self.transmit_python_payload(src_ip, dst_ip, sp, dp, body)
     }
 
     #[pyo3(signature = (dst_ip, frozen, src_port=None, dst_port=None))]
@@ -218,9 +365,7 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
 
-        let packet = Packet::build_ipv4_tcp_packet(src_ip, sp, dst_ip, dp, &body);
-        self.processor.process_packet(packet);
-        Ok(())
+        self.transmit_python_payload(src_ip, dst_ip, sp, dp, body)
     }
 
     #[pyo3(signature = (label))]
@@ -345,6 +490,35 @@ impl Dataplane {
 }
 
 impl Dataplane {
+    fn transmit_python_payload(
+        &self,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        src_port: u16,
+        dst_port: u16,
+        body: Bytes,
+    ) -> PyResult<()> {
+        if !self.cfg.python_fragmentation_enabled {
+            let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &body);
+            self.processor.process_packet(packet);
+            return Ok(());
+        }
+
+        let chunk_budget = python_payload_budget(self.cfg.mtu)?;
+        let max_message_bytes = self.cfg.python_fragmentation_max_message_bytes as usize;
+        let message_id = next_py_message_id();
+
+        let fragments =
+            build_py_payload_segments(body.as_ref(), chunk_budget, max_message_bytes, message_id)?;
+        for fragment in fragments {
+            let packet =
+                Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &fragment);
+            self.processor.process_packet(packet);
+        }
+
+        Ok(())
+    }
+
     fn wait_for_event_matching<F>(
         &self,
         timeout: Option<Duration>,
@@ -411,10 +585,172 @@ impl Dataplane {
     }
 }
 
+fn python_payload_budget(mtu: i32) -> PyResult<usize> {
+    let mtu_value = usize::try_from(mtu).map_err(|_| {
+        PyRuntimeError::new_err(format!(
+            "configured MTU {mtu} is invalid; expected positive value."
+        ))
+    })?;
+    let header_overhead = IPV4_HEADER_LEN + TCP_HEADER_LEN + PY_PAYLOAD_SEGMENT_HEADER_LEN;
+    match mtu_value.checked_sub(header_overhead) {
+        Some(0) | None => Err(PyRuntimeError::new_err(format!(
+            "configured MTU {mtu} is below the minimum {} required for Python fragmentation \
+             (must exceed {} bytes of IPv4/TCP/PyPayloadSeg headers).",
+            PY_MIN_FRAGMENTATION_MTU, header_overhead
+        ))),
+        Some(budget) => Ok(budget),
+    }
+}
+
+fn next_py_message_id() -> u64 {
+    PY_MESSAGE_ID_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+fn build_py_payload_segments(
+    body: &[u8],
+    chunk_budget: usize,
+    max_message_bytes: usize,
+    message_id: u64,
+) -> PyResult<Vec<Vec<u8>>> {
+    if chunk_budget == 0 {
+        return Err(PyRuntimeError::new_err(
+            "python payload chunk budget is zero; increase MTU to enable fragmentation.",
+        ));
+    }
+
+    if body.len() > max_message_bytes {
+        return Err(PyRuntimeError::new_err(format!(
+            "python buffer length {} exceeds configured limit of {} bytes.",
+            body.len(),
+            max_message_bytes
+        )));
+    }
+
+    if body.len() > u32::MAX as usize {
+        return Err(PyRuntimeError::new_err(format!(
+            "python buffer length {} exceeds 4 GiB limit for a single message.",
+            body.len()
+        )));
+    }
+
+    let fragment_count = if body.is_empty() {
+        1
+    } else {
+        (body.len() + chunk_budget - 1) / chunk_budget
+    };
+
+    if fragment_count > u16::MAX as usize {
+        return Err(PyRuntimeError::new_err(format!(
+            "python buffer requires {} fragments which exceeds the limit of {}; \
+             increase MTU or reduce payload size.",
+            fragment_count,
+            u16::MAX
+        )));
+    }
+
+    let total_len = body.len() as u32;
+    let fragment_count_u16 = fragment_count as u16;
+    let mut fragments = Vec::with_capacity(fragment_count);
+
+    for idx in 0..fragment_count {
+        let (chunk_start, chunk_end) = if body.is_empty() {
+            (0, 0)
+        } else {
+            let start = idx * chunk_budget;
+            let end = std::cmp::min(start + chunk_budget, body.len());
+            (start, end)
+        };
+        let chunk = &body[chunk_start..chunk_end];
+        let header = PyPayloadSegHeader {
+            fragmented: fragment_count > 1,
+            last_fragment: idx + 1 == fragment_count,
+            message_id,
+            total_len,
+            fragment_index: idx as u16,
+            fragment_count: fragment_count_u16,
+            fragment_payload_len: chunk.len() as u32,
+        };
+
+        let mut payload = vec![0u8; PY_PAYLOAD_SEGMENT_HEADER_LEN + chunk.len()];
+        header
+            .encode_into(&mut payload[..PY_PAYLOAD_SEGMENT_HEADER_LEN])
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        payload[PY_PAYLOAD_SEGMENT_HEADER_LEN..].copy_from_slice(chunk);
+
+        fragments.push(payload);
+    }
+
+    Ok(fragments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn python_payload_budget_accounts_for_headers() {
+        assert_eq!(python_payload_budget(1400).unwrap(), 1336);
+    }
+
+    #[test]
+    fn build_segments_single_fragment_sets_header() {
+        let payload = vec![0xAA; 512];
+        let segments = build_py_payload_segments(&payload, 1024, 4096, 42).expect("segments");
+        assert_eq!(segments.len(), 1);
+        let fragment = &segments[0];
+        assert_eq!(
+            fragment.len(),
+            PY_PAYLOAD_SEGMENT_HEADER_LEN + payload.len()
+        );
+        let (header, body) = PyPayloadSegHeader::decode_from(fragment).expect("header");
+        assert!(!header.is_fragmented());
+        assert!(!header.is_last_fragment());
+        assert_eq!(header.message_id, 42);
+        assert_eq!(header.total_len as usize, payload.len());
+        assert_eq!(header.fragment_index, 0);
+        assert_eq!(header.fragment_count, 1);
+        assert_eq!(header.fragment_payload_len as usize, payload.len());
+        assert_eq!(body, payload.as_slice());
+    }
+
+    #[test]
+    fn build_segments_multi_fragment_sets_flags_and_counts() {
+        let payload = vec![0xBB; 3000];
+        let segments = build_py_payload_segments(&payload, 1000, 4096, 7).expect("segments");
+        assert_eq!(segments.len(), 3);
+
+        for (idx, fragment) in segments.iter().enumerate() {
+            let (header, body) =
+                PyPayloadSegHeader::decode_from(fragment).expect("fragment header");
+            assert!(header.is_fragmented());
+            if idx == segments.len() - 1 {
+                assert!(header.is_last_fragment());
+            } else {
+                assert!(!header.is_last_fragment());
+            }
+            assert_eq!(header.fragment_index, idx as u16);
+            assert_eq!(header.fragment_count, segments.len() as u16);
+            let start = idx * 1000;
+            let end = std::cmp::min(start + 1000, payload.len());
+            assert_eq!(body, &payload[start..end]);
+        }
+    }
+
+    #[test]
+    fn build_segments_errors_when_payload_exceeds_limit() {
+        let payload = vec![0xCC; 10];
+        let err = build_py_payload_segments(&payload, 8, 5, 1).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("exceeds configured limit of 5 bytes"));
+    }
+}
+
 #[pymodule]
 fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dataplane>()?;
     m.add_class::<PacketReceiver>()?;
+    m.add_class::<PyPayloadDelivery>()?;
     m.add_class::<FrozenBuffer>()?;
     Ok(())
 }

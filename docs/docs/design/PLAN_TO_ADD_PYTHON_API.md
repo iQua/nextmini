@@ -117,6 +117,16 @@ _Status (2025-11-04 – BrownSnow): Benchmark recipe recorded in `docs/testing/p
 
 ---
 
+### 7b) Controller visibility & alerting
+
+- Dataplanes now emit `DataplaneToController::PythonFragmentEvents` whenever a fragment is rejected (`invalid_header` / `assembler_drop`) or when assembler safeguards trigger (`window_overflow`, `timeout`). Each entry includes `node_id`, `flow_id`, optional `message_id`, a `kind`, and a short `detail`.
+- Events only fire when `python_fragmentation_trace_flow_events = true`; operators can enable it in staging first to understand the noise level before rolling out fragmentation more broadly.
+- Controllers merely log the payload today, but downstream alerting can key off the `kind` + `flow_id`. Recommended thresholds: alarm on >N timeouts per minute per node and treat sustained window overflows as a configuration bug (Python senders exceeding the negotiated MTU).
+- Python receivers can opt into reconstructed payloads by calling `register_receiver_from_node(..., payload_only=True)` (or the `*_ip` variant). The resulting `PayloadDelivery` exposes `.payload`, `.message_id`, `.total_len`, and `.payload_format`, making it easy to correlate user-visible issues with the controller events above.
+- When fragmentation is disabled the new code paths are inert—buffers take the legacy “single IPv4/TCP packet” path—so shipping the telemetry ahead of the feature flag is safe.
+
+---
+
 ### 8) Packaging & build  
 _Status (2025-11-04 – PurpleMountain): `python-api` crate registered in workspace; wheel build verified via `maturin build --release -m python-api/Cargo.toml`._
 

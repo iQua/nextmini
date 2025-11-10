@@ -774,6 +774,33 @@ async fn handle_connection(
                             info!("Node {} left multicast group {}.", node_id, group_id);
                         }
                     }
+                    DataplaneToController::PythonFragmentEvents { node_id, events } => {
+                        for event in events {
+                            let flow = u128::from_be_bytes(event.flow_id);
+                            let msg_id = event
+                                .message_id
+                                .map(|id| id.to_string())
+                                .unwrap_or_else(|| "n/a".to_string());
+                            let missing = event
+                                .missing_fragments
+                                .map(|count| count.to_string())
+                                .unwrap_or_else(|| "-".to_string());
+                            warn!(
+                                "Node {} reported python fragmentation {:?} on flow {:032x} message {} (missing fragments: {}): {}",
+                                node_id, event.kind, flow, msg_id, missing, event.detail
+                            );
+                        }
+                    }
+                    DataplaneToController::PythonFragmentMetrics { node_id, snapshot } => {
+                        info!(
+                            "Node {} python fragmentation metrics: received={} invalid_header_drops={} reassembly_timeouts={} window_overflow_drops={}",
+                            node_id,
+                            snapshot.fragments_received,
+                            snapshot.invalid_header_drops,
+                            snapshot.reassembly_timeouts,
+                            snapshot.window_overflow_drops
+                        );
+                    }
                 }
             }
             Ok(Message::Ping(_)) => {

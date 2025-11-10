@@ -225,6 +225,31 @@ pub struct LocalConfig {
     #[arg(long)]
     pub mtu: i32,
 
+    /// Enable PyPayloadSeg header injection + fragmentation for buffers emitted via python-api.
+    #[default(false)]
+    #[arg(long)]
+    pub python_fragmentation_enabled: bool,
+
+    /// Maximum Python message size (bytes) accepted before fragmentation rejects the request.
+    #[default(64 * 1024)]
+    #[arg(long)]
+    pub python_fragmentation_max_message_bytes: u32,
+
+    /// Maximum buffered bytes per flow for in-progress fragment reassembly.
+    #[default(256 * 1024)]
+    #[arg(long)]
+    pub python_fragmentation_reassembly_window_bytes: u32,
+
+    /// Milliseconds to wait for all fragments of a message before dropping them.
+    #[default(1_000)]
+    #[arg(long)]
+    pub python_fragmentation_fragment_timeout_ms: u32,
+
+    /// Emit structured tracing + controller events when fragments drop or time out.
+    #[default(true)]
+    #[arg(long)]
+    pub python_fragmentation_trace_flow_events: bool,
+
     /// Set if the node should restart when the connection to the server is lost.
     #[default(false)]
     #[arg(long)]

@@ -56,6 +56,7 @@ nav:
       - Introduction: design/introduction.md
       - Architecture: design/architecture.md
       - Configuration Settings: design/configuration.md
+      - Python Payload Fragmentation: design/python_payload_fragmentation.md
   - Examples:
       - Simple: examples/simple.md
       - PyTorch: examples/pytorch.md
@@ -66,3 +67,5 @@ nav:
       - PyTorch on SBA: examples/pytorch-sba.md
       - Ring All-Reduce on SBA: examples/ring_allreduce-sba.md
       - Local Server + Fly.io: examples/localserver-flyio.md
+  - Testing:
+      - Fragmentation Smoke Test: testing/python_fragmentation_smoke.md
