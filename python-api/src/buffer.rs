@@ -134,4 +134,80 @@ mod tests {
             assert_eq!(readback.as_bytes(), original);
         });
     }
+    #[test]
+    fn frozen_buffer_slice_with_length() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"0123456789");
+            let buffer = FrozenBuffer::new(&data);
+            let sliced = buffer.slice(2, Some(5)).expect("slice");
+            assert_eq!(sliced.__len__(), 5);
+            assert_eq!(sliced.read(py).as_bytes(), b"23456");
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_slice_to_end() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"0123456789");
+            let buffer = FrozenBuffer::new(&data);
+            let sliced = buffer.slice(5, None).expect("slice");
+            assert_eq!(sliced.__len__(), 5);
+            assert_eq!(sliced.read(py).as_bytes(), b"56789");
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_slice_empty() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"0123456789");
+            let buffer = FrozenBuffer::new(&data);
+            let sliced = buffer.slice(5, Some(0)).expect("slice");
+            assert_eq!(sliced.__len__(), 0);
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_slice_at_boundary() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"0123456789");
+            let buffer = FrozenBuffer::new(&data);
+            // Start at beginning
+            let sliced = buffer.slice(0, Some(10)).expect("slice");
+            assert_eq!(sliced.read(py).as_bytes(), b"0123456789");
+            // Start at end
+            let sliced_end = buffer.slice(10, None).expect("slice");
+            assert_eq!(sliced_end.__len__(), 0);
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_slice_start_exceeds_length() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"01234");
+            let buffer = FrozenBuffer::new(&data);
+            let err = buffer.slice(10, None).unwrap_err();
+            assert!(err.to_string().contains("exceeds buffer length"));
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_slice_end_exceeds_length() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"01234");
+            let buffer = FrozenBuffer::new(&data);
+            let err = buffer.slice(2, Some(10)).unwrap_err();
+            assert!(err.to_string().contains("exceeds buffer length"));
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_slice_length_overflow() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"01234");
+            let buffer = FrozenBuffer::new(&data);
+            // Try to slice starting at 2 with length that would overflow
+            let err = buffer.slice(2, Some(usize::MAX)).unwrap_err();
+            assert!(err.to_string().contains("overflow"));
+        });
+    }
 }
