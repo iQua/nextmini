@@ -210,4 +210,11 @@ mod tests {
             assert!(err.to_string().contains("overflow"));
         });
     }
+    #[test]
+    fn frozen_buffer_from_bytes() {
+        let bytes = Bytes::from_static(b"internal");
+        let buffer = FrozenBuffer::from_bytes(bytes);
+        assert_eq!(buffer.__len__(), 8);
+        assert_eq!(&buffer.inner[..], b"internal");
+    }
 }
