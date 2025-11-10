@@ -85,6 +85,57 @@ If no route is available, the dataplane logs a warning and drops the packet (mat
 
 ---
 
+## Client APIs
+
+### Python bindings (`nextmini_py`)
+
+`nextmini_py.Dataplane` exposes a minimal set of helpers so applications can manage multicast membership without touching
+the controller CLI:
+
+| Method | Purpose |
+| --- | --- |
+| `create_group(label)` | Requests a new `(group_id, group_ip)` pair for the local node (the source). |
+| `group_is_ready(timeout_ms=None)` | Blocks until the controller acknowledges a group and returns `(group_id, group_ip, src_node_id)`. |
+| `join_group(group_id)` / `leave_group(group_id)` | Adds or drops the local node from the specified group. |
+| `wait_for_local_membership(group_id, timeout_ms=None)` | Confirms the controller installed membership + routes before the application starts sending/receiving. |
+| `wait_for_routes_installed(group_id, src_node_id=None, timeout_ms=None)` | Retrieves the latest `(route_id, next_hops)` fan-out for observability or debugging. |
+| `register_receiver_for_group(src_node_id, group_ip, payload_only=False)` | Binds a Python-side queue to packets sourced from `src_node_id` and destined for `group_ip`. |
+
+Example sender workflow:
+
+```python
+import nextmini_py as nm
+
+dp = nm.Dataplane("/abs/path/node-config.toml")
+dp.create_group("training-run-42")
+group = dp.group_is_ready(timeout_ms=5_000)
+assert group, "controller never acknowledged the group"
+group_id, group_ip, _ = group
+```
+
+Example receiver workflow:
+
+```python
+import nextmini_py as nm
+
+dp = nm.Dataplane("/abs/path/node-config.toml")
+dp.join_group(group_id)
+dp.wait_for_local_membership(group_id, timeout_ms=5_000)
+rx = dp.register_receiver_for_group(
+    src_node_id=1,
+    group_ip=group_ip,
+    payload_only=True,
+)
+payload = rx.recv(timeout_ms=2_000)
+dp.leave_group(group_id)
+```
+
+All helpers run over the existing websocket between the dataplane and controller, so no additional services are
+required. Events flow through the same `PythonEvent` queue used by the PyTorch bindings, enabling scripts to await group
+creation or membership changes.
+
+---
+
 ## Operational Notes
 
 - **Logging** – `RUST_LOG=info` surfaces directory broadcasts, route pushes, and membership changes on both controller and dataplane sides.
