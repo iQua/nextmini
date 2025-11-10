@@ -58,7 +58,7 @@ nav:
       - Configuration Settings: design/configuration.md
       - Python Payload Fragmentation: design/python_payload_fragmentation.md
       - Multicast Groups: design/multicast-groups.md
-      - Python Dataplane API: design/PLAN_TO_ADD_PYTHON_API.md
+      - Python Dataplane API: design/python-api.md
   - Examples:
       - Simple: examples/simple.md
       - PyTorch: examples/pytorch.md

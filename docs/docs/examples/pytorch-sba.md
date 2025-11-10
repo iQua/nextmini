@@ -134,7 +134,7 @@ If you want these SBA scenarios to stream intermediate loss/activation tensors t
 
 1. Install the `nextmini_py` wheel on the swarm nodes.
 2. Set `NEXTMINI_CONFIG=/var/nextmini/node-config.toml` (or the appropriate mounted path) and `NEXTMINI_DST_NODE=<target node id>` before invoking the training scripts.
-3. The provided `gpt2.py` and other helpers already gate the Python bridge behind those variables; once set, they publish metrics each step and log errors without aborting the job.
+3. The provided `gpt2.py` and other helpers already gate the Python bridge behind those variables; once set, they wrap each metric in a `FrozenBuffer`, publish it with `send_to_node`, and log errors without aborting the job.
 
 A companion receiver (launched on another trainer or analytics node) can call `rx.recv()` to ingest the payloads for dashboards or adaptive schedulers.
 

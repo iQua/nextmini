@@ -1,116 +1,117 @@
-# Python Payload Fragmentation
+# Python payload fragmentation
 
-_Last updated: 2025-11-10 by PurpleStone_
+Large tensors injected via `nextmini_py` now travel through a purpose-built fragmentation pipeline so senders no longer
+need to slice payloads manually. This document captures the shipped behavior, header format, configuration surface, and
+operational guidance for the `PyPayloadSeg` feature.
 
-This document captures the implementation plan for making large Python API injections respect the dataplane MTU while
-remaining transparent to existing callers. It expands on `PLAN_TO_ADD_SEGMENTATION.md` with concrete data structures,
-limits, and test expectations so Tracks A–D can execute in parallel without ambiguity.
+## Why it exists
 
-## Goals
+- Python callers frequently emit payloads that exceed the dataplane MTU (default 1 400 B). The legacy single-packet
+  path silently violated the MTU, resulting in drops or truncated IPv4 headers.
+- Manually chunking tensors in user space duplicated logic across scripts and made it hard to correlate drops with the
+  rust-side transport.
+- Operators needed telemetry whenever fragment groups timed out, were evicted, or exceeded buffers.
 
-1. Let Python clients send byte buffers larger than the dataplane MTU without manual chunking.
-2. Avoid touching the controller/dataplane fast path for non-Python flows.
-3. Provide bounded memory usage and actionable telemetry when fragments are dropped.
-4. Keep the rollout behind a feature flag so we can stage validation per environment.
+## Header layout
 
-## Header specification
+Every fragmented payload starts with a fixed 24-byte header encoded in little-endian order. Single-fragment payloads also
+include the header so receivers can rely on a uniform format.
 
 ```
 struct PyPayloadSegHeader {
-    magic: u16 = 0x5047;         // "PG" marker, little-endian
-    version: u8 = 1;             // bump to reject incompatible writers
+    magic: u16 = 0x5047;         // "PG"
+    version: u8 = 1;             // increment to reject incompatible writers
     flags: u8;                   // bit0=is_fragmented, bit1=is_last_fragment
-    message_id: u64;             // per-dataplane monotonically increasing id
-    total_len: u32;              // full payload size before fragmentation
-    fragment_index: u16;         // zero-based index of this fragment
-    fragment_count: u16;         // total fragment count (1 when unfragmented)
-    fragment_payload_len: u32;   // user bytes that immediately follow the header
+    message_id: u64;             // monotonically increasing per dataplane
+    total_len: u32;              // full logical payload length
+    fragment_index: u16;         // zero-based index
+    fragment_count: u16;         // total number of fragments
+    fragment_payload_len: u32;   // number of user bytes that follow this header
 }
 ```
 
-- All fields are encoded little-endian to match existing control-plane config structs.
-- Receivers validate `magic`, `version` ≤ supported, `fragment_index < fragment_count`,
-  `fragment_payload_len <= mtu_payload_budget`, and cumulative length == `total_len`.
-- Future extensions can reserve flag bits 2–7.
-- Single-fragment payloads keep both `is_fragmented` and `is_last_fragment` cleared; the last-fragment bit is only set
-  in tandem with `is_fragmented` for multi-fragment messages.
+The header size plus IPv4 (20 B) and TCP (20 B) headers leave `mtu - 64` bytes for user data per fragment. For the
+default MTU of 1 400 B this yields 1 336 B per chunk.
 
-## Sender pipeline (Track B)
+## Sender behavior
 
-1. `python-api/src/lib.rs` routes every outbound buffer through a new `FragmentedPayload` helper that:
-   - Reads the live MTU from `LocalConfig` (over FFI) and computes `mtu_payload_budget = mtu - 64`.
-   - Rejects buffers larger than `python_fragmentation.max_message_bytes` with a descriptive Python exception when the
-     feature flag is enabled; when disabled we keep the current single-packet behavior and warn.
-   - Allocates `ceil(len / budget)` fragments, stamps the header, and reuses `Packet::build_ipv4_tcp_packet` per chunk.
-   - Shares a thread-safe message-id generator (e.g., `AtomicU64`) across `send_to_ip`, `send_to_node`, and
-     `send_batch_to_node` so batches do not double-fragment.
-2. Add unit tests in `python-api/src/lib.rs` (behind `#[cfg(test)]` using the existing mock dataplane) that cover:
-   - Exact MTU boundary (payload == budget) stays in a single fragment.
-   - Large payload splits into N fragments with consistent header fields.
-   - Feature-flag-disabled behavior refuses to send and emits log.
+The Python bindings call `transmit_python_payload` whenever `send_to_node`, `send_to_ip`, or `send_batch_to_node` is
+invoked. The helper:
 
-## Reassembly & delivery (Track C)
+1. Checks `LocalConfig::python_fragmentation_enabled`.
+2. Enforces `python_fragmentation_max_message_bytes`; oversize payloads result in a Python exception before any packet
+   leaves the process.
+3. Splits the `FrozenBuffer` into `ceil(len / chunk_budget)` slices, allocates a message id from a process-wide
+   `AtomicU64`, and encodes the header for each fragment.
+4. Builds an IPv4/TCP packet per fragment and hands it to `ProcessorHandle::process_packet`.
 
-1. Introduce `PythonReassemblyBuffer` under `dataplane/src/node/python/` that holds a `HashMap<(FlowId, message_id),
-   FragmentAccumulator>` with:
-   - Arrival timestamp (monotonic), expected fragment_count/total_len, and `Vec<Vec<u8>>` or contiguous `BytesMut`.
-   - Aggregate byte counter per flow to enforce `reassembly_window_bytes`.
-2. `processor.rs` inspects each packet destined for the Python interface; if the header magic/version match, it:
-   - Drops + logs if fragmentation is disabled or header invalid.
-   - Inserts the fragment into the buffer, marking completion when all fragments are present or `is_last_fragment` with
-     contiguous byte count == `total_len`.
-   - Once complete, enqueues a synthetic packet (without IPv4/TCP headers) to `PythonInterfaceHandle`.
-3. `PacketReceiver::recv` gains an option (default `PayloadOnly`) that yields the reconstructed bytes, metadata about
-   the flow (flow id, src/dst ip), and a `SegmentationInfo` struct for introspection. A compatibility mode toggles back
-   to raw packet delivery for legacy tooling until migrations finish.
+When fragmentation is disabled the helper sends a single packet and assumes the payload already respects the MTU.
 
-## Failure handling & telemetry
+## Receiver behavior
 
-- Each buffer enforces `fragment_timeout_ms`; expired groups log `warn!` with flow + message id and emit a
-  `DataplaneToController::PythonFragmentEvents` message with `kind = "timeout"` whenever `trace_flow_events` is enabled.
-- When `reassembly_window_bytes` would be exceeded, the assembler drops the fragment and emits a matching controller
-  event with `kind = "window_overflow"`. Parser/assembler guardrails report `kind = "invalid_header"` or
-  `kind = "assembler_drop"` so operators can distinguish unhealthy senders.
-- Every `PythonFragmentEvent` entry contains the originating `node_id`, `flow_id`, optional `message_id`,
-  a human-readable `detail`, and (for timeouts) the number of `missing_fragments`. Controller logs now surface these
-  records so downstream tooling can alert on repeated issues.
-- `PythonInterfaceHandle` now maintains in-memory counters (accessible via `metrics_snapshot()` and ready for export
-  through a future `metrics::Registry` hook). The dataplane also emits periodic
-  `DataplaneToController::PythonFragmentMetrics` snapshots (every 5 s) so controllers and downstream alerting can
-  ingest the totals. Each snapshot carries:
-  - `python_fragments_received_total`
-  - `python_fragments_dropped_invalid_header_total`
-  - `python_reassembly_timeout_total`
-  - `python_reassembly_window_overflow_total`
+`PythonInterfaceHandle` inspects each packet delivered to Python receivers:
 
-## Configuration surfaces (Track A)
+- For payload-only receivers it removes IPv4/TCP headers, validates the `PyPayloadSeg` header, and forwards the payload
+  if the message contains a single fragment.
+- When a payload spans multiple fragments the handle buffers them by `(flow_id, message_id)` inside a bounded
+  `FragmentAssembler`. Once every fragment arrives (or the last fragment flag is set and byte counts match) the payload
+  is coalesced and enqueued as a `PythonDelivery::Payload`.
+- If the receiver was registered in raw mode, packets are delivered untouched.
 
-```
-[pipeline.python_fragmentation]
-enabled = false
-max_message_bytes = 65536
-reassembly_window_bytes = 262144
-fragment_timeout_ms = 1000
-trace_flow_events = true
-```
+The assembler enforces:
 
-- Situated under `LocalConfig::python_fragmentation` and mirrored into controller config so that Python tooling can read
-  the live values via the existing config RPC.
-- Docs: `docs/docs/design/configuration.md`, `docs/examples/pytorch_python_api.md`, and the new smoke script should call
-  out how to size the MTU and message limits.
+- `python_fragmentation_reassembly_window_bytes`: cap on in-flight fragment bytes per flow.
+- `python_fragmentation_fragment_timeout_ms`: deadline for the oldest fragment in a message.
+- Strict header validation so malformed payloads are dropped before they can starve the queues.
 
-## Testing & validation (Track D)
+`PayloadDelivery` objects expose `.message_id`, `.total_len`, `.fragment_count`, and `.payload_format` so Python code can
+trace individual fragment groups.
 
-1. Rust unit tests (sender + reassembly) as described above.
-2. Integration script `docs/testing/scripts/python_fragmentation_smoke.py`:
-   - Creates a 2 MiB buffer, sends via python-api, asserts reassembled payload matches.
-   - Parameterized MTU and timeout to stress edge cases.
-3. CI hook: new make target `cargo test --package python-api --package dataplane --lib fragmentation` plus an optional
-   `uv run` invocation for the smoke script (marked as `ignored` by default). Documentation will describe manual steps.
+## Configuration knobs
 
-## Open questions
+Set these fields in the node config (or via CLI flags) before enabling the feature:
 
-- Do we need a cross-host compatibility story if some nodes run old dataplanes lacking the header? (Current answer:
-  flag remains `false` until every node is upgraded.)
-- Should we reuse QUIC stream framing instead of custom headers? That would require deeper invasive changes, so we keep
-  the payload header for now.
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `python_fragmentation_enabled` | `false` | Feature flag. When `false`, the sender emits a single packet per `FrozenBuffer`. |
+| `python_fragmentation_max_message_bytes` | `65536` | Upper bound enforced by the Python sender. Keep it at or below `mtu - 64` unless you have a larger MTU. |
+| `python_fragmentation_reassembly_window_bytes` | `262144` | Per-flow memory budget for in-flight fragments. |
+| `python_fragmentation_fragment_timeout_ms` | `1000` | Timeout for incomplete fragment groups. |
+| `python_fragmentation_trace_flow_events` | `true` | Enables controller events + periodic metrics exports when fragments are dropped. |
+
+Remember to restart the dataplane after editing the config or passing new CLI overrides.
+
+## Telemetry and failure modes
+
+When tracing is enabled the dataplane emits `DataplaneToController::PythonFragmentEvents` with a `kind` value of:
+
+- `invalid_header` – header magic/version mismatch, impossible indexes, or payload len inconsistencies.
+- `assembler_drop` – the assembler was disabled or encountered an unexpected state.
+- `window_overflow` – accepting the fragment would exceed `reassembly_window_bytes` for its flow.
+- `timeout` – fragment group failed to complete before `fragment_timeout_ms`.
+
+Each event includes the `node_id`, `flow_id`, optional `message_id`, and a human-readable `detail`.
+
+In addition to the events the dataplane periodically publishes `DataplaneToController::PythonFragmentMetrics` snapshots
+containing:
+
+- `python_fragments_received_total`
+- `python_fragments_dropped_invalid_header_total`
+- `python_reassembly_timeout_total`
+- `python_reassembly_window_overflow_total`
+
+These counters can be scraped or logged for long-term alerting even when flow-level tracing is disabled.
+
+## Validation workflow
+
+Use `docs/testing/scripts/python_fragmentation_smoke.py` (documented in
+[`docs/docs/testing/python_fragmentation_smoke.md`](../testing/python_fragmentation_smoke.md)) to exercise the end-to-end
+pipeline:
+
+1. Start a dataplane with fragmentation enabled.
+2. Run the script with a multi-megabyte payload to force fragmentation.
+3. Confirm the receiver reports the reconstructed byte length and that no controller events are emitted during a healthy
+   run.
+
+Unit tests under `python-api/src/lib.rs` cover the fragment builder, while `dataplane/src/node/python/interface.rs`
+contains reassembly tests.

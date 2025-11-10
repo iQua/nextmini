@@ -63,7 +63,7 @@ When you want to push tensors or scalar metrics directly into the Nextmini datap
    export NEXTMINI_DST_NODE=2   # numeric node id that should receive telemetry
    ```
 
-3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). When both variables are present the script loads `nextmini_py.Dataplane`, registers a receiver for the chosen node, and ships the per-step loss via `send_to_node`.
+3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). When both variables are present the script loads `nextmini_py.Dataplane`, wraps each per-step loss tensor in a `FrozenBuffer`, and ships it via `send_to_node`.
 
 On the destination node you can mirror the setup with another Python worker and call `rx.recv(timeout_ms=2000)` to consume the metrics. The bindings reuse the same routing tables as the Rust dataplane, so multicast fan-out and QoS policies apply automatically. Consult the quickstart for queue sizing, fallbacks, and additional helpers.
 
