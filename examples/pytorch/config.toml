@@ -1,10 +1,3 @@
 private_network_interface = "eth0"
 private_network_name = "net1"
 public_network_addr = "172.0.0.1"
-
-# Enable python fragmentation helpers for the PyTorch quickstart.
-python_fragmentation_enabled = true
-python_fragmentation_max_message_bytes = 65536
-python_fragmentation_reassembly_window_bytes = 262144
-python_fragmentation_fragment_timeout_ms = 1000
-python_fragmentation_trace_flow_events = true
