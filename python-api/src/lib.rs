@@ -687,6 +687,37 @@ mod tests {
     }
 
     #[test]
+    fn python_payload_budget_minimum_valid_mtu() {
+        // Minimum working MTU is 65 (64 + 1 byte payload)
+        assert_eq!(python_payload_budget(65).unwrap(), 1);
+    }
+
+    #[test]
+    fn python_payload_budget_exactly_at_header_boundary_errors() {
+        // MTU=64 leaves 0 bytes for payload with actual 64-byte overhead
+        let err = python_payload_budget(64).unwrap_err();
+        assert!(err.to_string().contains("below the minimum"));
+    }
+
+    #[test]
+    fn python_payload_budget_negative_mtu_errors() {
+        let err = python_payload_budget(-1).unwrap_err();
+        assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn python_payload_budget_standard_ethernet_mtu() {
+        // Standard 1500 MTU Ethernet → 1500 - 64 = 1436
+        assert_eq!(python_payload_budget(1500).unwrap(), 1436);
+    }
+
+    #[test]
+    fn python_payload_budget_jumbo_frame_mtu() {
+        // Jumbo frame (9000 bytes) → 9000 - 64 = 8936
+        assert_eq!(python_payload_budget(9000).unwrap(), 8936);
+    }
+
+    #[test]
     fn build_segments_single_fragment_sets_header() {
         let payload = vec![0xAA; 512];
         let segments = build_py_payload_segments(&payload, 1024, 4096, 42).expect("segments");
