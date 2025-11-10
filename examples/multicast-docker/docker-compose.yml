@@ -76,7 +76,6 @@ services:
         --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${TENSOR_PATH:+--tensor-path ${TENSOR_PATH}}
-        ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
         ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
@@ -117,7 +116,6 @@ services:
         --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${SINK_PATH_A:+--sink-path ${SINK_PATH_A}}
-        ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
         ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
@@ -158,7 +156,6 @@ services:
         --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${SINK_PATH_B:+--sink-path ${SINK_PATH_B}}
-        ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
         ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
