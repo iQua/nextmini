@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 #[pyclass]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FrozenBuffer {
     pub(crate) inner: Bytes,
 }
@@ -107,5 +107,31 @@ impl FrozenBuffer {
     /// Internal constructor from Bytes (not exposed to Python)
     pub fn from_bytes(bytes: Bytes) -> Self {
         Self { inner: bytes }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frozen_buffer_empty() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"");
+            let buffer = FrozenBuffer::new(&data);
+            assert_eq!(buffer.__len__(), 0);
+        });
+    }
+
+    #[test]
+    fn frozen_buffer_read_roundtrip() {
+        Python::attach(|py| {
+            let original = b"test data";
+            let data = PyBytes::new(py, original);
+            let buffer = FrozenBuffer::new(&data);
+            let readback = buffer.read(py);
+            assert_eq!(buffer.__len__(), 9);
+            assert_eq!(readback.as_bytes(), original);
+        });
     }
 }
