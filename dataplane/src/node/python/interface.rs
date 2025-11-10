@@ -1,3 +1,6 @@
+//! Python dataplane interface that exposes per-flow delivery handles and manages
+//! fragment reassembly before bytes cross the FFI boundary.
+
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -26,6 +29,8 @@ use nextmini_messages::{
 };
 
 #[derive(Clone)]
+/// Shared entry point used by the dataplane to push packets or payloads toward
+/// Python receivers.
 pub struct PythonInterfaceHandle {
     inner: Arc<Inner>,
 }
@@ -57,6 +62,8 @@ struct ReceiverEntry {
 }
 
 #[derive(Default)]
+/// Atomically-tracked counters so we can export fragment health back to the
+/// controller without holding the delivery fast-path lock.
 struct FragmentMetrics {
     fragments_received: AtomicU64,
     invalid_header_drops: AtomicU64,
@@ -119,6 +126,7 @@ pub enum PythonDelivery {
 }
 
 #[derive(Clone, Debug)]
+/// Payload-Only delivery metadata consumed by Python receivers.
 pub struct PayloadDelivery {
     pub flow_id: FlowId,
     pub bytes: Vec<u8>,
@@ -164,6 +172,7 @@ enum DeliveryMode {
 }
 
 #[derive(Clone, Debug)]
+/// Runtime-configurable policy that toggles fragment handling for Python flows.
 pub struct PythonFragmentationPolicy {
     pub enabled: bool,
     pub max_message_bytes: usize,
@@ -199,6 +208,8 @@ impl From<&LocalConfig> for PythonFragmentationPolicy {
 }
 
 #[derive(Debug)]
+/// Wraps the assembler with a `Mutex` so async callers can submit fragments
+/// without racing policy changes.
 struct FragmentationRuntime {
     policy: PythonFragmentationPolicy,
     assembler: Mutex<FragmentAssembler>,
@@ -266,6 +277,8 @@ impl PythonInterfaceHandle {
         if inner.telemetry.is_none() {
             return;
         }
+        // Keep only a weak reference so periodic metrics do not keep the node
+        // alive after all handles have been dropped.
         let weak = Arc::downgrade(inner);
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(5));
@@ -333,6 +346,8 @@ impl PythonInterfaceHandle {
             return Self::send_raw(entry, packet);
         }
 
+        // Attempt to parse the Python payload header so we can either pass the
+        // untouched frame through or rebuild it once all fragments arrive.
         match parse_python_fragment(&packet) {
             FragmentProbe::NotSegmented => Self::send_raw(entry, packet),
             FragmentProbe::Single(fragment) => {
@@ -407,6 +422,8 @@ impl PythonInterfaceHandle {
             return self.deliver_payload_compat(entry, packet);
         }
 
+        // Build the `PayloadDelivery` differently depending on whether we saw a
+        // Python payload header and whether the payload was fragmented.
         match parse_python_fragment(&packet) {
             FragmentProbe::NotSegmented => {
                 let delivery = raw_payload_delivery(&packet);
@@ -674,6 +691,8 @@ fn parse_python_fragment(packet: &Packet) -> FragmentProbe<'_> {
     }
 }
 
+/// Rebuild an IPv4/TCP frame for single-fragment payloads while fixing up the
+/// IP length field to match the payload-only frame we emitted to Python.
 fn rebuild_single_fragment(_packet: &Packet, fragment: &ParsedFragment<'_>) -> Option<Packet> {
     let mut frame = Vec::with_capacity(fragment.payload_offset + fragment.payload.len());
     frame.extend_from_slice(&fragment.bytes[..fragment.payload_offset]);
@@ -690,6 +709,8 @@ fn rebuild_single_fragment(_packet: &Packet, fragment: &ParsedFragment<'_>) -> O
     Some(Packet::from_vec(frame))
 }
 
+/// Glue the saved header prefix and fully reassembled payload back into a frame
+/// that can be re-injected into the dataplane.
 fn rebuild_frame_from_message(msg: &ReassembledMessage) -> Option<Packet> {
     let mut prefix = msg.header_prefix.clone()?;
     prefix.extend_from_slice(&msg.payload);
@@ -716,6 +737,8 @@ fn payload_from_message(msg: ReassembledMessage) -> PayloadDelivery {
     }
 }
 
+/// Returns the byte offset of the TCP payload if the buffer holds a sane IPv4 +
+/// TCP header combination.
 fn tcp_payload_offset(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 20 || (bytes[0] >> 4) != 4 {
         return None;
@@ -802,6 +825,7 @@ impl From<FragmentDropKind> for PythonFragmentEventKind {
 }
 
 #[derive(Clone, Debug)]
+/// Events forwarded to Python code so it can mirror multicast group state.
 #[allow(dead_code)]
 pub enum PythonEvent {
     GroupCreated {

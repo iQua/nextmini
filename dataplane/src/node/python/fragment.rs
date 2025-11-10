@@ -1,3 +1,5 @@
+//! Fragment reassembly primitives shared by the Python dataplane interface.
+
 use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
@@ -6,6 +8,7 @@ use crate::node::FlowId;
 use crate::node::packet::PyPayloadSegHeader;
 
 #[derive(Debug, Clone)]
+/// Tunables that bound how much memory and time the assembler consumes.
 pub struct FragmentAssemblerConfig {
     pub enabled: bool,
     pub max_message_bytes: usize,
@@ -14,6 +17,7 @@ pub struct FragmentAssemblerConfig {
 }
 
 #[derive(Debug, Clone)]
+/// Summary of what happened when we attempted to ingest a fragment.
 pub struct InsertReport {
     pub evicted: Vec<EvictedMessage>,
     pub result: FragmentResult,
@@ -29,6 +33,7 @@ impl InsertReport {
 }
 
 #[derive(Debug, Clone)]
+/// State of a fragment after attempting to add it to the assembler.
 pub enum FragmentResult {
     Pending,
     Complete(ReassembledMessage),
@@ -81,6 +86,7 @@ pub struct EvictedMessage {
 }
 
 #[derive(Debug)]
+/// Tracks fragments currently being rebuilt for Python flows.
 pub struct FragmentAssembler {
     cfg: FragmentAssemblerConfig,
     inflight: AHashMap<(FlowId, u64), ReassemblyEntry>,
@@ -108,6 +114,8 @@ impl FragmentAssembler {
             return InsertReport::bypassed();
         }
 
+        // Drop expired entries up front so callers get eviction notifications
+        // before we potentially accept more bytes into the window.
         let mut report = InsertReport {
             evicted: self.evict_expired(now),
             result: FragmentResult::Pending,
@@ -139,6 +147,8 @@ impl FragmentAssembler {
         if self.cfg.reassembly_window_bytes > 0
             && self.inflight_bytes + chunk.len() > self.cfg.reassembly_window_bytes
         {
+            // Rejecting here ensures untrusted callers cannot pin the dataplane
+            // by spraying more fragment bytes than the configured window.
             report.result = FragmentResult::Dropped(FragmentDrop::window_overflow(format!(
                 "fragment window {} bytes exceeded for flow {} message {}.",
                 self.cfg.reassembly_window_bytes, flow_id, header.message_id
@@ -147,6 +157,8 @@ impl FragmentAssembler {
         }
 
         let key = (flow_id, header.message_id);
+        // Either reuse the existing entry or create one that preallocates slots
+        // for the advertised fragment_count to avoid reallocations later on.
         let entry = self.inflight.entry(key).or_insert_with(|| {
             ReassemblyEntry::new(
                 flow_id,
@@ -177,6 +189,9 @@ impl FragmentAssembler {
             }) => {
                 self.inflight_bytes += bytes_added;
                 self.inflight.remove(&key);
+                // Once a message completes we immediately hand ownership back so
+                // the assembler never holds onto payload capacity longer than
+                // necessary.
                 report.result = FragmentResult::Complete(ReassembledMessage {
                     flow_id,
                     message_id: header.message_id,
@@ -195,6 +210,8 @@ impl FragmentAssembler {
     }
 
     fn evict_expired(&mut self, now: Instant) -> Vec<EvictedMessage> {
+        // Collect keys first so we can drop the immutable borrow on `inflight`
+        // before removing entries.
         let expired: Vec<_> = self
             .inflight
             .iter()
@@ -210,6 +227,8 @@ impl FragmentAssembler {
         for key in expired {
             if let Some(entry) = self.inflight.remove(&key) {
                 self.inflight_bytes = self.inflight_bytes.saturating_sub(entry.buffered_bytes);
+                // Surface how many fragments were missing so downstream
+                // telemetry can reason about why the reassembly failed.
                 evicted.push(EvictedMessage {
                     flow_id: entry.flow_id,
                     message_id: entry.message_id,
@@ -222,6 +241,7 @@ impl FragmentAssembler {
 }
 
 #[derive(Debug)]
+/// Holds the fragments for a single `(flow_id, message_id)` pair.
 struct ReassemblyEntry {
     flow_id: FlowId,
     message_id: u64,
@@ -289,6 +309,8 @@ impl ReassemblyEntry {
         if idx == 0
             && let Some(prefix) = header_prefix
         {
+            // Fragment zero carries the TCP/IP header bytes Python needs when
+            // asking for the raw packet back, so capture it once.
             self.header_prefix = Some(prefix);
         }
 
@@ -298,6 +320,8 @@ impl ReassemblyEntry {
         self.deadline = new_deadline;
 
         if self.fragments.iter().all(|frag| frag.is_some()) {
+            // Every fragment has shown up; stitch them together immediately to
+            // minimize how long we hold the `assembler` mutex.
             let mut payload = Vec::with_capacity(self.total_len);
             for fragment in self.fragments.iter_mut() {
                 let bytes = fragment
