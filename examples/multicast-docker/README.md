@@ -71,7 +71,7 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
   `/workspace/tensors/tensor-auto-1g.pt` before every run.
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
-- `CHUNK_SIZE` – payload slice size (defaults to 6144 bytes to stay under the dataplane MTU).
+- `CHUNK_SIZE` – payload slice size (defaults to 32768 bytes to stay under the dataplane MTU).
 - `PAYLOAD_SLEEP_MS` – optional pacing delay between chunks when you need to slow down the source.
 - `VERIFY_CHECKSUM` – set to `1` to have the source emit, and receivers verify, a
   SHA-256 checksum stored at `CHECKSUM_PATH` (defaults to `/artifacts/<group>.sha256`).
@@ -98,7 +98,7 @@ docker compose up
 ```
 
 Each run downloads/install PyTorch (via `run_multicast_node.sh`), synthesizes the tensor,
-and then pushes it using `CHUNK_SIZE` (defaults to 6144 bytes). Receivers automatically
+and then pushes it using `CHUNK_SIZE` (defaults to 32768 bytes). Receivers automatically
 load the metadata, wait for the checksum (`/artifacts/<group>.sha256`), reconstruct the
 stream under `/artifacts/receiver-<node_id>.bin`, and verify integrity. Adjust the
 following knobs if needed:

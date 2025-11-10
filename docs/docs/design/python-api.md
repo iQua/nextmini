@@ -128,10 +128,7 @@ delivered to Python receivers that have called one of the waiters above; they ar
 
 ## Fragmentation and large payloads
 
-When `python_fragmentation_enabled = true` in `LocalConfig`, the sender splits each `FrozenBuffer` into MTU-safe pieces
-(`chunk_size = mtu - 64`), prepends a 24-byte `PyPayloadSegHeader`, and emits the sequence via the regular dataplane
-pipeline. The receiver reassembles fragments per `(flow_id, message_id)` pair before enqueuing the payload in Python
-space. Relevant configuration knobs (also exposed via CLI flags):
+When `python_fragmentation_enabled = true` in `LocalConfig`, the sender splits each `FrozenBuffer` into chunks (the default chunk size is 32768 bytes), prepends a 24-byte `PyPayloadSegHeader`, and emits the sequence via the regular dataplane pipeline. The receiver reassembles fragments per `(flow_id, message_id)` pair before enqueuing the payload in Python space. Relevant configuration knobs (also exposed via CLI flags):
 
 ```toml
 python_fragmentation_enabled = true

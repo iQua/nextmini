@@ -78,7 +78,7 @@ services:
         --group-timeout ${GROUP_TIMEOUT:-120}
         --member-timeout ${MEMBER_TIMEOUT:-90}
         --expected-subscribers ${EXPECTED_SUBSCRIBERS:-2}
-        --chunk-size ${CHUNK_SIZE:-6144}
+        --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${TENSOR_PATH:+--tensor-path ${TENSOR_PATH}}
         ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
@@ -123,7 +123,7 @@ services:
         --group-timeout ${GROUP_TIMEOUT:-300}
         --member-timeout ${MEMBER_TIMEOUT:-240}
         --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
-        --chunk-size ${CHUNK_SIZE:-6144}
+        --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${SINK_PATH_A:+--sink-path ${SINK_PATH_A}}
         ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
@@ -169,7 +169,7 @@ services:
         --group-timeout ${GROUP_TIMEOUT:-300}
         --member-timeout ${MEMBER_TIMEOUT:-240}
         --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
-        --chunk-size ${CHUNK_SIZE:-6144}
+        --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${SINK_PATH_B:+--sink-path ${SINK_PATH_B}}
         ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}

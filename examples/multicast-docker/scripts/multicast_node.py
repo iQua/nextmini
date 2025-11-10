@@ -35,14 +35,20 @@ METADATA_FILE = "tensor-metadata.json"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Drive the multicast docker example.")
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
-    parser.add_argument("--config", type=Path, required=True, help="Dataplane config TOML.")
-    parser.add_argument("--group-label", required=True, help="Label used when creating the group.")
+    parser.add_argument(
+        "--config", type=Path, required=True, help="Dataplane config TOML."
+    )
+    parser.add_argument(
+        "--group-label", required=True, help="Label used when creating the group."
+    )
     parser.add_argument("--postgres-host", default="postgres")
     parser.add_argument("--postgres-port", type=int, default=5432)
     parser.add_argument("--postgres-user", default="pgusr")
     parser.add_argument("--postgres-password", default="pgpwrd")
     parser.add_argument("--postgres-db", default="nextmini")
-    parser.add_argument("--group-timeout", type=int, default=90, help="Seconds to wait for group.")
+    parser.add_argument(
+        "--group-timeout", type=int, default=90, help="Seconds to wait for group."
+    )
     parser.add_argument(
         "--member-timeout",
         type=int,
@@ -129,8 +135,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-size",
         type=int,
-        default=6144,
-        help="Chunk size when splitting tensors (defaults to MTU-safe 6144 bytes).",
+        default=32768,
+        help="Chunk size when splitting tensors (defaults to 32768 bytes).",
     )
     parser.add_argument(
         "--sink-path",
@@ -191,7 +197,9 @@ def wait_for_group(conninfo: str, label: str, timeout: int) -> Tuple[int, str]:
         conn.autocommit = True
         with conn.cursor() as cur:
             while time.monotonic() < deadline:
-                cur.execute("SELECT id, group_ip FROM groups WHERE label = %s", (label,))
+                cur.execute(
+                    "SELECT id, group_ip FROM groups WHERE label = %s", (label,)
+                )
                 row = cur.fetchone()
                 if row:
                     return int(row[0]), row[1]
@@ -310,7 +318,9 @@ def wait_for_checksum_file(path: Path, timeout: int) -> str:
     raise TimeoutError(f"Timed out waiting for checksum file at {path}.")
 
 
-def write_tensor_metadata(args: argparse.Namespace, tensor_path: Path, size: int) -> None:
+def write_tensor_metadata(
+    args: argparse.Namespace, tensor_path: Path, size: int
+) -> None:
     if not args.artifact_dir:
         return
     meta = {"path": str(tensor_path), "bytes": size}
@@ -340,14 +350,18 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> Path | None:
     if not args.generate_tensor:
         return None
 
-    tensor_dir = args.tensor_path.parent if args.tensor_path else Path("/workspace/tensors")
+    tensor_dir = (
+        args.tensor_path.parent if args.tensor_path else Path("/workspace/tensors")
+    )
     tensor_dir.mkdir(parents=True, exist_ok=True)
     output = tensor_dir / "tensor-auto-1g.pt"
 
     log(f"Generating ~1GB tensor at {output}...", args.quiet)
     try:
         import torch
-    except ImportError as exc:  # pragma: no cover - only hits if torch missing in container
+    except (
+        ImportError
+    ) as exc:  # pragma: no cover - only hits if torch missing in container
         raise SystemExit(
             "PyTorch is required for --generate-tensor but is not installed in this container."
         ) from exc
@@ -494,7 +508,11 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
     wait_for_count(
-        conninfo, group_id, target=0, timeout=args.member_timeout, specific_node=args.node_id
+        conninfo,
+        group_id,
+        target=0,
+        timeout=args.member_timeout,
+        specific_node=args.node_id,
     )
     log("Controller recorded membership; waiting for local route install.", args.quiet)
 
@@ -545,7 +563,9 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     while received < expected_chunks:
         payload = receiver.recv(timeout_ms=args.receive_timeout_ms)
         if payload is None:
-            raise TimeoutError("Receiver timed out while waiting for multicast payloads.")
+            raise TimeoutError(
+                "Receiver timed out while waiting for multicast payloads."
+            )
         received += 1
         total_bytes += len(payload)
         if sink_file:
@@ -560,11 +580,16 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     if sink_file:
         sink_file.flush()
         sink_file.close()
-        log(f"Wrote reconstructed tensor to {sink_path} ({total_bytes} bytes)", args.quiet)
+        log(
+            f"Wrote reconstructed tensor to {sink_path} ({total_bytes} bytes)",
+            args.quiet,
+        )
 
     if sha:
         checksum_path = resolve_checksum_path(args)
-        expected_digest = wait_for_checksum_file(checksum_path, args.checksum_wait_seconds)
+        expected_digest = wait_for_checksum_file(
+            checksum_path, args.checksum_wait_seconds
+        )
         digest = sha.hexdigest()
         if digest != expected_digest:
             raise RuntimeError(
@@ -595,15 +620,17 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover - surfaced in docker logs
         log(f"ERROR: {exc}", quiet=False)
         return 1
-    
+
     # Keep container running after completion
-    log("Task completed. Keeping container alive (press Ctrl+C to exit)...", quiet=False)
+    log(
+        "Task completed. Keeping container alive (press Ctrl+C to exit)...", quiet=False
+    )
     try:
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
         log("Received interrupt signal, exiting.", quiet=False)
-    
+
     return 0
 
 

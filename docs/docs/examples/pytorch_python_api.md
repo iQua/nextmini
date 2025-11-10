@@ -104,6 +104,6 @@ python_fragmentation_fragment_timeout_ms = 1000
 python_fragmentation_trace_flow_events = true
 ```
 
-Restart the dataplane after editing the config. Once enabled, every `send_to_node` (and batch send) slices payloads into MTU-safe chunks, stamps the `PyPayloadSeg` header, and hands fragments to the regular routing pipeline. Payload-only receivers automatically reassemble the message and populate `.message_id`, `.total_len`, and `.fragment_count`.
+Restart the dataplane after editing the config. Once enabled, every `send_to_node` (and batch send) slices payloads into chunks of any size, stamps the `PyPayloadSeg` header, and hands fragments to the regular routing pipeline. Payload-only receivers automatically reassemble the message and populate `.message_id`, `.total_len`, and `.fragment_count`.
 
 See [`docs/docs/design/python_payload_fragmentation.md`](../design/python_payload_fragmentation.md) for details on the header format and telemetry surfaces, plus [`docs/docs/testing/python_fragmentation_smoke.md`](../testing/python_fragmentation_smoke.md) for an end-to-end validation script.
