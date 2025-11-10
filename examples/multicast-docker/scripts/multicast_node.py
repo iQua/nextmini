@@ -431,6 +431,7 @@ def fetch_pending_repairs(
         )
         return [(int(row[0]), int(row[1])) for row in cur.fetchall()]
 
+
 def chunk_count(total_bytes: int, chunk_size: int) -> int:
     if total_bytes <= 0:
         return 0
@@ -509,6 +510,17 @@ def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
             return
         time.sleep(1)
     raise TimeoutError(f"Timed out waiting for tensor metadata at {meta_path}.")
+
+
+def payload_view_and_len(delivery: object) -> Tuple[memoryview | bytes, int]:
+    """Normalize PacketReceiver output into a bytes-like view and its length."""
+    if isinstance(delivery, (bytes, bytearray, memoryview)):
+        return delivery, len(delivery)
+    if hasattr(delivery, "frozen_payload"):
+        frozen = delivery.frozen_payload  # PyPayloadDelivery exposes FrozenBuffer
+        view = memoryview(frozen)
+        return view, len(frozen)
+    raise TypeError(f"Unsupported payload type from receiver: {type(delivery)}")
 
 
 def generate_tensor_if_needed(args: argparse.Namespace) -> Path | None:
@@ -723,7 +735,10 @@ def run_source(args: argparse.Namespace, conninfo: str) -> None:
             checksum_path.write_text(sha.hexdigest() + "\n")
             log(f"Wrote checksum to {checksum_path}", args.quiet)
         if tensor_mode:
-            log(f"Source streamed {bytes_sent} bytes from {args.tensor_path}", args.quiet)
+            log(
+                f"Source streamed {bytes_sent} bytes from {args.tensor_path}",
+                args.quiet,
+            )
 
     log("Source finished sending multicast payloads.", args.quiet)
 

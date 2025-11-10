@@ -123,7 +123,7 @@ fn warn_misrouted_payload() {
 
 #[pyclass(name = "PayloadDelivery")]
 struct PyPayloadDelivery {
-    bytes: Vec<u8>,
+    buffer: FrozenBuffer,
     flow_id: u128,
     src_ip: String,
     dst_ip: String,
@@ -139,7 +139,12 @@ struct PyPayloadDelivery {
 impl PyPayloadDelivery {
     #[getter]
     fn payload<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.bytes)
+        PyBytes::new(py, self.buffer.inner.as_ref())
+    }
+
+    #[getter]
+    fn frozen_payload(&self) -> FrozenBuffer {
+        self.buffer.clone()
     }
 
     #[getter]
@@ -191,7 +196,7 @@ impl PyPayloadDelivery {
 impl From<RustPayloadDelivery> for PyPayloadDelivery {
     fn from(payload: RustPayloadDelivery) -> Self {
         Self {
-            bytes: payload.bytes,
+            buffer: FrozenBuffer::from_bytes(payload.bytes),
             flow_id: payload.flow_id,
             src_ip: payload.src_ip.to_string(),
             dst_ip: payload.dst_ip.to_string(),
