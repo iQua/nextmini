@@ -50,6 +50,9 @@ const PY_MIN_FRAGMENTATION_MTU: usize =
 
 static PY_MESSAGE_ID_SEQ: AtomicU64 = AtomicU64::new(1);
 
+type RouteHopList = Vec<usize>;
+type RouteInstallations = Vec<(usize, RouteHopList)>;
+
 #[pyclass]
 struct PacketReceiver {
     mode: DeliveryMode,
@@ -446,7 +449,7 @@ impl Dataplane {
         group_id: usize,
         src_node_id: Option<usize>,
         timeout_ms: Option<u64>,
-    ) -> PyResult<Option<Vec<(usize, Vec<usize>)>>> {
+    ) -> PyResult<Option<RouteInstallations>> {
         let timeout = timeout_ms.map(Duration::from_millis);
         let matched = self.wait_for_event_matching(timeout, |event| {
             matches!(
@@ -456,18 +459,17 @@ impl Dataplane {
                     src_node_id: event_src_node_id,
                     ..
                 } if *gid == group_id
-                    && src_node_id.map_or(true, |target| target == *event_src_node_id)
+                    && src_node_id.is_none_or(|target| target == *event_src_node_id)
             )
         });
 
-        let routes = matched.map(|event| {
-            if let PythonEvent::GroupRoutesInstalled { routes, .. } = event {
-                routes
+        let routes: Option<RouteInstallations> = matched.map(|event| {
+            match event {
+                PythonEvent::GroupRoutesInstalled { routes, .. } => routes
                     .into_iter()
                     .map(|entry| (entry.route_id, entry.next_hops))
-                    .collect()
-            } else {
-                unreachable!("matched variant should be routes installed");
+                    .collect(),
+                _ => unreachable!("matched variant should be routes installed"),
             }
         });
 
@@ -636,7 +638,7 @@ fn build_py_payload_segments(
     let fragment_count = if body.is_empty() {
         1
     } else {
-        (body.len() + chunk_budget - 1) / chunk_budget
+        body.len().div_ceil(chunk_budget)
     };
 
     if fragment_count > u16::MAX as usize {

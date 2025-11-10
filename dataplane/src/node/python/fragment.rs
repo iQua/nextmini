@@ -286,11 +286,10 @@ impl ReassemblyEntry {
             return Ok(EntryInsertOutcome::Duplicate);
         }
 
-        if idx == 0 {
-            if let Some(prefix) = header_prefix {
+        if idx == 0
+            && let Some(prefix) = header_prefix {
                 self.header_prefix = Some(prefix);
             }
-        }
 
         let chunk_len = chunk.len();
         self.fragments[idx] = Some(chunk);
