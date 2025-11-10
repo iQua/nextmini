@@ -346,6 +346,17 @@ def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
     raise TimeoutError(f"Timed out waiting for tensor metadata at {meta_path}.")
 
 
+def payload_view_and_len(delivery: object) -> Tuple[memoryview | bytes, int]:
+    """Normalize PacketReceiver output into a bytes-like view and its length."""
+    if isinstance(delivery, (bytes, bytearray, memoryview)):
+        return delivery, len(delivery)
+    if hasattr(delivery, "frozen_payload"):
+        frozen = delivery.frozen_payload  # PyPayloadDelivery exposes FrozenBuffer
+        view = memoryview(frozen)
+        return view, len(frozen)
+    raise TypeError(f"Unsupported payload type from receiver: {type(delivery)}")
+
+
 def generate_tensor_if_needed(args: argparse.Namespace) -> Path | None:
     if not args.generate_tensor:
         return None
@@ -547,6 +558,7 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
         group_ip=group_ip,
         src_port=args.src_port,
         dst_port=args.dst_port,
+        payload_only=True,
     )
 
     received = 0
@@ -561,19 +573,20 @@ def run_receiver(args: argparse.Namespace, conninfo: str) -> None:
     total_bytes = 0
 
     while received < expected_chunks:
-        payload = receiver.recv(timeout_ms=args.receive_timeout_ms)
-        if payload is None:
+        delivery = receiver.recv(timeout_ms=args.receive_timeout_ms)
+        if delivery is None:
             raise TimeoutError(
                 "Receiver timed out while waiting for multicast payloads."
             )
+        payload_view, payload_len = payload_view_and_len(delivery)
         received += 1
-        total_bytes += len(payload)
+        total_bytes += payload_len
         if sink_file:
-            sink_file.write(payload)
+            sink_file.write(payload_view)
         if sha:
-            sha.update(payload)
+            sha.update(payload_view)
         log(
-            f"[{received}/{expected_chunks}] received {len(payload)} bytes from group {group_id}",
+            f"[{received}/{expected_chunks}] received {payload_len} bytes from group {group_id}",
             args.quiet,
         )
 

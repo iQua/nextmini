@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use byteorder::{BigEndian, ByteOrder};
+use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::interval;
@@ -129,7 +130,7 @@ pub enum PythonDelivery {
 /// Payload-Only delivery metadata consumed by Python receivers.
 pub struct PayloadDelivery {
     pub flow_id: FlowId,
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
     pub src_ip: Ipv4Addr,
     pub dst_ip: Ipv4Addr,
     pub src_port: u16,
@@ -436,7 +437,7 @@ impl PythonInterfaceHandle {
                 self.inner.metrics.record_fragment_received();
                 let delivery = PayloadDelivery {
                     flow_id: fragment.flow_id,
-                    bytes: fragment.payload.to_vec(),
+                    bytes: Bytes::copy_from_slice(fragment.payload),
                     src_ip: fragment.flow_id.src_ip(),
                     dst_ip: fragment.flow_id.dst_ip(),
                     src_port: fragment.flow_id.src_port(),
@@ -568,10 +569,7 @@ impl PythonInterfaceHandle {
     }
 
     fn send_payload(entry: ReceiverEntry, payload: PayloadDelivery) -> Result<(), ()> {
-        match entry
-            .sender
-            .try_send(PythonDelivery::Payload(payload.clone()))
-        {
+        match entry.sender.try_send(PythonDelivery::Payload(payload)) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(delivery)) | Err(TrySendError::Closed(delivery)) => {
                 match delivery {
@@ -725,7 +723,7 @@ fn rebuild_frame_from_message(msg: &ReassembledMessage) -> Option<Packet> {
 fn payload_from_message(msg: ReassembledMessage) -> PayloadDelivery {
     PayloadDelivery {
         flow_id: msg.flow_id,
-        bytes: msg.payload,
+        bytes: Bytes::from(msg.payload),
         src_ip: msg.flow_id.src_ip(),
         dst_ip: msg.flow_id.dst_ip(),
         src_port: msg.flow_id.src_port(),
@@ -761,11 +759,10 @@ fn tcp_payload_from_frame(bytes: &[u8]) -> Option<&[u8]> {
 }
 
 fn raw_payload_delivery(packet: &Packet) -> PayloadDelivery {
+    let slice = tcp_payload_from_frame(packet.bytes()).unwrap_or(packet.bytes());
     PayloadDelivery {
         flow_id: packet.flow_id,
-        bytes: tcp_payload_from_frame(packet.bytes())
-            .unwrap_or(packet.bytes())
-            .to_vec(),
+        bytes: Bytes::copy_from_slice(slice),
         src_ip: packet.flow_id.src_ip(),
         dst_ip: packet.flow_id.dst_ip(),
         src_port: packet.flow_id.src_port(),
