@@ -22,9 +22,8 @@ use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::{Packet, PyPayloadSegHeader, PY_PAYLOAD_SEGMENT_HEADER_LEN};
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::{
-    DeliveryMode, FragmentTelemetry, PayloadDelivery as RustPayloadDelivery,
-    PayloadFormat as RustPayloadFormat, PythonDelivery, PythonEvent, PythonFragmentationPolicy,
-    PythonInterfaceHandle,
+    PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
+    PythonEvent, PythonFragmentationPolicy, PythonInterfaceHandle,
 };
 use nextmini::node::{NodeId, NodeIdExt};
 use nextmini_messages::DataplaneToController;
@@ -55,7 +54,7 @@ type RouteInstallations = Vec<(usize, RouteHopList)>;
 
 #[pyclass]
 struct PacketReceiver {
-    mode: DeliveryMode,
+    payload_only: bool,
     inner: Arc<Mutex<mpsc::Receiver<PythonDelivery>>>,
 }
 
@@ -64,7 +63,7 @@ impl PacketReceiver {
     #[pyo3(signature = (timeout_ms=None))]
     fn recv(&self, timeout_ms: Option<u64>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let inner = self.inner.clone();
-        let mode = self.mode;
+        let payload_only = self.payload_only;
         let fut = async move {
             match timeout_ms {
                 Some(ms) => tokio::time::timeout(
@@ -78,18 +77,18 @@ impl PacketReceiver {
         };
         let maybe_delivery = rt().block_on(fut);
         maybe_delivery
-            .map(|delivery| delivery_to_pyobject(py, mode, delivery))
+            .map(|delivery| delivery_to_pyobject(py, payload_only, delivery))
             .transpose()
     }
 
     fn recv_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let mode = self.mode;
+        let payload_only = self.payload_only;
         future_into_py(py, async move {
             let delivery = inner.lock().await.recv().await;
             Python::attach(|py| {
                 delivery
-                    .map(|delivery| delivery_to_pyobject(py, mode, delivery))
+                    .map(|delivery| delivery_to_pyobject(py, payload_only, delivery))
                     .transpose()
             })
         })
@@ -98,12 +97,12 @@ impl PacketReceiver {
 
 fn delivery_to_pyobject(
     py: Python<'_>,
-    mode: DeliveryMode,
+    payload_only: bool,
     delivery: PythonDelivery,
 ) -> PyResult<Py<PyAny>> {
     match delivery {
         PythonDelivery::Raw(packet) => {
-            if matches!(mode, DeliveryMode::PayloadOnly) {
+            if payload_only {
                 warn_misrouted_payload();
             }
             let bytes = PyBytes::new(py, packet.bytes());
@@ -236,11 +235,10 @@ impl Dataplane {
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
 
-        let telemetry = FragmentTelemetry::new(controller.clone(), cfg.node_id);
         let py_if = PythonInterfaceHandle::new(
             cfg.channel_capacity,
             PythonFragmentationPolicy::from(&cfg),
-            Some(telemetry),
+            Some((controller.clone(), cfg.node_id)),
         );
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
@@ -290,16 +288,11 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-        let mode = if payload_only {
-            DeliveryMode::PayloadOnly
-        } else {
-            DeliveryMode::RawPacket
-        };
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id, mode));
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id, payload_only));
         Py::new(
             py,
             PacketReceiver {
-                mode,
+                payload_only,
                 inner: Arc::new(Mutex::new(rx)),
             },
         )
@@ -321,16 +314,11 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-        let mode = if payload_only {
-            DeliveryMode::PayloadOnly
-        } else {
-            DeliveryMode::RawPacket
-        };
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id, mode));
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id, payload_only));
         Py::new(
             py,
             PacketReceiver {
-                mode,
+                payload_only,
                 inner: Arc::new(Mutex::new(rx)),
             },
         )
@@ -463,14 +451,12 @@ impl Dataplane {
             )
         });
 
-        let routes: Option<RouteInstallations> = matched.map(|event| {
-            match event {
-                PythonEvent::GroupRoutesInstalled { routes, .. } => routes
-                    .into_iter()
-                    .map(|entry| (entry.route_id, entry.next_hops))
-                    .collect(),
-                _ => unreachable!("matched variant should be routes installed"),
-            }
+        let routes: Option<RouteInstallations> = matched.map(|event| match event {
+            PythonEvent::GroupRoutesInstalled { routes, .. } => routes
+                .into_iter()
+                .map(|entry| (entry.route_id, entry.next_hops))
+                .collect(),
+            _ => unreachable!("matched variant should be routes installed"),
         });
 
         Ok(routes)

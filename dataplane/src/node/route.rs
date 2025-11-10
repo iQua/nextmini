@@ -814,7 +814,7 @@ mod tests {
             let hop = table.get_next_hop_by_flow(flow_id, None).unwrap();
 
             // Should pick one of the three
-            assert!(vec![10, 11, 12].contains(&hop));
+            assert!([10, 11, 12].contains(&hop));
         }
 
         #[test]
@@ -838,7 +838,7 @@ mod tests {
             let second = table.select_route_for_key(&key);
 
             assert_eq!(first, second, "Same key should select same route");
-            assert!(vec![2001, 2002, 2003].contains(&first.unwrap()));
+            assert!([2001, 2002, 2003].contains(&first.unwrap()));
         }
         #[test]
         fn pick_single_hop_chooses_from_multiple() {

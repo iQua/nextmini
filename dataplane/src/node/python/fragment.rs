@@ -287,9 +287,10 @@ impl ReassemblyEntry {
         }
 
         if idx == 0
-            && let Some(prefix) = header_prefix {
-                self.header_prefix = Some(prefix);
-            }
+            && let Some(prefix) = header_prefix
+        {
+            self.header_prefix = Some(prefix);
+        }
 
         let chunk_len = chunk.len();
         self.fragments[idx] = Some(chunk);

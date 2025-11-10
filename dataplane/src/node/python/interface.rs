@@ -38,13 +38,15 @@ impl fmt::Debug for PythonInterfaceHandle {
     }
 }
 
+type TelemetryHandle = (ControllerInterfaceHandle, NodeId);
+
 struct Inner {
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, ReceiverEntry>>,
     event_tx: mpsc::Sender<PythonEvent>,
     event_rx: Mutex<mpsc::Receiver<PythonEvent>>,
     fragmentation: FragmentationRuntime,
-    telemetry: Option<FragmentTelemetry>,
+    telemetry: Option<TelemetryHandle>,
     metrics: FragmentMetrics,
 }
 
@@ -52,57 +54,6 @@ struct Inner {
 struct ReceiverEntry {
     mode: DeliveryMode,
     sender: mpsc::Sender<PythonDelivery>,
-}
-
-#[derive(Clone)]
-pub struct FragmentTelemetry {
-    controller: ControllerInterfaceHandle,
-    node_id: NodeId,
-}
-
-impl FragmentTelemetry {
-    /// Constructor used exclusively by the python bindings crate to plumb
-    /// controller metrics/events out of the embedded dataplane.
-    #[allow(dead_code)]
-    pub fn new(controller: ControllerInterfaceHandle, node_id: NodeId) -> Self {
-        Self {
-            controller,
-            node_id,
-        }
-    }
-
-    async fn publish(
-        &self,
-        flow_id: FlowId,
-        message_id: Option<u64>,
-        kind: PythonFragmentEventKind,
-        detail: String,
-        missing_fragments: Option<usize>,
-    ) {
-        let event = PythonFragmentEvent {
-            flow_id: flow_id.to_be_bytes(),
-            message_id,
-            kind,
-            detail,
-            missing_fragments,
-        };
-
-        self.controller
-            .send(DataplaneToController::PythonFragmentEvents {
-                node_id: self.node_id,
-                events: vec![event],
-            })
-            .await;
-    }
-
-    async fn publish_metrics(&self, snapshot: ControllerFragmentMetricsSnapshot) {
-        self.controller
-            .send(DataplaneToController::PythonFragmentMetrics {
-                node_id: self.node_id,
-                snapshot,
-            })
-            .await;
-    }
 }
 
 #[derive(Default)]
@@ -207,13 +158,8 @@ pub enum PayloadFormat {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DeliveryMode {
-    /// Constructed from the python bindings when callers want raw packets.
-    #[allow(dead_code)]
+enum DeliveryMode {
     RawPacket,
-    /// Constructed from the python bindings when callers want payload-only
-    /// deliveries.
-    #[allow(dead_code)]
     PayloadOnly,
 }
 
@@ -294,7 +240,7 @@ impl PythonInterfaceHandle {
     pub fn new(
         capacity: usize,
         policy: PythonFragmentationPolicy,
-        telemetry: Option<FragmentTelemetry>,
+        telemetry: Option<TelemetryHandle>,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel(capacity);
         Self {
@@ -317,9 +263,9 @@ impl PythonInterfaceHandle {
     }
 
     fn spawn_metrics_task(inner: &Arc<Inner>) {
-        let Some(_) = inner.telemetry else {
+        if inner.telemetry.is_none() {
             return;
-        };
+        }
         let weak = Arc::downgrade(inner);
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(5));
@@ -328,11 +274,11 @@ impl PythonInterfaceHandle {
                 let Some(inner) = weak.upgrade() else {
                     break;
                 };
-                let Some(telemetry) = &inner.telemetry else {
+                let Some(telemetry) = inner.telemetry.clone() else {
                     continue;
                 };
                 let snapshot = inner.metrics.snapshot();
-                telemetry.publish_metrics(snapshot.into()).await;
+                telemetry_publish_metrics(&telemetry, snapshot.into()).await;
             }
         });
     }
@@ -341,8 +287,13 @@ impl PythonInterfaceHandle {
     pub async fn register_receiver(
         &self,
         flow_id: FlowId,
-        mode: DeliveryMode,
+        payload_only: bool,
     ) -> mpsc::Receiver<PythonDelivery> {
+        let mode = if payload_only {
+            DeliveryMode::PayloadOnly
+        } else {
+            DeliveryMode::RawPacket
+        };
         let (tx, rx) = mpsc::channel(self.inner.capacity);
         let mut map = self.inner.senders.lock().await;
         map.insert(flow_id, ReceiverEntry { mode, sender: tx });
@@ -560,9 +511,15 @@ impl PythonInterfaceHandle {
             return;
         }
         if let Some(telemetry) = &self.inner.telemetry {
-            telemetry
-                .publish(flow_id, message_id, kind, detail.into(), missing_fragments)
-                .await;
+            telemetry_publish_event(
+                telemetry,
+                flow_id,
+                message_id,
+                kind,
+                detail.into(),
+                missing_fragments,
+            )
+            .await;
         }
     }
 
@@ -797,6 +754,44 @@ fn raw_payload_delivery(packet: &Packet) -> PayloadDelivery {
     }
 }
 
+async fn telemetry_publish_event(
+    telemetry: &TelemetryHandle,
+    flow_id: FlowId,
+    message_id: Option<u64>,
+    kind: PythonFragmentEventKind,
+    detail: String,
+    missing_fragments: Option<usize>,
+) {
+    let (controller, node_id) = telemetry;
+    let event = PythonFragmentEvent {
+        flow_id: flow_id.to_be_bytes(),
+        message_id,
+        kind,
+        detail,
+        missing_fragments,
+    };
+
+    controller
+        .send(DataplaneToController::PythonFragmentEvents {
+            node_id: *node_id,
+            events: vec![event],
+        })
+        .await;
+}
+
+async fn telemetry_publish_metrics(
+    telemetry: &TelemetryHandle,
+    snapshot: ControllerFragmentMetricsSnapshot,
+) {
+    let (controller, node_id) = telemetry;
+    controller
+        .send(DataplaneToController::PythonFragmentMetrics {
+            node_id: *node_id,
+            snapshot,
+        })
+        .await;
+}
+
 impl From<FragmentDropKind> for PythonFragmentEventKind {
     fn from(kind: FragmentDropKind) -> Self {
         match kind {
@@ -861,9 +856,7 @@ mod tests {
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle
-            .register_receiver(flow_id, DeliveryMode::RawPacket)
-            .await;
+        let mut receiver = handle.register_receiver(flow_id, false).await;
 
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
@@ -890,9 +883,7 @@ mod tests {
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle
-            .register_receiver(flow_id, DeliveryMode::RawPacket)
-            .await;
+        let mut receiver = handle.register_receiver(flow_id, false).await;
 
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
@@ -955,9 +946,7 @@ mod tests {
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle
-            .register_receiver(flow_id, DeliveryMode::PayloadOnly)
-            .await;
+        let mut receiver = handle.register_receiver(flow_id, true).await;
 
         let payload = vec![0xAA; 32];
         let header = single_fragment_header(42, payload.len());
@@ -979,9 +968,7 @@ mod tests {
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle
-            .register_receiver(flow_id, DeliveryMode::PayloadOnly)
-            .await;
+        let mut receiver = handle.register_receiver(flow_id, true).await;
 
         // Build a packet with an invalid magic so it exercises the parse-error path.
         let payload = vec![0xBB; 16];
