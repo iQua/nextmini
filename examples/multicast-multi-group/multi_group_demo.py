@@ -9,6 +9,8 @@ Run with `--role source` to create groups and broadcast payloads, or with
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -115,6 +117,29 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional TCP destination port override.",
     )
+    parser.add_argument(
+        "--preserve-state-dir",
+        action="store_true",
+        help="Skip clearing the shared state directory on startup (defaults to cleanup).",
+    )
+    parser.add_argument(
+        "--participant-tag",
+        type=str,
+        default="default",
+        help="Identifier for this receiver when writing readiness/leave markers.",
+    )
+    parser.add_argument(
+        "--wait-tags",
+        nargs="+",
+        default=None,
+        help="Receiver tags the source should wait for (defaults to ['default']).",
+    )
+    parser.add_argument(
+        "--leave-tag",
+        type=str,
+        default=None,
+        help="Receiver tag whose leave marker unblocks the source (defaults to first wait tag).",
+    )
     return parser.parse_args()
 
 
@@ -127,16 +152,134 @@ def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+class StateDirCoordinator:
+    """Coordinates cleanup so concurrent roles don't clobber each other."""
+
+    def __init__(self, state_dir: Path, preserve_existing: bool) -> None:
+        self.state_dir = state_dir
+        self.preserve_existing = preserve_existing
+        self.lock_path = state_dir / ".state.lock"
+        self.count_path = state_dir / ".state.runners"
+
+    def __enter__(self) -> StateDirCoordinator:
+        self.enter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # pragma: no cover - teardown
+        self.exit()
+
+    def enter(self) -> None:
+        ensure_dir(self.state_dir)
+        if self.preserve_existing:
+            log(f"Preserving existing state dir at {self.state_dir} (cleanup disabled).")
+            return
+
+        with self._locked():
+            count = self._read_count()
+            if count == 0:
+                self._cleanup_files(phase="pre-run")
+            self._write_count(count + 1)
+
+    def exit(self) -> None:
+        if self.preserve_existing:
+            return
+
+        remove_lock = False
+        with self._locked():
+            count = self._read_count()
+            if count <= 1:
+                self._cleanup_files(phase="post-run")
+                self._remove_count_file()
+                remove_lock = True
+            else:
+                self._write_count(count - 1)
+
+        if remove_lock:
+            self._remove_lock_file()
+            self._maybe_remove_state_dir()
+
+    def _locked(self):
+        class _Lock:
+            def __init__(self, outer: StateDirCoordinator) -> None:
+                self.outer = outer
+                self.fd: int | None = None
+
+            def __enter__(self) -> None:
+                ensure_dir(self.outer.state_dir)
+                fd = os.open(self.outer.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                self.fd = fd
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                if self.fd is not None:
+                    fcntl.flock(self.fd, fcntl.LOCK_UN)
+                    os.close(self.fd)
+
+        return _Lock(self)
+
+    def _read_count(self) -> int:
+        try:
+            return int(self.count_path.read_text())
+        except (FileNotFoundError, ValueError):
+            return 0
+
+    def _write_count(self, value: int) -> None:
+        self.count_path.write_text(str(value))
+
+    def _remove_count_file(self) -> None:
+        try:
+            self.count_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _remove_lock_file(self) -> None:
+        try:
+            self.lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _maybe_remove_state_dir(self) -> None:
+        try:
+            next(self.state_dir.iterdir())
+        except StopIteration:
+            try:
+                self.state_dir.rmdir()
+            except OSError:
+                pass
+        except FileNotFoundError:
+            pass
+
+    def _cleanup_files(self, *, phase: str) -> None:
+        removed = 0
+        for pattern in ("*.toml", "*.toml.tmp"):
+            for candidate in self.state_dir.glob(pattern):
+                try:
+                    candidate.unlink()
+                    removed += 1
+                except FileNotFoundError:
+                    continue
+        if removed:
+            log(f"Cleared {removed} state file(s) from {self.state_dir} ({phase}).")
+
+
 def metadata_path(state_dir: Path, label: str) -> Path:
     return state_dir / f"{label}.toml"
 
 
-def ready_path(state_dir: Path, label: str) -> Path:
-    return state_dir / f"{label}.ready.toml"
+def tag_suffix(tag: str | None) -> str:
+    if tag:
+        cleaned = tag.strip()
+        if cleaned:
+            return f".{cleaned}"
+    return ""
 
 
-def left_path(state_dir: Path, label: str) -> Path:
-    return state_dir / f"{label}.left.toml"
+def ready_path(state_dir: Path, label: str, tag: str | None = None) -> Path:
+    return state_dir / f"{label}{tag_suffix(tag)}.ready.toml"
+
+
+def left_path(state_dir: Path, label: str, tag: str | None = None) -> Path:
+    return state_dir / f"{label}{tag_suffix(tag)}.left.toml"
 
 
 def toml_format_value(value: Any) -> str:
@@ -241,10 +384,12 @@ def run_source(args: argparse.Namespace) -> None:
         )
         log(f"Metadata for '{label}' written to {metadata_path(args.state_dir, label)}.")
 
+    wait_tags = args.wait_tags or ["default"]
     for meta in metas:
-        marker = ready_path(args.state_dir, meta.label)
-        log(f"Waiting for receiver readiness marker {marker}...")
-        wait_for_toml(marker, args.handshake_timeout)
+        for tag in wait_tags:
+            marker = ready_path(args.state_dir, meta.label, tag)
+            log(f"Waiting for receiver ({tag}) readiness marker {marker}...")
+            wait_for_toml(marker, args.handshake_timeout)
 
     log(f"Broadcasting {args.initial_count} packet(s) per group (pre-leave).")
     broadcast_payloads(
@@ -258,8 +403,12 @@ def run_source(args: argparse.Namespace) -> None:
     )
 
     leave_label = args.leave_label or metas[0].label
-    leave_marker = left_path(args.state_dir, leave_label)
-    log(f"Waiting for receiver to leave group '{leave_label}' (marker: {leave_marker})...")
+    leave_tag = args.leave_tag or wait_tags[0]
+    leave_marker = left_path(args.state_dir, leave_label, leave_tag)
+    log(
+        f"Waiting for receiver ({leave_tag}) to leave group '{leave_label}' "
+        f"(marker: {leave_marker})..."
+    )
     wait_for_toml(leave_marker, args.handshake_timeout)
 
     log(f"Receiver left '{leave_label}'. Broadcasting {args.post_leave_count} more packet(s) per group.")
@@ -312,15 +461,17 @@ def run_receiver(args: argparse.Namespace) -> None:
             dst_port=args.dst_port,
         )
         sessions.append(ReceiverSession(meta=meta, packet_receiver=receiver))
+        ready_marker = ready_path(args.state_dir, label, args.participant_tag)
         write_toml_atomically(
-            ready_path(args.state_dir, label),
+            ready_marker,
             {
                 "label": label,
                 "status": "ready",
                 "timestamp": int(time.time()),
+                "participant_tag": args.participant_tag,
             },
         )
-        log(f"Wrote readiness marker {ready_path(args.state_dir, label)}.")
+        log(f"Wrote readiness marker {ready_marker}.")
 
     log(f"Waiting for {args.initial_count} packet(s) per group.")
     for session in sessions:
@@ -333,12 +484,14 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     log(f"Leaving group '{leave_label}' to exercise leave_group().")
     dataplane.leave_group(session_to_leave.meta.group_id)
+    leave_marker = left_path(args.state_dir, leave_label, args.participant_tag)
     write_toml_atomically(
-        left_path(args.state_dir, leave_label),
+        leave_marker,
         {
             "label": leave_label,
             "status": "left",
             "timestamp": int(time.time()),
+            "participant_tag": args.participant_tag,
         },
     )
 
@@ -368,6 +521,8 @@ def run_receiver(args: argparse.Namespace) -> None:
 
 def main() -> int:
     args = parse_args()
+    coordinator = StateDirCoordinator(args.state_dir, preserve_existing=args.preserve_state_dir)
+    coordinator.enter()
     try:
         if args.role == "source":
             run_source(args)
@@ -379,6 +534,8 @@ def main() -> int:
     except Exception as exc:  # pragma: no cover - surfaced during manual runs
         log(f"ERROR: {exc}")
         raise
+    finally:
+        coordinator.exit()
     return 0
 
 

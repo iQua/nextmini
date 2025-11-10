@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -22,6 +23,8 @@ import fcntl
 
 
 LOCK_PATH = Path("target/.nextmini_build.lock")
+EXAMPLE_ROOT = Path(__file__).resolve().parent
+VENV_ROOT = EXAMPLE_ROOT / ".venv"
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -77,22 +80,52 @@ def build_lock() -> None:
         os.close(fd)
 
 
-def setup_virtualenv(name: str) -> tuple[str, dict[str, str]]:
+def virtualenv_path(name: str) -> Path:
+    return (VENV_ROOT / name).resolve()
+
+
+def purge_virtualenv(path: Path, *, reason: str) -> None:
+    if not path.exists():
+        return
+    print(f"Removing virtualenv at {path} ({reason}).", flush=True)
+    try:
+        shutil.rmtree(path)
+    except Exception as exc:  # pragma: no cover - cleanup best effort
+        print(f"Warning: failed to remove {path}: {exc}", file=sys.stderr, flush=True)
+    finally:
+        parent = path.parent
+        if parent == VENV_ROOT and parent.exists():
+            try:
+                next(parent.iterdir())
+            except StopIteration:
+                parent.rmdir()
+            except OSError:
+                pass
+
+
+def setup_virtualenv(name: str) -> tuple[str, dict[str, str], Path]:
     if subprocess.call(["which", "uv"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
         ensure_cmd([sys.executable, "-m", "pip", "install", "--no-cache-dir", "uv"])
 
-    venv_dir = Path(f".venv_{name}")
-    ensure_cmd(["uv", "venv", str(venv_dir)])
-    venv_path = venv_dir.resolve()
-    env = os.environ.copy()
-    env["VIRTUAL_ENV"] = str(venv_path)
-    env["PATH"] = f"{venv_path / 'bin'}:{env['PATH']}"
+    venv_dir = virtualenv_path(name)
+    purge_virtualenv(venv_dir, reason="pre-run cleanup")
+    venv_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    with build_lock():
-        ensure_cmd(["uv", "pip", "install", "maturin[patchelf]"], env=env)
-        ensure_cmd(["maturin", "develop", "--release", "-m", "python-api/Cargo.toml"], env=env)
-    python_exe = str(venv_path / "bin" / "python")
-    return python_exe, env
+    try:
+        ensure_cmd(["uv", "venv", str(venv_dir)])
+        env = os.environ.copy()
+        env["VIRTUAL_ENV"] = str(venv_dir)
+        env["PATH"] = f"{venv_dir / 'bin'}:{env['PATH']}"
+
+        with build_lock():
+            ensure_cmd(["uv", "pip", "install", "maturin[patchelf]"], env=env)
+            ensure_cmd(["maturin", "develop", "--release", "-m", "python-api/Cargo.toml"], env=env)
+    except Exception:
+        purge_virtualenv(venv_dir, reason="setup failed")
+        raise
+
+    python_exe = str(venv_dir / "bin" / "python")
+    return python_exe, env, venv_dir
 
 
 def run_multi_group_demo(python_exe: str, role: str, config: Path, extra: list[str], env: dict[str, str] | None = None) -> None:
@@ -123,8 +156,11 @@ def main(argv: list[str]) -> int:
         install_wheel(wheel_path)
         run_multi_group_demo(sys.executable, args.role, args.config, args.extra)
     else:
-        python_exe, env = setup_virtualenv(args.role)
-        run_multi_group_demo(python_exe, args.role, args.config, args.extra, env=env)
+        python_exe, env, venv_path = setup_virtualenv(args.role)
+        try:
+            run_multi_group_demo(python_exe, args.role, args.config, args.extra, env=env)
+        finally:
+            purge_virtualenv(venv_path, reason="post-run cleanup")
 
     return 0
 

@@ -1,4 +1,25 @@
 services:
+  state-cleaner:
+    build:
+      context: ../..
+      dockerfile: docs/testing/scripts/Dockerfile.harness
+    image: nextmini_python_harness
+    container_name: multigroup-state-cleaner
+    hostname: state-cleaner
+    restart: "no"
+    volumes:
+      - ../..:/workspace:cached
+      - ./tmp:/workspace/tmp
+    working_dir: /workspace
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        mkdir -p /workspace/tmp
+        find /workspace/tmp -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        mkdir -p /workspace/tmp/multigroup
+
   postgres:
     image: postgres:15-alpine
     container_name: multigroup-postgres
@@ -30,11 +51,13 @@ services:
     container_name: multigroup-controller
     hostname: controller
     depends_on:
+      state-cleaner:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     volumes:
       - ../..:/workspace:cached
-      - ../../docs/testing/configs/controller.toml:/var/nextmini/config.toml
+      - ./configs/controller.toml:/var/nextmini/config.toml
     working_dir: /var/nextmini
     command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
     ports:
@@ -51,6 +74,8 @@ services:
     container_name: multigroup-receiver
     hostname: receiver
     depends_on:
+      state-cleaner:
+        condition: service_completed_successfully
       controller:
         condition: service_started
     volumes:
@@ -70,6 +95,42 @@ services:
       - docs/testing/configs/node_receiver.toml
       - --state-dir
       - /workspace/tmp/multigroup
+      - --participant-tag
+      - receiver-primary
+
+  receiver_sticky:
+    build:
+      context: ../..
+      dockerfile: docs/testing/scripts/Dockerfile.harness
+    image: nextmini_python_harness
+    container_name: multigroup-receiver-sticky
+    hostname: receiver-sticky
+    depends_on:
+      state-cleaner:
+        condition: service_completed_successfully
+      controller:
+        condition: service_started
+    volumes:
+      - ../..:/workspace:cached
+      - ./tmp:/workspace/tmp
+    working_dir: /workspace
+    environment:
+      WAIT_FOR: controller:3000
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+    networks:
+      multigroup:
+        ipv4_address: 172.31.2.12
+    command:
+      - python
+      - examples/multicast-multi-group/run_multi_group.py
+      - receiver
+      - examples/multicast-multi-group/configs/node_receiver_sticky.toml
+      - --state-dir
+      - /workspace/tmp/multigroup
+      - --leave-label
+      - activation-stream
+      - --participant-tag
+      - receiver-sticky
 
   source:
     build:
@@ -79,9 +140,13 @@ services:
     container_name: multigroup-source
     hostname: source
     depends_on:
+      state-cleaner:
+        condition: service_completed_successfully
       controller:
         condition: service_started
       receiver:
+        condition: service_started
+      receiver_sticky:
         condition: service_started
     volumes:
       - ../..:/workspace:cached
@@ -100,6 +165,11 @@ services:
       - docs/testing/configs/node_sender.toml
       - --state-dir
       - /workspace/tmp/multigroup
+      - --wait-tags
+      - receiver-primary
+      - receiver-sticky
+      - --leave-tag
+      - receiver-primary
 
 networks:
   multigroup:
