@@ -68,16 +68,11 @@ services:
         examples/multicast-docker/scripts/run_multicast_node.sh source
         examples/multicast-docker/configs/node-source.toml
         --group-label ${GROUP_LABEL:-demo-multicast}
-        --postgres-host postgres
-        --postgres-user pgusr
-        --postgres-password pgpwrd
-        --postgres-db nextmini
+        --receiver-ids ${RECEIVER_IDS:-2,3}
         --payload-count ${PAYLOAD_COUNT:-8}
-        --payload-size ${PAYLOAD_SIZE:-1024}
         --sleep-ms ${PAYLOAD_SLEEP_MS:-250}
         --group-timeout ${GROUP_TIMEOUT:-120}
         --member-timeout ${MEMBER_TIMEOUT:-90}
-        --expected-subscribers ${EXPECTED_SUBSCRIBERS:-2}
         --chunk-size ${CHUNK_SIZE:-32768}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${TENSOR_PATH:+--tensor-path ${TENSOR_PATH}}
@@ -113,13 +108,9 @@ services:
         examples/multicast-docker/scripts/run_multicast_node.sh receiver
         examples/multicast-docker/configs/node-receiver-a.toml
         --group-label ${GROUP_LABEL:-demo-multicast}
-        --postgres-host postgres
-        --postgres-user pgusr
-        --postgres-password pgpwrd
-        --postgres-db nextmini
         --node-id 2
         --source-node-id ${SOURCE_NODE_ID:-1}
-        --expected ${RECEIVER_EXPECTED:-8}
+        --payload-count ${RECEIVER_EXPECTED:-8}
         --group-timeout ${GROUP_TIMEOUT:-300}
         --member-timeout ${MEMBER_TIMEOUT:-240}
         --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
@@ -129,7 +120,6 @@ services:
         ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
         ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
-        --checksum-wait-seconds ${CHECKSUM_WAIT_SECONDS:-300}
     networks:
       multicast:
         ipv4_address: 172.31.1.11
@@ -159,13 +149,9 @@ services:
         examples/multicast-docker/scripts/run_multicast_node.sh receiver
         examples/multicast-docker/configs/node-receiver-b.toml
         --group-label ${GROUP_LABEL:-demo-multicast}
-        --postgres-host postgres
-        --postgres-user pgusr
-        --postgres-password pgpwrd
-        --postgres-db nextmini
         --node-id 3
         --source-node-id ${SOURCE_NODE_ID:-1}
-        --expected ${RECEIVER_EXPECTED:-8}
+        --payload-count ${RECEIVER_EXPECTED:-8}
         --group-timeout ${GROUP_TIMEOUT:-300}
         --member-timeout ${MEMBER_TIMEOUT:-240}
         --receive-timeout-ms ${RECEIVE_TIMEOUT_MS:-120000}
@@ -175,7 +161,6 @@ services:
         ${CHECKSUM_PATH:+--checksum-path ${CHECKSUM_PATH}}
         ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
-        --checksum-wait-seconds ${CHECKSUM_WAIT_SECONDS:-300}
     networks:
       multicast:
         ipv4_address: 172.31.1.12

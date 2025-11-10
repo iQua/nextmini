@@ -68,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional tensor path to stream; defaults to generated tensor.",
     )
+    parser.add_argument(
+        "--checksum-path",
+        type=Path,
+        default=None,
+        help="Override auto-derived checksum location in artifact dir.",
+    )
     parser.add_argument("--generate-tensor", action="store_true")
     parser.add_argument("--artifact-dir", type=Path, default=Path("/artifacts"))
     parser.add_argument("--sink-path", type=Path, default=None)
@@ -135,6 +141,8 @@ def stream_tensor_chunks(path: Path, chunk_size: int) -> Iterator[bytes]:
 
 
 def resolve_checksum_path(args: argparse.Namespace) -> Path:
+    if args.checksum_path:
+        return args.checksum_path
     return args.artifact_dir / f"{args.group_label}.sha256"
 
 
