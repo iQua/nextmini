@@ -25,3 +25,12 @@ target/
 *.log
 *.bak
 *~
+
+# RepoPrompt
+.RepoPrompt/**
+
+# tensors
+tensors/**
+
+# artifacts
+**/artifacts
