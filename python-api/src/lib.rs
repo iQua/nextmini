@@ -235,11 +235,15 @@ impl Dataplane {
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
 
-        let py_if = PythonInterfaceHandle::new(
-            cfg.channel_capacity,
-            PythonFragmentationPolicy::from(&cfg),
-            Some((controller.clone(), cfg.node_id)),
-        );
+        // Enter the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new succeeds.
+        let py_if = {
+            let _rt_guard = rt().enter();
+            PythonInterfaceHandle::new(
+                cfg.channel_capacity,
+                PythonFragmentationPolicy::from(&cfg),
+                Some((controller.clone(), cfg.node_id)),
+            )
+        };
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
 
