@@ -91,7 +91,7 @@ Below is a **comprehensive plan** followed by the concrete code edits you can dr
 
 ---
 
-### 7) Testing strategy  
+### 7) Testing strategy
 _Status (2025-11-04 – PurpleMountain): Unit tests landed (`cargo test -p nextmini packet::tests`)._
 _Status (2025-11-04 – LilacLake): Docker-compose harness now provisions controller/Postgres plus sender+receiver containers; ready for end-to-end executions once we capture metrics & automate result uploads._
 
@@ -127,7 +127,7 @@ _Status (2025-11-04 – BrownSnow): Benchmark recipe recorded in `docs/testing/p
 
 ---
 
-### 8) Packaging & build  
+### 8) Packaging & build
 _Status (2025-11-04 – PurpleMountain): `python-api` crate registered in workspace; wheel build verified via `maturin build --release -m python-api/Cargo.toml`._
 
 * New crate `python-api` (published module name `nextmini_py`), `cdylib`, `abi3-py39`.
@@ -138,7 +138,7 @@ _Status (2025-11-04 – PurpleMountain): `python-api` crate registered in worksp
 
 ---
 
-### 9) Documentation & examples  
+### 9) Documentation & examples
 _Status (2025-11-04 – PurpleMountain): Added `docs/examples/pytorch_python_api.md`; refreshed example hooks already present in `examples/pytorch/gpt2.py`._
 
 * Add `docs/examples/pytorch_python_api.md` describing how to:
