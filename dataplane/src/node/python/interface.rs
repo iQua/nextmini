@@ -61,6 +61,9 @@ pub struct FragmentTelemetry {
 }
 
 impl FragmentTelemetry {
+    /// Constructor used exclusively by the python bindings crate to plumb
+    /// controller metrics/events out of the embedded dataplane.
+    #[allow(dead_code)]
     pub fn new(controller: ControllerInterfaceHandle, node_id: NodeId) -> Self {
         Self {
             controller,
@@ -178,6 +181,25 @@ pub struct PayloadDelivery {
     pub payload_format: PayloadFormat,
 }
 
+impl PayloadDelivery {
+    fn log_queue_drop(&self) {
+        warn!(
+            flow = %self.flow_id,
+            src = %self.src_ip,
+            dst = %self.dst_ip,
+            src_port = self.src_port,
+            dst_port = self.dst_port,
+            payload_len = self.bytes.len(),
+            total_len = ?self.total_len,
+            fragment_count = ?self.fragment_count,
+            message_id = ?self.message_id,
+            format = ?self.payload_format,
+            "PythonInterface: queue unavailable for flow {}; dropping payload delivery.",
+            self.flow_id
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PayloadFormat {
     Payload,
@@ -186,7 +208,12 @@ pub enum PayloadFormat {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryMode {
+    /// Constructed from the python bindings when callers want raw packets.
+    #[allow(dead_code)]
     RawPacket,
+    /// Constructed from the python bindings when callers want payload-only
+    /// deliveries.
+    #[allow(dead_code)]
     PayloadOnly,
 }
 
@@ -572,11 +599,16 @@ impl PythonInterfaceHandle {
             .try_send(PythonDelivery::Payload(payload.clone()))
         {
             Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) | Err(TrySendError::Closed(_)) => {
-                warn!(
-                    "PythonInterface: queue unavailable for flow {}; dropping payload delivery.",
-                    payload.flow_id
-                );
+            Err(TrySendError::Full(delivery)) | Err(TrySendError::Closed(delivery)) => {
+                match delivery {
+                    PythonDelivery::Payload(dropped) => dropped.log_queue_drop(),
+                    PythonDelivery::Raw(pkt) => {
+                        warn!(
+                            flow = %pkt.flow_id,
+                            "PythonInterface: queue returned unexpected raw packet in payload path; dropping packet."
+                        );
+                    }
+                }
                 Err(())
             }
         }
@@ -890,7 +922,7 @@ mod tests {
     fn single_fragment_header(message_id: u64, payload_len: usize) -> PyPayloadSegHeader {
         PyPayloadSegHeader {
             fragmented: false,
-            last_fragment: true,
+            last_fragment: false,
             message_id,
             total_len: payload_len as u32,
             fragment_index: 0,

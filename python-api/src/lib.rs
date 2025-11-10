@@ -652,6 +652,8 @@ fn build_py_payload_segments(
     let fragment_count_u16 = fragment_count as u16;
     let mut fragments = Vec::with_capacity(fragment_count);
 
+    let is_fragmented = fragment_count > 1;
+
     for idx in 0..fragment_count {
         let (chunk_start, chunk_end) = if body.is_empty() {
             (0, 0)
@@ -662,8 +664,8 @@ fn build_py_payload_segments(
         };
         let chunk = &body[chunk_start..chunk_end];
         let header = PyPayloadSegHeader {
-            fragmented: fragment_count > 1,
-            last_fragment: idx + 1 == fragment_count,
+            fragmented: is_fragmented,
+            last_fragment: is_fragmented && idx + 1 == fragment_count,
             message_id,
             total_len,
             fragment_index: idx as u16,

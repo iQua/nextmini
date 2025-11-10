@@ -62,6 +62,9 @@ impl std::error::Error for PyPayloadSegHeaderError {}
 impl PyPayloadSegHeader {
     pub const LEN: usize = PY_PAYLOAD_SEGMENT_HEADER_LEN;
 
+    /// Serializes the header for the python bindings; only referenced from the
+    /// `nextmini_py` crate when emitting payload fragments.
+    #[allow(dead_code)]
     pub fn encode_into(&self, dst: &mut [u8]) -> Result<(), PyPayloadSegHeaderError> {
         if dst.len() < Self::LEN {
             return Err(PyPayloadSegHeaderError::BufferTooSmall);
@@ -116,14 +119,21 @@ impl PyPayloadSegHeader {
         ))
     }
 
+    /// Whether the payload belongs to a fragmented message. Queried from the
+    /// python bindings when decoding fragment metadata.
+    #[allow(dead_code)]
     pub fn is_fragmented(&self) -> bool {
         self.fragmented
     }
 
+    /// Whether the payload is the final fragment. Queried from the python
+    /// bindings when decoding fragment metadata.
+    #[allow(dead_code)]
     pub fn is_last_fragment(&self) -> bool {
         self.last_fragment
     }
 
+    #[allow(dead_code)]
     fn flags_byte(&self) -> u8 {
         let mut flags = 0u8;
         if self.fragmented {

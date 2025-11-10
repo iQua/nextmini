@@ -358,7 +358,7 @@ mod tests {
     fn header(mid: u64, idx: u16, count: u16, total: usize, len: usize) -> PyPayloadSegHeader {
         PyPayloadSegHeader {
             fragmented: count > 1,
-            last_fragment: idx + 1 == count,
+            last_fragment: count > 1 && idx + 1 == count,
             message_id: mid,
             total_len: total as u32,
             fragment_index: idx,

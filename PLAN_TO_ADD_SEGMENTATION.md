@@ -237,3 +237,15 @@ _Last updated: 2025-11-10 by PurpleStone._
 | `python_fragmentation.trace_flow_events` | Controller event stream | `true` | Emits structured events for drops/timeouts so operators can alert. |
 
 Sample config updates + docs wiring will be added once Tracks B/C expose the necessary toggles in code.
+
+To run cargo test properly, first set the following environment variable:
+
+```
+export PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13
+```
+
+in your `./.zshrc`, where the path is the correct path to your Python 3.13 interpreter. Then run:
+
+```
+cargo nextest run --no-default-features --features dev-tests
+```

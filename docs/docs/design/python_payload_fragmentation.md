@@ -32,6 +32,8 @@ struct PyPayloadSegHeader {
 - Receivers validate `magic`, `version` ≤ supported, `fragment_index < fragment_count`,
   `fragment_payload_len <= mtu_payload_budget`, and cumulative length == `total_len`.
 - Future extensions can reserve flag bits 2–7.
+- Single-fragment payloads keep both `is_fragmented` and `is_last_fragment` cleared; the last-fragment bit is only set
+  in tandem with `is_fragmented` for multi-fragment messages.
 
 ## Sender pipeline (Track B)
 
