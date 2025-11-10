@@ -217,4 +217,14 @@ mod tests {
         assert_eq!(buffer.__len__(), 8);
         assert_eq!(&buffer.inner[..], b"internal");
     }
+    #[test]
+    fn frozen_buffer_clone() {
+        Python::attach(|py| {
+            let data = PyBytes::new(py, b"0123456789");
+            let buffer1 = FrozenBuffer::new(&data);
+            let buffer2 = buffer1.clone();
+            assert_eq!(buffer1.__len__(), buffer2.__len__());
+            assert_eq!(buffer1.read(py).as_bytes(), buffer2.read(py).as_bytes());
+        });
+    }
 }
