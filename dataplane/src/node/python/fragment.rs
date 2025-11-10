@@ -159,22 +159,26 @@ impl FragmentAssembler {
         let key = (flow_id, header.message_id);
         // Either reuse the existing entry or create one that preallocates slots
         // for the advertised fragment_count to avoid reallocations later on.
-        let entry = self.inflight.entry(key).or_insert_with(|| {
-            ReassemblyEntry::new(
-                flow_id,
-                header.message_id,
-                header.total_len as usize,
-                header.fragment_count as usize,
+        let insert_outcome = {
+            let entry = self.inflight.entry(key).or_insert_with(|| {
+                ReassemblyEntry::new(
+                    flow_id,
+                    header.message_id,
+                    header.total_len as usize,
+                    header.fragment_count as usize,
+                    now + self.cfg.fragment_timeout,
+                )
+            });
+
+            entry.insert_fragment(
+                &header,
+                chunk,
+                header_prefix,
                 now + self.cfg.fragment_timeout,
             )
-        });
+        };
 
-        match entry.insert_fragment(
-            &header,
-            chunk,
-            header_prefix,
-            now + self.cfg.fragment_timeout,
-        ) {
+        match insert_outcome {
             Ok(EntryInsertOutcome::Duplicate) => {
                 report.result = FragmentResult::Pending;
             }
@@ -188,7 +192,12 @@ impl FragmentAssembler {
                 header_prefix,
             }) => {
                 self.inflight_bytes += bytes_added;
-                self.inflight.remove(&key);
+                let reclaimed = self
+                    .inflight
+                    .remove(&key)
+                    .map(|entry| entry.buffered_bytes)
+                    .unwrap_or(payload.len());
+                self.inflight_bytes = self.inflight_bytes.saturating_sub(reclaimed);
                 // Once a message completes we immediately hand ownership back so
                 // the assembler never holds onto payload capacity longer than
                 // necessary.
@@ -201,7 +210,9 @@ impl FragmentAssembler {
                 });
             }
             Err(detail) => {
-                self.inflight.remove(&key);
+                if let Some(entry) = self.inflight.remove(&key) {
+                    self.inflight_bytes = self.inflight_bytes.saturating_sub(entry.buffered_bytes);
+                }
                 report.result = FragmentResult::Dropped(FragmentDrop::assembler(detail));
             }
         }
