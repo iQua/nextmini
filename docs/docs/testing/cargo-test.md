@@ -20,10 +20,12 @@ env PYO3_PYTHON=/opt/homebrew/bin/python3.13 \
 ```bash
 ./start-database.sh
 
-cargo nextest run -p controller
+# fast sweep (skip the DB-heavy tests)
+cargo nextest run -p controller --filter-expr 'not test(db::tests::receivers_join_leave_independent_groups) and not test(db::tests::multicast_missing_member_route_delivers_locally)'
 
-# the below test needs start the db
-cargo test -p controller receivers_join_leave_independent_groups -- --nocapture
+# run each DB-dependent test separately
+cargo nextest run -p controller db::tests::receivers_join_leave_independent_groups
+cargo nextest run -p controller db::tests::multicast_missing_member_route_delivers_locally
 ```
 
 ## Stop the database (optional)

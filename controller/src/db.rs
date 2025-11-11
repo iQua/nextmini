@@ -192,6 +192,16 @@ async fn create_db(pool: &Pool<Postgres>) {
         .await
         .expect("Failed to create membership trigger function");
 
+    sqlx::query(
+        r#"
+        DROP TRIGGER IF EXISTS group_membership_change_trigger
+        ON group_members;
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("Failed to drop existing membership trigger");
+
     let create_membership_trigger = r#"
         CREATE TRIGGER group_membership_change_trigger
         AFTER INSERT OR DELETE ON group_members
@@ -980,7 +990,17 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Node
 mod tests {
     use super::*;
     use dotenvy::dotenv;
+    use futures_util::StreamExt;
+    use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
+    use std::collections::HashMap;
+    use tokio::net::TcpListener;
+    use tokio::sync::{Mutex, RwLock};
+    use tokio::task::JoinHandle;
+    use tokio_tungstenite::{accept_async, connect_async};
+    use tokio_tungstenite::tungstenite::Message;
+
+    use nextmini_messages::ControllerToDataplane;
 
     /// Ensures receivers that participate in different groups can join and leave
     /// independently without clobbering each other's membership state.
@@ -1043,6 +1063,146 @@ mod tests {
             beta_members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
             vec![21]
         );
+
+        Ok(())
+    }
+
+    async fn insert_route(
+        pool: &Pool<Postgres>,
+        src: i32,
+        dst: i32,
+        edges: &[(i32, i32)],
+    ) -> AnyResult<()> {
+        let edges_json = json!(
+            edges
+                .iter()
+                .map(|(a, b)| [*a, *b])
+                .collect::<Vec<[i32; 2]>>()
+        );
+
+        sqlx::query(
+            r#"
+            INSERT INTO routes (src_node_id, dst_node_id, edges)
+            VALUES ($1, $2, $3)
+            "#,
+        )
+        .bind(src)
+        .bind(dst)
+        .bind(edges_json)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn attach_test_node(
+        node_id: usize,
+        node_ws: &NodeWriterMap,
+    ) -> AnyResult<JoinHandle<ControllerToDataplane>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let url = format!("ws://{}", addr);
+
+        let accept_handle = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await?;
+            accept_async(socket).await.map_err(anyhow::Error::from)
+        });
+
+        let (client_stream, _) = connect_async(&url).await?;
+        let server_stream = accept_handle.await??;
+
+        let (server_writer, _server_reader) = server_stream.split();
+        node_ws
+            .write()
+            .await
+            .insert(node_id, Arc::new(Mutex::new(server_writer)));
+
+        let (_client_writer, mut client_reader) = client_stream.split();
+        let handle = tokio::spawn(async move {
+            let msg = client_reader
+                .next()
+                .await
+                .expect("controller closed websocket without sending message")
+                .expect("websocket frame error");
+            let payload = match msg {
+                Message::Binary(bytes) => bytes,
+                other => panic!("unexpected websocket frame: {:?}", other),
+            };
+            rmp_serde::from_slice::<ControllerToDataplane>(&payload)
+                .expect("failed to decode controller message")
+        });
+
+        Ok(handle)
+    }
+
+    #[tokio::test]
+    async fn multicast_missing_member_route_delivers_locally() -> AnyResult<()> {
+        let _ = dotenv();
+
+        let database_url = std::env::var("SQLX_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .expect("DATABASE_URL or SQLX_TEST_DATABASE_URL must be set for controller tests");
+
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await
+            .expect("failed to connect to test database");
+
+        reset_db(&pool).await;
+
+        insert_route(&pool, 1, 2, &[(1, 2)]).await?;
+
+        let base = Ipv4Addr::new(239, 255, 0, 0);
+        let mask = Ipv4Addr::new(255, 255, 0, 0);
+        let group = create_group(&pool, "group-mixed", 1, base, mask).await?;
+
+        add_group_member(&pool, group.id, 2).await?;
+        add_group_member(&pool, group.id, 3).await?;
+
+        let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
+        let mut handles = Vec::new();
+        for node_id in [1usize, 2, 3] {
+            handles.push((node_id, attach_test_node(node_id, &node_ws).await?));
+        }
+
+        recompute_and_push_group_routes(group.id, &pool, &node_ws).await?;
+
+        let mut deliveries = HashMap::new();
+        for (node_id, handle) in handles {
+            let message = handle.await.expect("receiver task panicked");
+            deliveries.insert(node_id, message);
+        }
+
+        let edges_value: serde_json::Value =
+            sqlx::query_scalar("SELECT edges FROM group_routes WHERE group_id = $1")
+                .bind(group.id)
+                .fetch_one(&pool)
+                .await?;
+        let edges: Vec<[u32; 2]> = serde_json::from_value(edges_value)?;
+        assert_eq!(edges, vec![[1, 2]]);
+
+        let source_routes = match deliveries.remove(&1).expect("source delivery missing") {
+            ControllerToDataplane::InstallGroupRoutes { routes, .. } => routes,
+            other => panic!("unexpected message for node 1: {:?}", other),
+        };
+        assert_eq!(source_routes.len(), 1);
+        assert_eq!(source_routes[0].next_hops, vec![2]);
+
+        let member_two_routes = match deliveries.remove(&2).expect("member 2 delivery missing") {
+            ControllerToDataplane::InstallGroupRoutes { routes, .. } => routes,
+            other => panic!("unexpected message for node 2: {:?}", other),
+        };
+        assert_eq!(member_two_routes.len(), 1);
+        assert_eq!(member_two_routes[0].next_hops, vec![2]);
+
+        let member_three_routes =
+            match deliveries.remove(&3).expect("member 3 delivery missing") {
+                ControllerToDataplane::InstallGroupRoutes { routes, .. } => routes,
+                other => panic!("unexpected message for node 3: {:?}", other),
+            };
+        assert_eq!(member_three_routes.len(), 1);
+        assert_eq!(member_three_routes[0].next_hops, vec![3]);
 
         Ok(())
     }
