@@ -72,4 +72,5 @@ nav:
       - Local Server + Fly.io: examples/localserver-flyio.md
   - Testing:
       - Fragmentation Smoke Test: testing/python_fragmentation_smoke.md
+      - Cargo Test Guide: testing/cargo-test.md
       - Multicast Flow: examples/multicast-flow.md

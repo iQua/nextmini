@@ -616,6 +616,78 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
     });
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dotenvy::dotenv;
+    use sqlx::postgres::PgPoolOptions;
+
+    /// Ensures receivers that participate in different groups can join and leave
+    /// independently without clobbering each other's membership state.
+    /// See `docs/testing/controller.md` for how to start the local Postgres
+    /// instance before running this test.
+    #[tokio::test]
+    async fn receivers_join_leave_independent_groups() -> AnyResult<()> {
+        let _ = dotenv();
+
+        let database_url = std::env::var("SQLX_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .expect("DATABASE_URL or SQLX_TEST_DATABASE_URL must be set for controller tests");
+
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await
+            .expect("failed to connect to test database");
+
+        reset_db(&pool).await;
+
+        let base = Ipv4Addr::new(239, 255, 0, 0);
+        let mask = Ipv4Addr::new(255, 255, 0, 0);
+
+        let group_alpha = create_group(&pool, "group-alpha", 1, base, mask).await?;
+        let group_beta = create_group(&pool, "group-beta", 2, base, mask).await?;
+
+        // Node 20 subscribes to both groups while node 21 only listens to beta.
+        add_group_member(&pool, group_alpha.id, 20).await?;
+        add_group_member(&pool, group_beta.id, 20).await?;
+        add_group_member(&pool, group_beta.id, 21).await?;
+
+        let alpha_members = load_group_members(&pool, group_alpha.id).await?;
+        assert_eq!(
+            alpha_members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
+            vec![20]
+        );
+
+        let beta_members = load_group_members(&pool, group_beta.id).await?;
+        assert_eq!(
+            beta_members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
+            vec![20, 21]
+        );
+
+        // Leaving a single group does not eject the receiver from others.
+        remove_group_member(&pool, group_alpha.id, 20).await?;
+        let alpha_members = load_group_members(&pool, group_alpha.id).await?;
+        assert!(alpha_members.is_empty());
+
+        let beta_members = load_group_members(&pool, group_beta.id).await?;
+        assert_eq!(
+            beta_members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
+            vec![20, 21]
+        );
+
+        // Leaving the remaining group cleans up the final membership record.
+        remove_group_member(&pool, group_beta.id, 20).await?;
+        let beta_members = load_group_members(&pool, group_beta.id).await?;
+        assert_eq!(
+            beta_members.iter().map(|m| m.node_id).collect::<Vec<_>>(),
+            vec![21]
+        );
+
+        Ok(())
+    }
+}
+
 pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
     let mut listener = PgListener::connect_with(&db_pool)
         .await
