@@ -931,7 +931,7 @@ Live flip criteria (post-PR2/PR3/engines):
 - Tests: expanded protocol safety checks in `messages` crate (negative decode cases for truncated DATA and short CONTROL bodies). All unit tests pass.
 - Harness: `examples/reliable_multicast/e2e_reliable_multicast.py` now attempts `Dataplane.reliable_wait(...)` deterministically when the wrapper exposes it; logs Panels/Tables either way.
 - Logging hooks: documented `RELIABLE_HEX_LOG=1` to enable compact hex dumps of control/data frames during development; sender baseline already respects this env var. See `docs/reliable_logging.md`.
-- Python cleanup: legacy Python reliability is earmarked for full removal; currently blocked by BlueCat’s reservation on `python-api/src/lib.rs`. I will remove the remaining `#[cfg(feature = "legacy_py_reliable")]` blocks once their edit window completes.
+- Python cleanup: legacy Python reliability helpers (the `legacy_py_reliable` feature gate and the old control-loop shims) have been removed from `python-api/src/lib.rs`, so the bindings now rely solely on the dataplane ReliableHandle wiring.
 - Coordination: BlueCat holds `python-api/src/lib.rs` and `tools/e2e/test_reliable_multicast.py`; I avoided these paths, added tests inside `examples/` instead, and confirmed via Agent Mail. Pending GreenPond’s PR2/PR3 schedule to wire wrappers and begin receiver engine work immediately after.
 - Controller hardening: converted several `.expect()` usages in notification setup to error logs + early returns (no process crash on DB/listener issues). Runtime crash points reduced while preserving visibility in logs.
 - Controller reset gating: added `CONTROLLER_RESET_DB` env guard (default: reset enabled; set to 0/false/no to skip). Documented in `docs/reliable_e2e.md`.
@@ -961,7 +961,7 @@ Outstanding work (confirmed by reading code and feature builds):
 - Sender/Receiver engines remain placeholders; no actual network send/recv yet. Session spawns log no-op warnings.
 - Network writer hookup for reliable sessions undecided; will choose Mutex-wrapped shared writer or a dedicated path and then switch SessionManager to use it.
 - Python does not yet expose completion/counters; live E2E waits are placeholder until engines emit signals.
-- Legacy Python reliable code remains behind `legacy_py_reliable`; safe to delete once engines land to reduce confusion.
+- Legacy Python reliable code has been deleted; no additional feature gates remain on the Python side.
 
 Validation so far:
 - `cargo check --workspace` green.
