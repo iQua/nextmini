@@ -18,7 +18,7 @@ use super::control::{self, CompletionPolicy};
 use super::session::{AckPolicy, CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
-const READY_GRACE_MS: u64 = 200;
+const DEFAULT_READY_GRACE_MS: u64 = 1500;
 
 pub async fn run(
     cfg: SenderConfig,

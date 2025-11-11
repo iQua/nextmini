@@ -17,7 +17,7 @@ use crate::node::processor::ProcessorHandle;
 #[cfg(feature = "reliable")]
 use crate::node::reliable::api::{Command as ReliableCommand, ReliableHandle};
 #[cfg(feature = "reliable")]
-use crate::node::reliable::session::SessionManager;
+use crate::node::reliable::session::{PendingReceiverKey, SessionManager};
 #[cfg(feature = "reliable")]
 use std::sync::Arc;
 #[cfg(feature = "reliable")]
@@ -83,14 +83,37 @@ impl Conductor {
                             let _ = guard.spawn_receiver(cfg);
                             let _ = reply.send(sid);
                         }
+                        ReliableCommand::StartReceiverPending { cfg, key, reply } => {
+                            let mut guard = manager.lock().await;
+                            guard.enqueue_pending_receiver(key, cfg, reply);
+                        }
                         ReliableCommand::Stop { session } => {
                             let mut guard = manager.lock().await;
                             guard.stop(session).await;
                         }
                         ReliableCommand::Deliver { session, frame } => {
-                            let sender = {
-                                let guard = manager.lock().await;
-                                guard.input_sender(session)
+                            let group_ip = frame.group_ip;
+                            let source_node_id = frame.source_node_id;
+                            let (sender, pending_reply) = {
+                                let mut guard = manager.lock().await;
+                                if let Some(tx) = guard.input_sender(session) {
+                                    (Some(tx), None)
+                                } else if let (Some(gip), Some(src)) = (group_ip, source_node_id) {
+                                    if let Some((cfg, reply)) = guard.adopt_pending_receiver(
+                                        PendingReceiverKey {
+                                            group_ip: gip,
+                                            source_node_id: src,
+                                        },
+                                        session,
+                                    ) {
+                                        let _ = guard.spawn_receiver(cfg);
+                                        (guard.input_sender(session), Some(reply))
+                                    } else {
+                                        (None, None)
+                                    }
+                                } else {
+                                    (None, None)
+                                }
                             };
                             if let Some(tx) = sender {
                                 if tx.send(frame).await.is_err() {
@@ -98,6 +121,9 @@ impl Conductor {
                                         session_id = session,
                                         "Reliable runtime: receiver dropped inbound frame"
                                     );
+                                }
+                                if let Some(reply) = pending_reply {
+                                    let _ = reply.send(session);
                                 }
                             } else {
                                 tracing::warn!(

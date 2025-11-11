@@ -27,6 +27,10 @@ to deliver multicast packets locally.
 - `scripts/run_multicast_node.sh` – helper that builds the `nextmini_py` wheel inside
   the container (via `maturin develop`) and launches the Python driver.
 - `docker-compose.yml` – wires the services together on a dedicated bridge network.
+- `artifacts/group-info.json` – shared metadata surface with the controller-assigned
+  group id/IP so receivers can learn the multicast address out-of-band. Reliable session
+  IDs are now adopted automatically once manifests arrive, so no additional coordination
+  is required.
 
 ## Running the Example
 
@@ -57,7 +61,10 @@ The first run will take a few minutes as the wheel is compiled.
 
 Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor,
 waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and
-shuts down once the reconstructed outputs land in `artifacts/`.
+ shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are
+ negotiated inside the dataplane, so the example no longer needs to pass them through
+ shared files—the receivers simply block in `reliable_receive_file_rs` until the sender's
+ manifest arrives.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):

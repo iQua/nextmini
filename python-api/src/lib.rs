@@ -1,10 +1,13 @@
 mod buffer;
 
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 //
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
+#[cfg(feature = "reliable")]
+use std::collections::HashMap;
+#[cfg(feature = "reliable")]
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -294,6 +297,7 @@ impl Dataplane {
             )));
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
+        #[allow(unused_mut)]
         let mut sid = session_id.unwrap_or_else(|| next_py_message_id());
         #[cfg(feature = "reliable")]
         {
@@ -372,6 +376,7 @@ impl Dataplane {
         sink_path: Option<String>,
         session_id: Option<u64>,
     ) -> PyResult<u64> {
+        #[allow(unused_variables)]
         let ip = parse_ipv4(group_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
@@ -380,22 +385,20 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
+        #[allow(unused_mut)]
         let mut sid = session_id.unwrap_or_else(|| next_py_message_id());
         #[cfg(feature = "reliable")]
         {
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
-                if session_id.is_none() {
+                let mut resolved_sid = session_id;
+                if resolved_sid.is_none() {
                     if let Some(known) = self.lookup_session(ip, source_node_id) {
-                        sid = known;
-                    } else {
-                        return Err(PyRuntimeError::new_err(
-                            "session_id is required for reliable_receive_file_rs; call reliable_register_session_id first or pass session_id explicitly.",
-                        ));
+                        resolved_sid = Some(known);
                     }
                 }
-                let common = reliable_session::CommonConfig {
-                    session_id: sid,
+                let mut common = reliable_session::CommonConfig {
+                    session_id: resolved_sid.unwrap_or(0),
                     group_ip: ip,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
@@ -416,7 +419,16 @@ impl Dataplane {
                     nack_jitter_ms: reliable_cfg.nack_jitter_ms,
                     sack_interval_ms: reliable_cfg.sack_interval_ms,
                 };
-                let started_sid = rt().block_on(handle.start_receiver(cfg));
+                let started_sid = if resolved_sid.is_some() {
+                    rt().block_on(handle.start_receiver(cfg))
+                } else {
+                    let key = reliable_session::PendingReceiverKey {
+                        group_ip: ip,
+                        source_node_id,
+                    };
+                    rt().block_on(handle.start_receiver_pending(cfg, key))
+                };
+                sid = started_sid;
                 self.remember_session(ip, source_node_id, started_sid);
                 return Ok(started_sid);
             }

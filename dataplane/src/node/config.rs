@@ -441,6 +441,9 @@ pub struct ReliableConfig {
 
     /// Parity count per block (0 to disable).
     pub fec_p: u8,
+
+    /// Grace period (ms) to wait for receiver READY before opening the data gate.
+    pub ready_grace_ms: u64,
 }
 
 impl Default for ReliableConfig {
@@ -455,6 +458,7 @@ impl Default for ReliableConfig {
             ack_policy: "all".to_string(),
             fec_k: None,
             fec_p: 0,
+            ready_grace_ms: 1500,
         }
     }
 }

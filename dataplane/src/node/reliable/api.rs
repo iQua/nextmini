@@ -1,6 +1,8 @@
+use std::net::Ipv4Addr;
+
 use tokio::sync::{mpsc, oneshot};
 
-use super::session::{ReceiverConfig, SenderConfig};
+use super::session::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 
@@ -8,12 +10,24 @@ pub type SessionId = u64;
 pub struct InboundFrame {
     pub bytes: Vec<u8>,
     pub peer_id: Option<usize>,
+    pub group_ip: Option<Ipv4Addr>,
+    pub source_node_id: Option<usize>,
 }
 
 impl InboundFrame {
     #[allow(dead_code)]
-    pub fn new(bytes: Vec<u8>, peer_id: Option<usize>) -> Self {
-        Self { bytes, peer_id }
+    pub fn new(
+        bytes: Vec<u8>,
+        peer_id: Option<usize>,
+        group_ip: Option<Ipv4Addr>,
+        source_node_id: Option<usize>,
+    ) -> Self {
+        Self {
+            bytes,
+            peer_id,
+            group_ip,
+            source_node_id,
+        }
     }
 }
 
@@ -31,6 +45,11 @@ pub enum Command {
     },
     StartReceiver {
         cfg: ReceiverConfig,
+        reply: oneshot::Sender<SessionId>,
+    },
+    StartReceiverPending {
+        cfg: ReceiverConfig,
+        key: PendingReceiverKey,
         reply: oneshot::Sender<SessionId>,
     },
     Stop {
@@ -68,6 +87,21 @@ impl ReliableHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::StartReceiver { cfg, reply: tx });
         rx.await.expect("start_receiver reply")
+    }
+
+    #[allow(dead_code)]
+    pub async fn start_receiver_pending(
+        &self,
+        cfg: ReceiverConfig,
+        key: PendingReceiverKey,
+    ) -> SessionId {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::StartReceiverPending {
+            cfg,
+            key,
+            reply: tx,
+        });
+        rx.await.expect("start_receiver_pending reply")
     }
 
     #[allow(dead_code)]

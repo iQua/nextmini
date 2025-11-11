@@ -22,6 +22,13 @@ METADATA_FILE = "tensor-metadata.json"
 GROUP_INFO_FILE = "group-info.json"
 
 
+def atomic_write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(payload))
+    tmp.replace(path)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reliable multicast demo")
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
@@ -121,16 +128,21 @@ def group_info_path(args: argparse.Namespace) -> Path:
 
 
 def write_group_info(
-    args: argparse.Namespace, *, group_id: int, group_ip: str, receiver_ids: List[int]
+    args: argparse.Namespace,
+    *,
+    group_id: int,
+    group_ip: str,
+    receiver_ids: List[int],
 ) -> None:
     payload = {
         "label": args.group_label,
         "group_id": group_id,
         "group_ip": group_ip,
         "receiver_ids": receiver_ids,
+        "source_node_id": args.source_node_id,
     }
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
-    group_info_path(args).write_text(json.dumps(payload))
+    atomic_write_json(group_info_path(args), payload)
 
 
 def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, str]:
@@ -175,7 +187,12 @@ def run_source(args: argparse.Namespace) -> None:
     group_id, group_ip, _ = dataplane.group_is_ready(
         timeout_ms=max(args.group_timeout, 1) * 1000
     )
-    write_group_info(args, group_id=group_id, group_ip=group_ip, receiver_ids=receiver_ids)
+    write_group_info(
+        args,
+        group_id=group_id,
+        group_ip=group_ip,
+        receiver_ids=receiver_ids,
+    )
     log(f"Controller assigned group {group_id} ({group_ip}).", args.quiet)
 
     if args.tensor_path is None:

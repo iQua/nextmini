@@ -15,14 +15,16 @@ Fields
   then re-emit at this interval until the gap closes. Set to `0` to disable the
   timer (SACKs only fire when new gaps are observed).
 - `nack_interval_ms: u32` — how often targeted repairs are requested on timeouts.
-- Session coordination happens via explicit session IDs. Use `Dataplane.reliable_send_file_rs(..., session_id=...)`
-  (or let it allocate one) and pass/propagate the same ID to every receiver via
-  `Dataplane.reliable_receive_file_rs(..., session_id=...)` or
-  `Dataplane.reliable_register_session_id(...)`. The controller/orchestrator must
-  distribute the ID along with group membership so that every node registers the
-  same transfer.
+- Session coordination happens via explicit session IDs. Senders still allocate via
+  `Dataplane.reliable_send_file_rs(..., session_id=...)` (or allow the runtime to pick
+  one), but receivers can now omit the `session_id`. When `Dataplane.reliable_receive_file_rs`
+  is invoked without an ID, the dataplane waits for the first inbound manifest, adopts
+  the sender's session ID automatically, and only then spawns the reliable receiver.
+  Advanced orchestrators may still pre-register IDs with
+  `Dataplane.reliable_register_session_id(...)` when they need to short-circuit the wait.
 - `ack_policy: String` — sender commit policy: `all`, `k:N`, or `frac:P`.
 - `fec_k: Option<u16>` / `fec_p: Option<u16>` — optional FEC parameters per block.
+- `ready_grace_ms: u64` — grace window before the sender starts streaming when not all receivers have reported `Ready` (default 1500 ms).
 
 Example (node.toml)
 ```

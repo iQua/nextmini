@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use tokio::task::JoinHandle;
 
 use ahash::AHashMap;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use nextmini_messages::TokenBucketSpec;
 
@@ -42,6 +44,7 @@ pub struct SenderConfig {
     pub repair_backoff_ms: u64,
     pub fec_k: Option<u16>,
     pub fec_p: u8,
+    pub ready_grace_ms: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -61,6 +64,18 @@ pub struct SessionManager {
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
+    pending: AHashMap<PendingReceiverKey, VecDeque<PendingReceiver>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PendingReceiverKey {
+    pub group_ip: Ipv4Addr,
+    pub source_node_id: usize,
+}
+
+struct PendingReceiver {
+    cfg: ReceiverConfig,
+    reply: oneshot::Sender<SessionId>,
 }
 
 impl SessionManager {
@@ -77,6 +92,7 @@ impl SessionManager {
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
             next_session_id: 1,
+            pending: AHashMap::default(),
         }
     }
 
@@ -116,6 +132,32 @@ impl SessionManager {
         let sid = self.next_session_id;
         self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
         sid
+    }
+
+    pub fn enqueue_pending_receiver(
+        &mut self,
+        key: PendingReceiverKey,
+        cfg: ReceiverConfig,
+        reply: oneshot::Sender<SessionId>,
+    ) {
+        self.pending
+            .entry(key)
+            .or_default()
+            .push_back(PendingReceiver { cfg, reply });
+    }
+
+    pub fn adopt_pending_receiver(
+        &mut self,
+        key: PendingReceiverKey,
+        session_id: SessionId,
+    ) -> Option<(ReceiverConfig, oneshot::Sender<SessionId>)> {
+        let mut queue = self.pending.get_mut(&key)?;
+        let mut pending = queue.pop_front()?;
+        pending.cfg.common.session_id = session_id;
+        if queue.is_empty() {
+            self.pending.remove(&key);
+        }
+        Some((pending.cfg, pending.reply))
     }
 }
 
