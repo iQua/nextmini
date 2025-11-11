@@ -18,18 +18,5 @@ env PYO3_PYTHON=/opt/homebrew/bin/python3.13 \
 ## Controller
 
 ```bash
-./start-database.sh
-
-# fast sweep (skip the DB-heavy tests)
-cargo nextest run -p controller --filter-expr 'not test(db::tests::receivers_join_leave_independent_groups) and not test(db::tests::multicast_missing_member_route_delivers_locally)'
-
-# run each DB-dependent test separately
-cargo nextest run -p controller db::tests::receivers_join_leave_independent_groups
-cargo nextest run -p controller db::tests::multicast_missing_member_route_delivers_locally
-```
-
-## Stop the database (optional)
-
-```bash
-docker stop nextmini-database
+cargo nextest run -p controller 
 ```
