@@ -443,7 +443,6 @@ pub struct ReliableConfig {
     pub fec_p: u8,
 
     /// Grace period (ms) to wait for receiver READY before opening the data gate.
-    #[default(1500)]
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
 }

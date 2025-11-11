@@ -2,10 +2,10 @@ mod buffer;
 
 use std::net::Ipv4Addr;
 //
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 #[cfg(feature = "reliable")]
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 #[cfg(feature = "reliable")]
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
