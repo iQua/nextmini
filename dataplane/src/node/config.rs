@@ -443,6 +443,8 @@ pub struct ReliableConfig {
     pub fec_p: u8,
 
     /// Grace period (ms) to wait for receiver READY before opening the data gate.
+    #[default(1500)]
+    #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
 }
 
@@ -461,6 +463,10 @@ impl Default for ReliableConfig {
             ready_grace_ms: 1500,
         }
     }
+}
+
+const fn default_ready_grace_ms() -> u64 {
+    1500
 }
 
 fn default_local_address() -> Ipv4Addr {

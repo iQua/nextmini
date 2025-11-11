@@ -18,7 +18,6 @@ use super::control::{self, CompletionPolicy};
 use super::session::{AckPolicy, CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
-const DEFAULT_READY_GRACE_MS: u64 = 1500;
 
 pub async fn run(
     cfg: SenderConfig,
@@ -160,6 +159,7 @@ struct SenderState {
     ready_nodes: HashSet<usize>,
     ready_gate_open: bool,
     ready_deadline: Option<Instant>,
+    ready_grace_ms: u64,
     source_drained: bool,
     eot_sent: bool,
     bytes_sent: u64,
@@ -177,10 +177,11 @@ impl SenderState {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
         let ready_gate_open = receiver_count == 0;
+        let ready_grace_ms = cfg.ready_grace_ms.max(1);
         let ready_deadline = if ready_gate_open {
             None
         } else {
-            Some(Instant::now() + Duration::from_millis(READY_GRACE_MS))
+            Some(Instant::now() + Duration::from_millis(ready_grace_ms))
         };
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
@@ -223,6 +224,7 @@ impl SenderState {
             ready_nodes: HashSet::new(),
             ready_gate_open,
             ready_deadline,
+            ready_grace_ms,
             source_drained: total_chunks == 0,
             eot_sent: false,
             bytes_sent: 0,
