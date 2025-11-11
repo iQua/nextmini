@@ -39,7 +39,6 @@ pub struct SenderConfig {
     pub source_path: Option<String>,
     pub checksum_out: bool,
     pub ack_policy: AckPolicy,
-    pub sack_interval_ms: u64,
     pub repair_backoff_ms: u64,
     pub fec_k: Option<u16>,
     pub fec_p: u8,
@@ -54,6 +53,7 @@ pub struct ReceiverConfig {
     pub sink_path: Option<String>,
     pub nack_min_interval_ms: u64,
     pub nack_jitter_ms: u64,
+    pub sack_interval_ms: u64,
 }
 
 pub struct SessionManager {

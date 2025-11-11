@@ -77,6 +77,88 @@ impl NackLimiter {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SackSnapshot {
+    pub base: u64,
+    pub runs: Vec<(u16, u16)>,
+}
+
+/// Timer-backed helper that throttles SACK emission.
+pub struct SackScheduler {
+    interval: Duration,
+    last_sent: Option<Instant>,
+    snapshot: Option<SackSnapshot>,
+    dirty: bool,
+}
+
+impl SackScheduler {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last_sent: None,
+            snapshot: None,
+            dirty: false,
+        }
+    }
+
+    /// Update the pending SACK snapshot. Empty runs clear the state.
+    pub fn record(&mut self, base: u64, runs: Vec<(u16, u16)>) {
+        if runs.is_empty() {
+            self.snapshot = None;
+            self.dirty = false;
+            return;
+        }
+        self.snapshot = Some(SackSnapshot { base, runs });
+        self.dirty = true;
+    }
+
+    pub fn clear(&mut self) {
+        self.snapshot = None;
+        self.dirty = false;
+        self.last_sent = None;
+    }
+
+    pub fn has_snapshot(&self) -> bool {
+        self.snapshot.is_some()
+    }
+
+    pub fn ready(&self, now: Instant) -> bool {
+        if self.snapshot.is_none() {
+            return false;
+        }
+        match self.last_sent {
+            None => true,
+            Some(last) => {
+                if self.interval.is_zero() {
+                    self.dirty
+                } else {
+                    now.duration_since(last) >= self.interval
+                }
+            }
+        }
+    }
+
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        if self.snapshot.is_none() {
+            return None;
+        }
+        match (self.last_sent, self.interval.is_zero()) {
+            (None, _) => Some(now),
+            (Some(_), true) => self.dirty.then_some(now),
+            (Some(last), false) => Some(last + self.interval),
+        }
+    }
+
+    pub fn take_ready(&mut self, now: Instant) -> Option<SackSnapshot> {
+        if !self.ready(now) {
+            return None;
+        }
+        self.dirty = false;
+        self.last_sent = Some(now);
+        self.snapshot.clone()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum CompletionPolicy {
     All,
@@ -192,6 +274,61 @@ mod tests {
         assert!(limiter.should_send(43, t0 + Duration::from_millis(50)));
         // After window for original chunk: allowed again
         assert!(limiter.should_send(42, t0 + Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn sack_scheduler_resends_after_interval() {
+        let mut sched = SackScheduler::new(Duration::from_millis(40));
+        let t0 = Instant::now();
+        sched.record(10, vec![(1, 2)]);
+        assert!(sched.ready(t0));
+        let first = sched.take_ready(t0).expect("initial send");
+        assert_eq!(first.base, 10);
+        assert_eq!(first.runs, vec![(1, 2)]);
+
+        assert!(!sched.ready(t0 + Duration::from_millis(20)));
+        let deadline = sched
+            .next_deadline(t0 + Duration::from_millis(20))
+            .expect("deadline pending");
+        assert_eq!(deadline, t0 + Duration::from_millis(40));
+
+        let second = sched
+            .take_ready(t0 + Duration::from_millis(45))
+            .expect("resend after interval");
+        assert_eq!(second.base, 10);
+        assert_eq!(second.runs, vec![(1, 2)]);
+    }
+
+    #[test]
+    fn sack_scheduler_clears_state_on_empty_runs() {
+        let mut sched = SackScheduler::new(Duration::from_millis(10));
+        let t0 = Instant::now();
+        sched.record(5, vec![(1, 1)]);
+        assert!(sched.ready(t0));
+        sched.take_ready(t0);
+
+        sched.record(0, Vec::new());
+        assert!(!sched.has_snapshot());
+        assert!(!sched.ready(t0 + Duration::from_millis(20)));
+        assert!(
+            sched
+                .next_deadline(t0 + Duration::from_millis(20))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn sack_scheduler_zero_interval_requires_new_info() {
+        let mut sched = SackScheduler::new(Duration::from_millis(0));
+        let t0 = Instant::now();
+        sched.record(7, vec![(1, 1)]);
+        assert!(sched.ready(t0));
+        sched.take_ready(t0);
+        assert!(!sched.ready(t0 + Duration::from_millis(5)));
+        assert!(sched.next_deadline(t0 + Duration::from_millis(5)).is_none());
+
+        sched.record(7, vec![(2, 1)]);
+        assert!(sched.ready(t0 + Duration::from_millis(5)));
     }
 
     #[test]

@@ -200,13 +200,6 @@ impl SenderState {
                 "RLM sender: checksum_out requested but checksum emission is not implemented; skipping."
             );
         }
-        if cfg.sack_interval_ms != 0 {
-            tracing::debug!(
-                session_id = common.session_id,
-                sack_interval_ms = cfg.sack_interval_ms,
-                "RLM sender: sack_interval_ms acknowledged (adaptive timer pending)."
-            );
-        }
         if cfg.fec_k.is_some() || cfg.fec_p != 0 {
             tracing::warn!(
                 session_id = common.session_id,

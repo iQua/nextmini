@@ -1,9 +1,11 @@
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
+use tokio::time::{self, Sleep};
 
 use nextmini_messages::rlm::{self, RlmControl};
 
@@ -12,7 +14,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
-use super::control::NackLimiter;
+use super::control::{NackLimiter, SackScheduler, SackSnapshot};
 use super::session::ReceiverConfig;
 
 pub async fn run(
@@ -77,39 +79,121 @@ pub async fn run(
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
     let mut nack_limiter = NackLimiter::new(Duration::from_millis(cfg.nack_min_interval_ms.max(1)));
+    let mut sack_scheduler = SackScheduler::new(Duration::from_millis(cfg.sack_interval_ms));
+    let mut sack_timer: Option<Pin<Box<Sleep>>> = None;
 
-    while let Some(frame) = rx.recv().await {
-        if handle_data_frame(
-            &frame,
-            &mut expected,
-            &mut highest_seen,
-            &mut pending,
-            &mut received,
-            &mut bytes_received,
-            file.as_mut(),
-        ) {
-            let base = expected.saturating_sub(1);
-            if base > last_ack_up_to {
-                send_control(
+    loop {
+        tokio::select! {
+            maybe_frame = rx.recv() => {
+                let Some(frame) = maybe_frame else {
+                    break;
+                };
+
+                if handle_data_frame(
+                    &frame,
+                    &mut expected,
+                    &mut highest_seen,
+                    &mut pending,
+                    &mut received,
+                    &mut bytes_received,
+                    file.as_mut(),
+                ) {
+                    let base = expected.saturating_sub(1);
+                    if base > last_ack_up_to {
+                        send_control(
+                            sid,
+                            &RlmControl::Ack { up_to: base },
+                            src_ip,
+                            ctrl_src_port,
+                            dst_ip,
+                            ctrl_dst_port,
+                            &processors,
+                        );
+                        last_ack_up_to = base;
+                    }
+                    if highest_seen > base {
+                        let (ack_base, runs) =
+                            rlm::build_ack_and_sack(expected, &received, highest_seen);
+                        if runs.is_empty() {
+                            sack_scheduler.clear();
+                            sack_timer = None;
+                        } else {
+                            let now = Instant::now();
+                            sack_scheduler.record(ack_base, runs);
+                            if let Some(snapshot) = sack_scheduler.take_ready(now) {
+                                emit_sack(
+                                    sid,
+                                    snapshot,
+                                    src_ip,
+                                    ctrl_src_port,
+                                    dst_ip,
+                                    ctrl_dst_port,
+                                    &processors,
+                                );
+                            }
+                            reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
+                        }
+                    } else if sack_scheduler.has_snapshot() {
+                        sack_scheduler.clear();
+                        sack_timer = None;
+                    }
+                    if highest_seen >= expected
+                        && nack_limiter.should_send(expected, Instant::now())
+                    {
+                        if cfg.nack_jitter_ms > 0 {
+                            tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
+                        }
+                        send_control(
+                            sid,
+                            &RlmControl::Repair {
+                                indices: vec![expected],
+                            },
+                            src_ip,
+                            ctrl_src_port,
+                            dst_ip,
+                            ctrl_dst_port,
+                            &processors,
+                        );
+                    }
+                    continue;
+                }
+
+                if handle_control_frame(
+                    &frame,
+                    &mut ready_sent,
+                    &cfg,
                     sid,
-                    &RlmControl::Ack { up_to: base },
                     src_ip,
                     ctrl_src_port,
                     dst_ip,
                     ctrl_dst_port,
                     &processors,
+                    &mut eot_index,
+                ) {
+                    if let Some(last) = eot_index {
+                        if expected.saturating_sub(1) >= last {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+
+                tracing::warn!(
+                    session_id = sid,
+                    "RLM receiver: received frame that was neither DATA nor CONTROL"
                 );
-                last_ack_up_to = base;
             }
-            if highest_seen > base {
-                let (ack_base, runs) = rlm::build_ack_and_sack(expected, &received, highest_seen);
-                if !runs.is_empty() {
-                    send_control(
+            _ = async {
+                if let Some(timer) = &mut sack_timer {
+                    timer.as_mut().await;
+                }
+            }, if sack_timer.is_some() => {
+                sack_timer = None;
+                let now = Instant::now();
+                if let Some(snapshot) = sack_scheduler.take_ready(now) {
+                    emit_sack(
                         sid,
-                        &RlmControl::Sack {
-                            base: ack_base,
-                            runs,
-                        },
+                        snapshot,
                         src_ip,
                         ctrl_src_port,
                         dst_ip,
@@ -117,50 +201,9 @@ pub async fn run(
                         &processors,
                     );
                 }
+                reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
             }
-            if highest_seen >= expected && nack_limiter.should_send(expected, Instant::now()) {
-                if cfg.nack_jitter_ms > 0 {
-                    tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
-                }
-                send_control(
-                    sid,
-                    &RlmControl::Repair {
-                        indices: vec![expected],
-                    },
-                    src_ip,
-                    ctrl_src_port,
-                    dst_ip,
-                    ctrl_dst_port,
-                    &processors,
-                );
-            }
-            continue;
         }
-
-        if handle_control_frame(
-            &frame,
-            &mut ready_sent,
-            &cfg,
-            sid,
-            src_ip,
-            ctrl_src_port,
-            dst_ip,
-            ctrl_dst_port,
-            &processors,
-            &mut eot_index,
-        ) {
-            if let Some(last) = eot_index {
-                if expected.saturating_sub(1) >= last {
-                    break;
-                }
-            }
-            continue;
-        }
-
-        tracing::warn!(
-            session_id = sid,
-            "RLM receiver: received frame that was neither DATA nor CONTROL"
-        );
     }
 
     if let Some(f) = file.as_mut() {
@@ -262,6 +305,38 @@ fn send_control(
     let buf = rlm::encode_control(session_id, control);
     let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &buf);
     processors.process_packet(packet);
+}
+
+fn emit_sack(
+    session_id: u64,
+    snapshot: SackSnapshot,
+    src_ip: std::net::Ipv4Addr,
+    src_port: u16,
+    dst_ip: std::net::Ipv4Addr,
+    dst_port: u16,
+    processors: &ProcessorHandle,
+) {
+    send_control(
+        session_id,
+        &RlmControl::Sack {
+            base: snapshot.base,
+            runs: snapshot.runs,
+        },
+        src_ip,
+        src_port,
+        dst_ip,
+        dst_port,
+        processors,
+    );
+}
+
+fn reset_sack_timer(timer: &mut Option<Pin<Box<Sleep>>>, scheduler: &SackScheduler, now: Instant) {
+    if let Some(deadline) = scheduler.next_deadline(now) {
+        let when = time::Instant::from_std(deadline);
+        *timer = Some(Box::pin(time::sleep_until(when)));
+    } else {
+        *timer = None;
+    }
 }
 
 trait MaxAssign {

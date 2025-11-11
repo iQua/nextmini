@@ -287,6 +287,7 @@ impl Dataplane {
             };
 
             if let Some(handle) = &self.reliable {
+                let reliable_cfg = &self.cfg.reliable;
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 // Build sender config and start session.
@@ -296,8 +297,8 @@ impl Dataplane {
                     chunk_size,
                     src_port: sp,
                     dst_port: dp,
-                    control_weight: 10,
-                    data_bucket: None,
+                    control_weight: reliable_cfg.control_weight,
+                    data_bucket: reliable_cfg.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
@@ -312,7 +313,6 @@ impl Dataplane {
                     source_path: Some(tensor_path.to_string()),
                     checksum_out: false,
                     ack_policy: ack,
-                    sack_interval_ms: 100,
                     repair_backoff_ms: 10,
                     fec_k: None,
                     fec_p: 0,
@@ -358,14 +358,15 @@ impl Dataplane {
         #[cfg(feature = "reliable")]
         {
             if let Some(handle) = &self.reliable {
+                let reliable_cfg = &self.cfg.reliable;
                 let common = reliable_session::CommonConfig {
                     session_id: sid,
                     group_ip: parse_ipv4(group_ip)?,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
-                    control_weight: 10,
-                    data_bucket: None,
+                    control_weight: reliable_cfg.control_weight,
+                    data_bucket: reliable_cfg.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
@@ -376,8 +377,9 @@ impl Dataplane {
                     expected_bytes,
                     verify_checksum: false,
                     sink_path,
-                    nack_min_interval_ms: 5,
-                    nack_jitter_ms: 3,
+                    nack_min_interval_ms: reliable_cfg.nack_min_interval_ms,
+                    nack_jitter_ms: reliable_cfg.nack_jitter_ms,
+                    sack_interval_ms: reliable_cfg.sack_interval_ms,
                 };
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
                 return Ok(started_sid);
