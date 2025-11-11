@@ -318,7 +318,7 @@ impl SenderState {
     }
 
     fn handle_control(&mut self, frame: InboundFrame) {
-        let InboundFrame { bytes, peer_id } = frame;
+        let InboundFrame { bytes, peer_id, .. } = frame;
         let Some((_, control)) = rlm::decode_control(&bytes) else {
             tracing::warn!(
                 session_id = self.session_id,

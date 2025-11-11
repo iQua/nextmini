@@ -151,7 +151,7 @@ impl SessionManager {
         key: PendingReceiverKey,
         session_id: SessionId,
     ) -> Option<(ReceiverConfig, oneshot::Sender<SessionId>)> {
-        let mut queue = self.pending.get_mut(&key)?;
+        let queue = self.pending.get_mut(&key)?;
         let mut pending = queue.pop_front()?;
         pending.cfg.common.session_id = session_id;
         if queue.is_empty() {

@@ -14,10 +14,12 @@ use tokio::sync::mpsc;
 use tracing::{error, warn};
 
 #[cfg(feature = "reliable")]
+use nextmini_messages::INVALID;
+#[cfg(feature = "reliable")]
 use nextmini_messages::rlm;
 use nextmini_messages::{
-    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
-    RoutingTableEntry, TokenBucketSpec,
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
+    TokenBucketSpec,
 };
 
 use crate::node::config::{Feature, LocalConfig};

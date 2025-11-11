@@ -386,8 +386,7 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
-        #[allow(unused_mut)]
-        let mut sid = session_id.unwrap_or_else(|| next_py_message_id());
+        let sid = session_id.unwrap_or_else(|| next_py_message_id());
         #[cfg(feature = "reliable")]
         {
             if let Some(handle) = &self.reliable {
@@ -398,7 +397,7 @@ impl Dataplane {
                         resolved_sid = Some(known);
                     }
                 }
-                let mut common = reliable_session::CommonConfig {
+                let common = reliable_session::CommonConfig {
                     session_id: resolved_sid.unwrap_or(0),
                     group_ip: ip,
                     chunk_size,
@@ -429,7 +428,6 @@ impl Dataplane {
                     };
                     rt().block_on(handle.start_receiver_pending(cfg, key))
                 };
-                sid = started_sid;
                 self.remember_session(ip, source_node_id, started_sid);
                 return Ok(started_sid);
             }
