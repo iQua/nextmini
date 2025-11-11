@@ -9,9 +9,11 @@ pub mod namespace;
 pub mod network;
 pub mod packet;
 pub mod processor;
-pub mod python;
-pub mod route;
-pub mod scheduler;
+ pub mod python;
+ pub mod route;
+ pub mod scheduler;
+ #[cfg(feature = "reliable")]
+ pub mod reliable;
 
 use std::net::Ipv4Addr;
 

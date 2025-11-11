@@ -24,3 +24,7 @@ nextmini-messages = { path = "../messages", package = "nextmini-messages" }
 default = ["python-extension"]
 python-extension = ["pyo3/extension-module"]
 dev-tests = ["pyo3/auto-initialize"]
+# Historical shim to silence cfg checks on removed reliability code paths.
+legacy_py_reliable = []
+# Enable dataplane's reliable module and our wrapper code behind the same flag.
+reliable = ["nextmini/reliable"]

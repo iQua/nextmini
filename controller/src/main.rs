@@ -46,9 +46,13 @@ async fn main() {
     tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
-        .await
-        .expect("Failed to bind to port.");
+    let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Failed to bind controller port {}: {}. Exiting.", config.port, e);
+            return;
+        }
+    };
     info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
@@ -71,9 +75,13 @@ async fn main() {
     setup_group_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
-        let peer = stream
-            .peer_addr()
-            .expect("Connected streams should have a peer address.");
+        let peer = match stream.peer_addr() {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Missing peer address on accepted stream: {}. Skipping.", e);
+                continue;
+            }
+        };
 
         info!("New connection from {}.", peer);
 
@@ -136,7 +144,10 @@ async fn handle_connection(
                         );
 
                         // assigns a node ID as the dataplane node requests
-                        let node_id = maybe_node_id.unwrap();
+                        let Some(node_id) = maybe_node_id else {
+                            error!("Startup message missing node_id; rejecting connection.");
+                            continue;
+                        };
 
                         info!(
                             "Node with ID {} is attempting to connect (private: {}, public: {}).",
@@ -228,12 +239,15 @@ async fn handle_connection(
                             node_spec,
                         });
 
-                        match write_arc
-                            .lock()
-                            .await
-                            .send(Message::binary(rmp_serde::to_vec(&response).unwrap()))
-                            .await
-                        {
+                        // Safely encode and send StartUp response
+                        let msg_bytes = match rmp_serde::to_vec(&response) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                error!("Failed to encode StartUp response for node {}: {}", node_id, e);
+                                continue;
+                            }
+                        };
+                        match write_arc.lock().await.send(Message::binary(msg_bytes)).await {
                             Ok(_) => info!("Sent StartUp response to node {}.", node_id),
                             Err(e) => {
                                 error!(
@@ -309,7 +323,15 @@ async fn handle_connection(
                             match write_arc
                                 .lock()
                                 .await
-                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .send({
+                                    match rmp_serde::to_vec(&msg) {
+                                        Ok(buf) => Message::binary(buf),
+                                        Err(e) => {
+                                            error!("Failed to encode AddNode for {}: {}", node.id, e);
+                                            continue;
+                                        }
+                                    }
+                                })
                                 .await
                             {
                                 Ok(_) => info!(
@@ -365,7 +387,15 @@ async fn handle_connection(
                             match write_arc
                                 .lock()
                                 .await
-                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .send({
+                                    match rmp_serde::to_vec(&msg) {
+                                        Ok(buf) => Message::binary(buf),
+                                        Err(e) => {
+                                            error!("Failed to encode InstallRoutes for {}: {}", node_id, e);
+                                            continue;
+                                        }
+                                    }
+                                })
                                 .await
                             {
                                 Ok(_) => {
@@ -709,14 +739,15 @@ async fn handle_connection(
                                         src_node_id: group.src_node_id as usize,
                                     };
 
-                                    if let Err(e) = write_arc
-                                        .lock()
-                                        .await
-                                        .send(Message::binary(
-                                            rmp_serde::to_vec(&response).unwrap(),
-                                        ))
-                                        .await
-                                    {
+                                    // Pre-encode response and handle errors without panicking.
+                                    let msg_bytes = match rmp_serde::to_vec(&response) {
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            error!("Failed to encode GroupCreated response: {}", e);
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(e) = write_arc.lock().await.send(Message::binary(msg_bytes)).await {
                                         error!(
                                             "Failed to send GroupCreated to node {}: {}",
                                             node_id, e
@@ -799,6 +830,21 @@ async fn handle_connection(
                             snapshot.invalid_header_drops,
                             snapshot.reassembly_timeouts,
                             snapshot.window_overflow_drops
+                        );
+                    }
+                    DataplaneToController::ReliableStats { stats } => {
+                        info!(
+                            "ReliableStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} sacks={} fec_used={} ts_ms={}",
+                            stats.session_id,
+                            stats.node_id,
+                            stats.role,
+                            stats.bytes,
+                            stats.chunks,
+                            stats.resends,
+                            stats.repairs,
+                            stats.sacks,
+                            stats.fec_used,
+                            stats.ts_ms
                         );
                     }
                 }

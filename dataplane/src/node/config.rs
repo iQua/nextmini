@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, OperatingMode, Protocol,
-    SchedulingDiscipline,
+    SchedulingDiscipline, TokenBucketSpec,
 };
 
 use crate::node::scheduler::drop::DropStrategy;
@@ -404,6 +404,59 @@ pub struct LocalConfig {
     #[default(25000)]
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
+
+    /// Reliable multicast default configuration (used when the reliable subsystem is enabled).
+    #[default(Default::default())]
+    #[arg(skip)]
+    pub reliable: ReliableConfig,
+}
+
+/// Reliable multicast configuration knobs (consumed when the reliable subsystem is enabled).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReliableConfig {
+    /// Default data chunk size in bytes.
+    pub default_chunk_size: usize,
+
+    /// Control flow weight for WRR schedulers.
+    pub control_weight: usize,
+
+    /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
+    pub data_bucket: Option<TokenBucketSpec>,
+
+    /// Sender SACK emission interval in milliseconds.
+    pub sack_interval_ms: u64,
+
+    /// Receiver minimum interval between NACKs for the same chunk.
+    pub nack_min_interval_ms: u64,
+
+    /// Receiver jitter window in milliseconds added to NACK scheduling.
+    pub nack_jitter_ms: u64,
+
+    /// Ack policy: "all" | "k:N" | "frac:P".
+    pub ack_policy: String,
+
+    /// Optional FEC parameters: when `fec_k` is Some, compute `fec_p` parity chunks per block.
+    pub fec_k: Option<u16>,
+
+    /// Parity count per block (0 to disable).
+    pub fec_p: u8,
+}
+
+impl Default for ReliableConfig {
+    fn default() -> Self {
+        Self {
+            default_chunk_size: 32 * 1024,
+            control_weight: 8,
+            data_bucket: None,
+            sack_interval_ms: 50,
+            nack_min_interval_ms: 100,
+            nack_jitter_ms: 20,
+            ack_policy: "all".to_string(),
+            fec_k: None,
+            fec_p: 0,
+        }
+    }
 }
 
 fn default_local_address() -> Ipv4Addr {

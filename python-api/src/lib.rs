@@ -1,16 +1,12 @@
 mod buffer;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
 use std::net::Ipv4Addr;
-use std::path::{Path, PathBuf};
+//
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::{Duration, Instant};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use once_cell::sync::OnceCell;
 use pyo3::conversion::IntoPyObject;
 use pyo3::exceptions::PyRuntimeError;
@@ -18,11 +14,9 @@ use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
-use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::Mutex;
-use tracing::warn;
+// macros like tracing::warn! can be used without importing `warn` specifically.
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
@@ -35,6 +29,12 @@ use nextmini::node::python::interface::{
 };
 use nextmini::node::{NodeId, NodeIdExt};
 use nextmini_messages::DataplaneToController;
+#[cfg(feature = "reliable")]
+use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
+#[cfg(feature = "reliable")]
+use nextmini::node::reliable::session as reliable_session;
+#[cfg(feature = "reliable")]
+use nextmini_messages::rlm as rlm_msg;
 
 pub use crate::buffer::FrozenBuffer;
 
@@ -221,158 +221,7 @@ impl From<RustPayloadDelivery> for PyPayloadDelivery {
     }
 }
 
-const CONTROL_STRUCT_LEN: usize = 9;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlKind {
-    Ready = 1,
-    Ack = 2,
-    Repair = 3,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ControlMessage {
-    kind: ControlKind,
-    node_id: usize,
-    chunk_index: u64,
-}
-
-fn encode_control_payload(kind: ControlKind, node_id: usize, chunk_index: u64) -> Bytes {
-    let mut buf = [0u8; CONTROL_STRUCT_LEN];
-    buf[0] = kind as u8;
-    buf[1..5].copy_from_slice(&(node_id as u32).to_be_bytes());
-    buf[5..9].copy_from_slice(&(chunk_index as u32).to_be_bytes());
-    Bytes::copy_from_slice(&buf)
-}
-
-fn decode_control_payload(payload: &[u8]) -> PyResult<ControlMessage> {
-    if payload.len() < CONTROL_STRUCT_LEN {
-        return Err(PyRuntimeError::new_err("control payload too short"));
-    }
-    let kind = match payload[0] {
-        1 => ControlKind::Ready,
-        2 => ControlKind::Ack,
-        3 => ControlKind::Repair,
-        other => {
-            return Err(PyRuntimeError::new_err(format!(
-                "unknown control kind {other}"
-            )))
-        }
-    };
-    let node_id = u32::from_be_bytes(payload[1..5].try_into().unwrap()) as usize;
-    let chunk_index = u32::from_be_bytes(payload[5..9].try_into().unwrap()) as u64;
-    Ok(ControlMessage {
-        kind,
-        node_id,
-        chunk_index,
-    })
-}
-
-fn encode_chunk_payload(chunk_index: u64, chunk: &[u8]) -> Bytes {
-    let mut buf = BytesMut::with_capacity(12 + chunk.len());
-    buf.put_u64(chunk_index);
-    buf.put_u32(chunk.len() as u32);
-    buf.extend_from_slice(chunk);
-    buf.freeze()
-}
-
-fn decode_chunk_payload(bytes: &Bytes) -> PyResult<(u64, Bytes)> {
-    if bytes.len() < 12 {
-        return Err(PyRuntimeError::new_err("chunk payload shorter than header"));
-    }
-    let chunk_index = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
-    let len = u32::from_be_bytes(bytes[8..12].try_into().unwrap()) as usize;
-    let end = 12 + len;
-    if end > bytes.len() {
-        return Err(PyRuntimeError::new_err("chunk payload truncated"));
-    }
-    Ok((chunk_index, bytes.slice(12..end)))
-}
-
-fn chunk_count(total_bytes: u64, chunk_size: usize) -> u64 {
-    if chunk_size == 0 {
-        return 0;
-    }
-    if total_bytes == 0 {
-        0
-    } else {
-        ((total_bytes + chunk_size as u64 - 1) / chunk_size as u64) as u64
-    }
-}
-
-#[pyclass]
-struct ReliableSendReport {
-    bytes_sent: u64,
-    chunks_sent: u64,
-    resends: u64,
-    duration_ms: u64,
-    checksum: Option<String>,
-}
-
-#[pymethods]
-impl ReliableSendReport {
-    #[getter]
-    fn bytes_sent(&self) -> u64 {
-        self.bytes_sent
-    }
-
-    #[getter]
-    fn chunks_sent(&self) -> u64 {
-        self.chunks_sent
-    }
-
-    #[getter]
-    fn resends(&self) -> u64 {
-        self.resends
-    }
-
-    #[getter]
-    fn duration_ms(&self) -> u64 {
-        self.duration_ms
-    }
-
-    #[getter]
-    fn checksum(&self) -> Option<&str> {
-        self.checksum.as_deref()
-    }
-}
-
-#[pyclass]
-struct ReliableReceiveReport {
-    bytes_received: u64,
-    chunks_received: u64,
-    repairs_requested: u64,
-    duration_ms: u64,
-    checksum: Option<String>,
-}
-
-#[pymethods]
-impl ReliableReceiveReport {
-    #[getter]
-    fn bytes_received(&self) -> u64 {
-        self.bytes_received
-    }
-
-    #[getter]
-    fn chunks_received(&self) -> u64 {
-        self.chunks_received
-    }
-
-    #[getter]
-    fn repairs_requested(&self) -> u64 {
-        self.repairs_requested
-    }
-
-    #[getter]
-    fn duration_ms(&self) -> u64 {
-        self.duration_ms
-    }
-
-    #[getter]
-    fn checksum(&self) -> Option<&str> {
-        self.checksum.as_deref()
-    }
-}
+// Removed legacy Python-side reliable multicast helpers and control/chunk encoders.
 
 #[pyclass]
 struct Dataplane {
@@ -381,10 +230,188 @@ struct Dataplane {
     processor: ProcessorHandle,
     controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
+    #[cfg(feature = "reliable")]
+    reliable: Option<RustReliableHandle>,
 }
 
 #[pymethods]
 impl Dataplane {
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=32768, src_port=None, dst_port=None, ack_policy="all"))]
+    fn reliable_send_file_rs(
+        &self,
+        group_ip: &str,
+        receiver_ids: Vec<usize>,
+        tensor_path: &str,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        ack_policy: &str,
+    ) -> PyResult<u64> {
+        // Validate inputs early to surface helpful errors even while stubbed.
+        let _ip = parse_ipv4(group_ip)?;
+        if receiver_ids.is_empty() {
+            return Err(PyRuntimeError::new_err("receiver_ids must contain at least one entry."));
+        }
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+        let path = std::path::Path::new(tensor_path);
+        if !path.exists() {
+            return Err(PyRuntimeError::new_err(format!("tensor_path does not exist: {}", tensor_path)));
+        }
+        if !(ack_policy == "all"
+            || ack_policy.starts_with("k:")
+            || ack_policy.starts_with("frac:"))
+        {
+            return Err(PyRuntimeError::new_err(format!(
+                "invalid ack_policy: {ack_policy}"
+            )));
+        }
+        let _ = (src_port, dst_port); // reserved for future plumbing
+        let sid = next_py_message_id();
+        #[cfg(feature = "reliable")]
+        {
+            // Map ack_policy string to dataplane enum via messages helper.
+            let ap = rlm_msg::parse_ack_policy(ack_policy)
+                .ok_or_else(|| PyRuntimeError::new_err(format!("invalid ack_policy: {ack_policy}")))?;
+            let ack = match ap {
+                rlm_msg::AckPolicy::All => reliable_session::AckPolicy::All,
+                rlm_msg::AckPolicy::KofN(n) => reliable_session::AckPolicy::KofN(n as usize),
+                rlm_msg::AckPolicy::Fraction(p) => reliable_session::AckPolicy::Fraction(p),
+            };
+
+            if let Some(handle) = &self.reliable {
+                // Build sender config and start session. For now, we keep a minimal baseline.
+                let common = reliable_session::CommonConfig {
+                    session_id: sid,
+                    group_ip: parse_ipv4(group_ip)?,
+                    chunk_size,
+                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
+                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    control_weight: 10,
+                    data_bucket: None,
+                    local_node_id: self.cfg.node_id,
+                    user_space_base_addr: self.cfg.user_space_base_addr,
+                    local_netmask: self.cfg.local_netmask,
+                };
+                let total_bytes = std::fs::metadata(tensor_path)
+                    .map_err(|e| PyRuntimeError::new_err(format!("failed to stat file: {e}")))?
+                    .len();
+                let cfg = reliable_session::SenderConfig {
+                    common,
+                    receiver_ids,
+                    total_bytes,
+                    source_path: Some(tensor_path.to_string()),
+                    checksum_out: false,
+                    ack_policy: ack,
+                    sack_interval_ms: 100,
+                    repair_backoff_ms: 10,
+                    fec_k: None,
+                    fec_p: 0,
+                };
+                // Synchronous start for a session id; actual data plane runs in background.
+                let started_sid = rt().block_on(handle.start_sender(cfg));
+                return Ok(started_sid);
+            }
+        }
+        // Fallback stub when feature is disabled or handle unavailable.
+        tracing::warn!(
+            "reliable_send_file_rs called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={}",
+            sid,
+            group_ip,
+            receiver_ids,
+            tensor_path,
+            chunk_size,
+            ack_policy
+        );
+        Ok(sid)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=32768, src_port=None, dst_port=None, sink_path=None))]
+    fn reliable_receive_file_rs(
+        &self,
+        group_ip: &str,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        sink_path: Option<String>,
+    ) -> PyResult<u64> {
+        let _ip = parse_ipv4(group_ip)?;
+        if expected_bytes == 0 {
+            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
+        }
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+        let _ = (src_port, dst_port); // reserved for future plumbing
+        let sid = next_py_message_id();
+        #[cfg(feature = "reliable")]
+        {
+            if let Some(handle) = &self.reliable {
+                let common = reliable_session::CommonConfig {
+                    session_id: sid,
+                    group_ip: parse_ipv4(group_ip)?,
+                    chunk_size,
+                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
+                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    control_weight: 10,
+                    data_bucket: None,
+                    local_node_id: self.cfg.node_id,
+                    user_space_base_addr: self.cfg.user_space_base_addr,
+                    local_netmask: self.cfg.local_netmask,
+                };
+                let cfg = reliable_session::ReceiverConfig {
+                    common,
+                    source_node_id,
+                    expected_bytes,
+                    verify_checksum: false,
+                    sink_path,
+                    nack_min_interval_ms: 5,
+                    nack_jitter_ms: 3,
+                };
+                let started_sid = rt().block_on(handle.start_receiver(cfg));
+                return Ok(started_sid);
+            }
+        }
+        tracing::warn!(
+            "reliable_receive_file_rs called (stub): sid={} group_ip={} src_node={} expected_bytes={} chunk_size={} sink_path={:?}",
+            sid,
+            group_ip,
+            source_node_id,
+            expected_bytes,
+            chunk_size,
+            sink_path
+        );
+        Ok(sid)
+    }
+
+    #[pyo3(signature = (session_id, timeout_ms=None))]
+    fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
+        #[cfg(feature = "reliable")]
+        {
+            if let Some(handle) = &self.reliable {
+                let fut = handle.wait_completion(session_id);
+                if let Some(ms) = timeout_ms {
+                    let ok = rt().block_on(async move {
+                        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+                            .await
+                            .unwrap_or(Ok(false))
+                    });
+                    return Ok(ok);
+                } else {
+                    let ok = rt().block_on(fut);
+                    return Ok(ok);
+                }
+            }
+        }
+        // feature disabled ⇒ nothing to wait for
+        let _ = (session_id, timeout_ms);
+        Ok(false)
+    }
     #[new]
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
@@ -400,6 +427,8 @@ impl Dataplane {
         let mut cfg = conductor.local_config();
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
+        #[cfg(feature = "reliable")]
+        let reliable = conductor.reliable_handle();
 
         // Enter the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new succeeds.
         let py_if = {
@@ -423,6 +452,8 @@ impl Dataplane {
             processor,
             controller,
             _join: join,
+            #[cfg(feature = "reliable")]
+            reliable,
         })
     }
 
@@ -646,104 +677,14 @@ impl Dataplane {
         Ok(())
     }
 
-    #[pyo3(signature = (
-        group_ip,
-        receiver_ids,
-        tensor_path,
-        *,
-        chunk_size=32768,
-        flow_window=256,
-        flow_poll_ms=100,
-        ready_timeout_ms=90_000,
-        src_port=None,
-        dst_port=None,
-        sleep_ms=0,
-        checksum_path=None,
-        write_checksum=false
-    ))]
-    fn send_file_reliable(
-        &self,
-        group_ip: &str,
-        receiver_ids: Vec<usize>,
-        tensor_path: &str,
-        chunk_size: usize,
-        flow_window: usize,
-        flow_poll_ms: u64,
-        ready_timeout_ms: u64,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        sleep_ms: u64,
-        checksum_path: Option<String>,
-        write_checksum: bool,
-    ) -> PyResult<ReliableSendReport> {
-        let group_ip = parse_ipv4(group_ip)?;
-        let tensor_path = PathBuf::from(tensor_path);
-        let checksum_path = checksum_path.map(PathBuf::from);
-        let src_port = src_port.unwrap_or(self.cfg.user_space_client_port);
-        let dst_port = dst_port.unwrap_or(self.cfg.user_space_server_port);
-        self.run_reliable_sender(
-            group_ip,
-            &receiver_ids,
-            &tensor_path,
-            chunk_size,
-            flow_window,
-            Duration::from_millis(flow_poll_ms),
-            Duration::from_millis(ready_timeout_ms),
-            src_port,
-            dst_port,
-            Duration::from_millis(sleep_ms),
-            checksum_path.as_deref(),
-            write_checksum,
-        )
-    }
+    // Removed legacy send_file_reliable Python entrypoint.
 
-    #[pyo3(signature = (
-        group_ip,
-        source_node_id,
-        expected_bytes,
-        *,
-        chunk_size=32768,
-        receive_timeout_ms=5000,
-        src_port=None,
-        dst_port=None,
-        sink_path=None,
-        verify_checksum=false,
-        checksum_path=None
-    ))]
-    fn receive_file_reliable(
-        &self,
-        group_ip: &str,
-        source_node_id: usize,
-        expected_bytes: u64,
-        chunk_size: usize,
-        receive_timeout_ms: u64,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        sink_path: Option<String>,
-        verify_checksum: bool,
-        checksum_path: Option<String>,
-    ) -> PyResult<ReliableReceiveReport> {
-        let group_ip = parse_ipv4(group_ip)?;
-        let sink_path = sink_path.map(PathBuf::from);
-        let checksum_path = checksum_path.map(PathBuf::from);
-        let src_port = src_port.unwrap_or(self.cfg.user_space_client_port);
-        let dst_port = dst_port.unwrap_or(self.cfg.user_space_server_port);
-        self.run_reliable_receiver(
-            group_ip,
-            source_node_id,
-            expected_bytes,
-            chunk_size,
-            Duration::from_millis(receive_timeout_ms),
-            src_port,
-            dst_port,
-            sink_path.as_deref(),
-            verify_checksum,
-            checksum_path.as_deref(),
-        )
-    }
+    // Removed legacy receive_file_reliable Python entrypoint.
 }
 
 impl Dataplane {
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn run_reliable_sender(
         &self,
         group_ip: Ipv4Addr,
@@ -964,6 +905,8 @@ impl Dataplane {
         })
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn run_reliable_receiver(
         &self,
         group_ip: Ipv4Addr,
@@ -1135,6 +1078,8 @@ impl Dataplane {
         })
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn register_control_receivers(
         &self,
         receiver_ids: &[usize],
@@ -1153,6 +1098,8 @@ impl Dataplane {
         Ok(map)
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn wait_for_window(
         &self,
         flow_window: usize,
@@ -1183,6 +1130,8 @@ impl Dataplane {
         Ok(())
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn flush_control_messages(
         &self,
         receivers: &mut HashMap<usize, mpsc::Receiver<PythonDelivery>>,
@@ -1218,6 +1167,8 @@ impl Dataplane {
         Ok(())
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn poll_control_events(
         &self,
         receivers: &mut HashMap<usize, mpsc::Receiver<PythonDelivery>>,
@@ -1239,6 +1190,8 @@ impl Dataplane {
         Ok(events)
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn process_resends(
         &self,
         resend_queue: &mut BTreeSet<u64>,
@@ -1268,6 +1221,8 @@ impl Dataplane {
         Ok(resent)
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn control_from_delivery(&self, delivery: PythonDelivery) -> PyResult<ControlMessage> {
         match delivery {
             PythonDelivery::Payload(payload) => decode_control_payload(payload.bytes.as_ref()),
@@ -1277,6 +1232,8 @@ impl Dataplane {
         }
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn send_control_signal(
         &self,
         dst_node_id: usize,
@@ -1298,6 +1255,8 @@ impl Dataplane {
         .map(|_| ())
     }
 
+    #[cfg(feature = "legacy_py_reliable")]
+    #[allow(dead_code)]
     fn recv_with_timeout(
         &self,
         receiver: &mut mpsc::Receiver<PythonDelivery>,
@@ -1720,8 +1679,6 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PacketReceiver>()?;
     m.add_class::<PyPayloadDelivery>()?;
     m.add_class::<FrozenBuffer>()?;
-    m.add_class::<ReliableSendReport>()?;
-    m.add_class::<ReliableReceiveReport>()?;
     Ok(())
 }
 

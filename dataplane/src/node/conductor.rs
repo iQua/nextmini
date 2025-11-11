@@ -14,6 +14,14 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "reliable")]
+use crate::node::reliable::api::{Command as ReliableCommand, ReliableHandle};
+#[cfg(feature = "reliable")]
+use crate::node::reliable::session::SessionManager;
+#[cfg(feature = "reliable")]
+use std::sync::Arc;
+#[cfg(feature = "reliable")]
+use tokio::sync::Mutex as AsyncMutex;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -29,6 +37,10 @@ pub struct Conductor {
 
     /// controller interface handle for sending custom messages upstream
     controller: ControllerInterfaceHandle,
+
+    /// reliable multicast subsystem handle (initialized but not yet wired)
+    #[cfg(feature = "reliable")]
+    reliable: ReliableHandle,
 }
 
 impl Conductor {
@@ -44,12 +56,62 @@ impl Conductor {
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
 
+        // initialize reliable subsystem handle (command loop wiring to follow)
+        #[cfg(feature = "reliable")]
+        let (reliable, mut rx) = ReliableHandle::new();
+
+        #[cfg(feature = "reliable")]
+        {
+            let processors_for_mgr = processors.clone();
+            let mut_rx = rx;
+            tokio::spawn(async move {
+                let manager = Arc::new(AsyncMutex::new(SessionManager::new_without_net(
+                    processors_for_mgr,
+                )));
+                let mut rx = mut_rx;
+                while let Some(cmd) = rx.recv().await {
+                    match cmd {
+                        ReliableCommand::StartSender { cfg, reply } => {
+                            let sid = cfg.common.session_id;
+                            let mut guard = manager.lock().await;
+                            let _ = guard.spawn_sender(cfg);
+                            let _ = reply.send(sid);
+                        }
+                        ReliableCommand::StartReceiver { cfg, reply } => {
+                            let sid = cfg.common.session_id;
+                            let mut guard = manager.lock().await;
+                            let _ = guard.spawn_receiver(cfg);
+                            let _ = reply.send(sid);
+                        }
+                        ReliableCommand::Stop { session } => {
+                            let mut guard = manager.lock().await;
+                            guard.stop(session).await;
+                        }
+                        ReliableCommand::Wait { session, reply } => {
+                            // Take ownership of the task and await completion.
+                            let mut guard = manager.lock().await;
+                            if let Some(handle) = guard.take_task(session) {
+                                drop(guard);
+                                let _ = handle.await; // ignore join errors; treat as completion
+                                let _ = reply.send(true);
+                            } else {
+                                let _ = reply.send(false);
+                            }
+                        }
+                    }
+                }
+                tracing::warn!("Reliable command loop terminated.");
+            });
+        }
+
         Conductor {
             config,
             local_interface,
             processors,
             reporter,
             controller: controller_interface,
+            #[cfg(feature = "reliable")]
+            reliable,
         }
     }
 
@@ -202,5 +264,12 @@ impl Conductor {
     #[allow(dead_code)]
     pub fn controller_handle(&self) -> ControllerInterfaceHandle {
         self.controller.clone()
+    }
+
+    /// Returns a clone of the reliable handle when the `reliable` feature is enabled.
+    #[cfg(feature = "reliable")]
+    #[allow(dead_code)]
+    pub fn reliable_handle(&self) -> Option<crate::node::reliable::api::ReliableHandle> {
+        Some(self.reliable.clone())
     }
 }

@@ -7,6 +7,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 
 mod ip_ser;
+pub mod rlm;
 
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
@@ -74,6 +75,10 @@ pub enum DataplaneToController {
         node_id: usize,
         snapshot: PythonFragmentMetricsSnapshot,
     },
+    /// Periodic reliable-multicast session stats from dataplane (feature-gated at source).
+    ReliableStats {
+        stats: ReliableStats,
+    },
 }
 
 /// The new app flow message reported to controller from a src node to dest node.
@@ -137,6 +142,22 @@ pub struct PythonFragmentMetricsSnapshot {
     pub invalid_header_drops: u64,
     pub reassembly_timeouts: u64,
     pub window_overflow_drops: u64,
+}
+
+/// Reliable-multicast session metrics (optional)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ReliableStats {
+    pub session_id: u64,
+    pub node_id: usize,
+    /// "sender" | "receiver"
+    pub role: String,
+    pub bytes: u64,
+    pub chunks: u64,
+    pub resends: u64,
+    pub repairs: u64,
+    pub sacks: u64,
+    pub fec_used: u64,
+    pub ts_ms: i64,
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.

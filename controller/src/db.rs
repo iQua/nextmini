@@ -30,7 +30,7 @@ async fn create_db(pool: &Pool<Postgres>) {
     // over the public internet.
     // virtual_network_addr: Address of the node in the virtual network, established by Nextmini.
     // start_time: Timestamp when the dataplane observed the first payload packet.
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS nodes (
             id SERIAL PRIMARY KEY,
@@ -41,8 +41,9 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create nodes table");
+    .await {
+        error!("Failed to create nodes table: {}", e);
+    }
 
     // id: Unique identifier for the flow, automatically assigned by controller.
     // src_node_id: Source node ID for the flow.
@@ -53,7 +54,7 @@ async fn create_db(pool: &Pool<Postgres>) {
     // flow_rate: Optional flow rate in bytes per second.
     // flow_weight: Optional flow weight for scheduling.
     // is_finished: Whether this flow has completed.
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS flows (
             id SERIAL PRIMARY KEY,
@@ -71,14 +72,15 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create flows table");
+    .await {
+        error!("Failed to create flows table: {}", e);
+    }
 
     // route_id: Unique identifier for the route, automatically assigned by controller.
     // src_node_id: Source node ID for the route.
     // dst_node_id: Destination node ID for the route.
     // edges: All edges in the route, as an array of node IDs. e.g. [[1, 2], [2, 3]]
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS routes (
             route_id SERIAL PRIMARY KEY,
@@ -89,10 +91,11 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create routes table");
+    .await {
+        error!("Failed to create routes table: {}", e);
+    }
 
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS metrics (
             id SERIAL PRIMARY KEY,
@@ -105,10 +108,11 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create metrics table");
+    .await {
+        error!("Failed to create metrics table: {}", e);
+    }
 
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS app_flows (
             id SERIAL PRIMARY KEY,
@@ -124,10 +128,11 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create app_flows table");
+    .await {
+        error!("Failed to create app_flows table: {}", e);
+    }
 
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS groups (
             id SERIAL PRIMARY KEY,
@@ -139,10 +144,11 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create groups table");
+    .await {
+        error!("Failed to create groups table: {}", e);
+    }
 
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS group_members (
             group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -153,10 +159,11 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create group_members table");
+    .await {
+        error!("Failed to create group_members table: {}", e);
+    }
 
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS group_routes (
             group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
@@ -168,8 +175,9 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to create group_routes table");
+    .await {
+        error!("Failed to create group_routes table: {}", e);
+    }
 
     let create_membership_fn = r#"
         CREATE OR REPLACE FUNCTION notify_group_membership_change()
@@ -187,20 +195,20 @@ async fn create_db(pool: &Pool<Postgres>) {
         $$ LANGUAGE plpgsql;
     "#;
 
-    sqlx::query(create_membership_fn)
-        .execute(pool)
-        .await
-        .expect("Failed to create membership trigger function");
+    if let Err(e) = sqlx::query(create_membership_fn).execute(pool).await {
+        error!("Failed to create membership trigger function: {}", e);
+    }
 
-    sqlx::query(
+    if let Err(e) = sqlx::query(
         r#"
         DROP TRIGGER IF EXISTS group_membership_change_trigger
         ON group_members;
         "#,
     )
     .execute(pool)
-    .await
-    .expect("Failed to drop existing membership trigger");
+    .await {
+        error!("Failed to drop existing membership trigger: {}", e);
+    }
 
     let create_membership_trigger = r#"
         CREATE TRIGGER group_membership_change_trigger
@@ -209,10 +217,9 @@ async fn create_db(pool: &Pool<Postgres>) {
         EXECUTE FUNCTION notify_group_membership_change();
     "#;
 
-    sqlx::query(create_membership_trigger)
-        .execute(pool)
-        .await
-        .expect("Failed to create membership trigger");
+    if let Err(e) = sqlx::query(create_membership_trigger).execute(pool).await {
+        error!("Failed to create membership trigger: {}", e);
+    }
 
     // NOTE: Add new schema changes here so init/reset paths stay in sync.
 }
@@ -222,45 +229,37 @@ async fn reset_db(pool: &Pool<Postgres>) {
     info!("Resetting database - dropping all tables...");
 
     // drops the existing tables to ensure schema changes are applied
-    sqlx::query("DROP TABLE IF EXISTS metrics")
-        .execute(pool)
-        .await
-        .expect("Failed to drop metrics table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS metrics").execute(pool).await {
+        error!("Failed to drop metrics table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS app_flows")
-        .execute(pool)
-        .await
-        .expect("Failed to drop app_flows table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS app_flows").execute(pool).await {
+        error!("Failed to drop app_flows table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS flows")
-        .execute(pool)
-        .await
-        .expect("Failed to drop flows table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS flows").execute(pool).await {
+        error!("Failed to drop flows table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS group_routes")
-        .execute(pool)
-        .await
-        .expect("Failed to drop group_routes table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS group_routes").execute(pool).await {
+        error!("Failed to drop group_routes table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS group_members")
-        .execute(pool)
-        .await
-        .expect("Failed to drop group_members table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS group_members").execute(pool).await {
+        error!("Failed to drop group_members table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS groups")
-        .execute(pool)
-        .await
-        .expect("Failed to drop groups table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS groups").execute(pool).await {
+        error!("Failed to drop groups table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS routes")
-        .execute(pool)
-        .await
-        .expect("Failed to drop routes table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS routes").execute(pool).await {
+        error!("Failed to drop routes table: {}", e);
+    }
 
-    sqlx::query("DROP TABLE IF EXISTS nodes")
-        .execute(pool)
-        .await
-        .expect("Failed to drop nodes table");
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS nodes").execute(pool).await {
+        error!("Failed to drop nodes table: {}", e);
+    }
 
     // recreates the tables with current schema
     create_db(pool).await;
@@ -281,18 +280,32 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         .min_connections(50) // maintains a minimum number of connections
         .connect(&db_url)
         .await
-        .expect("Failed to connect to database");
+        .unwrap_or_else(|e| {
+            panic!("Failed to connect to database: {}", e);
+        });
 
-    // ensures the database starts from a clean state every time
-    reset_db(&pool).await;
+    // Controls initial database reset for dev/test. Default: enabled, unless CONTROLLER_RESET_DB explicitly disables it.
+    let reset_enabled = std::env::var("CONTROLLER_RESET_DB")
+        .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(true);
+    if reset_enabled {
+        reset_db(&pool).await;
+    } else {
+        info!("Database reset disabled via CONTROLLER_RESET_DB env var.");
+    }
 
     // adds routes derived from both custom routes and topology to the database
     let all_routes = merge_all_routes(config);
     info!("Adding all {} routes to the database.", all_routes.len());
 
     for (src_node_id, dst_node_id, edges) in all_routes {
-        let edges_json: serde_json::Value =
-            serde_json::to_value(&edges).expect("Failed to convert edges to JSON");
+        let edges_json: serde_json::Value = match serde_json::to_value(&edges) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to convert edges to JSON: {}", e);
+                continue;
+            }
+        };
 
         let result = sqlx::query(
             r#"
@@ -522,39 +535,50 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
         flow_table_name
     );
 
-    let mut conn = db_pool
-        .acquire()
-        .await
-        .expect("Failed to acquire connection");
+    let mut conn = match db_pool.acquire().await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to acquire connection for route trigger setup: {}", e);
+            return;
+        }
+    };
 
-    let row: Option<(i32,)> = sqlx::query_as(&check_trigger_sql)
-        .fetch_optional(&mut *conn) // Dereference to get &mut PgConnection
+    let row: Option<(i32,)> = match sqlx::query_as(&check_trigger_sql)
+        .fetch_optional(&mut *conn)
         .await
-        .expect("Failed to check trigger existence");
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to check route trigger existence: {}", e);
+            return;
+        }
+    };
 
     if row.is_none() {
-        sqlx::query(create_function_sql)
-            .execute(&mut *conn)
-            .await
-            .expect("Failed to create notification function");
-        sqlx::query(&create_trigger_sql)
-            .execute(&mut *conn)
-            .await
-            .expect("Failed to create trigger");
+        if let Err(e) = sqlx::query(create_function_sql).execute(&mut *conn).await {
+            error!("Failed to create route notification function: {}", e);
+        }
+        if let Err(e) = sqlx::query(&create_trigger_sql).execute(&mut *conn).await {
+            error!("Failed to create route trigger: {}", e);
+        }
     }
 
     // sets up a listener
-    let mut listener = PgListener::connect_with(&db_pool)
-        .await
-        .expect("Failed to connect listener");
-    listener
-        .listen("auto_sync_routes")
-        .await
-        .expect("Failed to listen to auto_sync_routes");
-    listener
-        .listen("sync_routes")
-        .await
-        .expect("Failed to listen to sync_routes");
+    let mut listener = match PgListener::connect_with(&db_pool).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Failed to connect route listener: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = listener.listen("auto_sync_routes").await {
+        error!("Failed to listen to auto_sync_routes: {}", e);
+        return;
+    }
+    if let Err(e) = listener.listen("sync_routes").await {
+        error!("Failed to listen to sync_routes: {}", e);
+        return;
+    }
 
     // spawns a task to handle notifications by installing the routes to all available nodes
     tokio::spawn(async move {
@@ -570,11 +594,18 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
                         // all routes from the database and re-install them all
                         info!("Installing route updates into the dataplane.");
 
-                        let routes_db: Vec<DbRoute> =
-                            sqlx::query_as::<_, DbRoute>("SELECT * FROM routes")
-                                .fetch_all(&*db_pool)
-                                .await
-                                .expect("Failed to fetch routes");
+                        let routes_db: Vec<DbRoute> = match sqlx::query_as::<_, DbRoute>(
+                            "SELECT * FROM routes",
+                        )
+                        .fetch_all(&*db_pool)
+                        .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("Failed to fetch routes: {}", e);
+                                continue;
+                            }
+                        };
 
                         let routes: Vec<Route> = routes_db
                             .iter()
@@ -850,37 +881,48 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Node
         AND tgrelid = '"flows"'::regclass;
     "#;
 
-    let mut conn = db_pool
-        .acquire()
-        .await
-        .expect("Failed to acquire connection");
+    let mut conn = match db_pool.acquire().await {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to acquire connection for flow trigger setup: {}", e);
+            return;
+        }
+    };
 
     // checks and creates a flow trigger if it doesn't exist
-    let flow_row: Option<(i32,)> = sqlx::query_as(check_flow_trigger_sql)
+    let flow_row: Option<(i32,)> = match sqlx::query_as(check_flow_trigger_sql)
         .fetch_optional(&mut *conn)
         .await
-        .expect("Failed to check flow trigger existence");
+    {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to check flow trigger existence: {}", e);
+            return;
+        }
+    };
 
     if flow_row.is_none() {
-        sqlx::query(create_flow_function_sql)
-            .execute(&mut *conn)
-            .await
-            .expect("Failed to create flow notification function");
-        sqlx::query(create_flow_trigger_sql)
-            .execute(&mut *conn)
-            .await
-            .expect("Failed to create flow trigger");
+        if let Err(e) = sqlx::query(create_flow_function_sql).execute(&mut *conn).await {
+            error!("Failed to create flow notification function: {}", e);
+        }
+        if let Err(e) = sqlx::query(create_flow_trigger_sql).execute(&mut *conn).await {
+            error!("Failed to create flow trigger: {}", e);
+        }
         info!("Created flow notification trigger.");
     }
 
     // sets up a listener for flow notifications
-    let mut listener = PgListener::connect_with(&db_pool)
-        .await
-        .expect("Failed to connect listener");
-    listener
-        .listen("auto_sync_flows")
-        .await
-        .expect("Failed to listen to auto_sync_flows");
+    let mut listener = match PgListener::connect_with(&db_pool).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Failed to connect flow listener: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = listener.listen("auto_sync_flows").await {
+        error!("Failed to listen to auto_sync_flows: {}", e);
+        return;
+    }
 
     // spawns a task to handle flow notifications by installing flows to relevant nodes
     tokio::spawn(async move {
