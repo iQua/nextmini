@@ -28,7 +28,7 @@ use nextmini::node::python::interface::{
     PythonEvent, PythonFragmentationPolicy, PythonInterfaceHandle,
 };
 #[cfg(feature = "reliable")]
-use nextmini::node::reliable::api::{InboundFrame, ReliableHandle as RustReliableHandle};
+use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
 #[cfg(feature = "reliable")]
 use nextmini::node::reliable::session as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
@@ -287,7 +287,6 @@ impl Dataplane {
             };
 
             if let Some(handle) = &self.reliable {
-                let ctrl_receivers = receiver_ids.clone();
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 // Build sender config and start session.
@@ -319,42 +318,6 @@ impl Dataplane {
                     fec_p: 0,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
-
-                // Bridge inbound control frames (ACK/SACK/REPAIR) from each receiver so the
-                // Rust sender can retire chunks and schedule repairs.
-                if !ctrl_receivers.is_empty() {
-                    let py_if = self.py_if.clone();
-                    let rh = handle.clone();
-                    let base = self.cfg.user_space_base_addr;
-                    let mask = self.cfg.local_netmask;
-                    let local_ip = self.cfg.user_space_address;
-                    for rid in ctrl_receivers {
-                        let src_ip = (rid as NodeId).ip_addr(base, mask);
-                        let dst_ip = local_ip;
-                        let flow_id = Packet::flow_id_from_parts(src_ip, dp, dst_ip, sp);
-                        let mut rx = rt().block_on(py_if.register_receiver(flow_id, true));
-                        let rh_clone = rh.clone();
-                        let peer_id = rid;
-                        rt().spawn(async move {
-                            while let Some(delivery) = rx.recv().await {
-                                match delivery {
-                                    PythonDelivery::Payload(p) => {
-                                        rh_clone.deliver(
-                                            started_sid,
-                                            InboundFrame::new(p.bytes.to_vec(), Some(peer_id)),
-                                        );
-                                    }
-                                    PythonDelivery::Raw(pkt) => {
-                                        rh_clone.deliver(
-                                            started_sid,
-                                            InboundFrame::new(pkt.bytes().to_vec(), Some(peer_id)),
-                                        );
-                                    }
-                                }
-                            }
-                        });
-                    }
-                }
                 return Ok(started_sid);
             }
         }
@@ -417,36 +380,6 @@ impl Dataplane {
                     nack_jitter_ms: 3,
                 };
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
-                // Bridge PythonInterface deliveries to receiver engine via ReliableHandle::deliver
-                // For local delivery, packets injected by the reliable sender use the
-                // unicast user-space IP of the destination node, not the multicast group.
-                let src_ip = (source_node_id as NodeId)
-                    .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
-                let dst_ip = self.cfg.user_space_address;
-                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-                let mut rx = rt().block_on(self.py_if.register_receiver(flow_id, true));
-                let rh2 = handle.clone();
-                let peer_id = source_node_id;
-                rt().spawn(async move {
-                    while let Some(delivery) = rx.recv().await {
-                        match delivery {
-                            nextmini::node::python::interface::PythonDelivery::Payload(p) => {
-                                rh2.deliver(
-                                    started_sid,
-                                    InboundFrame::new(p.bytes.to_vec(), Some(peer_id)),
-                                );
-                            }
-                            nextmini::node::python::interface::PythonDelivery::Raw(pkt) => {
-                                rh2.deliver(
-                                    started_sid,
-                                    InboundFrame::new(pkt.bytes().to_vec(), Some(peer_id)),
-                                );
-                            }
-                        }
-                    }
-                });
                 return Ok(started_sid);
             }
         }

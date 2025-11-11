@@ -52,22 +52,20 @@ impl Conductor {
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
-        let local_interface: LocalInterfaceHandle =
-            LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
-        processors.connect_local_interface(local_interface.clone());
-
         // initialize reliable subsystem handle (command loop wiring to follow)
         #[cfg(feature = "reliable")]
         let (reliable, rx) = ReliableHandle::new();
+
+        let local_interface: LocalInterfaceHandle =
+            LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
+        processors.connect_local_interface(local_interface.clone());
 
         #[cfg(feature = "reliable")]
         {
             let processors_for_mgr = processors.clone();
             let mut_rx = rx;
             tokio::spawn(async move {
-                let manager = Arc::new(AsyncMutex::new(SessionManager::new_without_net(
-                    processors_for_mgr,
-                )));
+                let manager = Arc::new(AsyncMutex::new(SessionManager::new(processors_for_mgr)));
                 let mut rx = mut_rx;
                 while let Some(cmd) = rx.recv().await {
                     match cmd {

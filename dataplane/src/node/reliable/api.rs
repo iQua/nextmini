@@ -17,7 +17,7 @@ impl InboundFrame {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ReliableHandle {
     #[allow(dead_code)]
     tx: mpsc::UnboundedSender<Command>,

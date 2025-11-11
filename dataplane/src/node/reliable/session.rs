@@ -70,9 +70,7 @@ impl SessionManager {
         handle
     }
 
-    /// Temporary constructor while the network writer hookup is decided.
-    /// Spawns no-op tasks for senders/receivers and logs warnings.
-    pub fn new_without_net(processors: ProcessorHandle) -> Self {
+    pub fn new(processors: ProcessorHandle) -> Self {
         Self {
             processors,
             tasks: AHashMap::default(),
