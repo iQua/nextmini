@@ -20,8 +20,14 @@ env PYO3_PYTHON=/opt/homebrew/bin/python3.13 \
 ```bash
 ./start-database.sh
 
-cargo test -p controller
-cargo test -p controller groups -- --nocapture
-cargo test -p controller groups::tests::reports_flow_finished_for_user_space -- --nocapture
 cargo nextest run -p controller
+
+# the below test needs start the db
+cargo test -p controller receivers_join_leave_independent_groups -- --nocapture
+```
+
+## Stop the database (optional)
+
+```bash
+docker stop nextmini-database
 ```
