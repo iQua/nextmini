@@ -2,9 +2,10 @@
 
 ## Workspace
 
+Run all workspace tests with a single command:
+
 ```bash
-cargo test --workspace --exclude nextmini_py
-cargo nextest run --workspace --exclude nextmini_py
+cargo nextest run --no-default-features --features reliable --features dev-tests
 ```
 
 ## nextmini_py
@@ -18,5 +19,5 @@ env PYO3_PYTHON=/opt/homebrew/bin/python3.13 \
 ## Controller
 
 ```bash
-cargo nextest run -p controller 
+cargo nextest run -p controller
 ```
