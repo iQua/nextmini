@@ -88,8 +88,23 @@ impl Conductor {
                             guard.stop(session).await;
                         }
                         ReliableCommand::Deliver { session, frame } => {
-                            let guard = manager.lock().await;
-                            guard.deliver(session, frame);
+                            let sender = {
+                                let guard = manager.lock().await;
+                                guard.input_sender(session)
+                            };
+                            if let Some(tx) = sender {
+                                if tx.send(frame).await.is_err() {
+                                    tracing::warn!(
+                                        session_id = session,
+                                        "Reliable runtime: receiver dropped inbound frame"
+                                    );
+                                }
+                            } else {
+                                tracing::warn!(
+                                    session_id = session,
+                                    "Reliable runtime: no receiver for inbound frame"
+                                );
+                            }
                         }
                         ReliableCommand::Wait { session, reply } => {
                             // Take ownership of the task and await completion.

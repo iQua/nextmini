@@ -107,11 +107,9 @@ impl SessionManager {
         self.inputs.remove(&sid);
     }
 
-    /// Push inbound bytes into a receiver session if available.
-    pub fn deliver(&self, sid: SessionId, frame: InboundFrame) {
-        if let Some(tx) = self.inputs.get(&sid) {
-            let _ = tx.try_send(frame);
-        }
+    /// Returns a clone of the inbound channel for a session, if present.
+    pub fn input_sender(&self, sid: SessionId) -> Option<mpsc::Sender<InboundFrame>> {
+        self.inputs.get(&sid).cloned()
     }
 
     pub fn allocate_session_id(&mut self) -> SessionId {
