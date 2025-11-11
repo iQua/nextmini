@@ -49,7 +49,10 @@ async fn main() {
     let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.port)).await {
         Ok(l) => l,
         Err(e) => {
-            error!("Failed to bind controller port {}: {}. Exiting.", config.port, e);
+            error!(
+                "Failed to bind controller port {}: {}. Exiting.",
+                config.port, e
+            );
             return;
         }
     };
@@ -243,11 +246,19 @@ async fn handle_connection(
                         let msg_bytes = match rmp_serde::to_vec(&response) {
                             Ok(b) => b,
                             Err(e) => {
-                                error!("Failed to encode StartUp response for node {}: {}", node_id, e);
+                                error!(
+                                    "Failed to encode StartUp response for node {}: {}",
+                                    node_id, e
+                                );
                                 continue;
                             }
                         };
-                        match write_arc.lock().await.send(Message::binary(msg_bytes)).await {
+                        match write_arc
+                            .lock()
+                            .await
+                            .send(Message::binary(msg_bytes))
+                            .await
+                        {
                             Ok(_) => info!("Sent StartUp response to node {}.", node_id),
                             Err(e) => {
                                 error!(
@@ -327,7 +338,10 @@ async fn handle_connection(
                                     match rmp_serde::to_vec(&msg) {
                                         Ok(buf) => Message::binary(buf),
                                         Err(e) => {
-                                            error!("Failed to encode AddNode for {}: {}", node.id, e);
+                                            error!(
+                                                "Failed to encode AddNode for {}: {}",
+                                                node.id, e
+                                            );
                                             continue;
                                         }
                                     }
@@ -391,7 +405,10 @@ async fn handle_connection(
                                     match rmp_serde::to_vec(&msg) {
                                         Ok(buf) => Message::binary(buf),
                                         Err(e) => {
-                                            error!("Failed to encode InstallRoutes for {}: {}", node_id, e);
+                                            error!(
+                                                "Failed to encode InstallRoutes for {}: {}",
+                                                node_id, e
+                                            );
                                             continue;
                                         }
                                     }
@@ -747,7 +764,12 @@ async fn handle_connection(
                                             continue;
                                         }
                                     };
-                                    if let Err(e) = write_arc.lock().await.send(Message::binary(msg_bytes)).await {
+                                    if let Err(e) = write_arc
+                                        .lock()
+                                        .await
+                                        .send(Message::binary(msg_bytes))
+                                        .await
+                                    {
                                         error!(
                                             "Failed to send GroupCreated to node {}: {}",
                                             node_id, e

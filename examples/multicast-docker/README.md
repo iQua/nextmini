@@ -36,7 +36,8 @@ Note: This has only been tested on arbutus. Needs to change the name and version
 
 ```bash
 cd python-api
-maturin build --release
+# Build the wheel with the reliable feature enabled
+maturin build --release -F reliable
 cd ../examples/multicast-docker
 docker compose build
 docker compose up
@@ -44,14 +45,14 @@ docker compose up
 
 The pre-built wheel will be shared across all containers, significantly speeding up startup.
 
-### Option 2: Build inside containers on any machines including MacOS.
+### Default: Build inside containers (recommended for portability)
 
 ```bash
 cd examples/multicast-docker
-SKIP_BUILD=0 docker compose up
+docker compose up
 ```
 
-This will build the `nextmini_py` extension inside each container using `maturin develop`.
+By default `SKIP_BUILD=0`, so each container builds the `nextmini_py` extension in-place using `maturin develop -F reliable`. This works across machines (including macOS hosts) without prebuilding wheels.
 The first run will take a few minutes as the wheel is compiled.
 
 Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor,

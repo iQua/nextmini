@@ -58,7 +58,7 @@ impl Conductor {
 
         // initialize reliable subsystem handle (command loop wiring to follow)
         #[cfg(feature = "reliable")]
-        let (reliable, mut rx) = ReliableHandle::new();
+        let (reliable, rx) = ReliableHandle::new();
 
         #[cfg(feature = "reliable")]
         {
@@ -86,6 +86,10 @@ impl Conductor {
                         ReliableCommand::Stop { session } => {
                             let mut guard = manager.lock().await;
                             guard.stop(session).await;
+                        }
+                        ReliableCommand::Deliver { session, frame } => {
+                            let guard = manager.lock().await;
+                            guard.deliver(session, frame);
                         }
                         ReliableCommand::Wait { session, reply } => {
                             // Take ownership of the task and await completion.

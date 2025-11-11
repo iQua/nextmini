@@ -41,7 +41,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create nodes table: {}", e);
     }
 
@@ -72,7 +73,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create flows table: {}", e);
     }
 
@@ -91,7 +93,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create routes table: {}", e);
     }
 
@@ -108,7 +111,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create metrics table: {}", e);
     }
 
@@ -128,7 +132,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create app_flows table: {}", e);
     }
 
@@ -144,7 +149,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create groups table: {}", e);
     }
 
@@ -159,7 +165,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create group_members table: {}", e);
     }
 
@@ -175,7 +182,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to create group_routes table: {}", e);
     }
 
@@ -206,7 +214,8 @@ async fn create_db(pool: &Pool<Postgres>) {
         "#,
     )
     .execute(pool)
-    .await {
+    .await
+    {
         error!("Failed to drop existing membership trigger: {}", e);
     }
 
@@ -229,35 +238,59 @@ async fn reset_db(pool: &Pool<Postgres>) {
     info!("Resetting database - dropping all tables...");
 
     // drops the existing tables to ensure schema changes are applied
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS metrics").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS metrics")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop metrics table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS app_flows").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS app_flows")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop app_flows table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS flows").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS flows")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop flows table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS group_routes").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS group_routes")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop group_routes table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS group_members").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS group_members")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop group_members table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS groups").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS groups")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop groups table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS routes").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS routes")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop routes table: {}", e);
     }
 
-    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS nodes").execute(pool).await {
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS nodes")
+        .execute(pool)
+        .await
+    {
         error!("Failed to drop nodes table: {}", e);
     }
 
@@ -538,7 +571,10 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
     let mut conn = match db_pool.acquire().await {
         Ok(c) => c,
         Err(e) => {
-            error!("Failed to acquire connection for route trigger setup: {}", e);
+            error!(
+                "Failed to acquire connection for route trigger setup: {}",
+                e
+            );
             return;
         }
     };
@@ -594,18 +630,17 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
                         // all routes from the database and re-install them all
                         info!("Installing route updates into the dataplane.");
 
-                        let routes_db: Vec<DbRoute> = match sqlx::query_as::<_, DbRoute>(
-                            "SELECT * FROM routes",
-                        )
-                        .fetch_all(&*db_pool)
-                        .await
-                        {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("Failed to fetch routes: {}", e);
-                                continue;
-                            }
-                        };
+                        let routes_db: Vec<DbRoute> =
+                            match sqlx::query_as::<_, DbRoute>("SELECT * FROM routes")
+                                .fetch_all(&*db_pool)
+                                .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!("Failed to fetch routes: {}", e);
+                                    continue;
+                                }
+                            };
 
                         let routes: Vec<Route> = routes_db
                             .iter()
@@ -902,10 +937,16 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Node
     };
 
     if flow_row.is_none() {
-        if let Err(e) = sqlx::query(create_flow_function_sql).execute(&mut *conn).await {
+        if let Err(e) = sqlx::query(create_flow_function_sql)
+            .execute(&mut *conn)
+            .await
+        {
             error!("Failed to create flow notification function: {}", e);
         }
-        if let Err(e) = sqlx::query(create_flow_trigger_sql).execute(&mut *conn).await {
+        if let Err(e) = sqlx::query(create_flow_trigger_sql)
+            .execute(&mut *conn)
+            .await
+        {
             error!("Failed to create flow trigger: {}", e);
         }
         info!("Created flow notification trigger.");
@@ -1027,7 +1068,6 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Node
     });
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1039,8 +1079,8 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::{Mutex, RwLock};
     use tokio::task::JoinHandle;
-    use tokio_tungstenite::{accept_async, connect_async};
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::{accept_async, connect_async};
 
     use nextmini_messages::ControllerToDataplane;
 
@@ -1238,11 +1278,10 @@ mod tests {
         assert_eq!(member_two_routes.len(), 1);
         assert_eq!(member_two_routes[0].next_hops, vec![2]);
 
-        let member_three_routes =
-            match deliveries.remove(&3).expect("member 3 delivery missing") {
-                ControllerToDataplane::InstallGroupRoutes { routes, .. } => routes,
-                other => panic!("unexpected message for node 3: {:?}", other),
-            };
+        let member_three_routes = match deliveries.remove(&3).expect("member 3 delivery missing") {
+            ControllerToDataplane::InstallGroupRoutes { routes, .. } => routes,
+            other => panic!("unexpected message for node 3: {:?}", other),
+        };
         assert_eq!(member_three_routes.len(), 1);
         assert_eq!(member_three_routes[0].next_hops, vec![3]);
 

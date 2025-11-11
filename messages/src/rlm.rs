@@ -172,11 +172,7 @@ pub fn decode_data(buf: &[u8]) -> Option<(RlmHeader, RlmData, &[u8])> {
     if end > buf.len() {
         return None;
     }
-    Some((
-        hdr,
-        RlmData { index, payload_len },
-        &buf[start..end],
-    ))
+    Some((hdr, RlmData { index, payload_len }, &buf[start..end]))
 }
 
 /// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
@@ -352,7 +348,10 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
             } else {
                 None
             };
-            Eot { last_index, checksum }
+            Eot {
+                last_index,
+                checksum,
+            }
         }
         _ => return None,
     };
@@ -370,7 +369,8 @@ pub fn coalesce_sack_runs(mut runs: Vec<(u16, u16)>) -> Vec<(u16, u16)> {
     let mut cur = runs[0];
     for (s, l) in runs.into_iter().skip(1) {
         let cur_end = cur.0.saturating_add(cur.1);
-        if s <= cur_end { // overlap or adjacent
+        if s <= cur_end {
+            // overlap or adjacent
             let new_end = cur_end.max(s.saturating_add(l));
             cur.1 = new_end.saturating_sub(cur.0);
         } else {
@@ -442,14 +442,20 @@ pub fn build_gap_runs(base: u64, highest_seen: u64, received: &BTreeSet<u64>) ->
 }
 
 /// Compute cumulative ACK base (`expected-1`) and SACK gap runs.
-pub fn build_ack_and_sack(expected: u64, received: &BTreeSet<u64>, highest_seen: u64) -> (u64, Vec<(u16, u16)>) {
+pub fn build_ack_and_sack(
+    expected: u64,
+    received: &BTreeSet<u64>,
+    highest_seen: u64,
+) -> (u64, Vec<(u16, u16)>) {
     let base = expected.saturating_sub(1);
     let runs = build_gap_runs(base, highest_seen, received);
     (base, runs)
 }
 
 /// Choose minimal REPAIR indices for a timeout on `expected`.
-pub fn choose_repair_indices(expected: u64) -> Vec<u64> { vec![expected] }
+pub fn choose_repair_indices(expected: u64) -> Vec<u64> {
+    vec![expected]
+}
 
 /// Ack policy controls sender retirement/commit logic.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -462,15 +468,21 @@ pub enum AckPolicy {
 /// Parse ack policy strings: "all", "k:N" where N>=1, or "frac:P" where 0<P<=1.
 pub fn parse_ack_policy(s: &str) -> Option<AckPolicy> {
     let low = s.trim().to_ascii_lowercase();
-    if low == "all" { return Some(AckPolicy::All); }
+    if low == "all" {
+        return Some(AckPolicy::All);
+    }
     if let Some(rest) = low.strip_prefix("k:") {
         let n: u32 = rest.parse().ok()?;
-        if n == 0 || n > u16::MAX as u32 { return None; }
+        if n == 0 || n > u16::MAX as u32 {
+            return None;
+        }
         return Some(AckPolicy::KofN(n as u16));
     }
     if let Some(rest) = low.strip_prefix("frac:") {
         let p: f32 = rest.parse().ok()?;
-        if p <= 0.0 || p > 1.0 { return None; }
+        if p <= 0.0 || p > 1.0 {
+            return None;
+        }
         return Some(AckPolicy::Fraction(p));
     }
     None
@@ -498,12 +510,25 @@ mod tests {
     #[test]
     fn roundtrip_controls() {
         let ctrls = vec![
-            RlmControl::Manifest { chunk_size: 4096, total_bytes: 123456, checksum_algo: 1, options: 0 },
+            RlmControl::Manifest {
+                chunk_size: 4096,
+                total_bytes: 123456,
+                checksum_algo: 1,
+                options: 0,
+            },
             RlmControl::Ready { node_id: 99 },
             RlmControl::Ack { up_to: 77 },
-            RlmControl::Sack { base: 10, runs: vec![(1,3), (10,2)] },
-            RlmControl::Repair { indices: vec![2,4,6,8] },
-            RlmControl::Eot { last_index: 1024, checksum: None },
+            RlmControl::Sack {
+                base: 10,
+                runs: vec![(1, 3), (10, 2)],
+            },
+            RlmControl::Repair {
+                indices: vec![2, 4, 6, 8],
+            },
+            RlmControl::Eot {
+                last_index: 1024,
+                checksum: None,
+            },
         ];
 
         for c in ctrls {
@@ -524,10 +549,10 @@ mod tests {
 
     #[test]
     fn coalesce_sack_runs_merges_and_sorts() {
-        let runs = vec![(5,2), (1,3), (3,2), (8,1)];
+        let runs = vec![(5, 2), (1, 3), (3, 2), (8, 1)];
         // (1..3)->(1,3) and (3..5)->(3,2) merge into (1,4); then (5,2) adjacent → (1,6)
         let out = coalesce_sack_runs(runs);
-        assert_eq!(out, vec![(1,6), (8,1)]);
+        assert_eq!(out, vec![(1, 6), (8, 1)]);
     }
 
     #[test]
@@ -536,19 +561,23 @@ mod tests {
         let highest = 20u64;
         let mut recvd = BTreeSet::new();
         // receive 11, 12, 15, 19, 20 → gaps (13,2) and (16,3)
-        for v in [11, 12, 15, 19, 20] { recvd.insert(v); }
+        for v in [11, 12, 15, 19, 20] {
+            recvd.insert(v);
+        }
         let gaps = build_gap_runs(base, highest, &recvd);
-        assert_eq!(gaps, vec![(3,2), (6,3)]);
+        assert_eq!(gaps, vec![(3, 2), (6, 3)]);
     }
 
     #[test]
     fn build_ack_and_sack_base_and_runs() {
         let mut recvd = BTreeSet::new();
-        for v in [2u64, 4, 5, 7] { recvd.insert(v); }
+        for v in [2u64, 4, 5, 7] {
+            recvd.insert(v);
+        }
         let (base, runs) = build_ack_and_sack(2, &recvd, 7);
         assert_eq!(base, 1);
         // missing 3 then 6
-        assert_eq!(runs, vec![(2,1), (5,1)]);
+        assert_eq!(runs, vec![(2, 1), (5, 1)]);
     }
 
     #[test]
@@ -569,7 +598,10 @@ mod tests {
         assert_eq!(parse_ack_policy("all"), Some(AckPolicy::All));
         assert_eq!(parse_ack_policy("ALL"), Some(AckPolicy::All));
         assert_eq!(parse_ack_policy("k:3"), Some(AckPolicy::KofN(3)));
-        assert_eq!(parse_ack_policy("frac:0.75"), Some(AckPolicy::Fraction(0.75)));
+        assert_eq!(
+            parse_ack_policy("frac:0.75"),
+            Some(AckPolicy::Fraction(0.75))
+        );
         assert_eq!(parse_ack_policy("k:0"), None);
         assert_eq!(parse_ack_policy("k:70000"), None);
         assert_eq!(parse_ack_policy("frac:0"), None);
@@ -593,7 +625,12 @@ mod tests {
         // Start from a valid manifest and then truncate body bytes
         let good = encode_control(
             9,
-            &RlmControl::Manifest { chunk_size: 4096, total_bytes: 123, checksum_algo: 0, options: 0 },
+            &RlmControl::Manifest {
+                chunk_size: 4096,
+                total_bytes: 123,
+                checksum_algo: 0,
+                options: 0,
+            },
         );
         let mut bad = good.clone();
         // Truncate to just header (no body)
@@ -613,19 +650,36 @@ mod tests {
         assert!(decode_control(&bad_ack).is_none());
 
         // Sack requires at least 10 bytes (base + count)
-        let sack = encode_control(1, &RlmControl::Sack { base: 10, runs: vec![(1,1)] });
+        let sack = encode_control(
+            1,
+            &RlmControl::Sack {
+                base: 10,
+                runs: vec![(1, 1)],
+            },
+        );
         let mut bad_sack = sack.clone();
         bad_sack.truncate(RlmHeader::LEN + 9);
         assert!(decode_control(&bad_sack).is_none());
 
         // Repair requires at least 2 bytes (count)
-        let repair = encode_control(1, &RlmControl::Repair { indices: vec![1,2] });
+        let repair = encode_control(
+            1,
+            &RlmControl::Repair {
+                indices: vec![1, 2],
+            },
+        );
         let mut bad_repair = repair.clone();
         bad_repair.truncate(RlmHeader::LEN + 1);
         assert!(decode_control(&bad_repair).is_none());
 
         // EOT requires 9 bytes minimum (index + flag)
-        let eot = encode_control(1, &RlmControl::Eot { last_index: 42, checksum: None });
+        let eot = encode_control(
+            1,
+            &RlmControl::Eot {
+                last_index: 42,
+                checksum: None,
+            },
+        );
         let mut bad_eot = eot.clone();
         bad_eot.truncate(RlmHeader::LEN + 8);
         assert!(decode_control(&bad_eot).is_none());

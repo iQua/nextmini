@@ -26,11 +26,7 @@ pub fn coalesce_sack_runs(mut runs: Vec<(u16, u16)>) -> Vec<(u16, u16)> {
 }
 
 /// Build SACK gap runs given a cumulative base and the set of received indices in (base, high].
-pub fn build_gap_runs(
-    base: u64,
-    highest_seen: u64,
-    received: &BTreeSet<u64>,
-) -> Vec<(u16, u16)> {
+pub fn build_gap_runs(base: u64, highest_seen: u64, received: &BTreeSet<u64>) -> Vec<(u16, u16)> {
     if highest_seen <= base {
         return Vec::new();
     }
@@ -142,9 +138,9 @@ pub fn process_control_event(
             }
             Vec::new()
         }
-        RlmControl::Manifest { .. }
-        | RlmControl::Ready { .. }
-        | RlmControl::Eot { .. } => Vec::new(),
+        RlmControl::Manifest { .. } | RlmControl::Ready { .. } | RlmControl::Eot { .. } => {
+            Vec::new()
+        }
     }
 }
 
@@ -177,7 +173,9 @@ mod tests {
         let highest = 12u64;
         let mut recv = BTreeSet::new();
         // received 6,7,10,12; missing 8,9,11
-        for i in [6u64, 7, 10, 12] { recv.insert(i); }
+        for i in [6u64, 7, 10, 12] {
+            recv.insert(i);
+        }
         let runs = build_gap_runs(base, highest, &recv);
         // gaps start at 8 (len 2) and 11 (len 1)
         assert_eq!(runs, vec![(3, 2), (6, 1)]);
@@ -217,6 +215,7 @@ mod tests {
             &policy,
         );
         assert!(retired1.is_empty());
+        retire_chunks(&retired1, &mut inflight, &mut resend);
 
         // Second ACK from node 2 up_to 2: retire 1 and 2 now
         let retired2 = process_control_event(
@@ -228,6 +227,7 @@ mod tests {
             &policy,
         );
         assert_eq!(retired2, vec![1, 2]);
+        retire_chunks(&retired2, &mut inflight, &mut resend);
 
         // Finish index 3
         let retired3 = process_control_event(
@@ -239,6 +239,7 @@ mod tests {
             &policy,
         );
         assert_eq!(retired3, vec![3]);
+        retire_chunks(&retired3, &mut inflight, &mut resend);
     }
 
     #[test]
@@ -263,6 +264,35 @@ mod tests {
 
         let scheduled: Vec<u64> = resend.iter().copied().collect();
         assert_eq!(scheduled, vec![11, 12, 15]);
+    }
+
+    #[test]
+    fn completion_policy_leader_retires_on_matching_ack() {
+        use std::collections::{BTreeMap, BTreeSet, HashSet};
+        let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
+        inflight.insert(1, HashSet::new());
+        let mut resend: BTreeSet<u64> = BTreeSet::new();
+        let policy = CompletionPolicy::Leader(42);
+
+        let retired = process_control_event(
+            7,
+            &RlmControl::Ack { up_to: 1 },
+            &mut inflight,
+            &mut resend,
+            3,
+            &policy,
+        );
+        assert!(retired.is_empty());
+
+        let retired = process_control_event(
+            42,
+            &RlmControl::Ack { up_to: 1 },
+            &mut inflight,
+            &mut resend,
+            3,
+            &policy,
+        );
+        assert_eq!(retired, vec![1]);
     }
 
     #[test]

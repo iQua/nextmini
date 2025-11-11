@@ -192,29 +192,21 @@ def run_source(args: argparse.Namespace) -> None:
     checksum_path = (
         resolve_checksum_path(args) if args.verify_checksum else None
     )
-    report = dataplane.send_file_reliable(
+    # New reliable path (feature=reliable): use thin shim; engines may be stubbed until writer lands
+    sid = dataplane.reliable_send_file_rs(
         group_ip,
         receiver_ids,
         str(args.tensor_path),
         chunk_size=args.chunk_size,
-        flow_window=args.flow_window,
-        flow_poll_ms=args.flow_poll_ms,
-        ready_timeout_ms=args.group_timeout * 1000,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        sleep_ms=args.sleep_ms,
-        checksum_path=str(checksum_path) if checksum_path else None,
-        write_checksum=args.verify_checksum,
+        ack_policy="all",
     )
-
-    log(
-        f"Source streamed {report.bytes_sent} bytes ({report.chunks_sent} chunks)"
-        f" with {report.resends} retransmits in {report.duration_ms} ms.",
-        args.quiet,
-    )
-    if report.checksum:
-        log(f"Checksum: {report.checksum}", args.quiet)
-    log("Source finished sending multicast payloads.", args.quiet)
+    log(f"Started reliable send session sid={sid}", args.quiet)
+    if hasattr(dataplane, "reliable_wait"):
+        ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
+        log(f"Send completion: {ok}", args.quiet)
+    log("Source issued reliable send request.", args.quiet)
 
 
 def run_receiver(args: argparse.Namespace) -> None:
@@ -256,29 +248,19 @@ def run_receiver(args: argparse.Namespace) -> None:
     checksum_path = (
         resolve_checksum_path(args) if args.verify_checksum else None
     )
-    report = dataplane.receive_file_reliable(
+    sid = dataplane.reliable_receive_file_rs(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
         chunk_size=args.chunk_size,
-        receive_timeout_ms=args.receive_timeout_ms,
         src_port=args.src_port,
         dst_port=args.dst_port,
         sink_path=str(sink_path) if sink_path else None,
-        verify_checksum=args.verify_checksum,
-        checksum_path=str(checksum_path) if checksum_path else None,
     )
-
-    log(
-        f"Receiver committed {report.bytes_received} bytes"
-        f" ({report.chunks_received} chunks, {report.repairs_requested} repairs)"
-        f" in {report.duration_ms} ms.",
-        args.quiet,
-    )
-    if sink_path:
-        log(f"Wrote reconstructed tensor to {sink_path}", args.quiet)
-    if report.checksum:
-        log("Checksum verified successfully.", args.quiet)
+    log(f"Started reliable receive session sid={sid}", args.quiet)
+    if hasattr(dataplane, "reliable_wait"):
+        ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
+        log(f"Receive completion: {ok}", args.quiet)
 
 
 def main() -> int:

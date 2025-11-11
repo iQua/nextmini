@@ -27,14 +27,14 @@ use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
     PythonEvent, PythonFragmentationPolicy, PythonInterfaceHandle,
 };
-use nextmini::node::{NodeId, NodeIdExt};
-use nextmini_messages::DataplaneToController;
 #[cfg(feature = "reliable")]
-use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
+use nextmini::node::reliable::api::{InboundFrame, ReliableHandle as RustReliableHandle};
 #[cfg(feature = "reliable")]
 use nextmini::node::reliable::session as reliable_session;
+use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "reliable")]
 use nextmini_messages::rlm as rlm_msg;
+use nextmini_messages::DataplaneToController;
 
 pub use crate::buffer::FrozenBuffer;
 
@@ -249,20 +249,24 @@ impl Dataplane {
         ack_policy: &str,
     ) -> PyResult<u64> {
         // Validate inputs early to surface helpful errors even while stubbed.
-        let _ip = parse_ipv4(group_ip)?;
+        #[allow(unused_variables)]
+        let group_ip_addr = parse_ipv4(group_ip)?;
         if receiver_ids.is_empty() {
-            return Err(PyRuntimeError::new_err("receiver_ids must contain at least one entry."));
+            return Err(PyRuntimeError::new_err(
+                "receiver_ids must contain at least one entry.",
+            ));
         }
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
         let path = std::path::Path::new(tensor_path);
         if !path.exists() {
-            return Err(PyRuntimeError::new_err(format!("tensor_path does not exist: {}", tensor_path)));
+            return Err(PyRuntimeError::new_err(format!(
+                "tensor_path does not exist: {}",
+                tensor_path
+            )));
         }
-        if !(ack_policy == "all"
-            || ack_policy.starts_with("k:")
-            || ack_policy.starts_with("frac:"))
+        if !(ack_policy == "all" || ack_policy.starts_with("k:") || ack_policy.starts_with("frac:"))
         {
             return Err(PyRuntimeError::new_err(format!(
                 "invalid ack_policy: {ack_policy}"
@@ -273,8 +277,9 @@ impl Dataplane {
         #[cfg(feature = "reliable")]
         {
             // Map ack_policy string to dataplane enum via messages helper.
-            let ap = rlm_msg::parse_ack_policy(ack_policy)
-                .ok_or_else(|| PyRuntimeError::new_err(format!("invalid ack_policy: {ack_policy}")))?;
+            let ap = rlm_msg::parse_ack_policy(ack_policy).ok_or_else(|| {
+                PyRuntimeError::new_err(format!("invalid ack_policy: {ack_policy}"))
+            })?;
             let ack = match ap {
                 rlm_msg::AckPolicy::All => reliable_session::AckPolicy::All,
                 rlm_msg::AckPolicy::KofN(n) => reliable_session::AckPolicy::KofN(n as usize),
@@ -282,13 +287,16 @@ impl Dataplane {
             };
 
             if let Some(handle) = &self.reliable {
-                // Build sender config and start session. For now, we keep a minimal baseline.
+                let ctrl_receivers = receiver_ids.clone();
+                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                // Build sender config and start session.
                 let common = reliable_session::CommonConfig {
                     session_id: sid,
-                    group_ip: parse_ipv4(group_ip)?,
+                    group_ip: group_ip_addr,
                     chunk_size,
-                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
-                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    src_port: sp,
+                    dst_port: dp,
                     control_weight: 10,
                     data_bucket: None,
                     local_node_id: self.cfg.node_id,
@@ -310,8 +318,43 @@ impl Dataplane {
                     fec_k: None,
                     fec_p: 0,
                 };
-                // Synchronous start for a session id; actual data plane runs in background.
                 let started_sid = rt().block_on(handle.start_sender(cfg));
+
+                // Bridge inbound control frames (ACK/SACK/REPAIR) from each receiver so the
+                // Rust sender can retire chunks and schedule repairs.
+                if !ctrl_receivers.is_empty() {
+                    let py_if = self.py_if.clone();
+                    let rh = handle.clone();
+                    let base = self.cfg.user_space_base_addr;
+                    let mask = self.cfg.local_netmask;
+                    let local_ip = self.cfg.user_space_address;
+                    for rid in ctrl_receivers {
+                        let src_ip = (rid as NodeId).ip_addr(base, mask);
+                        let dst_ip = local_ip;
+                        let flow_id = Packet::flow_id_from_parts(src_ip, dp, dst_ip, sp);
+                        let mut rx = rt().block_on(py_if.register_receiver(flow_id, true));
+                        let rh_clone = rh.clone();
+                        let peer_id = rid;
+                        rt().spawn(async move {
+                            while let Some(delivery) = rx.recv().await {
+                                match delivery {
+                                    PythonDelivery::Payload(p) => {
+                                        rh_clone.deliver(
+                                            started_sid,
+                                            InboundFrame::new(p.bytes.to_vec(), Some(peer_id)),
+                                        );
+                                    }
+                                    PythonDelivery::Raw(pkt) => {
+                                        rh_clone.deliver(
+                                            started_sid,
+                                            InboundFrame::new(pkt.bytes().to_vec(), Some(peer_id)),
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
                 return Ok(started_sid);
             }
         }
@@ -374,6 +417,36 @@ impl Dataplane {
                     nack_jitter_ms: 3,
                 };
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
+                // Bridge PythonInterface deliveries to receiver engine via ReliableHandle::deliver
+                // For local delivery, packets injected by the reliable sender use the
+                // unicast user-space IP of the destination node, not the multicast group.
+                let src_ip = (source_node_id as NodeId)
+                    .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+                let dst_ip = self.cfg.user_space_address;
+                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
+                let mut rx = rt().block_on(self.py_if.register_receiver(flow_id, true));
+                let rh2 = handle.clone();
+                let peer_id = source_node_id;
+                rt().spawn(async move {
+                    while let Some(delivery) = rx.recv().await {
+                        match delivery {
+                            nextmini::node::python::interface::PythonDelivery::Payload(p) => {
+                                rh2.deliver(
+                                    started_sid,
+                                    InboundFrame::new(p.bytes.to_vec(), Some(peer_id)),
+                                );
+                            }
+                            nextmini::node::python::interface::PythonDelivery::Raw(pkt) => {
+                                rh2.deliver(
+                                    started_sid,
+                                    InboundFrame::new(pkt.bytes().to_vec(), Some(peer_id)),
+                                );
+                            }
+                        }
+                    }
+                });
                 return Ok(started_sid);
             }
         }
@@ -399,7 +472,7 @@ impl Dataplane {
                     let ok = rt().block_on(async move {
                         tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
                             .await
-                            .unwrap_or(Ok(false))
+                            .unwrap_or(false)
                     });
                     return Ok(ok);
                 } else {

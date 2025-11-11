@@ -58,7 +58,7 @@ services:
       - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
-      SKIP_BUILD: "${SKIP_BUILD:-1}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
     command:
@@ -97,7 +97,7 @@ services:
       - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
-      SKIP_BUILD: "${SKIP_BUILD:-1}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
     command:
@@ -137,7 +137,7 @@ services:
       - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
-      SKIP_BUILD: "${SKIP_BUILD:-1}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
     command:

@@ -58,7 +58,8 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cpu >/dev/null
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   uv pip install maturin >/dev/null
-  maturin develop --release -m python-api/Cargo.toml >/dev/null
+  # Enable the dataplane's reliable engine in the Python bindings for this demo.
+  maturin develop --release -m python-api/Cargo.toml -F reliable >/dev/null
 else
   wheel_path="${NEXTMINI_PY_WHEEL:-}"
   if [[ -z "${wheel_path}" ]]; then

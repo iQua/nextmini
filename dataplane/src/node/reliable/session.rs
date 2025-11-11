@@ -2,14 +2,13 @@ use std::net::Ipv4Addr;
 use tokio::task::JoinHandle;
 
 use ahash::AHashMap;
+use tokio::sync::mpsc;
 
 use nextmini_messages::TokenBucketSpec;
 
-use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::FlowId;
 
-use super::api::SessionId;
+use super::api::{InboundFrame, SessionId};
 
 #[derive(Clone, Debug)]
 pub enum AckPolicy {
@@ -58,39 +57,45 @@ pub struct ReceiverConfig {
 }
 
 pub struct SessionManager {
-    // Optional until the network writer is fully wired for reliable sessions.
-    net: Option<NetworkInterfaceHandle>,
     processors: ProcessorHandle,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
+    inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
 }
 
 impl SessionManager {
-    pub fn new(net: NetworkInterfaceHandle, processors: ProcessorHandle) -> Self {
-        Self { net: Some(net), processors, tasks: AHashMap::default() }
-    }
-
     /// Removes and returns the join handle for a session task, if present.
     pub fn take_task(&mut self, sid: SessionId) -> Option<JoinHandle<()>> {
-        self.tasks.remove(&sid)
+        let handle = self.tasks.remove(&sid);
+        self.inputs.remove(&sid);
+        handle
     }
 
     /// Temporary constructor while the network writer hookup is decided.
     /// Spawns no-op tasks for senders/receivers and logs warnings.
     pub fn new_without_net(processors: ProcessorHandle) -> Self {
-        Self { net: None, processors, tasks: AHashMap::default() }
+        Self {
+            processors,
+            tasks: AHashMap::default(),
+            inputs: AHashMap::default(),
+        }
     }
 
     pub fn spawn_sender(&mut self, cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
-        let handle = tokio::spawn(super::sender::run(cfg, processors));
+        let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
+        self.inputs.insert(sid, tx);
+        let handle = tokio::spawn(super::sender::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
         sid
     }
 
     pub fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
         let sid = cfg.common.session_id;
-        let handle = tokio::spawn(super::receiver::run(cfg, None));
+        let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
+        self.inputs.insert(sid, tx);
+        let processors = self.processors.clone();
+        let handle = tokio::spawn(super::receiver::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
         sid
     }
@@ -99,20 +104,33 @@ impl SessionManager {
         if let Some(h) = self.tasks.remove(&sid) {
             h.abort();
         }
+        self.inputs.remove(&sid);
     }
 
-    /// Returns true if the session task has finished (or does not exist).
-    pub fn is_finished(&self, sid: SessionId) -> bool {
-        match self.tasks.get(&sid) {
-            Some(h) => h.is_finished(),
-            None => true,
+    /// Push inbound bytes into a receiver session if available.
+    pub fn deliver(&self, sid: SessionId, frame: InboundFrame) {
+        if let Some(tx) = self.inputs.get(&sid) {
+            let _ = tx.try_send(frame);
         }
     }
+}
 
-    /// Apply per-flow scheduler policy, e.g., raise control-flow priority.
-    /// Callers should pass the flow_id representing the control channel.
-    pub fn apply_scheduler_policy(&self, flow_id: FlowId, control_weight: usize) {
-        // Set WRR weight via processors; token-bucket per flow can be wired when exposed.
-        self.processors.set_flow_weight(flow_id, control_weight);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ack_policy_variants_constructible() {
+        let policies = [AckPolicy::All, AckPolicy::KofN(2), AckPolicy::Fraction(0.5)];
+        for policy in policies {
+            match policy {
+                AckPolicy::All => {}
+                AckPolicy::KofN(n) => assert!(n >= 1),
+                AckPolicy::Fraction(f) => {
+                    assert!(f > 0.0);
+                    assert!(f <= 1.0);
+                }
+            }
+        }
     }
 }
