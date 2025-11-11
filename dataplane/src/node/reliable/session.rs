@@ -60,6 +60,7 @@ pub struct SessionManager {
     processors: ProcessorHandle,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
+    next_session_id: SessionId,
 }
 
 impl SessionManager {
@@ -75,6 +76,7 @@ impl SessionManager {
             processors,
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
+            next_session_id: 1,
         }
     }
 
@@ -110,6 +112,12 @@ impl SessionManager {
         if let Some(tx) = self.inputs.get(&sid) {
             let _ = tx.try_send(frame);
         }
+    }
+
+    pub fn allocate_session_id(&mut self) -> SessionId {
+        let sid = self.next_session_id;
+        self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
+        sid
     }
 }
 

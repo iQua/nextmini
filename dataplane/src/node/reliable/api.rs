@@ -45,6 +45,9 @@ pub enum Command {
         session: SessionId,
         reply: oneshot::Sender<bool>,
     },
+    AllocateSession {
+        reply: oneshot::Sender<SessionId>,
+    },
 }
 
 impl ReliableHandle {
@@ -82,5 +85,12 @@ impl ReliableHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::Wait { session, reply: tx });
         rx.await.unwrap_or(false)
+    }
+
+    #[allow(dead_code)]
+    pub async fn allocate_session_id(&self) -> SessionId {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.tx.send(Command::AllocateSession { reply: tx });
+        rx.await.expect("allocate_session_id reply")
     }
 }

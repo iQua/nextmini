@@ -15,6 +15,12 @@ Fields
   then re-emit at this interval until the gap closes. Set to `0` to disable the
   timer (SACKs only fire when new gaps are observed).
 - `nack_interval_ms: u32` — how often targeted repairs are requested on timeouts.
+- Session coordination happens via explicit session IDs. Use `Dataplane.reliable_send_file_rs(..., session_id=...)`
+  (or let it allocate one) and pass/propagate the same ID to every receiver via
+  `Dataplane.reliable_receive_file_rs(..., session_id=...)` or
+  `Dataplane.reliable_register_session_id(...)`. The controller/orchestrator must
+  distribute the ID along with group membership so that every node registers the
+  same transfer.
 - `ack_policy: String` — sender commit policy: `all`, `k:N`, or `frac:P`.
 - `fec_k: Option<u16>` / `fec_p: Option<u16>` — optional FEC parameters per block.
 

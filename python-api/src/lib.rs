@@ -1,9 +1,10 @@
 mod buffer;
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 //
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -232,12 +233,31 @@ struct Dataplane {
     _join: tokio::task::JoinHandle<()>,
     #[cfg(feature = "reliable")]
     reliable: Option<RustReliableHandle>,
+    #[cfg(feature = "reliable")]
+    session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
+}
+
+impl Dataplane {
+    #[cfg(feature = "reliable")]
+    fn remember_session(&self, group_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
+        if let Ok(mut guard) = self.session_registry.lock() {
+            guard.insert((group_ip, source_node_id), session_id);
+        }
+    }
+
+    #[cfg(feature = "reliable")]
+    fn lookup_session(&self, group_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
+        self.session_registry
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&(group_ip, source_node_id)).copied())
+    }
 }
 
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=32768, src_port=None, dst_port=None, ack_policy="all"))]
+    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=32768, src_port=None, dst_port=None, ack_policy="all", session_id=None))]
     fn reliable_send_file_rs(
         &self,
         group_ip: &str,
@@ -247,6 +267,7 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         ack_policy: &str,
+        session_id: Option<u64>,
     ) -> PyResult<u64> {
         // Validate inputs early to surface helpful errors even while stubbed.
         #[allow(unused_variables)]
@@ -273,7 +294,7 @@ impl Dataplane {
             )));
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
-        let sid = next_py_message_id();
+        let mut sid = session_id.unwrap_or_else(|| next_py_message_id());
         #[cfg(feature = "reliable")]
         {
             // Map ack_policy string to dataplane enum via messages helper.
@@ -290,6 +311,9 @@ impl Dataplane {
                 let reliable_cfg = &self.cfg.reliable;
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                if session_id.is_none() {
+                    sid = rt().block_on(handle.allocate_session_id());
+                }
                 // Build sender config and start session.
                 let common = reliable_session::CommonConfig {
                     session_id: sid,
@@ -318,6 +342,7 @@ impl Dataplane {
                     fec_p: 0,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
+                self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
                 return Ok(started_sid);
             }
         }
@@ -335,7 +360,7 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=32768, src_port=None, dst_port=None, sink_path=None))]
+    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=32768, src_port=None, dst_port=None, sink_path=None, session_id=None))]
     fn reliable_receive_file_rs(
         &self,
         group_ip: &str,
@@ -345,8 +370,9 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         sink_path: Option<String>,
+        session_id: Option<u64>,
     ) -> PyResult<u64> {
-        let _ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(group_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
@@ -354,14 +380,23 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
-        let sid = next_py_message_id();
+        let mut sid = session_id.unwrap_or_else(|| next_py_message_id());
         #[cfg(feature = "reliable")]
         {
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
+                if session_id.is_none() {
+                    if let Some(known) = self.lookup_session(ip, source_node_id) {
+                        sid = known;
+                    } else {
+                        return Err(PyRuntimeError::new_err(
+                            "session_id is required for reliable_receive_file_rs; call reliable_register_session_id first or pass session_id explicitly.",
+                        ));
+                    }
+                }
                 let common = reliable_session::CommonConfig {
                     session_id: sid,
-                    group_ip: parse_ipv4(group_ip)?,
+                    group_ip: ip,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
@@ -382,6 +417,7 @@ impl Dataplane {
                     sack_interval_ms: reliable_cfg.sack_interval_ms,
                 };
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
+                self.remember_session(ip, source_node_id, started_sid);
                 return Ok(started_sid);
             }
         }
@@ -420,6 +456,30 @@ impl Dataplane {
         let _ = (session_id, timeout_ms);
         Ok(false)
     }
+
+    #[cfg(feature = "reliable")]
+    #[pyo3(signature = (group_ip, source_node_id, session_id))]
+    fn reliable_register_session_id(
+        &self,
+        group_ip: &str,
+        source_node_id: usize,
+        session_id: u64,
+    ) -> PyResult<()> {
+        let ip = parse_ipv4(group_ip)?;
+        self.remember_session(ip, source_node_id, session_id);
+        Ok(())
+    }
+
+    #[cfg(feature = "reliable")]
+    #[pyo3(signature = (group_ip, source_node_id))]
+    fn reliable_lookup_session_id(
+        &self,
+        group_ip: &str,
+        source_node_id: usize,
+    ) -> PyResult<Option<u64>> {
+        let ip = parse_ipv4(group_ip)?;
+        Ok(self.lookup_session(ip, source_node_id))
+    }
     #[new]
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
@@ -454,6 +514,9 @@ impl Dataplane {
             conductor.run().await;
         });
 
+        #[cfg(feature = "reliable")]
+        let session_registry = Arc::new(StdMutex::new(HashMap::new()));
+
         Ok(Self {
             cfg,
             py_if,
@@ -462,6 +525,8 @@ impl Dataplane {
             _join: join,
             #[cfg(feature = "reliable")]
             reliable,
+            #[cfg(feature = "reliable")]
+            session_registry,
         })
     }
 

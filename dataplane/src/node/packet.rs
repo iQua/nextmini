@@ -357,18 +357,33 @@ impl Packet {
     }
 
     pub fn tcp_payload_len(&self) -> usize {
+        self.tcp_payload_bounds()
+            .map(|(start, end)| end - start)
+            .unwrap_or(0)
+    }
+
+    pub fn has_tcp_payload(&self) -> bool {
+        self.tcp_payload_len() > 0
+    }
+
+    pub fn tcp_payload(&self) -> Option<&[u8]> {
+        let (start, end) = self.tcp_payload_bounds()?;
+        Some(&self.bytes()[start..end])
+    }
+
+    fn tcp_payload_bounds(&self) -> Option<(usize, usize)> {
         let buf = self.bytes();
         if self.packet_size < 20 || (buf[0] >> 4) != 4 {
-            return 0;
+            return None;
         }
         if buf[9] != 6 {
-            return 0;
+            return None;
         }
 
         let ihl = (buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
-        if self.packet_size < ip_header_len + 14 {
-            return 0;
+        if self.packet_size < ip_header_len + 20 {
+            return None;
         }
 
         let mut total_length = BigEndian::read_u16(&buf[2..4]) as usize;
@@ -377,18 +392,22 @@ impl Packet {
         }
 
         let tcp_offset = ip_header_len;
+        if self.packet_size <= tcp_offset + 12 {
+            return None;
+        }
         let tcp_data_offset = ((buf[tcp_offset + 12] >> 4) & 0x0F) as usize;
         let tcp_header_len = tcp_data_offset * 4;
 
-        if tcp_header_len < 20 || ip_header_len + tcp_header_len > self.packet_size {
-            return 0;
+        if tcp_header_len < 20 || ip_header_len + tcp_header_len > total_length {
+            return None;
         }
 
-        total_length.saturating_sub(ip_header_len + tcp_header_len)
-    }
+        let start = ip_header_len + tcp_header_len;
+        if start > total_length {
+            return None;
+        }
 
-    pub fn has_tcp_payload(&self) -> bool {
-        self.tcp_payload_len() > 0
+        Some((start, total_length))
     }
 
     /// Compute the flow identifier directly from the IPv4+TCP tuple.

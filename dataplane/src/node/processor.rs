@@ -13,9 +13,11 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
+#[cfg(feature = "reliable")]
+use nextmini_messages::rlm;
 use nextmini_messages::{
-    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
-    TokenBucketSpec,
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
+    RoutingTableEntry, TokenBucketSpec,
 };
 
 use crate::node::config::{Feature, LocalConfig};
@@ -28,6 +30,8 @@ use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::python::interface::PythonInterfaceHandle;
+#[cfg(feature = "reliable")]
+use crate::node::reliable::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
@@ -59,6 +63,8 @@ pub enum ProcessorMessage {
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[allow(dead_code)] // Only emitted when the python bridge is active.
     ConnectPythonInterface(PythonInterfaceHandle),
+    #[cfg(feature = "reliable")]
+    ConnectReliableHandle(ReliableHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +142,19 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the ConnectPythonInterface message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    #[cfg(feature = "reliable")]
+    pub fn connect_reliable_handle(&self, handle: ReliableHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectReliableHandle(handle))
+        {
+            error!(
+                "Error sending the ConnectReliableHandle message to the processors: {}",
                 e
             );
         };
@@ -596,6 +615,8 @@ struct Processor {
 
     // optional in-process Python delivery path
     python_interface: Option<PythonInterfaceHandle>,
+    #[cfg(feature = "reliable")]
+    reliable_handle: Option<ReliableHandle>,
 }
 
 impl Processor {
@@ -615,6 +636,8 @@ impl Processor {
             schedulers: AHashMap::new(),
             config,
             python_interface: None,
+            #[cfg(feature = "reliable")]
+            reliable_handle: None,
         }
     }
 
@@ -690,6 +713,10 @@ impl Processor {
             ProcessorMessage::ConnectPythonInterface(interface) => {
                 self.python_interface = Some(interface);
             }
+            #[cfg(feature = "reliable")]
+            ProcessorMessage::ConnectReliableHandle(handle) => {
+                self.reliable_handle = Some(handle);
+            }
         }
     }
 
@@ -758,6 +785,12 @@ impl Processor {
         let mut packet = packet;
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
+            #[cfg(feature = "reliable")]
+            {
+                if self.try_deliver_reliable(&packet) {
+                    return;
+                }
+            }
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
             if packet.flow_id.dst_ip() == self.config.local_address {
@@ -790,5 +823,39 @@ impl Processor {
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
             scheduler.send(packet);
         }
+    }
+
+    #[cfg(feature = "reliable")]
+    fn try_deliver_reliable(&self, packet: &Packet) -> bool {
+        let Some(handle) = self.reliable_handle.as_ref() else {
+            return false;
+        };
+        let Some(payload) = packet.tcp_payload() else {
+            return false;
+        };
+
+        let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
+            hdr.session_id
+        } else if let Some((hdr, _)) = rlm::decode_control(payload) {
+            hdr.session_id
+        } else {
+            return false;
+        };
+
+        let src_node = self.config.ip_to_node_id(packet.flow_id.src_ip());
+        let peer_id = if src_node == INVALID {
+            None
+        } else {
+            Some(src_node)
+        };
+
+        handle.deliver(
+            session_id,
+            ReliableInboundFrame {
+                bytes: payload.to_vec(),
+                peer_id,
+            },
+        );
+        true
     }
 }

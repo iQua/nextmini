@@ -59,6 +59,8 @@ impl Conductor {
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
+        #[cfg(feature = "reliable")]
+        processors.connect_reliable_handle(reliable.clone());
 
         #[cfg(feature = "reliable")]
         {
@@ -99,6 +101,11 @@ impl Conductor {
                             } else {
                                 let _ = reply.send(false);
                             }
+                        }
+                        ReliableCommand::AllocateSession { reply } => {
+                            let mut guard = manager.lock().await;
+                            let sid = guard.allocate_session_id();
+                            let _ = reply.send(sid);
                         }
                     }
                 }
