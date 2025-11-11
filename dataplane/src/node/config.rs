@@ -528,16 +528,26 @@ impl LocalConfig {
 
     /// Extracts source and destination node IDs from the flow ID.
     pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
+        self.try_extract_node_ids_from_flow(flow_id)
+            .unwrap_or_else(|| {
+                let src_ip = flow_id.src_ip();
+                let dst_ip = flow_id.dst_ip();
+                panic!("Detected unknown IP(s) in flow {} -> {}.", src_ip, dst_ip);
+            })
+    }
+
+    /// Attempts to extract node IDs, returning `None` when either IP is outside the configured subnets.
+    pub fn try_extract_node_ids_from_flow(&self, flow_id: FlowId) -> Option<(NodeId, NodeId)> {
         let src_ip = flow_id.src_ip();
         let dst_ip = flow_id.dst_ip();
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
 
         if src_node_id == INVALID || dst_node_id == INVALID {
-            panic!("Detected unknown IP(s) in flow {} -> {}.", src_ip, dst_ip);
+            None
+        } else {
+            Some((src_node_id, dst_node_id))
         }
-
-        (src_node_id, dst_node_id)
     }
 
     /// Returns the effective settings for TCP reordering tolerance.

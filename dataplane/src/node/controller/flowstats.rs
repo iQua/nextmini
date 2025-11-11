@@ -15,7 +15,7 @@ use nextmini_messages::{
 use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::packet::Packet;
-use crate::node::{FlowId, NodeId};
+use crate::node::{FlowId, FlowIdExt, NodeId};
 
 /// Returns the current time in milliseconds since the Unix epoch.
 #[cfg(not(test))]
@@ -122,7 +122,15 @@ impl FlowStatsReporterHandle {
 
     /// Report app flow start for a flow.
     pub fn report_app_flow(&self, flow_id: FlowId) {
-        let (src_node_id, dst_node_id) = self.config.extract_node_ids_from_flow(flow_id);
+        let Some((src_node_id, dst_node_id)) = self.config.try_extract_node_ids_from_flow(flow_id)
+        else {
+            warn!(
+                "FlowStatsReporter: skipping flow with unknown IP(s) {} -> {}",
+                flow_id.src_ip(),
+                flow_id.dst_ip()
+            );
+            return;
+        };
 
         let start_time = current_time_millis();
 

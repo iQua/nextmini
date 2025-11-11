@@ -104,6 +104,10 @@ def write_tensor_metadata(args: argparse.Namespace, tensor_path: Path, size: int
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
     payload = {"path": str(tensor_path), "bytes": size}
     metadata_path(args).write_text(json.dumps(payload))
+    log(
+        f"Recorded tensor metadata path={tensor_path} bytes={size} at {metadata_path(args)}",
+        args.quiet,
+    )
 
 
 def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
@@ -118,6 +122,10 @@ def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
                 args.tensor_path = Path(data["path"])
             if args.expected_bytes is None:
                 args.expected_bytes = int(data["bytes"])
+            log(
+                f"Loaded tensor metadata path={args.tensor_path} bytes={args.expected_bytes}",
+                args.quiet,
+            )
             return
         time.sleep(1)
     raise TimeoutError(f"Timed out waiting for tensor metadata at {path}.")
@@ -194,6 +202,11 @@ def run_source(args: argparse.Namespace) -> None:
         receiver_ids=receiver_ids,
     )
     log(f"Controller assigned group {group_id} ({group_ip}).", args.quiet)
+    log(
+        f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size} "
+        f"flow_window={args.flow_window} flow_poll_ms={args.flow_poll_ms}",
+        args.quiet,
+    )
 
     if args.tensor_path is None:
         raise SystemExit("Source role requires a tensor file; set --tensor-path or --generate-tensor.")
@@ -223,6 +236,8 @@ def run_source(args: argparse.Namespace) -> None:
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
         log(f"Send completion: {ok}", args.quiet)
+    else:
+        log("Dataplane lacks reliable_wait; send completion signal unavailable.", args.quiet)
     log("Source issued reliable send request.", args.quiet)
 
 
@@ -255,7 +270,10 @@ def run_receiver(args: argparse.Namespace) -> None:
     if routes is None:
         raise TimeoutError("Timed out waiting for GroupRoutesInstalled event.")
 
-    log("Routes installed; delegating reliable receive to dataplane.", args.quiet)
+    log(
+        f"Routes installed (entries={len(routes)}); delegating reliable receive to dataplane.",
+        args.quiet,
+    )
 
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:
@@ -278,6 +296,8 @@ def run_receiver(args: argparse.Namespace) -> None:
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
         log(f"Receive completion: {ok}", args.quiet)
+    else:
+        log("Dataplane lacks reliable_wait; receive completion signal unavailable.", args.quiet)
 
 
 def main() -> int:

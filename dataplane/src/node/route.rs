@@ -156,8 +156,9 @@ impl RoutingTable {
             return Some(RouteKey::Multicast(src_node, group_id));
         }
 
-        let (src_node, dst_node) = self.config.extract_node_ids_from_flow(flow_id);
-        Some(RouteKey::Unicast(src_node, dst_node))
+        self.config
+            .try_extract_node_ids_from_flow(flow_id)
+            .map(|(src_node, dst_node)| RouteKey::Unicast(src_node, dst_node))
     }
 
     /// Selects a route id for the provided route key.
