@@ -47,23 +47,7 @@ impl<'a> ControlEmitter<'a> {
     }
 
     fn send(&self, control: &RlmControl) {
-        tracing::info!(
-            session_id = self.session_id,
-            src_ip = %self.src_ip,
-            src_port = self.src_port,
-            dst_ip = %self.dst_ip,
-            dst_port = self.dst_port,
-            control = ?control,
-            "RLM receiver: sending control message"
-        );
-
         let buf = rlm::encode_control(self.session_id, control);
-        tracing::debug!(
-            session_id = self.session_id,
-            buf_len = buf.len(),
-            "RLM receiver: encoded control message"
-        );
-
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
@@ -71,14 +55,6 @@ impl<'a> ControlEmitter<'a> {
             self.dst_port,
             &buf,
         );
-
-        tracing::info!(
-            session_id = self.session_id,
-            flow_id = packet.flow_id,
-            packet_size = packet.packet_size,
-            "RLM receiver: built control packet, sending to processor"
-        );
-
         self.processors.process_packet(packet);
     }
 }
