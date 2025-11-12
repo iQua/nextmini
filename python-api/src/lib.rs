@@ -25,7 +25,7 @@ use tracing_subscriber::EnvFilter;
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
-use nextmini::node::packet::{Packet, PyPayloadSegHeader, PY_PAYLOAD_SEGMENT_HEADER_LEN};
+use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
