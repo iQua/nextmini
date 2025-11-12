@@ -6,6 +6,9 @@ use super::session::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 
+/// Metadata and payload extracted from inbound reliable frames. The control
+/// loop fills out peer/multicast context so receivers can reason about repair
+/// requests without re-parsing outer headers.
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
     pub bytes: Vec<u8>,
@@ -31,12 +34,17 @@ impl InboundFrame {
     }
 }
 
+/// Thin handle that lets callers enqueue commands for the reliable runtime
+/// task (sender/receiver lifecycle, frame delivery, etc.).
 #[derive(Clone, Debug)]
 pub struct ReliableHandle {
     #[allow(dead_code)]
     tx: mpsc::UnboundedSender<Command>,
 }
 
+/// Commands processed by the reliable runtime event loop. Most commands are
+/// async (reply over oneshot) so the caller can await session IDs or
+/// completion state.
 #[allow(dead_code)]
 pub enum Command {
     StartSender {

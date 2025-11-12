@@ -19,6 +19,8 @@ use super::session::{AckPolicy, CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
 
+/// Drives a sender session: streams chunks, tracks inflight state, and reacts
+/// to control frames emitted by receivers.
 pub async fn run(
     cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
@@ -67,6 +69,8 @@ pub async fn run(
     state.send_manifest(&processors);
 
     loop {
+        // Drain any immediately-available control frames so resend/retire
+        // decisions reflect fresh receiver state before we transmit more data.
         while let Ok(frame) = ctrl_rx.try_recv() {
             state.handle_control(frame);
         }
@@ -142,6 +146,7 @@ pub async fn run(
     }
 }
 
+/// Converts a user-facing ACK policy into a concrete completion rule.
 fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionPolicy {
     match policy {
         AckPolicy::All => CompletionPolicy::All,
@@ -153,6 +158,9 @@ fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionP
     }
 }
 
+/// Encapsulates all mutable sender-side state (window, inflight map, pacing,
+/// manifest timing, etc.). Keeping the logic centralized makes the event loop
+/// above easier to read and test.
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
@@ -448,6 +456,8 @@ impl SenderState {
     }
 }
 
+/// Chooses a sliding window size based on receiver fan-out and optional token
+/// bucket configuration.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let receiver_factor = (cfg.receiver_ids.len().max(1)) * 2;
     let mut window = DEFAULT_WINDOW.max(receiver_factor);
@@ -461,11 +471,14 @@ fn compute_window(cfg: &SenderConfig) -> usize {
     window
 }
 
+/// Materialized chunk that is ready to be encoded into an RLM frame.
 struct ChunkPayload {
     index: u64,
     data: Vec<u8>,
 }
 
+/// Reads chunk payloads from disk (if provided) and hands them to the sender
+/// in strict index order. Tests may swap in the empty case by omitting files.
 struct ChunkSource {
     file: Option<File>,
     chunk_size: usize,
@@ -523,6 +536,7 @@ impl ChunkSource {
     }
 }
 
+/// Simple token-bucket pacer used to honor optional bandwidth caps.
 struct DataPacer {
     spec: Option<nextmini_messages::TokenBucketSpec>,
     tokens: f64,

@@ -18,6 +18,8 @@ use super::control::{NackLimiter, SackScheduler, SackSnapshot};
 use super::session::ReceiverConfig;
 use super::trace::manifest_from_bytes;
 
+/// Utility for emitting control traffic (ACK/SACK/NACK/etc.) via the node
+/// processor stack using the same addressing the sender expects.
 struct ControlEmitter<'a> {
     session_id: u64,
     src_ip: std::net::Ipv4Addr,
@@ -59,6 +61,8 @@ impl<'a> ControlEmitter<'a> {
     }
 }
 
+/// Drives a receiver session: consumes inbound frames, persists payloads in
+/// order, and feeds back control signals so the sender can repair gaps.
 pub async fn run(
     cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
@@ -78,6 +82,7 @@ pub async fn run(
         );
     }
 
+    // Stream bookkeeping: RLM chunk indices start at 1.
     let mut expected: u64 = 1;
     let mut highest_seen: u64 = 0;
     let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
@@ -123,6 +128,7 @@ pub async fn run(
     let mut eot_index: Option<u64> = None;
     let mut nack_limiter = NackLimiter::new(Duration::from_millis(cfg.nack_min_interval_ms.max(1)));
     let mut sack_scheduler = SackScheduler::new(Duration::from_millis(cfg.sack_interval_ms));
+    // Tokio timer used to coalesce SACK traffic when the peer leaves gaps.
     let mut sack_timer: Option<Pin<Box<Sleep>>> = None;
 
     loop {
@@ -142,6 +148,8 @@ pub async fn run(
                     file.as_mut(),
                 ) {
                     let base = expected.saturating_sub(1);
+                    // Emit cumulative ACKs whenever we advance the head of
+                    // line; SACKs are handled below if gaps remain.
                     if base > last_ack_up_to {
                         control_io.send(&RlmControl::Ack { up_to: base });
                         last_ack_up_to = base;
@@ -222,6 +230,7 @@ pub async fn run(
     );
 }
 
+/// Returns true when the frame decoded as DATA and updates ordering state.
 fn handle_data_frame(
     frame: &InboundFrame,
     expected: &mut u64,
@@ -256,6 +265,7 @@ fn handle_data_frame(
     true
 }
 
+/// Handles receiver-side control frames (Manifest/EOT/etc.).
 fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
@@ -290,6 +300,7 @@ fn handle_control_frame(
     }
 }
 
+/// Serializes and emits the provided SACK snapshot.
 fn emit_sack(ctrl_io: &ControlEmitter<'_>, snapshot: SackSnapshot) {
     ctrl_io.send(&RlmControl::Sack {
         base: snapshot.base,
@@ -297,6 +308,7 @@ fn emit_sack(ctrl_io: &ControlEmitter<'_>, snapshot: SackSnapshot) {
     });
 }
 
+/// Arms or clears the SACK timer based on the scheduler's next deadline.
 fn reset_sack_timer(timer: &mut Option<Pin<Box<Sleep>>>, scheduler: &SackScheduler, now: Instant) {
     if let Some(deadline) = scheduler.next_deadline(now) {
         let when = time::Instant::from_std(deadline);
@@ -311,6 +323,7 @@ trait MaxAssign {
 }
 
 impl MaxAssign for u64 {
+    /// Keeps the maximum observed chunk index without branching at call sites.
     fn set_max(&mut self, other: Self) {
         if other > *self {
             *self = other;

@@ -12,6 +12,7 @@ use crate::node::processor::ProcessorHandle;
 
 use super::api::{InboundFrame, SessionId};
 
+/// Configures how strongly the sender waits for receiver acknowledgements.
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub enum AckPolicy {
@@ -20,6 +21,7 @@ pub enum AckPolicy {
     Fraction(f32),
 }
 
+/// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
 pub struct CommonConfig {
     pub session_id: SessionId,
@@ -34,6 +36,7 @@ pub struct CommonConfig {
     pub local_netmask: Ipv4Addr,
 }
 
+/// Sender-only configuration (fan-out, source path, FEC knobs, etc.).
 #[derive(Clone, Debug)]
 pub struct SenderConfig {
     pub common: CommonConfig,
@@ -48,6 +51,7 @@ pub struct SenderConfig {
     pub ready_grace_ms: u64,
 }
 
+/// Receiver-only configuration (source node, reliability timers, sinks, etc.).
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     pub common: CommonConfig,
@@ -60,6 +64,7 @@ pub struct ReceiverConfig {
     pub sack_interval_ms: u64,
 }
 
+/// Tracks running reliable sessions along with their inboxes and join handles.
 pub struct SessionManager {
     processors: ProcessorHandle,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
@@ -68,12 +73,15 @@ pub struct SessionManager {
     pending: AHashMap<PendingReceiverKey, VecDeque<PendingReceiver>>,
 }
 
+/// Key that allows a receiver to be created speculatively and paired once the
+/// control plane decides which session ID to use for a (group, source) tuple.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PendingReceiverKey {
     pub group_ip: Ipv4Addr,
     pub source_node_id: usize,
 }
 
+/// Wrapper that stores receiver config until a session ID is assigned.
 struct PendingReceiver {
     cfg: ReceiverConfig,
     reply: oneshot::Sender<SessionId>,
@@ -143,6 +151,8 @@ impl SessionManager {
         cfg: ReceiverConfig,
         reply: oneshot::Sender<SessionId>,
     ) {
+        // Multiple listeners may race to attach; keep them queued until the
+        // control plane picks a session ID.
         self.pending
             .entry(key)
             .or_default()

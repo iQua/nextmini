@@ -159,6 +159,7 @@ impl SackScheduler {
     }
 }
 
+/// Determines when a chunk can be retired from the sender's inflight queue.
 #[derive(Clone, Debug)]
 pub enum CompletionPolicy {
     All,
@@ -190,6 +191,8 @@ pub fn process_control_event(
     match ctrl {
         RlmControl::Ack { up_to } => {
             let up = *up_to;
+            // Track which receivers have acknowledged each chunk up to the
+            // cumulative pointer so we can evaluate the completion policy.
             for (_idx, acked_by) in inflight.range_mut(..=up) {
                 acked_by.insert(from_node);
             }
@@ -202,6 +205,8 @@ pub fn process_control_event(
             completed
         }
         RlmControl::Sack { base, runs } => {
+            // Each gap run represents missing data, so we enqueue the
+            // corresponding indices for retransmission.
             for (delta, len) in runs {
                 let start = *base + (*delta as u64);
                 let end = start + (*len as u64);
@@ -214,6 +219,8 @@ pub fn process_control_event(
             Vec::new()
         }
         RlmControl::Repair { indices } => {
+            // Receiver supplied explicit indices (e.g. after NACK limiter),
+            // so we add them to the resend queue if they are still inflight.
             for idx in indices {
                 if inflight.contains_key(idx) {
                     resend_queue.insert(*idx);
@@ -227,7 +234,7 @@ pub fn process_control_event(
     }
 }
 
-/// Helper to apply retirement (removes from inflight and any pending resends).
+/// Helper to apply retirement (removes from inflight state and resets queues).
 pub fn retire_chunks(
     to_retire: &[u64],
     inflight: &mut BTreeMap<u64, HashSet<usize>>,
