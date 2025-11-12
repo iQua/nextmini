@@ -650,8 +650,7 @@ mod tests {
         }
 
         #[test]
-        #[should_panic(expected = "Detected unknown IP")]
-        fn multicast_flow_without_group_directory_fails() {
+        fn multicast_flow_without_group_directory_returns_error() {
             let config = make_config(1);
             let mut table = RoutingTable::new(config.clone());
 
@@ -664,8 +663,12 @@ mod tests {
                 config.user_space_server_port,
             );
 
-            // Should panic when trying to extract node IDs from unknown multicast IP
-            let _ = table.get_next_hops_by_flow(flow_id, None);
+            let result = table.get_next_hops_by_flow(flow_id, None);
+            assert!(
+                matches!(result, Err(ref msg) if msg.contains("Unable to build route key")),
+                "Expected error about missing route key, got {:?}",
+                result
+            );
         }
 
         #[test]
