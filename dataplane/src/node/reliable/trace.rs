@@ -5,17 +5,11 @@ use nextmini_messages::rlm::{self, RlmControl};
 #[derive(Clone, Copy, Debug)]
 pub struct ManifestMeta {
     pub session_id: u64,
-    pub total_bytes: u64,
-    pub chunk_size: u32,
 }
 
 impl ManifestMeta {
-    pub fn new(session_id: u64, total_bytes: u64, chunk_size: u32) -> Self {
-        Self {
-            session_id,
-            total_bytes,
-            chunk_size,
-        }
+    pub fn new(session_id: u64) -> Self {
+        Self { session_id }
     }
 }
 
@@ -23,15 +17,7 @@ impl ManifestMeta {
 pub fn manifest_from_bytes(bytes: &[u8]) -> Option<ManifestMeta> {
     let (header, control) = rlm::decode_control(bytes)?;
     match control {
-        RlmControl::Manifest {
-            chunk_size,
-            total_bytes,
-            ..
-        } => Some(ManifestMeta::new(
-            header.session_id,
-            total_bytes,
-            chunk_size,
-        )),
+        RlmControl::Manifest { .. } => Some(ManifestMeta::new(header.session_id)),
         _ => None,
     }
 }
