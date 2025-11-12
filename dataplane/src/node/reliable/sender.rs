@@ -25,11 +25,6 @@ pub async fn run(
     processors: ProcessorHandle,
 ) {
     let sid = cfg.common.session_id;
-    tracing::info!(
-        session_id = sid,
-        receiver_count = cfg.receiver_ids.len(),
-        "RLM sender: run() started, entering main loop"
-    );
     let chunk_size = cfg.common.chunk_size as u64;
     let total_bytes = cfg.total_bytes;
     let total_chunks = if chunk_size == 0 {
@@ -72,17 +67,7 @@ pub async fn run(
     state.send_manifest(&processors);
 
     loop {
-        tracing::trace!(
-            session_id = sid,
-            ready_gate_open = state.ready_gate_open,
-            ready_nodes_count = state.ready_nodes.len(),
-            "RLM sender: top of main loop"
-        );
         while let Ok(frame) = ctrl_rx.try_recv() {
-            tracing::info!(
-                session_id = sid,
-                "RLM sender: received frame from ctrl_rx.try_recv()"
-            );
             state.handle_control(frame);
         }
 
@@ -149,10 +134,6 @@ pub async fn run(
             if let Ok(Some(frame)) =
                 tokio::time::timeout(Duration::from_millis(20), ctrl_rx.recv()).await
             {
-                tracing::info!(
-                    session_id = sid,
-                    "RLM sender: received frame from ctrl_rx.recv() while waiting"
-                );
                 state.handle_control(frame);
             }
             // On timeout or channel closed, just fall through and loop; this allows
@@ -363,22 +344,7 @@ impl SenderState {
     }
 
     fn handle_control(&mut self, frame: InboundFrame) {
-        let InboundFrame {
-            bytes,
-            peer_id,
-            group_ip,
-            source_node_id,
-        } = frame;
-
-        tracing::info!(
-            session_id = self.session_id,
-            ?peer_id,
-            ?source_node_id,
-            ?group_ip,
-            bytes_len = bytes.len(),
-            "RLM sender: handle_control called with frame"
-        );
-
+        let InboundFrame { bytes, peer_id, .. } = frame;
         let Some((_, control)) = rlm::decode_control(&bytes) else {
             tracing::warn!(
                 session_id = self.session_id,
@@ -387,24 +353,13 @@ impl SenderState {
             return;
         };
 
-        tracing::info!(
-            session_id = self.session_id,
-            ?control,
-            "RLM sender: decoded control message"
-        );
-
         match control {
             RlmControl::Ready { node_id } => {
                 self.ready_nodes.insert(node_id as usize);
-                tracing::info!(
+                tracing::debug!(
                     session_id = self.session_id,
                     node_id,
-                    peer = ?peer_id,
-                    source_node = ?source_node_id,
-                    dst_group = ?group_ip,
-                    ready_count = self.ready_nodes.len(),
-                    total_receivers = self.receiver_count,
-                    "RLM sender: READY received and processed"
+                    "RLM sender: receiver ready"
                 );
             }
             RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
@@ -415,9 +370,6 @@ impl SenderState {
                     tracing::warn!(
                         session_id = self.session_id,
                         ?control,
-                        peer = ?peer_id,
-                        source_node = ?source_node_id,
-                        dst_group = ?group_ip,
                         "RLM sender: dropping control without peer id"
                     );
                     return;

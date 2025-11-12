@@ -42,18 +42,15 @@ if [[ "${role}" == "source" && "${CLEAN_SHARED_DIRS:-1}" == "1" ]]; then
   fi
 fi
 
-# Use a container-specific venv path to avoid conflicts with host's .venv
-CONTAINER_VENV="/tmp/.venv-nextmini"
-
-if [[ ! -d "${CONTAINER_VENV}" ]]; then
+if [[ ! -d .venv ]]; then
   python -m pip install --upgrade pip >/dev/null
   if ! command -v uv >/dev/null; then
     pip install uv >/dev/null
   fi
-  uv venv "${CONTAINER_VENV}"
+  uv venv .venv
 fi
 
-source "${CONTAINER_VENV}/bin/activate"
+source .venv/bin/activate
 
 uv pip install "psycopg[binary]" >/dev/null
 uv pip install numpy >/dev/null

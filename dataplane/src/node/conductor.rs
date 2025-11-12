@@ -67,216 +67,95 @@ impl Conductor {
             let processors_for_mgr = processors.clone();
             let mut_rx = rx;
             tokio::spawn(async move {
-                tracing::info!("Conductor: reliable command processing loop started");
                 let manager = Arc::new(AsyncMutex::new(SessionManager::new(processors_for_mgr)));
                 let mut rx = mut_rx;
-                let mut cmd_count = 0u64;
-                loop {
-                    tracing::debug!(
-                        cmd_count = cmd_count,
-                        "Conductor: waiting for next command on rx.recv()"
-                    );
-                    let Some(cmd) = rx.recv().await else {
-                        tracing::warn!(
-                            "Conductor: rx.recv() returned None, channel closed, exiting loop"
-                        );
-                        break;
-                    };
-                    cmd_count += 1;
-                    tracing::debug!(cmd_count = cmd_count, "Conductor: received command in loop");
+                while let Some(cmd) = rx.recv().await {
                     match cmd {
                         ReliableCommand::StartSender { cfg, reply } => {
                             let sid = cfg.common.session_id;
-                            tracing::info!(
-                                session_id = sid,
-                                "Conductor: processing StartSender command"
-                            );
                             let mut guard = manager.lock().await;
                             let _ = guard.spawn_sender(cfg);
                             let _ = reply.send(sid);
-                            tracing::info!(
-                                session_id = sid,
-                                "Conductor: StartSender processed, continuing loop"
-                            );
                         }
                         ReliableCommand::StartReceiver { cfg, reply } => {
                             let sid = cfg.common.session_id;
                             let mut guard = manager.lock().await;
                             let _ = guard.spawn_receiver(cfg);
                             let _ = reply.send(sid);
-                            tracing::info!(
-                                session_id = sid,
-                                "Conductor: StartReceiver processed, continuing loop"
-                            );
                         }
                         ReliableCommand::StartReceiverPending { cfg, key, reply } => {
-                            tracing::info!(
-                                group_ip = %key.group_ip,
-                                source_node_id = key.source_node_id,
-                                "Conductor: processing StartReceiverPending command"
-                            );
                             let mut guard = manager.lock().await;
                             guard.enqueue_pending_receiver(key, cfg, reply);
-                            tracing::info!(
-                                group_ip = %key.group_ip,
-                                source_node_id = key.source_node_id,
-                                "Conductor: StartReceiverPending processed, continuing loop"
-                            );
                         }
                         ReliableCommand::Stop { session } => {
-                            tracing::info!(
-                                session_id = session,
-                                "Conductor: processing Stop command"
-                            );
                             let mut guard = manager.lock().await;
                             guard.stop(session).await;
-                            tracing::info!(
-                                session_id = session,
-                                "Conductor: Stop processed, continuing loop"
-                            );
                         }
                         ReliableCommand::Deliver { session, frame } => {
-                            tracing::info!(
-                                session_id = session,
-                                ?frame.group_ip,
-                                ?frame.source_node_id,
-                                ?frame.peer_id,
-                                bytes_len = frame.bytes.len(),
-                                "Conductor: received Command::Deliver"
-                            );
                             let group_ip = frame.group_ip;
                             let source_node_id = frame.source_node_id;
                             let (sender, pending_reply) = {
                                 let mut guard = manager.lock().await;
                                 if let Some(tx) = guard.input_sender(session) {
-                                    tracing::info!(
-                                        session_id = session,
-                                        "Conductor: found input_sender for session"
-                                    );
                                     (Some(tx), None)
-                                } else {
-                                    tracing::warn!(
-                                        session_id = session,
-                                        "Conductor: no input_sender found for session, checking pending receiver"
-                                    );
-                                    if let (Some(gip), Some(src)) = (group_ip, source_node_id) {
-                                        if let Some((cfg, reply)) = guard.adopt_pending_receiver(
-                                            PendingReceiverKey {
-                                                group_ip: gip,
-                                                source_node_id: src,
-                                            },
-                                            session,
-                                        ) {
-                                            tracing::info!(
-                                                session_id = session,
-                                                group_ip = %gip,
-                                                source_node_id = src,
-                                                "Conductor: adopted pending receiver and spawning"
-                                            );
-                                            let _ = guard.spawn_receiver(cfg);
-                                            (guard.input_sender(session), Some(reply))
-                                        } else {
-                                            tracing::warn!(
-                                                session_id = session,
-                                                group_ip = %gip,
-                                                source_node_id = src,
-                                                "Conductor: no pending receiver to adopt"
-                                            );
-                                            (None, None)
-                                        }
+                                } else if let (Some(gip), Some(src)) = (group_ip, source_node_id) {
+                                    if let Some((cfg, reply)) = guard.adopt_pending_receiver(
+                                        PendingReceiverKey {
+                                            group_ip: gip,
+                                            source_node_id: src,
+                                        },
+                                        session,
+                                    ) {
+                                        let _ = guard.spawn_receiver(cfg);
+                                        (guard.input_sender(session), Some(reply))
                                     } else {
-                                        tracing::warn!(
-                                            session_id = session,
-                                            "Conductor: missing group_ip or source_node_id"
-                                        );
                                         (None, None)
                                     }
+                                } else {
+                                    (None, None)
                                 }
                             };
                             if let Some(tx) = sender {
-                                tracing::info!(
-                                    session_id = session,
-                                    "Conductor: sending frame to session input channel"
-                                );
                                 if tx.send(frame).await.is_err() {
-                                    tracing::error!(
+                                    tracing::warn!(
                                         session_id = session,
-                                        "Conductor: receiver dropped inbound frame (channel send failed)"
+                                        "Reliable runtime: receiver dropped inbound frame"
                                     );
                                 }
                                 if let Some(reply) = pending_reply {
                                     let _ = reply.send(session);
                                 }
                             } else {
-                                tracing::error!(
+                                tracing::warn!(
                                     session_id = session,
-                                    ?group_ip,
-                                    ?source_node_id,
-                                    "Conductor: no sender found for inbound frame - frame dropped!"
+                                    "Reliable runtime: no receiver for inbound frame"
                                 );
                             }
-                            tracing::info!(
-                                session_id = session,
-                                "Conductor: Deliver command processed, continuing loop"
-                            );
                         }
                         ReliableCommand::Wait { session, reply } => {
-                            tracing::info!(
-                                session_id = session,
-                                "Conductor: processing Wait command - spawning separate task to avoid blocking"
-                            );
-                            // Spawn a separate task to handle Wait so it doesn't block the main loop
-                            let manager_clone = manager.clone();
-                            tokio::spawn(async move {
-                                // Take ownership of the task and await completion.
-                                let handle = {
-                                    let mut guard = manager_clone.lock().await;
-                                    guard.take_task(session)
-                                };
-                                if let Some(handle) = handle {
-                                    tracing::debug!(
-                                        session_id = session,
-                                        "Conductor: Wait - task found, awaiting completion in separate task"
-                                    );
-                                    let _ = handle.await; // ignore join errors; treat as completion
-                                    let mut guard = manager_clone.lock().await;
-                                    guard.remove_inputs(session);
-                                    drop(guard);
-                                    let _ = reply.send(true);
-                                    tracing::info!(
-                                        session_id = session,
-                                        "Conductor: Wait completed successfully"
-                                    );
-                                } else {
-                                    tracing::warn!(
-                                        session_id = session,
-                                        "Conductor: Wait - no task found for session"
-                                    );
-                                    let _ = reply.send(false);
-                                }
-                            });
-                            tracing::info!(
-                                session_id = session,
-                                "Conductor: Wait command spawned in background, continuing loop"
-                            );
+                            // Take ownership of the task and await completion.
+                            let handle = {
+                                let mut guard = manager.lock().await;
+                                guard.take_task(session)
+                            };
+                            if let Some(handle) = handle {
+                                let _ = handle.await; // ignore join errors; treat as completion
+                                let mut guard = manager.lock().await;
+                                guard.remove_inputs(session);
+                                drop(guard);
+                                let _ = reply.send(true);
+                            } else {
+                                let _ = reply.send(false);
+                            }
                         }
                         ReliableCommand::AllocateSession { reply } => {
-                            tracing::info!("Conductor: processing AllocateSession command");
                             let mut guard = manager.lock().await;
                             let sid = guard.allocate_session_id();
                             let _ = reply.send(sid);
-                            tracing::info!(
-                                session_id = sid,
-                                "Conductor: AllocateSession processed, continuing loop"
-                            );
                         }
                     }
-                    tracing::debug!(
-                        cmd_count = cmd_count,
-                        "Conductor: finished processing command, looping back"
-                    );
                 }
-                tracing::info!("Conductor: reliable command processing loop exited");
+                tracing::warn!("Reliable command loop terminated.");
             });
         }
 

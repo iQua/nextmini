@@ -686,11 +686,6 @@ impl Processor {
                     .install_group_routes(group_id, src_node_id, routes);
             }
             ProcessorMessage::AddNode(node_id, scheduler) => {
-                tracing::info!(
-                    node_id = node_id,
-                    local_node = self.routing_table.local_id,
-                    "Scheduler added to processor for node"
-                );
                 self.schedulers.insert(node_id, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
@@ -733,12 +728,6 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
-        tracing::debug!(
-            flow = %packet_flow_id,
-            local_node = self.routing_table.local_id,
-            "Processor: processing packet for routing"
-        );
-
         let reporter = self.flowstats_reporter.as_ref();
         match self
             .routing_table
@@ -749,13 +738,6 @@ impl Processor {
                     error!("No next hops available for flow {}.", packet_flow_id);
                     return;
                 }
-
-                tracing::debug!(
-                    flow = %packet_flow_id,
-                    next_hops = ?next_hops,
-                    local_node = self.routing_table.local_id,
-                    "Processor: about to send packet to next hops"
-                );
 
                 let last = next_hops.len() - 1;
                 let mut primary_packet = Some(packet);
@@ -772,21 +754,8 @@ impl Processor {
                             .clone()
                     };
 
-                    tracing::debug!(
-                        flow = %pkt.flow_id,
-                        next_hop = next_hop_id,
-                        local_node = self.routing_table.local_id,
-                        "Processor: calling send_packet"
-                    );
-
                     self.send_packet(pkt, next_hop_id).await;
                 }
-
-                tracing::debug!(
-                    flow = %packet_flow_id,
-                    local_node = self.routing_table.local_id,
-                    "Processor: finished sending packet to all next hops"
-                );
             }
             Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
         }
@@ -816,41 +785,16 @@ impl Processor {
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
-        tracing::debug!(
-            flow = %packet.flow_id,
-            next_hop = next_hop_id,
-            local_node = self.routing_table.local_id,
-            "send_packet: entered"
-        );
-
         #[allow(unused_mut)]
         let mut packet = packet;
         #[cfg(feature = "reliable")]
         let manifest_meta = manifest_from_packet(&packet);
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
-            tracing::debug!(
-                flow = %packet.flow_id,
-                next_hop = next_hop_id,
-                local_node = self.routing_table.local_id,
-                "send_packet: next_hop is local, attempting local delivery"
-            );
-
             #[cfg(feature = "reliable")]
             {
                 if self.try_deliver_reliable(&packet) {
-                    tracing::debug!(
-                        flow = %packet.flow_id,
-                        local_node = self.routing_table.local_id,
-                        "send_packet: delivered to reliable, returning"
-                    );
                     return;
-                } else {
-                    tracing::debug!(
-                        flow = %packet.flow_id,
-                        local_node = self.routing_table.local_id,
-                        "send_packet: try_deliver_reliable returned false, continuing to other delivery paths"
-                    );
                 }
             }
             // local delivery: use the destination IP address to distinguish between the TUN interface
@@ -883,13 +827,6 @@ impl Processor {
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-            tracing::debug!(
-                flow = %packet.flow_id,
-                next_hop = next_hop_id,
-                local_node = self.routing_table.local_id,
-                "send_packet: found scheduler, sending packet"
-            );
-
             #[cfg(feature = "reliable")]
             if let Some(meta) = manifest_meta {
                 tracing::debug!(
@@ -901,93 +838,33 @@ impl Processor {
                 );
             }
             scheduler.send(packet);
-
-            tracing::debug!(
-                next_hop = next_hop_id,
-                local_node = self.routing_table.local_id,
-                "send_packet: packet sent to scheduler"
-            );
-        } else {
-            tracing::error!(
-                flow = %packet.flow_id,
-                next_hop = next_hop_id,
-                local_node = self.routing_table.local_id,
-                available_schedulers = ?self.schedulers.keys().collect::<Vec<_>>(),
-                "Scheduler not found for next_hop; packet dropped"
-            );
         }
     }
 
     #[cfg(feature = "reliable")]
     fn try_deliver_reliable(&self, packet: &Packet) -> bool {
-        tracing::debug!(
-            flow = %packet.flow_id,
-            local_node = self.routing_table.local_id,
-            "try_deliver_reliable: entered"
-        );
-
         let Some(handle) = self.reliable_handle.as_ref() else {
-            tracing::debug!(
-                flow = %packet.flow_id,
-                local_node = self.routing_table.local_id,
-                "try_deliver_reliable: no reliable_handle, returning false"
-            );
             return false;
         };
         let Some(payload) = packet.tcp_payload() else {
-            tracing::debug!(
-                flow = %packet.flow_id,
-                local_node = self.routing_table.local_id,
-                "try_deliver_reliable: no tcp_payload, returning false"
-            );
             return false;
         };
         let manifest_meta = manifest_from_bytes(payload);
 
-        let mut payload_kind = "data";
         let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
             hdr.session_id
-        } else if let Some((hdr, ctrl)) = rlm::decode_control(payload) {
-            payload_kind = "control";
-            tracing::info!(
-                flow = %packet.flow_id,
-                local_node = self.routing_table.local_id,
-                session_id = hdr.session_id,
-                control_type = ?ctrl,
-                "try_deliver_reliable: decoded RLM CONTROL packet"
-            );
+        } else if let Some((hdr, _)) = rlm::decode_control(payload) {
             hdr.session_id
         } else {
-            tracing::debug!(
-                flow = %packet.flow_id,
-                local_node = self.routing_table.local_id,
-                "try_deliver_reliable: not an RLM packet, returning false"
-            );
             return false;
         };
 
         let src_node = self.config.ip_to_node_id(packet.flow_id.src_ip());
         let peer_id = if src_node == INVALID {
-            tracing::warn!(
-                session_id,
-                src_ip = %packet.flow_id.src_ip(),
-                dst_ip = %packet.flow_id.dst_ip(),
-                payload = payload_kind,
-                "RLM reliable: unable to map source IP to node id; peer metadata missing"
-            );
             None
         } else {
             Some(src_node)
         };
-
-        tracing::info!(
-            flow = %packet.flow_id,
-            local_node = self.routing_table.local_id,
-            session_id = session_id,
-            payload_kind = payload_kind,
-            ?peer_id,
-            "try_deliver_reliable: calling handle.deliver"
-        );
 
         handle.deliver(
             session_id,
@@ -997,13 +874,6 @@ impl Processor {
                 group_ip: Some(packet.flow_id.dst_ip()),
                 source_node_id: peer_id,
             },
-        );
-
-        tracing::info!(
-            flow = %packet.flow_id,
-            local_node = self.routing_table.local_id,
-            session_id = session_id,
-            "try_deliver_reliable: handle.deliver completed, returning true"
         );
         if let Some(meta) = manifest_meta {
             tracing::debug!(

@@ -97,49 +97,21 @@ impl SessionManager {
 
     pub fn spawn_sender(&mut self, cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
-        tracing::info!(
-            session_id = sid,
-            receiver_count = cfg.receiver_ids.len(),
-            "SessionManager: spawn_sender called"
-        );
         let processors = self.processors.clone();
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
-        self.inputs.insert(sid, tx.clone());
-        tracing::info!(
-            session_id = sid,
-            "SessionManager: sender input channel created and stored in inputs map"
-        );
+        self.inputs.insert(sid, tx);
         let handle = tokio::spawn(super::sender::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
-        tracing::info!(
-            session_id = sid,
-            total_sessions = self.tasks.len(),
-            "SessionManager: sender task spawned and stored"
-        );
         sid
     }
 
     pub fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
         let sid = cfg.common.session_id;
-        tracing::info!(
-            session_id = sid,
-            source_node = cfg.source_node_id,
-            "SessionManager: spawn_receiver called"
-        );
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
         self.inputs.insert(sid, tx);
-        tracing::info!(
-            session_id = sid,
-            "SessionManager: receiver input channel created and stored in inputs map"
-        );
         let processors = self.processors.clone();
         let handle = tokio::spawn(super::receiver::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
-        tracing::info!(
-            session_id = sid,
-            total_sessions = self.tasks.len(),
-            "SessionManager: receiver task spawned and stored"
-        );
         sid
     }
 
@@ -156,20 +128,7 @@ impl SessionManager {
 
     /// Returns a clone of the inbound channel for a session, if present.
     pub fn input_sender(&self, sid: SessionId) -> Option<mpsc::Sender<InboundFrame>> {
-        let result = self.inputs.get(&sid).cloned();
-        if result.is_some() {
-            tracing::debug!(
-                session_id = sid,
-                "SessionManager: input_sender found for session"
-            );
-        } else {
-            tracing::warn!(
-                session_id = sid,
-                available_sessions = ?self.inputs.keys().collect::<Vec<_>>(),
-                "SessionManager: input_sender NOT found for session"
-            );
-        }
-        result
+        self.inputs.get(&sid).cloned()
     }
 
     pub fn allocate_session_id(&mut self) -> SessionId {
