@@ -219,24 +219,6 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    # Source also waits for multicast routes to be installed.
-    log("Waiting for multicast routes to be installed on source...", args.quiet)
-    
-    # Read source node_id from config file using built-in tomllib (Python 3.11+)
-    import tomllib
-    with open(args.config, 'rb') as f:
-        source_config = tomllib.load(f)
-    source_node_id = source_config.get('node_id', 1)
-    
-    routes = dataplane.wait_for_routes_installed(
-        group_id,
-        src_node_id=source_node_id,
-        timeout_ms=args.member_timeout * 1000,
-    )
-    if routes is None:
-        raise TimeoutError("Timed out waiting for multicast routes on source node.")
-    log(f"Multicast routes installed on source (node {source_node_id}, entries={len(routes)}).", args.quiet)
-
     checksum_path = (
         resolve_checksum_path(args) if args.verify_checksum else None
     )
