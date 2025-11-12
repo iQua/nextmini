@@ -16,6 +16,7 @@ use crate::node::{NodeId, NodeIdExt};
 use super::api::InboundFrame;
 use super::control::{NackLimiter, SackScheduler, SackSnapshot};
 use super::session::ReceiverConfig;
+use super::trace::manifest_from_bytes;
 
 struct ControlEmitter<'a> {
     session_id: u64,
@@ -104,7 +105,7 @@ pub async fn run(
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
     // Source control traffic from the client (src) port to match sender expectations.
     let ctrl_src_port = cfg.common.src_port;
-    let ctrl_dst_port = cfg.common.src_port;
+    let ctrl_dst_port = cfg.common.dst_port;
 
     let control_io = ControlEmitter::new(
         sid,
@@ -118,7 +119,6 @@ pub async fn run(
     control_io.send(&RlmControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
-    let mut ready_sent = true;
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
     let mut nack_limiter = NackLimiter::new(Duration::from_millis(cfg.nack_min_interval_ms.max(1)));
@@ -179,7 +179,6 @@ pub async fn run(
 
                 if handle_control_frame(
                     &frame,
-                    &mut ready_sent,
                     &cfg,
                     &control_io,
                     &mut eot_index,
@@ -258,7 +257,6 @@ fn handle_data_frame(
 
 fn handle_control_frame(
     frame: &InboundFrame,
-    ready_sent: &mut bool,
     cfg: &ReceiverConfig,
     ctrl_io: &ControlEmitter<'_>,
     eot_index: &mut Option<u64>,
@@ -268,11 +266,18 @@ fn handle_control_frame(
     };
     match control {
         RlmControl::Manifest { .. } => {
-            if !*ready_sent {
-                ctrl_io.send(&RlmControl::Ready {
-                    node_id: cfg.common.local_node_id as u64,
-                });
-                *ready_sent = true;
+            ctrl_io.send(&RlmControl::Ready {
+                node_id: cfg.common.local_node_id as u64,
+            });
+
+            if let Some(meta) = manifest_from_bytes(&frame.bytes) {
+                tracing::debug!(
+                    session_id = meta.session_id,
+                    node_id = cfg.common.local_node_id,
+                    peer = ?frame.peer_id,
+                    dst_ip = %cfg.common.group_ip,
+                    "RLM receiver: MANIFEST received; READY sent."
+                );
             }
             true
         }

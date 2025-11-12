@@ -82,9 +82,7 @@ struct PendingReceiver {
 impl SessionManager {
     /// Removes and returns the join handle for a session task, if present.
     pub fn take_task(&mut self, sid: SessionId) -> Option<JoinHandle<()>> {
-        let handle = self.tasks.remove(&sid);
-        self.inputs.remove(&sid);
-        handle
+        self.tasks.remove(&sid)
     }
 
     pub fn new(processors: ProcessorHandle) -> Self {
@@ -121,6 +119,10 @@ impl SessionManager {
         if let Some(h) = self.tasks.remove(&sid) {
             h.abort();
         }
+        self.remove_inputs(sid);
+    }
+
+    pub fn remove_inputs(&mut self, sid: SessionId) {
         self.inputs.remove(&sid);
     }
 

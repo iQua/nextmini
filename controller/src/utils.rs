@@ -461,11 +461,17 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
                     next_hops = vec![INVALID];
                 }
             } else {
-                // this node does not belong to this route, but we still need to create
-                // a routing table entry with INVALID to maintain consistency across all
-                // nodes regarding the size of the routing tables
+                // this node does not belong to this route; mark INVALID so we can skip
                 next_hops = vec![INVALID];
             }
+        }
+
+        if next_hops.len() == 1 && next_hops[0] == INVALID {
+            debug!(
+                "Skipping route {} for node {} because no valid next hops were found.",
+                route.route_id, node_id
+            );
+            continue;
         }
 
         route_entries.push(RoutingTableEntry {
@@ -794,17 +800,10 @@ mod tests {
         }];
 
         let result = build_routes_for_node(routes, 5); // Node 5 is not in the route
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
-            assert_eq!(entries.len(), 1);
-            let entry = &entries[0];
-            assert_eq!(entry.route_id, 1);
-            // Node 5 is not in the route, should have INVALID next_hop
-            assert_eq!(entry.next_hops, vec![INVALID]);
-        } else {
-            panic!("Expected InstallRoutes message.");
-        }
+        assert!(
+            result.is_none(),
+            "Nodes that are not part of a route should not receive dummy entries"
+        );
     }
 
     #[test]

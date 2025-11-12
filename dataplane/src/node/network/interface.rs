@@ -15,6 +15,8 @@ use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::network::udp::{UdpClient, UdpReader, UdpStream, UdpWriter};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "reliable")]
+use crate::node::reliable::trace::manifest_from_packet;
 use crate::node::{FlowId, NodeId};
 
 pub enum NetworkStream {
@@ -104,6 +106,16 @@ impl NetworkInterfaceHandle {
         let mut aggregates: AHashMap<FlowId, usize> = AHashMap::default();
 
         for packet in packets.iter() {
+            #[cfg(feature = "reliable")]
+            if let Some(meta) = manifest_from_packet(packet) {
+                tracing::debug!(
+                    session_id = meta.session_id,
+                    local_node = self.local_id,
+                    remote_node = self.remote_node_id,
+                    flow = %packet.flow_id,
+                    "RLM MANIFEST handed to network interface writer"
+                );
+            }
             *aggregates.entry(packet.flow_id).or_default() += packet.packet_size;
         }
 

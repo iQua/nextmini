@@ -134,10 +134,15 @@ impl Conductor {
                         }
                         ReliableCommand::Wait { session, reply } => {
                             // Take ownership of the task and await completion.
-                            let mut guard = manager.lock().await;
-                            if let Some(handle) = guard.take_task(session) {
-                                drop(guard);
+                            let handle = {
+                                let mut guard = manager.lock().await;
+                                guard.take_task(session)
+                            };
+                            if let Some(handle) = handle {
                                 let _ = handle.await; // ignore join errors; treat as completion
+                                let mut guard = manager.lock().await;
+                                guard.remove_inputs(session);
+                                drop(guard);
                                 let _ = reply.send(true);
                             } else {
                                 let _ = reply.send(false);

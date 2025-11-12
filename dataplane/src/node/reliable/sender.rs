@@ -75,6 +75,11 @@ pub async fn run(
 
         let mut progressed = false;
 
+        if state.should_resend_manifest() {
+            state.send_manifest(&processors);
+            progressed = true;
+        }
+
         if state.ready_for_data() && !chunk_source.finished() && state.inflight_len() < state.window
         {
             match chunk_source.next_chunk() {
@@ -172,6 +177,8 @@ struct SenderState {
     src_port: u16,
     dst_port: u16,
     repair_backoff: Duration,
+    manifest_interval: Duration,
+    manifest_last_sent: Instant,
 }
 
 impl SenderState {
@@ -236,10 +243,12 @@ impl SenderState {
             src_port: cfg.common.src_port,
             dst_port: cfg.common.dst_port,
             repair_backoff: Duration::from_millis(cfg.repair_backoff_ms.max(1)),
+            manifest_interval: Duration::from_millis(250),
+            manifest_last_sent: Instant::now(),
         }
     }
 
-    fn send_manifest(&self, processors: &ProcessorHandle) {
+    fn send_manifest(&mut self, processors: &ProcessorHandle) {
         let manifest = RlmControl::Manifest {
             chunk_size: self.common.chunk_size as u32,
             total_bytes: self.total_bytes,
@@ -247,7 +256,17 @@ impl SenderState {
             options: 0,
         };
         self.send_control(&manifest, processors);
-        tracing::info!(session_id = self.session_id, "RLM sender: MANIFEST sent");
+        self.manifest_last_sent = Instant::now();
+        tracing::info!(
+            session_id = self.session_id,
+            src = %self.src_ip,
+            dst = %self.dst_ip,
+            dst_port = self.dst_port,
+            total_bytes = self.total_bytes,
+            chunk_size = self.common.chunk_size,
+            receivers = self.receiver_count,
+            "RLM sender: MANIFEST sent"
+        );
     }
 
     fn ready_for_data(&self) -> bool {
@@ -260,6 +279,10 @@ impl SenderState {
 
     fn should_resend(&self) -> bool {
         !self.resend_queue.is_empty()
+    }
+
+    fn should_resend_manifest(&self) -> bool {
+        !self.ready_gate_open && self.manifest_last_sent.elapsed() >= self.manifest_interval
     }
 
     fn mark_source_drained(&mut self) {
