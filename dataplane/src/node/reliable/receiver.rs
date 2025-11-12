@@ -181,6 +181,7 @@ pub async fn run(
                     &frame,
                     &cfg,
                     &control_io,
+                    dst_ip,
                     &mut eot_index,
                 ) {
                     if let Some(last) = eot_index && expected.saturating_sub(1) >= last {
@@ -259,6 +260,7 @@ fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
     ctrl_io: &ControlEmitter<'_>,
+    ctrl_dst_ip: std::net::Ipv4Addr,
     eot_index: &mut Option<u64>,
 ) -> bool {
     let Some((_, control)) = rlm::decode_control(&frame.bytes) else {
@@ -274,8 +276,7 @@ fn handle_control_frame(
                 tracing::debug!(
                     session_id = meta.session_id,
                     node_id = cfg.common.local_node_id,
-                    peer = ?frame.peer_id,
-                    dst_ip = %cfg.common.group_ip,
+                    ctrl_dst_ip = %ctrl_dst_ip,
                     "RLM receiver: MANIFEST received; READY sent."
                 );
             }
