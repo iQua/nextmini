@@ -119,6 +119,34 @@ impl NetworkInterfaceHandle {
             *aggregates.entry(packet.flow_id).or_default() += packet.packet_size;
         }
 
+        #[cfg(feature = "reliable")]
+        {
+            use nextmini_messages::rlm;
+
+            // Log RLM control packets being sent through network interface
+            for packet in &packets {
+                if let Some(payload) = packet.tcp_payload() {
+                    if !payload.is_empty() {
+                        match rlm::decode_control(payload) {
+                            Some((_hdr, ctrl_msg)) => {
+                                tracing::debug!(
+                                    local_node = self.local_id,
+                                    remote_node = self.remote_node_id,
+                                    flow = %packet.flow_id,
+                                    control_type = ?ctrl_msg,
+                                    packet_size = packet.packet_size,
+                                    "NetworkInterface sending RLM CONTROL packet to remote node"
+                                );
+                            }
+                            None => {
+                                // Not a control packet
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         self.writer.write_packets(packets).await?;
 
         if !aggregates.is_empty() {

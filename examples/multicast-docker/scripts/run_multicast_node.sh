@@ -15,6 +15,7 @@ fi
 sleep 2
 
 export PYTHONUNBUFFERED=1
+export UV_NO_PROGRESS=1
 
 cleanup_dir() {
   local target="$1"
@@ -42,15 +43,18 @@ if [[ "${role}" == "source" && "${CLEAN_SHARED_DIRS:-1}" == "1" ]]; then
   fi
 fi
 
-if [[ ! -d .venv ]]; then
+# Use a container-specific venv path to avoid conflicts with host's .venv
+CONTAINER_VENV="/tmp/.venv-nextmini"
+
+if [[ ! -d "${CONTAINER_VENV}" ]]; then
   python -m pip install --upgrade pip >/dev/null
   if ! command -v uv >/dev/null; then
     pip install uv >/dev/null
   fi
-  uv venv .venv
+  uv venv "${CONTAINER_VENV}"
 fi
 
-source .venv/bin/activate
+source "${CONTAINER_VENV}/bin/activate"
 
 uv pip install "psycopg[binary]" >/dev/null
 uv pip install numpy >/dev/null

@@ -18,15 +18,33 @@ use super::control::{self, CompletionPolicy};
 use super::session::{AckPolicy, CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
+/// Maximum safe chunk size to avoid MTU issues.
+/// Calculation: typical MTU (1500) - IP header (20) - TCP header (20) - RLM header (20) - RLM DATA header (12) - safety margin (100) = 1328
+const MAX_SAFE_CHUNK_SIZE: usize = 1328;
 
-/// Drives a sender session: streams chunks, tracks inflight state, and reacts
-/// to control frames emitted by receivers.
 pub async fn run(
-    cfg: SenderConfig,
+    mut cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
 ) {
     let sid = cfg.common.session_id;
+    tracing::debug!(
+        session_id = sid,
+        receiver_count = cfg.receiver_ids.len(),
+        "RLM sender: run() started, entering main loop"
+    );
+
+    // Validate and adjust chunk_size to avoid MTU issues
+    if cfg.common.chunk_size > MAX_SAFE_CHUNK_SIZE {
+        tracing::warn!(
+            session_id = sid,
+            original_chunk_size = cfg.common.chunk_size,
+            max_safe_chunk_size = MAX_SAFE_CHUNK_SIZE,
+            "RLM sender: chunk_size exceeds safe MTU limit, automatically reducing to avoid packet fragmentation issues"
+        );
+        cfg.common.chunk_size = MAX_SAFE_CHUNK_SIZE;
+    }
+
     let chunk_size = cfg.common.chunk_size as u64;
     let total_bytes = cfg.total_bytes;
     let total_chunks = if chunk_size == 0 {
@@ -35,7 +53,7 @@ pub async fn run(
         total_bytes.div_ceil(chunk_size)
     };
 
-    tracing::info!(
+    tracing::debug!(
         session_id = sid,
         total_bytes,
         total_chunks,
@@ -69,9 +87,20 @@ pub async fn run(
     state.send_manifest(&processors);
 
     loop {
-        // Drain any immediately-available control frames so resend/retire
-        // decisions reflect fresh receiver state before we transmit more data.
+        tracing::debug!(
+            session_id = sid,
+            ready_gate_open = state.ready_gate_open,
+            ready_nodes_count = state.ready_nodes.len(),
+            source_drained = state.source_drained,
+            inflight_len = state.inflight_len(),
+            window = state.window,
+            "RLM sender: top of main loop"
+        );
         while let Ok(frame) = ctrl_rx.try_recv() {
+            tracing::debug!(
+                session_id = sid,
+                "RLM sender: received frame from ctrl_rx.try_recv()"
+            );
             state.handle_control(frame);
         }
 
@@ -84,15 +113,55 @@ pub async fn run(
             progressed = true;
         }
 
-        if state.ready_for_data() && !chunk_source.finished() && state.inflight_len() < state.window
-        {
+        let ready_for_data = state.ready_for_data();
+        let chunk_finished = chunk_source.finished();
+        let inflight_check = state.inflight_len() < state.window;
+        tracing::debug!(
+            session_id = sid,
+            ready_for_data = ready_for_data,
+            chunk_finished = chunk_finished,
+            inflight_len = state.inflight_len(),
+            window = state.window,
+            inflight_check = inflight_check,
+            "RLM sender: checking data send conditions"
+        );
+
+        if chunk_finished && !state.source_drained {
+            tracing::debug!(
+                session_id = sid,
+                "RLM sender: chunk source finished, marking source drained"
+            );
+            state.mark_source_drained();
+            progressed = true;
+        }
+
+        if ready_for_data && !chunk_finished && inflight_check {
+            tracing::debug!(
+                session_id = sid,
+                "RLM sender: attempting to read next chunk"
+            );
             match chunk_source.next_chunk() {
                 Ok(Some(chunk)) => {
+                    tracing::debug!(
+                        session_id = sid,
+                        chunk_index = chunk.index,
+                        chunk_size = chunk.data.len(),
+                        "RLM sender: read chunk successfully, waiting for pacer"
+                    );
                     pacer.wait_for(state.common.chunk_size).await;
+                    tracing::debug!(
+                        session_id = sid,
+                        chunk_index = chunk.index,
+                        "RLM sender: pacer cleared, sending data chunk"
+                    );
                     state.send_data_chunk(chunk, &processors);
                     progressed = true;
                 }
                 Ok(None) => {
+                    tracing::warn!(
+                        session_id = sid,
+                        "RLM sender: next_chunk returned None, marking source drained"
+                    );
                     state.mark_source_drained();
                     progressed = true;
                 }
@@ -123,7 +192,7 @@ pub async fn run(
         }
 
         if state.is_complete() {
-            tracing::info!(
+            tracing::debug!(
                 session_id = sid,
                 bytes_sent = state.bytes_sent,
                 chunks_sent = state.primary_chunks,
@@ -134,11 +203,24 @@ pub async fn run(
         }
 
         if !progressed {
+            tracing::debug!(
+                session_id = sid,
+                "RLM sender: no progress, waiting for control messages (20ms timeout)"
+            );
             // Don't block forever; let the loop re-check timers (e.g., MANIFEST resend).
             if let Ok(Some(frame)) =
                 tokio::time::timeout(Duration::from_millis(20), ctrl_rx.recv()).await
             {
+                tracing::debug!(
+                    session_id = sid,
+                    "RLM sender: received frame from ctrl_rx.recv() while waiting"
+                );
                 state.handle_control(frame);
+            } else {
+                tracing::debug!(
+                    session_id = sid,
+                    "RLM sender: timeout waiting for control messages, continuing loop"
+                );
             }
             // On timeout or channel closed, just fall through and loop; this allows
             // MANIFEST re-sends every 250ms while waiting for READY.
@@ -146,7 +228,6 @@ pub async fn run(
     }
 }
 
-/// Converts a user-facing ACK policy into a concrete completion rule.
 fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionPolicy {
     match policy {
         AckPolicy::All => CompletionPolicy::All,
@@ -158,9 +239,6 @@ fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionP
     }
 }
 
-/// Encapsulates all mutable sender-side state (window, inflight map, pacing,
-/// manifest timing, etc.). Keeping the logic centralized makes the event loop
-/// above easier to read and test.
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
@@ -265,7 +343,7 @@ impl SenderState {
         };
         self.send_control(&manifest, processors);
         self.manifest_last_sent = Instant::now();
-        tracing::info!(
+        tracing::debug!(
             session_id = self.session_id,
             src = %self.src_ip,
             dst = %self.dst_ip,
@@ -300,6 +378,13 @@ impl SenderState {
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = rlm::encode_data(self.session_id, chunk.index, &chunk.data);
         let bytes = Bytes::from(frame);
+        tracing::debug!(
+            session_id = self.session_id,
+            chunk_index = chunk.index,
+            chunk_data_len = chunk.data.len(),
+            frame_len = bytes.len(),
+            "RLM sender: send_data_chunk - encoded DATA frame"
+        );
         self.enqueue_frame(chunk.index, bytes.clone());
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
@@ -336,7 +421,7 @@ impl SenderState {
         };
         self.send_control(&eot, processors);
         self.eot_sent = true;
-        tracing::info!(
+        tracing::debug!(
             session_id = self.session_id,
             last_index = self.total_chunks,
             "RLM sender: EOT sent"
@@ -352,7 +437,22 @@ impl SenderState {
     }
 
     fn handle_control(&mut self, frame: InboundFrame) {
-        let InboundFrame { bytes, peer_id, .. } = frame;
+        let InboundFrame {
+            bytes,
+            peer_id,
+            group_ip,
+            source_node_id,
+        } = frame;
+
+        tracing::debug!(
+            session_id = self.session_id,
+            ?peer_id,
+            ?source_node_id,
+            ?group_ip,
+            bytes_len = bytes.len(),
+            "RLM sender: handle_control called with frame"
+        );
+
         let Some((_, control)) = rlm::decode_control(&bytes) else {
             tracing::warn!(
                 session_id = self.session_id,
@@ -361,13 +461,24 @@ impl SenderState {
             return;
         };
 
+        tracing::debug!(
+            session_id = self.session_id,
+            ?control,
+            "RLM sender: decoded control message"
+        );
+
         match control {
             RlmControl::Ready { node_id } => {
                 self.ready_nodes.insert(node_id as usize);
                 tracing::debug!(
                     session_id = self.session_id,
                     node_id,
-                    "RLM sender: receiver ready"
+                    peer = ?peer_id,
+                    source_node = ?source_node_id,
+                    dst_group = ?group_ip,
+                    ready_count = self.ready_nodes.len(),
+                    total_receivers = self.receiver_count,
+                    "RLM sender: READY received and processed"
                 );
             }
             RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
@@ -378,6 +489,9 @@ impl SenderState {
                     tracing::warn!(
                         session_id = self.session_id,
                         ?control,
+                        peer = ?peer_id,
+                        source_node = ?source_node_id,
+                        dst_group = ?group_ip,
                         "RLM sender: dropping control without peer id"
                     );
                     return;
@@ -406,12 +520,27 @@ impl SenderState {
     }
 
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
+        tracing::debug!(
+            session_id = self.session_id,
+            src_ip = %self.src_ip,
+            dst_ip = %self.dst_ip,
+            src_port = self.src_port,
+            dst_port = self.dst_port,
+            frame_len = frame.len(),
+            "RLM sender: send_frame building packet"
+        );
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
             self.dst_ip,
             self.dst_port,
             frame,
+        );
+        tracing::debug!(
+            session_id = self.session_id,
+            flow_id = packet.flow_id,
+            packet_size = packet.packet_size,
+            "RLM sender: send_frame packet built, sending to processor"
         );
         processors.process_packet(packet);
     }
@@ -435,7 +564,7 @@ impl SenderState {
         if self.receiver_count > 0 && self.ready_nodes.len() == self.receiver_count {
             self.ready_gate_open = true;
             self.ready_deadline = None;
-            tracing::info!(
+            tracing::debug!(
                 session_id = self.session_id,
                 "RLM sender: all receivers ready"
             );
@@ -456,8 +585,6 @@ impl SenderState {
     }
 }
 
-/// Chooses a sliding window size based on receiver fan-out and optional token
-/// bucket configuration.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let receiver_factor = (cfg.receiver_ids.len().max(1)) * 2;
     let mut window = DEFAULT_WINDOW.max(receiver_factor);
@@ -471,14 +598,11 @@ fn compute_window(cfg: &SenderConfig) -> usize {
     window
 }
 
-/// Materialized chunk that is ready to be encoded into an RLM frame.
 struct ChunkPayload {
     index: u64,
     data: Vec<u8>,
 }
 
-/// Reads chunk payloads from disk (if provided) and hands them to the sender
-/// in strict index order. Tests may swap in the empty case by omitting files.
 struct ChunkSource {
     file: Option<File>,
     chunk_size: usize,
@@ -536,7 +660,6 @@ impl ChunkSource {
     }
 }
 
-/// Simple token-bucket pacer used to honor optional bandwidth caps.
 struct DataPacer {
     spec: Option<nextmini_messages::TokenBucketSpec>,
     tokens: f64,

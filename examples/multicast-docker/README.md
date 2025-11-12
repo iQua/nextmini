@@ -79,7 +79,7 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
   `/workspace/tensors/tensor-auto-1g.pt` before every run.
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
-- `CHUNK_SIZE` – payload slice size (defaults to 32768 bytes to stay under the dataplane MTU).
+- `CHUNK_SIZE` – payload slice size (defaults to 1400 bytes). **Note**: The RLM sender/receiver automatically validates and caps chunk_size at 1328 bytes to avoid MTU fragmentation issues. Values larger than this will be automatically reduced with a warning in the logs.
 - `PAYLOAD_SLEEP_MS` – optional pacing delay between chunks when you need to slow down the source.
 - `VERIFY_CHECKSUM` – set to `1` to have the source emit, and receivers verify, a
   SHA-256 checksum stored at `CHECKSUM_PATH` (defaults to `/artifacts/<group>.sha256`).
@@ -115,7 +115,7 @@ following knobs if needed:
 - Override `CHECKSUM_PATH` to write the digest elsewhere under `/artifacts`.
 - Provide a custom tensor via `TENSOR_PATH` (and optionally `EXPECTED_BYTES`) to skip
   auto-generation.
-- Increase/decrease `CHUNK_SIZE` or `PAYLOAD_SLEEP_MS` to tune throughput.
+- Increase/decrease `CHUNK_SIZE` (up to 1328 bytes max) or `PAYLOAD_SLEEP_MS` to tune throughput.
 - Inspect `/artifacts/tensor-metadata.json` for the last tensor path/size broadcast to
   receivers.
 
@@ -124,6 +124,24 @@ run `docker compose up` without creating them manually. The source container wil
 their contents automatically before each run (unless `CLEAN_SHARED_DIRS=0`), so you get
 a fresh slate without manual cleanup. Delete the directories entirely only if you want to
 recreate the bind mounts from scratch.
+
+### MTU and Chunk Size Limits
+
+The reliable multicast (RLM) implementation automatically validates chunk sizes to prevent
+packet fragmentation issues. The maximum safe chunk size is **1328 bytes**, calculated as:
+
+```
+Typical MTU (1500) - IP header (20) - TCP header (20) - RLM header (20) - RLM DATA header (12) - safety margin (100) = 1328 bytes
+```
+
+If you specify a `CHUNK_SIZE` larger than 1328 bytes, the RLM sender and receiver will
+automatically reduce it to 1328 bytes and log a warning. This prevents the following issues:
+
+- Packets exceeding MTU being dropped or corrupted during transmission
+- Invalid flow IDs causing routing failures
+- Sender/receiver deadlock due to unacknowledged packets
+
+For best performance in Docker networks (default MTU 1500), use chunk sizes between 1024-1328 bytes.
 
 ## Testing & Verification
 
