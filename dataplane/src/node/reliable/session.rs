@@ -1,10 +1,10 @@
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
-use tokio::task::JoinHandle;
 
 use ahash::AHashMap;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 use nextmini_messages::TokenBucketSpec;
 

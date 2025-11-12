@@ -1,10 +1,10 @@
-use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use nextmini_messages::rlm::{self, RlmControl};

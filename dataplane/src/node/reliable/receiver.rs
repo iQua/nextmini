@@ -1,9 +1,9 @@
-use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::{self, Sleep};
 

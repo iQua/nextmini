@@ -1,8 +1,9 @@
 //! Lightweight helpers for extracting trace metadata from reliable control
 //! frames. Used by both the dataplane and tooling to enrich logging.
 
-use crate::node::packet::Packet;
 use nextmini_messages::rlm::{self, RlmControl};
+
+use crate::node::packet::Packet;
 
 /// Minimal metadata extracted from a MANIFEST control frame for logging/tracing.
 #[derive(Clone, Copy, Debug)]
