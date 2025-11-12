@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tomllib
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -222,7 +221,9 @@ def run_source(args: argparse.Namespace) -> None:
 
     # Source also waits for multicast routes to be installed.
     log("Waiting for multicast routes to be installed on source...", args.quiet)
-
+    
+    # Read source node_id from config file using built-in tomllib (Python 3.11+)
+    import tomllib
     with open(args.config, 'rb') as f:
         source_config = tomllib.load(f)
     source_node_id = source_config.get('node_id', 1)
