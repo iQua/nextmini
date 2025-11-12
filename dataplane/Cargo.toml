@@ -47,6 +47,5 @@ rtnetlink = "0.18"
 nix = { version = "0.30", features = ["sched", "hostname", "fs"] }
 
 [features]
-default = []
-# Gate the in-progress reliable multicast module to keep the default build green.
+default = ["reliable"]
 reliable = []

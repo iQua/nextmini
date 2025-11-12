@@ -61,7 +61,8 @@ pub async fn run(
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
     let dst_ip = (cfg.source_node_id as NodeId)
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
-    let ctrl_src_port = cfg.common.dst_port;
+    // Source control traffic from the client (src) port to match sender expectations.
+    let ctrl_src_port = cfg.common.src_port;
     let ctrl_dst_port = cfg.common.src_port;
 
     send_control(

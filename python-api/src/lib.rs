@@ -1,7 +1,6 @@
 mod buffer;
 
 use std::net::Ipv4Addr;
-//
 #[cfg(feature = "reliable")]
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,6 +20,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 // macros like tracing::warn! can be used without importing `warn` specifically.
+use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
@@ -43,6 +43,7 @@ use nextmini_messages::DataplaneToController;
 pub use crate::buffer::FrozenBuffer;
 
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
+static TRACING: OnceCell<()> = OnceCell::new();
 
 fn rt() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
@@ -52,6 +53,18 @@ fn rt() -> &'static tokio::runtime::Runtime {
             .build()
             .expect("unable to create tokio runtime for nextmini_py")
     })
+}
+
+fn init_tracing_subscriber() {
+    TRACING.get_or_init(|| {
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_thread_ids(true)
+            .with_target(true)
+            .try_init();
+    });
 }
 
 const IPV4_HEADER_LEN: usize = 20;
@@ -1160,6 +1173,7 @@ mod tests {
 
 #[pymodule]
 fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    init_tracing_subscriber();
     m.add_class::<Dataplane>()?;
     m.add_class::<PacketReceiver>()?;
     m.add_class::<PyPayloadDelivery>()?;
