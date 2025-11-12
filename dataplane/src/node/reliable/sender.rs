@@ -84,6 +84,13 @@ pub async fn run(
             progressed = true;
         }
 
+        // Fix: Explicitly mark source as drained when chunk source finishes
+        // to prevent infinite loop waiting for source_drained to be set
+        if chunk_source.finished() && !state.source_drained {
+            state.mark_source_drained();
+            progressed = true;
+        }
+
         if state.ready_for_data() && !chunk_source.finished() && state.inflight_len() < state.window
         {
             match chunk_source.next_chunk() {
