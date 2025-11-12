@@ -11,9 +11,10 @@ use nextmini_messages::rlm::{self, RlmControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::python::payload::{build_py_payload_segments, python_payload_budget};
 use crate::node::{NodeId, NodeIdExt};
 
-use super::api::InboundFrame;
+use super::api::{InboundFrame, SessionId};
 use super::control::{self, CompletionPolicy};
 use super::session::{AckPolicy, CommonConfig, SenderConfig};
 
@@ -177,7 +178,7 @@ struct SenderState {
     total_chunks: u64,
     total_bytes: u64,
     inflight: BTreeMap<u64, HashSet<usize>>,
-    frame_cache: BTreeMap<u64, Bytes>,
+    frame_cache: BTreeMap<u64, Vec<Bytes>>,
     resend_queue: BTreeSet<u64>,
     ready_nodes: HashSet<usize>,
     ready_gate_open: bool,
@@ -194,6 +195,7 @@ struct SenderState {
     repair_backoff: Duration,
     manifest_interval: Duration,
     manifest_last_sent: Instant,
+    fragmenter: Option<FrameFragmenter>,
 }
 
 impl SenderState {
@@ -211,6 +213,7 @@ impl SenderState {
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
         let window = compute_window(&cfg);
+        let fragmenter = FrameFragmenter::new(&common);
 
         if cfg.common.control_weight != 0 {
             tracing::debug!(
@@ -260,6 +263,7 @@ impl SenderState {
             repair_backoff: Duration::from_millis(cfg.repair_backoff_ms.max(1)),
             manifest_interval: Duration::from_millis(250),
             manifest_last_sent: Instant::now(),
+            fragmenter,
         }
     }
 
@@ -306,21 +310,33 @@ impl SenderState {
 
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = rlm::encode_data(self.session_id, chunk.index, &chunk.data);
-        let bytes = Bytes::from(frame);
-        self.enqueue_frame(chunk.index, bytes.clone());
+        let fragments = self.fragment_frame(frame);
+        self.enqueue_frame(chunk.index, fragments.clone());
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
-        self.send_frame(&bytes, processors);
+        for bytes in fragments {
+            self.send_frame(&bytes, processors);
+        }
+    }
+
+    fn fragment_frame(&mut self, frame: Vec<u8>) -> Vec<Bytes> {
+        if let Some(fragmenter) = self.fragmenter.as_mut() {
+            fragmenter.fragment(frame)
+        } else {
+            vec![Bytes::from(frame)]
+        }
     }
 
     fn send_resend(&mut self, processors: &ProcessorHandle) -> bool {
         let Some(idx) = self.resend_queue.iter().next().copied() else {
             return false;
         };
-        if let Some(frame) = self.frame_cache.get(&idx).cloned() {
+        if let Some(frames) = self.frame_cache.get(&idx) {
             self.resend_queue.remove(&idx);
             self.resend_count += 1;
-            self.send_frame(&frame, processors);
+            for frame in frames {
+                self.send_frame(frame, processors);
+            }
             tracing::debug!(
                 session_id = self.session_id,
                 index = idx,
@@ -407,8 +423,8 @@ impl SenderState {
         }
     }
 
-    fn enqueue_frame(&mut self, idx: u64, frame: Bytes) {
-        self.frame_cache.insert(idx, frame);
+    fn enqueue_frame(&mut self, idx: u64, frames: Vec<Bytes>) {
+        self.frame_cache.insert(idx, frames);
         self.inflight.entry(idx).or_default();
     }
 
@@ -492,6 +508,67 @@ struct ChunkSource {
     total_chunks: u64,
     next_index: u64,
     session_id: u64,
+}
+
+struct FrameFragmenter {
+    session_id: SessionId,
+    chunk_budget: usize,
+    max_message_bytes: usize,
+    next_message_id: u64,
+}
+
+impl FrameFragmenter {
+    fn new(common: &CommonConfig) -> Option<Self> {
+        if !common.fragmentation.enabled {
+            return None;
+        }
+        let budget = match python_payload_budget(common.mtu) {
+            Ok(b) => b,
+            Err(err) => {
+                tracing::warn!(
+                    session_id = common.session_id,
+                    error = %err,
+                    "RLM sender: disabling fragmentation due to MTU configuration"
+                );
+                return None;
+            }
+        };
+        Some(Self {
+            session_id: common.session_id,
+            chunk_budget: budget,
+            max_message_bytes: common.fragmentation.max_message_bytes,
+            next_message_id: 1,
+        })
+    }
+
+    fn fragment(&mut self, frame: Vec<u8>) -> Vec<Bytes> {
+        if frame.len() <= self.chunk_budget {
+            return vec![Bytes::from(frame)];
+        }
+
+        match build_py_payload_segments(
+            &frame,
+            self.chunk_budget,
+            self.max_message_bytes,
+            self.next_message_id(),
+        ) {
+            Ok(chunks) => chunks.into_iter().map(Bytes::from).collect(),
+            Err(err) => {
+                tracing::warn!(
+                    session_id = self.session_id,
+                    error = %err,
+                    "RLM sender: fragmentation failed; falling back to single frame"
+                );
+                vec![Bytes::from(frame)]
+            }
+        }
+    }
+
+    fn next_message_id(&mut self) -> u64 {
+        let id = self.next_message_id;
+        self.next_message_id = self.next_message_id.wrapping_add(1).max(1);
+        id
+    }
 }
 
 impl ChunkSource {

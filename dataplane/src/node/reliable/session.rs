@@ -34,6 +34,17 @@ pub struct CommonConfig {
     pub local_node_id: usize,
     pub user_space_base_addr: Ipv4Addr,
     pub local_netmask: Ipv4Addr,
+    pub mtu: i32,
+    pub fragmentation: FragmentationConfig,
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct FragmentationConfig {
+    pub enabled: bool,
+    pub max_message_bytes: usize,
+    pub reassembly_window_bytes: usize,
+    pub fragment_timeout_ms: u64,
 }
 
 /// Sender-only configuration (fan-out, source path, FEC knobs, etc.).

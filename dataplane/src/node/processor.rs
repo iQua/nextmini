@@ -2,8 +2,11 @@
 /// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
+use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
+#[cfg(feature = "reliable")]
+use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use tokio;
@@ -32,7 +35,11 @@ use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
-use crate::node::packet::Packet;
+use crate::node::packet::{Packet, PyPayloadSegHeader};
+#[cfg(feature = "reliable")]
+use crate::node::python::fragment::{
+    EvictedMessage, FragmentAssembler, FragmentAssemblerConfig, FragmentResult,
+};
 use crate::node::python::interface::PythonInterfaceHandle;
 #[cfg(feature = "reliable")]
 use crate::node::reliable::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
@@ -621,6 +628,10 @@ struct Processor {
     python_interface: Option<PythonInterfaceHandle>,
     #[cfg(feature = "reliable")]
     reliable_handle: Option<ReliableHandle>,
+    #[cfg(feature = "reliable")]
+    reliable_fragment_enabled: bool,
+    #[cfg(feature = "reliable")]
+    reliable_fragment_assembler: FragmentAssembler,
 }
 
 impl Processor {
@@ -629,6 +640,16 @@ impl Processor {
         broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
         config: LocalConfig,
     ) -> Self {
+        #[cfg(feature = "reliable")]
+        let reliable_fragment_cfg = FragmentAssemblerConfig {
+            enabled: config.python_fragmentation_enabled,
+            max_message_bytes: config.python_fragmentation_max_message_bytes as usize,
+            reassembly_window_bytes: config.python_fragmentation_reassembly_window_bytes as usize,
+            fragment_timeout: Duration::from_millis(
+                config.python_fragmentation_fragment_timeout_ms as u64,
+            ),
+        };
+
         Self {
             packet_receiver,
             broadcast_receiver,
@@ -642,6 +663,10 @@ impl Processor {
             python_interface: None,
             #[cfg(feature = "reliable")]
             reliable_handle: None,
+            #[cfg(feature = "reliable")]
+            reliable_fragment_enabled: reliable_fragment_cfg.enabled,
+            #[cfg(feature = "reliable")]
+            reliable_fragment_assembler: FragmentAssembler::new(reliable_fragment_cfg),
         }
     }
 
@@ -842,18 +867,33 @@ impl Processor {
     }
 
     #[cfg(feature = "reliable")]
-    fn try_deliver_reliable(&self, packet: &Packet) -> bool {
-        let Some(handle) = self.reliable_handle.as_ref() else {
+    fn try_deliver_reliable(&mut self, packet: &Packet) -> bool {
+        let Some(handle) = self.reliable_handle.clone() else {
             return false;
         };
         let Some(payload) = packet.tcp_payload() else {
             return false;
         };
-        let manifest_meta = manifest_from_bytes(payload);
+        let mut owned_payload: Option<Vec<u8>> = None;
+        let mut payload_slice: &[u8] = payload;
+        if self.reliable_fragment_enabled {
+            match self.defragment_reliable(packet.flow_id, payload) {
+                DefragOutcome::Ready(Cow::Borrowed(bytes)) => {
+                    payload_slice = bytes;
+                }
+                DefragOutcome::Ready(Cow::Owned(bytes)) => {
+                    owned_payload = Some(bytes);
+                    payload_slice = owned_payload.as_ref().unwrap();
+                }
+                DefragOutcome::Pending => return true,
+                DefragOutcome::Dropped => return true,
+            }
+        }
+        let manifest_meta = manifest_from_bytes(payload_slice);
 
-        let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
+        let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload_slice) {
             hdr.session_id
-        } else if let Some((hdr, _)) = rlm::decode_control(payload) {
+        } else if let Some((hdr, _)) = rlm::decode_control(payload_slice) {
             hdr.session_id
         } else {
             return false;
@@ -866,10 +906,16 @@ impl Processor {
             Some(src_node)
         };
 
+        let payload_vec = if let Some(buf) = owned_payload {
+            buf
+        } else {
+            payload_slice.to_vec()
+        };
+
         handle.deliver(
             session_id,
             ReliableInboundFrame {
-                bytes: payload.to_vec(),
+                bytes: payload_vec,
                 peer_id,
                 group_ip: Some(packet.flow_id.dst_ip()),
                 source_node_id: peer_id,
@@ -886,4 +932,80 @@ impl Processor {
         }
         true
     }
+
+    #[cfg(feature = "reliable")]
+    fn defragment_reliable<'a>(&mut self, flow_id: FlowId, payload: &'a [u8]) -> DefragOutcome<'a> {
+        match PyPayloadSegHeader::decode_from(payload) {
+            Ok((header, remainder)) => {
+                let expected = header.fragment_payload_len as usize;
+                if header.fragment_count <= 1 && !header.fragmented {
+                    if expected <= remainder.len() {
+                        return DefragOutcome::Ready(Cow::Owned(remainder[..expected].to_vec()));
+                    } else {
+                        tracing::warn!(
+                            flow = %flow_id,
+                            expected,
+                            available = remainder.len(),
+                            "RLM defragmenter: fragment payload exceeds available bytes."
+                        );
+                        return DefragOutcome::Dropped;
+                    }
+                }
+                if expected > remainder.len() {
+                    tracing::warn!(
+                        flow = %flow_id,
+                        expected,
+                        available = remainder.len(),
+                        "RLM defragmenter: fragment payload truncated."
+                    );
+                    return DefragOutcome::Dropped;
+                }
+                let chunk = remainder[..expected].to_vec();
+                let report = self.reliable_fragment_assembler.insert_fragment(
+                    flow_id,
+                    header,
+                    chunk,
+                    None,
+                    Instant::now(),
+                );
+                self.handle_fragment_evictions(&report.evicted);
+                match report.result {
+                    FragmentResult::Pending => DefragOutcome::Pending,
+                    FragmentResult::Complete(message) => {
+                        DefragOutcome::Ready(Cow::Owned(message.payload))
+                    }
+                    FragmentResult::Dropped(drop) => {
+                        tracing::warn!(
+                            flow = %flow_id,
+                            detail = drop.detail,
+                            kind = ?drop.kind,
+                            "RLM defragmenter dropped message."
+                        );
+                        DefragOutcome::Dropped
+                    }
+                    FragmentResult::Bypassed => DefragOutcome::Ready(Cow::Borrowed(payload)),
+                }
+            }
+            Err(_) => DefragOutcome::Ready(Cow::Borrowed(payload)),
+        }
+    }
+
+    #[cfg(feature = "reliable")]
+    fn handle_fragment_evictions(&self, evicted: &[EvictedMessage]) {
+        for msg in evicted {
+            tracing::warn!(
+                flow = %msg.flow_id,
+                message_id = msg.message_id,
+                missing = msg.missing_fragments,
+                "RLM defragmenter evicted message after timeout."
+            );
+        }
+    }
+}
+
+#[cfg(feature = "reliable")]
+enum DefragOutcome<'a> {
+    Ready(Cow<'a, [u8]>),
+    Pending,
+    Dropped,
 }
