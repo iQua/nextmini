@@ -8,7 +8,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 try:
     import nextmini_py as nm
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
-    parser.add_argument("--chunk-size", type=int, default=1400)
+    parser.add_argument("--chunk-size", type=int, default=32768)
     parser.add_argument("--flow-window", type=int, default=256)
     parser.add_argument("--flow-poll-ms", type=int, default=100)
     parser.add_argument("--sleep-ms", type=int, default=0)
@@ -100,9 +100,7 @@ def metadata_path(args: argparse.Namespace) -> Path:
     return args.artifact_dir / METADATA_FILE
 
 
-def write_tensor_metadata(
-    args: argparse.Namespace, tensor_path: Path, size: int
-) -> None:
+def write_tensor_metadata(args: argparse.Namespace, tensor_path: Path, size: int) -> None:
     args.artifact_dir.mkdir(parents=True, exist_ok=True)
     payload = {"path": str(tensor_path), "bytes": size}
     metadata_path(args).write_text(json.dumps(payload))
@@ -155,9 +153,7 @@ def write_group_info(
     atomic_write_json(group_info_path(args), payload)
 
 
-def wait_for_group_info(
-    args: argparse.Namespace, timeout: int
-) -> Tuple[int, str]:
+def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, str]:
     path = group_info_path(args)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -174,13 +170,12 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     if args.tensor_path is None:
         tensor_dir = Path("/workspace/tensors")
         tensor_dir.mkdir(parents=True, exist_ok=True)
-        args.tensor_path = tensor_dir / "tensor-auto-1k.pt"
+        args.tensor_path = tensor_dir / "tensor-auto-1g.pt"
     import torch  # Imported lazily to keep startup light
 
-    log(f"Generating ~1KB tensor at {args.tensor_path}...", args.quiet)
+    log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
-    # Generate ~1KB tensor: 256 floats * 4 bytes/float = 1024 bytes
-    tensor = torch.randn(256, dtype=torch.float32).contiguous().cpu()
+    tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
     args.tensor_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(tensor, args.tensor_path)
     size = args.tensor_path.stat().st_size
@@ -213,20 +208,8 @@ def run_source(args: argparse.Namespace) -> None:
         args.quiet,
     )
 
-    log("Waiting for routes to be installed...", args.quiet)
-    routes = dataplane.wait_for_routes_installed(
-        group_id,
-        src_node_id=args.source_node_id,
-        timeout_ms=args.member_timeout * 1000,
-    )
-    if routes is None:
-        raise TimeoutError("Timed out waiting for GroupRoutesInstalled event.")
-    log(f"Routes installed (entries={len(routes)}); ready to send.", args.quiet)
-
     if args.tensor_path is None:
-        raise SystemExit(
-            "Source role requires a tensor file; set --tensor-path or --generate-tensor."
-        )
+        raise SystemExit("Source role requires a tensor file; set --tensor-path or --generate-tensor.")
     if not args.tensor_path.exists():
         raise SystemExit(f"Tensor file {args.tensor_path} does not exist")
 
@@ -254,10 +237,7 @@ def run_source(args: argparse.Namespace) -> None:
         ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
         log(f"Send completion: {ok}", args.quiet)
     else:
-        log(
-            "Dataplane lacks reliable_wait; send completion signal unavailable.",
-            args.quiet,
-        )
+        log("Dataplane lacks reliable_wait; send completion signal unavailable.", args.quiet)
     log("Source issued reliable send request.", args.quiet)
 
 
@@ -317,10 +297,7 @@ def run_receiver(args: argparse.Namespace) -> None:
         ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
         log(f"Receive completion: {ok}", args.quiet)
     else:
-        log(
-            "Dataplane lacks reliable_wait; receive completion signal unavailable.",
-            args.quiet,
-        )
+        log("Dataplane lacks reliable_wait; receive completion signal unavailable.", args.quiet)
 
 
 def main() -> int:
@@ -345,10 +322,7 @@ def main() -> int:
         log(f"ERROR: {exc}", quiet=False)
         return 1
 
-    log(
-        "Task completed. Keeping container alive (Ctrl+C to exit)...",
-        quiet=False,
-    )
+    log("Task completed. Keeping container alive (Ctrl+C to exit)...", quiet=False)
     try:
         while True:
             time.sleep(60)

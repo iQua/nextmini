@@ -6,6 +6,9 @@ use super::session::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 
+/// Metadata and payload extracted from inbound reliable frames. The control
+/// loop fills out peer/multicast context so receivers can reason about repair
+/// requests without re-parsing outer headers.
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
     pub bytes: Vec<u8>,
@@ -31,12 +34,17 @@ impl InboundFrame {
     }
 }
 
+/// Thin handle that lets callers enqueue commands for the reliable runtime
+/// task (sender/receiver lifecycle, frame delivery, etc.).
 #[derive(Clone, Debug)]
 pub struct ReliableHandle {
     #[allow(dead_code)]
     tx: mpsc::UnboundedSender<Command>,
 }
 
+/// Commands processed by the reliable runtime event loop. Most commands are
+/// async (reply over oneshot) so the caller can await session IDs or
+/// completion state.
 #[allow(dead_code)]
 pub enum Command {
     StartSender {
@@ -111,29 +119,7 @@ impl ReliableHandle {
 
     #[allow(dead_code)]
     pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
-        tracing::debug!(
-            session_id = session,
-            bytes_len = frame.bytes.len(),
-            ?frame.peer_id,
-            ?frame.group_ip,
-            ?frame.source_node_id,
-            "ReliableHandle::deliver: sending Command::Deliver to channel"
-        );
-        match self.tx.send(Command::Deliver { session, frame }) {
-            Ok(_) => {
-                tracing::debug!(
-                    session_id = session,
-                    "ReliableHandle::deliver: Command::Deliver sent successfully"
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    session_id = session,
-                    error = ?e,
-                    "ReliableHandle::deliver: failed to send Command::Deliver - channel closed?"
-                );
-            }
-        }
+        let _ = self.tx.send(Command::Deliver { session, frame });
     }
 
     #[allow(dead_code)]

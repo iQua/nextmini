@@ -18,10 +18,8 @@ use super::control::{NackLimiter, SackScheduler, SackSnapshot};
 use super::session::ReceiverConfig;
 use super::trace::manifest_from_bytes;
 
-/// Maximum safe chunk size to avoid MTU issues.
-/// Calculation: typical MTU (1500) - IP header (20) - TCP header (20) - RLM header (20) - RLM DATA header (12) - safety margin (100) = 1328
-const MAX_SAFE_CHUNK_SIZE: usize = 1328;
-
+/// Utility for emitting control traffic (ACK/SACK/NACK/etc.) via the node
+/// processor stack using the same addressing the sender expects.
 struct ControlEmitter<'a> {
     session_id: u64,
     src_ip: std::net::Ipv4Addr,
@@ -51,15 +49,6 @@ impl<'a> ControlEmitter<'a> {
     }
 
     fn send(&self, control: &RlmControl) {
-        tracing::debug!(
-            session_id = self.session_id,
-            ?control,
-            src = %self.src_ip,
-            src_port = self.src_port,
-            dst = %self.dst_ip,
-            dst_port = self.dst_port,
-            "RLM receiver: emitting control frame"
-        );
         let buf = rlm::encode_control(self.session_id, control);
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -68,48 +57,19 @@ impl<'a> ControlEmitter<'a> {
             self.dst_port,
             &buf,
         );
-        let flow_id = packet.flow_id;
-        let packet_size = packet.packet_size;
-        tracing::debug!(
-            session_id = self.session_id,
-            control = ?control,
-            flow = %flow_id,
-            src = %self.src_ip,
-            src_port = self.src_port,
-            dst = %self.dst_ip,
-            dst_port = self.dst_port,
-            packet_size = packet_size,
-            "RLM receiver: CONTROL packet built, sending to processor"
-        );
         self.processors.process_packet(packet);
-        tracing::debug!(
-            session_id = self.session_id,
-            control = ?control,
-            flow = %flow_id,
-            "RLM receiver: CONTROL packet sent to processor"
-        );
     }
 }
 
+/// Drives a receiver session: consumes inbound frames, persists payloads in
+/// order, and feeds back control signals so the sender can repair gaps.
 pub async fn run(
-    mut cfg: ReceiverConfig,
+    cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
 ) {
     let sid = cfg.common.session_id;
-
-    // Validate and adjust chunk_size to avoid MTU issues
-    if cfg.common.chunk_size > MAX_SAFE_CHUNK_SIZE {
-        tracing::warn!(
-            session_id = sid,
-            original_chunk_size = cfg.common.chunk_size,
-            max_safe_chunk_size = MAX_SAFE_CHUNK_SIZE,
-            "RLM receiver: chunk_size exceeds safe MTU limit, automatically reducing to avoid packet fragmentation issues"
-        );
-        cfg.common.chunk_size = MAX_SAFE_CHUNK_SIZE;
-    }
-
-    tracing::debug!(
+    tracing::info!(
         session_id = sid,
         expected_bytes = cfg.expected_bytes,
         "RLM receiver started"
@@ -122,6 +82,7 @@ pub async fn run(
         );
     }
 
+    // Stream bookkeeping: RLM chunk indices start at 1.
     let mut expected: u64 = 1;
     let mut highest_seen: u64 = 0;
     let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
@@ -163,20 +124,11 @@ pub async fn run(
     control_io.send(&RlmControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
-    tracing::debug!(
-        session_id = sid,
-        node_id = cfg.common.local_node_id,
-        src = %src_ip,
-        src_port = ctrl_src_port,
-        dst = %dst_ip,
-        dst_port = ctrl_dst_port,
-        group = %cfg.common.group_ip,
-        "RLM receiver: sending eager READY before MANIFEST"
-    );
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
     let mut nack_limiter = NackLimiter::new(Duration::from_millis(cfg.nack_min_interval_ms.max(1)));
     let mut sack_scheduler = SackScheduler::new(Duration::from_millis(cfg.sack_interval_ms));
+    // Tokio timer used to coalesce SACK traffic when the peer leaves gaps.
     let mut sack_timer: Option<Pin<Box<Sleep>>> = None;
 
     loop {
@@ -196,6 +148,8 @@ pub async fn run(
                     file.as_mut(),
                 ) {
                     let base = expected.saturating_sub(1);
+                    // Emit cumulative ACKs whenever we advance the head of
+                    // line; SACKs are handled below if gaps remain.
                     if base > last_ack_up_to {
                         control_io.send(&RlmControl::Ack { up_to: base });
                         last_ack_up_to = base;
@@ -268,7 +222,7 @@ pub async fn run(
         let _ = f.sync_all();
     }
 
-    tracing::debug!(
+    tracing::info!(
         session_id = sid,
         bytes_received,
         last_index = expected.saturating_sub(1),
@@ -276,6 +230,7 @@ pub async fn run(
     );
 }
 
+/// Returns true when the frame decoded as DATA and updates ordering state.
 fn handle_data_frame(
     frame: &InboundFrame,
     expected: &mut u64,
@@ -310,6 +265,7 @@ fn handle_data_frame(
     true
 }
 
+/// Handles receiver-side control frames (Manifest/EOT/etc.).
 fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
@@ -327,17 +283,11 @@ fn handle_control_frame(
             });
 
             if let Some(meta) = manifest_from_bytes(&frame.bytes) {
-                let ready_src_ip = (cfg.common.local_node_id as NodeId)
-                    .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
                 tracing::debug!(
                     session_id = meta.session_id,
                     node_id = cfg.common.local_node_id,
-                    peer = ?frame.peer_id,
-                    source_node = ?frame.source_node_id,
-                    ready_src = %ready_src_ip,
-                    ready_dst = %ctrl_dst_ip,
-                    dst_group = %cfg.common.group_ip,
-                    "RLM receiver: MANIFEST received; READY re-sent toward source"
+                    ctrl_dst_ip = %ctrl_dst_ip,
+                    "RLM receiver: MANIFEST received; READY sent."
                 );
             }
             true
@@ -350,6 +300,7 @@ fn handle_control_frame(
     }
 }
 
+/// Serializes and emits the provided SACK snapshot.
 fn emit_sack(ctrl_io: &ControlEmitter<'_>, snapshot: SackSnapshot) {
     ctrl_io.send(&RlmControl::Sack {
         base: snapshot.base,
@@ -357,6 +308,7 @@ fn emit_sack(ctrl_io: &ControlEmitter<'_>, snapshot: SackSnapshot) {
     });
 }
 
+/// Arms or clears the SACK timer based on the scheduler's next deadline.
 fn reset_sack_timer(timer: &mut Option<Pin<Box<Sleep>>>, scheduler: &SackScheduler, now: Instant) {
     if let Some(deadline) = scheduler.next_deadline(now) {
         let when = time::Instant::from_std(deadline);
@@ -371,6 +323,7 @@ trait MaxAssign {
 }
 
 impl MaxAssign for u64 {
+    /// Keeps the maximum observed chunk index without branching at call sites.
     fn set_max(&mut self, other: Self) {
         if other > *self {
             *self = other;
