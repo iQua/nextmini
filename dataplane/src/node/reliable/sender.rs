@@ -126,10 +126,14 @@ pub async fn run(
         }
 
         if !progressed {
-            match ctrl_rx.recv().await {
-                Some(frame) => state.handle_control(frame),
-                None => tokio::time::sleep(Duration::from_millis(5)).await,
+            // Don't block forever; let the loop re-check timers (e.g., MANIFEST resend).
+            if let Ok(Some(frame)) =
+                tokio::time::timeout(Duration::from_millis(20), ctrl_rx.recv()).await
+            {
+                state.handle_control(frame);
             }
+            // On timeout or channel closed, just fall through and loop; this allows
+            // MANIFEST re-sends every 250ms while waiting for READY.
         }
     }
 }
