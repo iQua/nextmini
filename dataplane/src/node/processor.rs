@@ -28,6 +28,7 @@ use crate::node::config::{Feature, LocalConfig};
 use crate::node::connector::Connector;
 use crate::node::connector::ConnectorMessage;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
+use crate::node::flow;
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
@@ -757,7 +758,26 @@ impl Processor {
                     self.send_packet(pkt, next_hop_id).await;
                 }
             }
-            Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
+            Err(e) => {
+                error!(
+                    "Error resolving route for flow {}: {} | src_ip={} dst_ip={} src_port={} dst_port={} packet_size={}",
+                    packet_flow_id,
+                    e,
+                    packet.flow_id.src_ip(),
+                    packet.flow_id.dst_ip(),
+                    packet.flow_id.src_port(),
+                    packet.flow_id.dst_port(),
+                    packet.packet_size
+                );
+
+                if packet_flow_id == flow::INVALID_FLOW_ID {
+                    warn!(
+                        "Packet with INVALID_FLOW_ID detected in processor! packet_size={} buffer_preview={:?}",
+                        packet.packet_size,
+                        &packet.bytes()[..packet.packet_size.min(60)]
+                    );
+                }
+            }
         }
     }
 

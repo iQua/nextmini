@@ -277,10 +277,21 @@ impl Packet {
         }
         let actual_size = buffer.len().min(packet_size);
         let flow_id = if buffer.is_empty() {
+            tracing::warn!("Packet::new: buffer is empty, setting INVALID_FLOW_ID");
             flow::INVALID_FLOW_ID
         } else {
             Self::get_flow_id_from_buf(&buffer[..actual_size])
         };
+
+        if flow_id == flow::INVALID_FLOW_ID {
+            tracing::warn!(
+                "Packet::new: INVALID_FLOW_ID detected! packet_size={} actual_size={} buffer.len()={}",
+                packet_size,
+                actual_size,
+                buffer.len()
+            );
+        }
+
         Self {
             flow_id,
             packet_size: actual_size,
@@ -447,6 +458,16 @@ impl Packet {
         let total_len = IP_HLEN + TCP_HLEN + payload.len();
         let mut buf = vec![0u8; total_len];
 
+        tracing::debug!(
+            "build_ipv4_tcp_packet: src={}:{} dst={}:{} payload_len={} total_len={}",
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            payload.len(),
+            total_len
+        );
+
         // IPv4 header
         buf[0] = 0x45; // version=4, header length=5 words
         BigEndian::write_u16(&mut buf[2..4], total_len as u16);
@@ -465,11 +486,31 @@ impl Packet {
         // Payload
         buf[IP_HLEN + TCP_HLEN..].copy_from_slice(payload);
 
+        tracing::debug!(
+            "build_ipv4_tcp_packet: buf[0]=0x{:02x} buf[12..20]={:?} buf[20..24]={:?}",
+            buf[0],
+            &buf[12..20],
+            &buf[20..24]
+        );
+
         Packet::from_vec(buf)
     }
 
     fn get_flow_id_from_buf(buf: &[u8]) -> FlowId {
-        if buf.len() < 20 || buf[0] >> 4 != 4 {
+        if buf.len() < 20 {
+            tracing::warn!(
+                "get_flow_id_from_buf: buffer too short, len={} (need >= 20)",
+                buf.len()
+            );
+            return flow::INVALID_FLOW_ID;
+        }
+
+        if buf[0] >> 4 != 4 {
+            tracing::warn!(
+                "get_flow_id_from_buf: not IPv4, buf[0]=0x{:02x} version={}",
+                buf[0],
+                buf[0] >> 4
+            );
             return flow::INVALID_FLOW_ID;
         }
 
@@ -477,13 +518,41 @@ impl Packet {
 
         let ihl = (buf[0] & 0x0F) as usize;
         let ip_header_len = ihl * 4;
-        if ip_header_len < 20 || buf.len() < ip_header_len + 4 {
+
+        if ip_header_len < 20 {
+            tracing::warn!(
+                "get_flow_id_from_buf: IP header too short, ihl={} ip_header_len={} (need >= 20)",
+                ihl,
+                ip_header_len
+            );
+            return flow::INVALID_FLOW_ID;
+        }
+
+        if buf.len() < ip_header_len + 4 {
+            tracing::warn!(
+                "get_flow_id_from_buf: buffer too short for ports, buf.len()={} ip_header_len={} (need >= {})",
+                buf.len(),
+                ip_header_len,
+                ip_header_len + 4
+            );
             return flow::INVALID_FLOW_ID;
         }
 
         let src_dst_port = BigEndian::read_u32(&buf[ip_header_len..ip_header_len + 4]);
 
-        (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
+        let flow_id = (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32;
+
+        tracing::debug!(
+            "get_flow_id_from_buf: SUCCESS buf.len()={} ihl={} ip_header_len={} flow_id={} src_dst_ip=0x{:016x} src_dst_port=0x{:08x}",
+            buf.len(),
+            ihl,
+            ip_header_len,
+            flow_id,
+            src_dst_ip,
+            src_dst_port
+        );
+
+        flow_id
     }
 
     #[cfg(target_os = "linux")]

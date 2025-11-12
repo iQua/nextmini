@@ -144,6 +144,7 @@ impl RoutingTable {
     /// Builds the routing key for a flow, incorporating multicast groups when applicable.
     fn key_for_flow(&self, flow_id: FlowId) -> Option<RouteKey> {
         if flow_id == flow::INVALID_FLOW_ID {
+            tracing::warn!("RoutingTable::key_for_flow: flow_id is INVALID_FLOW_ID");
             return None;
         }
 
@@ -151,14 +152,28 @@ impl RoutingTable {
         if let Some(&group_id) = self.group_dir.get(&dst_ip) {
             let src_node = self.config.ip_to_node_id(flow_id.src_ip());
             if src_node == INVALID {
+                tracing::warn!(
+                    "RoutingTable::key_for_flow: multicast flow but src_node is INVALID, src_ip={} dst_ip={} group_id={}",
+                    flow_id.src_ip(),
+                    dst_ip,
+                    group_id
+                );
                 return None;
             }
             return Some(RouteKey::Multicast(src_node, group_id));
         }
 
-        self.config
-            .try_extract_node_ids_from_flow(flow_id)
-            .map(|(src_node, dst_node)| RouteKey::Unicast(src_node, dst_node))
+        let result = self.config.try_extract_node_ids_from_flow(flow_id);
+        if result.is_none() {
+            tracing::warn!(
+                "RoutingTable::key_for_flow: failed to extract node IDs from flow, src_ip={} dst_ip={} src_port={} dst_port={}",
+                flow_id.src_ip(),
+                flow_id.dst_ip(),
+                flow_id.src_port(),
+                flow_id.dst_port()
+            );
+        }
+        result.map(|(src_node, dst_node)| RouteKey::Unicast(src_node, dst_node))
     }
 
     /// Selects a route id for the provided route key.
@@ -184,6 +199,11 @@ impl RoutingTable {
     ) -> Result<HopBuffer, String> {
         if flow_id == flow::INVALID_FLOW_ID {
             // the flow ID cannot be successfully extracted, no routing is possible
+            tracing::warn!(
+                "RoutingTable::get_next_hops_by_flow: INVALID_FLOW_ID detected! flow_id={} (u128::MAX={})",
+                flow_id,
+                u128::MAX
+            );
             return Err("No route can be selected.".to_string());
         }
 
@@ -196,7 +216,17 @@ impl RoutingTable {
 
         let key = self
             .key_for_flow(flow_id)
-            .ok_or_else(|| "Unable to build route key for flow".to_string())?;
+            .ok_or_else(|| {
+                tracing::warn!(
+                    "RoutingTable::get_next_hops_by_flow: Unable to build route key for flow_id={} src_ip={} dst_ip={} src_port={} dst_port={}",
+                    flow_id,
+                    flow_id.src_ip(),
+                    flow_id.dst_ip(),
+                    flow_id.src_port(),
+                    flow_id.dst_port()
+                );
+                "Unable to build route key for flow".to_string()
+            })?;
 
         let route_id = self
             .select_route_for_key(&key)
