@@ -30,7 +30,7 @@ pub async fn run(
     let total_chunks = if chunk_size == 0 {
         0
     } else {
-        (total_bytes + chunk_size - 1) / chunk_size
+        total_bytes.div_ceil(chunk_size)
     };
 
     tracing::info!(
@@ -103,11 +103,10 @@ pub async fn run(
             && state.ready_for_data()
             && state.should_resend()
             && last_resend.elapsed() >= state.repair_backoff
+            && state.send_resend(&processors)
         {
-            if state.send_resend(&processors) {
-                last_resend = Instant::now();
-                progressed = true;
-            }
+            last_resend = Instant::now();
+            progressed = true;
         }
 
         if !progressed && state.try_emit_eot(&processors) {
@@ -372,7 +371,7 @@ impl SenderState {
 
     fn enqueue_frame(&mut self, idx: u64, frame: Bytes) {
         self.frame_cache.insert(idx, frame);
-        self.inflight.entry(idx).or_insert_with(HashSet::new);
+        self.inflight.entry(idx).or_default();
     }
 
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
@@ -411,17 +410,17 @@ impl SenderState {
             );
             return;
         }
-        if let Some(deadline) = self.ready_deadline {
-            if Instant::now() >= deadline {
-                self.ready_gate_open = true;
-                self.ready_deadline = None;
-                tracing::warn!(
-                    session_id = self.session_id,
-                    ready = self.ready_nodes.len(),
-                    total = self.receiver_count,
-                    "RLM sender: proceeding without all receivers ready"
-                );
-            }
+        if let Some(deadline) = self.ready_deadline
+            && Instant::now() >= deadline
+        {
+            self.ready_gate_open = true;
+            self.ready_deadline = None;
+            tracing::warn!(
+                session_id = self.session_id,
+                ready = self.ready_nodes.len(),
+                total = self.receiver_count,
+                "RLM sender: proceeding without all receivers ready"
+            );
         }
     }
 }
@@ -429,12 +428,12 @@ impl SenderState {
 fn compute_window(cfg: &SenderConfig) -> usize {
     let receiver_factor = (cfg.receiver_ids.len().max(1)) * 2;
     let mut window = DEFAULT_WINDOW.max(receiver_factor);
-    if let Some(bucket) = &cfg.common.data_bucket {
-        if cfg.common.chunk_size > 0 {
-            let per_chunk = cfg.common.chunk_size;
-            let bucket_chunks = (bucket.bucket_size / per_chunk).max(1);
-            window = window.max(bucket_chunks);
-        }
+    if let Some(bucket) = &cfg.common.data_bucket
+        && cfg.common.chunk_size > 0
+    {
+        let per_chunk = cfg.common.chunk_size;
+        let bucket_chunks = (bucket.bucket_size / per_chunk).max(1);
+        window = window.max(bucket_chunks);
     }
     window
 }

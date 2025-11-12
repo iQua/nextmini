@@ -17,6 +17,47 @@ use super::api::InboundFrame;
 use super::control::{NackLimiter, SackScheduler, SackSnapshot};
 use super::session::ReceiverConfig;
 
+struct ControlEmitter<'a> {
+    session_id: u64,
+    src_ip: std::net::Ipv4Addr,
+    src_port: u16,
+    dst_ip: std::net::Ipv4Addr,
+    dst_port: u16,
+    processors: &'a ProcessorHandle,
+}
+
+impl<'a> ControlEmitter<'a> {
+    fn new(
+        session_id: u64,
+        src_ip: std::net::Ipv4Addr,
+        src_port: u16,
+        dst_ip: std::net::Ipv4Addr,
+        dst_port: u16,
+        processors: &'a ProcessorHandle,
+    ) -> Self {
+        Self {
+            session_id,
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            processors,
+        }
+    }
+
+    fn send(&self, control: &RlmControl) {
+        let buf = rlm::encode_control(self.session_id, control);
+        let packet = Packet::build_ipv4_tcp_packet(
+            self.src_ip,
+            self.src_port,
+            self.dst_ip,
+            self.dst_port,
+            &buf,
+        );
+        self.processors.process_packet(packet);
+    }
+}
+
 pub async fn run(
     cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
@@ -65,17 +106,18 @@ pub async fn run(
     let ctrl_src_port = cfg.common.src_port;
     let ctrl_dst_port = cfg.common.src_port;
 
-    send_control(
+    let control_io = ControlEmitter::new(
         sid,
-        &RlmControl::Ready {
-            node_id: cfg.common.local_node_id as u64,
-        },
         src_ip,
         ctrl_src_port,
         dst_ip,
         ctrl_dst_port,
         &processors,
     );
+
+    control_io.send(&RlmControl::Ready {
+        node_id: cfg.common.local_node_id as u64,
+    });
     let mut ready_sent = true;
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
@@ -101,15 +143,7 @@ pub async fn run(
                 ) {
                     let base = expected.saturating_sub(1);
                     if base > last_ack_up_to {
-                        send_control(
-                            sid,
-                            &RlmControl::Ack { up_to: base },
-                            src_ip,
-                            ctrl_src_port,
-                            dst_ip,
-                            ctrl_dst_port,
-                            &processors,
-                        );
+                        control_io.send(&RlmControl::Ack { up_to: base });
                         last_ack_up_to = base;
                     }
                     if highest_seen > base {
@@ -122,15 +156,7 @@ pub async fn run(
                             let now = Instant::now();
                             sack_scheduler.record(ack_base, runs);
                             if let Some(snapshot) = sack_scheduler.take_ready(now) {
-                                emit_sack(
-                                    sid,
-                                    snapshot,
-                                    src_ip,
-                                    ctrl_src_port,
-                                    dst_ip,
-                                    ctrl_dst_port,
-                                    &processors,
-                                );
+                                emit_sack(&control_io, snapshot);
                             }
                             reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
                         }
@@ -144,17 +170,9 @@ pub async fn run(
                         if cfg.nack_jitter_ms > 0 {
                             tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
                         }
-                        send_control(
-                            sid,
-                            &RlmControl::Repair {
-                                indices: vec![expected],
-                            },
-                            src_ip,
-                            ctrl_src_port,
-                            dst_ip,
-                            ctrl_dst_port,
-                            &processors,
-                        );
+                        control_io.send(&RlmControl::Repair {
+                            indices: vec![expected],
+                        });
                     }
                     continue;
                 }
@@ -163,18 +181,11 @@ pub async fn run(
                     &frame,
                     &mut ready_sent,
                     &cfg,
-                    sid,
-                    src_ip,
-                    ctrl_src_port,
-                    dst_ip,
-                    ctrl_dst_port,
-                    &processors,
+                    &control_io,
                     &mut eot_index,
                 ) {
-                    if let Some(last) = eot_index {
-                        if expected.saturating_sub(1) >= last {
-                            break;
-                        }
+                    if let Some(last) = eot_index && expected.saturating_sub(1) >= last {
+                        break;
                     }
                     continue;
                 }
@@ -192,15 +203,7 @@ pub async fn run(
                 sack_timer = None;
                 let now = Instant::now();
                 if let Some(snapshot) = sack_scheduler.take_ready(now) {
-                    emit_sack(
-                        sid,
-                        snapshot,
-                        src_ip,
-                        ctrl_src_port,
-                        dst_ip,
-                        ctrl_dst_port,
-                        &processors,
-                    );
+                    emit_sack(&control_io, snapshot);
                 }
                 reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
             }
@@ -257,12 +260,7 @@ fn handle_control_frame(
     frame: &InboundFrame,
     ready_sent: &mut bool,
     cfg: &ReceiverConfig,
-    session_id: u64,
-    src_ip: std::net::Ipv4Addr,
-    src_port: u16,
-    dst_ip: std::net::Ipv4Addr,
-    dst_port: u16,
-    processors: &ProcessorHandle,
+    ctrl_io: &ControlEmitter<'_>,
     eot_index: &mut Option<u64>,
 ) -> bool {
     let Some((_, control)) = rlm::decode_control(&frame.bytes) else {
@@ -271,17 +269,9 @@ fn handle_control_frame(
     match control {
         RlmControl::Manifest { .. } => {
             if !*ready_sent {
-                send_control(
-                    session_id,
-                    &RlmControl::Ready {
-                        node_id: cfg.common.local_node_id as u64,
-                    },
-                    src_ip,
-                    src_port,
-                    dst_ip,
-                    dst_port,
-                    processors,
-                );
+                ctrl_io.send(&RlmControl::Ready {
+                    node_id: cfg.common.local_node_id as u64,
+                });
                 *ready_sent = true;
             }
             true
@@ -294,41 +284,11 @@ fn handle_control_frame(
     }
 }
 
-fn send_control(
-    session_id: u64,
-    control: &RlmControl,
-    src_ip: std::net::Ipv4Addr,
-    src_port: u16,
-    dst_ip: std::net::Ipv4Addr,
-    dst_port: u16,
-    processors: &ProcessorHandle,
-) {
-    let buf = rlm::encode_control(session_id, control);
-    let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &buf);
-    processors.process_packet(packet);
-}
-
-fn emit_sack(
-    session_id: u64,
-    snapshot: SackSnapshot,
-    src_ip: std::net::Ipv4Addr,
-    src_port: u16,
-    dst_ip: std::net::Ipv4Addr,
-    dst_port: u16,
-    processors: &ProcessorHandle,
-) {
-    send_control(
-        session_id,
-        &RlmControl::Sack {
-            base: snapshot.base,
-            runs: snapshot.runs,
-        },
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        processors,
-    );
+fn emit_sack(ctrl_io: &ControlEmitter<'_>, snapshot: SackSnapshot) {
+    ctrl_io.send(&RlmControl::Sack {
+        base: snapshot.base,
+        runs: snapshot.runs,
+    });
 }
 
 fn reset_sack_timer(timer: &mut Option<Pin<Box<Sleep>>>, scheduler: &SackScheduler, now: Instant) {

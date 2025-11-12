@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 use nextmini_messages::rlm::RlmControl;
 
 /// Merge and normalize SACK gap runs encoded as `(start_delta_from_base, len)`.
+#[cfg(test)]
 pub fn coalesce_sack_runs(mut runs: Vec<(u16, u16)>) -> Vec<(u16, u16)> {
     if runs.is_empty() {
         return runs;
@@ -26,6 +27,7 @@ pub fn coalesce_sack_runs(mut runs: Vec<(u16, u16)>) -> Vec<(u16, u16)> {
 }
 
 /// Build SACK gap runs given a cumulative base and the set of received indices in (base, high].
+#[cfg(test)]
 pub fn build_gap_runs(base: u64, highest_seen: u64, received: &BTreeSet<u64>) -> Vec<(u16, u16)> {
     if highest_seen <= base {
         return Vec::new();
@@ -139,9 +141,7 @@ impl SackScheduler {
     }
 
     pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
-        if self.snapshot.is_none() {
-            return None;
-        }
+        self.snapshot.as_ref()?;
         match (self.last_sent, self.interval.is_zero()) {
             (None, _) => Some(now),
             (Some(_), true) => self.dirty.then_some(now),
@@ -163,6 +163,7 @@ impl SackScheduler {
 pub enum CompletionPolicy {
     All,
     Threshold(usize),
+    #[cfg_attr(not(test), allow(dead_code))]
     Leader(usize),
 }
 
@@ -443,9 +444,9 @@ mod tests {
 
         retire_chunks(&[1, 3], &mut inflight, &mut resend);
 
-        assert!(inflight.get(&1).is_none());
-        assert!(inflight.get(&3).is_none());
-        assert!(inflight.get(&2).is_some());
+        assert!(!inflight.contains_key(&1));
+        assert!(!inflight.contains_key(&3));
+        assert!(inflight.contains_key(&2));
         assert!(resend.is_empty());
     }
 }

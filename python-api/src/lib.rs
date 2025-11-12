@@ -1,8 +1,8 @@
 mod buffer;
 
-use std::net::Ipv4Addr;
 #[cfg(feature = "reliable")]
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "reliable")]
@@ -57,8 +57,7 @@ fn rt() -> &'static tokio::runtime::Runtime {
 
 fn init_tracing_subscriber() {
     TRACING.get_or_init(|| {
-        let filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
         let _ = tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_thread_ids(true)
@@ -311,7 +310,7 @@ impl Dataplane {
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
         #[allow(unused_mut)]
-        let mut sid = session_id.unwrap_or_else(|| next_py_message_id());
+        let mut sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
         {
             // Map ack_policy string to dataplane enum via messages helper.
@@ -399,7 +398,7 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
         let _ = (src_port, dst_port); // reserved for future plumbing
-        let sid = session_id.unwrap_or_else(|| next_py_message_id());
+        let sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
         {
             if let Some(handle) = &self.reliable {

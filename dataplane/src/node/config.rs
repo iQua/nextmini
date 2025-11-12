@@ -526,16 +526,6 @@ impl LocalConfig {
         }
     }
 
-    /// Extracts source and destination node IDs from the flow ID.
-    pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
-        self.try_extract_node_ids_from_flow(flow_id)
-            .unwrap_or_else(|| {
-                let src_ip = flow_id.src_ip();
-                let dst_ip = flow_id.dst_ip();
-                panic!("Detected unknown IP(s) in flow {} -> {}.", src_ip, dst_ip);
-            })
-    }
-
     /// Attempts to extract node IDs, returning `None` when either IP is outside the configured subnets.
     pub fn try_extract_node_ids_from_flow(&self, flow_id: FlowId) -> Option<(NodeId, NodeId)> {
         let src_ip = flow_id.src_ip();

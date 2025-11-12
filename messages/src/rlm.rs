@@ -586,11 +586,7 @@ mod tests {
         let highest = 70_000u64; // exceeds u16::MAX
         let recvd = BTreeSet::new(); // nothing received → one giant gap
         let gaps = build_gap_runs(base, highest, &recvd);
-        assert!(!gaps.is_empty());
-        for (d, l) in gaps {
-            assert!(d <= u16::MAX);
-            assert!(l <= u16::MAX);
-        }
+        assert_eq!(gaps, vec![(1, u16::MAX)]);
     }
 
     #[test]

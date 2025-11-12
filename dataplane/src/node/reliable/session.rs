@@ -12,6 +12,7 @@ use crate::node::processor::ProcessorHandle;
 
 use super::api::{InboundFrame, SessionId};
 
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub enum AckPolicy {
     All,
