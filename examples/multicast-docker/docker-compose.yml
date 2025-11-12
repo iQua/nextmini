@@ -32,6 +32,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
     volumes:
       - ../../:/workspace:cached
       - ./controller-config.toml:/var/nextmini/config.toml
@@ -58,6 +60,7 @@ services:
       - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
+      RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
@@ -97,6 +100,7 @@ services:
       - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
+      RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
@@ -137,6 +141,7 @@ services:
       - ./artifacts:/artifacts
     working_dir: /workspace
     environment:
+      RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
