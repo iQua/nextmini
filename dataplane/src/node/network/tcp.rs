@@ -179,13 +179,34 @@ impl TcpReader {
             // reads a packet from the TCP connection
             if let Ok(packet) = self.read_packet().await {
                 #[cfg(feature = "reliable")]
-                if let Some(meta) = manifest_from_packet(&packet) {
-                    tracing::debug!(
-                        session_id = meta.session_id,
-                        flow = %packet.flow_id,
-                        dst_ip = %packet.flow_id.dst_ip(),
-                        "RLM MANIFEST received on TCP reader"
-                    );
+                {
+                    use nextmini_messages::rlm;
+
+                    // Check if this is a RLM control packet
+                    if let Some(payload) = packet.tcp_payload() {
+                        if !payload.is_empty() {
+                            match rlm::decode_control(payload) {
+                                Some((_hdr, ctrl_msg)) => {
+                                    tracing::debug!(
+                                        flow = %packet.flow_id,
+                                        control_type = ?ctrl_msg,
+                                        "RLM CONTROL packet received on TCP reader"
+                                    );
+                                }
+                                None => {
+                                    // Not a control packet, check for MANIFEST
+                                    if let Some(meta) = manifest_from_packet(&packet) {
+                                        tracing::debug!(
+                                            session_id = meta.session_id,
+                                            flow = %packet.flow_id,
+                                            dst_ip = %packet.flow_id.dst_ip(),
+                                            "RLM MANIFEST received on TCP reader"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 // forwards the packet to the processor
                 self.processors.process_packet(packet);
@@ -229,6 +250,32 @@ impl TcpWriter {
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         if packets.is_empty() {
             return Ok(());
+        }
+
+        #[cfg(feature = "reliable")]
+        {
+            use nextmini_messages::rlm;
+
+            // Log RLM control packets being sent
+            for packet in &packets {
+                if let Some(payload) = packet.tcp_payload() {
+                    if !payload.is_empty() {
+                        match rlm::decode_control(payload) {
+                            Some((_hdr, ctrl_msg)) => {
+                                tracing::debug!(
+                                    flow = %packet.flow_id,
+                                    control_type = ?ctrl_msg,
+                                    packet_size = packet.packet_size,
+                                    "RLM CONTROL packet being written to TCP stream"
+                                );
+                            }
+                            None => {
+                                // Not a control packet
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // first creates IoSlice objects from packet buffers

@@ -111,7 +111,29 @@ impl ReliableHandle {
 
     #[allow(dead_code)]
     pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
-        let _ = self.tx.send(Command::Deliver { session, frame });
+        tracing::info!(
+            session_id = session,
+            bytes_len = frame.bytes.len(),
+            ?frame.peer_id,
+            ?frame.group_ip,
+            ?frame.source_node_id,
+            "ReliableHandle::deliver: sending Command::Deliver to channel"
+        );
+        match self.tx.send(Command::Deliver { session, frame }) {
+            Ok(_) => {
+                tracing::info!(
+                    session_id = session,
+                    "ReliableHandle::deliver: Command::Deliver sent successfully"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    session_id = session,
+                    error = ?e,
+                    "ReliableHandle::deliver: failed to send Command::Deliver - channel closed?"
+                );
+            }
+        }
     }
 
     #[allow(dead_code)]

@@ -47,6 +47,15 @@ impl<'a> ControlEmitter<'a> {
     }
 
     fn send(&self, control: &RlmControl) {
+        tracing::info!(
+            session_id = self.session_id,
+            control = ?control,
+            src = %self.src_ip,
+            src_port = self.src_port,
+            dst = %self.dst_ip,
+            dst_port = self.dst_port,
+            "RLM receiver: emitting control frame"
+        );
         let buf = rlm::encode_control(self.session_id, control);
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -55,7 +64,26 @@ impl<'a> ControlEmitter<'a> {
             self.dst_port,
             &buf,
         );
+        let flow_id = packet.flow_id;
+        let packet_size = packet.packet_size;
+        tracing::info!(
+            session_id = self.session_id,
+            control = ?control,
+            flow = %flow_id,
+            src = %self.src_ip,
+            src_port = self.src_port,
+            dst = %self.dst_ip,
+            dst_port = self.dst_port,
+            packet_size = packet_size,
+            "RLM receiver: CONTROL packet built, sending to processor"
+        );
         self.processors.process_packet(packet);
+        tracing::info!(
+            session_id = self.session_id,
+            control = ?control,
+            flow = %flow_id,
+            "RLM receiver: CONTROL packet sent to processor"
+        );
     }
 }
 
@@ -119,6 +147,16 @@ pub async fn run(
     control_io.send(&RlmControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
+    tracing::debug!(
+        session_id = sid,
+        node_id = cfg.common.local_node_id,
+        src = %src_ip,
+        src_port = ctrl_src_port,
+        dst = %dst_ip,
+        dst_port = ctrl_dst_port,
+        group = %cfg.common.group_ip,
+        "RLM receiver: sending eager READY before MANIFEST"
+    );
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
     let mut nack_limiter = NackLimiter::new(Duration::from_millis(cfg.nack_min_interval_ms.max(1)));
@@ -273,11 +311,17 @@ fn handle_control_frame(
             });
 
             if let Some(meta) = manifest_from_bytes(&frame.bytes) {
+                let ready_src_ip = (cfg.common.local_node_id as NodeId)
+                    .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
                 tracing::debug!(
                     session_id = meta.session_id,
                     node_id = cfg.common.local_node_id,
-                    ctrl_dst_ip = %ctrl_dst_ip,
-                    "RLM receiver: MANIFEST received; READY sent."
+                    peer = ?frame.peer_id,
+                    source_node = ?frame.source_node_id,
+                    ready_src = %ready_src_ip,
+                    ready_dst = %ctrl_dst_ip,
+                    dst_group = %cfg.common.group_ip,
+                    "RLM receiver: MANIFEST received; READY re-sent toward source"
                 );
             }
             true
