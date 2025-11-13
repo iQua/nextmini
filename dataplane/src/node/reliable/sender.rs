@@ -351,11 +351,10 @@ impl SenderState {
         };
         self.send_control(&manifest, processors);
         self.manifest_last_sent = Instant::now();
-        if !self.manifest_sent {
-            if self.receiver_count > 0 && self.ready_deadline.is_none() {
+        if !self.manifest_sent
+            && self.receiver_count > 0 && self.ready_deadline.is_none() {
                 self.ready_deadline = Some(Instant::now() + self.ready_grace);
             }
-        }
         self.manifest_sent = true;
         tracing::info!(
             session_id = self.session_id,
