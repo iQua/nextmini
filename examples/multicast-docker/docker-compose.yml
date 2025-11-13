@@ -79,7 +79,6 @@ services:
         --chunk-size ${CHUNK_SIZE:-4096}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${TENSOR_PATH:+--tensor-path ${TENSOR_PATH}}
-        ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
       multicast:
@@ -120,7 +119,6 @@ services:
         --chunk-size ${CHUNK_SIZE:-4096}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${SINK_PATH_A:+--sink-path ${SINK_PATH_A}}
-        ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
       multicast:
@@ -161,7 +159,6 @@ services:
         --chunk-size ${CHUNK_SIZE:-4096}
         ${EXPECTED_BYTES:+--expected-bytes ${EXPECTED_BYTES}}
         ${SINK_PATH_B:+--sink-path ${SINK_PATH_B}}
-        ${VERIFY_CHECKSUM:+--verify-checksum}
         --artifact-dir ${ARTIFACT_DIR:-/artifacts}
     networks:
       multicast:

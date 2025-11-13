@@ -79,11 +79,9 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
   size when `TENSOR_PATH` is not provided.
 - `CHUNK_SIZE` – payload slice size (defaults to 4096 bytes; reliable senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
 - `PAYLOAD_SLEEP_MS` – optional pacing delay between chunks when you need to slow down the source.
-- `VERIFY_CHECKSUM` – set to `1` to have the source emit, and receivers verify, a
-  SHA-256 checksum stored at `CHECKSUM_PATH` (defaults to `/artifacts/<group>.sha256`).
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
-- `ARTIFACT_DIR` – shared volume for tensors, metadata, and checksums.
+- `ARTIFACT_DIR` – shared volume for tensors and metadata.
 - `CLEAN_SHARED_DIRS` – when `1` (default) the source container empties the shared
   `artifacts/` directory before each run and, if no custom `--tensor-path` is provided,
   also clears the tensor staging directory. Set to `0` to keep prior outputs.
@@ -105,12 +103,10 @@ docker compose up
 
 Each run downloads/install PyTorch (via `run_multicast_node.sh`), synthesizes the tensor,
 and then pushes it using `CHUNK_SIZE` (defaults to 4096 bytes; payloads larger than the MTU are automatically fragmented by the dataplane). Receivers automatically
-load the metadata, wait for the checksum (`/artifacts/<group>.sha256`), reconstruct the
-stream under `/artifacts/receiver-<node_id>.bin`, and verify integrity. Adjust the
+load the metadata, reconstruct the
+stream under `/artifacts/receiver-<node_id>.bin`, and verify the byte counts. Adjust the
 following knobs if needed:
 
-- Set `VERIFY_CHECKSUM=1` to fail fast on data corruption.
-- Override `CHECKSUM_PATH` to write the digest elsewhere under `/artifacts`.
 - Provide a custom tensor via `TENSOR_PATH` (and optionally `EXPECTED_BYTES`) to skip
   auto-generation.
 - Increase/decrease `CHUNK_SIZE` or `PAYLOAD_SLEEP_MS` to tune throughput.
@@ -130,9 +126,9 @@ recreate the bind mounts from scratch.
 2. From `examples/multicast-docker`, run `docker compose up` (the tracked `artifacts/`
    and `tensors/` directories will be reused automatically and cleaned before each run).
 3. Tail the `source` and receiver logs (`docker compose logs -f source receiver_a receiver_b`)
-   to confirm group readiness events, chunk counters, and checksum reports.
-4. After the run, inspect `artifacts/tensor-metadata.json`, `artifacts/receiver-*.bin`, and
-   (when `VERIFY_CHECKSUM=1`) `/artifacts/<group>.sha256` to validate byte counts and digests.
+   to confirm group readiness events and chunk counters.
+4. After the run, inspect `artifacts/tensor-metadata.json` and `artifacts/receiver-*.bin`
+   to validate byte counts.
 
 ## Inspecting the Run
 

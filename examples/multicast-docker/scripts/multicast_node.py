@@ -64,16 +64,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional tensor path to stream; defaults to generated tensor.",
     )
-    parser.add_argument(
-        "--checksum-path",
-        type=Path,
-        default=None,
-        help="Override auto-derived checksum location in artifact dir.",
-    )
     parser.add_argument("--generate-tensor", action="store_true")
     parser.add_argument("--artifact-dir", type=Path, default=Path("/artifacts"))
     parser.add_argument("--sink-path", type=Path, default=None)
-    parser.add_argument("--verify-checksum", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
 
@@ -88,12 +81,6 @@ def log(message: str, quiet: bool = False) -> None:
     if quiet:
         return
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
-
-
-def resolve_checksum_path(args: argparse.Namespace) -> Path:
-    if args.checksum_path:
-        return args.checksum_path
-    return args.artifact_dir / f"{args.group_label}.sha256"
 
 
 def metadata_path(args: argparse.Namespace) -> Path:
@@ -155,7 +142,9 @@ def write_group_info(
     atomic_write_json(group_info_path(args), payload)
 
 
-def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, str]:
+def wait_for_group_info(
+    args: argparse.Namespace, timeout: int
+) -> Tuple[int, str]:
     path = group_info_path(args)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -178,7 +167,9 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
     # Generate ~1GB tensor: 256 * 1024 * 1024 floats * 4 bytes/float ≈ 1GB
-    tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
+    tensor = (
+        torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
+    )
 
     # For 1MB testing, uncomment the following lines and comment out the 1GB version above:
     # args.tensor_path = tensor_dir / "tensor-auto-1m.pt"
@@ -231,7 +222,6 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    checksum_path = resolve_checksum_path(args) if args.verify_checksum else None
     # New reliable path (feature=reliable): use thin shim; engines may be stubbed until writer lands
     sid = dataplane.send_file(
         group_ip,
@@ -274,8 +264,7 @@ def run_receiver(args: argparse.Namespace) -> None:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
-    checksum_path = resolve_checksum_path(args) if args.verify_checksum else None
-    sid = dataplane.receive_file(
+    sid = dataplane.reliable_receive_file_rs(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
