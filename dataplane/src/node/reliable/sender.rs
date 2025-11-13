@@ -141,7 +141,7 @@ pub async fn run(
             }
         }
 
-        // FIX:  makes retransmitting chunk possible; removes ready_for_data() check
+        // FIX: makes retransmitting chunk possible; removes ready_for_data() check
         if !progressed && state.should_resend() && last_resend.elapsed() >= state.repair_backoff {
             tracing::trace!(
                 session_id = sid,
