@@ -10,7 +10,7 @@ queue_capacity = 4000
 feature = "concurrent"
 python_fragmentation_enabled = true
 python_fragmentation_max_message_bytes = 65536
-python_fragmentation_reassembly_window_bytes = 655360
+python_fragmentation_reassembly_window_bytes = 3_000_000
 python_fragmentation_fragment_timeout_ms = 100000
 python_fragmentation_trace_flow_events = true
 
