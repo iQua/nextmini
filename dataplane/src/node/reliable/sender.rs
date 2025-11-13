@@ -16,7 +16,8 @@ use crate::node::{NodeId, NodeIdExt};
 
 use super::api::{InboundFrame, SessionId};
 use super::control::{self, CompletionPolicy};
-use super::session::{AckPolicy, CommonConfig, SenderConfig};
+use super::pgmcc::PgmccController;
+use super::session::{AckPolicy, CommonConfig, CongestionControl, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
 
@@ -77,6 +78,9 @@ pub async fn run(
         }
 
         state.maybe_release_ready_gate();
+        if let Some(rate) = state.maybe_pgmcc_recompute() {
+            pacer.set_target_rate(rate);
+        }
 
         let mut progressed = false;
 
@@ -87,7 +91,8 @@ pub async fn run(
             ready_for_data = state.ready_for_data(),
             chunk_source_finished = chunk_source.finished(),
             inflight_len = state.inflight_len(),
-            window = state.window,
+            window = state.window_limit(),
+            base_window = state.base_window,
             "RLM sender: loop iteration"
         );
 
@@ -103,14 +108,16 @@ pub async fn run(
             progressed = true;
         }
 
-        if state.ready_for_data() && !chunk_source.finished() && state.inflight_len() < state.window
+        if state.ready_for_data()
+            && !chunk_source.finished()
+            && state.inflight_len() < state.window_limit()
         {
             tracing::debug!(
                 session_id = sid,
                 ready_for_data = state.ready_for_data(),
                 chunk_source_finished = chunk_source.finished(),
                 inflight_len = state.inflight_len(),
-                window = state.window,
+                window = state.window_limit(),
                 "RLM sender: attempting to send next chunk"
             );
             match chunk_source.next_chunk() {
@@ -148,6 +155,7 @@ pub async fn run(
                 resend_queue_len = state.resend_queue.len(),
                 "RLM sender: attempting resend"
             );
+            pacer.wait_for(state.common.chunk_size).await;
             if state.send_resend(&processors) {
                 last_resend = Instant::now();
                 progressed = true;
@@ -202,11 +210,14 @@ struct SenderState {
     common: CommonConfig,
     completion_policy: CompletionPolicy,
     receiver_count: usize,
+    base_window: usize,
     window: usize,
+    pgmcc: Option<PgmccController>,
     total_chunks: u64,
     total_bytes: u64,
     inflight: BTreeMap<u64, HashSet<usize>>,
     frame_cache: BTreeMap<u64, Vec<Bytes>>,
+    first_send_times: BTreeMap<u64, Instant>,
     resend_queue: BTreeSet<u64>,
     ready_nodes: HashSet<usize>,
     ready_gate_open: bool,
@@ -240,7 +251,21 @@ impl SenderState {
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
-        let window = compute_window(&cfg);
+        let base_window = compute_window(&cfg);
+        let (window, pgmcc) = match &cfg.cc {
+            CongestionControl::Static => (base_window, None),
+            CongestionControl::Pgmcc(pcfg) => {
+                let mut controller = PgmccController::new(pcfg.clone(), cfg.receiver_ids.clone());
+                let init = pcfg
+                    .init_cwnd_chunks
+                    .max(pcfg.min_cwnd_chunks)
+                    .min(pcfg.max_cwnd_chunks)
+                    .min(base_window)
+                    .max(1);
+                controller.set_cwnd(init as f64);
+                (init, Some(controller))
+            }
+        };
         let fragmenter = FrameFragmenter::new(&common);
 
         if cfg.common.control_weight != 0 {
@@ -270,11 +295,14 @@ impl SenderState {
             common,
             completion_policy,
             receiver_count,
+            base_window,
             window,
+            pgmcc,
             total_chunks,
             total_bytes: cfg.total_bytes,
             inflight: BTreeMap::new(),
             frame_cache: BTreeMap::new(),
+            first_send_times: BTreeMap::new(),
             resend_queue: BTreeSet::new(),
             ready_nodes: HashSet::new(),
             ready_gate_open,
@@ -320,6 +348,28 @@ impl SenderState {
         self.ready_gate_open && !self.source_drained
     }
 
+    fn window_limit(&self) -> usize {
+        self.window.max(1)
+    }
+
+    fn maybe_pgmcc_recompute(&mut self) -> Option<f64> {
+        let Some(controller) = self.pgmcc.as_mut() else {
+            return None;
+        };
+        let chunk_size = self.common.chunk_size;
+        let now = Instant::now();
+        let update = controller.maybe_recompute(now, self.base_window, chunk_size)?;
+        self.window = update.window_chunks.max(1);
+        tracing::debug!(
+            session_id = self.session_id,
+            acker = update.acker,
+            window_chunks = update.window_chunks,
+            rate_bps = (update.rate_bytes_per_s * 8.0) as u64,
+            "RLM sender: PGMCC updated congestion window"
+        );
+        Some(update.rate_bytes_per_s)
+    }
+
     fn inflight_len(&self) -> usize {
         self.inflight.len()
     }
@@ -339,6 +389,8 @@ impl SenderState {
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = rlm::encode_data(self.session_id, chunk.index, &chunk.data);
         let fragments = self.fragment_frame(frame);
+        let now = Instant::now();
+        self.first_send_times.entry(chunk.index).or_insert(now);
         self.enqueue_frame(chunk.index, fragments.clone());
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
@@ -441,6 +493,7 @@ impl SenderState {
             );
             return;
         };
+        let now = Instant::now();
 
         match control {
             RlmControl::Ready { node_id } => {
@@ -454,6 +507,27 @@ impl SenderState {
             RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
                 // Ignore sender-originated control frames looped back.
             }
+            RlmControl::PgmccFeedback {
+                node_id,
+                acked_upto,
+                rtt_ms_x8,
+                loss_event_rate_x1e6,
+            } => {
+                if let Some(controller) = &mut self.pgmcc {
+                    let rtt_s = (rtt_ms_x8 as f64 / 8.0) / 1000.0;
+                    let loss_p = (loss_event_rate_x1e6 as f64) / 1_000_000.0;
+                    controller.on_external_feedback(
+                        node_id as usize,
+                        acked_upto,
+                        rtt_s,
+                        loss_p,
+                        now,
+                    );
+                }
+            }
+            RlmControl::PgmccAcker { .. } => {
+                // Receivers use this advisory; sender has no action to take.
+            }
             _ => {
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
@@ -463,6 +537,20 @@ impl SenderState {
                     );
                     return;
                 };
+                if let Some(controller) = &mut self.pgmcc {
+                    match &control {
+                        RlmControl::Ack { up_to } => {
+                            controller.on_ack(from_node, *up_to, &self.first_send_times, now);
+                        }
+                        RlmControl::Sack { base, runs } => {
+                            controller.on_sack(from_node, *base, runs);
+                        }
+                        RlmControl::Repair { indices } => {
+                            controller.on_repair(from_node, indices);
+                        }
+                        _ => {}
+                    }
+                }
                 tracing::debug!(
                     session_id = self.session_id,
                     from_node = from_node,
@@ -488,6 +576,7 @@ impl SenderState {
                     );
                     control::retire_chunks(&retired, &mut self.inflight, &mut self.resend_queue);
                     for idx in retired {
+                        self.first_send_times.remove(&idx);
                         self.frame_cache.remove(&idx);
                     }
                 }
@@ -588,7 +677,7 @@ fn compute_window(cfg: &SenderConfig) -> usize {
         let bucket_chunks = (bucket.bucket_size / per_chunk).max(1);
         window = window.max(bucket_chunks);
     }
-    window
+    window.max(1)
 }
 
 /// Materialized chunk that is ready to be encoded into an RLM frame.
@@ -719,43 +808,93 @@ impl ChunkSource {
 
 /// Simple token-bucket pacer used to honor optional bandwidth caps.
 struct DataPacer {
-    spec: Option<nextmini_messages::TokenBucketSpec>,
+    base_spec: Option<nextmini_messages::TokenBucketSpec>,
     tokens: f64,
     last: Instant,
+    rate_bytes_per_s: f64,
 }
 
 impl DataPacer {
     fn new(spec: Option<nextmini_messages::TokenBucketSpec>) -> Self {
+        let rate = spec.as_ref().map(|tb| tb.rate as f64).unwrap_or(0.0);
         let tokens = spec.as_ref().map(|tb| tb.bucket_size as f64).unwrap_or(0.0);
         Self {
-            spec,
+            base_spec: spec,
             tokens,
             last: Instant::now(),
+            rate_bytes_per_s: rate,
+        }
+    }
+
+    fn set_target_rate(&mut self, bytes_per_s: f64) {
+        if !bytes_per_s.is_finite() || bytes_per_s <= 0.0 {
+            if let Some(spec) = &self.base_spec {
+                self.rate_bytes_per_s = spec.rate as f64;
+            }
+            return;
+        }
+        let was_disabled = self.rate_bytes_per_s <= 0.0 && self.base_spec.is_none();
+        self.rate_bytes_per_s = bytes_per_s;
+        if was_disabled {
+            self.tokens = self.effective_bucket();
         }
     }
 
     async fn wait_for(&mut self, bytes: usize) {
-        let Some(spec) = self.spec.clone() else {
+        if self.base_spec.is_none() && self.rate_bytes_per_s <= 0.0 {
             return;
-        };
+        }
         let bytes_f = bytes as f64;
         loop {
-            self.refill(&spec);
+            self.refill();
             if self.tokens >= bytes_f {
                 self.tokens -= bytes_f;
                 break;
             }
+            let rate = self.effective_rate();
+            if rate <= 0.0 || !rate.is_finite() {
+                break;
+            }
             let needed = (bytes_f - self.tokens).max(1.0);
-            let wait = needed / spec.rate.max(1) as f64;
-            tokio::time::sleep(Duration::from_secs_f64(wait.max(0.001))).await;
+            let wait = (needed / rate).max(0.001);
+            tokio::time::sleep(Duration::from_secs_f64(wait)).await;
         }
     }
 
-    fn refill(&mut self, spec: &nextmini_messages::TokenBucketSpec) {
+    fn refill(&mut self) {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last).as_secs_f64();
-        self.tokens = (self.tokens + elapsed * spec.rate as f64).min(spec.bucket_size as f64);
+        if elapsed <= 0.0 {
+            return;
+        }
+        let rate = self.effective_rate();
+        if rate <= 0.0 || !rate.is_finite() {
+            self.last = now;
+            return;
+        }
+        let bucket = self.effective_bucket();
+        self.tokens = (self.tokens + elapsed * rate).min(bucket);
         self.last = now;
+    }
+
+    fn effective_rate(&self) -> f64 {
+        if self.rate_bytes_per_s > 0.0 {
+            self.rate_bytes_per_s
+        } else if let Some(spec) = &self.base_spec {
+            spec.rate.max(1) as f64
+        } else {
+            0.0
+        }
+    }
+
+    fn effective_bucket(&self) -> f64 {
+        if let Some(spec) = &self.base_spec {
+            spec.bucket_size as f64
+        } else if self.rate_bytes_per_s > 0.0 {
+            self.rate_bytes_per_s
+        } else {
+            f64::INFINITY
+        }
     }
 }
 

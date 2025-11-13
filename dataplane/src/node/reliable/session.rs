@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 
 use nextmini_messages::TokenBucketSpec;
 
+use crate::node::config::PgmccRuntimeConfig;
 use crate::node::processor::ProcessorHandle;
 
 use super::api::{InboundFrame, SessionId};
@@ -19,6 +20,37 @@ pub enum AckPolicy {
     All,
     KofN(usize),
     Fraction(f32),
+}
+
+/// Sender-side congestion control mode.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug)]
+pub enum CongestionControl {
+    /// Current behavior: static window + optional token bucket.
+    Static,
+    /// PGMCC: sender window & pacing driven by a designated ACKer.
+    Pgmcc(PgmccConfig),
+}
+
+/// Parameters that govern the PGMCC controller.
+#[derive(Clone, Debug)]
+pub struct PgmccConfig {
+    /// Minimum congestion window (chunks) to enforce.
+    pub min_cwnd_chunks: usize,
+    /// Hard ceiling for cwnd (also clamped by the static window).
+    pub max_cwnd_chunks: usize,
+    /// Initial cwnd to seed the controller with.
+    pub init_cwnd_chunks: usize,
+    /// EWMA smoothing factor for RTT samples [0,1].
+    pub rtt_alpha: f64,
+    /// EWMA smoothing factor for loss probability [0,1].
+    pub loss_alpha: f64,
+    /// Minimum RTT to clamp to (ms) to avoid zero/negative samples.
+    pub min_rtt_ms: u64,
+    /// Interval between feedback-driven recomputes (ms).
+    pub feedback_interval_ms: u64,
+    /// Percentage drop required before switching ACKer.
+    pub acker_hysteresis_pct: f64,
 }
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
@@ -60,6 +92,7 @@ pub struct SenderConfig {
     pub fec_k: Option<u16>,
     pub fec_p: u8,
     pub ready_grace_ms: u64,
+    pub cc: CongestionControl,
 }
 
 /// Receiver-only configuration (source node, reliability timers, sinks, etc.).
@@ -73,6 +106,25 @@ pub struct ReceiverConfig {
     pub nack_min_interval_ms: u64,
     pub nack_jitter_ms: u64,
     pub sack_interval_ms: u64,
+    pub pgmcc_enabled: bool,
+}
+
+impl From<&PgmccRuntimeConfig> for PgmccConfig {
+    fn from(cfg: &PgmccRuntimeConfig) -> Self {
+        Self {
+            min_cwnd_chunks: cfg.min_cwnd_chunks.max(1),
+            max_cwnd_chunks: cfg
+                .max_cwnd_chunks
+                .max(cfg.min_cwnd_chunks.max(1))
+                .max(cfg.init_cwnd_chunks.max(1)),
+            init_cwnd_chunks: cfg.init_cwnd_chunks.max(1),
+            rtt_alpha: cfg.rtt_alpha.clamp(0.0, 1.0),
+            loss_alpha: cfg.loss_alpha.clamp(0.0, 1.0),
+            min_rtt_ms: cfg.min_rtt_ms.max(1),
+            feedback_interval_ms: cfg.feedback_interval_ms.max(1),
+            acker_hysteresis_pct: cfg.acker_hysteresis_pct.clamp(0.0, 1.0),
+        }
+    }
 }
 
 /// Tracks running reliable sessions along with their inboxes and join handles.

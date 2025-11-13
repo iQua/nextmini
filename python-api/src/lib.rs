@@ -24,6 +24,8 @@ use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
+#[cfg(feature = "reliable")]
+use nextmini::node::config::PgmccRuntimeConfig;
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
@@ -268,7 +270,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=32768, src_port=None, dst_port=None, ack_policy="all", session_id=None))]
+    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=32768, src_port=None, dst_port=None, ack_policy="all", session_id=None, congestion=None))]
     fn reliable_send_file_rs(
         &self,
         group_ip: &str,
@@ -279,6 +281,7 @@ impl Dataplane {
         dst_port: Option<u16>,
         ack_policy: &str,
         session_id: Option<u64>,
+        congestion: Option<String>,
     ) -> PyResult<u64> {
         // Validate inputs early to surface helpful errors even while stubbed.
         #[allow(unused_variables)]
@@ -304,7 +307,7 @@ impl Dataplane {
                 "invalid ack_policy: {ack_policy}"
             )));
         }
-        let _ = (src_port, dst_port); // reserved for future plumbing
+        let _ = (src_port, dst_port, &congestion); // reserved for future plumbing
         #[allow(unused_mut)]
         let mut sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
@@ -328,6 +331,36 @@ impl Dataplane {
 
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
+                let mode = congestion.as_deref().unwrap_or_else(|| {
+                    if reliable_cfg
+                        .pgmcc
+                        .as_ref()
+                        .map(|cfg| cfg.enabled)
+                        .unwrap_or(false)
+                    {
+                        "pgmcc"
+                    } else {
+                        "static"
+                    }
+                });
+                let cc = match mode {
+                    "static" => reliable_session::CongestionControl::Static,
+                    "pgmcc" => {
+                        let runtime_cfg = reliable_cfg
+                            .pgmcc
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(PgmccRuntimeConfig::default);
+                        reliable_session::CongestionControl::Pgmcc(
+                            reliable_session::PgmccConfig::from(&runtime_cfg),
+                        )
+                    }
+                    other => {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "invalid congestion control: {other}"
+                        )))
+                    }
+                };
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 if session_id.is_none() {
@@ -362,6 +395,7 @@ impl Dataplane {
                     fec_k: None,
                     fec_p: 0,
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
+                    cc,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
                 self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
@@ -370,13 +404,14 @@ impl Dataplane {
         }
         // Fallback stub when feature is disabled or handle unavailable.
         tracing::warn!(
-            "reliable_send_file_rs called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={}",
+            "reliable_send_file_rs called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={} congestion={:?}",
             sid,
             group_ip,
             receiver_ids,
             tensor_path,
             chunk_size,
-            ack_policy
+            ack_policy,
+            congestion
         );
         Ok(sid)
     }
@@ -444,6 +479,11 @@ impl Dataplane {
                     nack_min_interval_ms: reliable_cfg.nack_min_interval_ms,
                     nack_jitter_ms: reliable_cfg.nack_jitter_ms,
                     sack_interval_ms: reliable_cfg.sack_interval_ms,
+                    pgmcc_enabled: reliable_cfg
+                        .pgmcc
+                        .as_ref()
+                        .map(|cfg| cfg.enabled)
+                        .unwrap_or(false),
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))

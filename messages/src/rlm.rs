@@ -22,6 +22,8 @@ pub enum RlmCtrlKind {
     Sack = 4,
     Repair = 5,
     Eot = 6,
+    PgmccFeedback = 7,
+    PgmccAcker = 8,
 }
 
 /// Fixed header for both DATA and CONTROL frames.
@@ -133,6 +135,20 @@ pub enum RlmControl {
         last_index: u64,
         checksum: Option<[u8; 32]>,
     },
+    /// Receiver-to-sender PGMCC feedback derived from a receiver's measured path.
+    PgmccFeedback {
+        node_id: u64,
+        /// Highest contiguous chunk delivered at the receiver.
+        acked_upto: u64,
+        /// Smoothed RTT in milliseconds, multiplied by 8 for fractional precision.
+        rtt_ms_x8: u32,
+        /// Loss event probability scaled by 1e6 (p * 1_000_000).
+        loss_event_rate_x1e6: u32,
+    },
+    /// Sender-to-receivers notification of the currently selected ACKer.
+    PgmccAcker {
+        node_id: u64,
+    },
 }
 
 /// Encode a DATA frame (header + RlmData + payload) into a fresh Vec<u8>.
@@ -236,6 +252,24 @@ pub fn encode_control(session_id: u64, control: &RlmControl) -> Vec<u8> {
                 None => b.push(0),
             }
             (RlmCtrlKind::Eot as u8, b)
+        }
+        PgmccFeedback {
+            node_id,
+            acked_upto,
+            rtt_ms_x8,
+            loss_event_rate_x1e6,
+        } => {
+            let mut b = Vec::with_capacity(8 + 8 + 4 + 4);
+            b.extend_from_slice(&node_id.to_be_bytes());
+            b.extend_from_slice(&acked_upto.to_be_bytes());
+            b.extend_from_slice(&rtt_ms_x8.to_be_bytes());
+            b.extend_from_slice(&loss_event_rate_x1e6.to_be_bytes());
+            (RlmCtrlKind::PgmccFeedback as u8, b)
+        }
+        PgmccAcker { node_id } => {
+            let mut b = Vec::with_capacity(8);
+            b.extend_from_slice(&node_id.to_be_bytes());
+            (RlmCtrlKind::PgmccAcker as u8, b)
         }
     };
 
@@ -352,6 +386,28 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
                 last_index,
                 checksum,
             }
+        }
+        x if x == RlmCtrlKind::PgmccFeedback as u8 => {
+            if body.len() < 8 + 8 + 4 + 4 {
+                return None;
+            }
+            let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
+            let acked_upto = u64::from_be_bytes(body[8..16].try_into().ok()?);
+            let rtt_ms_x8 = u32::from_be_bytes(body[16..20].try_into().ok()?);
+            let loss_event_rate_x1e6 = u32::from_be_bytes(body[20..24].try_into().ok()?);
+            PgmccFeedback {
+                node_id,
+                acked_upto,
+                rtt_ms_x8,
+                loss_event_rate_x1e6,
+            }
+        }
+        x if x == RlmCtrlKind::PgmccAcker as u8 => {
+            if body.len() < 8 {
+                return None;
+            }
+            let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
+            PgmccAcker { node_id }
         }
         _ => return None,
     };
@@ -529,6 +585,13 @@ mod tests {
                 last_index: 1024,
                 checksum: None,
             },
+            RlmControl::PgmccFeedback {
+                node_id: 5,
+                acked_upto: 500,
+                rtt_ms_x8: 640,
+                loss_event_rate_x1e6: 25_000,
+            },
+            RlmControl::PgmccAcker { node_id: 3 },
         ];
 
         for c in ctrls {

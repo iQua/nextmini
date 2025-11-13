@@ -61,6 +61,51 @@ impl<'a> ControlEmitter<'a> {
     }
 }
 
+struct ReceiverPgmcc {
+    min_interval: Duration,
+    last_feedback: Instant,
+}
+
+impl ReceiverPgmcc {
+    fn new(min_interval: Duration) -> Self {
+        let now = Instant::now();
+        let last_feedback = now.checked_sub(min_interval).unwrap_or(now);
+        Self {
+            min_interval,
+            last_feedback,
+        }
+    }
+
+    fn maybe_emit(
+        &mut self,
+        control_io: &ControlEmitter,
+        node_id: usize,
+        acked_upto: u64,
+        highest_seen: u64,
+        pending_gaps: usize,
+    ) {
+        let now = Instant::now();
+        if now.duration_since(self.last_feedback) < self.min_interval {
+            return;
+        }
+        self.last_feedback = now;
+        let rtt_ms = self.min_interval.as_millis() as u32;
+        let rtt_ms_x8 = rtt_ms.saturating_mul(8).max(8);
+        let loss_ratio = if highest_seen == 0 {
+            0.0
+        } else {
+            (pending_gaps as f64 / highest_seen as f64).clamp(0.0, 1.0)
+        };
+        let loss_event_rate_x1e6 = (loss_ratio * 1_000_000.0) as u32;
+        control_io.send(&RlmControl::PgmccFeedback {
+            node_id: node_id as u64,
+            acked_upto,
+            rtt_ms_x8,
+            loss_event_rate_x1e6,
+        });
+    }
+}
+
 /// Drives a receiver session: consumes inbound frames, persists payloads in
 /// order, and feeds back control signals so the sender can repair gaps.
 pub async fn run(
@@ -130,6 +175,13 @@ pub async fn run(
     let mut sack_scheduler = SackScheduler::new(Duration::from_millis(cfg.sack_interval_ms));
     // Tokio timer used to coalesce SACK traffic when the peer leaves gaps.
     let mut sack_timer: Option<Pin<Box<Sleep>>> = None;
+    let mut pgmcc_feedback = if cfg.pgmcc_enabled {
+        Some(ReceiverPgmcc::new(Duration::from_millis(
+            cfg.sack_interval_ms.max(1),
+        )))
+    } else {
+        None
+    };
 
     loop {
         tokio::select! {
@@ -164,6 +216,15 @@ pub async fn run(
                             "RLM receiver: sending ACK"
                         );
                         control_io.send(&RlmControl::Ack { up_to: base });
+                        if let Some(pgmcc) = pgmcc_feedback.as_mut() {
+                            pgmcc.maybe_emit(
+                                &control_io,
+                                cfg.common.local_node_id,
+                                base,
+                                highest_seen,
+                                pending.len(),
+                            );
+                        }
                         last_ack_up_to = base;
                     }
                     if highest_seen > base {
