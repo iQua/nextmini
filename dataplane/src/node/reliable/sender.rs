@@ -810,15 +810,21 @@ impl DataPacer {
             }
             return;
         }
-        let was_disabled = self.rate_bytes_per_s <= 0.0 && self.base_spec.is_none();
+        let was_disabled = self.rate_bytes_per_s <= 0.0;
         self.rate_bytes_per_s = bytes_per_s;
         if was_disabled {
-            self.tokens = self.effective_bucket();
+            if self.base_spec.is_some() {
+                self.tokens = self.effective_bucket();
+            } else {
+                self.tokens = 0.0;
+                self.last = Instant::now();
+            }
         }
     }
 
     async fn wait_for(&mut self, bytes: usize) {
-        if self.base_spec.is_none() && self.rate_bytes_per_s <= 0.0 {
+        if self.base_spec.is_none() {
+            self.wait_dynamic_only(bytes).await;
             return;
         }
         let bytes_f = bytes as f64;
@@ -867,11 +873,41 @@ impl DataPacer {
     fn effective_bucket(&self) -> f64 {
         if let Some(spec) = &self.base_spec {
             spec.bucket_size as f64
-        } else if self.rate_bytes_per_s > 0.0 {
-            self.rate_bytes_per_s
         } else {
             f64::INFINITY
         }
+    }
+
+    async fn wait_dynamic_only(&mut self, bytes: usize) {
+        if self.rate_bytes_per_s <= 0.0 {
+            return;
+        }
+        let bytes_f = bytes as f64;
+        self.refill_dynamic();
+        if self.tokens >= bytes_f {
+            self.tokens -= bytes_f;
+            return;
+        }
+        let needed = bytes_f - self.tokens;
+        self.tokens = 0.0;
+        let wait = (needed / self.rate_bytes_per_s).max(0.0);
+        if wait > 0.0 {
+            tokio::time::sleep(Duration::from_secs_f64(wait)).await;
+        }
+        self.last = Instant::now();
+    }
+
+    fn refill_dynamic(&mut self) {
+        if self.rate_bytes_per_s <= 0.0 {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last).as_secs_f64();
+        if elapsed <= 0.0 {
+            return;
+        }
+        self.tokens += elapsed * self.rate_bytes_per_s;
+        self.last = now;
     }
 }
 
