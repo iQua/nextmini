@@ -165,6 +165,13 @@ impl Conductor {
                             let guard = manager.lock().await;
                             guard.set_topology_ready(ready);
                         }
+                        ReliableCommand::SetGroupRoutesReady {
+                            group_ip,
+                            src_node_id,
+                        } => {
+                            let mut guard = manager.lock().await;
+                            guard.set_group_routes_ready(group_ip, src_node_id);
+                        }
                     }
                 }
                 tracing::warn!("Reliable command loop terminated.");

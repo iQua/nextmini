@@ -76,6 +76,8 @@ pub async fn run(
         }
 
         state.maybe_release_topology_gate();
+        state.maybe_release_routes_gate();
+        state.maybe_release_topology_gate();
         state.maybe_release_ready_gate();
         if let Some(rate) = state.maybe_pgmcc_recompute() {
             pacer.set_target_rate(rate);
@@ -219,10 +221,12 @@ struct SenderState {
     first_send_times: BTreeMap<u64, Instant>,
     resend_queue: BTreeSet<u64>,
     ready_nodes: HashSet<usize>,
+    routes_gate_open: bool,
     topology_gate_open: bool,
     ready_gate_open: bool,
     ready_deadline: Option<Instant>,
     topology_ready_rx: Option<watch::Receiver<bool>>,
+    routes_ready_rx: Option<watch::Receiver<bool>>,
     ready_grace: Duration,
     manifest_sent: bool,
     source_drained: bool,
@@ -246,8 +250,13 @@ impl SenderState {
         let receiver_count = cfg.receiver_ids.len();
         let ready_gate_open = receiver_count == 0;
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms.max(1));
-        let topology_ready_rx = cfg.topology_ready.take();
+        let mut topology_ready_rx = cfg.topology_ready.take();
         let topology_gate_open = topology_ready_rx
+            .as_ref()
+            .map(|rx| *rx.borrow())
+            .unwrap_or(true);
+        let mut routes_ready_rx = cfg.routes_ready.take();
+        let routes_gate_open = routes_ready_rx
             .as_ref()
             .map(|rx| *rx.borrow())
             .unwrap_or(true);
@@ -309,10 +318,12 @@ impl SenderState {
             first_send_times: BTreeMap::new(),
             resend_queue: BTreeSet::new(),
             ready_nodes: HashSet::new(),
+            routes_gate_open,
             topology_gate_open,
             ready_gate_open,
             ready_deadline,
             topology_ready_rx,
+            routes_ready_rx,
             ready_grace,
             manifest_sent: false,
             source_drained: total_chunks == 0,
@@ -398,7 +409,7 @@ impl SenderState {
     }
 
     fn should_emit_manifest(&self) -> bool {
-        if !self.topology_gate_open {
+        if !self.topology_gate_open || !self.routes_gate_open {
             return false;
         }
         if !self.manifest_sent {
@@ -655,6 +666,23 @@ impl SenderState {
             tracing::info!(
                 session_id = self.session_id,
                 "RLM sender: topology-ready signal received"
+            );
+        }
+    }
+
+    fn maybe_release_routes_gate(&mut self) {
+        if self.routes_gate_open {
+            return;
+        }
+        let Some(rx) = self.routes_ready_rx.as_mut() else {
+            self.routes_gate_open = true;
+            return;
+        };
+        if *rx.borrow() {
+            self.routes_gate_open = true;
+            tracing::info!(
+                session_id = self.session_id,
+                "RLM sender: multicast routes installed for this source"
             );
         }
     }

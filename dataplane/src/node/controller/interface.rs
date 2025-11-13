@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use futures::stream::{SplitSink, SplitStream};
@@ -11,7 +13,7 @@ use tokio_tungstenite::{
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupId};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -99,6 +101,8 @@ impl ControllerInterfaceHandle {
             python_interface,
             #[cfg(feature = "reliable")]
             reliable,
+            #[cfg(feature = "reliable")]
+            group_ip_by_id: HashMap::new(),
         };
 
         tokio::spawn(async move {
@@ -261,6 +265,8 @@ pub struct ControllerToDataplaneReceiver {
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
     #[cfg(feature = "reliable")]
     reliable: Option<ReliableHandle>,
+    #[cfg(feature = "reliable")]
+    group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -412,6 +418,13 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
                 self.processors.update_group_directory(groups.clone()).await;
+                #[cfg(feature = "reliable")]
+                {
+                    self.group_ip_by_id.clear();
+                    for entry in &groups {
+                        self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
+                    }
+                }
 
                 if let Some(py_if) = self.python_handle().await {
                     py_if
@@ -436,6 +449,20 @@ impl ControllerToDataplaneReceiver {
                 self.processors
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
+
+                #[cfg(feature = "reliable")]
+                {
+                    if let Some(handle) = &self.reliable {
+                        if let Some(ip) = self.group_ip_by_id.get(&group_id) {
+                            handle.set_group_routes_ready(*ip, src_node_id);
+                        } else {
+                            warn!(
+                                "InstallGroupRoutes received for unknown group {}; reliable senders may block.",
+                                group_id
+                            );
+                        }
+                    }
+                }
 
                 if let Some(py_if) = self.python_handle().await {
                     py_if
