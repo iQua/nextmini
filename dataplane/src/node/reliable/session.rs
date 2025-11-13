@@ -106,7 +106,6 @@ pub struct ReceiverConfig {
     pub nack_min_interval_ms: u64,
     pub nack_jitter_ms: u64,
     pub sack_interval_ms: u64,
-    pub pgmcc_enabled: bool,
 }
 
 impl From<&PgmccRuntimeConfig> for PgmccConfig {

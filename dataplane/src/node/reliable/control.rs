@@ -273,11 +273,9 @@ pub fn process_control_event(
             }
             Vec::new()
         }
-        RlmControl::Manifest { .. }
-        | RlmControl::Ready { .. }
-        | RlmControl::Eot { .. }
-        | RlmControl::PgmccFeedback { .. }
-        | RlmControl::PgmccAcker { .. } => Vec::new(),
+        RlmControl::Manifest { .. } | RlmControl::Ready { .. } | RlmControl::Eot { .. } => {
+            Vec::new()
+        }
     }
 }
 

@@ -159,45 +159,6 @@ impl PgmccController {
         }
     }
 
-    pub fn on_external_feedback(
-        &mut self,
-        node_id: usize,
-        acked_upto: u64,
-        rtt_s: f64,
-        loss_p: f64,
-        now: Instant,
-    ) {
-        let min_rtt_ms = self.cfg.min_rtt_ms;
-        let rtt_alpha = self.cfg.rtt_alpha;
-        let loss_alpha = self.cfg.loss_alpha;
-        let stats = self.stats_mut(node_id);
-        if acked_upto > stats.last_ack_index {
-            let delta = acked_upto - stats.last_ack_index;
-            stats.last_ack_index = acked_upto;
-            stats.acked_chunks = stats.acked_chunks.saturating_add(delta);
-            stats.acked_since_loss_sample = stats.acked_since_loss_sample.saturating_add(delta);
-        }
-        if rtt_s.is_finite() && rtt_s > 0.0 {
-            let mut sample = rtt_s;
-            let min_rtt = (min_rtt_ms as f64) / 1000.0;
-            sample = sample.max(min_rtt);
-            stats.rtt = if stats.rtt == 0.0 {
-                sample
-            } else {
-                (1.0 - rtt_alpha) * stats.rtt + rtt_alpha * sample
-            };
-        }
-        if loss_p.is_finite() {
-            let clamped = loss_p.max(MIN_LOSS_PROB);
-            stats.loss_p = if stats.loss_p == 0.0 {
-                clamped
-            } else {
-                (1.0 - loss_alpha) * stats.loss_p + loss_alpha * clamped
-            };
-        }
-        stats.last_ack_time = Some(now);
-    }
-
     pub fn maybe_recompute(
         &mut self,
         now: Instant,

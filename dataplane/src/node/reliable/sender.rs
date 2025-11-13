@@ -505,27 +505,6 @@ impl SenderState {
             RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
                 // Ignore sender-originated control frames looped back.
             }
-            RlmControl::PgmccFeedback {
-                node_id,
-                acked_upto,
-                rtt_ms_x8,
-                loss_event_rate_x1e6,
-            } => {
-                if let Some(controller) = &mut self.pgmcc {
-                    let rtt_s = (rtt_ms_x8 as f64 / 8.0) / 1000.0;
-                    let loss_p = (loss_event_rate_x1e6 as f64) / 1_000_000.0;
-                    controller.on_external_feedback(
-                        node_id as usize,
-                        acked_upto,
-                        rtt_s,
-                        loss_p,
-                        now,
-                    );
-                }
-            }
-            RlmControl::PgmccAcker { .. } => {
-                // Receivers use this advisory; sender has no action to take.
-            }
             _ => {
                 let Some(from_node) = peer_id else {
                     tracing::warn!(

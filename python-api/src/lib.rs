@@ -479,11 +479,6 @@ impl Dataplane {
                     nack_min_interval_ms: reliable_cfg.nack_min_interval_ms,
                     nack_jitter_ms: reliable_cfg.nack_jitter_ms,
                     sack_interval_ms: reliable_cfg.sack_interval_ms,
-                    pgmcc_enabled: reliable_cfg
-                        .pgmcc
-                        .as_ref()
-                        .map(|cfg| cfg.enabled)
-                        .unwrap_or(false),
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))
