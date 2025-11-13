@@ -97,8 +97,6 @@ the controller CLI:
 | `create_group(label)` | Requests a new `(group_id, group_ip)` pair for the local node (the source). |
 | `group_is_ready(timeout_ms=None)` | Blocks until the controller acknowledges a group and returns `(group_id, group_ip, src_node_id)`. |
 | `join_group(group_id)` / `leave_group(group_id)` | Adds or drops the local node from the specified group. |
-| `wait_for_local_membership(group_id, timeout_ms=None)` | Confirms the controller installed membership + routes before the application starts sending/receiving. |
-| `wait_for_routes_installed(group_id, src_node_id=None, timeout_ms=None)` | Retrieves the latest `(route_id, next_hops)` fan-out for observability or debugging. |
 | `register_receiver_for_group(src_node_id, group_ip, payload_only=False)` | Binds a Python-side queue to packets sourced from `src_node_id` and destined for `group_ip`. |
 
 Example sender workflow:
@@ -120,7 +118,6 @@ import nextmini_py as nm
 
 dp = nm.Dataplane("/abs/path/node-config.toml")
 dp.join_group(group_id)
-dp.wait_for_local_membership(group_id, timeout_ms=5_000)
 rx = dp.register_receiver_for_group(
     src_node_id=1,
     group_ip=group_ip,

@@ -118,7 +118,6 @@ group_id, group_ip, src_node_id = group
 # Receiver node
 rx_dp = nm.Dataplane("/abs/path/receiver-config.toml")
 rx_dp.join_group(group_id)
-rx_dp.wait_for_local_membership(group_id, timeout_ms=5_000)
 rx = rx_dp.register_receiver_for_group(
     src_node_id=src_node_id,
     group_ip=group_ip,
@@ -128,9 +127,6 @@ payload = rx.recv(timeout_ms=2_000)
 rx_dp.leave_group(group_id)
 ```
 
-Use `wait_for_routes_installed(group_id, src_node_id)` when you want to confirm the controller pushed the latest
-fan-out (e.g., in tests). `register_receiver_for_group` takes the source node ID and the allocated group IP, keeping the
-flow classification consistent with the dataplane’s routing table.
 
 ---
 

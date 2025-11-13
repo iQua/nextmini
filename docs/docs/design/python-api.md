@@ -30,7 +30,7 @@ govern fragmentation, telemetry, and group coordination.
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
-| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `wait_for_local_membership`, `wait_for_routes_installed`, `flow_id_from_nodes` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
+| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `flow_id_from_nodes` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
 | `nextmini_py.FrozenBuffer` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
 | `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns `bytes` when the receiver was registered in raw mode or a `PayloadDelivery` object when `payload_only=True`. |
 | `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count`, `.payload_format` | Metadata-rich wrapper populated when payload-only receivers are used. Fragmentation metadata is only set when the feature flag is enabled. |
@@ -117,8 +117,6 @@ secondary CLI:
 | `create_group(label)` | Requests a new multicast group through the controller. |
 | `join_group(group_id)` / `leave_group(group_id)` | Adds or removes the local node from a multicast group. |
 | `group_is_ready(timeout_ms=None)` | Waits for a `GroupCreated` event and returns `(group_id, group_ip, src_node_id)` when the controller finishes provisioning. |
-| `wait_for_local_membership(group_id, timeout_ms=None)` | Resolves to `True` once the controller confirms the local node joined the group. |
-| `wait_for_routes_installed(group_id, src_node_id=None, timeout_ms=None)` | Returns the next-hop fan-out for the requested group/source pair so scripts can confirm topology installation. |
 
 Each method leverages the `PythonEvent` queue maintained inside the dataplane (`PythonInterfaceHandle`). Events are only
 delivered to Python receivers that have called one of the waiters above; they are not broadcast globally.

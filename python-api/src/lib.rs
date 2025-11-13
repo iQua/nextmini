@@ -19,7 +19,6 @@ use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
-// macros like tracing::warn! can be used without importing `warn` specifically.
 use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
@@ -69,9 +68,6 @@ fn init_tracing_subscriber() {
 }
 
 static PY_MESSAGE_ID_SEQ: AtomicU64 = AtomicU64::new(1);
-
-type RouteHopList = Vec<usize>;
-type RouteInstallations = Vec<(usize, RouteHopList)>;
 
 #[pyclass]
 struct PacketReceiver {
@@ -268,7 +264,7 @@ impl Dataplane {
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=4096, src_port=None, dst_port=None, ack_policy="all", session_id=None, congestion=None))]
-    fn reliable_send_file_rs(
+    fn send_file(
         &self,
         group_ip: &str,
         receiver_ids: Vec<usize>,
@@ -396,7 +392,7 @@ impl Dataplane {
         }
         // Fallback stub when feature is disabled or handle unavailable.
         tracing::warn!(
-            "reliable_send_file_rs called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={} congestion={:?}",
+            "send_file called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={} congestion={:?}",
             sid,
             group_ip,
             receiver_ids,
@@ -410,7 +406,7 @@ impl Dataplane {
 
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=4096, src_port=None, dst_port=None, sink_path=None, session_id=None))]
-    fn reliable_receive_file_rs(
+    fn receive_file(
         &self,
         group_ip: &str,
         source_node_id: usize,
@@ -479,7 +475,7 @@ impl Dataplane {
             }
         }
         tracing::warn!(
-            "reliable_receive_file_rs called (stub): sid={} group_ip={} src_node={} expected_bytes={} chunk_size={} sink_path={:?}",
+            "receive_file called (stub): sid={} group_ip={} src_node={} expected_bytes={} chunk_size={} sink_path={:?}",
             sid,
             group_ip,
             source_node_id,
@@ -739,37 +735,6 @@ impl Dataplane {
         });
 
         Ok(matched.is_some())
-    }
-
-    #[pyo3(signature = (group_id, src_node_id=None, timeout_ms=None))]
-    fn wait_for_routes_installed(
-        &self,
-        group_id: usize,
-        src_node_id: Option<usize>,
-        timeout_ms: Option<u64>,
-    ) -> PyResult<Option<RouteInstallations>> {
-        let timeout = timeout_ms.map(Duration::from_millis);
-        let matched = self.wait_for_event_matching(timeout, |event| {
-            matches!(
-                event,
-                PythonEvent::GroupRoutesInstalled {
-                    group_id: gid,
-                    src_node_id: event_src_node_id,
-                    ..
-                } if *gid == group_id
-                    && src_node_id.is_none_or(|target| target == *event_src_node_id)
-            )
-        });
-
-        let routes: Option<RouteInstallations> = matched.map(|event| match event {
-            PythonEvent::GroupRoutesInstalled { routes, .. } => routes
-                .into_iter()
-                .map(|entry| (entry.route_id, entry.next_hops))
-                .collect(),
-            _ => unreachable!("matched variant should be routes installed"),
-        });
-
-        Ok(routes)
     }
 }
 

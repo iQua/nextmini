@@ -16,8 +16,8 @@ Fields
   timer (SACKs only fire when new gaps are observed).
 - `nack_interval_ms: u32` — how often targeted repairs are requested on timeouts.
 - Session coordination happens via explicit session IDs. Senders still allocate via
-  `Dataplane.reliable_send_file_rs(..., session_id=...)` (or allow the runtime to pick
-  one), but receivers can now omit the `session_id`. When `Dataplane.reliable_receive_file_rs`
+  `Dataplane.send_file(..., session_id=...)` (or allow the runtime to pick
+  one), but receivers can now omit the `session_id`. When `Dataplane.receive_file`
   is invoked without an ID, the dataplane waits for the first inbound manifest, adopts
   the sender's session ID automatically, and only then spawns the reliable receiver.
   Advanced orchestrators may still pre-register IDs with

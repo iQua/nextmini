@@ -218,16 +218,6 @@ def run_source(args: argparse.Namespace) -> None:
         args.quiet,
     )
 
-    log("Waiting for routes to be installed...", args.quiet)
-    routes = dataplane.wait_for_routes_installed(
-        group_id,
-        src_node_id=args.source_node_id,
-        timeout_ms=args.member_timeout * 1000,
-    )
-    if routes is None:
-        raise TimeoutError("Timed out waiting for GroupRoutesInstalled event.")
-    log(f"Routes installed (entries={len(routes)}); ready to send.", args.quiet)
-
     if args.tensor_path is None:
         raise SystemExit(
             "Source role requires a tensor file; set --tensor-path or --generate-tensor."
@@ -243,7 +233,7 @@ def run_source(args: argparse.Namespace) -> None:
 
     checksum_path = resolve_checksum_path(args) if args.verify_checksum else None
     # New reliable path (feature=reliable): use thin shim; engines may be stubbed until writer lands
-    sid = dataplane.reliable_send_file_rs(
+    sid = dataplane.send_file(
         group_ip,
         receiver_ids,
         str(args.tensor_path),
@@ -279,32 +269,13 @@ def run_receiver(args: argparse.Namespace) -> None:
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
 
-    log("Waiting for local membership confirmation...", args.quiet)
-    if not dataplane.wait_for_local_membership(
-        group_id, timeout_ms=args.member_timeout * 1000
-    ):
-        raise TimeoutError("Timed out waiting for LocalMemberJoined event.")
-
-    routes = dataplane.wait_for_routes_installed(
-        group_id,
-        src_node_id=args.source_node_id,
-        timeout_ms=args.member_timeout * 1000,
-    )
-    if routes is None:
-        raise TimeoutError("Timed out waiting for GroupRoutesInstalled event.")
-
-    log(
-        f"Routes installed (entries={len(routes)}); delegating reliable receive to dataplane.",
-        args.quiet,
-    )
-
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
     checksum_path = resolve_checksum_path(args) if args.verify_checksum else None
-    sid = dataplane.reliable_receive_file_rs(
+    sid = dataplane.receive_file(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
@@ -313,6 +284,7 @@ def run_receiver(args: argparse.Namespace) -> None:
         dst_port=args.dst_port,
         sink_path=str(sink_path) if sink_path else None,
     )
+
     log(f"Started reliable receive session sid={sid}", args.quiet)
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)

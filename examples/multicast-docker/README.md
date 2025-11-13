@@ -8,8 +8,6 @@ runs in-process via `nextmini_py` and drives the control-plane by issuing
 `nextmini_py` now exposes helpers that stream controller events into Python:
 
 - `group_is_ready()` – wait for the `GroupCreated` ack after issuing `CreateGroup`.
-- `wait_for_local_membership()` and `wait_for_routes_installed()` – receivers block
-  until the controller installs their local delivery entries before opening sockets.
 
 The source container calls `group_is_ready()` immediately after `CreateGroup`
 to learn the assigned `group_id`/`group_ip` without querying Postgres, while
@@ -63,7 +61,7 @@ Every run now streams a tensor end-to-end: the source synthesizes (or loads) a t
 waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and
  shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are
  negotiated inside the dataplane, so the example no longer needs to pass them through
- shared files—the receivers simply block in `reliable_receive_file_rs` until the sender's
+ shared files—the receivers simply block in `receive_file` until the sender's
  manifest arrives.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
