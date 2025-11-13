@@ -31,9 +31,8 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
-    PythonEvent, PythonFragmentationPolicy, PythonInterfaceHandle,
+    PythonEvent, PythonInterfaceHandle,
 };
-use nextmini::node::python::payload::{build_py_payload_segments, python_payload_budget};
 #[cfg(feature = "reliable")]
 use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
 #[cfg(feature = "reliable")]
@@ -291,9 +290,11 @@ impl Dataplane {
                 "receiver_ids must contain at least one entry.",
             ));
         }
+        let mut chunk_size = chunk_size;
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
+        chunk_size = self.clamp_reliable_chunk_size(chunk_size);
         let path = std::path::Path::new(tensor_path);
         if !path.exists() {
             return Err(PyRuntimeError::new_err(format!(
@@ -312,13 +313,6 @@ impl Dataplane {
         let mut sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
         {
-            let frag_cfg = reliable_session::FragmentationConfig {
-                enabled: self.cfg.python_fragmentation_enabled,
-                max_message_bytes: self.cfg.python_fragmentation_max_message_bytes as usize,
-                reassembly_window_bytes: self.cfg.python_fragmentation_reassembly_window_bytes
-                    as usize,
-                fragment_timeout_ms: self.cfg.python_fragmentation_fragment_timeout_ms as u64,
-            };
             // Map ack_policy string to dataplane enum via messages helper.
             let ap = rlm_msg::parse_ack_policy(ack_policy).ok_or_else(|| {
                 PyRuntimeError::new_err(format!("invalid ack_policy: {ack_policy}"))
@@ -378,8 +372,6 @@ impl Dataplane {
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
-                    mtu: self.cfg.mtu,
-                    fragmentation: frag_cfg.clone(),
                 };
                 let total_bytes = std::fs::metadata(tensor_path)
                     .map_err(|e| PyRuntimeError::new_err(format!("failed to stat file: {e}")))?
@@ -436,20 +428,15 @@ impl Dataplane {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
+        let mut chunk_size = chunk_size;
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
+        chunk_size = self.clamp_reliable_chunk_size(chunk_size);
         let _ = (src_port, dst_port); // reserved for future plumbing
         let sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
         {
-            let frag_cfg = reliable_session::FragmentationConfig {
-                enabled: self.cfg.python_fragmentation_enabled,
-                max_message_bytes: self.cfg.python_fragmentation_max_message_bytes as usize,
-                reassembly_window_bytes: self.cfg.python_fragmentation_reassembly_window_bytes
-                    as usize,
-                fragment_timeout_ms: self.cfg.python_fragmentation_fragment_timeout_ms as u64,
-            };
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
                 let mut resolved_sid = session_id;
@@ -469,8 +456,6 @@ impl Dataplane {
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
-                    mtu: self.cfg.mtu,
-                    fragmentation: frag_cfg.clone(),
                 };
                 let cfg = reliable_session::ReceiverConfig {
                     common,
@@ -575,11 +560,7 @@ impl Dataplane {
         // Enter the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new succeeds.
         let py_if = {
             let _rt_guard = rt().enter();
-            PythonInterfaceHandle::new(
-                cfg.channel_capacity,
-                PythonFragmentationPolicy::from(&cfg),
-                Some((controller.clone(), cfg.node_id)),
-            )
+            PythonInterfaceHandle::new(cfg.channel_capacity)
         };
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
@@ -826,6 +807,27 @@ impl Dataplane {
 }
 
 impl Dataplane {
+    fn clamp_reliable_chunk_size(&self, requested: usize) -> usize {
+        const IPV4_HEADER_LEN: usize = 20;
+        const TCP_HEADER_LEN: usize = 20;
+        const SAFETY_BYTES: usize = 64;
+        let mtu = self.cfg.mtu.max(1) as usize;
+        let budget = mtu
+            .saturating_sub(IPV4_HEADER_LEN + TCP_HEADER_LEN + SAFETY_BYTES)
+            .max(1);
+        if requested > budget {
+            tracing::warn!(
+                requested,
+                budget,
+                mtu = self.cfg.mtu,
+                "Reliable chunk_size exceeds MTU budget; clamping."
+            );
+            budget
+        } else {
+            requested.max(1)
+        }
+    }
+
     fn transmit_python_payload(
         &self,
         src_ip: Ipv4Addr,
@@ -835,25 +837,8 @@ impl Dataplane {
         body: Bytes,
     ) -> PyResult<u64> {
         let message_id = next_py_message_id();
-        if !self.cfg.python_fragmentation_enabled {
-            let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &body);
-            self.processor.process_packet(packet);
-            return Ok(message_id);
-        }
-
-        let chunk_budget = python_payload_budget(self.cfg.mtu)
-            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
-        let max_message_bytes = self.cfg.python_fragmentation_max_message_bytes as usize;
-
-        let fragments =
-            build_py_payload_segments(body.as_ref(), chunk_budget, max_message_bytes, message_id)
-                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
-        for fragment in fragments {
-            let packet =
-                Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &fragment);
-            self.processor.process_packet(packet);
-        }
-
+        let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &body);
+        self.processor.process_packet(packet);
         Ok(message_id)
     }
 

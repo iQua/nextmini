@@ -126,30 +126,15 @@ secondary CLI:
 Each method leverages the `PythonEvent` queue maintained inside the dataplane (`PythonInterfaceHandle`). Events are only
 delivered to Python receivers that have called one of the waiters above; they are not broadcast globally.
 
-## Fragmentation and large payloads
+## Payload size behavior
 
-When `python_fragmentation_enabled = true` in `LocalConfig`, the sender splits each `FrozenBuffer` into chunks (the default chunk size is 32768 bytes), prepends a 24-byte `PyPayloadSegHeader`, and emits the sequence via the regular dataplane pipeline. The receiver reassembles fragments per `(flow_id, message_id)` pair before enqueuing the payload in Python space. Relevant configuration knobs (also exposed via CLI flags):
-
-```toml
-python_fragmentation_enabled = true
-python_fragmentation_max_message_bytes = 65536
-python_fragmentation_reassembly_window_bytes = 262144
-python_fragmentation_fragment_timeout_ms = 1000
-python_fragmentation_trace_flow_events = true
-```
-
-See [`python_payload_fragmentation.md`](python_payload_fragmentation.md) for the header layout, assembler design, and
-telemetry surfaces. When fragmentation is off the sender falls back to the original single-packet behavior; oversize
-payloads will violate the MTU in that mode.
+The bindings now ship every payload as a single TCP frame; there is no application-level fragmentation to configure. The operating system handles any link-layer segmentation, and the dataplane enforces the configured MTU when chunking reliable multicast transfers. This keeps the API predictable: the bytes you send are the bytes delivered.
 
 ## Telemetry and troubleshooting
 
 - `PayloadDelivery` metadata mirrors the transport tuple plus optional `message_id`, `total_len`, `fragment_count`, and
-  `payload_format` (`"payload"` vs `"raw_packet"`). Use this information when correlating controller warnings or
-  verifying that a receiver is reassembling correctly.
-- Enabling `python_fragmentation_trace_flow_events` emits `DataplaneToController::PythonFragmentEvents` entries for
-  invalid headers, assembler drops, reassembly timeouts, and window overflows. The dataplane also periodically publishes
-  `PythonFragmentMetrics` snapshots so operators can alert without tailing logs.
+  `payload_format` (`"payload"` vs `"raw_packet"`). Since fragmentation is gone the optional fields are always `None`, but
+  they remain for backward compatibility with older tooling.
 - The bindings log backpressure warnings if a receiver queue fills up. Increase `channel_capacity` in node configs or
   call `recv()` more aggressively when this appears.
 

@@ -67,14 +67,6 @@ pub enum DataplaneToController {
     LeaveGroup {
         group_id: GroupId,
     },
-    PythonFragmentEvents {
-        node_id: usize,
-        events: Vec<PythonFragmentEvent>,
-    },
-    PythonFragmentMetrics {
-        node_id: usize,
-        snapshot: PythonFragmentMetricsSnapshot,
-    },
     /// Periodic reliable-multicast session stats from dataplane (feature-gated at source).
     ReliableStats {
         stats: ReliableStats,
@@ -113,35 +105,6 @@ pub struct RouteAssignment {
     pub flow_id: [u8; 16],
     pub route_id: usize,
     pub time: i64,
-}
-
-/// Structured telemetry describing python fragmentation drop/timeout events observed by a node.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PythonFragmentEvent {
-    pub flow_id: [u8; 16],
-    pub message_id: Option<u64>,
-    pub kind: PythonFragmentEventKind,
-    pub detail: String,
-    pub missing_fragments: Option<usize>,
-}
-
-/// Classification for the fragmentation event that occurred.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
-#[serde(rename_all = "snake_case")]
-pub enum PythonFragmentEventKind {
-    InvalidHeader,
-    AssemblerDrop,
-    WindowOverflow,
-    Timeout,
-}
-
-/// Snapshot of python fragmentation counters reported by a dataplane.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
-pub struct PythonFragmentMetricsSnapshot {
-    pub fragments_received: u64,
-    pub invalid_header_drops: u64,
-    pub reassembly_timeouts: u64,
-    pub window_overflow_drops: u64,
 }
 
 /// Reliable-multicast session metrics (optional)

@@ -11,10 +11,9 @@ use nextmini_messages::rlm::{self, RlmControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::python::payload::{build_py_payload_segments, python_payload_budget};
 use crate::node::{NodeId, NodeIdExt};
 
-use super::api::{InboundFrame, SessionId};
+use super::api::InboundFrame;
 use super::control::{self, CompletionPolicy};
 use super::pgmcc::PgmccController;
 use super::session::{AckPolicy, CommonConfig, CongestionControl, SenderConfig};
@@ -196,8 +195,11 @@ pub async fn run(
 
         if !progressed {
             // Don't block forever; let the loop re-check timers (e.g., MANIFEST resend).
-            if let Ok(Some(frame)) =
-                tokio::time::timeout(Duration::from_millis(CONTROL_POLL_TIMEOUT_MS), ctrl_rx.recv()).await
+            if let Ok(Some(frame)) = tokio::time::timeout(
+                Duration::from_millis(CONTROL_POLL_TIMEOUT_MS),
+                ctrl_rx.recv(),
+            )
+            .await
             {
                 state.handle_control(frame);
             }
@@ -257,7 +259,6 @@ struct SenderState {
     repair_backoff: Duration,
     manifest_interval: Duration,
     manifest_last_sent: Instant,
-    fragmenter: Option<FrameFragmenter>,
 }
 
 impl SenderState {
@@ -295,8 +296,6 @@ impl SenderState {
                 (init, Some(controller))
             }
         };
-        let fragmenter = FrameFragmenter::new(&common);
-
         if cfg.common.control_weight != 0 {
             tracing::debug!(
                 session_id = common.session_id,
@@ -354,7 +353,6 @@ impl SenderState {
             repair_backoff: Duration::from_millis(cfg.repair_backoff_ms.max(1)),
             manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             manifest_last_sent: Instant::now(),
-            fragmenter,
         }
     }
 
@@ -367,10 +365,9 @@ impl SenderState {
         };
         self.send_control(&manifest, processors);
         self.manifest_last_sent = Instant::now();
-        if !self.manifest_sent
-            && self.receiver_count > 0 && self.ready_deadline.is_none() {
-                self.ready_deadline = Some(Instant::now() + self.ready_grace);
-            }
+        if !self.manifest_sent && self.receiver_count > 0 && self.ready_deadline.is_none() {
+            self.ready_deadline = Some(Instant::now() + self.ready_grace);
+        }
         self.manifest_sent = true;
         tracing::info!(
             session_id = self.session_id,
@@ -438,40 +435,21 @@ impl SenderState {
     }
 
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
-        let frame = rlm::encode_data(self.session_id, chunk.index, &chunk.data);
-        let fragments = self.fragment_frame(frame);
+        let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
         let now = Instant::now();
         self.first_send_times.insert(chunk.index, now);
-        self.enqueue_frame(chunk.index, fragments.clone());
+        self.enqueue_frame(chunk.index, vec![frame.clone()]);
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
         tracing::debug!(
             session_id = self.session_id,
             chunk_index = chunk.index,
             chunk_data_len = chunk.data.len(),
-            fragments_count = fragments.len(),
             src_ip = %self.src_ip,
             dst_ip = %self.dst_ip,
-            "RLM sender: encoded DATA chunk, sending fragments to processor"
+            "RLM sender: encoded DATA chunk, sending frame to processor"
         );
-        for (frag_idx, bytes) in fragments.iter().enumerate() {
-            tracing::trace!(
-                session_id = self.session_id,
-                chunk_index = chunk.index,
-                fragment_index = frag_idx,
-                fragment_len = bytes.len(),
-                "RLM sender: sending fragment to send_frame"
-            );
-            self.send_frame(bytes, processors);
-        }
-    }
-
-    fn fragment_frame(&mut self, frame: Vec<u8>) -> Vec<Bytes> {
-        if let Some(fragmenter) = self.fragmenter.as_mut() {
-            fragmenter.fragment(frame)
-        } else {
-            vec![Bytes::from(frame)]
-        }
+        self.send_frame(&frame, processors);
     }
 
     fn send_resend(&mut self, processors: &ProcessorHandle) -> bool {
@@ -627,8 +605,8 @@ impl SenderState {
             // Evict oldest entries that are not in inflight or resend queue
             let mut to_evict = Vec::new();
             for (&cached_idx, _) in self.frame_cache.iter() {
-                if !self.inflight.contains_key(&cached_idx) 
-                    && !self.resend_queue.contains(&cached_idx) 
+                if !self.inflight.contains_key(&cached_idx)
+                    && !self.resend_queue.contains(&cached_idx)
                 {
                     to_evict.push(cached_idx);
                     if to_evict.len() >= 100 {
@@ -636,7 +614,7 @@ impl SenderState {
                     }
                 }
             }
-            
+
             if !to_evict.is_empty() {
                 for idx_to_remove in &to_evict {
                     self.frame_cache.remove(idx_to_remove);
@@ -658,7 +636,7 @@ impl SenderState {
                 );
             }
         }
-        
+
         self.frame_cache.insert(idx, frames);
         self.inflight.entry(idx).or_default();
     }
@@ -796,67 +774,6 @@ struct ChunkSource {
     total_chunks: u64,
     next_index: u64,
     session_id: u64,
-}
-
-struct FrameFragmenter {
-    session_id: SessionId,
-    chunk_budget: usize,
-    max_message_bytes: usize,
-    next_message_id: u64,
-}
-
-impl FrameFragmenter {
-    fn new(common: &CommonConfig) -> Option<Self> {
-        if !common.fragmentation.enabled {
-            return None;
-        }
-        let budget = match python_payload_budget(common.mtu) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::warn!(
-                    session_id = common.session_id,
-                    error = %err,
-                    "RLM sender: disabling fragmentation due to MTU configuration"
-                );
-                return None;
-            }
-        };
-        Some(Self {
-            session_id: common.session_id,
-            chunk_budget: budget,
-            max_message_bytes: common.fragmentation.max_message_bytes,
-            next_message_id: 1,
-        })
-    }
-
-    fn fragment(&mut self, frame: Vec<u8>) -> Vec<Bytes> {
-        if frame.len() <= self.chunk_budget {
-            return vec![Bytes::from(frame)];
-        }
-
-        match build_py_payload_segments(
-            &frame,
-            self.chunk_budget,
-            self.max_message_bytes,
-            self.next_message_id(),
-        ) {
-            Ok(chunks) => chunks.into_iter().map(Bytes::from).collect(),
-            Err(err) => {
-                tracing::warn!(
-                    session_id = self.session_id,
-                    error = %err,
-                    "RLM sender: fragmentation failed; falling back to single frame"
-                );
-                vec![Bytes::from(frame)]
-            }
-        }
-    }
-
-    fn next_message_id(&mut self) -> u64 {
-        let id = self.next_message_id;
-        self.next_message_id = self.next_message_id.wrapping_add(1).max(1);
-        id
-    }
 }
 
 impl ChunkSource {
@@ -1061,11 +978,23 @@ mod tests {
     fn constants_are_defined_and_reasonable() {
         // Verify all constants are defined with sensible values
         assert_eq!(DEFAULT_WINDOW, 64, "Default window should be 64 chunks");
-        assert_eq!(MANIFEST_RETRY_INTERVAL_MS, 250, "Manifest retry should be 250ms");
-        assert_eq!(CONTROL_POLL_TIMEOUT_MS, 20, "Control poll timeout should be 20ms");
-        assert_eq!(MAX_FRAME_CACHE_SIZE, 10_000, "Cache limit should be 10,000 entries");
-        assert_eq!(TRANSFER_TIMEOUT_SECS, 300, "Transfer timeout should be 5 minutes");
-        
+        assert_eq!(
+            MANIFEST_RETRY_INTERVAL_MS, 250,
+            "Manifest retry should be 250ms"
+        );
+        assert_eq!(
+            CONTROL_POLL_TIMEOUT_MS, 20,
+            "Control poll timeout should be 20ms"
+        );
+        assert_eq!(
+            MAX_FRAME_CACHE_SIZE, 10_000,
+            "Cache limit should be 10,000 entries"
+        );
+        assert_eq!(
+            TRANSFER_TIMEOUT_SECS, 300,
+            "Transfer timeout should be 5 minutes"
+        );
+
         // Verify constants are greater than zero (no accidental zeroes)
         assert!(DEFAULT_WINDOW > 0);
         assert!(MANIFEST_RETRY_INTERVAL_MS > 0);
@@ -1081,25 +1010,37 @@ mod tests {
     #[test]
     fn chunk_source_finished_detection() {
         let session_id = 1;
-        
+
         // Test 1: Zero chunks should be immediately finished
         let source = ChunkSource::new(None, 1024, 0, session_id);
-        assert!(source.finished(), "ChunkSource with 0 chunks should be finished immediately");
-        
+        assert!(
+            source.finished(),
+            "ChunkSource with 0 chunks should be finished immediately"
+        );
+
         // Test 2: Source with chunks should not be finished initially
         let mut source = ChunkSource::new(None, 1024, 5, session_id);
-        assert!(!source.finished(), "ChunkSource with 5 chunks should not be finished initially");
-        
+        assert!(
+            !source.finished(),
+            "ChunkSource with 5 chunks should not be finished initially"
+        );
+
         // Test 3: After consuming all chunks, should be finished
         for _ in 0..5 {
             let result = source.next_chunk();
             assert!(result.is_ok(), "Should successfully get chunk");
         }
-        assert!(source.finished(), "ChunkSource should be finished after all chunks consumed");
-        
+        assert!(
+            source.finished(),
+            "ChunkSource should be finished after all chunks consumed"
+        );
+
         // Test 4: Requesting more chunks after finished returns None
         let result = source.next_chunk();
-        assert!(matches!(result, Ok(None)), "Should return None when finished");
+        assert!(
+            matches!(result, Ok(None)),
+            "Should return None when finished"
+        );
     }
 
     /// TEST 3: Validates cache eviction logic prevents unbounded growth.
@@ -1112,51 +1053,61 @@ mod tests {
         let mut frame_cache: BTreeMap<u64, Vec<Bytes>> = BTreeMap::new();
         let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
         let resend_queue: BTreeSet<u64> = BTreeSet::new();
-        
+
         // Simulate filling cache to MAX_FRAME_CACHE_SIZE
         for i in 0..MAX_FRAME_CACHE_SIZE {
             let frames = vec![Bytes::from(vec![0u8; 100])];
             frame_cache.insert(i as u64, frames);
         }
-        
-        assert_eq!(frame_cache.len(), MAX_FRAME_CACHE_SIZE, 
-            "Cache should be at limit before eviction");
-        
+
+        assert_eq!(
+            frame_cache.len(),
+            MAX_FRAME_CACHE_SIZE,
+            "Cache should be at limit before eviction"
+        );
+
         // Mark some chunks as inflight (these should NOT be evicted)
         for i in 0..10 {
             inflight.insert(i as u64, HashSet::new());
         }
-        
+
         // Simulate eviction logic (from enqueue_frame)
         let mut to_evict = Vec::new();
         for (&cached_idx, _) in frame_cache.iter() {
-            if !inflight.contains_key(&cached_idx) 
-                && !resend_queue.contains(&cached_idx) 
-            {
+            if !inflight.contains_key(&cached_idx) && !resend_queue.contains(&cached_idx) {
                 to_evict.push(cached_idx);
                 if to_evict.len() >= 100 {
                     break;
                 }
             }
         }
-        
+
         // Verify eviction found eligible entries
-        assert_eq!(to_evict.len(), 100, 
-            "Should identify 100 entries for eviction");
-        
+        assert_eq!(
+            to_evict.len(),
+            100,
+            "Should identify 100 entries for eviction"
+        );
+
         // Verify inflight entries are not in eviction list
         for idx in 0..10 {
-            assert!(!to_evict.contains(&idx), 
-                "Inflight chunk {} should not be evicted", idx);
+            assert!(
+                !to_evict.contains(&idx),
+                "Inflight chunk {} should not be evicted",
+                idx
+            );
         }
-        
+
         // Perform eviction
         for idx in &to_evict {
             frame_cache.remove(idx);
         }
-        
-        assert_eq!(frame_cache.len(), MAX_FRAME_CACHE_SIZE - 100,
-            "Cache should have 100 fewer entries after eviction");
+
+        assert_eq!(
+            frame_cache.len(),
+            MAX_FRAME_CACHE_SIZE - 100,
+            "Cache should have 100 fewer entries after eviction"
+        );
     }
 
     /// TEST 4: Validates the timeout constant is used correctly.
@@ -1166,15 +1117,25 @@ mod tests {
     fn transfer_timeout_constant_is_reasonable() {
         // 5 minutes = 300 seconds
         let timeout_duration = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
-        
+
         // Verify it's set to 5 minutes
-        assert_eq!(timeout_duration.as_secs(), 300, "Timeout should be 5 minutes (300 seconds)");
-        
+        assert_eq!(
+            timeout_duration.as_secs(),
+            300,
+            "Timeout should be 5 minutes (300 seconds)"
+        );
+
         // Verify it's not too short (> 1 minute)
-        assert!(timeout_duration.as_secs() > 60, "Timeout should be longer than 1 minute");
-        
+        assert!(
+            timeout_duration.as_secs() > 60,
+            "Timeout should be longer than 1 minute"
+        );
+
         // Verify it's not too long (< 1 hour)
-        assert!(timeout_duration.as_secs() < 3600, "Timeout should be shorter than 1 hour");
+        assert!(
+            timeout_duration.as_secs() < 3600,
+            "Timeout should be shorter than 1 hour"
+        );
     }
 
     /// TEST 5: Validates completion_from_ack policy conversion.
@@ -1184,22 +1145,42 @@ mod tests {
     fn ack_policy_conversion() {
         // Test 1: All policy should require all receivers
         let policy = completion_from_ack(&AckPolicy::All, 5);
-        assert_eq!(policy, CompletionPolicy::All, "All policy should map to All completion");
-        
+        assert_eq!(
+            policy,
+            CompletionPolicy::All,
+            "All policy should map to All completion"
+        );
+
         // Test 2: KofN policy should use threshold
         let policy = completion_from_ack(&AckPolicy::KofN(3), 5);
-        assert_eq!(policy, CompletionPolicy::Threshold(3), "KofN(3) should map to Threshold(3)");
-        
+        assert_eq!(
+            policy,
+            CompletionPolicy::Threshold(3),
+            "KofN(3) should map to Threshold(3)"
+        );
+
         // Test 3: KofN with k > receiver_count should cap at receiver_count
         let policy = completion_from_ack(&AckPolicy::KofN(10), 5);
-        assert_eq!(policy, CompletionPolicy::Threshold(5), "KofN(10) with 5 receivers should cap at 5");
-        
+        assert_eq!(
+            policy,
+            CompletionPolicy::Threshold(5),
+            "KofN(10) with 5 receivers should cap at 5"
+        );
+
         // Test 4: Fraction policy should compute threshold
         let policy = completion_from_ack(&AckPolicy::Fraction(0.5), 10);
-        assert_eq!(policy, CompletionPolicy::Threshold(5), "Fraction(0.5) of 10 should be 5");
-        
+        assert_eq!(
+            policy,
+            CompletionPolicy::Threshold(5),
+            "Fraction(0.5) of 10 should be 5"
+        );
+
         // Test 5: Fraction rounds up
         let policy = completion_from_ack(&AckPolicy::Fraction(0.75), 10);
-        assert_eq!(policy, CompletionPolicy::Threshold(8), "Fraction(0.75) of 10 should round to 8");
+        assert_eq!(
+            policy,
+            CompletionPolicy::Threshold(8),
+            "Fraction(0.75) of 10 should round to 8"
+        );
     }
 }

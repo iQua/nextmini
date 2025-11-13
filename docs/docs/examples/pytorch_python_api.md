@@ -92,18 +92,8 @@ When both variables are set the script:
 
 On the destination node, start a second Python process with the same config and call `register_receiver_from_node(src_node_id=<source>, payload_only=True)` to collect the metrics. The helper functions reuse the same routing tables as the Rust dataplane, so unicast, multicast, and QoS policies apply automatically.
 
-## 6. Enabling fragmentation for large tensors
+## 6. Payload delivery semantics
 
-The Python bindings automatically fragment payloads when the node config enables the `python_fragmentation_*` fields:
+Payloads now traverse the dataplane as single frames—the OS networking stack handles any link-layer segmentation, so no `python_fragmentation_*` toggles remain. This keeps the API simple: whatever byte buffer you hand to `send_to_node` arrives at the receiver unchanged.
 
-```toml
-python_fragmentation_enabled = true
-python_fragmentation_max_message_bytes = 65536
-python_fragmentation_reassembly_window_bytes = 262144
-python_fragmentation_fragment_timeout_ms = 1000
-python_fragmentation_trace_flow_events = true
-```
-
-Restart the dataplane after editing the config. Once enabled, every `send_to_node` (and batch send) slices payloads into chunks of any size, stamps the `PyPayloadSeg` header, and hands fragments to the regular routing pipeline. Payload-only receivers automatically reassemble the message and populate `.message_id`, `.total_len`, and `.fragment_count`.
-
-See [`docs/docs/design/python_payload_fragmentation.md`](../design/python_payload_fragmentation.md) for details on the header format and telemetry surfaces, plus [`docs/docs/testing/python_fragmentation_smoke.md`](../testing/python_fragmentation_smoke.md) for an end-to-end validation script.
+For payload-only receivers, the `PayloadDelivery` metadata still exposes `message_id`, `total_len`, and `fragment_count` for backward compatibility, but those fields are always `None`. Use the `.payload`/`.frozen_payload` accessors for the tensor bytes and rely on your application-level framing if you need message identifiers.

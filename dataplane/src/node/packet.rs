@@ -1,9 +1,8 @@
-use std::fmt;
 use std::net::Ipv4Addr;
 use std::ops::Deref;
 use std::sync::Mutex;
 
-use byteorder::{BigEndian, ByteOrder, LittleEndian};
+use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use once_cell::sync::Lazy;
 
@@ -11,140 +10,6 @@ use crate::node::flow;
 use crate::node::{FlowId, RECEIVE_BUF_SIZE};
 
 static PACKET_BUFFER_POOL: Lazy<Mutex<Vec<BytesMut>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
-pub const PY_PAYLOAD_SEGMENT_HEADER_LEN: usize = 24;
-pub const PY_PAYLOAD_SEGMENT_MAGIC: u16 = 0x5047;
-pub const PY_PAYLOAD_SEGMENT_VERSION: u8 = 1;
-pub const PY_PAYLOAD_SEGMENT_FLAG_FRAGMENTED: u8 = 0b0000_0001;
-pub const PY_PAYLOAD_SEGMENT_FLAG_LAST_FRAGMENT: u8 = 0b0000_0010;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PyPayloadSegHeader {
-    pub fragmented: bool,
-    pub last_fragment: bool,
-    pub message_id: u64,
-    pub total_len: u32,
-    pub fragment_index: u16,
-    pub fragment_count: u16,
-    pub fragment_payload_len: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PyPayloadSegHeaderError {
-    BufferTooSmall,
-    InvalidMagic(u16),
-    UnsupportedVersion(u8),
-}
-
-impl fmt::Display for PyPayloadSegHeaderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PyPayloadSegHeaderError::BufferTooSmall => {
-                write!(f, "py-payload-seg header buffer too small")
-            }
-            PyPayloadSegHeaderError::InvalidMagic(magic) => {
-                write!(
-                    f,
-                    "invalid py-payload-seg magic {magic:#06x}; expected {PY_PAYLOAD_SEGMENT_MAGIC:#06x}"
-                )
-            }
-            PyPayloadSegHeaderError::UnsupportedVersion(version) => write!(
-                f,
-                "unsupported py-payload-seg version {version}; expected {}",
-                PY_PAYLOAD_SEGMENT_VERSION
-            ),
-        }
-    }
-}
-
-impl std::error::Error for PyPayloadSegHeaderError {}
-
-impl PyPayloadSegHeader {
-    pub const LEN: usize = PY_PAYLOAD_SEGMENT_HEADER_LEN;
-
-    /// Serializes the header for the python bindings; only referenced from the
-    /// `nextmini_py` crate when emitting payload fragments.
-    #[allow(dead_code)]
-    pub fn encode_into(&self, dst: &mut [u8]) -> Result<(), PyPayloadSegHeaderError> {
-        if dst.len() < Self::LEN {
-            return Err(PyPayloadSegHeaderError::BufferTooSmall);
-        }
-
-        LittleEndian::write_u16(&mut dst[0..2], PY_PAYLOAD_SEGMENT_MAGIC);
-        dst[2] = PY_PAYLOAD_SEGMENT_VERSION;
-        dst[3] = self.flags_byte();
-        LittleEndian::write_u64(&mut dst[4..12], self.message_id);
-        LittleEndian::write_u32(&mut dst[12..16], self.total_len);
-        LittleEndian::write_u16(&mut dst[16..18], self.fragment_index);
-        LittleEndian::write_u16(&mut dst[18..20], self.fragment_count);
-        LittleEndian::write_u32(&mut dst[20..24], self.fragment_payload_len);
-        Ok(())
-    }
-
-    pub fn decode_from(buf: &[u8]) -> Result<(Self, &[u8]), PyPayloadSegHeaderError> {
-        if buf.len() < Self::LEN {
-            return Err(PyPayloadSegHeaderError::BufferTooSmall);
-        }
-
-        let magic = LittleEndian::read_u16(&buf[0..2]);
-        if magic != PY_PAYLOAD_SEGMENT_MAGIC {
-            return Err(PyPayloadSegHeaderError::InvalidMagic(magic));
-        }
-
-        let version = buf[2];
-        if version != PY_PAYLOAD_SEGMENT_VERSION {
-            return Err(PyPayloadSegHeaderError::UnsupportedVersion(version));
-        }
-
-        let flags = buf[3];
-        let fragmented = flags & PY_PAYLOAD_SEGMENT_FLAG_FRAGMENTED != 0;
-        let last_fragment = flags & PY_PAYLOAD_SEGMENT_FLAG_LAST_FRAGMENT != 0;
-        let message_id = LittleEndian::read_u64(&buf[4..12]);
-        let total_len = LittleEndian::read_u32(&buf[12..16]);
-        let fragment_index = LittleEndian::read_u16(&buf[16..18]);
-        let fragment_count = LittleEndian::read_u16(&buf[18..20]);
-        let fragment_payload_len = LittleEndian::read_u32(&buf[20..24]);
-
-        Ok((
-            PyPayloadSegHeader {
-                fragmented,
-                last_fragment,
-                message_id,
-                total_len,
-                fragment_index,
-                fragment_count,
-                fragment_payload_len,
-            },
-            &buf[Self::LEN..],
-        ))
-    }
-
-    /// Whether the payload belongs to a fragmented message. Queried from the
-    /// python bindings when decoding fragment metadata.
-    #[allow(dead_code)]
-    pub fn is_fragmented(&self) -> bool {
-        self.fragmented
-    }
-
-    /// Whether the payload is the final fragment. Queried from the python
-    /// bindings when decoding fragment metadata.
-    #[allow(dead_code)]
-    pub fn is_last_fragment(&self) -> bool {
-        self.last_fragment
-    }
-
-    #[allow(dead_code)]
-    fn flags_byte(&self) -> u8 {
-        let mut flags = 0u8;
-        if self.fragmented {
-            flags |= PY_PAYLOAD_SEGMENT_FLAG_FRAGMENTED;
-        }
-        if self.last_fragment {
-            flags |= PY_PAYLOAD_SEGMENT_FLAG_LAST_FRAGMENT;
-        }
-        flags
-    }
-}
 
 /// A reusable packet buffer backed by a global pool.
 #[derive(Debug)]
@@ -503,40 +368,6 @@ impl Clone for Packet {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
-
-    #[test]
-    fn py_payload_seg_header_round_trip() {
-        let header = PyPayloadSegHeader {
-            fragmented: true,
-            last_fragment: true,
-            message_id: 42,
-            total_len: 4_096,
-            fragment_index: 2,
-            fragment_count: 3,
-            fragment_payload_len: 1_024,
-        };
-
-        let mut buf = vec![0u8; PyPayloadSegHeader::LEN];
-        header.encode_into(&mut buf).expect("encode");
-
-        let (decoded, remainder) = PyPayloadSegHeader::decode_from(&buf).expect("decode");
-        assert_eq!(decoded, header);
-        assert!(remainder.is_empty());
-        assert!(decoded.is_fragmented());
-        assert!(decoded.is_last_fragment());
-    }
-
-    #[test]
-    fn py_payload_seg_header_rejects_invalid_magic() {
-        let mut buf = vec![0u8; PyPayloadSegHeader::LEN];
-        LittleEndian::write_u16(&mut buf[0..2], 0xFFFF);
-        buf[2] = PY_PAYLOAD_SEGMENT_VERSION;
-        buf[3] = 0;
-        assert!(matches!(
-            PyPayloadSegHeader::decode_from(&buf),
-            Err(PyPayloadSegHeaderError::InvalidMagic(0xFFFF))
-        ));
-    }
 
     fn make_tcp_packet(flags: u8, payload_len: usize) -> Packet {
         let ip_hlen = 20usize;

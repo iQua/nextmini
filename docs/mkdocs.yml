@@ -56,7 +56,6 @@ nav:
       - Introduction: design/introduction.md
       - Architecture: design/architecture.md
       - Configuration Settings: design/configuration.md
-      - Python Payload Fragmentation: design/python_payload_fragmentation.md
       - Multicast Groups: design/multicast-groups.md
       - Python Dataplane API: design/python-api.md
   - Examples:
@@ -71,6 +70,5 @@ nav:
       - Ring All-Reduce on SBA: examples/ring_allreduce-sba.md
       - Local Server + Fly.io: examples/localserver-flyio.md
   - Testing:
-      - Fragmentation Smoke Test: testing/python_fragmentation_smoke.md
       - Cargo Test Guide: testing/cargo-test.md
       - Multicast Flow: examples/multicast-flow.md
