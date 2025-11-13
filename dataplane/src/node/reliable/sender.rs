@@ -353,9 +353,7 @@ impl SenderState {
     }
 
     fn maybe_pgmcc_recompute(&mut self) -> Option<f64> {
-        let Some(controller) = self.pgmcc.as_mut() else {
-            return None;
-        };
+        let controller = self.pgmcc.as_mut()?;
         let chunk_size = self.common.chunk_size;
         let now = Instant::now();
         let update = controller.maybe_recompute(now, self.base_window, chunk_size)?;

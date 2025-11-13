@@ -23,7 +23,7 @@ pub enum AckPolicy {
 }
 
 /// Sender-side congestion control mode.
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum CongestionControl {
     /// Current behavior: static window + optional token bucket.

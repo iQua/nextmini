@@ -243,7 +243,7 @@ impl PgmccController {
         let (winner_id, winner_cwnd, winner_rate, winner_rtt) = match (self.acker, current) {
             (Some(cur_id), Some(current_metrics)) if cur_id != cand_id => {
                 let (cur_id, cur_cwnd, cur_rate, cur_rtt) = current_metrics;
-                let hysteresis = 1.0 - self.cfg.acker_hysteresis_pct.max(0.0).min(1.0);
+                let hysteresis = 1.0 - self.cfg.acker_hysteresis_pct.clamp(0.0, 1.0);
                 if cand_cwnd < cur_cwnd * hysteresis {
                     (cand_id, cand_cwnd, cand_rate, cand_rtt)
                 } else {

@@ -39,6 +39,7 @@ pub enum PgmccKind {
     Acker,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct PgmccMeta {
     pub session_id: u64,
@@ -62,7 +63,7 @@ pub fn pgmcc_meta_from_bytes(bytes: &[u8]) -> Option<PgmccMeta> {
 }
 
 /// Attempts to parse PGMCC metadata from a [`Packet`]'s TCP payload.
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub fn pgmcc_meta_from_packet(packet: &Packet) -> Option<PgmccMeta> {
     let payload = packet.tcp_payload()?;
     pgmcc_meta_from_bytes(payload)
