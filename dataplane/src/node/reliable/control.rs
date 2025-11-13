@@ -160,7 +160,7 @@ impl SackScheduler {
 }
 
 /// Determines when a chunk can be retired from the sender's inflight queue.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompletionPolicy {
     All,
     Threshold(usize),
