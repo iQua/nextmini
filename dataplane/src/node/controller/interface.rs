@@ -22,6 +22,8 @@ use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
+#[cfg(feature = "reliable")]
+use crate::node::reliable::api::ReliableHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
 #[derive(Clone)]
@@ -36,6 +38,7 @@ pub struct ControllerInterfaceHandle {
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
+        #[cfg(feature = "reliable")] reliable: Option<ReliableHandle>,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
@@ -94,6 +97,8 @@ impl ControllerInterfaceHandle {
             user_space_client,
             user_space_server,
             python_interface,
+            #[cfg(feature = "reliable")]
+            reliable,
         };
 
         tokio::spawn(async move {
@@ -254,6 +259,8 @@ pub struct ControllerToDataplaneReceiver {
     user_space_server: UserSpaceServerHandle,
 
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
+    #[cfg(feature = "reliable")]
+    reliable: Option<ReliableHandle>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -356,6 +363,24 @@ impl ControllerToDataplaneReceiver {
                         self.config.node_id
                     );
                     self.user_space_client.add_flows(client_flows);
+                }
+            }
+
+            ControllerToDataplane::TopologyReady => {
+                info!(
+                    "Controller signaled that all nodes are connected; topology state is ready on node {}.",
+                    self.config.node_id
+                );
+                #[cfg(feature = "reliable")]
+                {
+                    if let Some(handle) = &self.reliable {
+                        handle.set_topology_ready(true);
+                    } else {
+                        warn!(
+                            "TopologyReady received but reliable subsystem is not attached on node {}.",
+                            self.config.node_id
+                        );
+                    }
                 }
             }
 

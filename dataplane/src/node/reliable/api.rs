@@ -75,6 +75,9 @@ pub enum Command {
     AllocateSession {
         reply: oneshot::Sender<SessionId>,
     },
+    SetTopologyReady {
+        ready: bool,
+    },
 }
 
 impl ReliableHandle {
@@ -134,5 +137,10 @@ impl ReliableHandle {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::AllocateSession { reply: tx });
         rx.await.expect("allocate_session_id reply")
+    }
+
+    #[allow(dead_code)]
+    pub fn set_topology_ready(&self, ready: bool) {
+        let _ = self.tx.send(Command::SetTopologyReady { ready });
     }
 }

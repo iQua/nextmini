@@ -396,6 +396,7 @@ impl Dataplane {
                     fec_p: 0,
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
                     cc,
+                    topology_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
                 self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);

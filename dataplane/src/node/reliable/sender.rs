@@ -5,7 +5,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use nextmini_messages::rlm::{self, RlmControl};
 
@@ -68,8 +68,6 @@ pub async fn run(
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
     let mut last_resend = Instant::now();
 
-    state.send_manifest(&processors);
-
     loop {
         // Drain any immediately-available control frames so resend/retire
         // decisions reflect fresh receiver state before we transmit more data.
@@ -77,6 +75,7 @@ pub async fn run(
             state.handle_control(frame);
         }
 
+        state.maybe_release_topology_gate();
         state.maybe_release_ready_gate();
         if let Some(rate) = state.maybe_pgmcc_recompute() {
             pacer.set_target_rate(rate);
@@ -96,7 +95,7 @@ pub async fn run(
             "RLM sender: loop iteration"
         );
 
-        if state.should_resend_manifest() {
+        if state.should_emit_manifest() {
             state.send_manifest(&processors);
             progressed = true;
         }
@@ -220,8 +219,12 @@ struct SenderState {
     first_send_times: BTreeMap<u64, Instant>,
     resend_queue: BTreeSet<u64>,
     ready_nodes: HashSet<usize>,
+    topology_gate_open: bool,
     ready_gate_open: bool,
     ready_deadline: Option<Instant>,
+    topology_ready_rx: Option<watch::Receiver<bool>>,
+    ready_grace: Duration,
+    manifest_sent: bool,
     source_drained: bool,
     eot_sent: bool,
     bytes_sent: u64,
@@ -238,16 +241,17 @@ struct SenderState {
 }
 
 impl SenderState {
-    fn new(cfg: SenderConfig, total_chunks: u64, completion_policy: CompletionPolicy) -> Self {
+    fn new(mut cfg: SenderConfig, total_chunks: u64, completion_policy: CompletionPolicy) -> Self {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
         let ready_gate_open = receiver_count == 0;
-        let ready_grace_ms = cfg.ready_grace_ms.max(1);
-        let ready_deadline = if ready_gate_open {
-            None
-        } else {
-            Some(Instant::now() + Duration::from_millis(ready_grace_ms))
-        };
+        let ready_grace = Duration::from_millis(cfg.ready_grace_ms.max(1));
+        let topology_ready_rx = cfg.topology_ready.take();
+        let topology_gate_open = topology_ready_rx
+            .as_ref()
+            .map(|rx| *rx.borrow())
+            .unwrap_or(true);
+        let ready_deadline = None;
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
@@ -305,8 +309,12 @@ impl SenderState {
             first_send_times: BTreeMap::new(),
             resend_queue: BTreeSet::new(),
             ready_nodes: HashSet::new(),
+            topology_gate_open,
             ready_gate_open,
             ready_deadline,
+            topology_ready_rx,
+            ready_grace,
+            manifest_sent: false,
             source_drained: total_chunks == 0,
             eot_sent: false,
             bytes_sent: 0,
@@ -332,6 +340,12 @@ impl SenderState {
         };
         self.send_control(&manifest, processors);
         self.manifest_last_sent = Instant::now();
+        if !self.manifest_sent {
+            if self.receiver_count > 0 && self.ready_deadline.is_none() {
+                self.ready_deadline = Some(Instant::now() + self.ready_grace);
+            }
+        }
+        self.manifest_sent = true;
         tracing::info!(
             session_id = self.session_id,
             src = %self.src_ip,
@@ -345,7 +359,7 @@ impl SenderState {
     }
 
     fn ready_for_data(&self) -> bool {
-        self.ready_gate_open && !self.source_drained
+        self.topology_gate_open && self.ready_gate_open && !self.source_drained
     }
 
     fn window_limit(&self) -> usize {
@@ -377,7 +391,20 @@ impl SenderState {
     }
 
     fn should_resend_manifest(&self) -> bool {
-        !self.ready_gate_open && self.manifest_last_sent.elapsed() >= self.manifest_interval
+        self.manifest_sent
+            && self.topology_gate_open
+            && !self.ready_gate_open
+            && self.manifest_last_sent.elapsed() >= self.manifest_interval
+    }
+
+    fn should_emit_manifest(&self) -> bool {
+        if !self.topology_gate_open {
+            return false;
+        }
+        if !self.manifest_sent {
+            return true;
+        }
+        self.should_resend_manifest()
     }
 
     fn mark_source_drained(&mut self) {
@@ -615,8 +642,25 @@ impl SenderState {
         processors.process_packet(packet);
     }
 
+    fn maybe_release_topology_gate(&mut self) {
+        if self.topology_gate_open {
+            return;
+        }
+        let Some(rx) = self.topology_ready_rx.as_mut() else {
+            self.topology_gate_open = true;
+            return;
+        };
+        if *rx.borrow() {
+            self.topology_gate_open = true;
+            tracing::info!(
+                session_id = self.session_id,
+                "RLM sender: topology-ready signal received"
+            );
+        }
+    }
+
     fn maybe_release_ready_gate(&mut self) {
-        if self.ready_gate_open {
+        if self.ready_gate_open || !self.manifest_sent {
             return;
         }
         if self.receiver_count > 0 && self.ready_nodes.len() == self.receiver_count {

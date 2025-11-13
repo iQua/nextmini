@@ -70,6 +70,9 @@ pub async fn new_node_connected(
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 send_flows(node_ws.clone(), db_pool.clone()).await;
 
+                // signal dataplane nodes that topology state is fully synced
+                send_topology_ready(node_ws.clone()).await;
+
                 let duration_secs = match start_time {
                     Some(t0) => t0.elapsed().as_secs_f32(),
                     None => 0.0,
@@ -261,6 +264,37 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
                     node.id, e
                 ),
             }
+        }
+    }
+}
+
+async fn send_topology_ready(node_ws: NodeWriterMap) {
+    let node_ws_guard = node_ws.read().await;
+    info!(
+        "Broadcasting topology-ready signal to {} dataplane nodes.",
+        node_ws_guard.len()
+    );
+    for (node_id, writer) in node_ws_guard.iter() {
+        let msg = ControllerToDataplane::TopologyReady;
+        if let Err(err) = writer
+            .lock()
+            .await
+            .send(Message::binary(match rmp_serde::to_vec(&msg) {
+                Ok(encoded) => encoded,
+                Err(e) => {
+                    error!(
+                        "Failed to encode topology-ready message for node {}: {}.",
+                        node_id, e
+                    );
+                    continue;
+                }
+            }))
+            .await
+        {
+            error!(
+                "Failed to send the topology-ready message to node {}: {}.",
+                node_id, err
+            );
         }
     }
 }

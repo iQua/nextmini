@@ -2,8 +2,7 @@ use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 
 use ahash::AHashMap;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use nextmini_messages::TokenBucketSpec;
@@ -93,6 +92,7 @@ pub struct SenderConfig {
     pub fec_p: u8,
     pub ready_grace_ms: u64,
     pub cc: CongestionControl,
+    pub topology_ready: Option<watch::Receiver<bool>>,
 }
 
 /// Receiver-only configuration (source node, reliability timers, sinks, etc.).
@@ -133,6 +133,7 @@ pub struct SessionManager {
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
     pending: AHashMap<PendingReceiverKey, VecDeque<PendingReceiver>>,
+    topology_ready_tx: watch::Sender<bool>,
 }
 
 /// Key that allows a receiver to be created speculatively and paired once the
@@ -156,18 +157,21 @@ impl SessionManager {
     }
 
     pub fn new(processors: ProcessorHandle) -> Self {
+        let (topology_ready_tx, _) = watch::channel(false);
         Self {
             processors,
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
             next_session_id: 1,
             pending: AHashMap::default(),
+            topology_ready_tx,
         }
     }
 
-    pub fn spawn_sender(&mut self, cfg: SenderConfig) -> SessionId {
+    pub fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
+        cfg.topology_ready = Some(self.topology_ready_tx.subscribe());
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
         self.inputs.insert(sid, tx);
         let handle = tokio::spawn(super::sender::run(cfg, rx, processors));
@@ -205,6 +209,10 @@ impl SessionManager {
         let sid = self.next_session_id;
         self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
         sid
+    }
+
+    pub fn set_topology_ready(&self, ready: bool) {
+        let _ = self.topology_ready_tx.send(ready);
     }
 
     pub fn enqueue_pending_receiver(

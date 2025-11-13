@@ -45,16 +45,20 @@ pub struct Conductor {
 
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
+        // Initialize reliable subsystem handle (command loop wiring to follow).
+        #[cfg(feature = "reliable")]
+        let (reliable, rx) = ReliableHandle::new();
+
         // connects the processors with its downstream local interface writers to send packets out
+        #[cfg(feature = "reliable")]
+        let (controller_interface, reporter, flowstats_reporter) =
+            ControllerInterfaceHandle::new(config.clone(), Some(reliable.clone())).await;
+        #[cfg(not(feature = "reliable"))]
         let (controller_interface, reporter, flowstats_reporter) =
             ControllerInterfaceHandle::new(config.clone()).await;
 
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
-
-        // initialize reliable subsystem handle (command loop wiring to follow)
-        #[cfg(feature = "reliable")]
-        let (reliable, rx) = ReliableHandle::new();
 
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
@@ -156,6 +160,10 @@ impl Conductor {
                             let mut guard = manager.lock().await;
                             let sid = guard.allocate_session_id();
                             let _ = reply.send(sid);
+                        }
+                        ReliableCommand::SetTopologyReady { ready } => {
+                            let guard = manager.lock().await;
+                            guard.set_topology_ready(ready);
                         }
                     }
                 }

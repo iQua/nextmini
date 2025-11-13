@@ -353,6 +353,8 @@ pub enum ControllerToDataplane {
     AddFlows {
         flows: Vec<Flow>,
     },
+    /// Signals that the controller has seen every expected dataplane node.
+    TopologyReady,
     GroupCreated {
         group_id: GroupId,
         #[serde(with = "ip_ser")]
