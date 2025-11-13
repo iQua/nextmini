@@ -179,9 +179,17 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
 
     log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
+    # Generate ~1GB tensor: 256 * 1024 * 1024 floats * 4 bytes/float ≈ 1GB
     tensor = (
         torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
     )
+
+    # For 1MB testing, uncomment the following lines and comment out the 1GB version above:
+    # args.tensor_path = tensor_dir / "tensor-auto-1m.pt"
+    # log(f"Generating ~1MB tensor at {args.tensor_path}...", args.quiet)
+    # # Generate ~1MB tensor: 256 * 1024 floats * 4 bytes/float ≈ 1MB
+    # tensor = torch.randn(256, 1024, dtype=torch.float32).contiguous().cpu()
+
     args.tensor_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(tensor, args.tensor_path)
     size = args.tensor_path.stat().st_size
