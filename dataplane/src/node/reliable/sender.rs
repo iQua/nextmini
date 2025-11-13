@@ -141,14 +141,17 @@ pub async fn run(
             }
         }
 
-        if !progressed
-            && state.ready_for_data()
-            && state.should_resend()
-            && last_resend.elapsed() >= state.repair_backoff
-            && state.send_resend(&processors)
-        {
-            last_resend = Instant::now();
-            progressed = true;
+        // FIX:  makes retransmitting chunk possible; removes ready_for_data() check
+        if !progressed && state.should_resend() && last_resend.elapsed() >= state.repair_backoff {
+            tracing::trace!(
+                session_id = sid,
+                resend_queue_len = state.resend_queue.len(),
+                "RLM sender: attempting resend"
+            );
+            if state.send_resend(&processors) {
+                last_resend = Instant::now();
+                progressed = true;
+            }
         }
 
         if !progressed && state.try_emit_eot(&processors) {
