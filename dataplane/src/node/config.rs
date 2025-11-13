@@ -449,9 +449,6 @@ pub struct ReliableConfig {
     /// Optional default PGMCC configuration (disabled when `None` or `enabled == false`).
     #[serde(default)]
     pub pgmcc: Option<PgmccRuntimeConfig>,
-    /// Optional cap on the sender's initial congestion window (chunks).
-    #[serde(default)]
-    pub initial_window_chunks: Option<usize>,
 }
 
 impl Default for ReliableConfig {
@@ -468,7 +465,6 @@ impl Default for ReliableConfig {
             fec_p: 0,
             ready_grace_ms: 1500,
             pgmcc: None,
-            initial_window_chunks: None,
         }
     }
 }

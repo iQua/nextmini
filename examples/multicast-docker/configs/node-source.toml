@@ -13,3 +13,24 @@ python_fragmentation_max_message_bytes = 65536
 python_fragmentation_reassembly_window_bytes = 655360
 python_fragmentation_fragment_timeout_ms = 100000
 python_fragmentation_trace_flow_events = true
+
+[reliable]
+default_chunk_size = 32768
+control_weight = 8
+sack_interval_ms = 50
+nack_min_interval_ms = 100
+nack_jitter_ms = 20
+ack_policy = "all"
+fec_p = 0
+ready_grace_ms = 1500
+
+[reliable.pgmcc]
+enabled = true
+min_cwnd_chunks = 2
+init_cwnd_chunks = 2
+max_cwnd_chunks = 64
+rtt_alpha = 0.125
+loss_alpha = 0.25
+min_rtt_ms = 5
+feedback_interval_ms = 100
+acker_hysteresis_pct = 0.1
