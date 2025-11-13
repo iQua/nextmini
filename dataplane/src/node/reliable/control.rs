@@ -207,15 +207,60 @@ pub fn process_control_event(
         RlmControl::Sack { base, runs } => {
             // Each gap run represents missing data, so we enqueue the
             // corresponding indices for retransmission.
+            tracing::debug!(
+                from_node = from_node,
+                base = base,
+                runs_count = runs.len(),
+                runs = ?runs,
+                "Processing SACK - runs are GAPS (missing chunks)"
+            );
+            let mut added_to_queue = 0;
+            let mut already_in_queue = 0;
+            let mut not_inflight = 0;
             for (delta, len) in runs {
                 let start = *base + (*delta as u64);
                 let end = start + (*len as u64);
+                tracing::trace!(
+                    from_node = from_node,
+                    delta = delta,
+                    len = len,
+                    start = start,
+                    end = end,
+                    "SACK gap range: [{}, {})",
+                    start,
+                    end
+                );
                 for idx in start..end {
                     if inflight.contains_key(&idx) {
-                        resend_queue.insert(idx);
+                        let was_new = resend_queue.insert(idx);
+                        if was_new {
+                            added_to_queue += 1;
+                            tracing::trace!(
+                                from_node = from_node,
+                                chunk_index = idx,
+                                "Added missing chunk to resend_queue"
+                            );
+                        } else {
+                            already_in_queue += 1;
+                        }
+                    } else {
+                        not_inflight += 1;
+                        tracing::trace!(
+                            from_node = from_node,
+                            chunk_index = idx,
+                            "Skipping chunk - not in inflight"
+                        );
                     }
                 }
             }
+            tracing::debug!(
+                from_node = from_node,
+                added_to_queue = added_to_queue,
+                already_in_queue = already_in_queue,
+                not_inflight = not_inflight,
+                resend_queue_size = resend_queue.len(),
+                "SACK processing complete"
+            );
             Vec::new()
         }
         RlmControl::Repair { indices } => {

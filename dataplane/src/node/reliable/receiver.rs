@@ -138,6 +138,12 @@ pub async fn run(
                     break;
                 };
 
+                tracing::trace!(
+                    session_id = sid,
+                    frame_len = frame.bytes.len(),
+                    "RLM receiver: received inbound frame"
+                );
+
                 if handle_data_frame(
                     &frame,
                     &mut expected,
@@ -151,6 +157,12 @@ pub async fn run(
                     // Emit cumulative ACKs whenever we advance the head of
                     // line; SACKs are handled below if gaps remain.
                     if base > last_ack_up_to {
+                        tracing::debug!(
+                            session_id = sid,
+                            up_to = base,
+                            expected = expected,
+                            "RLM receiver: sending ACK"
+                        );
                         control_io.send(&RlmControl::Ack { up_to: base });
                         last_ack_up_to = base;
                     }
@@ -175,12 +187,26 @@ pub async fn run(
                     if highest_seen >= expected
                         && nack_limiter.should_send(expected, Instant::now())
                     {
+                        tracing::debug!(
+                            session_id = sid,
+                            expected = expected,
+                            highest_seen = highest_seen,
+                            gap_size = highest_seen - expected,
+                            "RLM receiver: sending REPAIR/NACK request"
+                        );
                         if cfg.nack_jitter_ms > 0 {
                             tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
                         }
                         control_io.send(&RlmControl::Repair {
                             indices: vec![expected],
                         });
+                    } else if highest_seen >= expected {
+                        tracing::trace!(
+                            session_id = sid,
+                            expected = expected,
+                            highest_seen = highest_seen,
+                            "RLM receiver: gap detected but NACK limiter blocked send"
+                        );
                     }
                     continue;
                 }
@@ -241,10 +267,23 @@ fn handle_data_frame(
     mut file: Option<&mut std::fs::File>,
 ) -> bool {
     let Some((_, data, body)) = rlm::decode_data(&frame.bytes) else {
+        tracing::trace!("RLM receiver: frame is not DATA (decode_data returned None)");
         return false;
     };
     let idx = data.index;
+    tracing::debug!(
+        chunk_index = idx,
+        body_len = body.len(),
+        expected = *expected,
+        highest_seen = *highest_seen,
+        "RLM receiver: DATA chunk received"
+    );
     if idx < *expected {
+        tracing::trace!(
+            chunk_index = idx,
+            expected = *expected,
+            "RLM receiver: ignoring duplicate/old chunk"
+        );
         return true;
     }
 
@@ -293,6 +332,11 @@ fn handle_control_frame(
             true
         }
         RlmControl::Eot { last_index, .. } => {
+            tracing::info!(
+                session_id = cfg.common.session_id,
+                last_index = last_index,
+                "RLM receiver: EOT received"
+            );
             *eot_index = Some(last_index);
             true
         }
@@ -301,8 +345,14 @@ fn handle_control_frame(
 }
 
 /// Serializes and emits the provided SACK snapshot.
-fn emit_sack(ctrl_io: &ControlEmitter<'_>, snapshot: SackSnapshot) {
-    ctrl_io.send(&RlmControl::Sack {
+fn emit_sack(control_io: &ControlEmitter, snapshot: SackSnapshot) {
+    tracing::debug!(
+        session_id = control_io.session_id,
+        base = snapshot.base,
+        runs_count = snapshot.runs.len(),
+        "RLM receiver: sending SACK"
+    );
+    control_io.send(&RlmControl::Sack {
         base: snapshot.base,
         runs: snapshot.runs,
     });

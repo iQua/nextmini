@@ -80,6 +80,17 @@ pub async fn run(
 
         let mut progressed = false;
 
+        tracing::trace!(
+            session_id = sid,
+            ready_gate_open = state.ready_gate_open,
+            source_drained = state.source_drained,
+            ready_for_data = state.ready_for_data(),
+            chunk_source_finished = chunk_source.finished(),
+            inflight_len = state.inflight_len(),
+            window = state.window,
+            "RLM sender: loop iteration"
+        );
+
         if state.should_resend_manifest() {
             state.send_manifest(&processors);
             progressed = true;
@@ -94,8 +105,22 @@ pub async fn run(
 
         if state.ready_for_data() && !chunk_source.finished() && state.inflight_len() < state.window
         {
+            tracing::debug!(
+                session_id = sid,
+                ready_for_data = state.ready_for_data(),
+                chunk_source_finished = chunk_source.finished(),
+                inflight_len = state.inflight_len(),
+                window = state.window,
+                "RLM sender: attempting to send next chunk"
+            );
             match chunk_source.next_chunk() {
                 Ok(Some(chunk)) => {
+                    tracing::debug!(
+                        session_id = sid,
+                        chunk_index = chunk.index,
+                        chunk_size = chunk.data.len(),
+                        "RLM sender: sending data chunk"
+                    );
                     pacer.wait_for(state.common.chunk_size).await;
                     state.send_data_chunk(chunk, &processors);
                     progressed = true;
@@ -314,8 +339,24 @@ impl SenderState {
         self.enqueue_frame(chunk.index, fragments.clone());
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
-        for bytes in fragments {
-            self.send_frame(&bytes, processors);
+        tracing::debug!(
+            session_id = self.session_id,
+            chunk_index = chunk.index,
+            chunk_data_len = chunk.data.len(),
+            fragments_count = fragments.len(),
+            src_ip = %self.src_ip,
+            dst_ip = %self.dst_ip,
+            "RLM sender: encoded DATA chunk, sending fragments to processor"
+        );
+        for (frag_idx, bytes) in fragments.iter().enumerate() {
+            tracing::trace!(
+                session_id = self.session_id,
+                chunk_index = chunk.index,
+                fragment_index = frag_idx,
+                fragment_len = bytes.len(),
+                "RLM sender: sending fragment to send_frame"
+            );
+            self.send_frame(bytes, processors);
         }
     }
 
@@ -337,13 +378,20 @@ impl SenderState {
             for frame in frames {
                 self.send_frame(frame, processors);
             }
-            tracing::debug!(
+            tracing::info!(
                 session_id = self.session_id,
                 index = idx,
-                "RLM sender: retransmit"
+                resend_count = self.resend_count,
+                resend_queue_remaining = self.resend_queue.len(),
+                "RLM sender: retransmitting chunk"
             );
             true
         } else {
+            tracing::warn!(
+                session_id = self.session_id,
+                index = idx,
+                "RLM sender: cannot retransmit - chunk not in cache"
+            );
             self.resend_queue.remove(&idx);
             false
         }
@@ -351,6 +399,13 @@ impl SenderState {
 
     fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
         if self.eot_sent || !self.source_drained || !self.inflight.is_empty() {
+            if !self.eot_sent && self.source_drained && !self.inflight.is_empty() {
+                tracing::trace!(
+                    session_id = self.session_id,
+                    inflight_count = self.inflight.len(),
+                    "RLM sender: cannot send EOT - chunks still inflight"
+                );
+            }
             return false;
         }
         let eot = RlmControl::Eot {
@@ -405,6 +460,14 @@ impl SenderState {
                     );
                     return;
                 };
+                tracing::debug!(
+                    session_id = self.session_id,
+                    from_node = from_node,
+                    control_type = ?control,
+                    inflight_count = self.inflight.len(),
+                    resend_queue_len_before = self.resend_queue.len(),
+                    "RLM sender: processing control frame"
+                );
                 let retired = control::process_control_event(
                     from_node,
                     &control,
@@ -414,11 +477,23 @@ impl SenderState {
                     &self.completion_policy,
                 );
                 if !retired.is_empty() {
+                    tracing::debug!(
+                        session_id = self.session_id,
+                        retired_count = retired.len(),
+                        retired_indices = ?retired,
+                        "RLM sender: retiring chunks"
+                    );
                     control::retire_chunks(&retired, &mut self.inflight, &mut self.resend_queue);
                     for idx in retired {
                         self.frame_cache.remove(&idx);
                     }
                 }
+                tracing::debug!(
+                    session_id = self.session_id,
+                    inflight_count = self.inflight.len(),
+                    resend_queue_len = self.resend_queue.len(),
+                    "RLM sender: after processing control frame"
+                );
             }
         }
     }
@@ -429,6 +504,15 @@ impl SenderState {
     }
 
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
+        tracing::debug!(
+            session_id = self.session_id,
+            frame_len = frame.len(),
+            src_ip = %self.src_ip,
+            src_port = self.src_port,
+            dst_ip = %self.dst_ip,
+            dst_port = self.dst_port,
+            "RLM sender: send_frame building packet and calling processors.process_packet"
+        );
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
@@ -436,7 +520,17 @@ impl SenderState {
             self.dst_port,
             frame,
         );
+        tracing::debug!(
+            session_id = self.session_id,
+            flow_id = %packet.flow_id,
+            packet_len = packet.packet_size,
+            "RLM sender: packet built, calling processors.process_packet NOW"
+        );
         processors.process_packet(packet);
+        tracing::debug!(
+            session_id = self.session_id,
+            "RLM sender: processors.process_packet returned"
+        );
     }
 
     fn send_control(&self, control: &RlmControl, processors: &ProcessorHandle) {
