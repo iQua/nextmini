@@ -647,7 +647,10 @@ impl SenderState {
 /// bucket configuration.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let receiver_factor = (cfg.receiver_ids.len().max(1)) * 2;
-    let mut window = DEFAULT_WINDOW.max(receiver_factor);
+    let mut window = cfg
+        .initial_window_chunks
+        .unwrap_or(DEFAULT_WINDOW)
+        .max(receiver_factor);
     if let Some(bucket) = &cfg.common.data_bucket
         && cfg.common.chunk_size > 0
     {

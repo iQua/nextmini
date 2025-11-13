@@ -93,6 +93,7 @@ pub struct SenderConfig {
     pub fec_p: u8,
     pub ready_grace_ms: u64,
     pub cc: CongestionControl,
+    pub initial_window_chunks: Option<usize>,
 }
 
 /// Receiver-only configuration (source node, reliability timers, sinks, etc.).
