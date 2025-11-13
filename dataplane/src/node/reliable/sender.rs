@@ -388,7 +388,7 @@ impl SenderState {
         let frame = rlm::encode_data(self.session_id, chunk.index, &chunk.data);
         let fragments = self.fragment_frame(frame);
         let now = Instant::now();
-        self.first_send_times.entry(chunk.index).or_insert(now);
+        self.first_send_times.insert(chunk.index, now);
         self.enqueue_frame(chunk.index, fragments.clone());
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
@@ -428,6 +428,7 @@ impl SenderState {
         if let Some(frames) = self.frame_cache.get(&idx) {
             self.resend_queue.remove(&idx);
             self.resend_count += 1;
+            self.first_send_times.insert(idx, Instant::now());
             for frame in frames {
                 self.send_frame(frame, processors);
             }

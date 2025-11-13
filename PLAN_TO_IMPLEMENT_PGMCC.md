@@ -767,7 +767,8 @@ To make it explicit how the ACKer drives the sender:
 * PGMCC’s cwnd and pacing operate **orthogonally**:
 
   * You might send only 10 chunks per RTT due to congestion, but still require `K-of-N` ACKs per chunk before retirement.
-* For PGMCC sessions, consider defaulting AckPolicy to `All` or `K-of-N` with a reasonably large K to avoid “retiring too early” when ACKer is much slower than others.
+
+> **Fairness warning (today):** PGMCC currently assumes `ack_policy = "all"` for accurate RTT/loss samples. If you retire chunks early via `K-of-N` / `frac:P`, slow receivers may never ACK before their send timestamps are dropped, so the controller won’t see their RTT/loss and will bias toward faster receivers. We should either keep `AckPolicy::All` for PGMCC sessions or extend the controller to track slow receivers independently.
 
 No code changes are required to tie them together; just be conscious of config defaults.
 
@@ -823,4 +824,3 @@ Because all changes are guarded behind `CongestionControl::Pgmcc`, you can run e
 ---
 
 If you want, next step I can sketch the actual Rust type signatures and a minimal PgmccController skeleton that compiles against your codebase, but this plan should be enough to start implementing PGMCC in a controlled, incremental way.
-
