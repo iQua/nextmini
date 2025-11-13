@@ -250,12 +250,12 @@ impl SenderState {
         let receiver_count = cfg.receiver_ids.len();
         let ready_gate_open = receiver_count == 0;
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms.max(1));
-        let mut topology_ready_rx = cfg.topology_ready.take();
+        let topology_ready_rx = cfg.topology_ready.take();
         let topology_gate_open = topology_ready_rx
             .as_ref()
             .map(|rx| *rx.borrow())
             .unwrap_or(true);
-        let mut routes_ready_rx = cfg.routes_ready.take();
+        let routes_ready_rx = cfg.routes_ready.take();
         let routes_gate_open = routes_ready_rx
             .as_ref()
             .map(|rx| *rx.borrow())
