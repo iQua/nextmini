@@ -10,7 +10,7 @@ queue_capacity = 4000
 feature = "concurrent"
 
 [reliable]
-default_chunk_size = 32768
+default_chunk_size = 4096
 control_weight = 8
 sack_interval_ms = 50
 nack_min_interval_ms = 100

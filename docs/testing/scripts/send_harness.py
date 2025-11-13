@@ -3,7 +3,7 @@
 Simple sender harness for exercising the Nextmini Python dataplane API.
 
 The script bootstraps an in-process dataplane and repeatedly invokes
-`Dataplane.send_to_node` (or batched sends) using configurable payload sizes.
+`Dataplane.send_to_node` using configurable payload sizes.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 try:
     import nextmini_py as nm
@@ -51,12 +51,6 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=_positive_int,
         default=1,
         help="Number of payloads to send.",
-    )
-    parser.add_argument(
-        "--batch",
-        type=_positive_int,
-        default=1,
-        help="Bundle this many payloads per `send_batch_to_node` call.",
     )
     parser.add_argument(
         "--size",
@@ -119,15 +113,6 @@ def make_payload(args: argparse.Namespace) -> bytes:
     return bytes([fill_byte]) * args.size
 
 
-def emit_batch(dataplane: nm.Dataplane, dst_node: int, payloads: Iterable[memoryview], args: argparse.Namespace) -> None:
-    dataplane.send_batch_to_node(
-        dst_node,
-        list(payloads),
-        src_port=args.src_port,
-        dst_port=args.dst_port,
-    )
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     payload = make_payload(args)
@@ -142,25 +127,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             dst_port=args.dst_port,
         )
 
-    batch_payload = [memoryview(payload) for _ in range(args.batch)]
     start = time.time()
     delay = args.sleep_ms / 1000 if args.sleep_ms else 0.0
 
     total_sent = 0
     for idx in range(args.count):
-        if args.batch == 1:
-            dataplane.send_to_node(
-                args.dst_node_id,
-                memoryview(payload),
-                src_port=args.src_port,
-                dst_port=args.dst_port,
-            )
-        else:
-            emit_batch(dataplane, args.dst_node_id, batch_payload, args)
-
-        total_sent += args.batch
+        frozen = nm.FrozenBuffer(payload)
+        dataplane.send_to_node(
+            args.dst_node_id,
+            frozen,
+            src_port=args.src_port,
+            dst_port=args.dst_port,
+        )
+        total_sent += 1
         if not args.quiet:
-            log_msg = f"[{idx + 1}/{args.count}] sent {args.batch} payload(s) ({len(payload)} bytes each)"
+            log_msg = f"[{idx + 1}/{args.count}] sent payload ({len(payload)} bytes)"
             if flow_id is not None:
                 log_msg += f" flow_id={flow_id}"
             print(log_msg, flush=True)

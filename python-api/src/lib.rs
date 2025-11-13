@@ -234,8 +234,6 @@ impl From<RustPayloadDelivery> for PyPayloadDelivery {
     }
 }
 
-// Removed legacy Python-side reliable multicast helpers and control/chunk encoders.
-
 #[pyclass]
 struct Dataplane {
     cfg: LocalConfig,
@@ -269,7 +267,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=32768, src_port=None, dst_port=None, ack_policy="all", session_id=None, congestion=None))]
+    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=4096, src_port=None, dst_port=None, ack_policy="all", session_id=None, congestion=None))]
     fn reliable_send_file_rs(
         &self,
         group_ip: &str,
@@ -411,7 +409,7 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=32768, src_port=None, dst_port=None, sink_path=None, session_id=None))]
+    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=4096, src_port=None, dst_port=None, sink_path=None, session_id=None))]
     fn reliable_receive_file_rs(
         &self,
         group_ip: &str,
@@ -671,23 +669,6 @@ impl Dataplane {
         self.transmit_python_payload(src_ip, dst_ip, sp, dp, body)
     }
 
-    #[pyo3(signature = (dst_ip, frozen, src_port=None, dst_port=None))]
-    fn send_to_ip(
-        &self,
-        dst_ip: &str,
-        frozen: FrozenBuffer,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<u64> {
-        let body = frozen.inner.clone();
-        let dst_ip = parse_ipv4(dst_ip)?;
-        let src_ip = self.cfg.user_space_address;
-        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-
-        self.transmit_python_payload(src_ip, dst_ip, sp, dp, body)
-    }
-
     #[pyo3(signature = (label))]
     fn create_group(&self, label: String) -> PyResult<()> {
         rt().block_on(async {
@@ -789,20 +770,6 @@ impl Dataplane {
         });
 
         Ok(routes)
-    }
-
-    #[pyo3(signature = (dst_node_id, frozen_buffers, src_port=None, dst_port=None))]
-    fn send_batch_to_node(
-        &self,
-        dst_node_id: usize,
-        frozen_buffers: Vec<FrozenBuffer>,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<()> {
-        for frozen in frozen_buffers {
-            self.send_to_node(dst_node_id, frozen, src_port, dst_port)?;
-        }
-        Ok(())
     }
 }
 

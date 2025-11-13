@@ -29,7 +29,7 @@ Fields
 Example (node.toml)
 ```
 [reliable]
-default_chunk_size = 32768
+default_chunk_size = 4096
 control_weight = 10
 ack_policy = "all" # or "k:2", "frac:0.75"
 sack_interval_ms = 25

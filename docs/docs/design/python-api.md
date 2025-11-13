@@ -30,7 +30,7 @@ govern fragmentation, telemetry, and group coordination.
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
-| `nextmini_py.Dataplane` | `send_to_node`, `send_to_ip`, `send_batch_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `wait_for_local_membership`, `wait_for_routes_installed`, `flow_id_from_nodes` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
+| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `wait_for_local_membership`, `wait_for_routes_installed`, `flow_id_from_nodes` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
 | `nextmini_py.FrozenBuffer` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
 | `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns `bytes` when the receiver was registered in raw mode or a `PayloadDelivery` object when `payload_only=True`. |
 | `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count`, `.payload_format` | Metadata-rich wrapper populated when payload-only receivers are used. Fragmentation metadata is only set when the feature flag is enabled. |
@@ -66,10 +66,7 @@ payload = frozen_from_tensor(loss_tensor)
 dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
-`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. Use
-`send_to_ip(dst_ip="10.0.0.42", frozen=payload)` when you already know the destination IP (e.g., multicast group
-address). `send_batch_to_node(dst_node_id, [FrozenBuffer, …])` is a thin helper that iterates over the list and reuses
-the same flow tuple.
+`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, rely on controller helpers (for example `create_group` plus the reliable multicast APIs) and distribute traffic per node ID when you need to fan out from Python.
 
 ### Frozen buffers in detail
 

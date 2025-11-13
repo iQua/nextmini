@@ -80,9 +80,9 @@ payloads to `/tmp/nextmini_py/` for verification).
 
    ```bash
    bash docs/testing/scripts/run_harness.sh sender docs/testing/configs/node_sender.toml \
-     --src-node-id 1 --dst-node-id 2 --count 20 --size 32768
+     --src-node-id 1 --dst-node-id 2 --count 20 --size 4096
    ```
-   
+
    Receiver side:
 
    ```bash

@@ -26,7 +26,7 @@ The constructor embeds a Tokio runtime, spawns the Rust dataplane, and connects 
 
 ## 3. Send tensors with `FrozenBuffer`
 
-Wrap payloads in a `FrozenBuffer` before calling `send_to_node` (or `send_to_ip`). The helper accepts any `bytes` object, implements the buffer protocol, and exposes `slice()`/`read()` for convenience.
+Wrap payloads in a `FrozenBuffer` before calling `send_to_node`. The helper accepts any `bytes` object, implements the buffer protocol, and exposes `slice()`/`read()` for convenience.
 
 ```python
 import nextmini_py as nm
@@ -38,12 +38,6 @@ def frozen_from_tensor(tensor):
 dp = nm.Dataplane("/abs/path/node-config.toml")
 payload = frozen_from_tensor(loss_tensor)
 dp.send_to_node(dst_node_id=2, frozen=payload)
-
-# When you already know the destination IP (e.g., a multicast address):
-dp.send_to_ip(dst_ip="239.1.1.10", frozen=payload)
-
-# Batch helper to amortize the Python ↔ Rust hop:
-dp.send_batch_to_node(dst_node_id=2, frozen_buffers=[payload_a, payload_b])
 ```
 
 ## 4. Receive payloads with metadata

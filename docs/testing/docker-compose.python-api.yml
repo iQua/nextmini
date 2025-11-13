@@ -101,7 +101,7 @@ services:
         --dst-node-id ${SENDER_DST_ID:-2}
         --count ${SENDER_COUNT:-20}
         --batch ${SENDER_BATCH:-1}
-        --size ${SENDER_SIZE:-32768}
+        --size ${SENDER_SIZE:-4096}
         --sleep-ms ${SENDER_SLEEP_MS:-50}
 
 networks:
