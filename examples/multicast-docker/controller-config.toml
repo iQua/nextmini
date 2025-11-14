@@ -1,0 +1,17 @@
+protocol = "tcp"
+multicast_pool_base = "239.255.0.0"
+multicast_pool_mask = "255.255.0.0"
+
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 3 }
+
+[routing]
+protocol = "shortest_path"
+
+[db]
+host = "postgres"
+port = "5432"
+user = "pgusr"
+password = "pgpwrd"
+database = "nextmini"

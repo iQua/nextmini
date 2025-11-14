@@ -1,15 +1,19 @@
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::sync::Arc;
+
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupId};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -19,6 +23,9 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
+use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
+#[cfg(feature = "reliable")]
+use crate::node::reliable::api::ReliableHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
 #[derive(Clone)]
@@ -26,12 +33,14 @@ pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }
 
 /// The handle for the controller interface, which allows sending messages to the controller.
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
+        #[cfg(feature = "reliable")] reliable: Option<ReliableHandle>,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
@@ -47,10 +56,13 @@ impl ControllerInterfaceHandle {
             northbridge_receiver,
         };
 
+        let python_interface = Arc::new(Mutex::new(None));
+
         let controller_interface = Self {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            python_interface: python_interface.clone(),
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
@@ -86,6 +98,11 @@ impl ControllerInterfaceHandle {
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
+            python_interface,
+            #[cfg(feature = "reliable")]
+            reliable,
+            #[cfg(feature = "reliable")]
+            group_ip_by_id: HashMap::new(),
         };
 
         tokio::spawn(async move {
@@ -175,6 +192,12 @@ impl ControllerInterfaceHandle {
             );
         };
     }
+
+    #[allow(dead_code)]
+    pub async fn attach_python_interface(&self, interface: PythonInterfaceHandle) {
+        let mut guard = self.python_interface.lock().await;
+        *guard = Some(interface);
+    }
 }
 
 #[cfg(test)]
@@ -183,12 +206,14 @@ impl ControllerInterfaceHandle {
         let config = LocalConfig::default();
         let processors = ProcessorHandle::new(config.clone());
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        let python_interface = Arc::new(Mutex::new(None));
 
         (
             Self {
                 config,
                 processors,
                 northbridge_sender,
+                python_interface,
             },
             northbridge_receiver,
         )
@@ -236,6 +261,12 @@ pub struct ControllerToDataplaneReceiver {
     // handles for user-space TCP flows
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
+
+    python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
+    #[cfg(feature = "reliable")]
+    reliable: Option<ReliableHandle>,
+    #[cfg(feature = "reliable")]
+    group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -341,7 +372,124 @@ impl ControllerToDataplaneReceiver {
                 }
             }
 
+            ControllerToDataplane::TopologyReady => {
+                info!(
+                    "Controller signaled that all nodes are connected; topology state is ready on node {}.",
+                    self.config.node_id
+                );
+                #[cfg(feature = "reliable")]
+                {
+                    if let Some(handle) = &self.reliable {
+                        handle.set_topology_ready(true);
+                    } else {
+                        warn!(
+                            "TopologyReady received but reliable subsystem is not attached on node {}.",
+                            self.config.node_id
+                        );
+                    }
+                }
+            }
+
+            ControllerToDataplane::GroupCreated {
+                group_id,
+                group_ip,
+                src_node_id,
+            } => {
+                info!(
+                    "Registered multicast group {} ({}) owned by node {}.",
+                    group_id, group_ip, src_node_id
+                );
+
+                if let Some(py_if) = self.python_handle().await {
+                    py_if
+                        .publish_event(PythonEvent::GroupCreated {
+                            group_id,
+                            src_node_id,
+                            group_ip,
+                        })
+                        .await;
+                }
+            }
+
+            ControllerToDataplane::InstallGroupDirectory { groups } => {
+                info!(
+                    "Installing multicast group directory ({} entries) on node {}.",
+                    groups.len(),
+                    self.config.node_id
+                );
+                self.processors.update_group_directory(groups.clone()).await;
+                #[cfg(feature = "reliable")]
+                {
+                    self.group_ip_by_id.clear();
+                    for entry in &groups {
+                        self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
+                    }
+                }
+
+                if let Some(py_if) = self.python_handle().await {
+                    py_if
+                        .publish_event(PythonEvent::GroupDirectoryUpdated { entries: groups })
+                        .await;
+                }
+            }
+
+            ControllerToDataplane::InstallGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            } => {
+                info!(
+                    "Installing multicast routes for group {} from src {} on node {} ({} entries).",
+                    group_id,
+                    src_node_id,
+                    self.config.node_id,
+                    routes.len()
+                );
+                let cloned_routes = routes.clone();
+                self.processors
+                    .update_group_routes(group_id, src_node_id, routes)
+                    .await;
+
+                #[cfg(feature = "reliable")]
+                {
+                    if let Some(handle) = &self.reliable {
+                        if let Some(ip) = self.group_ip_by_id.get(&group_id) {
+                            handle.set_group_routes_ready(*ip, src_node_id);
+                        } else {
+                            warn!(
+                                "InstallGroupRoutes received for unknown group {}; reliable senders may block.",
+                                group_id
+                            );
+                        }
+                    }
+                }
+
+                if let Some(py_if) = self.python_handle().await {
+                    py_if
+                        .publish_event(PythonEvent::GroupRoutesInstalled {
+                            group_id,
+                            src_node_id,
+                            routes: cloned_routes.clone(),
+                        })
+                        .await;
+
+                    let node_id = self.config.node_id;
+                    for entry in &cloned_routes {
+                        if entry.next_hops.contains(&node_id) {
+                            py_if
+                                .publish_event(PythonEvent::LocalMemberJoined { group_id, node_id })
+                                .await;
+                            break;
+                        }
+                    }
+                }
+            }
+
             _ => error!("Received a message with an unknown type from the controller."),
         }
+    }
+
+    async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
+        self.python_interface.lock().await.clone()
     }
 }

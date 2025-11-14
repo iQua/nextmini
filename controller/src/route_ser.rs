@@ -43,3 +43,178 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize)]
+    struct TestRouteEdgePairs {
+        #[serde(deserialize_with = "deserialize_route_edges")]
+        edges: Vec<(u32, u32)>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TestRouteNodeSeq {
+        #[serde(deserialize_with = "deserialize_route_edges")]
+        edges: Vec<(u32, u32)>,
+    }
+
+    #[test]
+    fn test_deserialize_edge_pairs_format() {
+        // Test format: [[1, 2], [2, 3], [3, 4]]
+        let toml_str = r#"edges = [[1, 2], [2, 3], [3, 4]]"#;
+        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 3);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (2, 3));
+        assert_eq!(result.edges[2], (3, 4));
+    }
+
+    #[test]
+    fn test_deserialize_node_sequence_format() {
+        // Test format: [1, 2, 3, 4]
+        let toml_str = r#"edges = [1, 2, 3, 4]"#;
+        let result: TestRouteNodeSeq = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 3);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (2, 3));
+        assert_eq!(result.edges[2], (3, 4));
+    }
+
+    #[test]
+    fn test_deserialize_multicast_edge_pairs() {
+        // Test multicast topology: [[1, 2], [2, 3], [2, 4]]
+        let toml_str = r#"edges = [[1, 2], [2, 3], [2, 4]]"#;
+        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 3);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (2, 3));
+        assert_eq!(result.edges[2], (2, 4));
+
+        // Verify that node 2 appears as source in multiple edges (multicast branch point)
+        let edges_from_2: Vec<_> = result.edges.iter().filter(|(src, _)| *src == 2).collect();
+        assert_eq!(edges_from_2.len(), 2);
+    }
+
+    #[test]
+    fn test_deserialize_complex_multicast() {
+        // Complex multicast tree
+        let toml_str = r#"edges = [[1, 2], [2, 3], [2, 4], [3, 5], [4, 6]]"#;
+        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 5);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (2, 3));
+        assert_eq!(result.edges[2], (2, 4));
+        assert_eq!(result.edges[3], (3, 5));
+        assert_eq!(result.edges[4], (4, 6));
+    }
+
+    #[test]
+    fn test_deserialize_single_edge() {
+        // Single edge route
+        let toml_str = r#"edges = [[1, 2]]"#;
+        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 1);
+        assert_eq!(result.edges[0], (1, 2));
+    }
+
+    #[test]
+    fn test_deserialize_single_edge_node_seq() {
+        // Single edge as node sequence
+        let toml_str = r#"edges = [1, 2]"#;
+        let result: TestRouteNodeSeq = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 1);
+        assert_eq!(result.edges[0], (1, 2));
+    }
+
+    #[test]
+    fn test_deserialize_invalid_edge_too_few_nodes() {
+        // Edge with only one node should fail
+        let toml_str = r#"edges = [[1]]"#;
+        let result: Result<TestRouteEdgePairs, _> = toml::from_str(toml_str);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("exactly two nodes"));
+    }
+
+    #[test]
+    fn test_deserialize_invalid_edge_too_many_nodes() {
+        // Edge with three nodes should fail
+        let toml_str = r#"edges = [[1, 2, 3]]"#;
+        let result: Result<TestRouteEdgePairs, _> = toml::from_str(toml_str);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("exactly two nodes"));
+    }
+
+    #[test]
+    fn test_deserialize_invalid_node_seq_too_short() {
+        // Node sequence with only one node should fail
+        let toml_str = r#"edges = [1]"#;
+        let result: Result<TestRouteNodeSeq, _> = toml::from_str(toml_str);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("at least two nodes"));
+    }
+
+    #[test]
+    fn test_deserialize_empty_route() {
+        let toml_str = r#"edges = []"#;
+        let result: Result<TestRouteNodeSeq, _> = toml::from_str(toml_str);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().edges.len(), 0);
+    }
+
+    #[test]
+    fn test_deserialize_long_linear_path() {
+        // Long linear path: 1 -> 2 -> 3 -> 4 -> 5 -> 6
+        let toml_str = r#"edges = [1, 2, 3, 4, 5, 6]"#;
+        let result: TestRouteNodeSeq = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 5);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (2, 3));
+        assert_eq!(result.edges[2], (3, 4));
+        assert_eq!(result.edges[3], (4, 5));
+        assert_eq!(result.edges[4], (5, 6));
+    }
+
+    #[test]
+    fn test_deserialize_dag_with_reconvergence() {
+        let toml_str = r#"edges = [[1, 2], [1, 3], [2, 4], [3, 4]]"#;
+        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 4);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (1, 3));
+        assert_eq!(result.edges[2], (2, 4));
+        assert_eq!(result.edges[3], (3, 4));
+    }
+
+    #[test]
+    fn test_single_route_with_multiple_paths() {
+        // Single route with two separate paths
+        // Path 1: 1 -> 2 -> 4
+        // Path 2: 1 -> 3 -> 4
+        let toml_str = r#"edges = [[1, 2], [2, 4], [1, 3], [3, 4]]"#;
+        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+
+        assert_eq!(result.edges.len(), 4);
+        assert_eq!(result.edges[0], (1, 2));
+        assert_eq!(result.edges[1], (2, 4));
+        assert_eq!(result.edges[2], (1, 3));
+        assert_eq!(result.edges[3], (3, 4));
+    }
+}

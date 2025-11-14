@@ -8,6 +8,7 @@ mod topology;
 mod utils;
 
 use std::collections::{HashMap, HashSet};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use futures_util::stream::{SplitSink, SplitStream};
@@ -20,13 +21,21 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController};
+use anyhow::Result as AnyResult;
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupDirectoryEntry};
 
 use crate::config::{Config, get_config};
-use crate::db::{init_db, setup_flow_notification, setup_route_notification};
-use crate::models::{DbRoute, Node, Route};
+use crate::db::{
+    add_group_member, create_group, init_db, load_group_directory, load_group_members,
+    remove_group_member, setup_flow_notification, setup_group_notification,
+    setup_route_notification,
+};
+use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, new_node_connected};
-use crate::utils::{StartupResponseParams, build_routes_for_node, build_startup_response};
+use crate::utils::{
+    StartupResponseParams, build_group_routes_for_node, build_routes_for_node,
+    build_startup_response,
+};
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 pub type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -37,9 +46,16 @@ async fn main() {
     tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
     let db_pool = Arc::new(init_db(&config).await);
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port))
-        .await
-        .expect("Failed to bind to port.");
+    let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!(
+                "Failed to bind controller port {}: {}. Exiting.",
+                config.port, e
+            );
+            return;
+        }
+    };
     info!("The controller is now listening on port {}.", config.port);
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
@@ -59,11 +75,16 @@ async fn main() {
     // Set up database notifications
     setup_route_notification(db_pool.clone(), node_ws.clone()).await;
     setup_flow_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_group_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
-        let peer = stream
-            .peer_addr()
-            .expect("Connected streams should have a peer address.");
+        let peer = match stream.peer_addr() {
+            Ok(p) => p,
+            Err(e) => {
+                error!("Missing peer address on accepted stream: {}. Skipping.", e);
+                continue;
+            }
+        };
 
         info!("New connection from {}.", peer);
 
@@ -96,7 +117,7 @@ async fn handle_connection(
     write: WebSocketWriter,
     db_pool: Arc<Pool<Postgres>>,
     config: Config,
-    node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
+    node_ws: NodeWriterMap,
     new_node_connected_sender: broadcast::Sender<NodeConnectedEvent>,
 ) {
     let write_arc = Arc::new(Mutex::new(write));
@@ -126,7 +147,10 @@ async fn handle_connection(
                         );
 
                         // assigns a node ID as the dataplane node requests
-                        let node_id = maybe_node_id.unwrap();
+                        let Some(node_id) = maybe_node_id else {
+                            error!("Startup message missing node_id; rejecting connection.");
+                            continue;
+                        };
 
                         info!(
                             "Node with ID {} is attempting to connect (private: {}, public: {}).",
@@ -218,10 +242,21 @@ async fn handle_connection(
                             node_spec,
                         });
 
+                        // Safely encode and send StartUp response
+                        let msg_bytes = match rmp_serde::to_vec(&response) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                error!(
+                                    "Failed to encode StartUp response for node {}: {}",
+                                    node_id, e
+                                );
+                                continue;
+                            }
+                        };
                         match write_arc
                             .lock()
                             .await
-                            .send(Message::binary(rmp_serde::to_vec(&response).unwrap()))
+                            .send(Message::binary(msg_bytes))
                             .await
                         {
                             Ok(_) => info!("Sent StartUp response to node {}.", node_id),
@@ -299,7 +334,18 @@ async fn handle_connection(
                             match write_arc
                                 .lock()
                                 .await
-                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .send({
+                                    match rmp_serde::to_vec(&msg) {
+                                        Ok(buf) => Message::binary(buf),
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to encode AddNode for {}: {}",
+                                                node.id, e
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                })
                                 .await
                             {
                                 Ok(_) => info!(
@@ -355,7 +401,18 @@ async fn handle_connection(
                             match write_arc
                                 .lock()
                                 .await
-                                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                                .send({
+                                    match rmp_serde::to_vec(&msg) {
+                                        Ok(buf) => Message::binary(buf),
+                                        Err(e) => {
+                                            error!(
+                                                "Failed to encode InstallRoutes for {}: {}",
+                                                node_id, e
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                })
                                 .await
                             {
                                 Ok(_) => {
@@ -368,6 +425,15 @@ async fn handle_connection(
                             }
                         } else {
                             error!("No routes to install for node {}.", node_id);
+                        }
+
+                        if let Err(e) =
+                            send_multicast_state_to_node(&db_pool, node_id, &write_arc).await
+                        {
+                            error!(
+                                "Failed to send multicast state to node {} during startup: {}",
+                                node_id, e
+                            );
                         }
 
                         // as a new node connects, checks if all the expected nodes are now connected
@@ -667,6 +733,115 @@ async fn handle_connection(
                             }
                         }
                     }
+                    DataplaneToController::CreateGroup { label } => {
+                        let Some(node_id) = current_node_id else {
+                            warn!("CreateGroup received before node registration; ignoring.");
+                            continue;
+                        };
+
+                        match create_group(
+                            &db_pool,
+                            &label,
+                            node_id,
+                            config.multicast_pool_base,
+                            config.multicast_pool_mask,
+                        )
+                        .await
+                        {
+                            Ok(group) => match group.group_ip.parse::<Ipv4Addr>() {
+                                Ok(group_ip) => {
+                                    let response = ControllerToDataplane::GroupCreated {
+                                        group_id: group.id as usize,
+                                        group_ip,
+                                        src_node_id: group.src_node_id as usize,
+                                    };
+
+                                    // Pre-encode response and handle errors without panicking.
+                                    let msg_bytes = match rmp_serde::to_vec(&response) {
+                                        Ok(b) => b,
+                                        Err(e) => {
+                                            error!("Failed to encode GroupCreated response: {}", e);
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(e) = write_arc
+                                        .lock()
+                                        .await
+                                        .send(Message::binary(msg_bytes))
+                                        .await
+                                    {
+                                        error!(
+                                            "Failed to send GroupCreated to node {}: {}",
+                                            node_id, e
+                                        );
+                                    } else {
+                                        info!(
+                                            "Created multicast group {} ({}) for node {}.",
+                                            group.id, group.group_ip, node_id
+                                        );
+                                    }
+
+                                    if let Err(e) =
+                                        broadcast_group_directory(&db_pool, &node_ws).await
+                                    {
+                                        error!(
+                                            "Failed to broadcast group directory after creating group {}: {}",
+                                            group.id, e
+                                        );
+                                    }
+                                }
+                                Err(e) => error!(
+                                    "Invalid group IP {} stored for group {}: {}",
+                                    group.group_ip, group.id, e
+                                ),
+                            },
+                            Err(e) => error!(
+                                "Failed to create multicast group \"{}\" for node {}: {}",
+                                label, node_id, e
+                            ),
+                        }
+                    }
+                    DataplaneToController::JoinGroup { group_id } => {
+                        let Some(node_id) = current_node_id else {
+                            warn!("JoinGroup received before node registration; ignoring.");
+                            continue;
+                        };
+
+                        if let Err(e) = add_group_member(&db_pool, group_id as i32, node_id).await {
+                            error!("Node {} failed to join group {}: {}", node_id, group_id, e);
+                        } else {
+                            info!("Node {} joined multicast group {}.", node_id, group_id);
+                        }
+                    }
+                    DataplaneToController::LeaveGroup { group_id } => {
+                        let Some(node_id) = current_node_id else {
+                            warn!("LeaveGroup received before node registration; ignoring.");
+                            continue;
+                        };
+
+                        if let Err(e) =
+                            remove_group_member(&db_pool, group_id as i32, node_id).await
+                        {
+                            error!("Node {} failed to leave group {}: {}", node_id, group_id, e);
+                        } else {
+                            info!("Node {} left multicast group {}.", node_id, group_id);
+                        }
+                    }
+                    DataplaneToController::ReliableStats { stats } => {
+                        info!(
+                            "ReliableStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} sacks={} fec_used={} ts_ms={}",
+                            stats.session_id,
+                            stats.node_id,
+                            stats.role,
+                            stats.bytes,
+                            stats.chunks,
+                            stats.resends,
+                            stats.repairs,
+                            stats.sacks,
+                            stats.fec_used,
+                            stats.ts_ms
+                        );
+                    }
                 }
             }
             Ok(Message::Ping(_)) => {
@@ -687,4 +862,156 @@ async fn handle_connection(
         info!("Connection closed for node {}.", node_id);
         node_ws.write().await.remove(&node_id);
     }
+}
+
+async fn broadcast_group_directory(
+    db_pool: &Pool<Postgres>,
+    node_ws: &NodeWriterMap,
+) -> AnyResult<()> {
+    let entries = load_group_directory_entries(db_pool).await?;
+
+    let message = ControllerToDataplane::InstallGroupDirectory {
+        groups: entries.clone(),
+    };
+    let payload = rmp_serde::to_vec(&message)?;
+
+    let guard = node_ws.read().await;
+    for (node_id, sender) in guard.iter() {
+        if let Err(e) = sender
+            .lock()
+            .await
+            .send(Message::binary(payload.clone()))
+            .await
+        {
+            error!(
+                "Failed to send InstallGroupDirectory to node {}: {}",
+                node_id, e
+            );
+        } else {
+            info!(
+                "Broadcasted InstallGroupDirectory with {} entries to node {}.",
+                entries.len(),
+                node_id
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_group_directory_entries(
+    db_pool: &Pool<Postgres>,
+) -> AnyResult<Vec<GroupDirectoryEntry>> {
+    let groups = load_group_directory(db_pool).await?;
+    let mut entries = Vec::with_capacity(groups.len());
+
+    for group in groups {
+        match group.group_ip.parse::<Ipv4Addr>() {
+            Ok(ip) => entries.push(GroupDirectoryEntry {
+                group_id: group.id as usize,
+                group_ip: ip,
+            }),
+            Err(e) => warn!(
+                "Skipping group {} due to invalid IP {}: {}",
+                group.id, group.group_ip, e
+            ),
+        }
+    }
+
+    Ok(entries)
+}
+
+async fn send_multicast_state_to_node(
+    db_pool: &Pool<Postgres>,
+    node_id: usize,
+    writer: &Arc<Mutex<WebSocketWriter>>,
+) -> AnyResult<()> {
+    send_group_directory_to_node(db_pool, node_id, writer).await?;
+    send_group_routes_snapshot_to_node(db_pool, node_id, writer).await?;
+    Ok(())
+}
+
+async fn send_group_directory_to_node(
+    db_pool: &Pool<Postgres>,
+    node_id: usize,
+    writer: &Arc<Mutex<WebSocketWriter>>,
+) -> AnyResult<()> {
+    let entries = load_group_directory_entries(db_pool).await?;
+    let message = ControllerToDataplane::InstallGroupDirectory {
+        groups: entries.clone(),
+    };
+    let payload = rmp_serde::to_vec(&message)?;
+
+    if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
+        error!(
+            "Failed to send InstallGroupDirectory to node {}: {}",
+            node_id, e
+        );
+    } else {
+        info!(
+            "Sent InstallGroupDirectory with {} entries to node {}.",
+            entries.len(),
+            node_id
+        );
+    }
+
+    Ok(())
+}
+
+async fn send_group_routes_snapshot_to_node(
+    db_pool: &Pool<Postgres>,
+    node_id: usize,
+    writer: &Arc<Mutex<WebSocketWriter>>,
+) -> AnyResult<()> {
+    let stored_routes =
+        sqlx::query_as::<_, DbGroupRoute>("SELECT group_id, src_node_id, edges FROM group_routes")
+            .fetch_all(db_pool)
+            .await?;
+
+    if stored_routes.is_empty() {
+        return Ok(());
+    }
+
+    for group_route in stored_routes {
+        let dag_raw: Vec<[u32; 2]> = serde_json::from_value(group_route.edges.clone())?;
+        if dag_raw.is_empty() {
+            continue;
+        }
+
+        let dag_edges: Vec<(u32, u32)> =
+            dag_raw.into_iter().map(|pair| (pair[0], pair[1])).collect();
+        let members = load_group_members(db_pool, group_route.group_id).await?;
+        let member_set: HashSet<u32> = members.iter().map(|m| m.node_id as u32).collect();
+
+        let Some(entry) = build_group_routes_for_node(
+            group_route.group_id as usize,
+            group_route.src_node_id as u32,
+            &dag_edges,
+            node_id as u32,
+            &member_set,
+        ) else {
+            continue;
+        };
+
+        let message = ControllerToDataplane::InstallGroupRoutes {
+            group_id: group_route.group_id as usize,
+            src_node_id: group_route.src_node_id as usize,
+            routes: vec![entry],
+        };
+        let payload = rmp_serde::to_vec(&message)?;
+
+        if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
+            error!(
+                "Failed to send InstallGroupRoutes for group {} to node {}: {}",
+                group_route.group_id, node_id, e
+            );
+        } else {
+            info!(
+                "Sent InstallGroupRoutes snapshot for group {} to node {}.",
+                group_route.group_id, node_id
+            );
+        }
+    }
+
+    Ok(())
 }

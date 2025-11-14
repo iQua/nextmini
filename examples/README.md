@@ -17,6 +17,7 @@ Replace `<folder-name>` with one of the following:
 - simple-scheduler
 - smoltcp-test
 - splice-test
+- multicast-docker
 
 # Configuration Files
 

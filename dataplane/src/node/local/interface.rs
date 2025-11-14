@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use tun_rs::{AsyncDevice, DeviceBuilder};
 
 use crate::node::FlowIdExt;
@@ -44,12 +44,23 @@ impl LocalInterfaceHandle {
         processor: ProcessorHandle,
         flowstats_reporter: FlowStatsReporterHandle,
     ) -> Self {
+        let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
+
+        if !config.enable_local_interface {
+            debug!(
+                "Local interface disabled via configuration; skipping TUN interface initialization."
+            );
+            let _ = processor;
+            let _ = flowstats_reporter;
+            return Self {
+                shutdown_sender,
+                write_senders: Vec::new(),
+            };
+        }
+
         // creates local TUN devices. On Linux, this creates multiple queues for parallel processing,
         // each queue corresponding to its own device. On non-Linux platforms, it creates one device only.
         let tun_devices = Self::create_tun_devices(config.clone());
-
-        // a broadcast channel for sending the shutdown signal to both local interface readers and writers
-        let (shutdown_sender, _) = broadcast::channel(config.channel_capacity);
 
         let mut write_senders = Vec::with_capacity(tun_devices.len());
 
@@ -88,6 +99,14 @@ impl LocalInterfaceHandle {
     }
 
     pub fn write_packet(&self, packet: Packet) {
+        if self.write_senders.is_empty() {
+            debug!(
+                "Local interface disabled; dropping packet with flow {}.",
+                packet.flow_id
+            );
+            return;
+        }
+
         let idx = packet.flow_id.hash(self.write_senders.len());
         let sender = &self.write_senders[idx];
 

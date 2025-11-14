@@ -1,0 +1,13 @@
+controller_addr = "ws://controller:3000"
+private_network_interface = "eth0"
+# private_network_port = "8080"
+private_network_name = "python_api"
+# public_network_interface = "eth0"
+# public_network_port = "8080"
+node_id = 1
+n_nodes = 1
+num_tun_queues = 1
+num_packet_processors = 4
+channel_capacity = 4000
+queue_capacity = 3000
+# metrics_collection_interval = 5

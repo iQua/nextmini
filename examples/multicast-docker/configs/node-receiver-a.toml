@@ -1,0 +1,30 @@
+controller_addr = "ws://controller:3000"
+private_network_interface = "eth0"
+private_network_name = "multicast_demo"
+node_id = 2
+n_nodes = 1
+num_tun_queues = 1
+num_packet_processors = 4
+channel_capacity = 3000
+queue_capacity = 4000
+feature = "concurrent"
+
+[reliable]
+default_chunk_size = 4096
+control_weight = 8
+sack_interval_ms = 50
+nack_min_interval_ms = 100
+nack_jitter_ms = 20
+ack_policy = "all"
+fec_p = 0
+ready_grace_ms = 1500
+
+[reliable.tfmcc]
+enabled = true
+min_rate_bps = 500_000
+initial_rate_bps = 10_000_000
+max_rate_bps = 1_000_000_000
+feedback_interval_ms = 100
+rate_smooth_alpha = 0.25
+max_increase_per_rtt_pkts = 1.5
+clr_hysteresis_pct = 0.1

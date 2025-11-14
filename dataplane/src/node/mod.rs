@@ -4,10 +4,14 @@ pub mod connector;
 pub mod controller;
 pub mod flow;
 pub mod local;
+#[cfg(target_os = "linux")]
 pub mod namespace;
 pub mod network;
 pub mod packet;
 pub mod processor;
+pub mod python;
+#[cfg(feature = "reliable")]
+pub mod reliable;
 pub mod route;
 pub mod scheduler;
 

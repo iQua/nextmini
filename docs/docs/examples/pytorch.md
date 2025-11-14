@@ -51,6 +51,22 @@ sh train_lenet5.sh
 
 This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes for 10 epochs, each running in its own Docker container.
 
+## Optional: Stream training metrics through the Python dataplane API
+
+When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, enable the Python bindings described in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
+
+1. Build and install the `nextmini_py` wheel (`maturin build --release -m python-api/Cargo.toml; pip install target/wheels/nextmini_py-*.whl`).
+2. Export the environment variables consumed by `examples/pytorch/gpt2.py` (or your custom script):
+
+   ```bash
+   export NEXTMINI_CONFIG=/absolute/path/node-config.toml
+   export NEXTMINI_DST_NODE=2   # numeric node id that should receive telemetry
+   ```
+
+3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). When both variables are present the script loads `nextmini_py.Dataplane`, wraps each per-step loss tensor in a `FrozenBuffer`, and ships it via `send_to_node`.
+
+On the destination node you can mirror the setup with another Python worker and call `rx.recv(timeout_ms=2000)` to consume the metrics. The bindings reuse the same routing tables as the Rust dataplane, so multicast fan-out and QoS policies apply automatically. Consult the quickstart for queue sizing, fallbacks, and additional helpers.
+
 ## Running a Distributed PyTorch Trainer across Multiple Machines
 
 !!! warning

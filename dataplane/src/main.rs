@@ -14,6 +14,7 @@ use tracing::info;
 
 use node::conductor::Conductor;
 use node::config::LocalConfig;
+#[cfg(target_os = "linux")]
 use node::namespace::manager::NamespaceManager;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -23,22 +24,34 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // checks if we should run in virtual network namespaces on the same machine
     if config.n_nodes > 1 {
-        info!(
-            "Started deploying {} dataplane nodes in isolated network namespaces.",
-            config.n_nodes
-        );
-        deploy_multiple(config);
-    } else {
-        info!("Started deploying a single dataplane node.");
-        let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+        #[cfg(target_os = "linux")]
+        {
+            info!(
+                "Started deploying {} dataplane nodes in isolated network namespaces.",
+                config.n_nodes
+            );
+            deploy_multiple(config);
+            return Ok(());
+        }
 
-        rt.block_on(deploy(config));
+        #[cfg(not(target_os = "linux"))]
+        {
+            return Err(
+                "Running multiple dataplane nodes with network namespaces requires Linux.".into(),
+            );
+        }
     }
+
+    info!("Started deploying a single dataplane node.");
+    let rt = runtime::Runtime::new().expect("Failed to create the Tokio runtime.");
+
+    rt.block_on(deploy(config));
 
     Ok(())
 }
 
 // Deploys multiple dataplane nodes, each in its isolated network namespace.
+#[cfg(target_os = "linux")]
 fn deploy_multiple(config: LocalConfig) {
     let mut manager = NamespaceManager::new(config);
 

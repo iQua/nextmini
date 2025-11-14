@@ -1,0 +1,112 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: python-api-postgres
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      python_api:
+        ipv4_address: 172.31.0.2
+
+  controller:
+    build:
+      context: ../..
+      dockerfile: controller/Dockerfile
+    image: nextmini_controller
+    container_name: python-api-controller
+    hostname: controller
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../..:/workspace:cached
+      - ./configs/controller.toml:/var/nextmini/config.toml
+    working_dir: /var/nextmini
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+    networks:
+      python_api:
+        ipv4_address: 172.31.0.3
+    ports:
+      - "3000:3000"
+
+  receiver:
+    build:
+      context: ../..
+      dockerfile: docs/testing/scripts/Dockerfile.harness
+    image: nextmini_python_harness
+    container_name: python-api-receiver
+    hostname: receiver
+    depends_on:
+      - controller
+    volumes:
+      - ../..:/workspace:cached
+      - ./artifacts:/workspace/tmp
+    working_dir: /workspace
+    environment:
+      WAIT_FOR: controller:3000
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+    networks:
+      python_api:
+        ipv4_address: 172.31.0.4
+    command:
+      - bash
+      - -lc
+      - >
+        docs/testing/scripts/run_harness.sh receiver docs/testing/configs/node_receiver.toml
+        --src-node-id ${RECEIVER_SRC_ID:-1}
+        --expected ${RECEIVER_EXPECTED:-20}
+        --timeout-ms ${RECEIVER_TIMEOUT_MS:-5000}
+        --summary-json ${RECEIVER_SUMMARY:-/workspace/tmp/receiver-summary.json}
+        --output-dir ${RECEIVER_OUTPUT_DIR:-/workspace/tmp/receiver_payloads}
+
+  sender:
+    build:
+      context: ../..
+      dockerfile: docs/testing/scripts/Dockerfile.harness
+    image: nextmini_python_harness
+    container_name: python-api-sender
+    hostname: sender
+    depends_on:
+      - controller
+    volumes:
+      - ../..:/workspace:cached
+      - ./artifacts:/workspace/tmp
+    working_dir: /workspace
+    environment:
+      WAIT_FOR: controller:3000
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+    networks:
+      python_api:
+        ipv4_address: 172.31.0.5
+    command:
+      - bash
+      - -lc
+      - >
+        docs/testing/scripts/run_harness.sh sender docs/testing/configs/node_sender.toml
+        --src-node-id ${SENDER_SRC_ID:-1}
+        --dst-node-id ${SENDER_DST_ID:-2}
+        --count ${SENDER_COUNT:-20}
+        --batch ${SENDER_BATCH:-1}
+        --size ${SENDER_SIZE:-4096}
+        --sleep-ms ${SENDER_SLEEP_MS:-50}
+
+networks:
+  python_api:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

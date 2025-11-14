@@ -56,9 +56,12 @@ nav:
       - Introduction: design/introduction.md
       - Architecture: design/architecture.md
       - Configuration Settings: design/configuration.md
+      - Multicast Groups: design/multicast-groups.md
+      - Python Dataplane API: design/python-api.md
   - Examples:
       - Simple: examples/simple.md
       - PyTorch: examples/pytorch.md
+      - PyTorch Python API: examples/pytorch_python_api.md
       - Waterfilling: examples/waterfilling.md
       - Routes: examples/routes.md
       - Namespace: examples/namespace.md
@@ -66,3 +69,6 @@ nav:
       - PyTorch on SBA: examples/pytorch-sba.md
       - Ring All-Reduce on SBA: examples/ring_allreduce-sba.md
       - Local Server + Fly.io: examples/localserver-flyio.md
+  - Testing:
+      - Cargo Test Guide: testing/cargo-test.md
+      - Multicast Flow: examples/multicast-flow.md

@@ -70,7 +70,13 @@ pub async fn new_node_connected(
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 send_flows(node_ws.clone(), db_pool.clone()).await;
 
-                let duration_secs = start_time.unwrap().elapsed().as_secs_f32();
+                // signal dataplane nodes that topology state is fully synced
+                send_topology_ready(node_ws.clone()).await;
+
+                let duration_secs = match start_time {
+                    Some(t0) => t0.elapsed().as_secs_f32(),
+                    None => 0.0,
+                };
                 info!(
                     "All dataplane nodes have connected. It takes {:.2} seconds since the first node arrived.",
                     duration_secs
@@ -119,7 +125,13 @@ async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
             match writer
                 .lock()
                 .await
-                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .send(Message::binary(match rmp_serde::to_vec(&msg) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to encode controller message: {}", e);
+                        continue;
+                    }
+                }))
                 .await
             {
                 Ok(_) => {
@@ -160,7 +172,13 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
             match writer
                 .lock()
                 .await
-                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .send(Message::binary(match rmp_serde::to_vec(&msg) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to encode controller message: {}", e);
+                        continue;
+                    }
+                }))
                 .await
             {
                 Ok(_) => {}
@@ -217,7 +235,10 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
             };
 
             // replace the port with the Tcp max server port
-            let remote_ip = remote_addr.split(':').next().unwrap();
+            let Some(remote_ip) = remote_addr.split(':').next() else {
+                tracing::warn!("new_node: could not parse remote ip from {}", remote_addr);
+                continue;
+            };
             let remote_addr = format!("{}:{}", remote_ip, config.max_server_port);
 
             let msg = ControllerToDataplane::AddNodeAddress {
@@ -228,7 +249,13 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
             match writer
                 .lock()
                 .await
-                .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
+                .send(Message::binary(match rmp_serde::to_vec(&msg) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!("Failed to encode controller message: {}", e);
+                        continue;
+                    }
+                }))
                 .await
             {
                 Ok(_) => {}
@@ -237,6 +264,37 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
                     node.id, e
                 ),
             }
+        }
+    }
+}
+
+async fn send_topology_ready(node_ws: NodeWriterMap) {
+    let node_ws_guard = node_ws.read().await;
+    info!(
+        "Broadcasting topology-ready signal to {} dataplane nodes.",
+        node_ws_guard.len()
+    );
+    for (node_id, writer) in node_ws_guard.iter() {
+        let msg = ControllerToDataplane::TopologyReady;
+        if let Err(err) = writer
+            .lock()
+            .await
+            .send(Message::binary(match rmp_serde::to_vec(&msg) {
+                Ok(encoded) => encoded,
+                Err(e) => {
+                    error!(
+                        "Failed to encode topology-ready message for node {}: {}.",
+                        node_id, e
+                    );
+                    continue;
+                }
+            }))
+            .await
+        {
+            error!(
+                "Failed to send the topology-ready message to node {}: {}.",
+                node_id, err
+            );
         }
     }
 }

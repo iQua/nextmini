@@ -11,7 +11,8 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, OperatingMode, Protocol, SchedulingDiscipline,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, OperatingMode, Protocol,
+    SchedulingDiscipline, TokenBucketSpec,
 };
 
 use crate::node::scheduler::drop::DropStrategy;
@@ -43,10 +44,12 @@ mod tests {
 
     #[test]
     fn unordered_mode_disables_tolerances() {
-        let mut cfg = LocalConfig::default();
-        cfg.enforce_tcp_order = false;
-        cfg.delay_tolerance = 123;
-        cfg.backlog_tolerance = 99;
+        let cfg = LocalConfig {
+            enforce_tcp_order: false,
+            delay_tolerance: 123,
+            backlog_tolerance: 99,
+            ..Default::default()
+        };
 
         let (enforce, gap, backlog) = cfg.reorder_tolerances();
         assert!(!enforce);
@@ -56,9 +59,11 @@ mod tests {
 
     #[test]
     fn zero_tolerances_disable_components() {
-        let mut cfg = LocalConfig::default();
-        cfg.delay_tolerance = 0;
-        cfg.backlog_tolerance = 0;
+        let cfg = LocalConfig {
+            delay_tolerance: 0,
+            backlog_tolerance: 0,
+            ..Default::default()
+        };
 
         let (_, gap, backlog) = cfg.reorder_tolerances();
         assert_eq!(gap, None);
@@ -166,6 +171,11 @@ pub struct LocalConfig {
     #[default(false)]
     #[arg(long)]
     pub auto_add_nat: bool,
+
+    /// Enables the kernel-backed local interface (TUN). Disable when embedding the dataplane in-process.
+    #[default(true)]
+    #[arg(long)]
+    pub enable_local_interface: bool,
 
     /// This is not used in metrics collector.
     /// The interval at which metrics are collected and sent to the controller.
@@ -369,6 +379,138 @@ pub struct LocalConfig {
     #[default(25000)]
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
+
+    /// Reliable multicast default configuration (used when the reliable subsystem is enabled).
+    #[default(Default::default())]
+    #[arg(skip)]
+    pub reliable: ReliableConfig,
+}
+
+/// Reliable multicast configuration knobs (consumed when the reliable subsystem is enabled).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReliableConfig {
+    /// Default data chunk size in bytes.
+    pub default_chunk_size: usize,
+
+    /// Control flow weight for WRR schedulers.
+    pub control_weight: usize,
+
+    /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
+    pub data_bucket: Option<TokenBucketSpec>,
+
+    /// Sender SACK emission interval in milliseconds.
+    pub sack_interval_ms: u64,
+
+    /// Receiver minimum interval between NACKs for the same chunk.
+    pub nack_min_interval_ms: u64,
+
+    /// Receiver jitter window in milliseconds added to NACK scheduling.
+    pub nack_jitter_ms: u64,
+
+    /// Ack policy: "all" | "k:N" | "frac:P".
+    pub ack_policy: String,
+
+    /// Optional FEC parameters: when `fec_k` is Some, compute `fec_p` parity chunks per block.
+    pub fec_k: Option<u16>,
+
+    /// Parity count per block (0 to disable).
+    pub fec_p: u8,
+
+    /// Grace period (ms) to wait for receiver READY before opening the data gate.
+    #[serde(default = "default_ready_grace_ms")]
+    pub ready_grace_ms: u64,
+
+    /// Optional default TFMCC configuration (disabled when `None` or `enabled == false`).
+    #[serde(default)]
+    pub tfmcc: Option<TfmccRuntimeConfig>,
+}
+
+impl Default for ReliableConfig {
+    fn default() -> Self {
+        Self {
+            default_chunk_size: 32 * 1024,
+            control_weight: 8,
+            data_bucket: None,
+            sack_interval_ms: 50,
+            nack_min_interval_ms: 100,
+            nack_jitter_ms: 20,
+            ack_policy: "all".to_string(),
+            fec_k: None,
+            fec_p: 0,
+            ready_grace_ms: 1500,
+            tfmcc: None,
+        }
+    }
+}
+
+const fn default_ready_grace_ms() -> u64 {
+    1500
+}
+
+/// Runtime configuration for enabling TFMCC in the reliable multicast stack.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Deserialize)]
+pub struct TfmccRuntimeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tfmcc_min_rate_bps")]
+    pub min_rate_bps: f64,
+    #[serde(default = "default_tfmcc_max_rate_bps")]
+    pub max_rate_bps: f64,
+    #[serde(default = "default_tfmcc_initial_rate_bps")]
+    pub initial_rate_bps: f64,
+    #[serde(default = "default_tfmcc_feedback_interval_ms")]
+    pub feedback_interval_ms: u64,
+    #[serde(default = "default_tfmcc_rate_smooth_alpha")]
+    pub rate_smooth_alpha: f64,
+    #[serde(default = "default_tfmcc_max_increase_packets")]
+    pub max_increase_per_rtt_pkts: f64,
+    #[serde(default = "default_tfmcc_clr_hysteresis_pct")]
+    pub clr_hysteresis_pct: f64,
+}
+
+impl Default for TfmccRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_rate_bps: default_tfmcc_min_rate_bps(),
+            max_rate_bps: default_tfmcc_max_rate_bps(),
+            initial_rate_bps: default_tfmcc_initial_rate_bps(),
+            feedback_interval_ms: default_tfmcc_feedback_interval_ms(),
+            rate_smooth_alpha: default_tfmcc_rate_smooth_alpha(),
+            max_increase_per_rtt_pkts: default_tfmcc_max_increase_packets(),
+            clr_hysteresis_pct: default_tfmcc_clr_hysteresis_pct(),
+        }
+    }
+}
+
+fn default_tfmcc_min_rate_bps() -> f64 {
+    128_000.0
+}
+
+fn default_tfmcc_max_rate_bps() -> f64 {
+    10_000_000.0
+}
+
+fn default_tfmcc_initial_rate_bps() -> f64 {
+    256_000.0
+}
+
+const fn default_tfmcc_feedback_interval_ms() -> u64 {
+    100
+}
+
+fn default_tfmcc_rate_smooth_alpha() -> f64 {
+    0.25
+}
+
+fn default_tfmcc_max_increase_packets() -> f64 {
+    1.5
+}
+
+fn default_tfmcc_clr_hysteresis_pct() -> f64 {
+    0.1
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -402,6 +544,13 @@ fn default_netmask() -> Ipv4Addr {
 }
 
 impl LocalConfig {
+    /// Creates a `LocalConfig` from a TOML string while applying ClapSerde defaults.
+    #[allow(dead_code)] // Parsed from the python bindings crate.
+    pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
+        let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
+        Ok(LocalConfig::from(&mut opt))
+    }
+
     /// Converts IP address to node ID, supporting both TUN and user space networks.
     pub fn ip_to_node_id(&self, ip: Ipv4Addr) -> NodeId {
         let ip_addr = u32::from(ip);
@@ -418,19 +567,22 @@ impl LocalConfig {
             }
             // binds the external client/server address to the node ID
             subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
-            _ => {
-                panic!("Detected unknown IP {}.", ip);
-            }
+            _ => INVALID,
         }
     }
 
-    /// Extracts source and destination node IDs from the flow ID.
-    pub fn extract_node_ids_from_flow(&self, flow_id: FlowId) -> (NodeId, NodeId) {
+    /// Attempts to extract node IDs, returning `None` when either IP is outside the configured subnets.
+    pub fn try_extract_node_ids_from_flow(&self, flow_id: FlowId) -> Option<(NodeId, NodeId)> {
         let src_ip = flow_id.src_ip();
         let dst_ip = flow_id.dst_ip();
         let src_node_id = self.ip_to_node_id(src_ip);
         let dst_node_id = self.ip_to_node_id(dst_ip);
-        (src_node_id, dst_node_id)
+
+        if src_node_id == INVALID || dst_node_id == INVALID {
+            None
+        } else {
+            Some((src_node_id, dst_node_id))
+        }
     }
 
     /// Returns the effective settings for TCP reordering tolerance.
@@ -487,13 +639,20 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
+        cfgs.populate_runtime_defaults();
+
+        cfgs
+    }
+
+    /// Populates runtime-derived defaults such as interface addresses when they are missing.
+    pub fn populate_runtime_defaults(&mut self) {
         // sets the private ipv4 address of the network interface for the private network
         // Defined by RFC 1918, private IP addresses fall within the following ranges:
         // 10.0.0.0 - 10.255.255.255 (10.0.0.0/8)
         // 172.16.0.0 - 172.31.255.255 (172.16.0.0/12)
         // 192.168.0.0 - 192.168.255.255 (192.168.0.0/16)
-        if cfgs.private_network_addr.is_empty() {
-            let itf_name = cfgs.private_network_interface.clone();
+        if self.private_network_addr.is_empty() {
+            let itf_name = self.private_network_interface.clone();
 
             // retrieves a list of all private network interfaces available on the system
             let network_interfaces = NetworkInterface::show().expect(
@@ -517,38 +676,38 @@ impl LocalConfig {
             }
 
             // obtains the ipv4 address of the dataplane node
-            cfgs.private_network_addr = ipv4addr;
+            self.private_network_addr = ipv4addr;
 
             // computes the node_id from private_network_addr using external_base_addr
-            if let Ok(real_ip) = cfgs.private_network_addr.parse::<Ipv4Addr>() {
+            if let Ok(real_ip) = self.private_network_addr.parse::<Ipv4Addr>() {
                 let ip = u32::from(real_ip);
                 // external_base_addr is used to compute the node_id
                 // as it has the same prefix with the private_network_addr
-                let base = u32::from(cfgs.external_base_addr);
+                let base = u32::from(self.external_base_addr);
                 let computed_node_id = (ip - base) as NodeId;
-                if computed_node_id != 0 && cfgs.node_id == 0 {
-                    cfgs.node_id = computed_node_id;
+                if computed_node_id != 0 && self.node_id == 0 {
+                    self.node_id = computed_node_id;
                     info!(
                         "From real IP {} using external_base_addr, node_id is: {}.",
-                        cfgs.private_network_addr, cfgs.node_id
+                        self.private_network_addr, self.node_id
                     );
-                } else if cfgs.node_id != 0 {
+                } else if self.node_id != 0 {
                     info!(
                         "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
-                        cfgs.node_id, computed_node_id, cfgs.private_network_addr
+                        self.node_id, computed_node_id, self.private_network_addr
                     );
                 }
-            } else if !cfgs.private_network_addr.is_empty() {
+            } else if !self.private_network_addr.is_empty() {
                 error!(
                     "Failed to parse private_network_addr as Ipv4Addr: {}.",
-                    cfgs.private_network_addr
+                    self.private_network_addr
                 );
             }
         }
 
         // sets the ipv4 address of the network interface for the public network
-        if cfgs.public_network_addr.is_empty() {
-            let itf_name = cfgs.public_network_interface.clone();
+        if self.public_network_addr.is_empty() {
+            let itf_name = self.public_network_interface.clone();
 
             // retrieves a list of all public network interfaces available on the system
             let network_interfaces = NetworkInterface::show().expect(
@@ -571,15 +730,13 @@ impl LocalConfig {
                 }
             }
 
-            cfgs.public_network_addr = ipv4addr;
+            self.public_network_addr = ipv4addr;
         }
 
         // sets the number of packet processors to the number of threads if it is 0
-        if cfgs.num_packet_processors == 0 {
-            cfgs.num_packet_processors = num_cpus::get();
+        if self.num_packet_processors == 0 {
+            self.num_packet_processors = num_cpus::get();
         }
-
-        cfgs
     }
 
     /// Initializes the config for the namespace nodes.

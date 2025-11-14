@@ -1,12 +1,37 @@
 /// Defines message enums for controller-dataplane communication.
-use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::net::Ipv4Addr;
 
+use clap::ValueEnum;
+use serde::de::{self, Deserializer, Visitor};
+use serde::{Deserialize, Serialize};
+
 mod ip_ser;
+pub mod rlm;
 
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
+
+/// Identifier for a multicast group allocated by the controller.
+pub type GroupId = usize;
+
+/// Directory entry mapping a multicast group id to its allocated IP.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GroupDirectoryEntry {
+    pub group_id: GroupId,
+    #[serde(with = "ip_ser")]
+    pub group_ip: Ipv4Addr,
+}
+
+/// Routing table entry describing multicast fan-out from a node.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GroupRoutingTableEntry {
+    /// Route identifier equals the multicast group id for now.
+    pub route_id: usize,
+    pub next_hops: Vec<usize>,
+    pub src_node_id: usize,
+    pub group_id: GroupId,
+}
 
 /// Types of messages used to communicate from the dataplane to the controller.
 #[derive(Serialize, Deserialize, Debug)]
@@ -32,6 +57,19 @@ pub enum DataplaneToController {
     },
     RouteAssigned {
         assignments: Vec<RouteAssignment>,
+    },
+    CreateGroup {
+        label: String,
+    },
+    JoinGroup {
+        group_id: GroupId,
+    },
+    LeaveGroup {
+        group_id: GroupId,
+    },
+    /// Periodic reliable-multicast session stats from dataplane (feature-gated at source).
+    ReliableStats {
+        stats: ReliableStats,
     },
 }
 
@@ -67,6 +105,22 @@ pub struct RouteAssignment {
     pub flow_id: [u8; 16],
     pub route_id: usize,
     pub time: i64,
+}
+
+/// Reliable-multicast session metrics (optional)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ReliableStats {
+    pub session_id: u64,
+    pub node_id: usize,
+    /// "sender" | "receiver"
+    pub role: String,
+    pub bytes: u64,
+    pub chunks: u64,
+    pub resends: u64,
+    pub repairs: u64,
+    pub sacks: u64,
+    pub fec_used: u64,
+    pub ts_ms: i64,
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.
@@ -105,6 +159,73 @@ pub enum OperatingMode {
     #[default]
     Normal,
     Max,
+}
+
+/// How a dataplane route forwards traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum RouteForwardingMode {
+    #[default]
+    Unicast,
+    Multicast,
+}
+
+impl RouteForwardingMode {
+    pub fn is_multicast(self) -> bool {
+        matches!(self, RouteForwardingMode::Multicast)
+    }
+}
+
+fn default_route_forwarding_mode() -> RouteForwardingMode {
+    RouteForwardingMode::Unicast
+}
+
+fn deserialize_forward_mode<'de, D>(deserializer: D) -> Result<RouteForwardingMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct RouteForwardingModeVisitor;
+
+    impl<'de> Visitor<'de> for RouteForwardingModeVisitor {
+        type Value = RouteForwardingMode;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter
+                .write_str("a route forwarding mode (\"unicast\", \"multicast\", or a boolean)")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            match value.to_ascii_lowercase().as_str() {
+                "unicast" => Ok(RouteForwardingMode::Unicast),
+                "multicast" => Ok(RouteForwardingMode::Multicast),
+                other => Err(E::unknown_variant(other, &["unicast", "multicast"])),
+            }
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+
+        fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(if v {
+                RouteForwardingMode::Multicast
+            } else {
+                RouteForwardingMode::Unicast
+            })
+        }
+    }
+
+    deserializer.deserialize_any(RouteForwardingModeVisitor)
 }
 
 /// The node specification for a dataplane node.
@@ -195,6 +316,22 @@ pub enum ControllerToDataplane {
     AddFlows {
         flows: Vec<Flow>,
     },
+    /// Signals that the controller has seen every expected dataplane node.
+    TopologyReady,
+    GroupCreated {
+        group_id: GroupId,
+        #[serde(with = "ip_ser")]
+        group_ip: Ipv4Addr,
+        src_node_id: usize,
+    },
+    InstallGroupDirectory {
+        groups: Vec<GroupDirectoryEntry>,
+    },
+    InstallGroupRoutes {
+        group_id: GroupId,
+        src_node_id: usize,
+        routes: Vec<GroupRoutingTableEntry>,
+    },
 }
 
 /// Routing table entry: route_id → next_hop, with source and destination node IDs.
@@ -204,4 +341,9 @@ pub struct RoutingTableEntry {
     pub next_hops: Vec<usize>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
+    #[serde(
+        default = "default_route_forwarding_mode",
+        deserialize_with = "deserialize_forward_mode"
+    )]
+    pub forward_mode: RouteForwardingMode,
 }

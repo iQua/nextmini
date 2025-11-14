@@ -13,7 +13,16 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::{OperatingMode, RoutingTableEntry, TokenBucketSpec};
+#[cfg(feature = "reliable")]
+use crate::node::reliable::trace::{manifest_from_bytes, manifest_from_packet};
+#[cfg(feature = "reliable")]
+use nextmini_messages::INVALID;
+#[cfg(feature = "reliable")]
+use nextmini_messages::rlm;
+use nextmini_messages::{
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
+    TokenBucketSpec,
+};
 
 use crate::node::config::{Feature, LocalConfig};
 use crate::node::connector::Connector;
@@ -24,6 +33,9 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
+use crate::node::python::interface::PythonInterfaceHandle;
+#[cfg(feature = "reliable")]
+use crate::node::reliable::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, FlowIdExt, NodeId};
@@ -36,6 +48,12 @@ pub enum ProcessorPacket {
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
+    UpdateGroupDirectory(Vec<GroupDirectoryEntry>),
+    UpdateGroupRoutes {
+        group_id: GroupId,
+        src_node_id: NodeId,
+        routes: Vec<GroupRoutingTableEntry>,
+    },
     AddNode(NodeId, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectServerHandle(Box<UserSpaceServerHandle>),
@@ -47,6 +65,10 @@ pub enum ProcessorMessage {
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
+    #[allow(dead_code)] // Only emitted when the python bridge is active.
+    ConnectPythonInterface(PythonInterfaceHandle),
+    #[cfg(feature = "reliable")]
+    ConnectReliableHandle(ReliableHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +137,33 @@ impl ProcessorHandle {
         };
     }
 
+    /// Connects the in-process Python interface so local packets can be delivered directly.
+    #[allow(dead_code)] // Only invoked from the python bindings crate.
+    pub fn connect_python_interface(&self, interface: PythonInterfaceHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectPythonInterface(interface))
+        {
+            error!(
+                "Error sending the ConnectPythonInterface message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    #[cfg(feature = "reliable")]
+    pub fn connect_reliable_handle(&self, handle: ReliableHandle) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::ConnectReliableHandle(handle))
+        {
+            error!(
+                "Error sending the ConnectReliableHandle message to the processors: {}",
+                e
+            );
+        };
+    }
+
     /// Disconnects the user-space packet sender from the processor's hashmap of senders.
     /// This is needed when a user-space TCP flow finishes.
     pub fn disconnect_user_space_sender(&self, flow_id: FlowId) {
@@ -149,6 +198,39 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the UpdateRoutingTable message to the connector: {}",
+                e
+            );
+        }
+    }
+
+    pub async fn update_group_directory(&self, groups: Vec<GroupDirectoryEntry>) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::UpdateGroupDirectory(groups))
+        {
+            error!(
+                "Error sending the UpdateGroupDirectory message to the processors: {}",
+                e
+            );
+        }
+    }
+
+    pub async fn update_group_routes(
+        &self,
+        group_id: GroupId,
+        src_node_id: NodeId,
+        routes: Vec<GroupRoutingTableEntry>,
+    ) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::UpdateGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            })
+        {
+            error!(
+                "Error sending the UpdateGroupRoutes message to the processors: {}",
                 e
             );
         }
@@ -429,7 +511,7 @@ impl ConcurrentProcHandle {
                 .try_send(ProcessorPacket::ProcessPacket(packet))
             {
                 warn!(
-                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                    "ConcurrentProcHandle: Error sending a packet to the processor: {}.",
                     e
                 );
             }
@@ -442,7 +524,7 @@ impl ConcurrentProcHandle {
                         .try_send(ProcessorPacket::ProcessPacket(packet))
                     {
                         warn!(
-                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
+                            "ConcurrentProcHandle: Error sending a packet to the processor: {}.",
                             e
                         );
                     }
@@ -453,7 +535,7 @@ impl ConcurrentProcHandle {
                         .try_send(ProcessorPacket::ProcessPacket(packet))
                     {
                         warn!(
-                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
+                            "ConcurrentProcHandle: Error sending a packet to the connector: {}.",
                             e
                         );
                     }
@@ -534,6 +616,11 @@ struct Processor {
 
     // a unified hashmap for schedulers in normal mode
     schedulers: AHashMap<NodeId, SchedulerHandle>,
+
+    // optional in-process Python delivery path
+    python_interface: Option<PythonInterfaceHandle>,
+    #[cfg(feature = "reliable")]
+    reliable_handle: Option<ReliableHandle>,
 }
 
 impl Processor {
@@ -552,6 +639,9 @@ impl Processor {
             flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
+            python_interface: None,
+            #[cfg(feature = "reliable")]
+            reliable_handle: None,
         }
     }
 
@@ -584,6 +674,17 @@ impl Processor {
             ProcessorMessage::UpdateRoutingTable(routes) => {
                 self.routing_table.install_routes(routes);
             }
+            ProcessorMessage::UpdateGroupDirectory(groups) => {
+                self.routing_table.install_group_directory(groups);
+            }
+            ProcessorMessage::UpdateGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            } => {
+                self.routing_table
+                    .install_group_routes(group_id, src_node_id, routes);
+            }
             ProcessorMessage::AddNode(node_id, scheduler) => {
                 self.schedulers.insert(node_id, scheduler);
             }
@@ -613,19 +714,50 @@ impl Processor {
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
             }
+            ProcessorMessage::ConnectPythonInterface(interface) => {
+                self.python_interface = Some(interface);
+            }
+            #[cfg(feature = "reliable")]
+            ProcessorMessage::ConnectReliableHandle(handle) => {
+                self.reliable_handle = Some(handle);
+            }
         }
     }
 
-    /// Processes inbound packets for outbound delivery
+    /// Processes inbound packets for outbound delivery.
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
+        let reporter = self.flowstats_reporter.as_ref();
         match self
             .routing_table
-            .get_next_hop_by_flow(packet_flow_id, self.flowstats_reporter.as_ref())
+            .get_next_hops_by_flow(packet_flow_id, reporter)
         {
-            Ok(next_hop_id) => self.send_packet(packet, next_hop_id).await,
-            Err(e) => error!("Error getting the next hop: {}", e),
+            Ok(next_hops) => {
+                if next_hops.is_empty() {
+                    error!("No next hops available for flow {}.", packet_flow_id);
+                    return;
+                }
+
+                let last = next_hops.len() - 1;
+                let mut primary_packet = Some(packet);
+
+                for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
+                    let pkt = if idx == last {
+                        primary_packet
+                            .take()
+                            .expect("packet already dispatched to last hop")
+                    } else {
+                        primary_packet
+                            .as_ref()
+                            .expect("packet missing during multicast fan-out")
+                            .clone()
+                    };
+
+                    self.send_packet(pkt, next_hop_id).await;
+                }
+            }
+            Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
         }
     }
 
@@ -653,8 +785,18 @@ impl Processor {
     /// Sends a packet to its destined next hop, including local delivery to the TUN interface,
     /// a user-space TCP client, or a user-space TCP server.
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
+        #[allow(unused_mut)]
+        let mut packet = packet;
+        #[cfg(feature = "reliable")]
+        let manifest_meta = manifest_from_packet(&packet);
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
+            #[cfg(feature = "reliable")]
+            {
+                if self.try_deliver_reliable(&packet) {
+                    return;
+                }
+            }
             // local delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
             if packet.flow_id.dst_ip() == self.config.local_address {
@@ -664,6 +806,15 @@ impl Processor {
                     error!("The local interface has not yet been connected.");
                 }
             } else {
+                if let Some(ref py_if) = self.python_interface {
+                    match py_if.deliver(packet).await {
+                        Ok(()) => return,
+                        Err(returned_packet) => {
+                            packet = returned_packet;
+                        }
+                    }
+                }
+
                 let flow_id = packet.flow_id;
 
                 let dest = self.user_space_sender(flow_id);
@@ -676,7 +827,65 @@ impl Processor {
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
+            #[cfg(feature = "reliable")]
+            if let Some(meta) = manifest_meta {
+                tracing::debug!(
+                    session_id = meta.session_id,
+                    flow = %packet.flow_id,
+                    src_node = self.routing_table.local_id,
+                    next_hop = next_hop_id,
+                    "RLM MANIFEST queued for scheduler hop"
+                );
+            }
             scheduler.send(packet);
         }
+    }
+
+    #[cfg(feature = "reliable")]
+    fn try_deliver_reliable(&mut self, packet: &Packet) -> bool {
+        let Some(handle) = self.reliable_handle.clone() else {
+            return false;
+        };
+        let Some(payload) = packet.tcp_payload() else {
+            return false;
+        };
+        let manifest_meta = manifest_from_bytes(payload);
+
+        let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
+            hdr.session_id
+        } else if let Some((hdr, _)) = rlm::decode_control(payload) {
+            hdr.session_id
+        } else {
+            return false;
+        };
+
+        let src_node = self.config.ip_to_node_id(packet.flow_id.src_ip());
+        let peer_id = if src_node == INVALID {
+            None
+        } else {
+            Some(src_node)
+        };
+
+        let payload_vec = payload.to_vec();
+
+        handle.deliver(
+            session_id,
+            ReliableInboundFrame {
+                bytes: payload_vec,
+                peer_id,
+                group_ip: Some(packet.flow_id.dst_ip()),
+                source_node_id: peer_id,
+            },
+        );
+        if let Some(meta) = manifest_meta {
+            tracing::debug!(
+                session_id = meta.session_id,
+                local_node = self.routing_table.local_id,
+                source = ?peer_id,
+                dst_ip = %packet.flow_id.dst_ip(),
+                "RLM MANIFEST delivered to reliable stack on this node"
+            );
+        }
+        true
     }
 }

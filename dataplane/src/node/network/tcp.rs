@@ -8,12 +8,15 @@ use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{error, info, warn};
 
+use crate::node::FlowIdExt;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "reliable")]
+use crate::node::reliable::trace::manifest_from_packet;
 use crate::node::scheduler::sched::SchedulerHandle;
 
 pub struct TcpServer {
@@ -175,6 +178,15 @@ impl TcpReader {
         loop {
             // reads a packet from the TCP connection
             if let Ok(packet) = self.read_packet().await {
+                #[cfg(feature = "reliable")]
+                if let Some(meta) = manifest_from_packet(&packet) {
+                    tracing::debug!(
+                        session_id = meta.session_id,
+                        flow = %packet.flow_id,
+                        dst_ip = %packet.flow_id.dst_ip(),
+                        "RLM MANIFEST received on TCP reader"
+                    );
+                }
                 // forwards the packet to the processor
                 self.processors.process_packet(packet);
             }
