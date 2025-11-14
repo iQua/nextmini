@@ -38,7 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-size", type=int, default=4096)
     parser.add_argument("--receive-timeout-ms", type=int, default=5000)
     parser.add_argument("--group-timeout", type=int, default=90)
-    parser.add_argument("--member-timeout", type=int, default=60)
     parser.add_argument(
         "--payload-count",
         type=int,
