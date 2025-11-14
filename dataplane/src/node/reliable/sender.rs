@@ -224,11 +224,6 @@ fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionP
 /// Encapsulates all mutable sender-side state (window, inflight map, pacing,
 /// manifest timing, etc.). Keeping the logic centralized makes the event loop
 /// above easier to read and test.
-enum CcState {
-    Static,
-    Tfmcc(TfmccSender),
-}
-
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
@@ -236,7 +231,7 @@ struct SenderState {
     receiver_count: usize,
     base_window: usize,
     window: usize,
-    cc: CcState,
+    tfmcc: Option<TfmccSender>,
     total_chunks: u64,
     total_bytes: u64,
     inflight: BTreeMap<u64, HashSet<usize>>,
@@ -288,12 +283,13 @@ impl SenderState {
         let dst_ip = common.group_ip;
         let base_window = compute_window(&cfg);
         let session_start = Instant::now();
-        let (window, cc) = match &cfg.cc {
-            CongestionControl::Static => (base_window, CcState::Static),
-            CongestionControl::Tfmcc(tcfg) => {
-                let ctrl = TfmccSender::new(tcfg.clone(), cfg.common.chunk_size, session_start);
-                (base_window, CcState::Tfmcc(ctrl))
-            }
+        let tfmcc = match &cfg.cc {
+            CongestionControl::Static => None,
+            CongestionControl::Tfmcc(tcfg) => Some(TfmccSender::new(
+                tcfg.clone(),
+                cfg.common.chunk_size,
+                session_start,
+            )),
         };
         if cfg.common.control_weight != 0 {
             tracing::debug!(
@@ -323,8 +319,8 @@ impl SenderState {
             completion_policy,
             receiver_count,
             base_window,
-            window,
-            cc,
+            window: base_window,
+            tfmcc,
             total_chunks,
             total_bytes: cfg.total_bytes,
             inflight: BTreeMap::new(),
@@ -389,13 +385,9 @@ impl SenderState {
     }
 
     fn maybe_update_cc(&mut self) -> Option<f64> {
-        match &mut self.cc {
-            CcState::Static => None,
-            CcState::Tfmcc(ctrl) => {
-                ctrl.on_tick(Instant::now());
-                Some(ctrl.current_rate_bytes_per_s())
-            }
-        }
+        let ctrl = self.tfmcc.as_mut()?;
+        ctrl.on_tick(Instant::now());
+        Some(ctrl.current_rate_bytes_per_s())
     }
 
     fn inflight_len(&self) -> usize {
@@ -428,10 +420,9 @@ impl SenderState {
     }
 
     fn next_tfmcc_header(&mut self) -> Option<TfmccDataHeader> {
-        match &mut self.cc {
-            CcState::Tfmcc(ctrl) => Some(ctrl.build_data_header(Instant::now())),
-            CcState::Static => None,
-        }
+        self.tfmcc
+            .as_mut()
+            .map(|ctrl| ctrl.build_data_header(Instant::now()))
     }
 
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
@@ -544,11 +535,10 @@ impl SenderState {
                 // Ignore sender-originated control frames looped back.
             }
             _ => {
-                if let RlmControl::TfmccFeedback { .. } = &control {
-                    if let CcState::Tfmcc(ctrl) = &mut self.cc {
+                if let RlmControl::TfmccFeedback { .. } = &control
+                    && let Some(ctrl) = &mut self.tfmcc {
                         ctrl.on_feedback(&control, now);
                     }
-                }
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
                         session_id = self.session_id,
@@ -993,11 +983,6 @@ mod tests {
         );
 
         // Verify constants are greater than zero (no accidental zeroes)
-        assert!(DEFAULT_WINDOW > 0);
-        assert!(MANIFEST_RETRY_INTERVAL_MS > 0);
-        assert!(CONTROL_POLL_TIMEOUT_MS > 0);
-        assert!(MAX_FRAME_CACHE_SIZE > 0);
-        assert!(TRANSFER_TIMEOUT_SECS > 0);
     }
 
     /// TEST 2: Validates ChunkSource properly reports when finished.

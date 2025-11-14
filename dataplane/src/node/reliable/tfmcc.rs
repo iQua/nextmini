@@ -98,13 +98,12 @@ impl TfmccReceiver {
     pub fn on_data_header(&mut self, header: &TfmccDataHeader, now: Instant) {
         self.last_header = Some(*header);
         self.last_ts_i_ms = header.ts_i_ms;
-        if let Some((stamp, sent)) = self.pending_rtt {
-            if header.receiver_id == self.receiver_id && stamp == header.tr_r_echo_ms {
+        if let Some((stamp, sent)) = self.pending_rtt
+            && header.receiver_id == self.receiver_id && stamp == header.tr_r_echo_ms {
                 let sample = now.saturating_duration_since(sent).as_secs_f64();
                 self.update_rtt(sample);
                 self.pending_rtt = None;
             }
-        }
     }
 
     pub fn on_chunk(&mut self, seqno: u64) {
@@ -312,15 +311,13 @@ impl TfmccSender {
             self.fb_nr = self.fb_nr.wrapping_add(1);
             self.last_round_start = now;
         }
-        if let Some(clr) = self.clr_id {
-            if let Some(info) = self.receivers.get(&clr) {
-                if now.duration_since(info.last_feedback_at) >= self.feedback_interval * 3 {
+        if let Some(clr) = self.clr_id
+            && let Some(info) = self.receivers.get(&clr)
+                && now.duration_since(info.last_feedback_at) >= self.feedback_interval * 3 {
                     self.current_rate_bps =
                         (self.current_rate_bps * 0.5).max(self.cfg.min_rate_bps);
                     self.clr_id = None;
                 }
-            }
-        }
     }
 
     pub fn current_rate_bytes_per_s(&self) -> f64 {

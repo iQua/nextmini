@@ -160,16 +160,16 @@ pub async fn run(
                         }
                         state.on_chunk(data.index);
                     }
-                    if handle_data_frame(
-                        &data,
+                    let ctx = FrameCtx {
+                        data: &data,
                         body,
-                        &mut expected,
-                        &mut highest_seen,
-                        &mut pending,
-                        &mut received,
-                        &mut bytes_received,
-                        file.as_mut(),
-                    ) {
+                        expected: &mut expected,
+                        highest_seen: &mut highest_seen,
+                        pending: &mut pending,
+                        received: &mut received,
+                        bytes_received: &mut bytes_received,
+                    };
+                    if handle_data_frame(ctx, file.as_mut()) {
                         let base = expected.saturating_sub(1);
                         if base > last_ack_up_to {
                             tracing::debug!(
@@ -222,11 +222,10 @@ pub async fn run(
                                 "RLM receiver: gap detected but NACK limiter blocked send"
                             );
                         }
-                        if let Some(state) = tfmcc.as_mut() {
-                            if let Some(feedback) = state.maybe_feedback(now) {
+                        if let Some(state) = tfmcc.as_mut()
+                            && let Some(feedback) = state.maybe_feedback(now) {
                                 control_io.send(&feedback);
                             }
-                        }
                         continue;
                     }
                 }
@@ -277,46 +276,47 @@ pub async fn run(
 }
 
 /// Returns true when the frame decoded as DATA and updates ordering state.
-fn handle_data_frame(
-    data: &rlm::RlmData,
-    body: &[u8],
-    expected: &mut u64,
-    highest_seen: &mut u64,
-    pending: &mut BTreeMap<u64, Bytes>,
-    received: &mut BTreeSet<u64>,
-    bytes_received: &mut u64,
-    mut file: Option<&mut std::fs::File>,
-) -> bool {
-    let idx = data.index;
+struct FrameCtx<'a> {
+    data: &'a rlm::RlmData,
+    body: &'a [u8],
+    expected: &'a mut u64,
+    highest_seen: &'a mut u64,
+    pending: &'a mut BTreeMap<u64, Bytes>,
+    received: &'a mut BTreeSet<u64>,
+    bytes_received: &'a mut u64,
+}
+
+fn handle_data_frame(ctx: FrameCtx<'_>, mut file: Option<&mut std::fs::File>) -> bool {
+    let idx = ctx.data.index;
     tracing::debug!(
         chunk_index = idx,
-        body_len = body.len(),
-        expected = *expected,
-        highest_seen = *highest_seen,
+        body_len = ctx.body.len(),
+        expected = *ctx.expected,
+        highest_seen = *ctx.highest_seen,
         "RLM receiver: DATA chunk received"
     );
-    if idx < *expected {
+    if idx < *ctx.expected {
         tracing::trace!(
             chunk_index = idx,
-            expected = *expected,
+            expected = *ctx.expected,
             "RLM receiver: ignoring duplicate/old chunk"
         );
         return true;
     }
 
-    let payload = Bytes::copy_from_slice(body);
-    highest_seen.set_max(idx);
-    if pending.insert(idx, payload).is_none() {
-        received.insert(idx);
+    let payload = Bytes::copy_from_slice(ctx.body);
+    ctx.highest_seen.set_max(idx);
+    if ctx.pending.insert(idx, payload).is_none() {
+        ctx.received.insert(idx);
     }
 
-    while let Some(bytes) = pending.remove(expected) {
-        received.remove(expected);
-        *bytes_received += bytes.len() as u64;
+    while let Some(bytes) = ctx.pending.remove(ctx.expected) {
+        ctx.received.remove(ctx.expected);
+        *ctx.bytes_received += bytes.len() as u64;
         if let Some(f) = file.as_mut() {
             let _ = (**f).write_all(&bytes);
         }
-        *expected += 1;
+        *ctx.expected += 1;
     }
     true
 }
