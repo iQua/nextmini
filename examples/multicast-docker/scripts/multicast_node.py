@@ -156,13 +156,13 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     if args.tensor_path is None:
         tensor_dir = Path("/workspace/tensors")
         tensor_dir.mkdir(parents=True, exist_ok=True)
-        args.tensor_path = tensor_dir / "tensor-auto-1g.pt"
+        args.tensor_path = tensor_dir / "tensor-auto-50m.pt"
 
-    log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
+    log(f"Generating ~50MB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
-    # Generate ~1GB tensor: 256 * 1024 * 1024 floats * 4 bytes/float ≈ 1GB
+    # Generate ~50MB tensor: 256 * 1024 * 50 floats * 4 bytes/float ≈ 50MB
     tensor = (
-        torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
+        torch.randn(256, 1024, 50, dtype=torch.float32).contiguous().cpu()
     )
 
     # For 1MB testing, uncomment the following lines and comment out the 1GB version above:
