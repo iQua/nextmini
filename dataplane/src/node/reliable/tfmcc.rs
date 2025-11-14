@@ -278,7 +278,7 @@ impl TfmccReceiver {
             .clamp(self.cfg.min_rate_bps, self.cfg.max_rate_bps)
             .max(self.cfg.min_rate_bps);
         if (new_rate - self.x_r_bps).abs() > f64::EPSILON {
-            tracing::debug!(
+            tracing::info!(
                 receiver_id = self.receiver_id,
                 rate_bps = new_rate as u64,
                 have_rtt = self.have_rtt,

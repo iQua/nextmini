@@ -388,7 +388,7 @@ impl SenderState {
         let ctrl = self.tfmcc.as_mut()?;
         ctrl.on_tick(Instant::now());
         let rate = ctrl.current_rate_bytes_per_s();
-        tracing::debug!(
+        tracing::info!(
             session_id = self.session_id,
             rate_bps = (rate * 8.0) as u64,
             "TFMCC updated sender rate"
