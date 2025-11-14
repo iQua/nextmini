@@ -7,8 +7,6 @@ use tracing::warn;
 use nextmini_messages::SchedulingDiscipline;
 
 use crate::node::packet::Packet;
-#[cfg(feature = "reliable")]
-use crate::node::reliable::trace::manifest_from_packet;
 use crate::node::scheduler::drop::PacketDrop;
 use crate::node::scheduler::queue::SchedulerQueue;
 use crate::node::scheduler::sched::SchedulerReaderMessage;
@@ -72,8 +70,6 @@ impl SchedulerReader {
     }
 
     fn enqueue(&mut self, packet: Packet) {
-        #[cfg(feature = "reliable")]
-        let manifest_meta = manifest_from_packet(&packet);
         let flow_id = packet.flow_id;
         let queue_len = self.queue.queue_len(flow_id);
 
@@ -84,14 +80,6 @@ impl SchedulerReader {
 
         // the case that this packet will be dropped
         if should_drop_packet {
-            #[cfg(feature = "reliable")]
-            if let Some(meta) = manifest_meta {
-                tracing::debug!(
-                    session_id = meta.session_id,
-                    flow = %flow_id,
-                    "RLM MANIFEST dropped by scheduler drop strategy before enqueue"
-                );
-            }
             self.packets_dropped += 1;
             self.drops_since_last_log += 1;
 
@@ -116,14 +104,6 @@ impl SchedulerReader {
         let is_tcp_data = packet.is_tcp_data();
 
         if self.queue.enqueue(packet).is_err() {
-            #[cfg(feature = "reliable")]
-            if let Some(meta) = manifest_meta {
-                tracing::debug!(
-                    session_id = meta.session_id,
-                    flow = %flow_id,
-                    "RLM MANIFEST dropped because scheduler queue is full"
-                );
-            }
             self.packets_dropped += 1;
             self.drops_since_last_log += 1;
 
@@ -140,16 +120,6 @@ impl SchedulerReader {
                 self.last_drop_log = now;
             }
         } else {
-            #[cfg(feature = "reliable")]
-            if let Some(meta) = manifest_meta {
-                let queue_depth = queue_len + 1;
-                tracing::debug!(
-                    session_id = meta.session_id,
-                    flow = %flow_id,
-                    queue_depth,
-                    "RLM MANIFEST enqueued on scheduler"
-                );
-            }
             // notifies the writer task if it is not a TCP data packet (e.g., if it is SYN, FIN, RST, or pure ACK)
             // if it is a TCP data packet, it is stored in the queue for a while before being consumed by the
             // writer task

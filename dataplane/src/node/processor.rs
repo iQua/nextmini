@@ -14,8 +14,6 @@ use tokio::sync::mpsc;
 use tracing::{error, warn};
 
 #[cfg(feature = "reliable")]
-use crate::node::reliable::trace::{manifest_from_bytes, manifest_from_packet};
-#[cfg(feature = "reliable")]
 use nextmini_messages::INVALID;
 #[cfg(feature = "reliable")]
 use nextmini_messages::rlm;
@@ -787,8 +785,6 @@ impl Processor {
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
         #[allow(unused_mut)]
         let mut packet = packet;
-        #[cfg(feature = "reliable")]
-        let manifest_meta = manifest_from_packet(&packet);
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             #[cfg(feature = "reliable")]
@@ -827,16 +823,6 @@ impl Processor {
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-            #[cfg(feature = "reliable")]
-            if let Some(meta) = manifest_meta {
-                tracing::debug!(
-                    session_id = meta.session_id,
-                    flow = %packet.flow_id,
-                    src_node = self.routing_table.local_id,
-                    next_hop = next_hop_id,
-                    "RLM MANIFEST queued for scheduler hop"
-                );
-            }
             scheduler.send(packet);
         }
     }
@@ -849,8 +835,6 @@ impl Processor {
         let Some(payload) = packet.tcp_payload() else {
             return false;
         };
-        let manifest_meta = manifest_from_bytes(payload);
-
         let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
             hdr.session_id
         } else if let Some((hdr, _)) = rlm::decode_control(payload) {
@@ -877,15 +861,6 @@ impl Processor {
                 source_node_id: peer_id,
             },
         );
-        if let Some(meta) = manifest_meta {
-            tracing::debug!(
-                session_id = meta.session_id,
-                local_node = self.routing_table.local_id,
-                source = ?peer_id,
-                dst_ip = %packet.flow_id.dst_ip(),
-                "RLM MANIFEST delivered to reliable stack on this node"
-            );
-        }
         true
     }
 }

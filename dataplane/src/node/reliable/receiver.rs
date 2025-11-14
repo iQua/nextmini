@@ -17,7 +17,6 @@ use super::api::InboundFrame;
 use super::control::{NackLimiter, SackScheduler, SackSnapshot};
 use super::session::{CongestionControl, ReceiverConfig};
 use super::tfmcc::TfmccReceiver;
-use super::trace::manifest_from_bytes;
 
 /// Utility for emitting control traffic (ACK/SACK/NACK/etc.) via the node
 /// processor stack using the same addressing the sender expects.
@@ -234,7 +233,6 @@ pub async fn run(
                     &frame,
                     &cfg,
                     &control_io,
-                    dst_ip,
                     &mut eot_index,
                 ) {
                     if let Some(last) = eot_index && expected.saturating_sub(1) >= last {
@@ -326,7 +324,6 @@ fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
     ctrl_io: &ControlEmitter<'_>,
-    ctrl_dst_ip: std::net::Ipv4Addr,
     eot_index: &mut Option<u64>,
 ) -> bool {
     let Some((_, control)) = rlm::decode_control(&frame.bytes) else {
@@ -337,15 +334,6 @@ fn handle_control_frame(
             ctrl_io.send(&RlmControl::Ready {
                 node_id: cfg.common.local_node_id as u64,
             });
-
-            if let Some(meta) = manifest_from_bytes(&frame.bytes) {
-                tracing::debug!(
-                    session_id = meta.session_id,
-                    node_id = cfg.common.local_node_id,
-                    ctrl_dst_ip = %ctrl_dst_ip,
-                    "RLM receiver: MANIFEST received; READY sent."
-                );
-            }
             true
         }
         RlmControl::Eot { last_index, .. } => {

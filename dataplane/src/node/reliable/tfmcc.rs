@@ -10,6 +10,8 @@ use super::session::TfmccConfig;
 const MAX_LOSS_SAMPLES: usize = 32;
 const MIN_RTT_S: f64 = 0.001;
 
+/// Sliding-window summary of inter-loss intervals used to estimate the TF-MCC
+/// loss event rate.
 #[derive(Debug)]
 struct LossHistory {
     intervals: VecDeque<f64>,
@@ -24,6 +26,7 @@ impl LossHistory {
         }
     }
 
+    /// Records the number of packets between consecutive losses.
     fn record(&mut self, interval: f64) {
         if !interval.is_finite() || interval <= 0.0 {
             return;
@@ -35,6 +38,7 @@ impl LossHistory {
         self.have_loss = true;
     }
 
+    /// Returns the mean loss event rate across the buffered samples.
     fn loss_event_rate(&self) -> Option<f64> {
         if self.intervals.is_empty() {
             return None;
@@ -51,6 +55,8 @@ impl LossHistory {
     }
 }
 
+/// Tracks missing sequence numbers and groups them into loss events once they
+/// exceed a detection delay.
 #[derive(Debug)]
 struct LossEventTracker {
     pending: BTreeMap<u64, Instant>,
@@ -65,20 +71,26 @@ impl LossEventTracker {
         }
     }
 
+    /// Marks a contiguous block of missing chunks.
     fn on_missing_range(&mut self, start: u64, end: u64, now: Instant) {
         for idx in start..end {
             self.pending.entry(idx).or_insert(now);
         }
     }
 
+    /// Clears tracking state for a chunk that eventually arrived.
     fn on_arrival(&mut self, seqno: u64) {
         self.pending.remove(&seqno);
     }
 
+    /// Remembers how many packets have been delivered since the previous loss.
     fn on_in_order_packet(&mut self) {
         self.packets_since_event += 1.0;
     }
 
+    /// Returns the packet intervals for any pending losses that exceeded the
+    /// detection delay. Intervals are clustered so a burst of adjacent missing
+    /// chunks only counts as one event.
     fn poll_expired(&mut self, now: Instant, delay: Duration) -> Vec<f64> {
         if self.pending.is_empty() {
             return Vec::new();
@@ -118,6 +130,9 @@ impl LossEventTracker {
     }
 }
 
+/// Receiver-side TF-MCC controller implemented inside the dataplane. Each
+/// receiver maintains independent RTT/loss estimates and feeds them back to the
+/// sender.
 #[derive(Debug)]
 pub struct TfmccReceiver {
     cfg: TfmccConfig,
@@ -198,6 +213,8 @@ impl TfmccReceiver {
         self.recompute_rate();
     }
 
+    /// Emits TF-MCC feedback when the interval elapses or when the sender runs
+    /// faster than our computed rate.
     pub fn maybe_feedback(&mut self, now: Instant) -> Option<RlmControl> {
         let header = self.last_header?;
         let due_time = self
@@ -317,6 +334,8 @@ impl ReceiverInfo {
     }
 }
 
+/// Sender-side TF-MCC controller that merges receiver feedback and chooses a
+/// congestion-limiting receiver (CLR).
 #[derive(Debug)]
 pub struct TfmccSender {
     cfg: TfmccConfig,
@@ -355,6 +374,8 @@ impl TfmccSender {
         }
     }
 
+    /// Applies a feedback report to refresh per-receiver state and possibly
+    /// lower the session rate.
     pub fn on_feedback(&mut self, feedback: &RlmControl, now: Instant) {
         if let RlmControl::TfmccFeedback {
             receiver_id,
@@ -366,6 +387,8 @@ impl TfmccSender {
             ..
         } = feedback
         {
+            // Remember which receiver most recently echoed our timestamp so we
+            // can piggy-back the RTT request in the next data header.
             self.last_echo = Some((*receiver_id, *tr_r_ms));
             let rtt_sample = if *have_rtt {
                 self.sample_rtt(*ts_i_echo_ms, now)
@@ -400,6 +423,7 @@ impl TfmccSender {
         }
     }
 
+    /// Advances the sender round number and detects stale CLR state.
     pub fn on_tick(&mut self, now: Instant) {
         if now.duration_since(self.last_round_start) >= self.feedback_interval {
             self.fb_nr = self.fb_nr.wrapping_add(1);
@@ -420,6 +444,7 @@ impl TfmccSender {
         (self.current_rate_bps / 8.0).max(0.0)
     }
 
+    /// Produces the TF-MCC header for the next outbound data chunk.
     pub fn build_data_header(&mut self, now: Instant) -> TfmccDataHeader {
         self.on_tick(now);
         self.current_rate_bps = self.clamp_rate(self.current_rate_bps);
@@ -441,6 +466,8 @@ impl TfmccSender {
         }
     }
 
+    /// Installs the receiver as the CLR (or keeps the existing CLR) and nudges
+    /// the current rate toward the candidate.
     fn apply_candidate_rate(&mut self, receiver_id: u32, candidate: f64) {
         if let Some(clr) = self.clr_id {
             if clr == receiver_id {
@@ -470,6 +497,7 @@ impl TfmccSender {
         rate.clamp(self.cfg.min_rate_bps, self.cfg.max_rate_bps)
     }
 
+    /// Computes a single additive increase step measured in bits per second.
     fn additive_increase(&self) -> f64 {
         if self.r_max_s <= 0.0 {
             return self.packet_bits;

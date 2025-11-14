@@ -27,50 +27,6 @@ pub enum CongestionControl {
     Cubic,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::LocalConfig;
-    use std::time::Duration;
-
-    #[test]
-    fn default_reorder_tolerances_match_defaults() {
-        let cfg = LocalConfig::default();
-        let (enforce, gap, backlog) = cfg.reorder_tolerances();
-        assert!(enforce);
-        assert_eq!(gap, Some(Duration::from_micros(500)));
-        // Default backlog tolerance is disabled (0) when enforcement is enabled.
-        assert_eq!(backlog, 0);
-    }
-
-    #[test]
-    fn unordered_mode_disables_tolerances() {
-        let cfg = LocalConfig {
-            enforce_tcp_order: false,
-            delay_tolerance: 123,
-            backlog_tolerance: 99,
-            ..Default::default()
-        };
-
-        let (enforce, gap, backlog) = cfg.reorder_tolerances();
-        assert!(!enforce);
-        assert_eq!(gap, None);
-        assert_eq!(backlog, 0);
-    }
-
-    #[test]
-    fn zero_tolerances_disable_components() {
-        let cfg = LocalConfig {
-            delay_tolerance: 0,
-            backlog_tolerance: 0,
-            ..Default::default()
-        };
-
-        let (_, gap, backlog) = cfg.reorder_tolerances();
-        assert_eq!(gap, None);
-        assert_eq!(backlog, 0);
-    }
-}
-
 /// The processing mode for processing packets
 #[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -820,5 +776,49 @@ impl LocalConfig {
                 error!("Error receiving the message: {}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LocalConfig;
+    use std::time::Duration;
+
+    #[test]
+    fn default_reorder_tolerances_match_defaults() {
+        let cfg = LocalConfig::default();
+        let (enforce, gap, backlog) = cfg.reorder_tolerances();
+        assert!(enforce);
+        assert_eq!(gap, Some(Duration::from_micros(500)));
+        // Default backlog tolerance is disabled (0) when enforcement is enabled.
+        assert_eq!(backlog, 0);
+    }
+
+    #[test]
+    fn unordered_mode_disables_tolerances() {
+        let cfg = LocalConfig {
+            enforce_tcp_order: false,
+            delay_tolerance: 123,
+            backlog_tolerance: 99,
+            ..Default::default()
+        };
+
+        let (enforce, gap, backlog) = cfg.reorder_tolerances();
+        assert!(!enforce);
+        assert_eq!(gap, None);
+        assert_eq!(backlog, 0);
+    }
+
+    #[test]
+    fn zero_tolerances_disable_components() {
+        let cfg = LocalConfig {
+            delay_tolerance: 0,
+            backlog_tolerance: 0,
+            ..Default::default()
+        };
+
+        let (_, gap, backlog) = cfg.reorder_tolerances();
+        assert_eq!(gap, None);
+        assert_eq!(backlog, 0);
     }
 }
