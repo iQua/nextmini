@@ -273,7 +273,10 @@ pub fn process_control_event(
             }
             Vec::new()
         }
-        RlmControl::Manifest { .. } | RlmControl::Ready { .. } | RlmControl::Eot { .. } => {
+        RlmControl::Manifest { .. }
+        | RlmControl::Ready { .. }
+        | RlmControl::Eot { .. }
+        | RlmControl::TfmccFeedback { .. } => {
             Vec::new()
         }
     }

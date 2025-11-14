@@ -15,7 +15,8 @@ use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
 use super::control::{NackLimiter, SackScheduler, SackSnapshot};
-use super::session::ReceiverConfig;
+use super::session::{CongestionControl, ReceiverConfig};
+use super::tfmcc::TfmccReceiver;
 use super::trace::manifest_from_bytes;
 
 /// Utility for emitting control traffic (ACK/SACK/NACK/etc.) via the node
@@ -124,6 +125,14 @@ pub async fn run(
     control_io.send(&RlmControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
+    let mut tfmcc = match &cfg.cc {
+        CongestionControl::Tfmcc(tcfg) => Some(TfmccReceiver::new(
+            cfg.common.local_node_id as u32,
+            tcfg.clone(),
+            cfg.common.chunk_size,
+        )),
+        CongestionControl::Static => None,
+    };
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
     let mut nack_limiter = NackLimiter::new(Duration::from_millis(cfg.nack_min_interval_ms.max(1)));
@@ -143,72 +152,83 @@ pub async fn run(
                     frame_len = frame.bytes.len(),
                     "RLM receiver: received inbound frame"
                 );
-
-                if handle_data_frame(
-                    &frame,
-                    &mut expected,
-                    &mut highest_seen,
-                    &mut pending,
-                    &mut received,
-                    &mut bytes_received,
-                    file.as_mut(),
-                ) {
-                    let base = expected.saturating_sub(1);
-                    // Emit cumulative ACKs whenever we advance the head of
-                    // line; SACKs are handled below if gaps remain.
-                    if base > last_ack_up_to {
-                        tracing::debug!(
-                            session_id = sid,
-                            up_to = base,
-                            expected = expected,
-                            "RLM receiver: sending ACK"
-                        );
-                        control_io.send(&RlmControl::Ack { up_to: base });
-                        last_ack_up_to = base;
+                if let Some((_, data, body)) = rlm::decode_data(&frame.bytes) {
+                    let now = Instant::now();
+                    if let Some(state) = tfmcc.as_mut() {
+                        if let Some(header) = data.tfmcc {
+                            state.on_data_header(&header, now);
+                        }
+                        state.on_chunk(data.index);
                     }
-                    if highest_seen > base {
-                        let (ack_base, runs) =
-                            rlm::build_ack_and_sack(expected, &received, highest_seen);
-                        if runs.is_empty() {
+                    if handle_data_frame(
+                        &data,
+                        body,
+                        &mut expected,
+                        &mut highest_seen,
+                        &mut pending,
+                        &mut received,
+                        &mut bytes_received,
+                        file.as_mut(),
+                    ) {
+                        let base = expected.saturating_sub(1);
+                        if base > last_ack_up_to {
+                            tracing::debug!(
+                                session_id = sid,
+                                up_to = base,
+                                expected = expected,
+                                "RLM receiver: sending ACK"
+                            );
+                            control_io.send(&RlmControl::Ack { up_to: base });
+                            last_ack_up_to = base;
+                        }
+                        if highest_seen > base {
+                            let (ack_base, runs) =
+                                rlm::build_ack_and_sack(expected, &received, highest_seen);
+                            if runs.is_empty() {
+                                sack_scheduler.clear();
+                                sack_timer = None;
+                            } else {
+                                sack_scheduler.record(ack_base, runs);
+                                if let Some(snapshot) = sack_scheduler.take_ready(now) {
+                                    emit_sack(&control_io, snapshot);
+                                }
+                                reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
+                            }
+                        } else if sack_scheduler.has_snapshot() {
                             sack_scheduler.clear();
                             sack_timer = None;
-                        } else {
-                            let now = Instant::now();
-                            sack_scheduler.record(ack_base, runs);
-                            if let Some(snapshot) = sack_scheduler.take_ready(now) {
-                                emit_sack(&control_io, snapshot);
+                        }
+                        if highest_seen >= expected
+                            && nack_limiter.should_send(expected, now)
+                        {
+                            tracing::debug!(
+                                session_id = sid,
+                                expected = expected,
+                                highest_seen = highest_seen,
+                                gap_size = highest_seen - expected,
+                                "RLM receiver: sending REPAIR/NACK request"
+                            );
+                            if cfg.nack_jitter_ms > 0 {
+                                tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
                             }
-                            reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
+                            control_io.send(&RlmControl::Repair {
+                                indices: vec![expected],
+                            });
+                        } else if highest_seen >= expected {
+                            tracing::trace!(
+                                session_id = sid,
+                                expected = expected,
+                                highest_seen = highest_seen,
+                                "RLM receiver: gap detected but NACK limiter blocked send"
+                            );
                         }
-                    } else if sack_scheduler.has_snapshot() {
-                        sack_scheduler.clear();
-                        sack_timer = None;
-                    }
-                    if highest_seen >= expected
-                        && nack_limiter.should_send(expected, Instant::now())
-                    {
-                        tracing::debug!(
-                            session_id = sid,
-                            expected = expected,
-                            highest_seen = highest_seen,
-                            gap_size = highest_seen - expected,
-                            "RLM receiver: sending REPAIR/NACK request"
-                        );
-                        if cfg.nack_jitter_ms > 0 {
-                            tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
+                        if let Some(state) = tfmcc.as_mut() {
+                            if let Some(feedback) = state.maybe_feedback(now) {
+                                control_io.send(&feedback);
+                            }
                         }
-                        control_io.send(&RlmControl::Repair {
-                            indices: vec![expected],
-                        });
-                    } else if highest_seen >= expected {
-                        tracing::trace!(
-                            session_id = sid,
-                            expected = expected,
-                            highest_seen = highest_seen,
-                            "RLM receiver: gap detected but NACK limiter blocked send"
-                        );
+                        continue;
                     }
-                    continue;
                 }
 
                 if handle_control_frame(
@@ -258,7 +278,8 @@ pub async fn run(
 
 /// Returns true when the frame decoded as DATA and updates ordering state.
 fn handle_data_frame(
-    frame: &InboundFrame,
+    data: &rlm::RlmData,
+    body: &[u8],
     expected: &mut u64,
     highest_seen: &mut u64,
     pending: &mut BTreeMap<u64, Bytes>,
@@ -266,10 +287,6 @@ fn handle_data_frame(
     bytes_received: &mut u64,
     mut file: Option<&mut std::fs::File>,
 ) -> bool {
-    let Some((_, data, body)) = rlm::decode_data(&frame.bytes) else {
-        tracing::trace!("RLM receiver: frame is not DATA (decode_data returned None)");
-        return false;
-    };
     let idx = data.index;
     tracing::debug!(
         chunk_index = idx,

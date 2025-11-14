@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 
-use nextmini_messages::rlm::{self, RlmControl};
+use nextmini_messages::rlm::{self, RlmControl, TfmccDataHeader};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -15,8 +15,8 @@ use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
 use super::control::{self, CompletionPolicy};
-use super::pgmcc::PgmccController;
 use super::session::{AckPolicy, CommonConfig, CongestionControl, SenderConfig};
+use super::tfmcc::TfmccSender;
 
 const DEFAULT_WINDOW: usize = 64;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
@@ -94,7 +94,7 @@ pub async fn run(
         state.maybe_release_topology_gate();
         state.maybe_release_routes_gate();
         state.maybe_release_ready_gate();
-        if let Some(rate) = state.maybe_pgmcc_recompute() {
+        if let Some(rate) = state.maybe_update_cc() {
             pacer.set_target_rate(rate);
         }
 
@@ -224,6 +224,11 @@ fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionP
 /// Encapsulates all mutable sender-side state (window, inflight map, pacing,
 /// manifest timing, etc.). Keeping the logic centralized makes the event loop
 /// above easier to read and test.
+enum CcState {
+    Static,
+    Tfmcc(TfmccSender),
+}
+
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
@@ -231,7 +236,7 @@ struct SenderState {
     receiver_count: usize,
     base_window: usize,
     window: usize,
-    pgmcc: Option<PgmccController>,
+    cc: CcState,
     total_chunks: u64,
     total_bytes: u64,
     inflight: BTreeMap<u64, HashSet<usize>>,
@@ -282,18 +287,12 @@ impl SenderState {
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
         let base_window = compute_window(&cfg);
-        let (window, pgmcc) = match &cfg.cc {
-            CongestionControl::Static => (base_window, None),
-            CongestionControl::Pgmcc(pcfg) => {
-                let mut controller = PgmccController::new(pcfg.clone(), cfg.receiver_ids.clone());
-                let init = pcfg
-                    .init_cwnd_chunks
-                    .max(pcfg.min_cwnd_chunks)
-                    .min(pcfg.max_cwnd_chunks)
-                    .min(base_window)
-                    .max(1);
-                controller.set_cwnd(init as f64);
-                (init, Some(controller))
+        let session_start = Instant::now();
+        let (window, cc) = match &cfg.cc {
+            CongestionControl::Static => (base_window, CcState::Static),
+            CongestionControl::Tfmcc(tcfg) => {
+                let ctrl = TfmccSender::new(tcfg.clone(), cfg.common.chunk_size, session_start);
+                (base_window, CcState::Tfmcc(ctrl))
             }
         };
         if cfg.common.control_weight != 0 {
@@ -325,7 +324,7 @@ impl SenderState {
             receiver_count,
             base_window,
             window,
-            pgmcc,
+            cc,
             total_chunks,
             total_bytes: cfg.total_bytes,
             inflight: BTreeMap::new(),
@@ -389,20 +388,14 @@ impl SenderState {
         self.window.max(1)
     }
 
-    fn maybe_pgmcc_recompute(&mut self) -> Option<f64> {
-        let controller = self.pgmcc.as_mut()?;
-        let chunk_size = self.common.chunk_size;
-        let now = Instant::now();
-        let update = controller.maybe_recompute(now, self.base_window, chunk_size)?;
-        self.window = update.window_chunks.max(1);
-        tracing::debug!(
-            session_id = self.session_id,
-            acker = update.acker,
-            window_chunks = update.window_chunks,
-            rate_bps = (update.rate_bytes_per_s * 8.0) as u64,
-            "RLM sender: PGMCC updated congestion window"
-        );
-        Some(update.rate_bytes_per_s)
+    fn maybe_update_cc(&mut self) -> Option<f64> {
+        match &mut self.cc {
+            CcState::Static => None,
+            CcState::Tfmcc(ctrl) => {
+                ctrl.on_tick(Instant::now());
+                Some(ctrl.current_rate_bytes_per_s())
+            }
+        }
     }
 
     fn inflight_len(&self) -> usize {
@@ -434,8 +427,21 @@ impl SenderState {
         self.source_drained = true;
     }
 
+    fn next_tfmcc_header(&mut self) -> Option<TfmccDataHeader> {
+        match &mut self.cc {
+            CcState::Tfmcc(ctrl) => Some(ctrl.build_data_header(Instant::now())),
+            CcState::Static => None,
+        }
+    }
+
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
-        let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
+        let tfmcc_header = self.next_tfmcc_header();
+        let frame = Bytes::from(rlm::encode_data(
+            self.session_id,
+            chunk.index,
+            &chunk.data,
+            tfmcc_header.as_ref(),
+        ));
         let now = Instant::now();
         self.first_send_times.insert(chunk.index, now);
         self.enqueue_frame(chunk.index, vec![frame.clone()]);
@@ -538,6 +544,11 @@ impl SenderState {
                 // Ignore sender-originated control frames looped back.
             }
             _ => {
+                if let RlmControl::TfmccFeedback { .. } = &control {
+                    if let CcState::Tfmcc(ctrl) = &mut self.cc {
+                        ctrl.on_feedback(&control, now);
+                    }
+                }
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
                         session_id = self.session_id,
@@ -546,20 +557,6 @@ impl SenderState {
                     );
                     return;
                 };
-                if let Some(controller) = &mut self.pgmcc {
-                    match &control {
-                        RlmControl::Ack { up_to } => {
-                            controller.on_ack(from_node, *up_to, &self.first_send_times, now);
-                        }
-                        RlmControl::Sack { base, runs } => {
-                            controller.on_sack(from_node, *base, runs);
-                        }
-                        RlmControl::Repair { indices } => {
-                            controller.on_repair(from_node, indices);
-                        }
-                        _ => {}
-                    }
-                }
                 tracing::debug!(
                     session_id = self.session_id,
                     from_node = from_node,
@@ -963,7 +960,7 @@ mod tests {
         let idx = 7;
         let plen = 4096usize;
         let payload = vec![0xAAu8; plen];
-        let buf = rlm::encode_data(sid, idx, &payload);
+        let buf = rlm::encode_data(sid, idx, &payload, None);
         let (hdr, data, body) = rlm::decode_data(&buf).expect("decode data");
         assert_eq!(hdr.session_id, sid);
         assert_eq!(data.index, idx);

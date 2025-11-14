@@ -421,9 +421,9 @@ pub struct ReliableConfig {
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
 
-    /// Optional default PGMCC configuration (disabled when `None` or `enabled == false`).
+    /// Optional default TFMCC configuration (disabled when `None` or `enabled == false`).
     #[serde(default)]
-    pub pgmcc: Option<PgmccRuntimeConfig>,
+    pub tfmcc: Option<TfmccRuntimeConfig>,
 }
 
 impl Default for ReliableConfig {
@@ -439,7 +439,7 @@ impl Default for ReliableConfig {
             fec_k: None,
             fec_p: 0,
             ready_grace_ms: 1500,
-            pgmcc: None,
+            tfmcc: None,
         }
     }
 }
@@ -448,75 +448,68 @@ const fn default_ready_grace_ms() -> u64 {
     1500
 }
 
-/// Runtime configuration for enabling PGMCC in the reliable multicast stack.
+/// Runtime configuration for enabling TFMCC in the reliable multicast stack.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
-pub struct PgmccRuntimeConfig {
+pub struct TfmccRuntimeConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default = "default_pgmcc_min_cwnd_chunks")]
-    pub min_cwnd_chunks: usize,
-    #[serde(default = "default_pgmcc_max_cwnd_chunks")]
-    pub max_cwnd_chunks: usize,
-    #[serde(default = "default_pgmcc_init_cwnd_chunks")]
-    pub init_cwnd_chunks: usize,
-    #[serde(default = "default_pgmcc_rtt_alpha")]
-    pub rtt_alpha: f64,
-    #[serde(default = "default_pgmcc_loss_alpha")]
-    pub loss_alpha: f64,
-    #[serde(default = "default_pgmcc_min_rtt_ms")]
-    pub min_rtt_ms: u64,
-    #[serde(default = "default_pgmcc_feedback_interval_ms")]
+    #[serde(default = "default_tfmcc_min_rate_bps")]
+    pub min_rate_bps: f64,
+    #[serde(default = "default_tfmcc_max_rate_bps")]
+    pub max_rate_bps: f64,
+    #[serde(default = "default_tfmcc_initial_rate_bps")]
+    pub initial_rate_bps: f64,
+    #[serde(default = "default_tfmcc_feedback_interval_ms")]
     pub feedback_interval_ms: u64,
-    #[serde(default = "default_pgmcc_acker_hysteresis_pct")]
-    pub acker_hysteresis_pct: f64,
+    #[serde(default = "default_tfmcc_rate_smooth_alpha")]
+    pub rate_smooth_alpha: f64,
+    #[serde(default = "default_tfmcc_max_increase_packets")]
+    pub max_increase_per_rtt_pkts: f64,
+    #[serde(default = "default_tfmcc_clr_hysteresis_pct")]
+    pub clr_hysteresis_pct: f64,
 }
 
-impl Default for PgmccRuntimeConfig {
+impl Default for TfmccRuntimeConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            min_cwnd_chunks: default_pgmcc_min_cwnd_chunks(),
-            max_cwnd_chunks: default_pgmcc_max_cwnd_chunks(),
-            init_cwnd_chunks: default_pgmcc_init_cwnd_chunks(),
-            rtt_alpha: default_pgmcc_rtt_alpha(),
-            loss_alpha: default_pgmcc_loss_alpha(),
-            min_rtt_ms: default_pgmcc_min_rtt_ms(),
-            feedback_interval_ms: default_pgmcc_feedback_interval_ms(),
-            acker_hysteresis_pct: default_pgmcc_acker_hysteresis_pct(),
+            min_rate_bps: default_tfmcc_min_rate_bps(),
+            max_rate_bps: default_tfmcc_max_rate_bps(),
+            initial_rate_bps: default_tfmcc_initial_rate_bps(),
+            feedback_interval_ms: default_tfmcc_feedback_interval_ms(),
+            rate_smooth_alpha: default_tfmcc_rate_smooth_alpha(),
+            max_increase_per_rtt_pkts: default_tfmcc_max_increase_packets(),
+            clr_hysteresis_pct: default_tfmcc_clr_hysteresis_pct(),
         }
     }
 }
 
-const fn default_pgmcc_min_cwnd_chunks() -> usize {
-    4
+fn default_tfmcc_min_rate_bps() -> f64 {
+    128_000.0
 }
 
-const fn default_pgmcc_max_cwnd_chunks() -> usize {
-    512
+fn default_tfmcc_max_rate_bps() -> f64 {
+    10_000_000.0
 }
 
-const fn default_pgmcc_init_cwnd_chunks() -> usize {
-    32
+fn default_tfmcc_initial_rate_bps() -> f64 {
+    256_000.0
 }
 
-fn default_pgmcc_rtt_alpha() -> f64 {
-    0.125
-}
-
-fn default_pgmcc_loss_alpha() -> f64 {
-    0.25
-}
-
-const fn default_pgmcc_min_rtt_ms() -> u64 {
-    5
-}
-
-const fn default_pgmcc_feedback_interval_ms() -> u64 {
+const fn default_tfmcc_feedback_interval_ms() -> u64 {
     100
 }
 
-fn default_pgmcc_acker_hysteresis_pct() -> f64 {
+fn default_tfmcc_rate_smooth_alpha() -> f64 {
+    0.25
+}
+
+fn default_tfmcc_max_increase_packets() -> f64 {
+    1.5
+}
+
+fn default_tfmcc_clr_hysteresis_pct() -> f64 {
     0.1
 }
 

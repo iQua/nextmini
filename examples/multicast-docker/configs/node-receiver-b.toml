@@ -19,13 +19,12 @@ ack_policy = "all"
 fec_p = 0
 ready_grace_ms = 1500
 
-[reliable.pgmcc]
+[reliable.tfmcc]
 enabled = true
-min_cwnd_chunks = 2
-init_cwnd_chunks = 2
-max_cwnd_chunks = 64
-rtt_alpha = 0.125
-loss_alpha = 0.25
-min_rtt_ms = 5
+min_rate_bps = 262144
+initial_rate_bps = 524288
+max_rate_bps = 10485760
 feedback_interval_ms = 100
-acker_hysteresis_pct = 0.1
+rate_smooth_alpha = 0.25
+max_increase_per_rtt_pkts = 1.5
+clr_hysteresis_pct = 0.1

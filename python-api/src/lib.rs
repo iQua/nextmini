@@ -24,7 +24,7 @@ use tracing_subscriber::EnvFilter;
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
 #[cfg(feature = "reliable")]
-use nextmini::node::config::PgmccRuntimeConfig;
+use nextmini::node::config::TfmccRuntimeConfig;
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
@@ -321,26 +321,26 @@ impl Dataplane {
                 let reliable_cfg = &self.cfg.reliable;
                 let mode = congestion.as_deref().unwrap_or_else(|| {
                     if reliable_cfg
-                        .pgmcc
+                        .tfmcc
                         .as_ref()
                         .map(|cfg| cfg.enabled)
                         .unwrap_or(false)
                     {
-                        "pgmcc"
+                        "tfmcc"
                     } else {
                         "static"
                     }
                 });
                 let cc = match mode {
                     "static" => reliable_session::CongestionControl::Static,
-                    "pgmcc" => {
+                    "tfmcc" => {
                         let runtime_cfg = reliable_cfg
-                            .pgmcc
+                            .tfmcc
                             .as_ref()
                             .cloned()
-                            .unwrap_or_else(PgmccRuntimeConfig::default);
-                        reliable_session::CongestionControl::Pgmcc(
-                            reliable_session::PgmccConfig::from(&runtime_cfg),
+                            .unwrap_or_else(TfmccRuntimeConfig::default);
+                        reliable_session::CongestionControl::Tfmcc(
+                            reliable_session::TfmccConfig::from(&runtime_cfg),
                         )
                     }
                     other => {
@@ -460,6 +460,23 @@ impl Dataplane {
                     nack_min_interval_ms: reliable_cfg.nack_min_interval_ms,
                     nack_jitter_ms: reliable_cfg.nack_jitter_ms,
                     sack_interval_ms: reliable_cfg.sack_interval_ms,
+                    cc: if reliable_cfg
+                        .tfmcc
+                        .as_ref()
+                        .map(|cfg| cfg.enabled)
+                        .unwrap_or(false)
+                    {
+                        let runtime_cfg = reliable_cfg
+                            .tfmcc
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(TfmccRuntimeConfig::default);
+                        reliable_session::CongestionControl::Tfmcc(
+                            reliable_session::TfmccConfig::from(&runtime_cfg),
+                        )
+                    } else {
+                        reliable_session::CongestionControl::Static
+                    },
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))

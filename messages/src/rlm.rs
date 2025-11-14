@@ -22,6 +22,7 @@ pub enum RlmCtrlKind {
     Sack = 4,
     Repair = 5,
     Eot = 6,
+    TfmccFeedback = 7,
 }
 
 /// Fixed header for both DATA and CONTROL frames.
@@ -97,10 +98,51 @@ impl RlmHeader {
 
 /// DATA payload header (follows `RlmHeader` when kind == Data).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TfmccDataHeader {
+    pub x_supp_bits_per_s: u32,
+    pub ts_i_ms: u32,
+    pub receiver_id: u32,
+    pub tr_r_echo_ms: u32,
+    pub fb_nr: u8,
+    pub is_clr: bool,
+    pub r_max_ms: u16,
+}
+
+impl TfmccDataHeader {
+    pub const LEN: usize = 4 + 4 + 4 + 4 + 1 + 1 + 2;
+
+    fn encode_into(&self, out: &mut [u8]) {
+        debug_assert!(out.len() >= Self::LEN);
+        out[0..4].copy_from_slice(&self.x_supp_bits_per_s.to_be_bytes());
+        out[4..8].copy_from_slice(&self.ts_i_ms.to_be_bytes());
+        out[8..12].copy_from_slice(&self.receiver_id.to_be_bytes());
+        out[12..16].copy_from_slice(&self.tr_r_echo_ms.to_be_bytes());
+        out[16] = self.fb_nr;
+        out[17] = self.is_clr as u8;
+        out[18..20].copy_from_slice(&self.r_max_ms.to_be_bytes());
+    }
+
+    fn decode_from(buf: &[u8]) -> Option<Self> {
+        if buf.len() < Self::LEN {
+            return None;
+        }
+        Some(Self {
+            x_supp_bits_per_s: u32::from_be_bytes(buf[0..4].try_into().ok()?),
+            ts_i_ms: u32::from_be_bytes(buf[4..8].try_into().ok()?),
+            receiver_id: u32::from_be_bytes(buf[8..12].try_into().ok()?),
+            tr_r_echo_ms: u32::from_be_bytes(buf[12..16].try_into().ok()?),
+            fb_nr: buf[16],
+            is_clr: buf[17] != 0,
+            r_max_ms: u16::from_be_bytes(buf[18..20].try_into().ok()?),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RlmData {
     pub index: u64,
     pub payload_len: u32,
-    // followed by payload bytes
+    pub tfmcc: Option<TfmccDataHeader>,
 }
 
 /// CONTROL payload variants (follows `RlmHeader` when kind == Control).
@@ -133,11 +175,30 @@ pub enum RlmControl {
         last_index: u64,
         checksum: Option<[u8; 32]>,
     },
+    /// TFMCC receiver feedback conveying desired rate and RTT/loss state.
+    TfmccFeedback {
+        receiver_id: u32,
+        have_rtt: bool,
+        have_loss: bool,
+        receiver_leave: bool,
+        tr_r_ms: u32,
+        ts_i_echo_ms: u32,
+        fb_nr_echo: u8,
+        x_r_bits_per_s: u32,
+    },
 }
 
 /// Encode a DATA frame (header + RlmData + payload) into a fresh Vec<u8>.
-pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
-    let body_len = 8 + 4 + payload.len() as u32; // RlmData
+pub fn encode_data(
+    session_id: u64,
+    index: u64,
+    payload: &[u8],
+    tfmcc: Option<&TfmccDataHeader>,
+) -> Vec<u8> {
+    let ext_len = tfmcc.map(|_| TfmccDataHeader::LEN).unwrap_or(0);
+    assert!(ext_len <= u16::MAX as usize);
+    let body_len =
+        8 + 4 + 2 + 2 + ext_len as u32 + payload.len() as u32; // RlmData base + extensions + payload
     let mut out = vec![0u8; RlmHeader::LEN + body_len as usize];
     RlmHeader {
         magic: RLM_MAGIC,
@@ -148,11 +209,21 @@ pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
         body_len,
     }
     .encode_into(&mut out[..RlmHeader::LEN]);
-    // RlmData
-    out[RlmHeader::LEN..RlmHeader::LEN + 8].copy_from_slice(&index.to_be_bytes());
-    out[RlmHeader::LEN + 8..RlmHeader::LEN + 12]
-        .copy_from_slice(&(payload.len() as u32).to_be_bytes());
-    out[RlmHeader::LEN + 12..].copy_from_slice(payload);
+    let mut pos = RlmHeader::LEN;
+    out[pos..pos + 8].copy_from_slice(&index.to_be_bytes());
+    pos += 8;
+    out[pos..pos + 4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+    pos += 4;
+    out[pos..pos + 2].copy_from_slice(&(ext_len as u16).to_be_bytes());
+    pos += 2;
+    // reserved
+    out[pos..pos + 2].fill(0);
+    pos += 2;
+    if let Some(header) = tfmcc {
+        header.encode_into(&mut out[pos..pos + ext_len]);
+        pos += ext_len;
+    }
+    out[pos..pos + payload.len()].copy_from_slice(payload);
     out
 }
 
@@ -162,17 +233,49 @@ pub fn decode_data(buf: &[u8]) -> Option<(RlmHeader, RlmData, &[u8])> {
     if hdr.kind != RlmKind::Data {
         return None;
     }
-    if buf.len() < off + hdr.body_len as usize || hdr.body_len < 12 {
+    if hdr.body_len < 16 {
         return None;
     }
-    let index = u64::from_be_bytes(buf[off..off + 8].try_into().ok()?);
-    let payload_len = u32::from_be_bytes(buf[off + 8..off + 12].try_into().ok()?);
-    let start = off + 12;
-    let end = start + payload_len as usize;
-    if end > buf.len() {
+    if buf.len() < off + hdr.body_len as usize {
         return None;
     }
-    Some((hdr, RlmData { index, payload_len }, &buf[start..end]))
+    let mut pos = off;
+    let index = u64::from_be_bytes(buf[pos..pos + 8].try_into().ok()?);
+    pos += 8;
+    let payload_len = u32::from_be_bytes(buf[pos..pos + 4].try_into().ok()?);
+    pos += 4;
+    let ext_len = u16::from_be_bytes(buf[pos..pos + 2].try_into().ok()?);
+    pos += 2;
+    pos += 2; // reserved
+    if hdr.body_len as usize
+        != 8 + 4 + 2 + 2 + ext_len as usize + payload_len as usize
+    {
+        return None;
+    }
+    let ext_start = pos;
+    let ext_end = ext_start + ext_len as usize;
+    if ext_end > buf.len() {
+        return None;
+    }
+    let tfmcc = if ext_len as usize == TfmccDataHeader::LEN {
+        TfmccDataHeader::decode_from(&buf[ext_start..ext_end])
+    } else {
+        None
+    };
+    pos = ext_end;
+    let payload_end = pos + payload_len as usize;
+    if payload_end > buf.len() {
+        return None;
+    }
+    Some((
+        hdr,
+        RlmData {
+            index,
+            payload_len,
+            tfmcc,
+        },
+        &buf[pos..payload_end],
+    ))
 }
 
 /// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
@@ -236,6 +339,36 @@ pub fn encode_control(session_id: u64, control: &RlmControl) -> Vec<u8> {
                 None => b.push(0),
             }
             (RlmCtrlKind::Eot as u8, b)
+        }
+        TfmccFeedback {
+            receiver_id,
+            have_rtt,
+            have_loss,
+            receiver_leave,
+            tr_r_ms,
+            ts_i_echo_ms,
+            fb_nr_echo,
+            x_r_bits_per_s,
+        } => {
+            let mut b = Vec::with_capacity(4 + 1 + 1 + 2 + 4 + 4 + 4);
+            b.extend_from_slice(&receiver_id.to_be_bytes());
+            let mut flags = 0u8;
+            if *have_rtt {
+                flags |= 0b0000_0001;
+            }
+            if *have_loss {
+                flags |= 0b0000_0010;
+            }
+            if *receiver_leave {
+                flags |= 0b0000_0100;
+            }
+            b.push(flags);
+            b.push(*fb_nr_echo);
+            b.extend_from_slice(&0u16.to_be_bytes());
+            b.extend_from_slice(&tr_r_ms.to_be_bytes());
+            b.extend_from_slice(&ts_i_echo_ms.to_be_bytes());
+            b.extend_from_slice(&x_r_bits_per_s.to_be_bytes());
+            (RlmCtrlKind::TfmccFeedback as u8, b)
         }
     };
 
@@ -351,6 +484,27 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
             Eot {
                 last_index,
                 checksum,
+            }
+        }
+        x if x == RlmCtrlKind::TfmccFeedback as u8 => {
+            if body.len() < 4 + 1 + 1 + 2 + 4 + 4 + 4 {
+                return None;
+            }
+            let receiver_id = u32::from_be_bytes(body[0..4].try_into().ok()?);
+            let flags = body[4];
+            let fb_nr_echo = body[5];
+            let tr_r_ms = u32::from_be_bytes(body[8..12].try_into().ok()?);
+            let ts_i_echo_ms = u32::from_be_bytes(body[12..16].try_into().ok()?);
+            let x_r_bits_per_s = u32::from_be_bytes(body[16..20].try_into().ok()?);
+            TfmccFeedback {
+                receiver_id,
+                have_rtt: (flags & 0b0000_0001) != 0,
+                have_loss: (flags & 0b0000_0010) != 0,
+                receiver_leave: (flags & 0b0000_0100) != 0,
+                tr_r_ms,
+                ts_i_echo_ms,
+                fb_nr_echo,
+                x_r_bits_per_s,
             }
         }
         _ => return None,
@@ -496,7 +650,7 @@ mod tests {
     #[test]
     fn roundtrip_data() {
         let payload = b"hello world";
-        let buf = encode_data(42, 7, payload);
+        let buf = encode_data(42, 7, payload, None);
         let (hdr, data, body) = decode_data(&buf).expect("decode data");
         assert_eq!(hdr.magic, RLM_MAGIC);
         assert_eq!(hdr.version, RLM_VERSION);
@@ -542,7 +696,7 @@ mod tests {
 
     #[test]
     fn bad_magic_rejected() {
-        let mut buf = encode_data(1, 1, b"x");
+        let mut buf = encode_data(1, 1, b"x", None);
         buf[0] = 0; // break magic
         assert!(decode_data(&buf).is_none());
     }
@@ -607,13 +761,31 @@ mod tests {
 
     #[test]
     fn decode_data_rejects_truncated_payload() {
-        let buf = encode_data(1, 1, b"abc");
+        let buf = encode_data(1, 1, b"abc", None);
         // Corrupt payload_len to be larger than actual bytes
         let mut bad = buf.clone();
         // RlmHeader::LEN + 8 (index) position payload_len (4 bytes)
         let pos = RlmHeader::LEN + 8;
         bad[pos..pos + 4].copy_from_slice(&(9999u32.to_be_bytes()));
         assert!(decode_data(&bad).is_none());
+    }
+
+    #[test]
+    fn encode_decode_data_with_tfmcc_header() {
+        let header = TfmccDataHeader {
+            x_supp_bits_per_s: 1000,
+            ts_i_ms: 42,
+            receiver_id: 7,
+            tr_r_echo_ms: 11,
+            fb_nr: 3,
+            is_clr: true,
+            r_max_ms: 55,
+        };
+        let buf = encode_data(9, 5, b"xx", Some(&header));
+        let (_, data, payload) = decode_data(&buf).expect("decode");
+        assert_eq!(payload, b"xx");
+        assert_eq!(data.index, 5);
+        assert_eq!(data.tfmcc, Some(header));
     }
 
     #[test]
