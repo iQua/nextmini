@@ -35,9 +35,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
     parser.add_argument("--chunk-size", type=int, default=4096)
-    parser.add_argument("--flow-window", type=int, default=256)
-    parser.add_argument("--flow-poll-ms", type=int, default=100)
-    parser.add_argument("--sleep-ms", type=int, default=0)
     parser.add_argument("--receive-timeout-ms", type=int, default=5000)
     parser.add_argument("--group-timeout", type=int, default=90)
     parser.add_argument("--member-timeout", type=int, default=60)
@@ -204,8 +201,7 @@ def run_source(args: argparse.Namespace) -> None:
     )
     log(f"Controller assigned group {group_id} ({group_ip}).", args.quiet)
     log(
-        f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size} "
-        f"flow_window={args.flow_window} flow_poll_ms={args.flow_poll_ms}",
+        f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
         args.quiet,
     )
 

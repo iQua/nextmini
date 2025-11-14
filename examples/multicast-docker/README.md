@@ -78,7 +78,6 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
 - `CHUNK_SIZE` – payload slice size (defaults to 4096 bytes; reliable senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
-- `PAYLOAD_SLEEP_MS` – optional pacing delay between chunks when you need to slow down the source.
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
 - `ARTIFACT_DIR` – shared volume for tensors and metadata.
@@ -109,7 +108,7 @@ following knobs if needed:
 
 - Provide a custom tensor via `TENSOR_PATH` (and optionally `EXPECTED_BYTES`) to skip
   auto-generation.
-- Increase/decrease `CHUNK_SIZE` or `PAYLOAD_SLEEP_MS` to tune throughput.
+- Increase/decrease `CHUNK_SIZE` to tune throughput.
 - Inspect `/artifacts/tensor-metadata.json` for the last tensor path/size broadcast to
   receivers.
 
