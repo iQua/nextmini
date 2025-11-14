@@ -21,9 +21,9 @@ ready_grace_ms = 1500
 
 [reliable.tfmcc]
 enabled = true
-min_rate_bps = 262144
-initial_rate_bps = 524288
-max_rate_bps = 10485760
+min_rate_bps = 500_000
+initial_rate_bps = 10_000_000
+max_rate_bps = 1_000_000_000
 feedback_interval_ms = 100
 rate_smooth_alpha = 0.25
 max_increase_per_rtt_pkts = 1.5

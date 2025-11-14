@@ -387,7 +387,13 @@ impl SenderState {
     fn maybe_update_cc(&mut self) -> Option<f64> {
         let ctrl = self.tfmcc.as_mut()?;
         ctrl.on_tick(Instant::now());
-        Some(ctrl.current_rate_bytes_per_s())
+        let rate = ctrl.current_rate_bytes_per_s();
+        tracing::debug!(
+            session_id = self.session_id,
+            rate_bps = (rate * 8.0) as u64,
+            "TFMCC updated sender rate"
+        );
+        Some(rate)
     }
 
     fn inflight_len(&self) -> usize {

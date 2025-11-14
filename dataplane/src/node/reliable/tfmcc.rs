@@ -99,11 +99,13 @@ impl TfmccReceiver {
         self.last_header = Some(*header);
         self.last_ts_i_ms = header.ts_i_ms;
         if let Some((stamp, sent)) = self.pending_rtt
-            && header.receiver_id == self.receiver_id && stamp == header.tr_r_echo_ms {
-                let sample = now.saturating_duration_since(sent).as_secs_f64();
-                self.update_rtt(sample);
-                self.pending_rtt = None;
-            }
+            && header.receiver_id == self.receiver_id
+            && stamp == header.tr_r_echo_ms
+        {
+            let sample = now.saturating_duration_since(sent).as_secs_f64();
+            self.update_rtt(sample);
+            self.pending_rtt = None;
+        }
     }
 
     pub fn on_chunk(&mut self, seqno: u64) {
@@ -114,8 +116,7 @@ impl TfmccReceiver {
         }
         if seqno >= self.expected_seqno {
             if seqno > self.expected_seqno {
-                self.loss_history
-                    .record(self.packets_since_loss.max(1.0));
+                self.loss_history.record(self.packets_since_loss.max(1.0));
                 self.packets_since_loss = 0.0;
             }
             self.expected_seqno = seqno.saturating_add(1);
@@ -130,8 +131,7 @@ impl TfmccReceiver {
             .last_feedback_sent
             .map(|t| now.duration_since(t) >= self.feedback_interval)
             .unwrap_or(true);
-        let slower = self.x_r_bps > 0.0
-            && self.x_r_bps + 1.0 < header.x_supp_bits_per_s as f64;
+        let slower = self.x_r_bps > 0.0 && self.x_r_bps + 1.0 < header.x_supp_bits_per_s as f64;
         if !due_time && !slower {
             return None;
         }
@@ -183,25 +183,39 @@ impl TfmccReceiver {
             return;
         }
         let rtt = self.rtt_s.max(MIN_RTT_S);
-        let p = self
-            .loss_history
-            .loss_event_rate()
-            .unwrap_or_else(|| if self.loss_history.have_loss() { 1e-6 } else { 0.0 });
+        let p = self.loss_history.loss_event_rate().unwrap_or_else(|| {
+            if self.loss_history.have_loss() {
+                1e-6
+            } else {
+                0.0
+            }
+        });
         let rate = if p <= 0.0 {
             self.cfg.max_rate_bps
         } else {
             let sqrt_term = (2.0 * p / 3.0).sqrt();
-            let denom = sqrt_term
-                + 12.0 * (3.0 * p / 8.0).sqrt() * p * (1.0 + 32.0 * p * p);
+            let denom = sqrt_term + 12.0 * (3.0 * p / 8.0).sqrt() * p * (1.0 + 32.0 * p * p);
             if denom <= 0.0 {
                 self.cfg.max_rate_bps
             } else {
                 (self.packet_bits * 1.0) / (rtt * denom)
             }
         };
-        self.x_r_bps = rate
+        let new_rate = rate
             .clamp(self.cfg.min_rate_bps, self.cfg.max_rate_bps)
             .max(self.cfg.min_rate_bps);
+        if (new_rate - self.x_r_bps).abs() > f64::EPSILON {
+            tracing::debug!(
+                receiver_id = self.receiver_id,
+                rate_bps = new_rate as u64,
+                have_rtt = self.have_rtt,
+                have_loss = self.loss_history.have_loss(),
+                rtt_ms = (self.rtt_s * 1000.0) as u64,
+                loss_rate = self.loss_history.loss_event_rate(),
+                "TFMCC receiver recomputed desired rate"
+            );
+        }
+        self.x_r_bps = new_rate;
     }
 }
 
@@ -298,8 +312,7 @@ impl TfmccSender {
             }
             if *receiver_leave && self.clr_id == Some(*receiver_id) {
                 self.clr_id = None;
-                self.current_rate_bps =
-                    (self.current_rate_bps * 0.5).max(self.cfg.min_rate_bps);
+                self.current_rate_bps = (self.current_rate_bps * 0.5).max(self.cfg.min_rate_bps);
             }
             let candidate = self.clamp_rate(candidate);
             self.apply_candidate_rate(*receiver_id, candidate);
@@ -313,11 +326,11 @@ impl TfmccSender {
         }
         if let Some(clr) = self.clr_id
             && let Some(info) = self.receivers.get(&clr)
-                && now.duration_since(info.last_feedback_at) >= self.feedback_interval * 3 {
-                    self.current_rate_bps =
-                        (self.current_rate_bps * 0.5).max(self.cfg.min_rate_bps);
-                    self.clr_id = None;
-                }
+            && now.duration_since(info.last_feedback_at) >= self.feedback_interval * 3
+        {
+            self.current_rate_bps = (self.current_rate_bps * 0.5).max(self.cfg.min_rate_bps);
+            self.clr_id = None;
+        }
     }
 
     pub fn current_rate_bytes_per_s(&self) -> f64 {
@@ -333,9 +346,7 @@ impl TfmccSender {
             .or_else(|| self.clr_id.map(|id| (id, 0)))
             .unwrap_or((0, 0));
         let is_clr = self.clr_id == Some(receiver_id) && receiver_id != 0;
-        let r_max_ms = (self.r_max_s * 1000.0)
-            .round()
-            .clamp(0.0, u16::MAX as f64) as u16;
+        let r_max_ms = (self.r_max_s * 1000.0).round().clamp(0.0, u16::MAX as f64) as u16;
         TfmccDataHeader {
             x_supp_bits_per_s: self.current_rate_bps.max(1.0) as u32,
             ts_i_ms,
@@ -359,8 +370,8 @@ impl TfmccSender {
                 self.current_rate_bps = self.clamp_rate(self.current_rate_bps);
                 return;
             }
-            let hysteresis = self.current_rate_bps
-                * (1.0 - self.cfg.clr_hysteresis_pct.clamp(0.0, 1.0));
+            let hysteresis =
+                self.current_rate_bps * (1.0 - self.cfg.clr_hysteresis_pct.clamp(0.0, 1.0));
             if candidate < hysteresis {
                 self.clr_id = Some(receiver_id);
                 self.current_rate_bps = candidate;
