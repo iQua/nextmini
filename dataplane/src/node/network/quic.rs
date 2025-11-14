@@ -201,7 +201,7 @@ impl QuicReader {
     pub async fn run(&mut self) {
         loop {
             if let Ok(packet) = self.read_packet().await {
-                self.processors.process_packet(packet);
+                self.processors.process_packet(packet).await;
             }
         }
     }

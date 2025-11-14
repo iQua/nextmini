@@ -64,7 +64,7 @@ impl TxToken for PacketTxToken {
         let packet = Packet::new(len, buf);
 
         // uses non-blocking send() to send the outbound packet
-        self.0.process_packet(packet);
+        self.0.process_packet_blocking(packet);
 
         result
     }

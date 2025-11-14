@@ -74,7 +74,7 @@ pub async fn run(
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
 
     loop {
-        // Check for transfer timeout
+        // checks for transfer timeout
         if transfer_start.elapsed() > transfer_timeout && !state.is_complete() {
             tracing::error!(
                 session_id = sid,
@@ -85,8 +85,8 @@ pub async fn run(
             );
             break;
         }
-        // Drain any immediately-available control frames so resend/retire
-        // decisions reflect fresh receiver state before we transmit more data.
+        // drains any immediately-available control frames so resend/retire
+        // decisions reflect fresh receiver state before we transmit more data
         while let Ok(frame) = ctrl_rx.try_recv() {
             state.handle_control(frame);
         }
@@ -117,7 +117,7 @@ pub async fn run(
             progressed = true;
         }
 
-        // Fix: Explicitly mark source as drained when chunk source finishes
+        // explicitly mark source as drained when chunk source finishes
         // to prevent infinite loop waiting for source_drained to be set
         if chunk_source.finished() && !state.source_drained {
             state.mark_source_drained();
@@ -164,14 +164,16 @@ pub async fn run(
             }
         }
 
-        // FIX: makes retransmitting chunk possible; removes ready_for_data() check
+        // makes retransmitting chunk possible
         if !progressed && state.should_resend() && last_resend.elapsed() >= state.repair_backoff {
             tracing::trace!(
                 session_id = sid,
                 resend_queue_len = state.resend_queue.len(),
                 "RLM sender: attempting resend"
             );
+
             pacer.wait_for(state.common.chunk_size).await;
+
             if state.send_resend(&processors) {
                 last_resend = Instant::now();
                 progressed = true;
@@ -291,6 +293,7 @@ impl SenderState {
                 session_start,
             )),
         };
+
         if cfg.common.control_weight != 0 {
             tracing::debug!(
                 session_id = common.session_id,
@@ -298,12 +301,14 @@ impl SenderState {
                 "RLM sender: control_weight is recorded but scheduler boosts are not yet wired."
             );
         }
+
         if cfg.checksum_out {
             tracing::warn!(
                 session_id = common.session_id,
                 "RLM sender: checksum_out requested but checksum emission is not implemented; skipping."
             );
         }
+
         if cfg.fec_k.is_some() || cfg.fec_p != 0 {
             tracing::warn!(
                 session_id = common.session_id,
@@ -636,15 +641,6 @@ impl SenderState {
     }
 
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
-        tracing::debug!(
-            session_id = self.session_id,
-            frame_len = frame.len(),
-            src_ip = %self.src_ip,
-            src_port = self.src_port,
-            dst_ip = %self.dst_ip,
-            dst_port = self.dst_port,
-            "RLM sender: send_frame building packet and calling processors.process_packet"
-        );
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
@@ -652,21 +648,13 @@ impl SenderState {
             self.dst_port,
             frame,
         );
-        tracing::debug!(
-            session_id = self.session_id,
-            flow_id = %packet.flow_id,
-            packet_len = packet.packet_size,
-            "RLM sender: packet built, calling processors.process_packet NOW"
-        );
-        processors.process_packet(packet);
-        tracing::debug!(
-            session_id = self.session_id,
-            "RLM sender: processors.process_packet returned"
-        );
+
+        processors.process_packet_blocking(packet);
     }
 
     fn send_control(&self, control: &RlmControl, processors: &ProcessorHandle) {
         let buf = rlm::encode_control(self.session_id, control);
+
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
@@ -674,17 +662,20 @@ impl SenderState {
             self.dst_port,
             &buf,
         );
-        processors.process_packet(packet);
+
+        processors.process_packet_blocking(packet);
     }
 
     fn maybe_release_topology_gate(&mut self) {
         if self.topology_gate_open {
             return;
         }
+
         let Some(rx) = self.topology_ready_rx.as_mut() else {
             self.topology_gate_open = true;
             return;
         };
+
         if *rx.borrow() {
             self.topology_gate_open = true;
             tracing::info!(
@@ -715,6 +706,7 @@ impl SenderState {
         if self.ready_gate_open || !self.manifest_sent {
             return;
         }
+
         if self.receiver_count > 0 && self.ready_nodes.len() == self.receiver_count {
             self.ready_gate_open = true;
             self.ready_deadline = None;
@@ -724,6 +716,7 @@ impl SenderState {
             );
             return;
         }
+
         if let Some(deadline) = self.ready_deadline
             && Instant::now() >= deadline
         {

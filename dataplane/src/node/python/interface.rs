@@ -35,6 +35,7 @@ struct Inner {
     senders: Mutex<AHashMap<FlowId, ReceiverEntry>>,
     event_tx: mpsc::Sender<PythonEvent>,
     event_rx: Mutex<mpsc::Receiver<PythonEvent>>,
+    backpressure: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -98,14 +99,16 @@ pub enum PayloadFormat {
 
 impl PythonInterfaceHandle {
     #[allow(dead_code)]
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, backpressure: bool) -> Self {
         let (event_tx, event_rx) = mpsc::channel(capacity);
+
         Self {
             inner: Arc::new(Inner {
                 capacity,
                 senders: Mutex::new(AHashMap::new()),
                 event_tx,
                 event_rx: Mutex::new(event_rx),
+                backpressure,
             }),
         }
     }
@@ -121,9 +124,11 @@ impl PythonInterfaceHandle {
         } else {
             DeliveryMode::RawPacket
         };
+
         let (tx, rx) = mpsc::channel(self.inner.capacity);
         let mut map = self.inner.senders.lock().await;
         map.insert(flow_id, ReceiverEntry { mode, sender: tx });
+
         rx
     }
 
@@ -287,13 +292,14 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_success_for_registered_flow() {
-        let handle = PythonInterfaceHandle::new(4);
+        let handle = PythonInterfaceHandle::new(4, false);
         let flow_id = Packet::flow_id_from_parts(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
+
         let mut receiver = handle.register_receiver(flow_id, false).await;
 
         let packet = Packet::build_ipv4_tcp_packet(
@@ -303,7 +309,9 @@ mod tests {
             5000,
             &[1, 2, 3, 4],
         );
+
         assert!(handle.deliver(packet.clone()).await.is_ok());
+
         match receiver.recv().await {
             Some(PythonDelivery::Raw(received)) => {
                 assert_eq!(received.bytes(), packet.bytes())
@@ -314,7 +322,7 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_fails_when_queue_full() {
-        let handle = PythonInterfaceHandle::new(1);
+        let handle = PythonInterfaceHandle::new(1, false);
         let flow_id = Packet::flow_id_from_parts(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
@@ -337,7 +345,7 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_returns_error_without_receiver() {
-        let handle = PythonInterfaceHandle::new(4);
+        let handle = PythonInterfaceHandle::new(4, false);
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
@@ -350,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn payload_only_receives_tcp_payload() {
-        let handle = PythonInterfaceHandle::new(4);
+        let handle = PythonInterfaceHandle::new(4, false);
         let flow_id = Packet::flow_id_from_parts(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,

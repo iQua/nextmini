@@ -308,7 +308,7 @@ impl UdpReader {
             }
 
             let packet = Packet::new(packet_size, buf);
-            self.processors.process_packet(packet);
+            self.processors.process_packet(packet).await;
         }
     }
 }

@@ -176,7 +176,7 @@ impl TcpReader {
             // reads a packet from the TCP connection
             if let Ok(packet) = self.read_packet().await {
                 // forwards the packet to the processor
-                self.processors.process_packet(packet);
+                self.processors.process_packet(packet).await;
             }
         }
     }

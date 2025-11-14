@@ -50,6 +50,7 @@ impl<'a> ControlEmitter<'a> {
 
     fn send(&self, control: &RlmControl) {
         let buf = rlm::encode_control(self.session_id, control);
+
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
@@ -57,7 +58,8 @@ impl<'a> ControlEmitter<'a> {
             self.dst_port,
             &buf,
         );
-        self.processors.process_packet(packet);
+
+        self.processors.process_packet_blocking(packet);
     }
 }
 

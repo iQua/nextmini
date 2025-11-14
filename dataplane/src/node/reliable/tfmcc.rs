@@ -10,7 +10,7 @@ use super::session::TfmccConfig;
 const MAX_LOSS_SAMPLES: usize = 32;
 const MIN_RTT_S: f64 = 0.001;
 
-/// Sliding-window summary of inter-loss intervals used to estimate the TF-MCC
+/// Sliding-window summary of inter-loss intervals used to estimate the TFMCC
 /// loss event rate.
 #[derive(Debug)]
 struct LossHistory {
@@ -130,7 +130,7 @@ impl LossEventTracker {
     }
 }
 
-/// Receiver-side TF-MCC controller implemented inside the dataplane. Each
+/// Receiver-side TFMCC controller implemented inside the dataplane. Each
 /// receiver maintains independent RTT/loss estimates and feeds them back to the
 /// sender.
 #[derive(Debug)]
@@ -213,7 +213,7 @@ impl TfmccReceiver {
         self.recompute_rate();
     }
 
-    /// Emits TF-MCC feedback when the interval elapses or when the sender runs
+    /// Emits TFMCC feedback when the interval elapses or when the sender runs
     /// faster than our computed rate.
     pub fn maybe_feedback(&mut self, now: Instant) -> Option<RlmControl> {
         let header = self.last_header?;
@@ -334,7 +334,7 @@ impl ReceiverInfo {
     }
 }
 
-/// Sender-side TF-MCC controller that merges receiver feedback and chooses a
+/// Sender-side TFMCC controller that merges receiver feedback and chooses a
 /// congestion-limiting receiver (CLR).
 #[derive(Debug)]
 pub struct TfmccSender {
@@ -444,7 +444,7 @@ impl TfmccSender {
         (self.current_rate_bps / 8.0).max(0.0)
     }
 
-    /// Produces the TF-MCC header for the next outbound data chunk.
+    /// Produces the TFMCC header for the next outbound data chunk.
     pub fn build_data_header(&mut self, now: Instant) -> TfmccDataHeader {
         self.on_tick(now);
         self.current_rate_bps = self.clamp_rate(self.current_rate_bps);

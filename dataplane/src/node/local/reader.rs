@@ -76,7 +76,7 @@ impl LocalReader {
                     self.flowstats_reporter.report_packet(&packet);
 
                     // sends to the processor for routing and forwarding
-                    self.processor.process_packet(packet);
+                    self.processor.process_packet(packet).await;
                 }
             }
         }

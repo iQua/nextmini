@@ -32,12 +32,14 @@ pub enum SchedulerWriterMessage {
 pub struct SchedulerHandle {
     reader_sender: mpsc::Sender<SchedulerReaderMessage>,
     writer_sender: mpsc::UnboundedSender<SchedulerWriterMessage>,
+    backpressure: bool,
 }
 
 impl SchedulerHandle {
     pub fn new(config: LocalConfig, net_interface: NetworkInterfaceHandle) -> Self {
         let (reader_sender, reader_receiver) = mpsc::channel(config.channel_capacity);
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
+        let backpressure = config.channel_backpressure;
 
         let scheduler = Scheduler::new(config, net_interface, reader_receiver, writer_receiver);
         scheduler.run();
@@ -45,19 +47,20 @@ impl SchedulerHandle {
         Self {
             reader_sender,
             writer_sender,
+            backpressure,
         }
     }
 
     /// Sends a packet to the scheduler.
-    pub fn send(&self, packet: Packet) {
-        if let Err(e) = self
-            .reader_sender
-            .try_send(SchedulerReaderMessage::InboundPacket(packet))
-        {
-            error!(
-                "SchedulerHandle: Error sending a packet to the scheduler: {}.",
-                e
-            );
+    pub async fn send(&self, packet: Packet) {
+        let msg = SchedulerReaderMessage::InboundPacket(packet);
+
+        if self.backpressure {
+            if let Err(e) = self.reader_sender.send(msg).await {
+                error!("SchedulerHandle: reader channel closed; dropping packet: {e}");
+            }
+        } else if let Err(e) = self.reader_sender.try_send(msg) {
+            error!("SchedulerHandle: Error sending a packet to the scheduler: {e}.");
         }
     }
 

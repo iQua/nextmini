@@ -246,10 +246,18 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn process_packet(&self, packet: Packet) {
+    pub async fn process_packet(&self, packet: Packet) {
         match self {
-            ProcessorHandle::Sequential(handle) => handle.process_packet(packet),
-            ProcessorHandle::Concurrent(handle) => handle.process_packet(packet),
+            ProcessorHandle::Sequential(handle) => handle.process_packet(packet).await,
+            ProcessorHandle::Concurrent(handle) => handle.process_packet(packet).await,
+        }
+    }
+
+    /// For synchronous producers (Python bindings, smoltcp virtual NIC).
+    pub fn process_packet_blocking(&self, packet: Packet) {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.process_packet_blocking(packet),
+            ProcessorHandle::Concurrent(handle) => handle.process_packet_blocking(packet),
         }
     }
 
@@ -406,44 +414,103 @@ impl SequentialProcHandle {
         }
     }
 
-    pub fn process_packet(&self, packet: Packet) {
-        let idx = packet.flow_id.hash(self.packet_senders.len());
-        let sender = &self.packet_senders[idx];
-
-        let packet_flow_id = packet.flow_id;
-        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+    pub async fn process_packet(&self, packet: Packet) {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
 
         // sends through the processor for local delivery
         if dst_node_id == self.config.node_id {
-            if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
-                warn!(
-                    "SequentialProcHandle: Error sending a packet to the processor: {}.",
-                    e
-                );
-            }
+            self.send_to_processor(packet).await;
         } else {
-            // sends according to the operating mode at src node
+            // sends according to the operating mode
             match self.config.operating_mode {
                 OperatingMode::Normal => {
-                    if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
-                        warn!(
-                            "SequentialProcHandle: Error sending a packet to the processor: {}.",
-                            e
-                        );
-                    }
+                    self.send_to_processor(packet).await;
                 }
                 OperatingMode::Max => {
-                    if let Err(e) = self
-                        .connector_packet_sender
-                        .try_send(ProcessorPacket::ProcessPacket(packet))
-                    {
-                        warn!(
-                            "SequentialProcHandle: Error sending a packet to the connector: {}.",
-                            e
-                        );
-                    }
+                    self.send_to_connector(packet).await;
                 }
             }
+        }
+    }
+
+    async fn send_to_processor(&self, packet: Packet) {
+        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let sender = &self.packet_senders[idx];
+
+        if self.config.channel_backpressure {
+            if let Err(e) = sender.send(ProcessorPacket::ProcessPacket(packet)).await {
+                error!("SequentialProcHandle: processor channel closed; dropping packet: {e}");
+            }
+        } else if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+            warn!("SequentialProcHandle: processor channel full; dropping packet: {e}");
+        }
+    }
+
+    async fn send_to_connector(&self, packet: Packet) {
+        if self.config.channel_backpressure {
+            if let Err(e) = self
+                .connector_packet_sender
+                .send(ProcessorPacket::ProcessPacket(packet))
+                .await
+            {
+                error!("SequentialProcHandle: connector channel closed; dropping packet: {e}");
+            }
+        } else if let Err(e) = self
+            .connector_packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!("SequentialProcHandle: connector channel full; dropping packet: {e}");
+        }
+    }
+
+    /// For sync producers (Python API, TCP readers, and QUIC readers).
+    pub fn process_packet_blocking(&self, packet: Packet) {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+
+        if dst_node_id == self.config.node_id {
+            self.send_to_processor_blocking(packet);
+        } else {
+            match self.config.operating_mode {
+                OperatingMode::Normal => {
+                    self.send_to_processor_blocking(packet);
+                }
+                OperatingMode::Max => {
+                    self.send_to_connector_blocking(packet);
+                }
+            }
+        }
+    }
+
+    fn send_to_processor_blocking(&self, packet: Packet) {
+        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let sender = &self.packet_senders[idx];
+
+        if self.config.channel_backpressure {
+            if let Err(e) = sender.blocking_send(ProcessorPacket::ProcessPacket(packet)) {
+                warn!(
+                    "SequentialProcHandle: blocking send to processor failed; dropping packet: {e}"
+                );
+            }
+        } else if let Err(e) = sender.try_send(ProcessorPacket::ProcessPacket(packet)) {
+            warn!("SequentialProcHandle: processor channel full; dropping packet: {e}");
+        }
+    }
+
+    fn send_to_connector_blocking(&self, packet: Packet) {
+        if self.config.channel_backpressure {
+            if let Err(e) = self
+                .connector_packet_sender
+                .blocking_send(ProcessorPacket::ProcessPacket(packet))
+            {
+                warn!(
+                    "SequentialProcHandle: blocking send to connector failed; dropping packet: {e}"
+                );
+            }
+        } else if let Err(e) = self
+            .connector_packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!("SequentialProcHandle: connector channel full; dropping packet: {e}");
         }
     }
 }
@@ -474,11 +541,12 @@ impl ConcurrentProcHandle {
             });
         }
 
-        // create a new connector
+        // creates a new connector
         let (connector_packet_sender, connector_packet_receiver) =
             mpsc::channel(config.channel_capacity);
         let (connector_message_sender, connector_message_receiver) =
             mpsc::channel(config.channel_capacity);
+
         let mut connector = Connector::new(
             connector_packet_receiver,
             connector_message_receiver,
@@ -498,47 +566,109 @@ impl ConcurrentProcHandle {
         }
     }
 
-    pub fn process_packet(&self, packet: Packet) {
-        let packet_flow_id = packet.flow_id;
-        let dst_node_id = self.config.ip_to_node_id(packet_flow_id.dst_ip());
+    pub async fn process_packet(&self, packet: Packet) {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
 
         // sends through the processor for local delivery
         if dst_node_id == self.config.node_id {
-            if let Err(e) = self
-                .packet_sender
-                .try_send(ProcessorPacket::ProcessPacket(packet))
-            {
-                warn!(
-                    "ConcurrentProcHandle: Error sending a packet to the processor: {}.",
-                    e
-                );
-            }
+            self.send_to_processor(packet).await;
         } else {
-            // sends according to the operating mode at src node
+            // sends according to the operating mode
             match self.config.operating_mode {
                 OperatingMode::Normal => {
-                    if let Err(e) = self
-                        .packet_sender
-                        .try_send(ProcessorPacket::ProcessPacket(packet))
-                    {
-                        warn!(
-                            "ConcurrentProcHandle: Error sending a packet to the processor: {}.",
-                            e
-                        );
-                    }
+                    self.send_to_processor(packet).await;
                 }
                 OperatingMode::Max => {
-                    if let Err(e) = self
-                        .connector_packet_sender
-                        .try_send(ProcessorPacket::ProcessPacket(packet))
-                    {
-                        warn!(
-                            "ConcurrentProcHandle: Error sending a packet to the connector: {}.",
-                            e
-                        );
-                    }
+                    self.send_to_connector(packet).await;
                 }
             }
+        }
+    }
+
+    pub fn process_packet_blocking(&self, packet: Packet) {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+
+        if dst_node_id == self.config.node_id {
+            self.send_to_processor_blocking(packet);
+        } else {
+            match self.config.operating_mode {
+                OperatingMode::Normal => {
+                    self.send_to_processor_blocking(packet);
+                }
+                OperatingMode::Max => {
+                    self.send_to_connector_blocking(packet);
+                }
+            }
+        }
+    }
+
+    async fn send_to_processor(&self, packet: Packet) {
+        if self.config.channel_backpressure {
+            if let Err(e) = self
+                .packet_sender
+                .send_async(ProcessorPacket::ProcessPacket(packet))
+                .await
+            {
+                warn!("ConcurrentProcHandle: flume channel closed; dropping packet: {e}");
+            }
+        } else if let Err(e) = self
+            .packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!("ConcurrentProcHandle: flume channel full; dropping packet: {e}");
+        }
+    }
+
+    async fn send_to_connector(&self, packet: Packet) {
+        if self.config.channel_backpressure {
+            if let Err(e) = self
+                .connector_packet_sender
+                .send(ProcessorPacket::ProcessPacket(packet))
+                .await
+            {
+                warn!("ConcurrentProcHandle: connector channel closed; dropping packet: {e}");
+            }
+        } else if let Err(e) = self
+            .connector_packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!("ConcurrentProcHandle: connector channel full; dropping packet: {e}");
+        }
+    }
+
+    fn send_to_processor_blocking(&self, packet: Packet) {
+        if self.config.channel_backpressure {
+            if let Err(e) = self
+                .packet_sender
+                .send(ProcessorPacket::ProcessPacket(packet))
+            {
+                warn!(
+                    "ConcurrentProcHandle: blocking send to flume channel failed; dropping packet: {e}"
+                );
+            }
+        } else if let Err(e) = self
+            .packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!("ConcurrentProcHandle: flume channel full; dropping packet: {e}");
+        }
+    }
+
+    fn send_to_connector_blocking(&self, packet: Packet) {
+        if self.config.channel_backpressure {
+            if let Err(e) = self
+                .connector_packet_sender
+                .blocking_send(ProcessorPacket::ProcessPacket(packet))
+            {
+                warn!(
+                    "ConcurrentProcHandle: blocking send to connector failed; dropping packet: {e}"
+                );
+            }
+        } else if let Err(e) = self
+            .connector_packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(packet))
+        {
+            warn!("ConcurrentProcHandle: connector channel full; dropping packet: {e}");
         }
     }
 }
@@ -785,15 +915,18 @@ impl Processor {
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
         #[allow(unused_mut)]
         let mut packet = packet;
+
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             #[cfg(feature = "reliable")]
             {
+                // if possible, deliver to the reliable transport subsystem
                 if self.try_deliver_reliable(&packet) {
                     return;
                 }
             }
-            // local delivery: use the destination IP address to distinguish between the TUN interface
+
+            // local TUN delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
             if packet.flow_id.dst_ip() == self.config.local_address {
                 if let Some(ref local_interface) = self.local_interface {
@@ -823,7 +956,7 @@ impl Processor {
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-            scheduler.send(packet);
+            scheduler.send(packet).await;
         }
     }
 

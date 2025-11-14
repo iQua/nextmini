@@ -550,6 +550,7 @@ impl Dataplane {
         let ip = parse_ipv4(group_ip)?;
         Ok(self.lookup_session(ip, source_node_id))
     }
+
     #[new]
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
@@ -565,14 +566,17 @@ impl Dataplane {
         let mut cfg = conductor.local_config();
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
+
         #[cfg(feature = "reliable")]
         let reliable = conductor.reliable_handle();
 
-        // Enter the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new succeeds.
+        // enters the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new() succeeds
         let py_if = {
             let _rt_guard = rt().enter();
-            PythonInterfaceHandle::new(cfg.channel_capacity)
+
+            PythonInterfaceHandle::new(cfg.channel_capacity, cfg.channel_backpressure)
         };
+
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
 
@@ -787,7 +791,8 @@ impl Dataplane {
     ) -> PyResult<u64> {
         let message_id = next_py_message_id();
         let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &body);
-        self.processor.process_packet(packet);
+        self.processor.process_packet_blocking(packet);
+
         Ok(message_id)
     }
 
