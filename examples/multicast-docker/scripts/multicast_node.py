@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Multicast docker helper backed by Rust-side reliability primitives."""
-
 from __future__ import annotations
 
 import argparse
