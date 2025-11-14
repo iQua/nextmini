@@ -197,8 +197,7 @@ pub fn encode_data(
 ) -> Vec<u8> {
     let ext_len = tfmcc.map(|_| TfmccDataHeader::LEN).unwrap_or(0);
     assert!(ext_len <= u16::MAX as usize);
-    let body_len =
-        8 + 4 + 2 + 2 + ext_len as u32 + payload.len() as u32; // RlmData base + extensions + payload
+    let body_len = 8 + 4 + 2 + 2 + ext_len as u32 + payload.len() as u32; // RlmData base + extensions + payload
     let mut out = vec![0u8; RlmHeader::LEN + body_len as usize];
     RlmHeader {
         magic: RLM_MAGIC,
@@ -247,9 +246,7 @@ pub fn decode_data(buf: &[u8]) -> Option<(RlmHeader, RlmData, &[u8])> {
     let ext_len = u16::from_be_bytes(buf[pos..pos + 2].try_into().ok()?);
     pos += 2;
     pos += 2; // reserved
-    if hdr.body_len as usize
-        != 8 + 4 + 2 + 2 + ext_len as usize + payload_len as usize
-    {
+    if hdr.body_len as usize != 8 + 4 + 2 + 2 + ext_len as usize + payload_len as usize {
         return None;
     }
     let ext_start = pos;

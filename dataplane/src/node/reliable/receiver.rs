@@ -158,7 +158,7 @@ pub async fn run(
                         if let Some(header) = data.tfmcc {
                             state.on_data_header(&header, now);
                         }
-                        state.on_chunk(data.index);
+                        state.on_chunk(data.index, now);
                     }
                     let ctx = FrameCtx {
                         data: &data,

@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
@@ -52,6 +52,73 @@ impl LossHistory {
 }
 
 #[derive(Debug)]
+struct LossEventTracker {
+    pending: BTreeMap<u64, Instant>,
+    packets_since_event: f64,
+}
+
+impl LossEventTracker {
+    fn new() -> Self {
+        Self {
+            pending: BTreeMap::new(),
+            packets_since_event: 0.0,
+        }
+    }
+
+    fn on_missing_range(&mut self, start: u64, end: u64, now: Instant) {
+        for idx in start..end {
+            self.pending.entry(idx).or_insert(now);
+        }
+    }
+
+    fn on_arrival(&mut self, seqno: u64) {
+        self.pending.remove(&seqno);
+    }
+
+    fn on_in_order_packet(&mut self) {
+        self.packets_since_event += 1.0;
+    }
+
+    fn poll_expired(&mut self, now: Instant, delay: Duration) -> Vec<f64> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let mut expired: Vec<(u64, Instant)> = self
+            .pending
+            .iter()
+            .filter_map(|(seq, ts)| {
+                if now.duration_since(*ts) >= delay {
+                    Some((*seq, *ts))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if expired.is_empty() {
+            return Vec::new();
+        }
+        expired.sort_by_key(|(_, ts)| *ts);
+        let mut outputs = Vec::new();
+        let mut cluster_anchor: Option<Instant> = None;
+        for (_, detected) in &expired {
+            let new_cluster = match cluster_anchor {
+                None => true,
+                Some(anchor) => detected.duration_since(anchor) > delay,
+            };
+            if new_cluster {
+                outputs.push(self.packets_since_event.max(1.0));
+                self.packets_since_event = 0.0;
+                cluster_anchor = Some(*detected);
+            }
+        }
+        for (seq, _) in expired {
+            self.pending.remove(&seq);
+        }
+        outputs
+    }
+}
+
+#[derive(Debug)]
 pub struct TfmccReceiver {
     cfg: TfmccConfig,
     receiver_id: u32,
@@ -59,7 +126,7 @@ pub struct TfmccReceiver {
     session_start: Instant,
     feedback_interval: Duration,
     expected_seqno: u64,
-    packets_since_loss: f64,
+    loss_tracker: LossEventTracker,
     loss_history: LossHistory,
     rtt_s: f64,
     have_rtt: bool,
@@ -82,7 +149,7 @@ impl TfmccReceiver {
             session_start: Instant::now(),
             feedback_interval,
             expected_seqno: 0,
-            packets_since_loss: 0.0,
+            loss_tracker: LossEventTracker::new(),
             loss_history: LossHistory::new(),
             rtt_s: 0.0,
             have_rtt: false,
@@ -98,30 +165,36 @@ impl TfmccReceiver {
     pub fn on_data_header(&mut self, header: &TfmccDataHeader, now: Instant) {
         self.last_header = Some(*header);
         self.last_ts_i_ms = header.ts_i_ms;
-        if let Some((stamp, sent)) = self.pending_rtt
-            && header.receiver_id == self.receiver_id
-            && stamp == header.tr_r_echo_ms
-        {
+        if let Some((_stamp, sent)) = self.pending_rtt.filter(|(stamp, _)| {
+            header.receiver_id == self.receiver_id && *stamp == header.tr_r_echo_ms
+        }) {
             let sample = now.saturating_duration_since(sent).as_secs_f64();
             self.update_rtt(sample);
             self.pending_rtt = None;
         }
     }
 
-    pub fn on_chunk(&mut self, seqno: u64) {
+    pub fn on_chunk(&mut self, seqno: u64, now: Instant) {
+        self.loss_tracker.on_arrival(seqno);
         if self.expected_seqno == 0 {
             self.expected_seqno = seqno.saturating_add(1);
-            self.packets_since_loss = 1.0;
+            self.loss_tracker.on_in_order_packet();
             return;
         }
-        if seqno >= self.expected_seqno {
-            if seqno > self.expected_seqno {
-                self.loss_history.record(self.packets_since_loss.max(1.0));
-                self.packets_since_loss = 0.0;
-            }
-            self.expected_seqno = seqno.saturating_add(1);
+        if seqno < self.expected_seqno {
+            // duplicate or reordered inside window; already accounted for
+            return;
         }
-        self.packets_since_loss += 1.0;
+        if seqno > self.expected_seqno {
+            self.loss_tracker
+                .on_missing_range(self.expected_seqno, seqno, now);
+        }
+        self.expected_seqno = seqno.saturating_add(1);
+        self.loss_tracker.on_in_order_packet();
+        let delay = self.loss_detection_delay();
+        for interval in self.loss_tracker.poll_expired(now, delay) {
+            self.loss_history.record(interval);
+        }
         self.recompute_rate();
     }
 
@@ -211,11 +284,19 @@ impl TfmccReceiver {
                 have_rtt = self.have_rtt,
                 have_loss = self.loss_history.have_loss(),
                 rtt_ms = (self.rtt_s * 1000.0) as u64,
-                loss_rate = self.loss_history.loss_event_rate(),
+                loss_rate = self.loss_history.loss_event_rate().unwrap_or(0.0),
                 "TFMCC receiver recomputed desired rate"
             );
         }
         self.x_r_bps = new_rate;
+    }
+
+    fn loss_detection_delay(&self) -> Duration {
+        if self.have_rtt && self.rtt_s.is_finite() && self.rtt_s > 0.0 {
+            Duration::from_secs_f64(self.rtt_s.max(MIN_RTT_S))
+        } else {
+            Duration::from_millis(self.cfg.feedback_interval_ms.max(10))
+        }
     }
 }
 
@@ -324,10 +405,12 @@ impl TfmccSender {
             self.fb_nr = self.fb_nr.wrapping_add(1);
             self.last_round_start = now;
         }
-        if let Some(clr) = self.clr_id
-            && let Some(info) = self.receivers.get(&clr)
-            && now.duration_since(info.last_feedback_at) >= self.feedback_interval * 3
-        {
+        let should_drop_clr = self
+            .clr_id
+            .and_then(|clr| self.receivers.get(&clr))
+            .map(|info| now.duration_since(info.last_feedback_at) >= self.feedback_interval * 3)
+            .unwrap_or(false);
+        if should_drop_clr {
             self.current_rate_bps = (self.current_rate_bps * 0.5).max(self.cfg.min_rate_bps);
             self.clr_id = None;
         }

@@ -542,9 +542,10 @@ impl SenderState {
             }
             _ => {
                 if let RlmControl::TfmccFeedback { .. } = &control
-                    && let Some(ctrl) = &mut self.tfmcc {
-                        ctrl.on_feedback(&control, now);
-                    }
+                    && let Some(ctrl) = &mut self.tfmcc
+                {
+                    ctrl.on_feedback(&control, now);
+                }
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
                         session_id = self.session_id,
