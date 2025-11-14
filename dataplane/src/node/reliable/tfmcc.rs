@@ -8,7 +8,6 @@ use nextmini_messages::rlm::{RlmControl, TfmccDataHeader};
 use super::session::TfmccConfig;
 
 const MAX_LOSS_SAMPLES: usize = 32;
-const MAX_PENDING_RTT: usize = 32;
 const MIN_RTT_S: f64 = 0.001;
 
 #[derive(Debug)]
@@ -69,7 +68,7 @@ pub struct TfmccReceiver {
     last_ts_i_ms: u32,
     last_feedback_sent: Option<Instant>,
     last_sent_round: u8,
-    pending_rtt: VecDeque<(u32, Instant)>,
+    pending_rtt: Option<(u32, Instant)>,
 }
 
 impl TfmccReceiver {
@@ -92,24 +91,18 @@ impl TfmccReceiver {
             last_ts_i_ms: 0,
             last_feedback_sent: None,
             last_sent_round: 0,
-            pending_rtt: VecDeque::with_capacity(MAX_PENDING_RTT),
+            pending_rtt: None,
         }
     }
 
     pub fn on_data_header(&mut self, header: &TfmccDataHeader, now: Instant) {
         self.last_header = Some(*header);
         self.last_ts_i_ms = header.ts_i_ms;
-        while let Some((stamp, sent)) = self.pending_rtt.front().copied() {
-            if stamp == header.tr_r_echo_ms {
-                let _ = self.pending_rtt.pop_front();
+        if let Some((stamp, sent)) = self.pending_rtt {
+            if header.receiver_id == self.receiver_id && stamp == header.tr_r_echo_ms {
                 let sample = now.saturating_duration_since(sent).as_secs_f64();
                 self.update_rtt(sample);
-                break;
-            }
-            if now.duration_since(sent) > Duration::from_secs(5) || stamp < header.tr_r_echo_ms {
-                let _ = self.pending_rtt.pop_front();
-            } else {
-                break;
+                self.pending_rtt = None;
             }
         }
     }
@@ -146,9 +139,8 @@ impl TfmccReceiver {
         self.last_feedback_sent = Some(now);
         self.last_sent_round = header.fb_nr;
         let tr_r_ms = self.elapsed_ms(now);
-        self.pending_rtt.push_back((tr_r_ms, now));
-        if self.pending_rtt.len() > MAX_PENDING_RTT {
-            self.pending_rtt.pop_front();
+        if self.pending_rtt.is_none() {
+            self.pending_rtt = Some((tr_r_ms, now));
         }
         let bits_per_s = self
             .x_r_bps
