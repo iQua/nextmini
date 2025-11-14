@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 import time
+import torch
 from pathlib import Path
 from typing import List, Tuple
 
@@ -159,7 +160,6 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
         tensor_dir = Path("/workspace/tensors")
         tensor_dir.mkdir(parents=True, exist_ok=True)
         args.tensor_path = tensor_dir / "tensor-auto-1g.pt"
-    import torch  # Imported lazily to keep startup light
 
     log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
@@ -218,7 +218,7 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    # New reliable path (feature=reliable): use thin shim; engines may be stubbed until writer lands
+    # Launch reliable multicast send via the consolidated send_file API.
     sid = dataplane.send_file(
         group_ip,
         receiver_ids,
@@ -260,7 +260,7 @@ def run_receiver(args: argparse.Namespace) -> None:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
-    sid = dataplane.reliable_receive_file_rs(
+    sid = dataplane.receive_file(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
