@@ -137,9 +137,7 @@ def write_group_info(
     atomic_write_json(group_info_path(args), payload)
 
 
-def wait_for_group_info(
-    args: argparse.Namespace, timeout: int
-) -> Tuple[int, str]:
+def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, str]:
     path = group_info_path(args)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -161,9 +159,7 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     log(f"Generating ~50MB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
     # Generate ~50MB tensor: 256 * 1024 * 50 floats * 4 bytes/float ≈ 50MB
-    tensor = (
-        torch.randn(256, 1024, 50, dtype=torch.float32).contiguous().cpu()
-    )
+    tensor = torch.randn(256, 1024, 50, dtype=torch.float32).contiguous().cpu()
 
     # For 1MB testing, uncomment the following lines and comment out the 1GB version above:
     # args.tensor_path = tensor_dir / "tensor-auto-1m.pt"
