@@ -126,13 +126,18 @@ pub async fn run(
     control_io.send(&RlmControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
-    let mut tfmcc = match &cfg.cc {
-        CongestionControl::Tfmcc(tcfg) => Some(TfmccReceiver::new(
-            cfg.common.local_node_id as u32,
-            tcfg.clone(),
-            cfg.common.chunk_size,
-        )),
-        CongestionControl::Static => None,
+    // TFMCC is disabled when enable_sack_nack=false (channel_backpressure=true)
+    let mut tfmcc = if !cfg.enable_sack_nack {
+        None
+    } else {
+        match &cfg.cc {
+            CongestionControl::Tfmcc(tcfg) => Some(TfmccReceiver::new(
+                cfg.common.local_node_id as u32,
+                tcfg.clone(),
+                cfg.common.chunk_size,
+            )),
+            CongestionControl::Static => None,
+        }
     };
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
@@ -188,40 +193,44 @@ pub async fn run(
                             if runs.is_empty() {
                                 sack_scheduler.clear();
                                 sack_timer = None;
-                            } else {
+                            } else if cfg.enable_sack_nack {
+                                // SACK processing enabled (normal mode)
                                 sack_scheduler.record(ack_base, runs);
                                 if let Some(snapshot) = sack_scheduler.take_ready(now) {
                                     emit_sack(&control_io, snapshot);
                                 }
                                 reset_sack_timer(&mut sack_timer, &sack_scheduler, now);
                             }
-                        } else if sack_scheduler.has_snapshot() {
+                        } else if cfg.enable_sack_nack && sack_scheduler.has_snapshot() {
                             sack_scheduler.clear();
                             sack_timer = None;
                         }
-                        if highest_seen >= expected
-                            && nack_limiter.should_send(expected, now)
-                        {
-                            tracing::debug!(
-                                session_id = sid,
-                                expected = expected,
-                                highest_seen = highest_seen,
-                                gap_size = highest_seen - expected,
-                                "RLM receiver: sending REPAIR/NACK request"
-                            );
-                            if cfg.nack_jitter_ms > 0 {
-                                tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
+                        // REPAIR/NACK processing (only when backpressure disabled)
+                        if cfg.enable_sack_nack {
+                            if highest_seen >= expected
+                                && nack_limiter.should_send(expected, now)
+                            {
+                                tracing::debug!(
+                                    session_id = sid,
+                                    expected = expected,
+                                    highest_seen = highest_seen,
+                                    gap_size = highest_seen - expected,
+                                    "RLM receiver: sending REPAIR/NACK request"
+                                );
+                                if cfg.nack_jitter_ms > 0 {
+                                    tokio::time::sleep(Duration::from_millis(cfg.nack_jitter_ms)).await;
+                                }
+                                control_io.send(&RlmControl::Repair {
+                                    indices: vec![expected],
+                                });
+                            } else if highest_seen >= expected {
+                                tracing::trace!(
+                                    session_id = sid,
+                                    expected = expected,
+                                    highest_seen = highest_seen,
+                                    "RLM receiver: gap detected but NACK limiter blocked send"
+                                );
                             }
-                            control_io.send(&RlmControl::Repair {
-                                indices: vec![expected],
-                            });
-                        } else if highest_seen >= expected {
-                            tracing::trace!(
-                                session_id = sid,
-                                expected = expected,
-                                highest_seen = highest_seen,
-                                "RLM receiver: gap detected but NACK limiter blocked send"
-                            );
                         }
                         if let Some(state) = tfmcc.as_mut()
                             && let Some(feedback) = state.maybe_feedback(now) {
@@ -252,7 +261,8 @@ pub async fn run(
                 if let Some(timer) = &mut sack_timer {
                     timer.as_mut().await;
                 }
-            }, if sack_timer.is_some() => {
+            }, if sack_timer.is_some() && cfg.enable_sack_nack => {
+                // SACK timer event (only when backpressure disabled)
                 sack_timer = None;
                 let now = Instant::now();
                 if let Some(snapshot) = sack_scheduler.take_ready(now) {

@@ -261,6 +261,8 @@ struct SenderState {
     repair_backoff: Duration,
     manifest_interval: Duration,
     manifest_last_sent: Instant,
+    /// When false (channel_backpressure=true), SACK/NACK-based repair is disabled
+    enable_sack_nack: bool,
 }
 
 impl SenderState {
@@ -285,13 +287,18 @@ impl SenderState {
         let dst_ip = common.group_ip;
         let base_window = compute_window(&cfg);
         let session_start = Instant::now();
-        let tfmcc = match &cfg.cc {
-            CongestionControl::Static => None,
-            CongestionControl::Tfmcc(tcfg) => Some(TfmccSender::new(
-                tcfg.clone(),
-                cfg.common.chunk_size,
-                session_start,
-            )),
+        // TFMCC is disabled when use_tfmcc=false (channel_backpressure=true)
+        let tfmcc = if !cfg.use_tfmcc {
+            None
+        } else {
+            match &cfg.cc {
+                CongestionControl::Static => None,
+                CongestionControl::Tfmcc(tcfg) => Some(TfmccSender::new(
+                    tcfg.clone(),
+                    cfg.common.chunk_size,
+                    session_start,
+                )),
+            }
         };
 
         if cfg.common.control_weight != 0 {
@@ -353,6 +360,7 @@ impl SenderState {
             repair_backoff: Duration::from_millis(cfg.repair_backoff_ms.max(1)),
             manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             manifest_last_sent: Instant::now(),
+            enable_sack_nack: cfg.enable_sack_nack,
         }
     }
 
@@ -551,6 +559,19 @@ impl SenderState {
                 {
                     ctrl.on_feedback(&control, now);
                 }
+
+                // Skip SACK/REPAIR processing when backpressure is enabled
+                if !self.enable_sack_nack {
+                    if matches!(control, RlmControl::Sack { .. } | RlmControl::Repair { .. }) {
+                        tracing::debug!(
+                            session_id = self.session_id,
+                            control_type = ?control,
+                            "RLM sender: skipping SACK/REPAIR (backpressure enabled)"
+                        );
+                        return;
+                    }
+                }
+
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
                         session_id = self.session_id,

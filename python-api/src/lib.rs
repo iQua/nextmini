@@ -364,6 +364,9 @@ impl Dataplane {
                     cc,
                     topology_ready: None,
                     routes_ready: None,
+                    // Disable TFMCC and SACK/NACK when channel backpressure is enabled
+                    use_tfmcc: !self.cfg.channel_backpressure,
+                    enable_sack_nack: !self.cfg.channel_backpressure,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
                 self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
@@ -457,6 +460,8 @@ impl Dataplane {
                     } else {
                         reliable_session::CongestionControl::Static
                     },
+                    // Disable SACK/NACK/REPAIR when channel backpressure is enabled
+                    enable_sack_nack: !self.cfg.channel_backpressure,
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))
