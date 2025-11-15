@@ -78,6 +78,19 @@ def log(message: str, quiet: bool = False) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
+def format_throughput(bytes_transferred: int, elapsed_seconds: float) -> str:
+    if elapsed_seconds <= 0:
+        return "N/A"
+    
+    bytes_per_sec = bytes_transferred / elapsed_seconds
+    mbps = (bytes_per_sec * 8) / 1_000_000
+    mib_per_sec = bytes_per_sec / (1024 * 1024)
+    
+    return f"{mib_per_sec:.2f} MiB/s ({mbps:.2f} Mbps)"
+
+
+
+
 def metadata_path(args: argparse.Namespace) -> Path:
     return args.artifact_dir / METADATA_FILE
 
@@ -212,6 +225,9 @@ def run_source(args: argparse.Namespace) -> None:
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
     # Launch reliable multicast send via the consolidated send_file API.
+    log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
+    send_start_time = time.perf_counter()
+    
     sid = dataplane.send_file(
         group_ip,
         receiver_ids,
@@ -221,9 +237,17 @@ def run_source(args: argparse.Namespace) -> None:
         dst_port=args.dst_port,
     )
     log(f"Started reliable send session sid={sid}", args.quiet)
+    
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
+        send_end_time = time.perf_counter()
+        elapsed = send_end_time - send_start_time
+        
         log(f"Send completion: {ok}", args.quiet)
+        log(
+            f"Transfer completed in {elapsed:.3f}s - Throughput: {format_throughput(total_bytes, elapsed)}",
+            args.quiet,
+        )
     else:
         log(
             "Dataplane lacks reliable_wait; send completion signal unavailable.",
@@ -252,6 +276,9 @@ def run_receiver(args: argparse.Namespace) -> None:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
+    log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
+    recv_start_time = time.perf_counter()
+    
     sid = dataplane.receive_file(
         group_ip,
         args.source_node_id,
@@ -262,10 +289,18 @@ def run_receiver(args: argparse.Namespace) -> None:
         sink_path=str(sink_path) if sink_path else None,
     )
 
-    log(f"Started reliable receive session sid={sid}", args.quiet)
+    log(f"Started reliable receive session sid={sid}.", args.quiet)
+    
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
-        log(f"Receive completion: {ok}", args.quiet)
+        recv_end_time = time.perf_counter()
+        elapsed = recv_end_time - recv_start_time
+        
+        log(f"Receive completion: {ok}.", args.quiet)
+        log(
+            f"Reception completed in {elapsed:.3f}s - Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
+            args.quiet,
+        )
     else:
         log(
             "Dataplane lacks reliable_wait; receive completion signal unavailable.",
