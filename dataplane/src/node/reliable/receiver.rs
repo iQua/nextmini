@@ -15,23 +15,23 @@ use super::session::ReceiverConfig;
 
 /// Utility for emitting completion control traffic (ACKs) via the node
 /// processor stack using the same addressing the sender expects.
-struct ControlEmitter<'a> {
+struct ControlEmitter {
     session_id: u64,
     src_ip: std::net::Ipv4Addr,
     src_port: u16,
     dst_ip: std::net::Ipv4Addr,
     dst_port: u16,
-    processors: &'a ProcessorHandle,
+    processors: ProcessorHandle,
 }
 
-impl<'a> ControlEmitter<'a> {
+impl ControlEmitter {
     fn new(
         session_id: u64,
         src_ip: std::net::Ipv4Addr,
         src_port: u16,
         dst_ip: std::net::Ipv4Addr,
         dst_port: u16,
-        processors: &'a ProcessorHandle,
+        processors: ProcessorHandle,
     ) -> Self {
         Self {
             session_id,
@@ -113,7 +113,7 @@ pub async fn run(
         ctrl_src_port,
         dst_ip,
         ctrl_dst_port,
-        &processors,
+        processors.clone(),
     );
 
     control_io.send(&RlmControl::Ready {
@@ -224,7 +224,7 @@ fn handle_data_frame(ctx: FrameCtx<'_>, mut file: Option<&mut std::fs::File>) ->
 fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
-    ctrl_io: &ControlEmitter<'_>,
+    ctrl_io: &ControlEmitter,
     eot_index: &mut Option<u64>,
 ) -> bool {
     let Some((_, control)) = rlm::decode_control(&frame.bytes) else {
