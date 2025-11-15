@@ -14,7 +14,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
-use super::control::{self, CompletionPolicy};
+use super::control;
 use super::session::{CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
@@ -62,8 +62,7 @@ pub async fn run(
             }
         });
 
-    let completion_policy = CompletionPolicy::All;
-    let mut state = SenderState::new(cfg, total_chunks, completion_policy);
+    let mut state = SenderState::new(cfg, total_chunks);
     let mut chunk_source =
         ChunkSource::new(source_file, state.common.chunk_size, total_chunks, sid);
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
@@ -194,7 +193,6 @@ pub async fn run(
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
-    completion_policy: CompletionPolicy,
     receiver_count: usize,
     base_window: usize,
     window: usize,
@@ -223,7 +221,7 @@ struct SenderState {
 }
 
 impl SenderState {
-    fn new(mut cfg: SenderConfig, total_chunks: u64, completion_policy: CompletionPolicy) -> Self {
+    fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
         let ready_gate_open = receiver_count == 0;
@@ -271,7 +269,6 @@ impl SenderState {
         Self {
             session_id: common.session_id,
             common,
-            completion_policy,
             receiver_count,
             base_window,
             window: base_window,
@@ -445,7 +442,6 @@ impl SenderState {
                     &control,
                     &mut self.inflight,
                     self.receiver_count.max(1),
-                    &self.completion_policy,
                 );
                 if !retired.is_empty() {
                     tracing::debug!(

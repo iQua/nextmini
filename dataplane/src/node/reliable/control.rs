@@ -2,20 +2,6 @@ use std::collections::{BTreeMap, HashSet};
 
 use nextmini_messages::rlm::RlmControl;
 
-/// Determines when a chunk can be retired from the sender's inflight queue.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CompletionPolicy {
-    All,
-}
-
-impl CompletionPolicy {
-    pub fn should_retire(&self, acked_by: &HashSet<usize>, receiver_count: usize) -> bool {
-        match *self {
-            CompletionPolicy::All => acked_by.len() == receiver_count,
-        }
-    }
-}
-
 /// Process a single control event from `from_node` and update inflight state.
 /// Returns a list of chunk indices that should be retired after this event.
 pub fn process_control_event(
@@ -23,7 +9,6 @@ pub fn process_control_event(
     ctrl: &RlmControl,
     inflight: &mut BTreeMap<u64, HashSet<usize>>,
     receiver_count: usize,
-    policy: &CompletionPolicy,
 ) -> Vec<u64> {
     match ctrl {
         RlmControl::Ack { up_to } => {
@@ -33,7 +18,8 @@ pub fn process_control_event(
             }
             let mut completed = Vec::new();
             for (idx, acked_by) in inflight.range(..=up) {
-                if policy.should_retire(acked_by, receiver_count) {
+                // a chunk should be retired when all receivers have acknowledged it
+                if acked_by.len() == receiver_count {
                     completed.push(*idx);
                 }
             }
@@ -57,26 +43,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn process_control_ack_retires_when_policy_all() {
+    fn process_control_ack_retires_when_all_acknowledge() {
         let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
         for idx in 1..=3u64 {
             inflight.insert(idx, HashSet::new());
         }
-        let policy = CompletionPolicy::All;
         let rc = 2usize;
 
         let retired1 =
-            process_control_event(1, &RlmControl::Ack { up_to: 3 }, &mut inflight, rc, &policy);
+            process_control_event(1, &RlmControl::Ack { up_to: 3 }, &mut inflight, rc);
         assert!(retired1.is_empty());
         retire_chunks(&retired1, &mut inflight);
 
         let retired2 =
-            process_control_event(2, &RlmControl::Ack { up_to: 2 }, &mut inflight, rc, &policy);
+            process_control_event(2, &RlmControl::Ack { up_to: 2 }, &mut inflight, rc);
         assert_eq!(retired2, vec![1, 2]);
         retire_chunks(&retired2, &mut inflight);
 
         let retired3 =
-            process_control_event(2, &RlmControl::Ack { up_to: 3 }, &mut inflight, rc, &policy);
+            process_control_event(2, &RlmControl::Ack { up_to: 3 }, &mut inflight, rc);
         assert_eq!(retired3, vec![3]);
     }
 

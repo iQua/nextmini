@@ -297,37 +297,6 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
     Some((hdr, ctrl))
 }
 
-/// Ack policy controls sender retirement/commit logic.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum AckPolicy {
-    All,
-    KofN(u16),
-    Fraction(f32),
-}
-
-/// Parse ack policy strings: "all", "k:N" where N>=1, or "frac:P" where 0<P<=1.
-pub fn parse_ack_policy(s: &str) -> Option<AckPolicy> {
-    let low = s.trim().to_ascii_lowercase();
-    if low == "all" {
-        return Some(AckPolicy::All);
-    }
-    if let Some(rest) = low.strip_prefix("k:") {
-        let n: u32 = rest.parse().ok()?;
-        if n == 0 || n > u16::MAX as u32 {
-            return None;
-        }
-        return Some(AckPolicy::KofN(n as u16));
-    }
-    if let Some(rest) = low.strip_prefix("frac:") {
-        let p: f32 = rest.parse().ok()?;
-        if p <= 0.0 || p > 1.0 {
-            return None;
-        }
-        return Some(AckPolicy::Fraction(p));
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,22 +344,6 @@ mod tests {
         let mut buf = encode_data(1, 1, b"x");
         buf[0] = 0; // break magic
         assert!(decode_data(&buf).is_none());
-    }
-
-    #[test]
-    fn parse_ack_policy_variants() {
-        assert_eq!(parse_ack_policy("all"), Some(AckPolicy::All));
-        assert_eq!(parse_ack_policy("ALL"), Some(AckPolicy::All));
-        assert_eq!(parse_ack_policy("k:3"), Some(AckPolicy::KofN(3)));
-        assert_eq!(
-            parse_ack_policy("frac:0.75"),
-            Some(AckPolicy::Fraction(0.75))
-        );
-        assert_eq!(parse_ack_policy("k:0"), None);
-        assert_eq!(parse_ack_policy("k:70000"), None);
-        assert_eq!(parse_ack_policy("frac:0"), None);
-        assert_eq!(parse_ack_policy("frac:1.2"), None);
-        assert_eq!(parse_ack_policy("bogus"), None);
     }
 
     #[test]
