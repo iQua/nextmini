@@ -34,27 +34,8 @@ except ImportError as e:
     sys.exit(1)
 
 
-def _extract_tcp_payload(packet_buffer: bytes) -> bytes:
-    """Extract TCP payload from an IPv4/TCP packet."""
-    
-    if len(packet_buffer) < 20:
-        raise ValueError("Packet too short to contain IPv4 header")
-    
-    ip_header_len = (packet_buffer[0] & 0x0F) * 4
-    if ip_header_len < 20 or len(packet_buffer) < ip_header_len + 20:
-        raise ValueError("Invalid IPv4 header length in packet")
-    
-    tcp_header_offset = ip_header_len
-    tcp_data_offset = (packet_buffer[tcp_header_offset + 12] >> 4) & 0x0F
-    tcp_header_len = tcp_data_offset * 4
-    if tcp_header_len < 20:
-        raise ValueError("Invalid TCP header length in packet")
-    
-    payload_offset = ip_header_len + tcp_header_len
-    if payload_offset > len(packet_buffer):
-        raise ValueError("Malformed packet: payload offset exceeds packet length")
-    
-    return packet_buffer[payload_offset:]
+# Note: Manual TCP header parsing is no longer needed.
+# The dataplane now delivers PayloadDelivery objects with headers already stripped.
 
 
 class MLWorker:
@@ -107,13 +88,13 @@ class MLWorker:
         Returns:
             Received tensor, or None if timeout
         """
-        packet = self.receiver.recv(timeout_ms=timeout_ms)
-        if packet is None:
+        delivery = self.receiver.recv(timeout_ms=timeout_ms)
+        if delivery is None:
             return None
-        
-        # Extract TCP payload from the full packet
-        payload = _extract_tcp_payload(packet)
-        
+
+        # Get TCP payload (headers already stripped by dataplane)
+        payload = delivery.payload
+
         # Deserialize tensor
         tensor = deserialize_tensor(payload)
         return tensor

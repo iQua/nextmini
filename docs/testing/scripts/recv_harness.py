@@ -121,7 +121,9 @@ async def receive_loop(args: argparse.Namespace) -> dict:
 
     async def _recv_once() -> Optional[bytes]:
         try:
-            return await asyncio.wait_for(receiver.recv_async(), timeout=timeout)
+            delivery = await asyncio.wait_for(receiver.recv_async(), timeout=timeout)
+            # Extract payload from PayloadDelivery object
+            return delivery.payload if delivery else None
         except asyncio.TimeoutError:
             return None
 
