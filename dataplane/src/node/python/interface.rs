@@ -35,25 +35,16 @@ struct Inner {
     senders: Mutex<AHashMap<FlowId, ReceiverEntry>>,
     event_tx: mpsc::Sender<PythonEvent>,
     event_rx: Mutex<mpsc::Receiver<PythonEvent>>,
+    backpressure: bool,
 }
 
 #[derive(Clone, Debug)]
 struct ReceiverEntry {
-    mode: DeliveryMode,
-    sender: mpsc::Sender<PythonDelivery>,
+    sender: mpsc::Sender<PayloadDelivery>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DeliveryMode {
-    RawPacket,
-    PayloadOnly,
-}
-
-#[derive(Clone, Debug)]
-pub enum PythonDelivery {
-    Raw(Packet),
-    Payload(PayloadDelivery),
-}
+/// Payload delivery to Python receivers (previously supported Raw packets, now payload-only)
+pub type PythonDelivery = PayloadDelivery;
 
 #[derive(Clone, Debug)]
 /// Payload-only delivery metadata consumed by Python receivers.
@@ -98,14 +89,16 @@ pub enum PayloadFormat {
 
 impl PythonInterfaceHandle {
     #[allow(dead_code)]
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, backpressure: bool) -> Self {
         let (event_tx, event_rx) = mpsc::channel(capacity);
+
         Self {
             inner: Arc::new(Inner {
                 capacity,
                 senders: Mutex::new(AHashMap::new()),
                 event_tx,
                 event_rx: Mutex::new(event_rx),
+                backpressure,
             }),
         }
     }
@@ -114,16 +107,11 @@ impl PythonInterfaceHandle {
     pub async fn register_receiver(
         &self,
         flow_id: FlowId,
-        payload_only: bool,
     ) -> mpsc::Receiver<PythonDelivery> {
-        let mode = if payload_only {
-            DeliveryMode::PayloadOnly
-        } else {
-            DeliveryMode::RawPacket
-        };
         let (tx, rx) = mpsc::channel(self.inner.capacity);
         let mut map = self.inner.senders.lock().await;
-        map.insert(flow_id, ReceiverEntry { mode, sender: tx });
+        map.insert(flow_id, ReceiverEntry { sender: tx });
+
         rx
     }
 
@@ -149,54 +137,31 @@ impl PythonInterfaceHandle {
             return Err(packet);
         };
 
-        match entry.mode {
-            DeliveryMode::RawPacket => self.deliver_raw(entry, packet).await,
-            DeliveryMode::PayloadOnly => self.deliver_payload(entry, packet).await,
-        }
-    }
-
-    async fn deliver_raw(&self, entry: ReceiverEntry, packet: Packet) -> Result<(), Packet> {
-        Self::send_raw(entry, packet)
+        // Always deliver payload (no raw packet mode)
+        self.deliver_payload(entry, packet).await
     }
 
     async fn deliver_payload(&self, entry: ReceiverEntry, packet: Packet) -> Result<(), Packet> {
         let delivery = raw_payload_delivery(&packet);
-        if Self::send_payload(entry, delivery).is_err() {
+        if Self::send_payload(entry, delivery, self.inner.backpressure).await.is_err() {
             return Err(packet);
         }
         Ok(())
     }
 
-    fn send_payload(entry: ReceiverEntry, payload: PayloadDelivery) -> Result<(), ()> {
-        match entry.sender.try_send(PythonDelivery::Payload(payload)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(delivery)) | Err(TrySendError::Closed(delivery)) => {
-                match delivery {
-                    PythonDelivery::Payload(dropped) => dropped.log_queue_drop(),
-                    PythonDelivery::Raw(pkt) => {
-                        warn!(
-                            flow = %pkt.flow_id,
-                            "PythonInterface: queue returned unexpected raw packet in payload path; dropping packet."
-                        );
-                    }
+    async fn send_payload(entry: ReceiverEntry, payload: PayloadDelivery, backpressure: bool) -> Result<(), ()> {
+        if backpressure {
+            // With backpressure enabled, wait for capacity
+            entry.sender.send(payload).await.map_err(|_| ())
+        } else {
+            // Without backpressure, drop on full queue
+            match entry.sender.try_send(payload) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(dropped)) | Err(TrySendError::Closed(dropped)) => {
+                    dropped.log_queue_drop();
+                    Err(())
                 }
-                Err(())
             }
-        }
-    }
-
-    fn send_raw(entry: ReceiverEntry, packet: Packet) -> Result<(), Packet> {
-        match entry.sender.try_send(PythonDelivery::Raw(packet)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(PythonDelivery::Raw(pkt)))
-            | Err(TrySendError::Closed(PythonDelivery::Raw(pkt))) => {
-                warn!(
-                    "PythonInterface: queue unavailable for flow {}; dropping packet.",
-                    pkt.flow_id
-                );
-                Err(pkt)
-            }
-            Err(_) => unreachable!("unexpected delivery variant"),
         }
     }
 
@@ -287,14 +252,15 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_success_for_registered_flow() {
-        let handle = PythonInterfaceHandle::new(4);
+        let handle = PythonInterfaceHandle::new(4, false);
         let flow_id = Packet::flow_id_from_parts(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle.register_receiver(flow_id, false).await;
+
+        let mut receiver = handle.register_receiver(flow_id).await;
 
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
@@ -303,25 +269,28 @@ mod tests {
             5000,
             &[1, 2, 3, 4],
         );
+
         assert!(handle.deliver(packet.clone()).await.is_ok());
-        match receiver.recv().await {
-            Some(PythonDelivery::Raw(received)) => {
-                assert_eq!(received.bytes(), packet.bytes())
-            }
-            other => panic!("unexpected delivery: {:?}", other),
-        }
+
+        // Now receives payload (headers stripped)
+        let payload = receiver.recv().await.expect("should receive payload");
+        assert_eq!(payload.bytes.as_ref(), &[1, 2, 3, 4]);
+        assert_eq!(payload.src_ip, Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(payload.dst_ip, Ipv4Addr::new(10, 0, 0, 2));
+        assert_eq!(payload.src_port, 4000);
+        assert_eq!(payload.dst_port, 5000);
     }
 
     #[tokio::test]
     async fn deliver_fails_when_queue_full() {
-        let handle = PythonInterfaceHandle::new(1);
+        let handle = PythonInterfaceHandle::new(1, false);
         let flow_id = Packet::flow_id_from_parts(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle.register_receiver(flow_id, false).await;
+        let mut receiver = handle.register_receiver(flow_id).await;
 
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
@@ -337,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn deliver_returns_error_without_receiver() {
-        let handle = PythonInterfaceHandle::new(4);
+        let handle = PythonInterfaceHandle::new(4, false);
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
@@ -349,15 +318,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn payload_only_receives_tcp_payload() {
-        let handle = PythonInterfaceHandle::new(4);
+    async fn delivers_tcp_payload_with_metadata() {
+        let handle = PythonInterfaceHandle::new(4, false);
         let flow_id = Packet::flow_id_from_parts(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
         );
-        let mut receiver = handle.register_receiver(flow_id, true).await;
+        let mut receiver = handle.register_receiver(flow_id).await;
 
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
@@ -367,15 +336,64 @@ mod tests {
             &[1, 2, 3, 4],
         );
         assert!(handle.deliver(packet).await.is_ok());
-        match receiver.recv().await {
-            Some(PythonDelivery::Payload(payload)) => {
-                assert_eq!(payload.bytes.as_ref(), &[1, 2, 3, 4]);
-                assert_eq!(payload.message_id, None);
-                assert_eq!(payload.total_len, None);
-                assert_eq!(payload.fragment_count, None);
-                assert_eq!(payload.payload_format, PayloadFormat::RawPacket);
-            }
-            other => panic!("unexpected delivery: {:?}", other),
-        }
+
+        let payload = receiver.recv().await.expect("should receive payload");
+        assert_eq!(payload.bytes.as_ref(), &[1, 2, 3, 4]);
+        assert_eq!(payload.message_id, None);
+        assert_eq!(payload.total_len, None);
+        assert_eq!(payload.fragment_count, None);
+        assert_eq!(payload.payload_format, PayloadFormat::RawPacket);
+    }
+
+    #[tokio::test]
+    async fn backpressure_waits_instead_of_dropping() {
+        // Create handle with backpressure enabled and capacity of 1
+        let handle = PythonInterfaceHandle::new(1, true);
+        let flow_id = Packet::flow_id_from_parts(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+        );
+        let mut receiver = handle.register_receiver(flow_id).await;
+
+        // First packet should succeed
+        let packet1 = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            &[1, 2, 3, 4],
+        );
+        assert!(handle.deliver(packet1.clone()).await.is_ok());
+
+        // Second packet should also succeed (waits instead of dropping)
+        let packet2 = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            &[5, 6, 7, 8],
+        );
+
+        // Spawn delivery in background since it will block
+        let handle_clone = handle.clone();
+        let deliver_task = tokio::spawn(async move {
+            handle_clone.deliver(packet2).await
+        });
+
+        // Give it a moment to start blocking
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Receive first packet to make space
+        let payload1 = receiver.recv().await.expect("should receive first payload");
+        assert_eq!(payload1.bytes.as_ref(), &[1, 2, 3, 4]);
+
+        // Now the second delivery should complete
+        assert!(deliver_task.await.unwrap().is_ok());
+
+        // Verify second packet was received
+        let payload2 = receiver.recv().await.expect("should receive second payload");
+        assert_eq!(payload2.bytes.as_ref(), &[5, 6, 7, 8]);
     }
 }

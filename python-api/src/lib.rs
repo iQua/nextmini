@@ -71,7 +71,6 @@ static PY_MESSAGE_ID_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[pyclass]
 struct PacketReceiver {
-    payload_only: bool,
     inner: Arc<Mutex<mpsc::Receiver<PythonDelivery>>>,
 }
 
@@ -80,7 +79,6 @@ impl PacketReceiver {
     #[pyo3(signature = (timeout_ms=None))]
     fn recv(&self, timeout_ms: Option<u64>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let inner = self.inner.clone();
-        let payload_only = self.payload_only;
         let fut = async move {
             match timeout_ms {
                 Some(ms) => tokio::time::timeout(
@@ -94,18 +92,17 @@ impl PacketReceiver {
         };
         let maybe_delivery = rt().block_on(fut);
         maybe_delivery
-            .map(|delivery| delivery_to_pyobject(py, payload_only, delivery))
+            .map(|delivery| delivery_to_pyobject(py, delivery))
             .transpose()
     }
 
     fn recv_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
-        let payload_only = self.payload_only;
         future_into_py(py, async move {
             let delivery = inner.lock().await.recv().await;
             Python::attach(|py| {
                 delivery
-                    .map(|delivery| delivery_to_pyobject(py, payload_only, delivery))
+                    .map(|delivery| delivery_to_pyobject(py, delivery))
                     .transpose()
             })
         })
@@ -114,28 +111,11 @@ impl PacketReceiver {
 
 fn delivery_to_pyobject(
     py: Python<'_>,
-    payload_only: bool,
     delivery: PythonDelivery,
 ) -> PyResult<Py<PyAny>> {
-    match delivery {
-        PythonDelivery::Raw(packet) => {
-            if payload_only {
-                warn_misrouted_payload();
-            }
-            let bytes = PyBytes::new(py, packet.bytes());
-            Ok(bytes.into_pyobject(py)?.unbind().into())
-        }
-        PythonDelivery::Payload(payload) => {
-            let obj = Py::new(py, PyPayloadDelivery::from(payload))?;
-            Ok(obj.into_pyobject(py)?.unbind().into())
-        }
-    }
-}
-
-fn warn_misrouted_payload() {
-    tracing::warn!(
-        "PythonInterface: received raw packet for a payload-only receiver; delivering raw bytes."
-    );
+    // PythonDelivery is now just PayloadDelivery (type alias)
+    let obj = Py::new(py, PyPayloadDelivery::from(delivery))?;
+    Ok(obj.into_pyobject(py)?.unbind().into())
 }
 
 #[pyclass(name = "PayloadDelivery")]
@@ -384,6 +364,9 @@ impl Dataplane {
                     cc,
                     topology_ready: None,
                     routes_ready: None,
+                    // Disable TFMCC and SACK/NACK when channel backpressure is enabled
+                    use_tfmcc: !self.cfg.channel_backpressure,
+                    enable_sack_nack: !self.cfg.channel_backpressure,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
                 self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
@@ -477,6 +460,8 @@ impl Dataplane {
                     } else {
                         reliable_session::CongestionControl::Static
                     },
+                    // Disable SACK/NACK/REPAIR when channel backpressure is enabled
+                    enable_sack_nack: !self.cfg.channel_backpressure,
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))
@@ -550,6 +535,7 @@ impl Dataplane {
         let ip = parse_ipv4(group_ip)?;
         Ok(self.lookup_session(ip, source_node_id))
     }
+
     #[new]
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
@@ -565,14 +551,17 @@ impl Dataplane {
         let mut cfg = conductor.local_config();
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
+
         #[cfg(feature = "reliable")]
         let reliable = conductor.reliable_handle();
 
-        // Enter the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new succeeds.
+        // enters the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new() succeeds
         let py_if = {
             let _rt_guard = rt().enter();
-            PythonInterfaceHandle::new(cfg.channel_capacity)
+
+            PythonInterfaceHandle::new(cfg.channel_capacity, cfg.channel_backpressure)
         };
+
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
 
@@ -613,14 +602,13 @@ impl Dataplane {
         Ok(Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp))
     }
 
-    #[pyo3(signature = (src_node_id, src_port=None, dst_port=None, payload_only=false))]
+    #[pyo3(signature = (src_node_id, src_port=None, dst_port=None))]
     fn register_receiver_from_node(
         &self,
         py: Python<'_>,
         src_node_id: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        payload_only: bool,
     ) -> PyResult<Py<PacketReceiver>> {
         let src_ip =
             (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
@@ -628,17 +616,16 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id, payload_only));
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id));
         Py::new(
             py,
             PacketReceiver {
-                payload_only,
                 inner: Arc::new(Mutex::new(rx)),
             },
         )
     }
 
-    #[pyo3(signature = (src_node_id, group_ip, src_port=None, dst_port=None, payload_only=false))]
+    #[pyo3(signature = (src_node_id, group_ip, src_port=None, dst_port=None))]
     fn register_receiver_for_group(
         &self,
         py: Python<'_>,
@@ -646,7 +633,6 @@ impl Dataplane {
         group_ip: &str,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        payload_only: bool,
     ) -> PyResult<Py<PacketReceiver>> {
         let src_ip =
             (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
@@ -654,11 +640,10 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         let flow_id = Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp);
-        let rx = rt().block_on(self.py_if.register_receiver(flow_id, payload_only));
+        let rx = rt().block_on(self.py_if.register_receiver(flow_id));
         Py::new(
             py,
             PacketReceiver {
-                payload_only,
                 inner: Arc::new(Mutex::new(rx)),
             },
         )
@@ -787,7 +772,8 @@ impl Dataplane {
     ) -> PyResult<u64> {
         let message_id = next_py_message_id();
         let packet = Packet::build_ipv4_tcp_packet(src_ip, src_port, dst_ip, dst_port, &body);
-        self.processor.process_packet(packet);
+        self.processor.process_packet_blocking(packet);
+
         Ok(message_id)
     }
 

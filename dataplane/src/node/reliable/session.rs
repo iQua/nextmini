@@ -74,6 +74,10 @@ pub struct SenderConfig {
     pub cc: CongestionControl,
     pub topology_ready: Option<watch::Receiver<bool>>,
     pub routes_ready: Option<watch::Receiver<bool>>,
+    /// When false (channel_backpressure=true), TFMCC rate control is disabled
+    pub use_tfmcc: bool,
+    /// When false (channel_backpressure=true), SACK/NACK-based repair is disabled
+    pub enable_sack_nack: bool,
 }
 
 /// Receiver-only configuration (source node, reliability timers, sinks, etc.).
@@ -88,6 +92,8 @@ pub struct ReceiverConfig {
     pub nack_jitter_ms: u64,
     pub sack_interval_ms: u64,
     pub cc: CongestionControl,
+    /// When false (channel_backpressure=true), SACK/NACK/REPAIR is disabled
+    pub enable_sack_nack: bool,
 }
 
 impl From<&TfmccRuntimeConfig> for TfmccConfig {

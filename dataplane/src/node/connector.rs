@@ -118,7 +118,7 @@ impl Connector {
         // sends directly when the TCP max connection is already established, or initiates a new connection
         if let Some(scheduler) = self.schedulers.get(&flow_id) {
             // if the scheduler is already initialized at the source node, sends the packet to the next hop directly
-            scheduler.send(packet);
+            scheduler.send(packet).await;
         } else {
             // if the scheduler is not initialized, initiates a new connection for the first packet of the flow
 
@@ -171,7 +171,7 @@ impl Connector {
                 .await;
 
             // sends the first packet of the flow with the new scheduler
-            scheduler.send(packet);
+            scheduler.send(packet).await;
 
             // stores the flow id to the scheduler into hashmap for sending subsequent packets
             self.schedulers.insert(flow_id, scheduler);
