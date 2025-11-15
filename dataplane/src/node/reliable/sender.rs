@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read};
 use std::net::Ipv4Addr;
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 
-use nextmini_messages::rlm::{self, RlmControl, TfmccDataHeader};
+use nextmini_messages::rlm::{self, RlmControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -15,13 +15,11 @@ use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
 use super::control::{self, CompletionPolicy};
-use super::session::{AckPolicy, CommonConfig, CongestionControl, SenderConfig};
-use super::tfmcc::TfmccSender;
+use super::session::{AckPolicy, CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
 const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
-const MAX_FRAME_CACHE_SIZE: usize = 10_000; // Limit cache to prevent unbounded growth
 const TRANSFER_TIMEOUT_SECS: u64 = 300; // 5 minutes - configurable later
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
@@ -69,7 +67,6 @@ pub async fn run(
     let mut chunk_source =
         ChunkSource::new(source_file, state.common.chunk_size, total_chunks, sid);
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
-    let mut last_resend = Instant::now();
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
 
@@ -80,7 +77,6 @@ pub async fn run(
                 session_id = sid,
                 elapsed_secs = transfer_start.elapsed().as_secs(),
                 inflight = state.inflight_len(),
-                resend_queue = state.resend_queue.len(),
                 "RLM sender: transfer timeout exceeded; forcing completion"
             );
             break;
@@ -94,9 +90,6 @@ pub async fn run(
         state.maybe_release_topology_gate();
         state.maybe_release_routes_gate();
         state.maybe_release_ready_gate();
-        if let Some(rate) = state.maybe_update_cc() {
-            pacer.set_target_rate(rate);
-        }
 
         let mut progressed = false;
 
@@ -164,22 +157,6 @@ pub async fn run(
             }
         }
 
-        // makes retransmitting chunk possible
-        if !progressed && state.should_resend() && last_resend.elapsed() >= state.repair_backoff {
-            tracing::trace!(
-                session_id = sid,
-                resend_queue_len = state.resend_queue.len(),
-                "RLM sender: attempting resend"
-            );
-
-            pacer.wait_for(state.common.chunk_size).await;
-
-            if state.send_resend(&processors) {
-                last_resend = Instant::now();
-                progressed = true;
-            }
-        }
-
         if !progressed && state.try_emit_eot(&processors) {
             progressed = true;
         }
@@ -189,7 +166,6 @@ pub async fn run(
                 session_id = sid,
                 bytes_sent = state.bytes_sent,
                 chunks_sent = state.primary_chunks,
-                resends = state.resend_count,
                 "RLM sender finished with reliable delivery guarantees"
             );
             break;
@@ -233,13 +209,9 @@ struct SenderState {
     receiver_count: usize,
     base_window: usize,
     window: usize,
-    tfmcc: Option<TfmccSender>,
     total_chunks: u64,
     total_bytes: u64,
     inflight: BTreeMap<u64, HashSet<usize>>,
-    frame_cache: BTreeMap<u64, Vec<Bytes>>,
-    first_send_times: BTreeMap<u64, Instant>,
-    resend_queue: BTreeSet<u64>,
     ready_nodes: HashSet<usize>,
     routes_gate_open: bool,
     topology_gate_open: bool,
@@ -253,16 +225,12 @@ struct SenderState {
     eot_sent: bool,
     bytes_sent: u64,
     primary_chunks: u64,
-    resend_count: u64,
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
     src_port: u16,
     dst_port: u16,
-    repair_backoff: Duration,
     manifest_interval: Duration,
     manifest_last_sent: Instant,
-    /// When false (channel_backpressure=true), SACK/NACK-based repair is disabled
-    enable_sack_nack: bool,
 }
 
 impl SenderState {
@@ -286,20 +254,6 @@ impl SenderState {
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
         let base_window = compute_window(&cfg);
-        let session_start = Instant::now();
-        // TFMCC is disabled when use_tfmcc=false (channel_backpressure=true)
-        let tfmcc = if !cfg.use_tfmcc {
-            None
-        } else {
-            match &cfg.cc {
-                CongestionControl::Static => None,
-                CongestionControl::Tfmcc(tcfg) => Some(TfmccSender::new(
-                    tcfg.clone(),
-                    cfg.common.chunk_size,
-                    session_start,
-                )),
-            }
-        };
 
         if cfg.common.control_weight != 0 {
             tracing::debug!(
@@ -332,13 +286,9 @@ impl SenderState {
             receiver_count,
             base_window,
             window: base_window,
-            tfmcc,
             total_chunks,
             total_bytes: cfg.total_bytes,
             inflight: BTreeMap::new(),
-            frame_cache: BTreeMap::new(),
-            first_send_times: BTreeMap::new(),
-            resend_queue: BTreeSet::new(),
             ready_nodes: HashSet::new(),
             routes_gate_open,
             topology_gate_open,
@@ -352,15 +302,12 @@ impl SenderState {
             eot_sent: false,
             bytes_sent: 0,
             primary_chunks: 0,
-            resend_count: 0,
             src_ip,
             dst_ip,
             src_port: cfg.common.src_port,
             dst_port: cfg.common.dst_port,
-            repair_backoff: Duration::from_millis(cfg.repair_backoff_ms.max(1)),
             manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             manifest_last_sent: Instant::now(),
-            enable_sack_nack: cfg.enable_sack_nack,
         }
     }
 
@@ -397,24 +344,8 @@ impl SenderState {
         self.window.max(1)
     }
 
-    fn maybe_update_cc(&mut self) -> Option<f64> {
-        let ctrl = self.tfmcc.as_mut()?;
-        ctrl.on_tick(Instant::now());
-        let rate = ctrl.current_rate_bytes_per_s();
-        tracing::info!(
-            session_id = self.session_id,
-            rate_bps = (rate * 8.0) as u64,
-            "TFMCC updated sender rate"
-        );
-        Some(rate)
-    }
-
     fn inflight_len(&self) -> usize {
         self.inflight.len()
-    }
-
-    fn should_resend(&self) -> bool {
-        !self.resend_queue.is_empty()
     }
 
     fn should_resend_manifest(&self) -> bool {
@@ -438,23 +369,9 @@ impl SenderState {
         self.source_drained = true;
     }
 
-    fn next_tfmcc_header(&mut self) -> Option<TfmccDataHeader> {
-        self.tfmcc
-            .as_mut()
-            .map(|ctrl| ctrl.build_data_header(Instant::now()))
-    }
-
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
-        let tfmcc_header = self.next_tfmcc_header();
-        let frame = Bytes::from(rlm::encode_data(
-            self.session_id,
-            chunk.index,
-            &chunk.data,
-            tfmcc_header.as_ref(),
-        ));
-        let now = Instant::now();
-        self.first_send_times.insert(chunk.index, now);
-        self.enqueue_frame(chunk.index, vec![frame.clone()]);
+        let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
+        self.inflight.entry(chunk.index).or_default();
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
         tracing::debug!(
@@ -466,36 +383,6 @@ impl SenderState {
             "RLM sender: encoded DATA chunk, sending frame to processor"
         );
         self.send_frame(&frame, processors);
-    }
-
-    fn send_resend(&mut self, processors: &ProcessorHandle) -> bool {
-        let Some(idx) = self.resend_queue.iter().next().copied() else {
-            return false;
-        };
-        if let Some(frames) = self.frame_cache.get(&idx) {
-            self.resend_queue.remove(&idx);
-            self.resend_count += 1;
-            self.first_send_times.insert(idx, Instant::now());
-            for frame in frames {
-                self.send_frame(frame, processors);
-            }
-            tracing::info!(
-                session_id = self.session_id,
-                index = idx,
-                resend_count = self.resend_count,
-                resend_queue_remaining = self.resend_queue.len(),
-                "RLM sender: retransmitting chunk"
-            );
-            true
-        } else {
-            tracing::warn!(
-                session_id = self.session_id,
-                index = idx,
-                "RLM sender: cannot retransmit - chunk not in cache"
-            );
-            self.resend_queue.remove(&idx);
-            false
-        }
     }
 
     fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
@@ -524,10 +411,7 @@ impl SenderState {
     }
 
     fn is_complete(&self) -> bool {
-        self.source_drained
-            && self.eot_sent
-            && self.inflight.is_empty()
-            && self.resend_queue.is_empty()
+        self.source_drained && self.eot_sent && self.inflight.is_empty()
     }
 
     fn handle_control(&mut self, frame: InboundFrame) {
@@ -539,8 +423,6 @@ impl SenderState {
             );
             return;
         };
-        let now = Instant::now();
-
         match control {
             RlmControl::Ready { node_id } => {
                 self.ready_nodes.insert(node_id as usize);
@@ -554,24 +436,6 @@ impl SenderState {
                 // Ignore sender-originated control frames looped back.
             }
             _ => {
-                if let RlmControl::TfmccFeedback { .. } = &control
-                    && let Some(ctrl) = &mut self.tfmcc
-                {
-                    ctrl.on_feedback(&control, now);
-                }
-
-                // Skip SACK/REPAIR processing when backpressure is enabled
-                if !self.enable_sack_nack {
-                    if matches!(control, RlmControl::Sack { .. } | RlmControl::Repair { .. }) {
-                        tracing::debug!(
-                            session_id = self.session_id,
-                            control_type = ?control,
-                            "RLM sender: skipping SACK/REPAIR (backpressure enabled)"
-                        );
-                        return;
-                    }
-                }
-
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
                         session_id = self.session_id,
@@ -585,14 +449,12 @@ impl SenderState {
                     from_node = from_node,
                     control_type = ?control,
                     inflight_count = self.inflight.len(),
-                    resend_queue_len_before = self.resend_queue.len(),
                     "RLM sender: processing control frame"
                 );
                 let retired = control::process_control_event(
                     from_node,
                     &control,
                     &mut self.inflight,
-                    &mut self.resend_queue,
                     self.receiver_count.max(1),
                     &self.completion_policy,
                 );
@@ -603,62 +465,15 @@ impl SenderState {
                         retired_indices = ?retired,
                         "RLM sender: retiring chunks"
                     );
-                    control::retire_chunks(&retired, &mut self.inflight, &mut self.resend_queue);
-                    for idx in retired {
-                        self.first_send_times.remove(&idx);
-                        self.frame_cache.remove(&idx);
-                    }
+                    control::retire_chunks(&retired, &mut self.inflight);
                 }
                 tracing::debug!(
                     session_id = self.session_id,
                     inflight_count = self.inflight.len(),
-                    resend_queue_len = self.resend_queue.len(),
                     "RLM sender: after processing control frame"
                 );
             }
         }
-    }
-
-    fn enqueue_frame(&mut self, idx: u64, frames: Vec<Bytes>) {
-        // Enforce cache size limit to prevent unbounded memory growth
-        if self.frame_cache.len() >= MAX_FRAME_CACHE_SIZE {
-            // Evict oldest entries that are not in inflight or resend queue
-            let mut to_evict = Vec::new();
-            for (&cached_idx, _) in self.frame_cache.iter() {
-                if !self.inflight.contains_key(&cached_idx)
-                    && !self.resend_queue.contains(&cached_idx)
-                {
-                    to_evict.push(cached_idx);
-                    if to_evict.len() >= 100 {
-                        break; // Evict in batches
-                    }
-                }
-            }
-
-            if !to_evict.is_empty() {
-                for idx_to_remove in &to_evict {
-                    self.frame_cache.remove(idx_to_remove);
-                    self.first_send_times.remove(idx_to_remove);
-                }
-                tracing::debug!(
-                    session_id = self.session_id,
-                    evicted = to_evict.len(),
-                    cache_size = self.frame_cache.len(),
-                    "RLM sender: evicted old frames from cache"
-                );
-            } else {
-                tracing::warn!(
-                    session_id = self.session_id,
-                    cache_size = self.frame_cache.len(),
-                    inflight = self.inflight.len(),
-                    resend_queue = self.resend_queue.len(),
-                    "RLM sender: frame cache at limit but no entries eligible for eviction"
-                );
-            }
-        }
-
-        self.frame_cache.insert(idx, frames);
-        self.inflight.entry(idx).or_default();
     }
 
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
@@ -853,25 +668,6 @@ impl DataPacer {
         }
     }
 
-    fn set_target_rate(&mut self, bytes_per_s: f64) {
-        if !bytes_per_s.is_finite() || bytes_per_s <= 0.0 {
-            if let Some(spec) = &self.base_spec {
-                self.rate_bytes_per_s = spec.rate as f64;
-            }
-            return;
-        }
-        let was_disabled = self.rate_bytes_per_s <= 0.0;
-        self.rate_bytes_per_s = bytes_per_s;
-        if was_disabled {
-            if self.base_spec.is_some() {
-                self.tokens = self.effective_bucket();
-            } else {
-                self.tokens = 0.0;
-                self.last = Instant::now();
-            }
-        }
-    }
-
     async fn wait_for(&mut self, bytes: usize) {
         if self.base_spec.is_none() {
             self.wait_dynamic_only(bytes).await;
@@ -971,7 +767,7 @@ mod tests {
         let idx = 7;
         let plen = 4096usize;
         let payload = vec![0xAAu8; plen];
-        let buf = rlm::encode_data(sid, idx, &payload, None);
+        let buf = rlm::encode_data(sid, idx, &payload);
         let (hdr, data, body) = rlm::decode_data(&buf).expect("decode data");
         assert_eq!(hdr.session_id, sid);
         assert_eq!(data.index, idx);
@@ -979,34 +775,7 @@ mod tests {
         assert_eq!(body.len(), plen);
     }
 
-    /// TEST 1: Validates that named constants are properly defined and accessible.
-    /// This fixes the "magic numbers" issue where hardcoded values were scattered
-    /// throughout the code, making it hard to tune and maintain.
-    #[test]
-    fn constants_are_defined_and_reasonable() {
-        // Verify all constants are defined with sensible values
-        assert_eq!(DEFAULT_WINDOW, 64, "Default window should be 64 chunks");
-        assert_eq!(
-            MANIFEST_RETRY_INTERVAL_MS, 250,
-            "Manifest retry should be 250ms"
-        );
-        assert_eq!(
-            CONTROL_POLL_TIMEOUT_MS, 20,
-            "Control poll timeout should be 20ms"
-        );
-        assert_eq!(
-            MAX_FRAME_CACHE_SIZE, 10_000,
-            "Cache limit should be 10,000 entries"
-        );
-        assert_eq!(
-            TRANSFER_TIMEOUT_SECS, 300,
-            "Transfer timeout should be 5 minutes"
-        );
-
-        // Verify constants are greater than zero (no accidental zeroes)
-    }
-
-    /// TEST 2: Validates ChunkSource properly reports when finished.
+    /// TEST 1: Validates ChunkSource properly reports when finished.
     /// This tests the fix for the infinite loop bug where the sender could get stuck
     /// waiting for source_drained when chunk_source.finished() returned true but
     /// the state wasn't updated.
@@ -1046,74 +815,7 @@ mod tests {
         );
     }
 
-    /// TEST 3: Validates cache eviction logic prevents unbounded growth.
-    /// This tests the fix for memory exhaustion where the frame cache could grow
-    /// to millions of entries during long transfers with packet loss.
-    #[test]
-    fn cache_eviction_prevents_unbounded_growth() {
-        // Create a mock sender state (we can't fully initialize without dependencies,
-        // so we test the logic separately)
-        let mut frame_cache: BTreeMap<u64, Vec<Bytes>> = BTreeMap::new();
-        let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
-        let resend_queue: BTreeSet<u64> = BTreeSet::new();
-
-        // Simulate filling cache to MAX_FRAME_CACHE_SIZE
-        for i in 0..MAX_FRAME_CACHE_SIZE {
-            let frames = vec![Bytes::from(vec![0u8; 100])];
-            frame_cache.insert(i as u64, frames);
-        }
-
-        assert_eq!(
-            frame_cache.len(),
-            MAX_FRAME_CACHE_SIZE,
-            "Cache should be at limit before eviction"
-        );
-
-        // Mark some chunks as inflight (these should NOT be evicted)
-        for i in 0..10 {
-            inflight.insert(i as u64, HashSet::new());
-        }
-
-        // Simulate eviction logic (from enqueue_frame)
-        let mut to_evict = Vec::new();
-        for (&cached_idx, _) in frame_cache.iter() {
-            if !inflight.contains_key(&cached_idx) && !resend_queue.contains(&cached_idx) {
-                to_evict.push(cached_idx);
-                if to_evict.len() >= 100 {
-                    break;
-                }
-            }
-        }
-
-        // Verify eviction found eligible entries
-        assert_eq!(
-            to_evict.len(),
-            100,
-            "Should identify 100 entries for eviction"
-        );
-
-        // Verify inflight entries are not in eviction list
-        for idx in 0..10 {
-            assert!(
-                !to_evict.contains(&idx),
-                "Inflight chunk {} should not be evicted",
-                idx
-            );
-        }
-
-        // Perform eviction
-        for idx in &to_evict {
-            frame_cache.remove(idx);
-        }
-
-        assert_eq!(
-            frame_cache.len(),
-            MAX_FRAME_CACHE_SIZE - 100,
-            "Cache should have 100 fewer entries after eviction"
-        );
-    }
-
-    /// TEST 4: Validates the timeout constant is used correctly.
+    /// TEST 2: Validates the timeout constant is used correctly.
     /// This tests the fix for hung transfers where senders could wait indefinitely
     /// for receivers that never respond.
     #[test]
@@ -1141,7 +843,7 @@ mod tests {
         );
     }
 
-    /// TEST 5: Validates completion_from_ack policy conversion.
+    /// TEST 3: Validates completion_from_ack policy conversion.
     /// This ensures ACK policies are correctly converted to completion policies,
     /// which is critical for proper sender retirement logic.
     #[test]

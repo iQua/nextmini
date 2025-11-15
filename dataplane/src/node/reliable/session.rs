@@ -7,7 +7,6 @@ use tokio::task::JoinHandle;
 
 use nextmini_messages::TokenBucketSpec;
 
-use crate::node::config::TfmccRuntimeConfig;
 use crate::node::processor::ProcessorHandle;
 
 use super::api::{InboundFrame, SessionId};
@@ -19,28 +18,6 @@ pub enum AckPolicy {
     All,
     KofN(usize),
     Fraction(f32),
-}
-
-/// Sender-side congestion control mode.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub enum CongestionControl {
-    /// Current behavior: static window + optional token bucket.
-    Static,
-    /// TFMCC: rate-based controller driven by receiver feedback.
-    Tfmcc(TfmccConfig),
-}
-
-/// Parameters that govern the TFMCC controller.
-#[derive(Clone, Debug)]
-pub struct TfmccConfig {
-    pub min_rate_bps: f64,
-    pub max_rate_bps: f64,
-    pub initial_rate_bps: f64,
-    pub feedback_interval_ms: u64,
-    pub rate_smooth_alpha: f64,
-    pub max_increase_per_rtt_pkts: f64,
-    pub clr_hysteresis_pct: f64,
 }
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
@@ -67,17 +44,11 @@ pub struct SenderConfig {
     pub source_path: Option<String>,
     pub checksum_out: bool,
     pub ack_policy: AckPolicy,
-    pub repair_backoff_ms: u64,
     pub fec_k: Option<u16>,
     pub fec_p: u8,
     pub ready_grace_ms: u64,
-    pub cc: CongestionControl,
     pub topology_ready: Option<watch::Receiver<bool>>,
     pub routes_ready: Option<watch::Receiver<bool>>,
-    /// When false (channel_backpressure=true), TFMCC rate control is disabled
-    pub use_tfmcc: bool,
-    /// When false (channel_backpressure=true), SACK/NACK-based repair is disabled
-    pub enable_sack_nack: bool,
 }
 
 /// Receiver-only configuration (source node, reliability timers, sinks, etc.).
@@ -88,28 +59,6 @@ pub struct ReceiverConfig {
     pub expected_bytes: u64,
     pub verify_checksum: bool,
     pub sink_path: Option<String>,
-    pub nack_min_interval_ms: u64,
-    pub nack_jitter_ms: u64,
-    pub sack_interval_ms: u64,
-    pub cc: CongestionControl,
-    /// When false (channel_backpressure=true), SACK/NACK/REPAIR is disabled
-    pub enable_sack_nack: bool,
-}
-
-impl From<&TfmccRuntimeConfig> for TfmccConfig {
-    fn from(cfg: &TfmccRuntimeConfig) -> Self {
-        Self {
-            min_rate_bps: cfg.min_rate_bps.max(1.0),
-            max_rate_bps: cfg.max_rate_bps.max(cfg.min_rate_bps.max(1.0)),
-            initial_rate_bps: cfg
-                .initial_rate_bps
-                .clamp(cfg.min_rate_bps.max(1.0), cfg.max_rate_bps.max(1.0)),
-            feedback_interval_ms: cfg.feedback_interval_ms.max(10),
-            rate_smooth_alpha: cfg.rate_smooth_alpha.clamp(0.0, 1.0),
-            max_increase_per_rtt_pkts: cfg.max_increase_per_rtt_pkts.max(0.5),
-            clr_hysteresis_pct: cfg.clr_hysteresis_pct.clamp(0.0, 1.0),
-        }
-    }
 }
 
 /// Tracks running reliable sessions along with their inboxes and join handles.

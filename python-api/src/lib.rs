@@ -24,7 +24,6 @@ use tracing_subscriber::EnvFilter;
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
 #[cfg(feature = "reliable")]
-use nextmini::node::config::TfmccRuntimeConfig;
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
@@ -109,10 +108,7 @@ impl PacketReceiver {
     }
 }
 
-fn delivery_to_pyobject(
-    py: Python<'_>,
-    delivery: PythonDelivery,
-) -> PyResult<Py<PyAny>> {
+fn delivery_to_pyobject(py: Python<'_>, delivery: PythonDelivery) -> PyResult<Py<PyAny>> {
     // PythonDelivery is now just PayloadDelivery (type alias)
     let obj = Py::new(py, PyPayloadDelivery::from(delivery))?;
     Ok(obj.into_pyobject(py)?.unbind().into())
@@ -299,36 +295,13 @@ impl Dataplane {
 
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
-                let mode = congestion.as_deref().unwrap_or_else(|| {
-                    if reliable_cfg
-                        .tfmcc
-                        .as_ref()
-                        .map(|cfg| cfg.enabled)
-                        .unwrap_or(false)
-                    {
-                        "tfmcc"
-                    } else {
-                        "static"
-                    }
-                });
-                let cc = match mode {
-                    "static" => reliable_session::CongestionControl::Static,
-                    "tfmcc" => {
-                        let runtime_cfg = reliable_cfg
-                            .tfmcc
-                            .as_ref()
-                            .cloned()
-                            .unwrap_or_else(TfmccRuntimeConfig::default);
-                        reliable_session::CongestionControl::Tfmcc(
-                            reliable_session::TfmccConfig::from(&runtime_cfg),
-                        )
-                    }
-                    other => {
+                if let Some(mode) = congestion {
+                    if mode != "static" {
                         return Err(PyRuntimeError::new_err(format!(
-                            "invalid congestion control: {other}"
-                        )))
+                            "invalid congestion control: {mode}"
+                        )));
                     }
-                };
+                }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 if session_id.is_none() {
@@ -357,16 +330,11 @@ impl Dataplane {
                     source_path: Some(tensor_path.to_string()),
                     checksum_out: false,
                     ack_policy: ack,
-                    repair_backoff_ms: 10,
                     fec_k: None,
                     fec_p: 0,
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
-                    cc,
                     topology_ready: None,
                     routes_ready: None,
-                    // Disable TFMCC and SACK/NACK when channel backpressure is enabled
-                    use_tfmcc: !self.cfg.channel_backpressure,
-                    enable_sack_nack: !self.cfg.channel_backpressure,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
                 self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
@@ -375,14 +343,13 @@ impl Dataplane {
         }
         // Fallback stub when feature is disabled or handle unavailable.
         tracing::warn!(
-            "send_file called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={} congestion={:?}",
+            "send_file called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={}",
             sid,
             group_ip,
             receiver_ids,
             tensor_path,
             chunk_size,
             ack_policy,
-            congestion
         );
         Ok(sid)
     }
@@ -440,28 +407,6 @@ impl Dataplane {
                     expected_bytes,
                     verify_checksum: false,
                     sink_path,
-                    nack_min_interval_ms: reliable_cfg.nack_min_interval_ms,
-                    nack_jitter_ms: reliable_cfg.nack_jitter_ms,
-                    sack_interval_ms: reliable_cfg.sack_interval_ms,
-                    cc: if reliable_cfg
-                        .tfmcc
-                        .as_ref()
-                        .map(|cfg| cfg.enabled)
-                        .unwrap_or(false)
-                    {
-                        let runtime_cfg = reliable_cfg
-                            .tfmcc
-                            .as_ref()
-                            .cloned()
-                            .unwrap_or_else(TfmccRuntimeConfig::default);
-                        reliable_session::CongestionControl::Tfmcc(
-                            reliable_session::TfmccConfig::from(&runtime_cfg),
-                        )
-                    } else {
-                        reliable_session::CongestionControl::Static
-                    },
-                    // Disable SACK/NACK/REPAIR when channel backpressure is enabled
-                    enable_sack_nack: !self.cfg.channel_backpressure,
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))
