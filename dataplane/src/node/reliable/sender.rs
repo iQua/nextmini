@@ -80,7 +80,7 @@ pub async fn run(
             );
             break;
         }
-        // drains any immediately-available control frames so resend/retire
+        // drains any immediately-available control frames so retire
         // decisions reflect fresh receiver state before we transmit more data
         while let Ok(frame) = ctrl_rx.try_recv() {
             state.handle_control(frame);

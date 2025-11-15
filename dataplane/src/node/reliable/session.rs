@@ -41,7 +41,7 @@ pub struct SenderConfig {
     pub routes_ready: Option<watch::Receiver<bool>>,
 }
 
-/// Receiver-only configuration (source node, reliability timers, sinks, etc.).
+/// Receiver-only configuration (source node, expected bytes, sink path, etc.).
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     pub common: CommonConfig,

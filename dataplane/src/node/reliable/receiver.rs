@@ -59,7 +59,7 @@ impl<'a> ControlEmitter<'a> {
 }
 
 /// Drives a receiver session: consumes inbound frames, persists payloads in
-/// order, and feeds back control signals so the sender can repair gaps.
+/// order, and sends acknowledgement signals back to the sender.
 pub async fn run(
     cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
