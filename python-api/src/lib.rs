@@ -37,7 +37,6 @@ use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
 use nextmini::node::reliable::session as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "reliable")]
-use nextmini_messages::rlm as rlm_msg;
 use nextmini_messages::DataplaneToController;
 
 pub use crate::buffer::FrozenBuffer;
@@ -239,7 +238,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=4096, src_port=None, dst_port=None, ack_policy="all", session_id=None, congestion=None))]
+    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None, congestion=None))]
     fn send_file(
         &self,
         group_ip: &str,
@@ -248,7 +247,6 @@ impl Dataplane {
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        ack_policy: &str,
         session_id: Option<u64>,
         congestion: Option<String>,
     ) -> PyResult<u64> {
@@ -272,27 +270,11 @@ impl Dataplane {
                 tensor_path
             )));
         }
-        if !(ack_policy == "all" || ack_policy.starts_with("k:") || ack_policy.starts_with("frac:"))
-        {
-            return Err(PyRuntimeError::new_err(format!(
-                "invalid ack_policy: {ack_policy}"
-            )));
-        }
         let _ = (src_port, dst_port, &congestion); // reserved for future plumbing
         #[allow(unused_mut)]
         let mut sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
         {
-            // Map ack_policy string to dataplane enum via messages helper.
-            let ap = rlm_msg::parse_ack_policy(ack_policy).ok_or_else(|| {
-                PyRuntimeError::new_err(format!("invalid ack_policy: {ack_policy}"))
-            })?;
-            let ack = match ap {
-                rlm_msg::AckPolicy::All => reliable_session::AckPolicy::All,
-                rlm_msg::AckPolicy::KofN(n) => reliable_session::AckPolicy::KofN(n as usize),
-                rlm_msg::AckPolicy::Fraction(p) => reliable_session::AckPolicy::Fraction(p),
-            };
-
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
                 if let Some(mode) = congestion {
@@ -329,7 +311,6 @@ impl Dataplane {
                     total_bytes,
                     source_path: Some(tensor_path.to_string()),
                     checksum_out: false,
-                    ack_policy: ack,
                     fec_k: None,
                     fec_p: 0,
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
@@ -343,13 +324,12 @@ impl Dataplane {
         }
         // Fallback stub when feature is disabled or handle unavailable.
         tracing::warn!(
-            "send_file called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={} ack_policy={}",
+            "send_file called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={}",
             sid,
             group_ip,
             receiver_ids,
             tensor_path,
             chunk_size,
-            ack_policy,
         );
         Ok(sid)
     }

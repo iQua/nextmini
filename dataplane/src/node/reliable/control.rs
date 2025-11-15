@@ -6,17 +6,12 @@ use nextmini_messages::rlm::RlmControl;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompletionPolicy {
     All,
-    Threshold(usize),
-    #[cfg_attr(not(test), allow(dead_code))]
-    Leader(usize),
 }
 
 impl CompletionPolicy {
     pub fn should_retire(&self, acked_by: &HashSet<usize>, receiver_count: usize) -> bool {
         match *self {
             CompletionPolicy::All => acked_by.len() == receiver_count,
-            CompletionPolicy::Threshold(t) => acked_by.len() >= t.min(receiver_count),
-            CompletionPolicy::Leader(id) => acked_by.contains(&id),
         }
     }
 }
@@ -85,20 +80,6 @@ mod tests {
         assert_eq!(retired3, vec![3]);
     }
 
-    #[test]
-    fn completion_policy_leader_retires_on_matching_ack() {
-        let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
-        inflight.insert(1, HashSet::new());
-        let policy = CompletionPolicy::Leader(42);
-
-        let retired =
-            process_control_event(7, &RlmControl::Ack { up_to: 1 }, &mut inflight, 3, &policy);
-        assert!(retired.is_empty());
-
-        let retired =
-            process_control_event(42, &RlmControl::Ack { up_to: 1 }, &mut inflight, 3, &policy);
-        assert_eq!(retired, vec![1]);
-    }
 
     #[test]
     fn retire_chunks_removes_indices() {

@@ -641,9 +641,6 @@ pub struct ReliableConfig {
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
 
-    /// Ack policy: "all" | "k:N" | "frac:P".
-    pub ack_policy: String,
-
     /// Optional FEC parameters: when `fec_k` is Some, compute `fec_p` parity chunks per block.
     pub fec_k: Option<u16>,
 
@@ -661,7 +658,6 @@ impl Default for ReliableConfig {
             default_chunk_size: 32 * 1024,
             control_weight: 8,
             data_bucket: None,
-            ack_policy: "all".to_string(),
             fec_k: None,
             fec_p: 0,
             ready_grace_ms: 1500,

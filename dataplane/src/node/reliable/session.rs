@@ -11,15 +11,6 @@ use crate::node::processor::ProcessorHandle;
 
 use super::api::{InboundFrame, SessionId};
 
-/// Configures how strongly the sender waits for receiver acknowledgements.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Clone, Debug)]
-pub enum AckPolicy {
-    All,
-    KofN(usize),
-    Fraction(f32),
-}
-
 /// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
 pub struct CommonConfig {
@@ -43,7 +34,6 @@ pub struct SenderConfig {
     pub total_bytes: u64,
     pub source_path: Option<String>,
     pub checksum_out: bool,
-    pub ack_policy: AckPolicy,
     pub fec_k: Option<u16>,
     pub fec_p: u8,
     pub ready_grace_ms: u64,
@@ -196,22 +186,3 @@ impl SessionManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ack_policy_variants_constructible() {
-        let policies = [AckPolicy::All, AckPolicy::KofN(2), AckPolicy::Fraction(0.5)];
-        for policy in policies {
-            match policy {
-                AckPolicy::All => {}
-                AckPolicy::KofN(n) => assert!(n >= 1),
-                AckPolicy::Fraction(f) => {
-                    assert!(f > 0.0);
-                    assert!(f <= 1.0);
-                }
-            }
-        }
-    }
-}

@@ -15,7 +15,7 @@ use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
 use super::control::{self, CompletionPolicy};
-use super::session::{AckPolicy, CommonConfig, SenderConfig};
+use super::session::{CommonConfig, SenderConfig};
 
 const DEFAULT_WINDOW: usize = 64;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
@@ -62,7 +62,7 @@ pub async fn run(
             }
         });
 
-    let completion_policy = completion_from_ack(&cfg.ack_policy, cfg.receiver_ids.len());
+    let completion_policy = CompletionPolicy::All;
     let mut state = SenderState::new(cfg, total_chunks, completion_policy);
     let mut chunk_source =
         ChunkSource::new(source_file, state.common.chunk_size, total_chunks, sid);
@@ -187,17 +187,6 @@ pub async fn run(
     }
 }
 
-/// Converts a user-facing ACK policy into a concrete completion rule.
-fn completion_from_ack(policy: &AckPolicy, receiver_count: usize) -> CompletionPolicy {
-    match policy {
-        AckPolicy::All => CompletionPolicy::All,
-        AckPolicy::KofN(k) => CompletionPolicy::Threshold((*k).max(1).min(receiver_count.max(1))),
-        AckPolicy::Fraction(fraction) => {
-            let needed = ((*fraction * receiver_count as f32).ceil() as usize).max(1);
-            CompletionPolicy::Threshold(needed.min(receiver_count.max(1)))
-        }
-    }
-}
 
 /// Encapsulates all mutable sender-side state (window, inflight map, pacing,
 /// manifest timing, etc.). Keeping the logic centralized makes the event loop
@@ -843,49 +832,4 @@ mod tests {
         );
     }
 
-    /// TEST 3: Validates completion_from_ack policy conversion.
-    /// This ensures ACK policies are correctly converted to completion policies,
-    /// which is critical for proper sender retirement logic.
-    #[test]
-    fn ack_policy_conversion() {
-        // Test 1: All policy should require all receivers
-        let policy = completion_from_ack(&AckPolicy::All, 5);
-        assert_eq!(
-            policy,
-            CompletionPolicy::All,
-            "All policy should map to All completion"
-        );
-
-        // Test 2: KofN policy should use threshold
-        let policy = completion_from_ack(&AckPolicy::KofN(3), 5);
-        assert_eq!(
-            policy,
-            CompletionPolicy::Threshold(3),
-            "KofN(3) should map to Threshold(3)"
-        );
-
-        // Test 3: KofN with k > receiver_count should cap at receiver_count
-        let policy = completion_from_ack(&AckPolicy::KofN(10), 5);
-        assert_eq!(
-            policy,
-            CompletionPolicy::Threshold(5),
-            "KofN(10) with 5 receivers should cap at 5"
-        );
-
-        // Test 4: Fraction policy should compute threshold
-        let policy = completion_from_ack(&AckPolicy::Fraction(0.5), 10);
-        assert_eq!(
-            policy,
-            CompletionPolicy::Threshold(5),
-            "Fraction(0.5) of 10 should be 5"
-        );
-
-        // Test 5: Fraction rounds up
-        let policy = completion_from_ack(&AckPolicy::Fraction(0.75), 10);
-        assert_eq!(
-            policy,
-            CompletionPolicy::Threshold(8),
-            "Fraction(0.75) of 10 should round to 8"
-        );
-    }
 }
