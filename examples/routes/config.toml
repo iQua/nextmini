@@ -1,8 +1,9 @@
 private_network_interface = "eth0"
 private_network_name = "net1"
 num_tun_queues = 1
-num_packet_processors = 10 
+num_packet_processors = 4
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
-enforce_tcp_order = true 
+# For single path, enforce_tcp_order should be false.
+enforce_tcp_order = false
