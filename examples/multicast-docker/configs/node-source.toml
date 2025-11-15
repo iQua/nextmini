@@ -13,6 +13,5 @@ channel_backpressure = true
 [reliable]
 default_chunk_size = 4096
 control_weight = 8
-ack_policy = "all"
 fec_p = 0
 ready_grace_ms = 1500

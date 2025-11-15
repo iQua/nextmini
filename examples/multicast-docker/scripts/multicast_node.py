@@ -219,7 +219,6 @@ def run_source(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        ack_policy="all",
     )
     log(f"Started reliable send session sid={sid}", args.quiet)
     if hasattr(dataplane, "reliable_wait"):
