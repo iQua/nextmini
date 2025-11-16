@@ -1,19 +1,24 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+#[cfg(feature = "python-extension")]
 use std::sync::Arc;
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc};
+#[cfg(feature = "python-extension")]
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, FlowTransport, GroupId};
+use nextmini_messages::{
+    ControllerToDataplane, DataplaneToController, Flow, FlowTransport, GroupId,
+};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -116,6 +121,8 @@ impl ControllerInterfaceHandle {
             reliable,
             group_ip_by_id: HashMap::new(),
             reliable_unicast,
+            topology_ready: false,
+            pending_user_space_flows: Vec::new(),
         };
 
         tokio::spawn(async move {
@@ -281,6 +288,8 @@ pub struct ControllerToDataplaneReceiver {
     reliable: Option<ReliableHandle>,
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
     reliable_unicast: Option<ReliableUnicastFlowHandle>,
+    topology_ready: bool,
+    pending_user_space_flows: Vec<Flow>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -363,7 +372,7 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                let mut tcp_client_flows = Vec::new();
+                let mut user_space_flows = Vec::new();
                 let mut reliable_flows = Vec::new();
 
                 for flow in &flows {
@@ -375,7 +384,7 @@ impl ControllerToDataplaneReceiver {
                             }
                             if flow.src_node_id == self.config.node_id {
                                 // this node is the client for this flow
-                                tcp_client_flows.push(flow.clone());
+                                user_space_flows.push(flow.clone());
                             }
                         }
                         FlowTransport::ReliableUnicast => {
@@ -388,13 +397,18 @@ impl ControllerToDataplaneReceiver {
                     }
                 }
 
-                if !tcp_client_flows.is_empty() {
-                    info!(
-                        "Adding {} user-space flows to node {}.",
-                        tcp_client_flows.len(),
-                        self.config.node_id
-                    );
-                    self.user_space_client.add_flows(tcp_client_flows);
+                if !user_space_flows.is_empty() {
+                    if self.topology_ready {
+                        self.start_user_space_flows(user_space_flows);
+                    } else {
+                        info!(
+                            "Deferring {} user-space flows on node {} until topology is ready.",
+                            user_space_flows.len(),
+                            self.config.node_id
+                        );
+                        self.pending_user_space_flows
+                            .extend(user_space_flows.into_iter());
+                    }
                 }
 
                 if !reliable_flows.is_empty() {
@@ -414,6 +428,9 @@ impl ControllerToDataplaneReceiver {
                     "Controller signaled that all nodes are connected; topology state is ready on node {}.",
                     self.config.node_id
                 );
+
+                self.topology_ready = true;
+
                 if let Some(handle) = &self.reliable {
                     handle.set_topology_ready(true);
                 } else {
@@ -422,6 +439,8 @@ impl ControllerToDataplaneReceiver {
                         self.config.node_id
                     );
                 }
+
+                self.flush_pending_user_space_flows();
             }
 
             ControllerToDataplane::GroupCreated {
@@ -478,7 +497,10 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id,
                     routes.len()
                 );
+
+                #[cfg(feature = "python-extension")]
                 let cloned_routes = routes.clone();
+
                 self.processors
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
@@ -518,6 +540,35 @@ impl ControllerToDataplaneReceiver {
 
             _ => error!("Received a message with an unknown type from the controller."),
         }
+    }
+
+    fn start_user_space_flows(&mut self, flows: Vec<Flow>) {
+        if flows.is_empty() {
+            return;
+        }
+
+        info!(
+            "Adding {} user-space flows to node {}.",
+            flows.len(),
+            self.config.node_id
+        );
+        self.user_space_client.add_flows(flows);
+    }
+
+    fn flush_pending_user_space_flows(&mut self) {
+        if self.pending_user_space_flows.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_user_space_flows);
+
+        info!(
+            "Topology ready on node {}; starting {} deferred user-space flows.",
+            self.config.node_id,
+            pending.len()
+        );
+
+        self.start_user_space_flows(pending);
     }
 
     #[cfg(feature = "python-extension")]
