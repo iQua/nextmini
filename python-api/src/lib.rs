@@ -262,7 +262,7 @@ impl Dataplane {
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
-        chunk_size = self.clamp_reliable_chunk_size(chunk_size);
+
         let path = std::path::Path::new(tensor_path);
         if !path.exists() {
             return Err(PyRuntimeError::new_err(format!(
@@ -353,7 +353,7 @@ impl Dataplane {
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
-        chunk_size = self.clamp_reliable_chunk_size(chunk_size);
+
         let _ = (src_port, dst_port); // reserved for future plumbing
         let sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "reliable")]
@@ -662,27 +662,6 @@ impl Dataplane {
 }
 
 impl Dataplane {
-    fn clamp_reliable_chunk_size(&self, requested: usize) -> usize {
-        const IPV4_HEADER_LEN: usize = 20;
-        const TCP_HEADER_LEN: usize = 20;
-        const SAFETY_BYTES: usize = 64;
-        let mtu = self.cfg.mtu.max(1) as usize;
-        let budget = mtu
-            .saturating_sub(IPV4_HEADER_LEN + TCP_HEADER_LEN + SAFETY_BYTES)
-            .max(1);
-        if requested > budget {
-            tracing::warn!(
-                requested,
-                budget,
-                mtu = self.cfg.mtu,
-                "Reliable chunk_size exceeds MTU budget; clamping."
-            );
-            budget
-        } else {
-            requested.max(1)
-        }
-    }
-
     fn transmit_python_payload(
         &self,
         src_ip: Ipv4Addr,
