@@ -16,7 +16,7 @@ use super::api::InboundFrame;
 use super::control;
 use super::session::{CommonConfig, SenderConfig};
 
-const DEFAULT_WINDOW: usize = 512;
+pub(super) const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
 const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const TRANSFER_TIMEOUT_SECS: u64 = 300; // 5 minutes - configurable later
@@ -199,23 +199,28 @@ impl SenderState {
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
+
         let ready_gate_open = receiver_count == 0;
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms.max(1));
+
         let topology_ready_rx = cfg.topology_ready.take();
         let topology_gate_open = topology_ready_rx
             .as_ref()
             .map(|rx| *rx.borrow())
             .unwrap_or(true);
+
         let routes_ready_rx = cfg.routes_ready.take();
         let routes_gate_open = routes_ready_rx
             .as_ref()
             .map(|rx| *rx.borrow())
             .unwrap_or(true);
         let ready_deadline = None;
+
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
         let base_window = compute_window(&cfg);
+
         let mut receiver_progress = BTreeMap::new();
         for node_id in &cfg.receiver_ids {
             receiver_progress.insert(*node_id, 0);
@@ -325,6 +330,7 @@ impl SenderState {
 
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
+
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
         self.update_retired_up_to();
@@ -372,6 +378,7 @@ impl SenderState {
         };
         self.send_control(&eot, processors);
         self.eot_sent = true;
+
         tracing::info!(
             session_id = self.session_id,
             last_index = self.total_chunks,
@@ -486,6 +493,7 @@ impl SenderState {
 
         if *rx.borrow() {
             self.topology_gate_open = true;
+
             tracing::info!(
                 session_id = self.session_id,
                 "RLM sender: topology-ready signal received"
@@ -518,10 +526,12 @@ impl SenderState {
         if self.receiver_count > 0 && self.ready_nodes.len() == self.receiver_count {
             self.ready_gate_open = true;
             self.ready_deadline = None;
+
             tracing::info!(
                 session_id = self.session_id,
                 "RLM sender: all receivers ready"
             );
+
             return;
         }
 
@@ -540,8 +550,7 @@ impl SenderState {
     }
 }
 
-/// Chooses a sliding window size based on receiver fan-out and optional token
-/// bucket configuration.
+/// Compute a sliding window size based on the minimum of the default value and token bucket configuration.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let mut window = DEFAULT_WINDOW;
 
@@ -553,13 +562,15 @@ fn compute_window(cfg: &SenderConfig) -> usize {
         window = window.min(bucket_chunks);
     }
 
+    tracing::info!("The sliding window size is {window} on the source.");
+
     window
 }
 
 /// Materialized chunk that is ready to be encoded into an RLM frame.
 struct ChunkPayload {
     index: u64,
-    data: Vec<u8>,
+    data: Bytes,
 }
 
 /// Reads chunk payloads from memory and hands them to the sender in strict index order.
@@ -598,11 +609,14 @@ impl ChunkSource {
         }
 
         let end = (start + self.chunk_size).min(self.bytes.len());
-        let mut data = Vec::with_capacity(end.saturating_sub(start));
-        data.extend_from_slice(&self.bytes[start..end]);
+
+        // Zero-copy slice – O(1), shares underlying buffer
+        let data = self.bytes.slice(start..end);
+
         self.buffer_offset = end;
         let idx = self.next_index;
         self.next_index += 1;
+
         Some(ChunkPayload { index: idx, data })
     }
 }

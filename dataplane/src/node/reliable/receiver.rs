@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
@@ -73,7 +71,14 @@ pub async fn run(
 
     // Stream bookkeeping: RLM chunk indices start at 1.
     let mut expected: u64 = 1;
-    let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
+    let per_chunk = cfg.common.chunk_size.max(1);
+    let window_size = cfg
+        .common
+        .data_bucket
+        .as_ref()
+        .map(|bucket| (bucket.bucket_size / per_chunk).max(1))
+        .unwrap_or(super::sender::DEFAULT_WINDOW);
+    let mut pending = PendingWindow::new(window_size, expected);
     let mut bytes_received: u64 = 0;
     let sink_buffer = cfg.sink_buffer.clone();
 
@@ -162,12 +167,91 @@ pub async fn run(
     );
 }
 
+/// Fixed-size buffer that keeps track of out-of-order chunks within the current
+/// receiver window.
+struct PendingWindow {
+    base_index: u64,
+    head: usize,
+    slots: Vec<Option<Bytes>>,
+}
+
+impl PendingWindow {
+    fn new(window_size: usize, base_index: u64) -> Self {
+        let size = window_size.max(1);
+        Self {
+            base_index,
+            head: 0,
+            slots: vec![None; size],
+        }
+    }
+
+    fn insert(&mut self, index: u64, payload: Bytes) -> bool {
+        if index < self.base_index {
+            return false;
+        }
+        let offset = index - self.base_index;
+        if offset >= self.slots.len() as u64 {
+            tracing::warn!(
+                chunk_index = index,
+                base_index = self.base_index,
+                window = self.slots.len(),
+                "RLM receiver: chunk outside pending window, dropping"
+            );
+            return false;
+        }
+        let slot_idx = self.slot_index(offset);
+        if self.slots[slot_idx].is_none() {
+            self.slots[slot_idx] = Some(payload);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn take_contiguous_from(&mut self, expected: &mut u64) -> Vec<Bytes> {
+        let mut ready = Vec::new();
+        loop {
+            if *expected < self.base_index {
+                break;
+            }
+            let offset = *expected - self.base_index;
+            if offset >= self.slots.len() as u64 {
+                break;
+            }
+            let idx = self.slot_index(offset);
+            match self.slots[idx].take() {
+                Some(bytes) => {
+                    ready.push(bytes);
+                    *expected += 1;
+                    self.advance_window();
+                }
+                None => break,
+            }
+        }
+        ready
+    }
+
+    fn slot_index(&self, offset: u64) -> usize {
+        if self.slots.is_empty() {
+            return 0;
+        }
+        (self.head + offset as usize) % self.slots.len()
+    }
+
+    fn advance_window(&mut self) {
+        self.base_index = self.base_index.saturating_add(1);
+        if !self.slots.is_empty() {
+            self.head = (self.head + 1) % self.slots.len();
+        }
+    }
+}
+
 /// Returns ordering updates and ready chunks when a DATA frame is processed.
 struct FrameCtx<'a> {
     data: &'a rlm::RlmData,
     body: &'a [u8],
     expected: &'a mut u64,
-    pending: &'a mut BTreeMap<u64, Bytes>,
+    pending: &'a mut PendingWindow,
     bytes_received: &'a mut u64,
 }
 
@@ -197,15 +281,14 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     }
 
     let payload = Bytes::copy_from_slice(ctx.body);
-    if ctx.pending.insert(idx, payload).is_none() {
+    if ctx.pending.insert(idx, payload) {
         tracing::trace!(chunk_index = idx, "RLM receiver: chunk stored for ordering");
     }
 
-    let mut ready_chunks = Vec::new();
-    while let Some(bytes) = ctx.pending.remove(ctx.expected) {
-        *ctx.bytes_received += bytes.len() as u64;
-        ready_chunks.push(bytes);
-        *ctx.expected += 1;
+    let ready_chunks = ctx.pending.take_contiguous_from(ctx.expected);
+    if !ready_chunks.is_empty() {
+        let ready_bytes: u64 = ready_chunks.iter().map(|chunk| chunk.len() as u64).sum();
+        *ctx.bytes_received += ready_bytes;
     }
     let advanced = !ready_chunks.is_empty();
     DataOutcome {
