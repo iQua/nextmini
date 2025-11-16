@@ -23,6 +23,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "python-extension")]
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::reliable::api::ReliableHandle;
 use crate::node::reliable::unicast::ReliableUnicastFlowHandle;
@@ -33,6 +34,7 @@ pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }
 
@@ -56,12 +58,14 @@ impl ControllerInterfaceHandle {
             northbridge_receiver,
         };
 
+        #[cfg(feature = "python-extension")]
         let python_interface = Arc::new(Mutex::new(None));
 
         let controller_interface = Self {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            #[cfg(feature = "python-extension")]
             python_interface: python_interface.clone(),
         };
 
@@ -107,6 +111,7 @@ impl ControllerInterfaceHandle {
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
+            #[cfg(feature = "python-extension")]
             python_interface,
             reliable,
             group_ip_by_id: HashMap::new(),
@@ -271,6 +276,7 @@ pub struct ControllerToDataplaneReceiver {
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
 
+    #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
     reliable: Option<ReliableHandle>,
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
@@ -428,6 +434,7 @@ impl ControllerToDataplaneReceiver {
                     group_id, group_ip, src_node_id
                 );
 
+                #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupCreated {
@@ -451,6 +458,7 @@ impl ControllerToDataplaneReceiver {
                     self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
                 }
 
+                #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupDirectoryUpdated { entries: groups })
@@ -486,6 +494,7 @@ impl ControllerToDataplaneReceiver {
                     }
                 }
 
+                #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupRoutesInstalled {
@@ -511,6 +520,7 @@ impl ControllerToDataplaneReceiver {
         }
     }
 
+    #[cfg(feature = "python-extension")]
     async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
         self.python_interface.lock().await.clone()
     }

@@ -267,64 +267,7 @@ pub fn allocate_multicast_ip(base_addr: Ipv4Addr, mask: Ipv4Addr, ordinal: u32) 
     Ipv4Addr::from(network | offset)
 }
 
-/// Compute a multicast DAG by unioning shortest paths from src to each member.
-#[allow(dead_code)]
-pub fn compute_group_tree_edges(
-    src_node_id: u32,
-    member_node_ids: &[u32],
-    undirected_edges: &[(u32, u32)],
-) -> Vec<(u32, u32)> {
-    if member_node_ids.is_empty() || undirected_edges.is_empty() {
-        return Vec::new();
-    }
-
-    let mut bidirectional = Vec::with_capacity(undirected_edges.len() * 2);
-    for &(a, b) in undirected_edges {
-        bidirectional.push((a, b));
-        bidirectional.push((b, a));
-    }
-
-    let (_node_ids, node_map, graph) = create_graph_with_mapping(&bidirectional);
-    let Some(&src_idx) = node_map.get(&src_node_id) else {
-        warn!(
-            "Source node {} missing from topology, unable to compute multicast DAG.",
-            src_node_id
-        );
-        return Vec::new();
-    };
-
-    let mut seen = HashSet::new();
-    let mut dag = Vec::new();
-    let mut shortest_path = routing::ShortestPath::new(graph.clone());
-
-    for &member in member_node_ids {
-        if member == src_node_id {
-            continue;
-        }
-
-        let Some(&dst_idx) = node_map.get(&member) else {
-            warn!(
-                "Member node {} missing from topology; skipping in multicast tree.",
-                member
-            );
-            continue;
-        };
-
-        let path = shortest_path.compute_route(src_idx, dst_idx);
-        for window in path.windows(2) {
-            let from = graph[window[0]];
-            let to = graph[window[1]];
-            if seen.insert((from, to)) {
-                dag.push((from, to));
-            }
-        }
-    }
-
-    dag
-}
-
 /// Build per-node multicast routing entries including local delivery for members.
-#[allow(dead_code)]
 pub fn build_group_routes_for_node(
     group_id: GroupId,
     src_node_id: u32,
@@ -526,6 +469,61 @@ mod tests {
     use super::*;
     use crate::models::Route;
     use std::collections::HashSet;
+
+    /// Compute a multicast DAG by unioning shortest paths from src to each member.
+    pub fn compute_group_tree_edges(
+        src_node_id: u32,
+        member_node_ids: &[u32],
+        undirected_edges: &[(u32, u32)],
+    ) -> Vec<(u32, u32)> {
+        if member_node_ids.is_empty() || undirected_edges.is_empty() {
+            return Vec::new();
+        }
+
+        let mut bidirectional = Vec::with_capacity(undirected_edges.len() * 2);
+        for &(a, b) in undirected_edges {
+            bidirectional.push((a, b));
+            bidirectional.push((b, a));
+        }
+
+        let (_node_ids, node_map, graph) = create_graph_with_mapping(&bidirectional);
+        let Some(&src_idx) = node_map.get(&src_node_id) else {
+            warn!(
+                "Source node {} missing from topology, unable to compute multicast DAG.",
+                src_node_id
+            );
+            return Vec::new();
+        };
+
+        let mut seen = HashSet::new();
+        let mut dag = Vec::new();
+        let mut shortest_path = routing::ShortestPath::new(graph.clone());
+
+        for &member in member_node_ids {
+            if member == src_node_id {
+                continue;
+            }
+
+            let Some(&dst_idx) = node_map.get(&member) else {
+                warn!(
+                    "Member node {} missing from topology; skipping in multicast tree.",
+                    member
+                );
+                continue;
+            };
+
+            let path = shortest_path.compute_route(src_idx, dst_idx);
+            for window in path.windows(2) {
+                let from = graph[window[0]];
+                let to = graph[window[1]];
+                if seen.insert((from, to)) {
+                    dag.push((from, to));
+                }
+            }
+        }
+
+        dag
+    }
 
     #[test]
     fn test_compute_group_tree_edges_union_shortest_paths() {

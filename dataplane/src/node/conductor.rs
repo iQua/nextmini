@@ -34,12 +34,10 @@ pub struct Conductor {
 
     /// controller interface handle for sending custom messages upstream
     #[cfg(feature = "python-extension")]
-    #[allow(dead_code)]
     controller: ControllerInterfaceHandle,
 
     /// reliable session subsystem handle (initialized but not yet wired)
     #[cfg(feature = "python-extension")]
-    #[allow(dead_code)]
     reliable: ReliableHandle,
 }
 
@@ -208,8 +206,7 @@ impl Conductor {
         match self.config.protocol {
             Protocol::Tcp => {
                 // uses TcpMaxServer to handle the connections for max operating mode
-                let mut tcp_max_server =
-                    TcpMaxServer::new(self.config.clone(), self.processors.clone());
+                let mut tcp_max_server = TcpMaxServer::new(self.processors.clone());
 
                 // uses TcpServer to handle the connections for normal operating mode
                 if public_port == private_port {

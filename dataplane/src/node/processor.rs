@@ -27,6 +27,7 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
+#[cfg(feature = "python-extension")]
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::reliable::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
 use crate::node::route::RoutingTable;
@@ -59,7 +60,6 @@ pub enum ProcessorMessage {
     SetFlowWeight(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[cfg(feature = "python-extension")]
-    #[allow(dead_code)]
     ConnectPythonInterface(PythonInterfaceHandle),
     ConnectReliableHandle(ReliableHandle),
 }
@@ -741,6 +741,7 @@ struct Processor {
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 
     // optional in-process Python delivery path
+    #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
     reliable_handle: Option<ReliableHandle>,
 }
@@ -761,6 +762,7 @@ impl Processor {
             flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
+            #[cfg(feature = "python-extension")]
             python_interface: None,
             reliable_handle: None,
         }
@@ -925,6 +927,7 @@ impl Processor {
                     error!("The local interface has not yet been connected.");
                 }
             } else {
+                #[cfg(feature = "python-extension")]
                 if let Some(ref py_if) = self.python_interface {
                     match py_if.deliver(packet).await {
                         Ok(()) => return,

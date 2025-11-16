@@ -28,8 +28,7 @@ use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::{
-    PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
-    PythonEvent, PythonInterfaceHandle,
+    PayloadDelivery as RustPayloadDelivery, PythonDelivery, PythonEvent, PythonInterfaceHandle,
 };
 #[cfg(feature = "python-extension")]
 use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
@@ -127,7 +126,6 @@ struct PyPayloadDelivery {
     message_id: Option<u64>,
     total_len: Option<u32>,
     fragment_count: Option<u16>,
-    format: String,
 }
 
 #[pymethods]
@@ -181,11 +179,6 @@ impl PyPayloadDelivery {
     fn fragment_count(&self) -> Option<u16> {
         self.fragment_count
     }
-
-    #[getter]
-    fn payload_format(&self) -> &str {
-        &self.format
-    }
 }
 
 impl From<RustPayloadDelivery> for PyPayloadDelivery {
@@ -200,10 +193,6 @@ impl From<RustPayloadDelivery> for PyPayloadDelivery {
             message_id: payload.message_id,
             total_len: payload.total_len,
             fragment_count: payload.fragment_count,
-            format: match payload.payload_format {
-                RustPayloadFormat::Payload => "payload".to_string(),
-                RustPayloadFormat::RawPacket => "raw_packet".to_string(),
-            },
         }
     }
 }

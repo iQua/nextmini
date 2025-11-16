@@ -631,7 +631,6 @@ impl LocalConfig {
 }
 
 /// Reliable session configuration knobs (consumed when the reliable subsystem is enabled).
-#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReliableConfig {
     /// Default data chunk size in bytes.
