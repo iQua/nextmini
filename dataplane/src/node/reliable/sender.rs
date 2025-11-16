@@ -429,7 +429,7 @@ impl SenderState {
                 );
             }
             RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
-                // Ignore sender-originated control frames looped back.
+                // ignores if the sender-originated control frames somehow looped back
             }
             RlmControl::Ack { .. } => {
                 let Some(from_node) = peer_id else {
@@ -679,13 +679,15 @@ mod tests {
         let payload = vec![0xAAu8; plen];
         let buf = rlm::encode_data(sid, idx, &payload);
         let (hdr, data, body) = rlm::decode_data(&buf).expect("decode data");
+
         assert_eq!(hdr.session_id, sid);
         assert_eq!(data.index, idx);
         assert_eq!(data.payload_len as usize, plen);
         assert_eq!(body.len(), plen);
     }
 
-    /// TEST 1: Validates ChunkSource properly reports when finished.
+    /// Validates ChunkSource properly reports when finished.
+    ///
     /// This tests the fix for the infinite loop bug where the sender could get stuck
     /// waiting for source_drained when chunk_source.finished() returned true but
     /// the state wasn't updated.
@@ -693,21 +695,21 @@ mod tests {
     fn chunk_source_finished_detection() {
         let session_id = 1;
 
-        // Test 1: Zero chunks should be immediately finished
+        // Zero chunks should be immediately finished
         let source = ChunkSource::new(None, 1024, 0, session_id);
         assert!(
             source.finished(),
             "ChunkSource with 0 chunks should be finished immediately"
         );
 
-        // Test 2: Source with chunks should not be finished initially
+        //Source with chunks should not be finished initially
         let mut source = ChunkSource::new(None, 1024, 5, session_id);
         assert!(
             !source.finished(),
             "ChunkSource with 5 chunks should not be finished initially"
         );
 
-        // Test 3: After consuming all chunks, should be finished
+        // After consuming all chunks, should be finished
         for _ in 0..5 {
             let result = source.next_chunk();
             assert!(result.is_ok(), "Should successfully get chunk");
@@ -717,7 +719,7 @@ mod tests {
             "ChunkSource should be finished after all chunks consumed"
         );
 
-        // Test 4: Requesting more chunks after finished returns None
+        // Requesting more chunks after finished returns None
         let result = source.next_chunk();
         assert!(
             matches!(result, Ok(None)),
@@ -725,7 +727,8 @@ mod tests {
         );
     }
 
-    /// TEST 2: Validates the timeout constant is used correctly.
+    /// Validates the timeout constant is used correctly.
+    ///
     /// This tests the fix for hung transfers where senders could wait indefinitely
     /// for receivers that never respond.
     #[test]

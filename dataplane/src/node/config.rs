@@ -641,12 +641,6 @@ pub struct ReliableConfig {
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
 
-    /// Optional FEC parameters: when `fec_k` is Some, compute `fec_p` parity chunks per block.
-    pub fec_k: Option<u16>,
-
-    /// Parity count per block (0 to disable).
-    pub fec_p: u8,
-
     /// Grace period (ms) to wait for receiver READY before opening the data gate.
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
@@ -655,11 +649,9 @@ pub struct ReliableConfig {
 impl Default for ReliableConfig {
     fn default() -> Self {
         Self {
-            default_chunk_size: 32 * 1024,
+            default_chunk_size: 64 * 1024,
             control_weight: 8,
             data_bucket: None,
-            fec_k: None,
-            fec_p: 0,
             ready_grace_ms: 1500,
         }
     }

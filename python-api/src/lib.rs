@@ -258,7 +258,7 @@ impl Dataplane {
                 "receiver_ids must contain at least one entry.",
             ));
         }
-        let mut chunk_size = chunk_size;
+
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
@@ -349,7 +349,7 @@ impl Dataplane {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
-        let mut chunk_size = chunk_size;
+
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }

@@ -9,9 +9,3 @@ channel_capacity = 3000
 queue_capacity = 4000
 feature = "concurrent"
 channel_backpressure = true
-
-[reliable]
-default_chunk_size = 4096
-control_weight = 8
-fec_p = 0
-ready_grace_ms = 1500
