@@ -48,8 +48,8 @@ services:
   source:
     build:
       context: ../../
-      dockerfile: docs/testing/scripts/Dockerfile.harness
-    image: nextmini_python_harness
+      dockerfile: examples/multicast-docker/Dockerfile
+    image: nextmini_python
     container_name: multicast-source
     hostname: source
     depends_on:
@@ -79,8 +79,8 @@ services:
   receiver_a:
     build:
       context: ../../
-      dockerfile: docs/testing/scripts/Dockerfile.harness
-    image: nextmini_python_harness
+      dockerfile: examples/multicast-docker/Dockerfile
+    image: nextmini_python
     container_name: multicast-receiver-a
     hostname: receiver-a
     depends_on:
@@ -111,8 +111,8 @@ services:
   receiver_b:
     build:
       context: ../../
-      dockerfile: docs/testing/scripts/Dockerfile.harness
-    image: nextmini_python_harness
+      dockerfile: examples/multicast-docker/Dockerfile
+    image: nextmini_python
     container_name: multicast-receiver-b
     hostname: receiver-b
     depends_on:
