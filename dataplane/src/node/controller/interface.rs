@@ -526,10 +526,6 @@ impl ControllerToDataplaneReceiver {
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
 
-                if let Some(ip) = self.group_ip_by_id.get(&group_id) {
-                    self.reliable.set_dest_routes_ready(*ip, src_node_id);
-                }
-
                 #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if

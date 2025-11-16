@@ -156,13 +156,6 @@ impl Conductor {
                             let guard = manager.lock().await;
                             guard.set_topology_ready(ready);
                         }
-                        ReliableCommand::SetDestRoutesReady {
-                            dest_ip,
-                            src_node_id,
-                        } => {
-                            let mut guard = manager.lock().await;
-                            guard.set_dest_routes_ready(dest_ip, src_node_id);
-                        }
                     }
                 }
                 warn!("Reliable command loop terminated.");

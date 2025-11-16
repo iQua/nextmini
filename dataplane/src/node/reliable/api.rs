@@ -64,10 +64,6 @@ pub enum Command {
     SetTopologyReady {
         ready: bool,
     },
-    SetDestRoutesReady {
-        dest_ip: Ipv4Addr,
-        src_node_id: usize,
-    },
 }
 
 impl ReliableHandle {
@@ -137,13 +133,5 @@ impl ReliableHandle {
     /// Notify the runtime that the control plane finished installing topology.
     pub fn set_topology_ready(&self, ready: bool) {
         let _ = self.tx.send(Command::SetTopologyReady { ready });
-    }
-
-    /// Notify the runtime that destination routes for (dest, src) are in place.
-    pub fn set_dest_routes_ready(&self, dest_ip: Ipv4Addr, src_node_id: usize) {
-        let _ = self.tx.send(Command::SetDestRoutesReady {
-            dest_ip,
-            src_node_id,
-        });
     }
 }
