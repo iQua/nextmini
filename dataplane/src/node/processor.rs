@@ -950,9 +950,7 @@ impl Processor {
                 if let Some(sender) = dest
                     && sender.try_send(packet).is_err()
                 {
-                    tracing::error!(
-                        "Failed to send a packet in user-space flows to its local destination."
-                    );
+                    error!("Failed to send a packet in user-space flows to its local destination.");
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {

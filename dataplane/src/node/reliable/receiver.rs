@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use tokio::sync::mpsc;
+use tracing::{debug, info, trace, warn};
 
 use nextmini_messages::rlm::{self, RlmControl};
 
@@ -68,7 +69,7 @@ pub async fn run(
     processors: ProcessorHandle,
 ) {
     let sid = cfg.common.session_id;
-    tracing::info!(
+    info!(
         session_id = sid,
         expected_bytes = cfg.expected_bytes,
         "RLM receiver started"
@@ -116,7 +117,7 @@ pub async fn run(
     let mut eot_index: Option<u64> = None;
 
     while let Some(frame) = rx.recv().await {
-        tracing::trace!(
+        trace!(
             session_id = sid,
             frame_len = frame.bytes.len(),
             "RLM receiver: received inbound frame"
@@ -148,7 +149,7 @@ pub async fn run(
                         || final_chunk_reached
                         || received_all_bytes
                     {
-                        tracing::debug!(
+                        debug!(
                             session_id = sid,
                             up_to = base,
                             expected = expected,
@@ -171,13 +172,13 @@ pub async fn run(
             continue;
         }
 
-        tracing::warn!(
+        warn!(
             session_id = sid,
             "RLM receiver: received frame that was neither DATA nor CONTROL"
         );
     }
 
-    tracing::info!(
+    info!(
         session_id = sid,
         bytes_received,
         last_index = expected.saturating_sub(1),
@@ -212,7 +213,7 @@ impl PendingWindow {
         }
         let offset = index - self.base_index;
         if offset >= self.slots.len() as u64 {
-            tracing::warn!(
+            warn!(
                 chunk_index = index,
                 base_index = self.base_index,
                 window = self.slots.len(),
@@ -289,14 +290,14 @@ struct DataOutcome {
 /// Handles ordering/bookkeeping for a single reliable DATA frame.
 fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     let idx = ctx.data.index;
-    tracing::debug!(
+    debug!(
         chunk_index = idx,
         body_len = ctx.body.len(),
         expected = *ctx.expected,
         "RLM receiver: DATA chunk received"
     );
     if idx < *ctx.expected {
-        tracing::trace!(
+        trace!(
             chunk_index = idx,
             expected = *ctx.expected,
             "RLM receiver: ignoring duplicate/old chunk"
@@ -309,7 +310,7 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
 
     let payload = Bytes::copy_from_slice(ctx.body);
     if ctx.pending.insert(idx, payload) {
-        tracing::trace!(chunk_index = idx, "RLM receiver: chunk stored for ordering");
+        trace!(chunk_index = idx, "RLM receiver: chunk stored for ordering");
     }
 
     let ready_chunks = ctx.pending.take_contiguous_from(ctx.expected);
@@ -342,7 +343,7 @@ fn handle_control_frame(
             true
         }
         RlmControl::Eot { last_index } => {
-            tracing::info!(
+            info!(
                 session_id = cfg.common.session_id,
                 last_index = last_index,
                 "RLM receiver: EOT received"

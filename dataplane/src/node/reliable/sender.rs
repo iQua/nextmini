@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
+use tracing::{debug, error, info, trace, warn};
 
 use nextmini_messages::rlm::{self, RlmControl};
 
@@ -37,7 +38,7 @@ pub async fn run(
         total_bytes.div_ceil(chunk_size)
     };
 
-    tracing::info!(
+    info!(
         session_id = sid,
         total_bytes,
         total_chunks,
@@ -56,7 +57,7 @@ pub async fn run(
     loop {
         // checks for transfer timeout
         if transfer_start.elapsed() > transfer_timeout && !state.is_complete() {
-            tracing::error!(
+            error!(
                 session_id = sid,
                 elapsed_secs = transfer_start.elapsed().as_secs(),
                 inflight = state.inflight_len(),
@@ -76,7 +77,7 @@ pub async fn run(
 
         let mut progressed = false;
 
-        tracing::trace!(
+        trace!(
             session_id = sid,
             ready_gate_open = state.ready_gate_open,
             source_drained = state.source_drained,
@@ -104,7 +105,7 @@ pub async fn run(
             && !chunk_source.finished()
             && state.inflight_len() < state.window_limit()
         {
-            tracing::debug!(
+            debug!(
                 session_id = sid,
                 ready_for_data = state.ready_for_data(),
                 chunk_source_finished = chunk_source.finished(),
@@ -114,7 +115,7 @@ pub async fn run(
             );
             match chunk_source.next_chunk() {
                 Some(chunk) => {
-                    tracing::debug!(
+                    debug!(
                         session_id = sid,
                         chunk_index = chunk.index,
                         chunk_size = chunk.data.len(),
@@ -136,7 +137,7 @@ pub async fn run(
         }
 
         if state.is_complete() {
-            tracing::info!(
+            info!(
                 session_id = sid,
                 bytes_sent = state.bytes_sent,
                 chunks_sent = state.primary_chunks,
@@ -233,7 +234,7 @@ impl SenderState {
         }
 
         if cfg.common.control_weight != 0 {
-            tracing::debug!(
+            debug!(
                 session_id = common.session_id,
                 control_weight = cfg.common.control_weight,
                 "RLM sender: control_weight is recorded but scheduler boosts are not yet wired."
@@ -289,7 +290,7 @@ impl SenderState {
             self.ready_deadline = Some(Instant::now() + self.ready_grace);
         }
         self.manifest_sent = true;
-        tracing::info!(
+        info!(
             session_id = self.session_id,
             src = %self.src_ip,
             dst = %self.dst_ip,
@@ -357,7 +358,7 @@ impl SenderState {
                 (self.bytes_since_last_report as f64 * 8.0) / (elapsed * 1_000_000_000.0);
             let total_elapsed = now.duration_since(self.throughput_start).as_secs_f64();
 
-            tracing::info!(
+            info!(
                 session_id = self.session_id,
                 throughput_gbps = format!("{:.3}", throughput_gbps),
                 bytes = self.bytes_since_last_report,
@@ -382,7 +383,7 @@ impl SenderState {
         self.primary_chunks += 1;
         self.update_retired_up_to();
         self.report_throughput();
-        tracing::debug!(
+        debug!(
             session_id = self.session_id,
             chunk_index = chunk.index,
             chunk_data_len = chunk.data.len(),
@@ -415,7 +416,7 @@ impl SenderState {
     fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
         if self.eot_sent || !self.source_drained || self.outstanding_chunks() > 0 {
             if !self.eot_sent && self.source_drained && self.outstanding_chunks() > 0 {
-                tracing::trace!(
+                trace!(
                     session_id = self.session_id,
                     inflight_count = self.outstanding_chunks(),
                     "RLM sender: cannot send EOT - chunks still inflight"
@@ -429,7 +430,7 @@ impl SenderState {
         self.send_control(&eot, processors);
         self.eot_sent = true;
 
-        tracing::info!(
+        info!(
             session_id = self.session_id,
             last_index = self.total_chunks,
             "RLM sender: EOT sent"
@@ -446,7 +447,7 @@ impl SenderState {
     fn handle_control(&mut self, frame: InboundFrame) {
         let InboundFrame { bytes, peer_id, .. } = frame;
         let Some((_, control)) = rlm::decode_control(&bytes) else {
-            tracing::warn!(
+            warn!(
                 session_id = self.session_id,
                 "RLM sender: failed to decode control frame"
             );
@@ -455,7 +456,7 @@ impl SenderState {
         match &control {
             RlmControl::Ready { node_id } => {
                 self.ready_nodes.insert(*node_id as usize);
-                tracing::debug!(
+                debug!(
                     session_id = self.session_id,
                     node_id = *node_id,
                     "RLM sender: receiver ready"
@@ -466,7 +467,7 @@ impl SenderState {
             }
             RlmControl::Ack { .. } => {
                 let Some(from_node) = peer_id else {
-                    tracing::warn!(
+                    warn!(
                         session_id = self.session_id,
                         ?control,
                         "RLM sender: dropping control without peer id"
@@ -474,7 +475,7 @@ impl SenderState {
                     return;
                 };
                 if !self.receiver_progress.contains_key(&from_node) {
-                    tracing::warn!(
+                    warn!(
                         session_id = self.session_id,
                         from_node,
                         "RLM sender: ignoring ACK from unexpected node"
@@ -488,7 +489,7 @@ impl SenderState {
                 );
                 if let Some(new_value) = updated {
                     self.update_retired_up_to();
-                    tracing::debug!(
+                    debug!(
                         session_id = self.session_id,
                         from_node = from_node,
                         up_to = new_value,
@@ -497,7 +498,7 @@ impl SenderState {
                         "RLM sender: cumulative ACK processed"
                     );
                 } else {
-                    tracing::trace!(
+                    trace!(
                         session_id = self.session_id,
                         from_node = from_node,
                         "RLM sender: ACK made no progress"
@@ -549,7 +550,7 @@ impl SenderState {
         if *rx.borrow() {
             self.topology_gate_open = true;
 
-            tracing::info!(
+            info!(
                 session_id = self.session_id,
                 "RLM sender: topology-ready signal received"
             );
@@ -567,7 +568,7 @@ impl SenderState {
         };
         if *rx.borrow() {
             self.routes_gate_open = true;
-            tracing::info!(
+            info!(
                 session_id = self.session_id,
                 "RLM sender: multicast routes installed for this source"
             );
@@ -584,7 +585,7 @@ impl SenderState {
             self.ready_gate_open = true;
             self.ready_deadline = None;
 
-            tracing::info!(
+            info!(
                 session_id = self.session_id,
                 "RLM sender: all receivers ready"
             );
@@ -597,7 +598,7 @@ impl SenderState {
         {
             self.ready_gate_open = true;
             self.ready_deadline = None;
-            tracing::warn!(
+            warn!(
                 session_id = self.session_id,
                 ready = self.ready_nodes.len(),
                 total = self.receiver_count,
@@ -621,7 +622,7 @@ fn compute_window(cfg: &SenderConfig) -> usize {
         window = window.min(bucket_chunks);
     }
 
-    tracing::info!("The sliding window size is {window} on the source.");
+    info!("The sliding window size is {window} on the source.");
 
     window
 }

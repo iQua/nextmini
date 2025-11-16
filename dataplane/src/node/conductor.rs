@@ -1,7 +1,7 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
-use tracing::info;
+use tracing::{info, warn};
 
 use nextmini_messages::Protocol;
 
@@ -121,7 +121,7 @@ impl Conductor {
                             };
                             if let Some(tx) = sender {
                                 if tx.send(frame).await.is_err() {
-                                    tracing::warn!(
+                                    warn!(
                                         session_id = session,
                                         "Reliable runtime: receiver dropped inbound frame"
                                     );
@@ -130,7 +130,7 @@ impl Conductor {
                                     let _ = reply.send(session);
                                 }
                             } else {
-                                tracing::warn!(
+                                warn!(
                                     session_id = session,
                                     "Reliable runtime: no receiver for inbound frame"
                                 );
@@ -174,7 +174,7 @@ impl Conductor {
                         }
                     }
                 }
-                tracing::warn!("Reliable command loop terminated.");
+                warn!("Reliable command loop terminated.");
             });
         }
 

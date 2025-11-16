@@ -133,7 +133,7 @@ async fn send_flows(
                 .send(Message::binary(match rmp_serde::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
-                        tracing::error!("Failed to encode controller message: {}", e);
+                        error!("Failed to encode controller message: {}", e);
                         continue;
                     }
                 }))
@@ -180,7 +180,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
                 .send(Message::binary(match rmp_serde::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
-                        tracing::error!("Failed to encode controller message: {}", e);
+                        error!("Failed to encode controller message: {}", e);
                         continue;
                     }
                 }))
@@ -241,7 +241,7 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
 
             // replace the port with the Tcp max server port
             let Some(remote_ip) = remote_addr.split(':').next() else {
-                tracing::warn!("new_node: could not parse remote ip from {}", remote_addr);
+                warn!("new_node: could not parse remote ip from {}", remote_addr);
                 continue;
             };
             let remote_addr = format!("{}:{}", remote_ip, config.max_server_port);
@@ -257,7 +257,7 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
                 .send(Message::binary(match rmp_serde::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
-                        tracing::error!("Failed to encode controller message: {}", e);
+                        error!("Failed to encode controller message: {}", e);
                         continue;
                     }
                 }))
