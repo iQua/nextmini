@@ -348,10 +348,13 @@ impl SenderState {
     // reports throughput every 1 second
     fn report_throughput(&mut self) {
         let now = Instant::now();
-        let elapsed = now.duration_since(self.throughput_last_report).as_secs_f64();
+        let elapsed = now
+            .duration_since(self.throughput_last_report)
+            .as_secs_f64();
 
         if elapsed >= 1.0 && self.bytes_since_last_report > 0 {
-            let throughput_gbps = (self.bytes_since_last_report as f64 * 8.0) / (elapsed * 1_000_000_000.0);
+            let throughput_gbps =
+                (self.bytes_since_last_report as f64 * 8.0) / (elapsed * 1_000_000_000.0);
             let total_elapsed = now.duration_since(self.throughput_start).as_secs_f64();
 
             tracing::info!(
