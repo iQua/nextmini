@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
-use nextmini_messages::{Flow, NodeSpec, Protocol, SchedulingDiscipline};
+use nextmini_messages::{Flow, FlowTransport, NodeSpec, Protocol, SchedulingDiscipline};
 
 use crate::route_ser::deserialize_route_edges;
 use crate::topology::{FatTreeConfig, FullMeshConfig, RingConfig, TorusConfig};
@@ -147,6 +147,10 @@ pub struct Config {
     #[serde(default = "default_protocol")]
     pub protocol: Protocol,
 
+    /// Default transport used for controller-managed flows.
+    #[serde(default = "default_flow_transport")]
+    pub flow_transport: FlowTransport,
+
     /// The routes configuration
     #[serde(default)]
     pub routes: Vec<Route>,
@@ -242,6 +246,10 @@ fn default_db_config() -> DBConfig {
     }
 }
 
+fn default_flow_transport() -> FlowTransport {
+    FlowTransport::Tcp
+}
+
 pub fn get_config(filename: &str) -> Config {
     if Path::new(filename).exists() {
         match fs::read_to_string(filename) {
@@ -289,6 +297,7 @@ impl Default for Config {
             multicast_pool_mask: default_multicast_pool_mask(),
             max_server_port: default_max_server_port(),
             protocol: default_protocol(),
+            flow_transport: default_flow_transport(),
             routes: Vec::new(),
             flows: Vec::new(),
             link_rates: Vec::new(),

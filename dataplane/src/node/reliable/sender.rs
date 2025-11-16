@@ -196,6 +196,8 @@ struct SenderState {
 }
 
 impl SenderState {
+    /// Builds a fresh state tracker for a sender session, wiring gate watchers
+    /// and initializing per-receiver progress counters.
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
@@ -268,6 +270,7 @@ impl SenderState {
         state
     }
 
+    /// Emit a MANIFEST describing the file transfer so receivers can prime their state.
     fn send_manifest(&mut self, processors: &ProcessorHandle) {
         let manifest = RlmControl::Manifest {
             chunk_size: self.common.chunk_size as u32,
@@ -291,22 +294,27 @@ impl SenderState {
         );
     }
 
+    /// Determines whether the sender is allowed to transmit data frames.
     fn ready_for_data(&self) -> bool {
         self.topology_gate_open && self.ready_gate_open && !self.source_drained
     }
 
+    /// Ensures the window never collapses to zero (which would deadlock the loop).
     fn window_limit(&self) -> usize {
         self.window.max(1)
     }
 
+    /// Returns the number of outstanding chunks still waiting for ACKs.
     fn inflight_len(&self) -> usize {
         self.outstanding_chunks() as usize
     }
 
+    /// Returns the number of chunks currently outside of the retired window.
     fn outstanding_chunks(&self) -> u64 {
         self.primary_chunks.saturating_sub(self.retired_up_to)
     }
 
+    /// Decide whether we should re-send the MANIFEST while the ready gate stays closed.
     fn should_resend_manifest(&self) -> bool {
         self.manifest_sent
             && self.topology_gate_open
@@ -314,6 +322,7 @@ impl SenderState {
             && self.manifest_last_sent.elapsed() >= self.manifest_interval
     }
 
+    /// Determines if the sender should emit a MANIFEST based on topology/gate state.
     fn should_emit_manifest(&self) -> bool {
         if !self.topology_gate_open || !self.routes_gate_open {
             return false;
@@ -324,10 +333,12 @@ impl SenderState {
         self.should_resend_manifest()
     }
 
+    /// Marks the source buffer as fully drained (preventing redundant reads).
     fn mark_source_drained(&mut self) {
         self.source_drained = true;
     }
 
+    /// Encode and hand off a chunk to the processor, updating accounting.
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
 
@@ -345,6 +356,7 @@ impl SenderState {
         self.send_frame(&frame, processors);
     }
 
+    /// Advance the retired watermark based on the slowest receiver.
     fn update_retired_up_to(&mut self) {
         if self.receiver_count == 0 {
             self.retired_up_to = self.primary_chunks;
@@ -362,6 +374,7 @@ impl SenderState {
         self.retired_up_to = min_progress.min(self.total_chunks);
     }
 
+    /// Emit an End-of-Transfer once all chunks have been acknowledged.
     fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
         if self.eot_sent || !self.source_drained || self.outstanding_chunks() > 0 {
             if !self.eot_sent && self.source_drained && self.outstanding_chunks() > 0 {
@@ -387,10 +400,12 @@ impl SenderState {
         true
     }
 
+    /// Returns true when the sender drained the source and all acknowledgements were processed.
     fn is_complete(&self) -> bool {
         self.source_drained && self.eot_sent && self.outstanding_chunks() == 0
     }
 
+    /// Handle READY/ACK/EOT control frames coming from receivers.
     fn handle_control(&mut self, frame: InboundFrame) {
         let InboundFrame { bytes, peer_id, .. } = frame;
         let Some((_, control)) = rlm::decode_control(&bytes) else {
@@ -455,6 +470,7 @@ impl SenderState {
         }
     }
 
+    /// Serialize the already-encoded payload into a packet and enqueue it.
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -467,6 +483,7 @@ impl SenderState {
         processors.process_packet_blocking(packet);
     }
 
+    /// Convenience helper for building and sending control packets.
     fn send_control(&self, control: &RlmControl, processors: &ProcessorHandle) {
         let buf = rlm::encode_control(self.session_id, control);
 
@@ -481,6 +498,7 @@ impl SenderState {
         processors.process_packet_blocking(packet);
     }
 
+    /// Open the topology gate once the watch channel signals readiness.
     fn maybe_release_topology_gate(&mut self) {
         if self.topology_gate_open {
             return;
@@ -501,6 +519,7 @@ impl SenderState {
         }
     }
 
+    /// Open the routes gate once the control plane installs multicast routes.
     fn maybe_release_routes_gate(&mut self) {
         if self.routes_gate_open {
             return;
@@ -518,6 +537,7 @@ impl SenderState {
         }
     }
 
+    /// Once every receiver signals READY (or we time out), unblock data transfer.
     fn maybe_release_ready_gate(&mut self) {
         if self.ready_gate_open || !self.manifest_sent {
             return;
@@ -550,7 +570,9 @@ impl SenderState {
     }
 }
 
-/// Compute a sliding window size based on the minimum of the default value and token bucket configuration.
+/// Compute a sliding window size based on the default limit and, if present,
+/// the token-bucket shaper so we never admit more inflight bytes than the
+/// pacer can service.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let mut window = DEFAULT_WINDOW;
 
@@ -583,6 +605,7 @@ struct ChunkSource {
 }
 
 impl ChunkSource {
+    /// Construct a new chunk source that will walk through the shared buffer.
     fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64) -> Self {
         Self {
             bytes,
@@ -593,10 +616,13 @@ impl ChunkSource {
         }
     }
 
+    /// Returns true when every chunk has either been produced or the transfer was zero-length.
     fn finished(&self) -> bool {
         self.total_chunks == 0 || self.next_index > self.total_chunks
     }
 
+    /// Returns the next chunk, advancing the internal cursor and sharing the
+    /// underlying buffer instead of copying bytes.
     fn next_chunk(&mut self) -> Option<ChunkPayload> {
         if self.finished() {
             return None;
@@ -630,11 +656,13 @@ struct DataPacer {
 }
 
 impl DataPacer {
+    /// Builds a pacer backed by the runtime token-bucket implementation.
     fn new(spec: Option<nextmini_messages::TokenBucketSpec>) -> Self {
         let bucket = spec.map(TokenBucket::new);
         Self { bucket }
     }
 
+    /// Await scheduling tokens before sending `bytes` worth of payload.
     async fn wait_for(&mut self, bytes: usize) {
         if let Some(bucket) = self.bucket.as_mut() {
             bucket.wait_for_bytes(bytes).await;

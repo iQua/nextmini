@@ -13,7 +13,7 @@ use tokio_tungstenite::{
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupId};
+use nextmini_messages::{ControllerToDataplane, DataplaneToController, FlowTransport, GroupId};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -26,6 +26,8 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 #[cfg(feature = "reliable")]
 use crate::node::reliable::api::ReliableHandle;
+#[cfg(feature = "reliable")]
+use crate::node::reliable::unicast::ReliableUnicastFlowHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
 #[derive(Clone)]
@@ -91,6 +93,16 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
+        #[cfg(feature = "reliable")]
+        let reliable_unicast = reliable.clone().map(|handle| {
+            ReliableUnicastFlowHandle::new(
+                config.clone(),
+                processors.clone(),
+                flowstats_reporter.clone(),
+                handle,
+            )
+        });
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
             receiver_stream,
@@ -103,6 +115,8 @@ impl ControllerInterfaceHandle {
             reliable,
             #[cfg(feature = "reliable")]
             group_ip_by_id: HashMap::new(),
+            #[cfg(feature = "reliable")]
+            reliable_unicast,
         };
 
         tokio::spawn(async move {
@@ -267,6 +281,8 @@ pub struct ControllerToDataplaneReceiver {
     reliable: Option<ReliableHandle>,
     #[cfg(feature = "reliable")]
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
+    #[cfg(feature = "reliable")]
+    reliable_unicast: Option<ReliableUnicastFlowHandle>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -349,26 +365,61 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                let mut client_flows = Vec::new();
+                let mut tcp_client_flows = Vec::new();
+                #[cfg(feature = "reliable")]
+                let mut reliable_flows = Vec::new();
 
                 for flow in &flows {
-                    if flow.dst_node_id == self.config.node_id {
-                        // this node is the server for this flow
-                        self.user_space_server.store_flow_spec(flow.clone());
-                    }
-                    if flow.src_node_id == self.config.node_id {
-                        // this node is the client for this flow
-                        client_flows.push(flow.clone());
+                    match flow.flow_spec.transport {
+                        FlowTransport::Tcp => {
+                            if flow.dst_node_id == self.config.node_id {
+                                // this node is the server for this flow
+                                self.user_space_server.store_flow_spec(flow.clone());
+                            }
+                            if flow.src_node_id == self.config.node_id {
+                                // this node is the client for this flow
+                                tcp_client_flows.push(flow.clone());
+                            }
+                        }
+                        FlowTransport::ReliableUnicast => {
+                            #[cfg(feature = "reliable")]
+                            {
+                                if flow.src_node_id == self.config.node_id
+                                    || flow.dst_node_id == self.config.node_id
+                                {
+                                    reliable_flows.push(flow.clone());
+                                }
+                            }
+                            #[cfg(not(feature = "reliable"))]
+                            {
+                                warn!(
+                                    "Node {} received reliable flow {:?}->{:?} but reliable support is disabled.",
+                                    self.config.node_id, flow.src_node_id, flow.dst_node_id
+                                );
+                            }
+                        }
                     }
                 }
 
-                if !client_flows.is_empty() {
+                if !tcp_client_flows.is_empty() {
                     info!(
                         "Adding {} user-space flows to node {}.",
-                        client_flows.len(),
+                        tcp_client_flows.len(),
                         self.config.node_id
                     );
-                    self.user_space_client.add_flows(client_flows);
+                    self.user_space_client.add_flows(tcp_client_flows);
+                }
+
+                #[cfg(feature = "reliable")]
+                if !reliable_flows.is_empty() {
+                    if let Some(handle) = &self.reliable_unicast {
+                        handle.add_flows(reliable_flows);
+                    } else {
+                        warn!(
+                            "Node {} received reliable flows but unicast handle is unavailable.",
+                            self.config.node_id
+                        );
+                    }
                 }
             }
 

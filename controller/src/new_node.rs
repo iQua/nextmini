@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, TokenBucketSpec};
+use nextmini_messages::{ControllerToDataplane, FlowTransport, TokenBucketSpec};
 
 use crate::NodeWriterMap;
 use crate::WebSocketWriter;
@@ -68,7 +68,7 @@ pub async fn new_node_connected(
 
                 // waits for all link rates to be set before sending the flows
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                send_flows(node_ws.clone(), db_pool.clone()).await;
+                send_flows(node_ws.clone(), db_pool.clone(), config.flow_transport).await;
 
                 // signal dataplane nodes that topology state is fully synced
                 send_topology_ready(node_ws.clone()).await;
@@ -91,7 +91,11 @@ pub async fn new_node_connected(
     }
 }
 
-async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
+async fn send_flows(
+    node_ws: NodeWriterMap,
+    db_pool: Arc<Pool<Postgres>>,
+    flow_transport: FlowTransport,
+) {
     let db_flows: Vec<DbFlow> =
         match sqlx::query_as("SELECT * FROM flows WHERE is_finished = false")
             .fetch_all(&*db_pool)
@@ -115,12 +119,13 @@ async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
 
         if !flows.is_empty() {
             info!(
-                "Adding {} user-space TCP flows to node {}.",
+                "Adding {} controller flows ({:?}) to node {}.",
                 flows.len(),
+                flow_transport,
                 node_id
             );
 
-            let msg = build_flows_for_node(flows);
+            let msg = build_flows_for_node(flows, flow_transport);
 
             match writer
                 .lock()

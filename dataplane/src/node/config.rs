@@ -11,8 +11,8 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, OperatingMode, Protocol,
-    SchedulingDiscipline, TokenBucketSpec,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, INVALID, OperatingMode,
+    Protocol, SchedulingDiscipline, TokenBucketSpec,
 };
 
 use crate::node::scheduler::drop::DropStrategy;
@@ -287,6 +287,7 @@ pub struct LocalConfig {
             flow_len: FlowLen::Bytes(1_000_000_000),
             flow_rate: None,
             flow_weight: None,
+            transport: FlowTransport::Tcp,
         },
     }])]
     #[arg(skip)]

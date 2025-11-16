@@ -1,5 +1,6 @@
 /// Defines message enums for controller-dataplane communication.
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 
 use clap::ValueEnum;
@@ -236,6 +237,15 @@ pub struct NodeSpec {
     pub operating_mode: OperatingMode,
 }
 
+/// Transport selection for controller-managed flows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowTransport {
+    #[default]
+    Tcp,
+    ReliableUnicast,
+}
+
 /// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
@@ -253,6 +263,8 @@ pub struct FlowSpec {
     pub flow_rate: Option<usize>,
     #[serde(default)]
     pub flow_weight: Option<usize>,
+    #[serde(default)]
+    pub transport: FlowTransport,
 }
 
 /// The length of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.
@@ -267,6 +279,21 @@ impl FlowLen {
         match *self {
             FlowLen::Bytes(size) => sent_size >= size as u64,
             FlowLen::Duration(duration) => start_time.elapsed().as_secs_f64() >= duration,
+        }
+    }
+}
+
+impl Hash for FlowLen {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            FlowLen::Bytes(size) => {
+                0u8.hash(state);
+                size.hash(state);
+            }
+            FlowLen::Duration(duration) => {
+                1u8.hash(state);
+                duration.to_bits().hash(state);
+            }
         }
     }
 }

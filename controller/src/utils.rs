@@ -7,8 +7,8 @@ use petgraph::graph::DiGraph;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, GroupId, GroupRoutingTableEntry, INVALID,
-    NodeSpec, OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, GroupId, GroupRoutingTableEntry,
+    INVALID, NodeSpec, OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry,
     SchedulingDiscipline,
 };
 
@@ -74,7 +74,7 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
 }
 
 /// Builds an AddFlow message for flows.
-pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
+pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> ControllerToDataplane {
     let flows: Vec<Flow> = flows
         .into_iter()
         .map(|flow| {
@@ -95,6 +95,7 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
                     flow_len,
                     flow_rate: flow.flow_rate.map(|r| r as usize),
                     flow_weight: flow.flow_weight.map(|w| w as usize),
+                    transport,
                 },
             }
         })

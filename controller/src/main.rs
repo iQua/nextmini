@@ -74,7 +74,7 @@ async fn main() {
 
     // Set up database notifications
     setup_route_notification(db_pool.clone(), node_ws.clone()).await;
-    setup_flow_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_flow_notification(db_pool.clone(), node_ws.clone(), config.flow_transport).await;
     setup_group_notification(db_pool.clone(), node_ws.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {

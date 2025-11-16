@@ -1,3 +1,5 @@
+//! Helpers for interpreting and tracking reliable multicast control frames.
+
 use std::collections::BTreeMap;
 
 use nextmini_messages::rlm::RlmControl;

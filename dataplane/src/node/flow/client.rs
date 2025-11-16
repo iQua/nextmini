@@ -332,6 +332,7 @@ mod tests {
                 flow_len: FlowLen::Bytes(1024),
                 flow_rate: Some(1_000_000),
                 flow_weight: weight,
+                transport: nextmini_messages::FlowTransport::Tcp,
             },
         }
     }

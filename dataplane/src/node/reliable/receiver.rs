@@ -24,6 +24,8 @@ struct ControlEmitter {
 }
 
 impl ControlEmitter {
+    /// Prepare an emitter that can forward RLM control traffic back through the
+    /// node's processor pipeline.
     fn new(
         session_id: u64,
         src_ip: std::net::Ipv4Addr,
@@ -42,6 +44,7 @@ impl ControlEmitter {
         }
     }
 
+    /// Encode and inject a single control frame.
     fn send(&self, control: &RlmControl) {
         let buf = rlm::encode_control(self.session_id, control);
 
@@ -191,6 +194,7 @@ struct PendingWindow {
 }
 
 impl PendingWindow {
+    /// Create a pending window sized to the configured sliding window.
     fn new(window_size: usize, base_index: u64) -> Self {
         let size = window_size.max(1);
         Self {
@@ -200,6 +204,8 @@ impl PendingWindow {
         }
     }
 
+    /// Attempt to store a chunk for later delivery; returns true if it landed in
+    /// the buffer and false if it was out of range or a duplicate.
     fn insert(&mut self, index: u64, payload: Bytes) -> bool {
         if index < self.base_index {
             return false;
@@ -223,6 +229,8 @@ impl PendingWindow {
         }
     }
 
+    /// Drain any contiguous payloads starting at `expected`, advancing the base
+    /// index so future inserts can land.
     fn take_contiguous_from(&mut self, expected: &mut u64) -> Vec<Bytes> {
         let mut ready = Vec::new();
         loop {
@@ -246,6 +254,7 @@ impl PendingWindow {
         ready
     }
 
+    /// Translate a logical offset relative to `base_index` into a circular slot.
     fn slot_index(&self, offset: u64) -> usize {
         if self.slots.is_empty() {
             return 0;
@@ -253,6 +262,7 @@ impl PendingWindow {
         (self.head + offset as usize) % self.slots.len()
     }
 
+    /// Move the base forward by one slot, wrapping the circular buffer index.
     fn advance_window(&mut self) {
         self.base_index = self.base_index.saturating_add(1);
         if !self.slots.is_empty() {
@@ -261,7 +271,7 @@ impl PendingWindow {
     }
 }
 
-/// Returns ordering updates and ready chunks when a DATA frame is processed.
+/// Borrowed state required to evaluate a DATA frame.
 struct FrameCtx<'a> {
     data: &'a rlm::RlmData,
     body: &'a [u8],
@@ -270,11 +280,13 @@ struct FrameCtx<'a> {
     bytes_received: &'a mut u64,
 }
 
+/// Outcome describing whether the new frame unlocked bytes for delivery.
 struct DataOutcome {
     ready_chunks: Vec<Bytes>,
     advanced: bool,
 }
 
+/// Handles ordering/bookkeeping for a single reliable DATA frame.
 fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     let idx = ctx.data.index;
     tracing::debug!(

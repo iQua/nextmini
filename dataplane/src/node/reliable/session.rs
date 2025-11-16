@@ -80,6 +80,7 @@ impl SessionManager {
         self.tasks.remove(&sid)
     }
 
+    /// Construct a manager that can spawn sender/receiver tasks and track their lifetimes.
     pub fn new(processors: ProcessorHandle) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
         Self {
@@ -93,6 +94,8 @@ impl SessionManager {
         }
     }
 
+    /// Spawn a sender task, wiring up control-plane readiness watchers and
+    /// returning its assigned session ID.
     pub fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
@@ -110,6 +113,7 @@ impl SessionManager {
         sid
     }
 
+    /// Spawn a receiver task and hand it a bounded inbox for inbound frames.
     pub fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
@@ -120,6 +124,7 @@ impl SessionManager {
         sid
     }
 
+    /// Abort a running session and drop its inbox, if still active.
     pub async fn stop(&mut self, sid: SessionId) {
         if let Some(h) = self.tasks.remove(&sid) {
             h.abort();
@@ -127,6 +132,7 @@ impl SessionManager {
         self.remove_inputs(sid);
     }
 
+    /// Remove the inbound channel for a session ID.
     pub fn remove_inputs(&mut self, sid: SessionId) {
         self.inputs.remove(&sid);
     }
@@ -136,16 +142,19 @@ impl SessionManager {
         self.inputs.get(&sid).cloned()
     }
 
+    /// Reserve a unique session identifier for future tasks.
     pub fn allocate_session_id(&mut self) -> SessionId {
         let sid = self.next_session_id;
         self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
         sid
     }
 
+    /// Broadcast topology readiness so all senders may advance their state gates.
     pub fn set_topology_ready(&self, ready: bool) {
         let _ = self.topology_ready_tx.send(ready);
     }
 
+    /// Settle or create a group-route watch channel and mark it ready.
     pub fn set_group_routes_ready(&mut self, group_ip: Ipv4Addr, src_node_id: usize) {
         let key = (group_ip, src_node_id);
         let entry = self.route_ready.entry(key).or_insert_with(|| {
@@ -169,6 +178,8 @@ impl SessionManager {
             .push_back(PendingReceiver { cfg, reply });
     }
 
+    /// Pair the next pending receiver for a (group, source) tuple with the
+    /// concrete session ID chosen by the control plane.
     pub fn adopt_pending_receiver(
         &mut self,
         key: PendingReceiverKey,
