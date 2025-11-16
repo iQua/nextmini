@@ -120,7 +120,8 @@ impl ControllerInterfaceHandle {
             group_ip_by_id: HashMap::new(),
             reliable_unicast,
             topology_ready: false,
-            pending_user_space_flows: Vec::new(),
+            pending_tcp_flows: Vec::new(),
+            pending_reliable_flows: Vec::new(),
         };
 
         tokio::spawn(async move {
@@ -288,7 +289,8 @@ pub struct ControllerToDataplaneReceiver {
     reliable: ReliableHandle,
     reliable_unicast: ReliableUnicastFlowHandle,
     topology_ready: bool,
-    pending_user_space_flows: Vec<Flow>,
+    pending_tcp_flows: Vec<Flow>,
+    pending_reliable_flows: Vec<Flow>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -371,7 +373,7 @@ impl ControllerToDataplaneReceiver {
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                let mut user_space_flows = Vec::new();
+                let mut tcp_flows = Vec::new();
                 let mut reliable_flows = Vec::new();
 
                 for flow in &flows {
@@ -383,7 +385,7 @@ impl ControllerToDataplaneReceiver {
                             }
                             if flow.src_node_id == self.config.node_id {
                                 // this node is the client for this flow
-                                user_space_flows.push(flow.clone());
+                                tcp_flows.push(flow.clone());
                             }
                         }
                         FlowTransport::ReliableUnicast => {
@@ -396,22 +398,36 @@ impl ControllerToDataplaneReceiver {
                     }
                 }
 
-                if !user_space_flows.is_empty() {
+                if !tcp_flows.is_empty() {
                     if self.topology_ready {
-                        self.start_user_space_flows(user_space_flows);
+                        self.start_tcp_flows(tcp_flows);
                     } else {
                         info!(
-                            "Deferring {} user-space flows on node {} until topology is ready.",
-                            user_space_flows.len(),
+                            "Deferring {} user-space TCP flows on node {} until the topology is ready.",
+                            tcp_flows.len(),
                             self.config.node_id
                         );
-                        self.pending_user_space_flows
-                            .extend(user_space_flows.into_iter());
+                        self.pending_tcp_flows.extend(tcp_flows.into_iter());
                     }
                 }
 
                 if !reliable_flows.is_empty() {
-                    self.reliable_unicast.add_flows(reliable_flows);
+                    if self.topology_ready {
+                        info!(
+                            "Adding {} reliable unicast flows to node {}.",
+                            reliable_flows.len(),
+                            self.config.node_id
+                        );
+                        self.reliable_unicast.add_flows(reliable_flows);
+                    } else {
+                        info!(
+                            "Deferring {} reliable unicast flows on node {} until the topology is ready.",
+                            reliable_flows.len(),
+                            self.config.node_id
+                        );
+                        self.pending_reliable_flows
+                            .extend(reliable_flows.into_iter());
+                    }
                 }
             }
 
@@ -424,7 +440,7 @@ impl ControllerToDataplaneReceiver {
                 self.topology_ready = true;
                 self.reliable.set_topology_ready(true);
 
-                self.flush_pending_user_space_flows();
+                self.flush_pending_flows();
             }
 
             ControllerToDataplane::GroupCreated {
@@ -519,33 +535,43 @@ impl ControllerToDataplaneReceiver {
         }
     }
 
-    fn start_user_space_flows(&mut self, flows: Vec<Flow>) {
+    fn start_tcp_flows(&mut self, flows: Vec<Flow>) {
         if flows.is_empty() {
             return;
         }
 
         info!(
-            "Adding {} user-space flows to node {}.",
+            "Adding {} user-space TCP flows to node {}.",
             flows.len(),
             self.config.node_id
         );
         self.user_space_client.add_flows(flows);
     }
 
-    fn flush_pending_user_space_flows(&mut self) {
-        if self.pending_user_space_flows.is_empty() {
-            return;
+    fn flush_pending_flows(&mut self) {
+        if !self.pending_tcp_flows.is_empty() {
+            let pending = std::mem::take(&mut self.pending_tcp_flows);
+
+            info!(
+                "Topology ready on node {}; starting {} deferred user-space flows.",
+                self.config.node_id,
+                pending.len()
+            );
+
+            self.start_tcp_flows(pending);
         }
 
-        let pending = std::mem::take(&mut self.pending_user_space_flows);
+        if !self.pending_reliable_flows.is_empty() {
+            let pending = std::mem::take(&mut self.pending_reliable_flows);
 
-        info!(
-            "Topology ready on node {}; starting {} deferred user-space flows.",
-            self.config.node_id,
-            pending.len()
-        );
+            info!(
+                "Topology ready on node {}; starting {} deferred reliable unicast flows.",
+                self.config.node_id,
+                pending.len()
+            );
 
-        self.start_user_space_flows(pending);
+            self.reliable_unicast.add_flows(pending);
+        }
     }
 
     #[cfg(feature = "python-extension")]
