@@ -247,101 +247,6 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, tensor_path, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None, congestion=None))]
-    fn send_file(
-        &self,
-        group_ip: &str,
-        receiver_ids: Vec<usize>,
-        tensor_path: &str,
-        chunk_size: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        session_id: Option<u64>,
-        congestion: Option<String>,
-    ) -> PyResult<u64> {
-        // Validate inputs early to surface helpful errors even while stubbed.
-        #[allow(unused_variables)]
-        let group_ip_addr = parse_ipv4(group_ip)?;
-        if receiver_ids.is_empty() {
-            return Err(PyRuntimeError::new_err(
-                "receiver_ids must contain at least one entry.",
-            ));
-        }
-
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
-        }
-
-        let path = std::path::Path::new(tensor_path);
-        if !path.exists() {
-            return Err(PyRuntimeError::new_err(format!(
-                "tensor_path does not exist: {}",
-                tensor_path
-            )));
-        }
-        let _ = (src_port, dst_port, &congestion); // reserved for future plumbing
-        #[allow(unused_mut)]
-        let mut sid = session_id.unwrap_or_else(next_py_message_id);
-        #[cfg(feature = "reliable")]
-        {
-            if let Some(handle) = &self.reliable {
-                let reliable_cfg = &self.cfg.reliable;
-                if let Some(mode) = congestion {
-                    if mode != "static" {
-                        return Err(PyRuntimeError::new_err(format!(
-                            "invalid congestion control: {mode}"
-                        )));
-                    }
-                }
-                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                if session_id.is_none() {
-                    sid = rt().block_on(handle.allocate_session_id());
-                }
-                // Build sender config and start session.
-                let common = reliable_session::CommonConfig {
-                    session_id: sid,
-                    group_ip: group_ip_addr,
-                    chunk_size,
-                    src_port: sp,
-                    dst_port: dp,
-                    control_weight: reliable_cfg.control_weight,
-                    data_bucket: reliable_cfg.data_bucket.clone(),
-                    local_node_id: self.cfg.node_id,
-                    user_space_base_addr: self.cfg.user_space_base_addr,
-                    local_netmask: self.cfg.local_netmask,
-                };
-                let total_bytes = std::fs::metadata(tensor_path)
-                    .map_err(|e| PyRuntimeError::new_err(format!("failed to stat file: {e}")))?
-                    .len();
-                let cfg = reliable_session::SenderConfig {
-                    common,
-                    receiver_ids,
-                    total_bytes,
-                    source_path: Some(tensor_path.to_string()),
-                    source_buffer: None,
-                    ready_grace_ms: reliable_cfg.ready_grace_ms,
-                    topology_ready: None,
-                    routes_ready: None,
-                };
-                let started_sid = rt().block_on(handle.start_sender(cfg));
-                self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
-                return Ok(started_sid);
-            }
-        }
-        // Fallback stub when feature is disabled or handle unavailable.
-        tracing::warn!(
-            "send_file called (stub): sid={} group_ip={} receivers={:?} file={} chunk_size={}",
-            sid,
-            group_ip,
-            receiver_ids,
-            tensor_path,
-            chunk_size,
-        );
-        Ok(sid)
-    }
-
-    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None, congestion=None))]
     fn send_buffer(
         &self,
@@ -407,8 +312,7 @@ impl Dataplane {
                     common,
                     receiver_ids,
                     total_bytes,
-                    source_path: None,
-                    source_buffer: Some(buffer.inner.clone()),
+                    source_buffer: buffer.inner.clone(),
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
                     topology_ready: None,
                     routes_ready: None,
@@ -426,85 +330,6 @@ impl Dataplane {
             receiver_ids,
             total_bytes,
             chunk_size
-        );
-        Ok(sid)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=4096, src_port=None, dst_port=None, sink_path=None, session_id=None))]
-    fn receive_file(
-        &self,
-        group_ip: &str,
-        source_node_id: usize,
-        expected_bytes: u64,
-        chunk_size: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        sink_path: Option<String>,
-        session_id: Option<u64>,
-    ) -> PyResult<u64> {
-        #[allow(unused_variables)]
-        let ip = parse_ipv4(group_ip)?;
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
-        }
-
-        let _ = (src_port, dst_port); // reserved for future plumbing
-        let sid = session_id.unwrap_or_else(next_py_message_id);
-        #[cfg(feature = "reliable")]
-        {
-            if let Some(handle) = &self.reliable {
-                let reliable_cfg = &self.cfg.reliable;
-                let mut resolved_sid = session_id;
-                if resolved_sid.is_none() {
-                    if let Some(known) = self.lookup_session(ip, source_node_id) {
-                        resolved_sid = Some(known);
-                    }
-                }
-                let common = reliable_session::CommonConfig {
-                    session_id: resolved_sid.unwrap_or(0),
-                    group_ip: ip,
-                    chunk_size,
-                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
-                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
-                    control_weight: reliable_cfg.control_weight,
-                    data_bucket: reliable_cfg.data_bucket.clone(),
-                    local_node_id: self.cfg.node_id,
-                    user_space_base_addr: self.cfg.user_space_base_addr,
-                    local_netmask: self.cfg.local_netmask,
-                };
-                let cfg = reliable_session::ReceiverConfig {
-                    common,
-                    source_node_id,
-                    expected_bytes,
-                    sink_path,
-                    sink_buffer: None,
-                };
-                let started_sid = if resolved_sid.is_some() {
-                    rt().block_on(handle.start_receiver(cfg))
-                } else {
-                    let key = reliable_session::PendingReceiverKey {
-                        group_ip: ip,
-                        source_node_id,
-                    };
-                    rt().block_on(handle.start_receiver_pending(cfg, key))
-                };
-                self.remember_session(ip, source_node_id, started_sid);
-                return Ok(started_sid);
-            }
-        }
-        tracing::warn!(
-            "receive_file called (stub): sid={} group_ip={} src_node={} expected_bytes={} chunk_size={} sink_path={:?}",
-            sid,
-            group_ip,
-            source_node_id,
-            expected_bytes,
-            chunk_size,
-            sink_path
         );
         Ok(sid)
     }
@@ -560,7 +385,6 @@ impl Dataplane {
                     common,
                     source_node_id,
                     expected_bytes,
-                    sink_path: None,
                     sink_buffer: Some(sink_buf.clone()),
                 };
                 let started_sid = if resolved_sid.is_some() {

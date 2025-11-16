@@ -61,8 +61,8 @@ Every run now streams a tensor end-to-end: the source synthesizes (or loads) a t
 waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and
  shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are
  negotiated inside the dataplane, so the example no longer needs to pass them through
- shared files—the receivers simply block in `receive_file` until the sender's
- manifest arrives.
+ shared files—the receivers simply block in `receive_buffer` until the sender's
+ manifest arrives and then drain the payload via `get_reliable_buffer`.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):

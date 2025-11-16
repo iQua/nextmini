@@ -34,8 +34,7 @@ pub struct SenderConfig {
     pub common: CommonConfig,
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
-    pub source_path: Option<String>,
-    pub source_buffer: Option<Bytes>,
+    pub source_buffer: Bytes,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
     pub routes_ready: Option<watch::Receiver<bool>>,
@@ -47,7 +46,6 @@ pub struct ReceiverConfig {
     pub common: CommonConfig,
     pub source_node_id: usize,
     pub expected_bytes: u64,
-    pub sink_path: Option<String>,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 

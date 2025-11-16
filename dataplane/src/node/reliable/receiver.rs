@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::Write;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -76,21 +75,6 @@ pub async fn run(
     let mut expected: u64 = 1;
     let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
     let mut bytes_received: u64 = 0;
-    let mut file = cfg
-        .sink_path
-        .as_ref()
-        .and_then(|path| match std::fs::File::create(path) {
-            Ok(f) => Some(f),
-            Err(error) => {
-                tracing::error!(
-                    session_id = sid,
-                    path = %path,
-                    %error,
-                    "RLM receiver: failed to create sink file"
-                );
-                None
-            }
-        });
     let sink_buffer = cfg.sink_buffer.clone();
 
     let src_ip = (cfg.common.local_node_id as NodeId)
@@ -132,11 +116,6 @@ pub async fn run(
             };
             let outcome = handle_data_frame(ctx);
             if !outcome.ready_chunks.is_empty() {
-                if let Some(file) = file.as_mut() {
-                    for chunk in &outcome.ready_chunks {
-                        let _ = file.write_all(chunk);
-                    }
-                }
                 if let Some(buf) = &sink_buffer {
                     let mut guard = buf.lock().await;
                     for chunk in &outcome.ready_chunks {
@@ -173,10 +152,6 @@ pub async fn run(
             session_id = sid,
             "RLM receiver: received frame that was neither DATA nor CONTROL"
         );
-    }
-
-    if let Some(f) = file.as_mut() {
-        let _ = f.sync_all();
     }
 
     tracing::info!(

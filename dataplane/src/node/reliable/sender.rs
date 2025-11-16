@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use std::fs::File;
-use std::io::{self, Read};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
@@ -47,28 +45,10 @@ pub async fn run(
         "RLM sender started"
     );
 
-    let source_file = cfg
-        .source_path
-        .as_ref()
-        .and_then(|path| match File::open(path) {
-            Ok(file) => Some(file),
-            Err(error) => {
-                tracing::error!(
-                    session_id = sid,
-                    path = %path,
-                    %error,
-                    "RLM sender: unable to open source file; falling back to empty chunks"
-                );
-                None
-            }
-        });
-
-    let mut chunk_source = if let Some(buf) = cfg.source_buffer.clone() {
-        ChunkSource::from_buffer(buf, cfg.common.chunk_size, total_chunks, sid)
-    } else {
-        ChunkSource::from_file(source_file, cfg.common.chunk_size, total_chunks, sid)
-    };
+    let chunk_bytes = cfg.common.chunk_size;
+    let source_buffer = cfg.source_buffer.clone();
     let mut state = SenderState::new(cfg, total_chunks);
+    let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks);
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
@@ -133,7 +113,7 @@ pub async fn run(
                 "RLM sender: attempting to send next chunk"
             );
             match chunk_source.next_chunk() {
-                Ok(Some(chunk)) => {
+                Some(chunk) => {
                     tracing::debug!(
                         session_id = sid,
                         chunk_index = chunk.index,
@@ -144,16 +124,7 @@ pub async fn run(
                     state.send_data_chunk(chunk, &processors);
                     progressed = true;
                 }
-                Ok(None) => {
-                    state.mark_source_drained();
-                    progressed = true;
-                }
-                Err(error) => {
-                    tracing::error!(
-                        session_id = sid,
-                        %error,
-                        "RLM sender: read error; stopping new chunk generation"
-                    );
+                None => {
                     state.mark_source_drained();
                     progressed = true;
                 }
@@ -590,51 +561,22 @@ struct ChunkPayload {
     data: Vec<u8>,
 }
 
-enum ChunkSourceInner {
-    File(File),
-    Buffer(Bytes),
-    Empty,
-}
-
-/// Reads chunk payloads from disk or memory (if provided) and hands them to the
-/// sender in strict index order. Tests may swap in the empty case by omitting files.
+/// Reads chunk payloads from memory and hands them to the sender in strict index order.
 struct ChunkSource {
-    inner: ChunkSourceInner,
+    bytes: Bytes,
     chunk_size: usize,
     total_chunks: u64,
     next_index: u64,
-    session_id: u64,
     buffer_offset: usize,
 }
 
 impl ChunkSource {
-    fn from_file(
-        file: Option<File>,
-        chunk_size: usize,
-        total_chunks: u64,
-        session_id: u64,
-    ) -> Self {
-        let inner = match file {
-            Some(file) => ChunkSourceInner::File(file),
-            None => ChunkSourceInner::Empty,
-        };
+    fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64) -> Self {
         Self {
-            inner,
+            bytes,
             chunk_size,
             total_chunks,
             next_index: 1,
-            session_id,
-            buffer_offset: 0,
-        }
-    }
-
-    fn from_buffer(buf: Bytes, chunk_size: usize, total_chunks: u64, session_id: u64) -> Self {
-        Self {
-            inner: ChunkSourceInner::Buffer(buf),
-            chunk_size,
-            total_chunks,
-            next_index: 1,
-            session_id,
             buffer_offset: 0,
         }
     }
@@ -643,53 +585,24 @@ impl ChunkSource {
         self.total_chunks == 0 || self.next_index > self.total_chunks
     }
 
-    fn next_chunk(&mut self) -> io::Result<Option<ChunkPayload>> {
+    fn next_chunk(&mut self) -> Option<ChunkPayload> {
         if self.finished() {
-            return Ok(None);
+            return None;
         }
 
+        let start = self.buffer_offset;
+        if start >= self.bytes.len() {
+            self.next_index = self.total_chunks + 1;
+            return None;
+        }
+
+        let end = (start + self.chunk_size).min(self.bytes.len());
+        let mut data = Vec::with_capacity(end.saturating_sub(start));
+        data.extend_from_slice(&self.bytes[start..end]);
+        self.buffer_offset = end;
         let idx = self.next_index;
-
-        match &mut self.inner {
-            ChunkSourceInner::File(file) => {
-                let mut buf = vec![0u8; self.chunk_size];
-                let read = file.read(&mut buf)?;
-                if read == 0 {
-                    tracing::warn!(
-                        session_id = self.session_id,
-                        "RLM sender: source file ended unexpectedly"
-                    );
-                    self.next_index = self.total_chunks + 1;
-                    return Ok(None);
-                }
-                buf.truncate(read);
-                self.next_index += 1;
-                Ok(Some(ChunkPayload {
-                    index: idx,
-                    data: buf,
-                }))
-            }
-            ChunkSourceInner::Buffer(bytes) => {
-                let start = self.buffer_offset;
-                if start >= bytes.len() {
-                    self.next_index = self.total_chunks + 1;
-                    return Ok(None);
-                }
-                let end = (start + self.chunk_size).min(bytes.len());
-                let mut data = Vec::with_capacity(end.saturating_sub(start));
-                data.extend_from_slice(&bytes[start..end]);
-                self.buffer_offset = end;
-                self.next_index += 1;
-                Ok(Some(ChunkPayload { index: idx, data }))
-            }
-            ChunkSourceInner::Empty => {
-                self.next_index += 1;
-                Ok(Some(ChunkPayload {
-                    index: idx,
-                    data: Vec::new(),
-                }))
-            }
-        }
+        self.next_index += 1;
+        Some(ChunkPayload { index: idx, data })
     }
 }
 
@@ -743,14 +656,14 @@ mod tests {
         let session_id = 1;
 
         // Zero chunks should be immediately finished
-        let source = ChunkSource::from_file(None, 1024, 0, session_id);
+        let source = ChunkSource::new(Bytes::new(), 1024, 0);
         assert!(
             source.finished(),
             "ChunkSource with 0 chunks should be finished immediately"
         );
 
         //Source with chunks should not be finished initially
-        let mut source = ChunkSource::from_file(None, 1024, 5, session_id);
+        let mut source = ChunkSource::new(Bytes::from(vec![0u8; 1024 * 5]), 1024, 5);
         assert!(
             !source.finished(),
             "ChunkSource with 5 chunks should not be finished initially"
@@ -759,7 +672,7 @@ mod tests {
         // After consuming all chunks, should be finished
         for _ in 0..5 {
             let result = source.next_chunk();
-            assert!(result.is_ok(), "Should successfully get chunk");
+            assert!(result.is_some(), "Should successfully get chunk");
         }
         assert!(
             source.finished(),
@@ -768,10 +681,7 @@ mod tests {
 
         // Requesting more chunks after finished returns None
         let result = source.next_chunk();
-        assert!(
-            matches!(result, Ok(None)),
-            "Should return None when finished"
-        );
+        assert!(result.is_none(), "Should return None when finished");
     }
 
     /// Validates the timeout constant is used correctly.
