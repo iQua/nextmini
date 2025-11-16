@@ -115,12 +115,12 @@ pub async fn run(
                 bytes_received: &mut bytes_received,
             };
             let outcome = handle_data_frame(ctx);
-            if !outcome.ready_chunks.is_empty() {
-                if let Some(buf) = &sink_buffer {
-                    let mut guard = buf.lock().await;
-                    for chunk in &outcome.ready_chunks {
-                        guard.extend_from_slice(chunk);
-                    }
+            if !outcome.ready_chunks.is_empty()
+                && let Some(buf) = &sink_buffer
+            {
+                let mut guard = buf.lock().await;
+                for chunk in &outcome.ready_chunks {
+                    guard.extend_from_slice(chunk);
                 }
             }
             if outcome.advanced {

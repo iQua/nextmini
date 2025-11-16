@@ -44,6 +44,9 @@ pub use crate::buffer::FrozenBuffer;
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
 
+#[cfg(feature = "reliable")]
+type BufferRegistry = Arc<StdMutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
+
 fn rt() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -217,7 +220,7 @@ struct Dataplane {
     #[cfg(feature = "reliable")]
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
     #[cfg(feature = "reliable")]
-    buffer_registry: Arc<StdMutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>,
+    buffer_registry: BufferRegistry,
 }
 
 impl Dataplane {
@@ -248,7 +251,7 @@ impl Dataplane {
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None, congestion=None))]
-    fn send_buffer(
+    fn send_data(
         &self,
         group_ip: &str,
         receiver_ids: Vec<usize>,
@@ -323,20 +326,12 @@ impl Dataplane {
             }
         }
 
-        tracing::warn!(
-            "send_buffer called (stub): sid={} group_ip={} receivers={:?} bytes={} chunk_size={}",
-            sid,
-            group_ip,
-            receiver_ids,
-            total_bytes,
-            chunk_size
-        );
         Ok(sid)
     }
 
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None))]
-    fn receive_buffer(
+    fn receive_data(
         &self,
         group_ip: &str,
         source_node_id: usize,
@@ -402,14 +397,6 @@ impl Dataplane {
             }
         }
 
-        tracing::warn!(
-            "receive_buffer called (stub): sid={} group_ip={} src_node={} expected_bytes={} chunk_size={}",
-            sid,
-            group_ip,
-            source_node_id,
-            expected_bytes,
-            chunk_size
-        );
         Ok(sid)
     }
 
@@ -439,7 +426,7 @@ impl Dataplane {
 
     #[cfg(feature = "reliable")]
     #[pyo3(signature = (session_id, consume=true))]
-    fn get_reliable_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
+    fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
         let buf_arc = {
             let guard = self
                 .buffer_registry

@@ -653,8 +653,6 @@ mod tests {
     /// the state wasn't updated.
     #[test]
     fn chunk_source_finished_detection() {
-        let session_id = 1;
-
         // Zero chunks should be immediately finished
         let source = ChunkSource::new(Bytes::new(), 1024, 0);
         assert!(

@@ -57,12 +57,7 @@ docker compose up
 By default `SKIP_BUILD=0`, so each container builds the `nextmini_py` extension in-place using `maturin develop -F reliable`. This works across machines (including macOS hosts) without prebuilding wheels.
 The first run will take a few minutes as the wheel is compiled.
 
-Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor,
-waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and
- shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are
- negotiated inside the dataplane, so the example no longer needs to pass them through
- shared files—the receivers simply block in `receive_buffer` until the sender's
- manifest arrives and then drain the payload via `get_reliable_buffer`.
+Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor, waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are negotiated inside the dataplane, and the receivers simply block in `receive_data` until the receiving completes, and then drain the payload via `get_data_buffer`.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):

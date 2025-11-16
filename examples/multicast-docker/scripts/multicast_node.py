@@ -5,9 +5,10 @@ import argparse
 import json
 import sys
 import time
-import torch
 from pathlib import Path
 from typing import List, Tuple
+
+import torch
 
 try:
     import nextmini_py as nm
@@ -230,7 +231,7 @@ def run_source(args: argparse.Namespace) -> None:
         tensor_bytes = fh.read()
     frozen = nm.FrozenBuffer(tensor_bytes)
 
-    sid = dataplane.send_buffer(
+    sid = dataplane.send_data(
         group_ip,
         receiver_ids,
         frozen,
@@ -281,7 +282,7 @@ def run_receiver(args: argparse.Namespace) -> None:
     log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
     recv_start_time = time.perf_counter()
 
-    sid = dataplane.receive_buffer(
+    sid = dataplane.receive_data(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
@@ -308,13 +309,13 @@ def run_receiver(args: argparse.Namespace) -> None:
             "Dataplane lacks reliable_wait; receive completion signal unavailable.",
             args.quiet,
         )
-    if hasattr(dataplane, "get_reliable_buffer"):
-        frozen = dataplane.get_reliable_buffer(sid)
+    if hasattr(dataplane, "get_data_buffer"):
+        frozen = dataplane.get_data_buffer(sid)
         payload_bytes = bytes(frozen.read())
         log(f"Retrieved {len(payload_bytes)} bytes into FrozenBuffer.", args.quiet)
     else:
         log(
-            "Dataplane lacks get_reliable_buffer; in-memory payload unavailable.",
+            "Dataplane lacks get_data_buffer; in-memory payload unavailable.",
             args.quiet,
         )
 
