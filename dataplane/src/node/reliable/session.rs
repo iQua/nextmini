@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use ahash::AHashMap;
-use tokio::sync::{mpsc, oneshot, watch};
+use bytes::Bytes;
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use nextmini_messages::TokenBucketSpec;
@@ -33,6 +35,7 @@ pub struct SenderConfig {
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_path: Option<String>,
+    pub source_buffer: Option<Bytes>,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
     pub routes_ready: Option<watch::Receiver<bool>>,
@@ -45,6 +48,7 @@ pub struct ReceiverConfig {
     pub source_node_id: usize,
     pub expected_bytes: u64,
     pub sink_path: Option<String>,
+    pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 /// Tracks running reliable sessions along with their inboxes and join handles.
@@ -181,4 +185,3 @@ impl SessionManager {
         Some((pending.cfg, pending.reply))
     }
 }
-

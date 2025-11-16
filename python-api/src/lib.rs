@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use once_cell::sync::OnceCell;
 use pyo3::conversion::IntoPyObject;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyKeyError, PyRuntimeError};
 use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
@@ -216,6 +216,8 @@ struct Dataplane {
     reliable: Option<RustReliableHandle>,
     #[cfg(feature = "reliable")]
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
+    #[cfg(feature = "reliable")]
+    buffer_registry: Arc<StdMutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>,
 }
 
 impl Dataplane {
@@ -232,6 +234,13 @@ impl Dataplane {
             .lock()
             .ok()
             .and_then(|guard| guard.get(&(group_ip, source_node_id)).copied())
+    }
+
+    #[cfg(feature = "reliable")]
+    fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
+        if let Ok(mut guard) = self.buffer_registry.lock() {
+            guard.insert(session_id, buf);
+        }
     }
 }
 
@@ -310,6 +319,7 @@ impl Dataplane {
                     receiver_ids,
                     total_bytes,
                     source_path: Some(tensor_path.to_string()),
+                    source_buffer: None,
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
                     topology_ready: None,
                     routes_ready: None,
@@ -327,6 +337,95 @@ impl Dataplane {
             receiver_ids,
             tensor_path,
             chunk_size,
+        );
+        Ok(sid)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None, congestion=None))]
+    fn send_buffer(
+        &self,
+        group_ip: &str,
+        receiver_ids: Vec<usize>,
+        buffer: FrozenBuffer,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        session_id: Option<u64>,
+        congestion: Option<String>,
+    ) -> PyResult<u64> {
+        #[allow(unused_variables)]
+        let group_ip_addr = parse_ipv4(group_ip)?;
+        if receiver_ids.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "receiver_ids must contain at least one entry.",
+            ));
+        }
+
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+
+        let total_bytes = buffer.inner.len() as u64;
+        if total_bytes == 0 {
+            return Err(PyRuntimeError::new_err(
+                "buffer is empty; nothing to transmit.",
+            ));
+        }
+
+        #[allow(unused_variables)]
+        let mut sid = session_id.unwrap_or_else(next_py_message_id);
+        #[cfg(feature = "reliable")]
+        {
+            if let Some(handle) = &self.reliable {
+                let reliable_cfg = &self.cfg.reliable;
+                if let Some(mode) = congestion.as_deref() {
+                    if mode != "static" {
+                        return Err(PyRuntimeError::new_err(format!(
+                            "invalid congestion control: {mode}"
+                        )));
+                    }
+                }
+                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                if session_id.is_none() {
+                    sid = rt().block_on(handle.allocate_session_id());
+                }
+                let common = reliable_session::CommonConfig {
+                    session_id: sid,
+                    group_ip: group_ip_addr,
+                    chunk_size,
+                    src_port: sp,
+                    dst_port: dp,
+                    control_weight: reliable_cfg.control_weight,
+                    data_bucket: reliable_cfg.data_bucket.clone(),
+                    local_node_id: self.cfg.node_id,
+                    user_space_base_addr: self.cfg.user_space_base_addr,
+                    local_netmask: self.cfg.local_netmask,
+                };
+                let cfg = reliable_session::SenderConfig {
+                    common,
+                    receiver_ids,
+                    total_bytes,
+                    source_path: None,
+                    source_buffer: Some(buffer.inner.clone()),
+                    ready_grace_ms: reliable_cfg.ready_grace_ms,
+                    topology_ready: None,
+                    routes_ready: None,
+                };
+                let started_sid = rt().block_on(handle.start_sender(cfg));
+                self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
+                return Ok(started_sid);
+            }
+        }
+
+        tracing::warn!(
+            "send_buffer called (stub): sid={} group_ip={} receivers={:?} bytes={} chunk_size={}",
+            sid,
+            group_ip,
+            receiver_ids,
+            total_bytes,
+            chunk_size
         );
         Ok(sid)
     }
@@ -383,6 +482,7 @@ impl Dataplane {
                     source_node_id,
                     expected_bytes,
                     sink_path,
+                    sink_buffer: None,
                 };
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))
@@ -409,6 +509,86 @@ impl Dataplane {
         Ok(sid)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None))]
+    fn receive_buffer(
+        &self,
+        group_ip: &str,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        session_id: Option<u64>,
+    ) -> PyResult<u64> {
+        #[allow(unused_variables)]
+        let ip = parse_ipv4(group_ip)?;
+        if expected_bytes == 0 {
+            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
+        }
+
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+
+        let sid = session_id.unwrap_or_else(next_py_message_id);
+        #[cfg(feature = "reliable")]
+        {
+            if let Some(handle) = &self.reliable {
+                let reliable_cfg = &self.cfg.reliable;
+                let mut resolved_sid = session_id;
+                if resolved_sid.is_none() {
+                    if let Some(known) = self.lookup_session(ip, source_node_id) {
+                        resolved_sid = Some(known);
+                    }
+                }
+                let cap = usize::try_from(expected_bytes).unwrap_or(0);
+                let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
+                let common = reliable_session::CommonConfig {
+                    session_id: resolved_sid.unwrap_or(0),
+                    group_ip: ip,
+                    chunk_size,
+                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
+                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    control_weight: reliable_cfg.control_weight,
+                    data_bucket: reliable_cfg.data_bucket.clone(),
+                    local_node_id: self.cfg.node_id,
+                    user_space_base_addr: self.cfg.user_space_base_addr,
+                    local_netmask: self.cfg.local_netmask,
+                };
+                let cfg = reliable_session::ReceiverConfig {
+                    common,
+                    source_node_id,
+                    expected_bytes,
+                    sink_path: None,
+                    sink_buffer: Some(sink_buf.clone()),
+                };
+                let started_sid = if resolved_sid.is_some() {
+                    rt().block_on(handle.start_receiver(cfg))
+                } else {
+                    let key = reliable_session::PendingReceiverKey {
+                        group_ip: ip,
+                        source_node_id,
+                    };
+                    rt().block_on(handle.start_receiver_pending(cfg, key))
+                };
+                self.remember_session(ip, source_node_id, started_sid);
+                self.remember_buffer_sink(started_sid, sink_buf);
+                return Ok(started_sid);
+            }
+        }
+
+        tracing::warn!(
+            "receive_buffer called (stub): sid={} group_ip={} src_node={} expected_bytes={} chunk_size={}",
+            sid,
+            group_ip,
+            source_node_id,
+            expected_bytes,
+            chunk_size
+        );
+        Ok(sid)
+    }
+
     #[pyo3(signature = (session_id, timeout_ms=None))]
     fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "reliable")]
@@ -431,6 +611,38 @@ impl Dataplane {
         // feature disabled ⇒ nothing to wait for
         let _ = (session_id, timeout_ms);
         Ok(false)
+    }
+
+    #[cfg(feature = "reliable")]
+    #[pyo3(signature = (session_id, consume=true))]
+    fn get_reliable_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
+        let buf_arc = {
+            let guard = self
+                .buffer_registry
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("buffer_registry poisoned"))?;
+            guard
+                .get(&session_id)
+                .cloned()
+                .ok_or_else(|| PyKeyError::new_err(format!("no buffer for session {session_id}")))?
+        };
+
+        let bytes = {
+            let mut guard = rt().block_on(buf_arc.lock());
+            if consume {
+                Bytes::from(std::mem::take(&mut *guard))
+            } else {
+                Bytes::copy_from_slice(&guard)
+            }
+        };
+
+        if consume {
+            if let Ok(mut guard) = self.buffer_registry.lock() {
+                guard.remove(&session_id);
+            }
+        }
+
+        Ok(FrozenBuffer::from_bytes(bytes))
     }
 
     #[cfg(feature = "reliable")]
@@ -492,6 +704,8 @@ impl Dataplane {
 
         #[cfg(feature = "reliable")]
         let session_registry = Arc::new(StdMutex::new(HashMap::new()));
+        #[cfg(feature = "reliable")]
+        let buffer_registry = Arc::new(StdMutex::new(HashMap::new()));
 
         Ok(Self {
             cfg,
@@ -503,6 +717,8 @@ impl Dataplane {
             reliable,
             #[cfg(feature = "reliable")]
             session_registry,
+            #[cfg(feature = "reliable")]
+            buffer_registry,
         })
     }
 

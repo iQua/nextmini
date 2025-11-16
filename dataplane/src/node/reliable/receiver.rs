@@ -91,6 +91,7 @@ pub async fn run(
                 None
             }
         });
+    let sink_buffer = cfg.sink_buffer.clone();
 
     let src_ip = (cfg.common.local_node_id as NodeId)
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
@@ -129,7 +130,21 @@ pub async fn run(
                 pending: &mut pending,
                 bytes_received: &mut bytes_received,
             };
-            if handle_data_frame(ctx, file.as_mut()) {
+            let outcome = handle_data_frame(ctx);
+            if !outcome.ready_chunks.is_empty() {
+                if let Some(file) = file.as_mut() {
+                    for chunk in &outcome.ready_chunks {
+                        let _ = file.write_all(chunk);
+                    }
+                }
+                if let Some(buf) = &sink_buffer {
+                    let mut guard = buf.lock().await;
+                    for chunk in &outcome.ready_chunks {
+                        guard.extend_from_slice(chunk);
+                    }
+                }
+            }
+            if outcome.advanced {
                 let base = expected.saturating_sub(1);
                 if base > last_ack_up_to {
                     tracing::debug!(
@@ -141,8 +156,8 @@ pub async fn run(
                     control_io.send(&RlmControl::Ack { up_to: base });
                     last_ack_up_to = base;
                 }
-                continue;
             }
+            continue;
         }
 
         if handle_control_frame(&frame, &cfg, &control_io, &mut eot_index) {
@@ -172,7 +187,7 @@ pub async fn run(
     );
 }
 
-/// Returns true when the frame decoded as DATA and updates ordering state.
+/// Returns ordering updates and ready chunks when a DATA frame is processed.
 struct FrameCtx<'a> {
     data: &'a rlm::RlmData,
     body: &'a [u8],
@@ -181,7 +196,12 @@ struct FrameCtx<'a> {
     bytes_received: &'a mut u64,
 }
 
-fn handle_data_frame(ctx: FrameCtx<'_>, mut file: Option<&mut std::fs::File>) -> bool {
+struct DataOutcome {
+    ready_chunks: Vec<Bytes>,
+    advanced: bool,
+}
+
+fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     let idx = ctx.data.index;
     tracing::debug!(
         chunk_index = idx,
@@ -195,7 +215,10 @@ fn handle_data_frame(ctx: FrameCtx<'_>, mut file: Option<&mut std::fs::File>) ->
             expected = *ctx.expected,
             "RLM receiver: ignoring duplicate/old chunk"
         );
-        return true;
+        return DataOutcome {
+            ready_chunks: Vec::new(),
+            advanced: false,
+        };
     }
 
     let payload = Bytes::copy_from_slice(ctx.body);
@@ -203,14 +226,17 @@ fn handle_data_frame(ctx: FrameCtx<'_>, mut file: Option<&mut std::fs::File>) ->
         tracing::trace!(chunk_index = idx, "RLM receiver: chunk stored for ordering");
     }
 
+    let mut ready_chunks = Vec::new();
     while let Some(bytes) = ctx.pending.remove(ctx.expected) {
         *ctx.bytes_received += bytes.len() as u64;
-        if let Some(f) = file.as_mut() {
-            let _ = (**f).write_all(&bytes);
-        }
+        ready_chunks.push(bytes);
         *ctx.expected += 1;
     }
-    true
+    let advanced = !ready_chunks.is_empty();
+    DataOutcome {
+        ready_chunks,
+        advanced,
+    }
 }
 
 /// Handles receiver-side control frames (Manifest/EOT/etc.).

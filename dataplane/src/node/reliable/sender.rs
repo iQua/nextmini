@@ -63,9 +63,12 @@ pub async fn run(
             }
         });
 
+    let mut chunk_source = if let Some(buf) = cfg.source_buffer.clone() {
+        ChunkSource::from_buffer(buf, cfg.common.chunk_size, total_chunks, sid)
+    } else {
+        ChunkSource::from_file(source_file, cfg.common.chunk_size, total_chunks, sid)
+    };
     let mut state = SenderState::new(cfg, total_chunks);
-    let mut chunk_source =
-        ChunkSource::new(source_file, state.common.chunk_size, total_chunks, sid);
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
@@ -587,24 +590,52 @@ struct ChunkPayload {
     data: Vec<u8>,
 }
 
-/// Reads chunk payloads from disk (if provided) and hands them to the sender
-/// in strict index order. Tests may swap in the empty case by omitting files.
+enum ChunkSourceInner {
+    File(File),
+    Buffer(Bytes),
+    Empty,
+}
+
+/// Reads chunk payloads from disk or memory (if provided) and hands them to the
+/// sender in strict index order. Tests may swap in the empty case by omitting files.
 struct ChunkSource {
-    file: Option<File>,
+    inner: ChunkSourceInner,
     chunk_size: usize,
     total_chunks: u64,
     next_index: u64,
     session_id: u64,
+    buffer_offset: usize,
 }
 
 impl ChunkSource {
-    fn new(file: Option<File>, chunk_size: usize, total_chunks: u64, session_id: u64) -> Self {
+    fn from_file(
+        file: Option<File>,
+        chunk_size: usize,
+        total_chunks: u64,
+        session_id: u64,
+    ) -> Self {
+        let inner = match file {
+            Some(file) => ChunkSourceInner::File(file),
+            None => ChunkSourceInner::Empty,
+        };
         Self {
-            file,
+            inner,
             chunk_size,
             total_chunks,
             next_index: 1,
             session_id,
+            buffer_offset: 0,
+        }
+    }
+
+    fn from_buffer(buf: Bytes, chunk_size: usize, total_chunks: u64, session_id: u64) -> Self {
+        Self {
+            inner: ChunkSourceInner::Buffer(buf),
+            chunk_size,
+            total_chunks,
+            next_index: 1,
+            session_id,
+            buffer_offset: 0,
         }
     }
 
@@ -619,29 +650,45 @@ impl ChunkSource {
 
         let idx = self.next_index;
 
-        if let Some(file) = self.file.as_mut() {
-            let mut buf = vec![0u8; self.chunk_size];
-            let read = file.read(&mut buf)?;
-            if read == 0 {
-                tracing::warn!(
-                    session_id = self.session_id,
-                    "RLM sender: source file ended unexpectedly"
-                );
-                self.next_index = self.total_chunks + 1;
-                return Ok(None);
+        match &mut self.inner {
+            ChunkSourceInner::File(file) => {
+                let mut buf = vec![0u8; self.chunk_size];
+                let read = file.read(&mut buf)?;
+                if read == 0 {
+                    tracing::warn!(
+                        session_id = self.session_id,
+                        "RLM sender: source file ended unexpectedly"
+                    );
+                    self.next_index = self.total_chunks + 1;
+                    return Ok(None);
+                }
+                buf.truncate(read);
+                self.next_index += 1;
+                Ok(Some(ChunkPayload {
+                    index: idx,
+                    data: buf,
+                }))
             }
-            buf.truncate(read);
-            self.next_index += 1;
-            Ok(Some(ChunkPayload {
-                index: idx,
-                data: buf,
-            }))
-        } else {
-            self.next_index += 1;
-            Ok(Some(ChunkPayload {
-                index: idx,
-                data: Vec::new(),
-            }))
+            ChunkSourceInner::Buffer(bytes) => {
+                let start = self.buffer_offset;
+                if start >= bytes.len() {
+                    self.next_index = self.total_chunks + 1;
+                    return Ok(None);
+                }
+                let end = (start + self.chunk_size).min(bytes.len());
+                let mut data = Vec::with_capacity(end.saturating_sub(start));
+                data.extend_from_slice(&bytes[start..end]);
+                self.buffer_offset = end;
+                self.next_index += 1;
+                Ok(Some(ChunkPayload { index: idx, data }))
+            }
+            ChunkSourceInner::Empty => {
+                self.next_index += 1;
+                Ok(Some(ChunkPayload {
+                    index: idx,
+                    data: Vec::new(),
+                }))
+            }
         }
     }
 }
@@ -696,14 +743,14 @@ mod tests {
         let session_id = 1;
 
         // Zero chunks should be immediately finished
-        let source = ChunkSource::new(None, 1024, 0, session_id);
+        let source = ChunkSource::from_file(None, 1024, 0, session_id);
         assert!(
             source.finished(),
             "ChunkSource with 0 chunks should be finished immediately"
         );
 
         //Source with chunks should not be finished initially
-        let mut source = ChunkSource::new(None, 1024, 5, session_id);
+        let mut source = ChunkSource::from_file(None, 1024, 5, session_id);
         assert!(
             !source.finished(),
             "ChunkSource with 5 chunks should not be finished initially"

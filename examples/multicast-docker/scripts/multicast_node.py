@@ -81,14 +81,12 @@ def log(message: str, quiet: bool = False) -> None:
 def format_throughput(bytes_transferred: int, elapsed_seconds: float) -> str:
     if elapsed_seconds <= 0:
         return "N/A"
-    
+
     bytes_per_sec = bytes_transferred / elapsed_seconds
     mbps = (bytes_per_sec * 8) / 1_000_000
     mib_per_sec = bytes_per_sec / (1024 * 1024)
-    
+
     return f"{mib_per_sec:.2f} MiB/s ({mbps:.2f} Mbps)"
-
-
 
 
 def metadata_path(args: argparse.Namespace) -> Path:
@@ -224,25 +222,29 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    # Launch reliable multicast send via the consolidated send_file API.
+    # Launch reliable multicast send from an in-memory FrozenBuffer.
     log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
     send_start_time = time.perf_counter()
-    
-    sid = dataplane.send_file(
+
+    with args.tensor_path.open("rb") as fh:
+        tensor_bytes = fh.read()
+    frozen = nm.FrozenBuffer(tensor_bytes)
+
+    sid = dataplane.send_buffer(
         group_ip,
         receiver_ids,
-        str(args.tensor_path),
+        frozen,
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
     log(f"Started reliable send session sid={sid}", args.quiet)
-    
+
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
         send_end_time = time.perf_counter()
         elapsed = send_end_time - send_start_time
-        
+
         log(f"Send completion: {ok}", args.quiet)
         log(
             f"Transfer completed in {elapsed:.3f}s - Throughput: {format_throughput(total_bytes, elapsed)}",
@@ -278,24 +280,24 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
     recv_start_time = time.perf_counter()
-    
-    sid = dataplane.receive_file(
+
+    sid = dataplane.receive_buffer(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        sink_path=str(sink_path) if sink_path else None,
     )
 
     log(f"Started reliable receive session sid={sid}.", args.quiet)
-    
+
+    payload_bytes: bytes | None = None
     if hasattr(dataplane, "reliable_wait"):
         ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
         recv_end_time = time.perf_counter()
         elapsed = recv_end_time - recv_start_time
-        
+
         log(f"Receive completion: {ok}.", args.quiet)
         log(
             f"Reception completed in {elapsed:.3f}s - Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
@@ -306,6 +308,20 @@ def run_receiver(args: argparse.Namespace) -> None:
             "Dataplane lacks reliable_wait; receive completion signal unavailable.",
             args.quiet,
         )
+    if hasattr(dataplane, "get_reliable_buffer"):
+        frozen = dataplane.get_reliable_buffer(sid)
+        payload_bytes = bytes(frozen.read())
+        log(f"Retrieved {len(payload_bytes)} bytes into FrozenBuffer.", args.quiet)
+    else:
+        log(
+            "Dataplane lacks get_reliable_buffer; in-memory payload unavailable.",
+            args.quiet,
+        )
+
+    if payload_bytes is not None and sink_path is not None:
+        sink_path.parent.mkdir(parents=True, exist_ok=True)
+        sink_path.write_bytes(payload_bytes)
+        log(f"Wrote payload to {sink_path}.", args.quiet)
 
 
 def main() -> int:
