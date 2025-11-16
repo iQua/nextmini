@@ -11,11 +11,11 @@ pub fn update_receiver_progress(
 ) -> Option<u64> {
     match ctrl {
         RlmControl::Ack { up_to } => {
-            if let Some(entry) = progress.get_mut(&from_node) {
-                if *up_to > *entry {
-                    *entry = *up_to;
-                    return Some(*entry);
-                }
+            if let Some(entry) = progress.get_mut(&from_node)
+                && *up_to > *entry
+            {
+                *entry = *up_to;
+                return Some(*entry);
             }
             None
         }
@@ -49,6 +49,6 @@ mod tests {
 
         let missing = update_receiver_progress(99, &RlmControl::Ack { up_to: 10 }, &mut progress);
         assert!(missing.is_none());
-        assert!(progress.get(&99).is_none());
+        assert!(!progress.contains_key(&99));
     }
 }
