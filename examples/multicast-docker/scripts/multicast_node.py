@@ -163,6 +163,7 @@ def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, st
 def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     if not args.generate_tensor:
         return
+
     if args.tensor_path is None:
         tensor_dir = Path("/workspace/tensors")
         tensor_dir.mkdir(parents=True, exist_ok=True)
@@ -170,14 +171,9 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
 
     log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
+
     # Generate ~1GB tensor: 256 * 1024 * 1024 floats * 4 bytes/float ≈ 1GB
     tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
-
-    # For 1MB testing, uncomment the following lines and comment out the 1GB version above:
-    # args.tensor_path = tensor_dir / "tensor-auto-1m.pt"
-    # log(f"Generating ~1MB tensor at {args.tensor_path}...", args.quiet)
-    # # Generate ~1MB tensor: 256 * 1024 floats * 4 bytes/float ≈ 1MB
-    # tensor = torch.randn(256, 1024, dtype=torch.float32).contiguous().cpu()
 
     args.tensor_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(tensor, args.tensor_path)
@@ -239,24 +235,17 @@ def run_source(args: argparse.Namespace) -> None:
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
-    log(f"Started reliable send session sid={sid}", args.quiet)
+    log(f"Started reliable send session (session ID = {sid}).", args.quiet)
 
-    if hasattr(dataplane, "reliable_wait"):
-        ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
-        send_end_time = time.perf_counter()
-        elapsed = send_end_time - send_start_time
+    ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
+    send_end_time = time.perf_counter()
+    elapsed = send_end_time - send_start_time
 
-        log(f"Send completion: {ok}", args.quiet)
-        log(
-            f"Transfer completed in {elapsed:.3f}s - Throughput: {format_throughput(total_bytes, elapsed)}",
-            args.quiet,
-        )
-    else:
-        log(
-            "Dataplane lacks reliable_wait; send completion signal unavailable.",
-            args.quiet,
-        )
-    log("Source issued reliable send request.", args.quiet)
+    log(f"Send completion: {ok}.", args.quiet)
+    log(
+        f"Transfer completed in {elapsed:.3f} seconds. Throughput: {format_throughput(total_bytes, elapsed)}",
+        args.quiet,
+    )
 
 
 def run_receiver(args: argparse.Namespace) -> None:
@@ -291,33 +280,23 @@ def run_receiver(args: argparse.Namespace) -> None:
         dst_port=args.dst_port,
     )
 
-    log(f"Started reliable receive session sid={sid}.", args.quiet)
+    log(f"Started reliable receive session (session ID = {sid}).", args.quiet)
 
     payload_bytes: bytes | None = None
-    if hasattr(dataplane, "reliable_wait"):
-        ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
-        recv_end_time = time.perf_counter()
-        elapsed = recv_end_time - recv_start_time
 
-        log(f"Receive completion: {ok}.", args.quiet)
-        log(
-            f"Reception completed in {elapsed:.3f}s - Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
-            args.quiet,
-        )
-    else:
-        log(
-            "Dataplane lacks reliable_wait; receive completion signal unavailable.",
-            args.quiet,
-        )
-    if hasattr(dataplane, "get_data_buffer"):
-        frozen = dataplane.get_data_buffer(sid)
-        payload_bytes = bytes(frozen.read())
-        log(f"Retrieved {len(payload_bytes)} bytes into FrozenBuffer.", args.quiet)
-    else:
-        log(
-            "Dataplane lacks get_data_buffer; in-memory payload unavailable.",
-            args.quiet,
-        )
+    ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
+    recv_end_time = time.perf_counter()
+    elapsed = recv_end_time - recv_start_time
+
+    log(f"Receive completion: {ok}.", args.quiet)
+    log(
+        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
+        args.quiet,
+    )
+
+    frozen = dataplane.get_data_buffer(sid)
+    payload_bytes = bytes(frozen.read())
+    log(f"Retrieved {len(payload_bytes)} bytes into FrozenBuffer.", args.quiet)
 
     if payload_bytes is not None and sink_path is not None:
         sink_path.parent.mkdir(parents=True, exist_ok=True)
