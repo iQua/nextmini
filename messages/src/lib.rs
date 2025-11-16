@@ -256,15 +256,71 @@ pub struct Flow {
 }
 
 /// The specification of a user-space TCP flow.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
+#[derive(Serialize, PartialEq, Debug, Clone, Copy)]
 pub struct FlowSpec {
     pub flow_len: FlowLen,
     #[serde(default)]
-    pub flow_rate: Option<usize>,
+    pub flow_rate: Option<usize>, // bytes per second
     #[serde(default)]
     pub flow_weight: Option<usize>,
     #[serde(default)]
     pub transport: FlowTransport,
+}
+
+impl<'de> Deserialize<'de> for FlowSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct FlowSpecSerde {
+            flow_len: FlowLen,
+            #[serde(default)]
+            flow_rate: Option<usize>,
+            #[serde(default)]
+            flow_weight: Option<usize>,
+            #[serde(default)]
+            transport: FlowTransport,
+        }
+
+        let helper = FlowSpecSerde::deserialize(deserializer)?;
+        let spec = FlowSpec {
+            flow_len: helper.flow_len,
+            flow_rate: helper.flow_rate,
+            flow_weight: helper.flow_weight,
+            transport: helper.transport,
+        };
+        spec.validate().map_err(de::Error::custom)?;
+        Ok(spec)
+    }
+}
+
+#[derive(Debug)]
+pub enum FlowSpecValidationError {
+    DurationMissingRate,
+}
+
+impl fmt::Display for FlowSpecValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FlowSpecValidationError::DurationMissingRate => {
+                write!(f, "duration-based flows require flow_rate (bytes/sec)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FlowSpecValidationError {}
+
+impl FlowSpec {
+    pub fn validate(&self) -> Result<(), FlowSpecValidationError> {
+        match self.flow_len {
+            FlowLen::Duration(_) if self.flow_rate.is_none() => {
+                Err(FlowSpecValidationError::DurationMissingRate)
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The length of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.

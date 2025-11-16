@@ -75,33 +75,47 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
 
 /// Builds an AddFlow message for flows.
 pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> ControllerToDataplane {
-    let flows: Vec<Flow> = flows
-        .into_iter()
-        .map(|flow| {
-            debug!("Building an AddFlow message for flow id {}", flow.id);
+    let mut built = Vec::new();
 
-            // converts database Flow to message Flow.
-            let flow_len = match flow.flow_len_type.as_str() {
-                "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
-                "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
-                _ => FlowLen::Bytes(0), // default fallback
-            };
+    for flow in flows {
+        debug!("Building an AddFlow message for flow id {}", flow.id);
 
-            Flow {
-                controller_id: Some(flow.id),
-                src_node_id: flow.src_node_id as usize,
-                dst_node_id: flow.dst_node_id as usize,
-                flow_spec: FlowSpec {
-                    flow_len,
-                    flow_rate: flow.flow_rate.map(|r| r as usize),
-                    flow_weight: flow.flow_weight.map(|w| w as usize),
-                    transport,
-                },
+        let flow_len = match flow.flow_len_type.as_str() {
+            "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
+            "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
+            other => {
+                warn!(
+                    "Flow {} has unsupported flow_len_type {}; skipping.",
+                    flow.id, other
+                );
+                continue;
             }
-        })
-        .collect();
+        };
 
-    ControllerToDataplane::AddFlows { flows }
+        let flow_spec = FlowSpec {
+            flow_len,
+            flow_rate: flow.flow_rate.map(|r| r as usize),
+            flow_weight: flow.flow_weight.map(|w| w as usize),
+            transport,
+        };
+
+        if let Err(err) = flow_spec.validate() {
+            warn!(
+                "Skipping flow {} ({} -> {}): {}.",
+                flow.id, flow.src_node_id, flow.dst_node_id, err
+            );
+            continue;
+        }
+
+        built.push(Flow {
+            controller_id: Some(flow.id),
+            src_node_id: flow.src_node_id as usize,
+            dst_node_id: flow.dst_node_id as usize,
+            flow_spec,
+        });
+    }
+
+    ControllerToDataplane::AddFlows { flows: built }
 }
 
 /// Creates a DiGraph with proper node mapping from edges, preserving the relationship

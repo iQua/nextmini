@@ -126,6 +126,7 @@ impl ReliableUnicastFlowHandle {
             }
 
             let started_sid = reliable.start_sender(sender_cfg).await;
+            reliable.set_group_routes_ready(dst_ip, cfg.node_id);
             let ok = reliable.wait_completion(started_sid).await;
 
             let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);

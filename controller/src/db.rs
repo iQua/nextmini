@@ -373,6 +373,13 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
         let src_node_id = flow.src_node_id as i32;
         let dst_node_id = flow.dst_node_id as i32;
 
+        if let Err(err) = flow.flow_spec.validate() {
+            panic!(
+                "Invalid custom flow {} -> {} in controller config: {}",
+                src_node_id, dst_node_id, err
+            );
+        }
+
         // converts the FlowLen to the database format
         let (flow_len_type, flow_len_bytes, flow_len_duration) = match flow.flow_spec.flow_len {
             nextmini_messages::FlowLen::Bytes(bytes) => ("bytes", Some(bytes as i64), None),
