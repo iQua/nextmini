@@ -72,13 +72,6 @@ pub async fn run(
         "RLM receiver started"
     );
 
-    if cfg.verify_checksum {
-        tracing::warn!(
-            session_id = sid,
-            "RLM receiver: checksum verification requested but not yet implemented."
-        );
-    }
-
     // Stream bookkeeping: RLM chunk indices start at 1.
     let mut expected: u64 = 1;
     let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
@@ -237,7 +230,7 @@ fn handle_control_frame(
             });
             true
         }
-        RlmControl::Eot { last_index, .. } => {
+        RlmControl::Eot { last_index } => {
             tracing::info!(
                 session_id = cfg.common.session_id,
                 last_index = last_index,

@@ -105,8 +105,6 @@ pub enum RlmControl {
     Manifest {
         chunk_size: u32,
         total_bytes: u64,
-        checksum_algo: u8, // 0: none, 1: sha256
-        options: u32,
     },
     Ready {
         node_id: u64,
@@ -114,10 +112,9 @@ pub enum RlmControl {
     Ack {
         up_to: u64,
     },
-    /// End-of-transfer marker with the last expected chunk and optional checksum.
+    /// End-of-transfer marker with the last expected chunk.
     Eot {
         last_index: u64,
-        checksum: Option<[u8; 32]>,
     },
 }
 
@@ -177,14 +174,10 @@ pub fn encode_control(session_id: u64, control: &RlmControl) -> Vec<u8> {
         Manifest {
             chunk_size,
             total_bytes,
-            checksum_algo,
-            options,
         } => {
-            let mut b = vec![0u8; 4 + 8 + 1 + 4];
+            let mut b = vec![0u8; 4 + 8];
             b[0..4].copy_from_slice(&chunk_size.to_be_bytes());
             b[4..12].copy_from_slice(&total_bytes.to_be_bytes());
-            b[12] = *checksum_algo;
-            b[13..17].copy_from_slice(&options.to_be_bytes());
             (RlmCtrlKind::Manifest as u8, b)
         }
         Ready { node_id } => {
@@ -197,19 +190,9 @@ pub fn encode_control(session_id: u64, control: &RlmControl) -> Vec<u8> {
             b[..8].copy_from_slice(&up_to.to_be_bytes());
             (RlmCtrlKind::Ack as u8, b)
         }
-        Eot {
-            last_index,
-            checksum,
-        } => {
-            let mut b = Vec::with_capacity(8 + 1 + 32);
-            b.extend_from_slice(&last_index.to_be_bytes());
-            match checksum {
-                Some(arr) => {
-                    b.push(1);
-                    b.extend_from_slice(arr);
-                }
-                None => b.push(0),
-            }
+        Eot { last_index } => {
+            let mut b = vec![0u8; 8];
+            b[..8].copy_from_slice(&last_index.to_be_bytes());
             (RlmCtrlKind::Eot as u8, b)
         }
     };
@@ -243,18 +226,14 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
     let body = &buf[off..off + hdr.body_len as usize];
     let ctrl = match hdr.ctrl_kind {
         x if x == RlmCtrlKind::Manifest as u8 => {
-            if body.len() < 4 + 8 + 1 + 4 {
+            if body.len() < 4 + 8 {
                 return None;
             }
             let chunk_size = u32::from_be_bytes(body[0..4].try_into().ok()?);
             let total_bytes = u64::from_be_bytes(body[4..12].try_into().ok()?);
-            let checksum_algo = body[12];
-            let options = u32::from_be_bytes(body[13..17].try_into().ok()?);
             Manifest {
                 chunk_size,
                 total_bytes,
-                checksum_algo,
-                options,
             }
         }
         x if x == RlmCtrlKind::Ready as u8 => {
@@ -272,25 +251,11 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
             Ack { up_to }
         }
         x if x == RlmCtrlKind::Eot as u8 => {
-            if body.len() < 8 + 1 {
+            if body.len() < 8 {
                 return None;
             }
             let last_index = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            let has_sum = body[8];
-            let checksum = if has_sum == 1 {
-                if body.len() < 8 + 1 + 32 {
-                    return None;
-                }
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&body[9..9 + 32]);
-                Some(arr)
-            } else {
-                None
-            };
-            Eot {
-                last_index,
-                checksum,
-            }
+            Eot { last_index }
         }
         _ => return None,
     };
@@ -321,15 +286,10 @@ mod tests {
             RlmControl::Manifest {
                 chunk_size: 4096,
                 total_bytes: 123456,
-                checksum_algo: 1,
-                options: 0,
             },
             RlmControl::Ready { node_id: 99 },
             RlmControl::Ack { up_to: 77 },
-            RlmControl::Eot {
-                last_index: 15,
-                checksum: Some([0xAA; 32]),
-            },
+            RlmControl::Eot { last_index: 15 },
         ];
         for ctrl in ctrls {
             let buf = encode_control(77, &ctrl);
@@ -365,8 +325,6 @@ mod tests {
             &RlmControl::Manifest {
                 chunk_size: 4096,
                 total_bytes: 123,
-                checksum_algo: 0,
-                options: 0,
             },
         );
         let mut bad = good.clone();
@@ -386,16 +344,10 @@ mod tests {
         bad_ack.truncate(RlmHeader::LEN + 6);
         assert!(decode_control(&bad_ack).is_none());
 
-        // EOT requires 9 bytes minimum (index + flag)
-        let eot = encode_control(
-            1,
-            &RlmControl::Eot {
-                last_index: 42,
-                checksum: None,
-            },
-        );
+        // EOT requires 8 bytes (index only)
+        let eot = encode_control(1, &RlmControl::Eot { last_index: 42 });
         let mut bad_eot = eot.clone();
-        bad_eot.truncate(RlmHeader::LEN + 8);
+        bad_eot.truncate(RlmHeader::LEN + 4);
         assert!(decode_control(&bad_eot).is_none());
     }
 }

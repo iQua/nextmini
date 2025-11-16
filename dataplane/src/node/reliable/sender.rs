@@ -250,22 +250,6 @@ impl SenderState {
             );
         }
 
-        if cfg.checksum_out {
-            tracing::warn!(
-                session_id = common.session_id,
-                "RLM sender: checksum_out requested but checksum emission is not implemented; skipping."
-            );
-        }
-
-        if cfg.fec_k.is_some() || cfg.fec_p != 0 {
-            tracing::warn!(
-                session_id = common.session_id,
-                fec_k = ?cfg.fec_k,
-                fec_p = cfg.fec_p,
-                "RLM sender: FEC parameters supplied but FEC is not yet implemented."
-            );
-        }
-
         Self {
             session_id: common.session_id,
             common,
@@ -301,8 +285,6 @@ impl SenderState {
         let manifest = RlmControl::Manifest {
             chunk_size: self.common.chunk_size as u32,
             total_bytes: self.total_bytes,
-            checksum_algo: 0,
-            options: 0,
         };
         self.send_control(&manifest, processors);
         self.manifest_last_sent = Instant::now();
@@ -384,7 +366,6 @@ impl SenderState {
         }
         let eot = RlmControl::Eot {
             last_index: self.total_chunks,
-            checksum: None,
         };
         self.send_control(&eot, processors);
         self.eot_sent = true;

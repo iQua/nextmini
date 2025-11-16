@@ -26,16 +26,13 @@ pub struct CommonConfig {
     pub local_netmask: Ipv4Addr,
 }
 
-/// Sender-only configuration (fan-out, source path, FEC knobs, etc.).
+/// Sender-only configuration (fan-out, source path, ready grace, etc.).
 #[derive(Clone, Debug)]
 pub struct SenderConfig {
     pub common: CommonConfig,
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_path: Option<String>,
-    pub checksum_out: bool,
-    pub fec_k: Option<u16>,
-    pub fec_p: u8,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
     pub routes_ready: Option<watch::Receiver<bool>>,
@@ -47,7 +44,6 @@ pub struct ReceiverConfig {
     pub common: CommonConfig,
     pub source_node_id: usize,
     pub expected_bytes: u64,
-    pub verify_checksum: bool,
     pub sink_path: Option<String>,
 }
 

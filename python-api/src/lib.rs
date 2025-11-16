@@ -310,9 +310,6 @@ impl Dataplane {
                     receiver_ids,
                     total_bytes,
                     source_path: Some(tensor_path.to_string()),
-                    checksum_out: false,
-                    fec_k: None,
-                    fec_p: 0,
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
                     topology_ready: None,
                     routes_ready: None,
@@ -385,7 +382,6 @@ impl Dataplane {
                     common,
                     source_node_id,
                     expected_bytes,
-                    verify_checksum: false,
                     sink_path,
                 };
                 let started_sid = if resolved_sid.is_some() {
