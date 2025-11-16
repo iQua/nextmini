@@ -176,7 +176,7 @@ impl TokenBucket {
 mod tests {
     use super::*;
 
-    use tokio::time::Duration;
+    use tokio::time::{self, Duration};
 
     fn make_packet(size: usize) -> Packet {
         let mut packet = Packet::from_vec(vec![0; size.max(1)]);
@@ -229,5 +229,49 @@ mod tests {
             bucket.tokens, 300,
             "Token count should remain unchanged if no time has advanced"
         );
+    }
+
+    #[tokio::test]
+    async fn wait_for_bytes_respects_rate_with_virtual_time() {
+        time::pause();
+
+        let spec = TokenBucketSpec {
+            rate: 1_000,
+            bucket_size: 1_000,
+        };
+        let mut bucket = TokenBucket::new(spec);
+
+        bucket.wait_for_bytes(1_000).await;
+        assert_eq!(
+            bucket.tokens, 0,
+            "bucket should be empty after consuming exactly its capacity"
+        );
+
+        let mut bucket_for_wait = bucket;
+        let waiter = tokio::spawn(async move {
+            bucket_for_wait.wait_for_bytes(500).await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "wait_for_bytes should not complete without any time passing"
+        );
+
+        time::advance(Duration::from_millis(400)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "wait_for_bytes should still be pending after only 400ms of simulated time"
+        );
+
+        time::advance(Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            waiter.is_finished(),
+            "wait_for_bytes should complete once enough simulated time has passed"
+        );
+
+        waiter.await.unwrap();
     }
 }
