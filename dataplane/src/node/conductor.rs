@@ -48,7 +48,7 @@ impl Conductor {
 
         // connects the processors with its downstream local interface writers to send packets out
         let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone(), Some(reliable.clone())).await;
+            ControllerInterfaceHandle::new(config.clone(), reliable.clone()).await;
 
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();

@@ -47,7 +47,7 @@ pub struct ControllerInterfaceHandle {
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-        reliable: Option<ReliableHandle>,
+        reliable: ReliableHandle,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
@@ -100,14 +100,12 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
-        let reliable_unicast = reliable.clone().map(|handle| {
-            ReliableUnicastFlowHandle::new(
-                config.clone(),
-                processors.clone(),
-                flowstats_reporter.clone(),
-                handle,
-            )
-        });
+        let reliable_unicast = ReliableUnicastFlowHandle::new(
+            config.clone(),
+            processors.clone(),
+            flowstats_reporter.clone(),
+            reliable.clone(),
+        );
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
             config: config.clone(),
@@ -285,9 +283,10 @@ pub struct ControllerToDataplaneReceiver {
 
     #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
-    reliable: Option<ReliableHandle>,
+
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
-    reliable_unicast: Option<ReliableUnicastFlowHandle>,
+    reliable: ReliableHandle,
+    reliable_unicast: ReliableUnicastFlowHandle,
     topology_ready: bool,
     pending_user_space_flows: Vec<Flow>,
 }
@@ -412,14 +411,7 @@ impl ControllerToDataplaneReceiver {
                 }
 
                 if !reliable_flows.is_empty() {
-                    if let Some(handle) = &self.reliable_unicast {
-                        handle.add_flows(reliable_flows);
-                    } else {
-                        warn!(
-                            "Node {} received reliable flows but unicast handle is unavailable.",
-                            self.config.node_id
-                        );
-                    }
+                    self.reliable_unicast.add_flows(reliable_flows);
                 }
             }
 
@@ -430,15 +422,7 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.topology_ready = true;
-
-                if let Some(handle) = &self.reliable {
-                    handle.set_topology_ready(true);
-                } else {
-                    warn!(
-                        "TopologyReady received but reliable subsystem is not attached on node {}.",
-                        self.config.node_id
-                    );
-                }
+                self.reliable.set_topology_ready(true);
 
                 self.flush_pending_user_space_flows();
             }
@@ -505,15 +489,8 @@ impl ControllerToDataplaneReceiver {
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
 
-                if let Some(handle) = &self.reliable {
-                    if let Some(ip) = self.group_ip_by_id.get(&group_id) {
-                        handle.set_dest_routes_ready(*ip, src_node_id);
-                    } else {
-                        warn!(
-                            "InstallGroupRoutes received for unknown group {}; reliable senders may block.",
-                            group_id
-                        );
-                    }
+                if let Some(ip) = self.group_ip_by_id.get(&group_id) {
+                    self.reliable.set_dest_routes_ready(*ip, src_node_id);
                 }
 
                 #[cfg(feature = "python-extension")]
