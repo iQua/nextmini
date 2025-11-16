@@ -72,7 +72,7 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
   `/workspace/tensors/tensor-auto-1g.pt` before every run.
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
-- `CHUNK_SIZE` – payload slice size (defaults to 4096 bytes; reliable senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
+- `CHUNK_SIZE` – payload slice size (defaults to 8500 bytes; reliable senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
 - `ARTIFACT_DIR` – shared volume for tensors and metadata.
@@ -96,7 +96,7 @@ docker compose up
 ```
 
 Each run downloads/install PyTorch (via `run_multicast_node.sh`), synthesizes the tensor,
-and then pushes it using `CHUNK_SIZE` (defaults to 4096 bytes; payloads larger than the MTU are automatically fragmented by the dataplane). Receivers automatically
+and then pushes it using `CHUNK_SIZE` (defaults to 8500 bytes; payloads larger than the MTU are automatically fragmented by the dataplane). Receivers automatically
 load the metadata, reconstruct the
 stream under `/artifacts/receiver-<node_id>.bin`, and verify the byte counts. Adjust the
 following knobs if needed:

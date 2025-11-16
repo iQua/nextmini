@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
-    parser.add_argument("--chunk-size", type=int, default=4096)
+    parser.add_argument("--chunk-size", type=int, default=8500)
     parser.add_argument("--receive-timeout-ms", type=int, default=5000)
     parser.add_argument("--group-timeout", type=int, default=90)
     parser.add_argument(

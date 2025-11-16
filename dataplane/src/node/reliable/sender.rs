@@ -16,7 +16,7 @@ use super::api::InboundFrame;
 use super::control;
 use super::session::{CommonConfig, SenderConfig};
 
-const DEFAULT_WINDOW: usize = 64;
+const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
 const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const TRANSFER_TIMEOUT_SECS: u64 = 300; // 5 minutes - configurable later
@@ -543,16 +543,17 @@ impl SenderState {
 /// Chooses a sliding window size based on receiver fan-out and optional token
 /// bucket configuration.
 fn compute_window(cfg: &SenderConfig) -> usize {
-    let receiver_factor = (cfg.receiver_ids.len().max(1)) * 2;
-    let mut window = DEFAULT_WINDOW.max(receiver_factor);
+    let mut window = DEFAULT_WINDOW;
+
     if let Some(bucket) = &cfg.common.data_bucket
         && cfg.common.chunk_size > 0
     {
         let per_chunk = cfg.common.chunk_size;
         let bucket_chunks = (bucket.bucket_size / per_chunk).max(1);
-        window = window.max(bucket_chunks);
+        window = window.min(bucket_chunks);
     }
-    window.max(1)
+
+    window
 }
 
 /// Materialized chunk that is ready to be encoded into an RLM frame.

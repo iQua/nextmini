@@ -250,7 +250,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None, congestion=None))]
+    #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
     fn send_data(
         &self,
         group_ip: &str,
@@ -330,7 +330,7 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=4096, src_port=None, dst_port=None, session_id=None))]
+    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
     fn receive_data(
         &self,
         group_ip: &str,
