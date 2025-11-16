@@ -86,6 +86,7 @@ impl ReliableHandle {
     }
 
     /// Request that the runtime spin up a receiver immediately.
+    #[allow(dead_code)]
     pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::StartReceiver { cfg, reply: tx });
@@ -94,7 +95,6 @@ impl ReliableHandle {
 
     /// Request that the runtime stage a receiver that will be paired once the
     /// control-plane assigns a session ID (pending receivers cover this race).
-    #[allow(dead_code)]
     pub async fn start_receiver_pending(
         &self,
         cfg: ReceiverConfig,

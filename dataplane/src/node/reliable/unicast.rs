@@ -10,7 +10,9 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::reliable::api::{ReliableHandle, SessionId};
-use crate::node::reliable::session::{CommonConfig, ReceiverConfig, SenderConfig};
+use crate::node::reliable::session::{
+    CommonConfig, PendingReceiverKey, ReceiverConfig, SenderConfig,
+};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
 /// Handles controller-managed reliable unicast flows on a dataplane node.
@@ -175,16 +177,16 @@ impl ReliableUnicastFlowHandle {
         let reliable = self.reliable.clone();
 
         tokio::spawn(async move {
-            let sid = session_id_for_flow(&flow);
             let reliable_cfg = cfg.reliable.clone();
-            let dst_ip =
+            let dest_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let data_bucket =
                 bucket_from_flow_rate(flow.flow_spec.flow_rate, &reliable_cfg.data_bucket);
 
             let common = CommonConfig {
-                session_id: sid,
-                dest_ip: dst_ip,
+                // Placeholder; will be overwritten by adopt_pending_receiver.
+                session_id: 0,
+                dest_ip,
                 chunk_size: reliable_cfg.default_chunk_size,
                 src_port: cfg.user_space_client_port,
                 dst_port: cfg.user_space_server_port,
@@ -202,7 +204,13 @@ impl ReliableUnicastFlowHandle {
                 sink_buffer: None,
             };
 
-            let started_sid = reliable.start_receiver(receiver_cfg).await;
+            let key = PendingReceiverKey {
+                dest_ip,
+                source_node_id: flow.src_node_id,
+            };
+
+            // Stage the receiver; the runtime will materialize it when the first frame arrives.
+            let started_sid = reliable.start_receiver_pending(receiver_cfg, key).await;
             let _ = reliable.wait_completion(started_sid).await;
             reliable.stop(started_sid);
         });
