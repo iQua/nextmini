@@ -505,7 +505,7 @@ impl ControllerToDataplaneReceiver {
                 {
                     if let Some(handle) = &self.reliable {
                         if let Some(ip) = self.group_ip_by_id.get(&group_id) {
-                            handle.set_group_routes_ready(*ip, src_node_id);
+                            handle.set_dest_routes_ready(*ip, src_node_id);
                         } else {
                             warn!(
                                 "InstallGroupRoutes received for unknown group {}; reliable senders may block.",

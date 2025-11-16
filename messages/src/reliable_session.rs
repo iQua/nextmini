@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-/// "RLM1" in ASCII.
-pub const RLM_MAGIC: u32 = 0x524C_4D31;
-pub const RLM_VERSION: u8 = 1;
+/// Magic constant (legacy "RLM1" ASCII) used by reliable session frames.
+pub const RELIABLE_SESSION_MAGIC: u32 = 0x524C_4D31;
+pub const RELIABLE_SESSION_VERSION: u8 = 1;
 
 /// Top-level frame kind carried in the header.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RlmKind {
+pub enum ReliableSessionKind {
     Data = 1,
     Control = 2,
 }
@@ -15,7 +15,7 @@ pub enum RlmKind {
 /// Control sub-kind (only meaningful when kind == Control).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RlmCtrlKind {
+pub enum ReliableSessionCtrlKind {
     Manifest = 1,
     Ready = 2,
     Ack = 3,
@@ -25,24 +25,24 @@ pub enum RlmCtrlKind {
 /// Fixed header for both DATA and CONTROL frames.
 ///
 /// Layout (big-endian):
-/// - magic:      u32  (RLM_MAGIC)
-/// - version:    u8   (RLM_VERSION)
+/// - magic:      u32  (RELIABLE_SESSION_MAGIC)
+/// - version:    u8   (RELIABLE_SESSION_VERSION)
 /// - kind:       u8   (1=Data, 2=Control)
-/// - ctrl_kind:  u8   (RlmCtrlKind value when kind=Control, else 0)
+/// - ctrl_kind:  u8   (ReliableSessionCtrlKind value when kind=Control, else 0)
 /// - reserved:   u8   (0; alignment/padding)
 /// - session_id: u64  (flow/session demux)
 /// - body_len:   u32  (number of bytes following the header)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RlmHeader {
+pub struct ReliableSessionHeader {
     pub magic: u32,
     pub version: u8,
-    pub kind: RlmKind,
+    pub kind: ReliableSessionKind,
     pub ctrl_kind: u8,
     pub session_id: u64,
     pub body_len: u32,
 }
 
-impl RlmHeader {
+impl ReliableSessionHeader {
     pub const LEN: usize = 4 + 1 + 1 + 1 + 1 + 8 + 4;
 
     #[inline]
@@ -63,16 +63,16 @@ impl RlmHeader {
             return None;
         }
         let magic = u32::from_be_bytes(buf[0..4].try_into().ok()?);
-        if magic != RLM_MAGIC {
+        if magic != RELIABLE_SESSION_MAGIC {
             return None;
         }
         let version = buf[4];
-        if version != RLM_VERSION {
+        if version != RELIABLE_SESSION_VERSION {
             return None;
         }
         let kind = match buf[5] {
-            1 => RlmKind::Data,
-            2 => RlmKind::Control,
+            1 => ReliableSessionKind::Data,
+            2 => ReliableSessionKind::Control,
             _ => return None,
         };
         let ctrl_kind = buf[6];
@@ -94,14 +94,14 @@ impl RlmHeader {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RlmData {
+pub struct ReliableSessionData {
     pub index: u64,
     pub payload_len: u32,
 }
 
-/// CONTROL payload variants (follows `RlmHeader` when kind == Control).
+/// CONTROL payload variants (follows `ReliableSessionHeader` when kind == Control).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RlmControl {
+pub enum ReliableSessionControl {
     Manifest {
         chunk_size: u32,
         total_bytes: u64,
@@ -118,20 +118,20 @@ pub enum RlmControl {
     },
 }
 
-/// Encode a DATA frame (header + RlmData + payload) into a fresh Vec<u8>.
+/// Encode a DATA frame (header + ReliableSessionData + payload) into a fresh Vec<u8>.
 pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
     let body_len = 8 + 4 + payload.len() as u32;
-    let mut out = vec![0u8; RlmHeader::LEN + body_len as usize];
-    RlmHeader {
-        magic: RLM_MAGIC,
-        version: RLM_VERSION,
-        kind: RlmKind::Data,
+    let mut out = vec![0u8; ReliableSessionHeader::LEN + body_len as usize];
+    ReliableSessionHeader {
+        magic: RELIABLE_SESSION_MAGIC,
+        version: RELIABLE_SESSION_VERSION,
+        kind: ReliableSessionKind::Data,
         ctrl_kind: 0,
         session_id,
         body_len,
     }
-    .encode_into(&mut out[..RlmHeader::LEN]);
-    let mut pos = RlmHeader::LEN;
+    .encode_into(&mut out[..ReliableSessionHeader::LEN]);
+    let mut pos = ReliableSessionHeader::LEN;
     out[pos..pos + 8].copy_from_slice(&index.to_be_bytes());
     pos += 8;
     out[pos..pos + 4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -141,9 +141,9 @@ pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
 }
 
 /// Try to decode a DATA frame; returns (header, data header, payload slice).
-pub fn decode_data(buf: &[u8]) -> Option<(RlmHeader, RlmData, &[u8])> {
-    let (hdr, off) = RlmHeader::decode_from(buf)?;
-    if hdr.kind != RlmKind::Data {
+pub fn decode_data(buf: &[u8]) -> Option<(ReliableSessionHeader, ReliableSessionData, &[u8])> {
+    let (hdr, off) = ReliableSessionHeader::decode_from(buf)?;
+    if hdr.kind != ReliableSessionKind::Data {
         return None;
     }
     if hdr.body_len < 12 {
@@ -164,12 +164,12 @@ pub fn decode_data(buf: &[u8]) -> Option<(RlmHeader, RlmData, &[u8])> {
     if payload_end > buf.len() {
         return None;
     }
-    Some((hdr, RlmData { index, payload_len }, &buf[pos..payload_end]))
+    Some((hdr, ReliableSessionData { index, payload_len }, &buf[pos..payload_end]))
 }
 
 /// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
-pub fn encode_control(session_id: u64, control: &RlmControl) -> Vec<u8> {
-    use RlmControl::*;
+pub fn encode_control(session_id: u64, control: &ReliableSessionControl) -> Vec<u8> {
+    use ReliableSessionControl::*;
     let (ctrl_kind, body_bytes) = match control {
         Manifest {
             chunk_size,
@@ -178,45 +178,45 @@ pub fn encode_control(session_id: u64, control: &RlmControl) -> Vec<u8> {
             let mut b = vec![0u8; 4 + 8];
             b[0..4].copy_from_slice(&chunk_size.to_be_bytes());
             b[4..12].copy_from_slice(&total_bytes.to_be_bytes());
-            (RlmCtrlKind::Manifest as u8, b)
+            (ReliableSessionCtrlKind::Manifest as u8, b)
         }
         Ready { node_id } => {
             let mut b = vec![0u8; 8];
             b[..8].copy_from_slice(&node_id.to_be_bytes());
-            (RlmCtrlKind::Ready as u8, b)
+            (ReliableSessionCtrlKind::Ready as u8, b)
         }
         Ack { up_to } => {
             let mut b = vec![0u8; 8];
             b[..8].copy_from_slice(&up_to.to_be_bytes());
-            (RlmCtrlKind::Ack as u8, b)
+            (ReliableSessionCtrlKind::Ack as u8, b)
         }
         Eot { last_index } => {
             let mut b = vec![0u8; 8];
             b[..8].copy_from_slice(&last_index.to_be_bytes());
-            (RlmCtrlKind::Eot as u8, b)
+            (ReliableSessionCtrlKind::Eot as u8, b)
         }
     };
 
     let body_len = body_bytes.len() as u32;
-    let mut out = vec![0u8; RlmHeader::LEN + body_len as usize];
-    RlmHeader {
-        magic: RLM_MAGIC,
-        version: RLM_VERSION,
-        kind: RlmKind::Control,
+    let mut out = vec![0u8; ReliableSessionHeader::LEN + body_len as usize];
+    ReliableSessionHeader {
+        magic: RELIABLE_SESSION_MAGIC,
+        version: RELIABLE_SESSION_VERSION,
+        kind: ReliableSessionKind::Control,
         ctrl_kind,
         session_id,
         body_len,
     }
-    .encode_into(&mut out[..RlmHeader::LEN]);
-    out[RlmHeader::LEN..].copy_from_slice(&body_bytes);
+    .encode_into(&mut out[..ReliableSessionHeader::LEN]);
+    out[ReliableSessionHeader::LEN..].copy_from_slice(&body_bytes);
     out
 }
 
 /// Try to decode a CONTROL frame; returns (header, parsed control).
-pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
-    use RlmControl::*;
-    let (hdr, off) = RlmHeader::decode_from(buf)?;
-    if hdr.kind != RlmKind::Control {
+pub fn decode_control(buf: &[u8]) -> Option<(ReliableSessionHeader, ReliableSessionControl)> {
+    use ReliableSessionControl::*;
+    let (hdr, off) = ReliableSessionHeader::decode_from(buf)?;
+    if hdr.kind != ReliableSessionKind::Control {
         return None;
     }
     // Guard against out-of-bounds before slicing body to avoid panics.
@@ -225,7 +225,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
     }
     let body = &buf[off..off + hdr.body_len as usize];
     let ctrl = match hdr.ctrl_kind {
-        x if x == RlmCtrlKind::Manifest as u8 => {
+        x if x == ReliableSessionCtrlKind::Manifest as u8 => {
             if body.len() < 4 + 8 {
                 return None;
             }
@@ -236,21 +236,21 @@ pub fn decode_control(buf: &[u8]) -> Option<(RlmHeader, RlmControl)> {
                 total_bytes,
             }
         }
-        x if x == RlmCtrlKind::Ready as u8 => {
+        x if x == ReliableSessionCtrlKind::Ready as u8 => {
             if body.len() < 8 {
                 return None;
             }
             let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
             Ready { node_id }
         }
-        x if x == RlmCtrlKind::Ack as u8 => {
+        x if x == ReliableSessionCtrlKind::Ack as u8 => {
             if body.len() < 8 {
                 return None;
             }
             let up_to = u64::from_be_bytes(body[0..8].try_into().ok()?);
             Ack { up_to }
         }
-        x if x == RlmCtrlKind::Eot as u8 => {
+        x if x == ReliableSessionCtrlKind::Eot as u8 => {
             if body.len() < 8 {
                 return None;
             }
@@ -271,9 +271,9 @@ mod tests {
         let payload = b"hello world";
         let buf = encode_data(42, 7, payload);
         let (hdr, data, body) = decode_data(&buf).expect("decode data");
-        assert_eq!(hdr.magic, RLM_MAGIC);
-        assert_eq!(hdr.version, RLM_VERSION);
-        assert_eq!(hdr.kind as u8, RlmKind::Data as u8);
+        assert_eq!(hdr.magic, RELIABLE_SESSION_MAGIC);
+        assert_eq!(hdr.version, RELIABLE_SESSION_VERSION);
+        assert_eq!(hdr.kind as u8, ReliableSessionKind::Data as u8);
         assert_eq!(hdr.session_id, 42);
         assert_eq!(data.index, 7);
         assert_eq!(data.payload_len as usize, payload.len());
@@ -283,13 +283,13 @@ mod tests {
     #[test]
     fn roundtrip_controls() {
         let ctrls = vec![
-            RlmControl::Manifest {
+            ReliableSessionControl::Manifest {
                 chunk_size: 4096,
                 total_bytes: 123456,
             },
-            RlmControl::Ready { node_id: 99 },
-            RlmControl::Ack { up_to: 77 },
-            RlmControl::Eot { last_index: 15 },
+            ReliableSessionControl::Ready { node_id: 99 },
+            ReliableSessionControl::Ack { up_to: 77 },
+            ReliableSessionControl::Eot { last_index: 15 },
         ];
         for ctrl in ctrls {
             let buf = encode_control(77, &ctrl);
@@ -311,8 +311,8 @@ mod tests {
         let buf = encode_data(1, 1, b"abc");
         // Corrupt payload_len to be larger than actual bytes
         let mut bad = buf.clone();
-        // RlmHeader::LEN + 8 (index) position payload_len (4 bytes)
-        let pos = RlmHeader::LEN + 8;
+        // ReliableSessionHeader::LEN + 8 (index) position payload_len (4 bytes)
+        let pos = ReliableSessionHeader::LEN + 8;
         bad[pos..pos + 4].copy_from_slice(&(9999u32.to_be_bytes()));
         assert!(decode_data(&bad).is_none());
     }
@@ -322,32 +322,32 @@ mod tests {
         // Start from a valid manifest and then truncate body bytes
         let good = encode_control(
             9,
-            &RlmControl::Manifest {
+            &ReliableSessionControl::Manifest {
                 chunk_size: 4096,
                 total_bytes: 123,
             },
         );
         let mut bad = good.clone();
         // Truncate to just header (no body)
-        bad.truncate(RlmHeader::LEN);
+        bad.truncate(ReliableSessionHeader::LEN);
         assert!(decode_control(&bad).is_none());
 
         // Ready requires 8 bytes; provide fewer
-        let ready = encode_control(1, &RlmControl::Ready { node_id: 7 });
+        let ready = encode_control(1, &ReliableSessionControl::Ready { node_id: 7 });
         let mut bad_ready = ready.clone();
-        bad_ready.truncate(RlmHeader::LEN + 4);
+        bad_ready.truncate(ReliableSessionHeader::LEN + 4);
         assert!(decode_control(&bad_ready).is_none());
 
         // Ack requires 8 bytes
-        let ack = encode_control(1, &RlmControl::Ack { up_to: 1 });
+        let ack = encode_control(1, &ReliableSessionControl::Ack { up_to: 1 });
         let mut bad_ack = ack.clone();
-        bad_ack.truncate(RlmHeader::LEN + 6);
+        bad_ack.truncate(ReliableSessionHeader::LEN + 6);
         assert!(decode_control(&bad_ack).is_none());
 
         // EOT requires 8 bytes (index only)
-        let eot = encode_control(1, &RlmControl::Eot { last_index: 42 });
+        let eot = encode_control(1, &ReliableSessionControl::Eot { last_index: 42 });
         let mut bad_eot = eot.clone();
-        bad_eot.truncate(RlmHeader::LEN + 4);
+        bad_eot.truncate(ReliableSessionHeader::LEN + 4);
         assert!(decode_control(&bad_eot).is_none());
     }
 }

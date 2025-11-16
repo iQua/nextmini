@@ -7,15 +7,15 @@ use super::session::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 pub type SessionId = u64;
 
 /// Metadata and payload extracted from inbound reliable frames. The control
-/// loop fills out peer/multicast context without re-parsing outer headers.
+/// loop fills out peer/destination context without re-parsing outer headers.
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
     /// Raw payload extracted from the transport pipeline.
     pub bytes: Vec<u8>,
     /// Optional identifier for the peer that sourced the frame.
     pub peer_id: Option<usize>,
-    /// Multicast group that the frame targeted, if any.
-    pub group_ip: Option<Ipv4Addr>,
+    /// Destination IP (unicast or multicast) for the frame, if any.
+    pub dest_ip: Option<Ipv4Addr>,
     /// Controller-assigned ID of the originating node.
     pub source_node_id: Option<usize>,
 }
@@ -27,13 +27,13 @@ impl InboundFrame {
     pub fn new(
         bytes: Vec<u8>,
         peer_id: Option<usize>,
-        group_ip: Option<Ipv4Addr>,
+        dest_ip: Option<Ipv4Addr>,
         source_node_id: Option<usize>,
     ) -> Self {
         Self {
             bytes,
             peer_id,
-            group_ip,
+            dest_ip,
             source_node_id,
         }
     }
@@ -83,8 +83,8 @@ pub enum Command {
     SetTopologyReady {
         ready: bool,
     },
-    SetGroupRoutesReady {
-        group_ip: Ipv4Addr,
+    SetDestRoutesReady {
+        dest_ip: Ipv4Addr,
         src_node_id: usize,
     },
 }
@@ -165,11 +165,10 @@ impl ReliableHandle {
     }
 
     #[allow(dead_code)]
-    /// Notify the runtime that multicast routes for (group, src) are in place.
-    pub fn set_group_routes_ready(&self, group_ip: Ipv4Addr, src_node_id: usize) {
-        let _ = self.tx.send(Command::SetGroupRoutesReady {
-            group_ip,
-            src_node_id,
-        });
+    /// Notify the runtime that destination routes for (dest, src) are in place.
+    pub fn set_dest_routes_ready(&self, dest_ip: Ipv4Addr, src_node_id: usize) {
+        let _ = self
+            .tx
+            .send(Command::SetDestRoutesReady { dest_ip, src_node_id });
     }
 }

@@ -96,7 +96,7 @@ impl ReliableUnicastFlowHandle {
 
             let common = CommonConfig {
                 session_id: sid,
-                group_ip: dst_ip,
+                dest_ip: dst_ip,
                 chunk_size: reliable_cfg.default_chunk_size,
                 src_port,
                 dst_port,
@@ -138,7 +138,7 @@ impl ReliableUnicastFlowHandle {
             }
 
             let started_sid = reliable.start_sender(sender_cfg).await;
-            reliable.set_group_routes_ready(dst_ip, cfg.node_id);
+            reliable.set_dest_routes_ready(dst_ip, cfg.node_id);
             let ok = reliable.wait_completion(started_sid).await;
 
             let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
@@ -184,7 +184,7 @@ impl ReliableUnicastFlowHandle {
 
             let common = CommonConfig {
                 session_id: sid,
-                group_ip: dst_ip,
+                dest_ip: dst_ip,
                 chunk_size: reliable_cfg.default_chunk_size,
                 src_port: cfg.user_space_client_port,
                 dst_port: cfg.user_space_server_port,

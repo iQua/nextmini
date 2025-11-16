@@ -38,7 +38,7 @@ pub struct Conductor {
     /// controller interface handle for sending custom messages upstream
     controller: ControllerInterfaceHandle,
 
-    /// reliable multicast subsystem handle (initialized but not yet wired)
+    /// reliable session subsystem handle (initialized but not yet wired)
     #[cfg(feature = "reliable")]
     reliable: ReliableHandle,
 }
@@ -96,16 +96,16 @@ impl Conductor {
                             guard.stop(session).await;
                         }
                         ReliableCommand::Deliver { session, frame } => {
-                            let group_ip = frame.group_ip;
+                            let dest_ip = frame.dest_ip;
                             let source_node_id = frame.source_node_id;
                             let (sender, pending_reply) = {
                                 let mut guard = manager.lock().await;
                                 if let Some(tx) = guard.input_sender(session) {
                                     (Some(tx), None)
-                                } else if let (Some(gip), Some(src)) = (group_ip, source_node_id) {
+                                } else if let (Some(dip), Some(src)) = (dest_ip, source_node_id) {
                                     if let Some((cfg, reply)) = guard.adopt_pending_receiver(
                                         PendingReceiverKey {
-                                            group_ip: gip,
+                                            dest_ip: dip,
                                             source_node_id: src,
                                         },
                                         session,
@@ -165,12 +165,12 @@ impl Conductor {
                             let guard = manager.lock().await;
                             guard.set_topology_ready(ready);
                         }
-                        ReliableCommand::SetGroupRoutesReady {
-                            group_ip,
+                        ReliableCommand::SetDestRoutesReady {
+                            dest_ip,
                             src_node_id,
                         } => {
                             let mut guard = manager.lock().await;
-                            guard.set_group_routes_ready(group_ip, src_node_id);
+                            guard.set_dest_routes_ready(dest_ip, src_node_id);
                         }
                     }
                 }

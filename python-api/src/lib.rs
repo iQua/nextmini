@@ -225,18 +225,18 @@ struct Dataplane {
 
 impl Dataplane {
     #[cfg(feature = "reliable")]
-    fn remember_session(&self, group_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
+    fn remember_session(&self, dest_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
         if let Ok(mut guard) = self.session_registry.lock() {
-            guard.insert((group_ip, source_node_id), session_id);
+            guard.insert((dest_ip, source_node_id), session_id);
         }
     }
 
     #[cfg(feature = "reliable")]
-    fn lookup_session(&self, group_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
+    fn lookup_session(&self, dest_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
         self.session_registry
             .lock()
             .ok()
-            .and_then(|guard| guard.get(&(group_ip, source_node_id)).copied())
+            .and_then(|guard| guard.get(&(dest_ip, source_node_id)).copied())
     }
 
     #[cfg(feature = "reliable")]
@@ -250,10 +250,10 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
+    #[pyo3(signature = (dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
     fn send_data(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         receiver_ids: Vec<usize>,
         buffer: FrozenBuffer,
         chunk_size: usize,
@@ -263,7 +263,7 @@ impl Dataplane {
         congestion: Option<String>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
-        let group_ip_addr = parse_ipv4(group_ip)?;
+        let dest_ip_addr = parse_ipv4(dest_ip)?;
         if receiver_ids.is_empty() {
             return Err(PyRuntimeError::new_err(
                 "receiver_ids must contain at least one entry.",
@@ -301,7 +301,7 @@ impl Dataplane {
                 }
                 let common = reliable_session::CommonConfig {
                     session_id: sid,
-                    group_ip: group_ip_addr,
+                    dest_ip: dest_ip_addr,
                     chunk_size,
                     src_port: sp,
                     dst_port: dp,
@@ -321,7 +321,7 @@ impl Dataplane {
                     routes_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
-                self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
+                self.remember_session(dest_ip_addr, self.cfg.node_id, started_sid);
                 return Ok(started_sid);
             }
         }
@@ -330,10 +330,10 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
+    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
     fn receive_data(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         source_node_id: usize,
         expected_bytes: u64,
         chunk_size: usize,
@@ -342,7 +342,7 @@ impl Dataplane {
         session_id: Option<u64>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
-        let ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(dest_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
@@ -366,7 +366,7 @@ impl Dataplane {
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = reliable_session::CommonConfig {
                     session_id: resolved_sid.unwrap_or(0),
-                    group_ip: ip,
+                    dest_ip: ip,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
@@ -386,7 +386,7 @@ impl Dataplane {
                     rt().block_on(handle.start_receiver(cfg))
                 } else {
                     let key = reliable_session::PendingReceiverKey {
-                        group_ip: ip,
+                        dest_ip: ip,
                         source_node_id,
                     };
                     rt().block_on(handle.start_receiver_pending(cfg, key))
@@ -457,26 +457,26 @@ impl Dataplane {
     }
 
     #[cfg(feature = "reliable")]
-    #[pyo3(signature = (group_ip, source_node_id, session_id))]
+    #[pyo3(signature = (dest_ip, source_node_id, session_id))]
     fn reliable_register_session_id(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         source_node_id: usize,
         session_id: u64,
     ) -> PyResult<()> {
-        let ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(dest_ip)?;
         self.remember_session(ip, source_node_id, session_id);
         Ok(())
     }
 
     #[cfg(feature = "reliable")]
-    #[pyo3(signature = (group_ip, source_node_id))]
+    #[pyo3(signature = (dest_ip, source_node_id))]
     fn reliable_lookup_session_id(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         source_node_id: usize,
     ) -> PyResult<Option<u64>> {
-        let ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(dest_ip)?;
         Ok(self.lookup_session(ip, source_node_id))
     }
 

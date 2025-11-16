@@ -17,7 +17,7 @@ use super::api::{InboundFrame, SessionId};
 #[derive(Clone, Debug)]
 pub struct CommonConfig {
     pub session_id: SessionId,
-    pub group_ip: Ipv4Addr,
+    pub dest_ip: Ipv4Addr,
     pub chunk_size: usize,
     pub src_port: u16,
     pub dst_port: u16,
@@ -61,10 +61,10 @@ pub struct SessionManager {
 }
 
 /// Key that allows a receiver to be created speculatively and paired once the
-/// control plane decides which session ID to use for a (group, source) tuple.
+/// control plane decides which session ID to use for a (destination, source) tuple.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PendingReceiverKey {
-    pub group_ip: Ipv4Addr,
+    pub dest_ip: Ipv4Addr,
     pub source_node_id: usize,
 }
 
@@ -100,7 +100,7 @@ impl SessionManager {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
         cfg.topology_ready = Some(self.topology_ready_tx.subscribe());
-        let route_key = (cfg.common.group_ip, cfg.common.local_node_id);
+        let route_key = (cfg.common.dest_ip, cfg.common.local_node_id);
         let routes_ready_sender = self.route_ready.entry(route_key).or_insert_with(|| {
             let (tx, _rx) = watch::channel(false);
             tx
@@ -154,9 +154,9 @@ impl SessionManager {
         let _ = self.topology_ready_tx.send(ready);
     }
 
-    /// Settle or create a group-route watch channel and mark it ready.
-    pub fn set_group_routes_ready(&mut self, group_ip: Ipv4Addr, src_node_id: usize) {
-        let key = (group_ip, src_node_id);
+    /// Settle or create a destination-route watch channel and mark it ready.
+    pub fn set_dest_routes_ready(&mut self, dest_ip: Ipv4Addr, src_node_id: usize) {
+        let key = (dest_ip, src_node_id);
         let entry = self.route_ready.entry(key).or_insert_with(|| {
             let (tx, _rx) = watch::channel(false);
             tx
@@ -178,7 +178,7 @@ impl SessionManager {
             .push_back(PendingReceiver { cfg, reply });
     }
 
-    /// Pair the next pending receiver for a (group, source) tuple with the
+    /// Pair the next pending receiver for a (destination, source) tuple with the
     /// concrete session ID chosen by the control plane.
     pub fn adopt_pending_receiver(
         &mut self,

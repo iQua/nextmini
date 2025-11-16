@@ -343,7 +343,7 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
 
-    /// Reliable multicast default configuration (used when the reliable subsystem is enabled).
+    /// Reliable session default configuration (used when the reliable subsystem is enabled).
     #[default(Default::default())]
     #[arg(skip)]
     pub reliable: ReliableConfig,
@@ -629,7 +629,7 @@ impl LocalConfig {
     }
 }
 
-/// Reliable multicast configuration knobs (consumed when the reliable subsystem is enabled).
+/// Reliable session configuration knobs (consumed when the reliable subsystem is enabled).
 #[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReliableConfig {

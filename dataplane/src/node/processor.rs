@@ -16,7 +16,7 @@ use tracing::{error, warn};
 #[cfg(feature = "reliable")]
 use nextmini_messages::INVALID;
 #[cfg(feature = "reliable")]
-use nextmini_messages::rlm;
+use nextmini_messages::reliable_session;
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
     TokenBucketSpec,
@@ -966,9 +966,9 @@ impl Processor {
         let Some(payload) = packet.tcp_payload() else {
             return false;
         };
-        let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
+        let session_id = if let Some((hdr, _, _)) = reliable_session::decode_data(payload) {
             hdr.session_id
-        } else if let Some((hdr, _)) = rlm::decode_control(payload) {
+        } else if let Some((hdr, _)) = reliable_session::decode_control(payload) {
             hdr.session_id
         } else {
             return false;
@@ -988,7 +988,7 @@ impl Processor {
             ReliableInboundFrame {
                 bytes: payload_vec,
                 peer_id,
-                group_ip: Some(packet.flow_id.dst_ip()),
+                dest_ip: Some(packet.flow_id.dst_ip()),
                 source_node_id: peer_id,
             },
         );

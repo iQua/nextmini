@@ -8,7 +8,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 
 mod ip_ser;
-pub mod rlm;
+pub mod reliable_session;
 
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
@@ -68,7 +68,7 @@ pub enum DataplaneToController {
     LeaveGroup {
         group_id: GroupId,
     },
-    /// Periodic reliable-multicast session stats from dataplane (feature-gated at source).
+    /// Periodic reliable session stats from dataplane (feature-gated at source).
     ReliableStats {
         stats: ReliableStats,
     },
@@ -108,7 +108,7 @@ pub struct RouteAssignment {
     pub time: i64,
 }
 
-/// Reliable-multicast session metrics (optional)
+/// Reliable session metrics (optional)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ReliableStats {
     pub session_id: u64,
