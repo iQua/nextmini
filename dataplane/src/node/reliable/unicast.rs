@@ -40,6 +40,8 @@ impl ReliableUnicastFlowHandle {
     /// Installs any reliable-unicast flows that target the local node (as source and/or destination).
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
+            // Flows can involve the local node as the sender, receiver, or both
+            // (loopback). Spin up whichever side matches.
             if flow.src_node_id == self.cfg.node_id {
                 self.spawn_sender(flow.clone());
             }
@@ -50,6 +52,9 @@ impl ReliableUnicastFlowHandle {
     }
 
     fn spawn_sender(&self, flow: Flow) {
+        // The controller might hand us duration-based flows that do not resolve
+        // to a byte count; we skip those early so we do not start half-baked
+        // sessions.
         let Some(total_bytes) = flow_bytes(&flow) else {
             return;
         };
@@ -85,6 +90,8 @@ impl ReliableUnicastFlowHandle {
                 }
             };
 
+            // We currently inject a fixed pattern; higher-level APIs fill the
+            // buffer before the flow is scheduled.
             let source_buffer = Bytes::from(vec![0xAAu8; total_bytes_usize]);
 
             let common = CommonConfig {
@@ -111,11 +118,16 @@ impl ReliableUnicastFlowHandle {
             };
 
             if let Some(weight) = flow.flow_spec.flow_weight {
+                // Update the processor scheduler before any packets leave the
+                // node so the control plane's prioritization takes effect
+                // immediately.
                 let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
                 processors.set_flow_weight(flow_id, weight);
             }
 
             if let Some(controller_id) = flow.controller_id {
+                // Report flow start once we know the flow ID so the controller
+                // can track successes as soon as the sender is live.
                 let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
                 flowstats.report_user_flow_start(flow_id, controller_id);
             } else {
@@ -149,6 +161,8 @@ impl ReliableUnicastFlowHandle {
     }
 
     fn spawn_receiver(&self, flow: Flow) {
+        // The receiver mirrors the sender's byte budget so the two sides agree
+        // on when to terminate.
         let Some(expected_bytes) = flow_bytes(&flow) else {
             return;
         };
@@ -195,6 +209,8 @@ impl ReliableUnicastFlowHandle {
     }
 }
 
+/// Generates a deterministic session ID for a flow so senders and receivers can
+/// rendezvous without additional signaling.
 fn session_id_for_flow(flow: &Flow) -> SessionId {
     let mut hasher = DefaultHasher::new();
     flow.controller_id.hash(&mut hasher);
@@ -205,6 +221,8 @@ fn session_id_for_flow(flow: &Flow) -> SessionId {
     raw | 0x8000_0000_0000_0000
 }
 
+/// Converts user-visible flow specs into the exact number of bytes the runtime
+/// should push across the wire.
 fn flow_bytes(flow: &Flow) -> Option<u64> {
     match flow.flow_spec.flow_len {
         FlowLen::Bytes(bytes) => Some(bytes as u64),
@@ -223,6 +241,9 @@ fn flow_bytes(flow: &Flow) -> Option<u64> {
     }
 }
 
+/// Builds a per-flow token bucket so bandwidth can be shaped in line with the
+/// controller's desired rate, falling back to the reliable defaults when no
+/// rate override was provided.
 fn bucket_from_flow_rate(
     flow_rate: Option<usize>,
     default_bucket: &Option<TokenBucketSpec>,
@@ -237,6 +258,8 @@ fn bucket_from_flow_rate(
     }
 }
 
+/// Encodes the 5-tuple identifying a unicast flow into the 128-bit identifier
+/// expected by the dataplane processor.
 fn flow_id_for_unicast(cfg: &LocalConfig, flow: &Flow, src_port: u16, dst_port: u16) -> FlowId {
     let src_ip = flow
         .src_node_id
