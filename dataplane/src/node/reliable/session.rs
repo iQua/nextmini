@@ -56,6 +56,7 @@ pub struct SessionManager {
     next_session_id: SessionId,
     pending: AHashMap<PendingReceiverKey, VecDeque<PendingReceiver>>,
     topology_ready_tx: watch::Sender<bool>,
+    topology_ready: bool,
 }
 
 /// Key that allows a receiver to be created speculatively and paired once the
@@ -88,16 +89,23 @@ impl SessionManager {
             next_session_id: 1,
             pending: AHashMap::default(),
             topology_ready_tx,
+            topology_ready: false,
         }
     }
 
     /// Spawn a sender task, wiring up control-plane readiness watchers and
     /// returning its assigned session ID.
-    pub fn spawn_sender(&mut self, cfg: SenderConfig) -> SessionId {
+    pub fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 
-        let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
+        if self.topology_ready {
+            cfg.topology_ready = None;
+        } else {
+            cfg.topology_ready = Some(self.topology_ready_tx.subscribe());
+        }
+
+        let (tx, rx) = mpsc::channel(1024);
         self.inputs.insert(sid, tx);
 
         let handle = tokio::spawn(super::sender::run(cfg, rx, processors));
@@ -143,7 +151,8 @@ impl SessionManager {
     }
 
     /// Broadcast topology readiness so all senders may advance their state gates.
-    pub fn set_topology_ready(&self, ready: bool) {
+    pub fn set_topology_ready(&mut self, ready: bool) {
+        self.topology_ready = ready;
         let _ = self.topology_ready_tx.send(ready);
     }
 

@@ -153,7 +153,7 @@ impl Conductor {
                             let _ = reply.send(sid);
                         }
                         ReliableCommand::SetTopologyReady { ready } => {
-                            let guard = manager.lock().await;
+                            let mut guard = manager.lock().await;
                             guard.set_topology_ready(ready);
                         }
                     }
