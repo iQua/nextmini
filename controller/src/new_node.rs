@@ -137,9 +137,11 @@ async fn maybe_broadcast_topology_ready(
         && locally_ready_nodes.len() == expected_node_count
     {
         *topology_ready_sent = true;
+
         info!(
             "All dataplane nodes have finished wiring their topologies. Broadcasting topology-ready signal."
         );
+
         send_topology_ready(node_ws).await;
     }
 }

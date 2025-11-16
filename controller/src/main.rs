@@ -118,7 +118,7 @@ async fn handle_connection(
     db_pool: Arc<Pool<Postgres>>,
     config: Config,
     node_ws: NodeWriterMap,
-    new_node_connected_sender: broadcast::Sender<NodeConnectedEvent>,
+    new_node_connected_sender: broadcast::Sender<TopologyEvent>,
 ) {
     let write_arc = Arc::new(Mutex::new(write));
     let mut current_node_id = None;
