@@ -36,7 +36,8 @@ mod tests {
         let mut progress: BTreeMap<usize, u64> = BTreeMap::new();
         progress.insert(7, 2);
 
-        let updated = update_receiver_progress(7, &ReliableSessionControl::Ack { up_to: 5 }, &mut progress);
+        let updated =
+            update_receiver_progress(7, &ReliableSessionControl::Ack { up_to: 5 }, &mut progress);
 
         assert_eq!(updated, Some(5));
         assert_eq!(progress.get(&7).copied(), Some(5));
@@ -47,11 +48,16 @@ mod tests {
         let mut progress: BTreeMap<usize, u64> = BTreeMap::new();
         progress.insert(1, 4);
 
-        let regression = update_receiver_progress(1, &ReliableSessionControl::Ack { up_to: 2 }, &mut progress);
+        let regression =
+            update_receiver_progress(1, &ReliableSessionControl::Ack { up_to: 2 }, &mut progress);
         assert!(regression.is_none());
         assert_eq!(progress.get(&1).copied(), Some(4));
 
-        let missing = update_receiver_progress(99, &ReliableSessionControl::Ack { up_to: 10 }, &mut progress);
+        let missing = update_receiver_progress(
+            99,
+            &ReliableSessionControl::Ack { up_to: 10 },
+            &mut progress,
+        );
         assert!(missing.is_none());
         assert!(!progress.contains_key(&99));
     }

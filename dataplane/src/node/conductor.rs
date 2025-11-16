@@ -1,6 +1,9 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
+use std::sync::Arc;
+
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{info, warn};
 
 use nextmini_messages::Protocol;
@@ -14,14 +17,8 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-#[cfg(feature = "reliable")]
 use crate::node::reliable::api::{Command as ReliableCommand, ReliableHandle};
-#[cfg(feature = "reliable")]
 use crate::node::reliable::session::{PendingReceiverKey, SessionManager};
-#[cfg(feature = "reliable")]
-use std::sync::Arc;
-#[cfg(feature = "reliable")]
-use tokio::sync::Mutex as AsyncMutex;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -39,23 +36,17 @@ pub struct Conductor {
     controller: ControllerInterfaceHandle,
 
     /// reliable session subsystem handle (initialized but not yet wired)
-    #[cfg(feature = "reliable")]
     reliable: ReliableHandle,
 }
 
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
         // Initialize reliable subsystem handle (command loop wiring to follow).
-        #[cfg(feature = "reliable")]
         let (reliable, rx) = ReliableHandle::new();
 
         // connects the processors with its downstream local interface writers to send packets out
-        #[cfg(feature = "reliable")]
         let (controller_interface, reporter, flowstats_reporter) =
             ControllerInterfaceHandle::new(config.clone(), Some(reliable.clone())).await;
-        #[cfg(not(feature = "reliable"))]
-        let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone()).await;
 
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
@@ -63,10 +54,8 @@ impl Conductor {
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
-        #[cfg(feature = "reliable")]
         processors.connect_reliable_handle(reliable.clone());
 
-        #[cfg(feature = "reliable")]
         {
             let processors_for_mgr = processors.clone();
             let mut_rx = rx;
@@ -184,7 +173,6 @@ impl Conductor {
             processors,
             reporter,
             controller: controller_interface,
-            #[cfg(feature = "reliable")]
             reliable,
         }
     }
@@ -340,10 +328,9 @@ impl Conductor {
         self.controller.clone()
     }
 
-    /// Returns a clone of the reliable handle when the `reliable` feature is enabled.
-    #[cfg(feature = "reliable")]
+    /// Returns a clone of the reliable handle for language bindings.
     #[allow(dead_code)]
-    pub fn reliable_handle(&self) -> Option<crate::node::reliable::api::ReliableHandle> {
-        Some(self.reliable.clone())
+    pub fn reliable_handle(&self) -> crate::node::reliable::api::ReliableHandle {
+        self.reliable.clone()
     }
 }

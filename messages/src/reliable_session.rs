@@ -164,7 +164,11 @@ pub fn decode_data(buf: &[u8]) -> Option<(ReliableSessionHeader, ReliableSession
     if payload_end > buf.len() {
         return None;
     }
-    Some((hdr, ReliableSessionData { index, payload_len }, &buf[pos..payload_end]))
+    Some((
+        hdr,
+        ReliableSessionData { index, payload_len },
+        &buf[pos..payload_end],
+    ))
 }
 
 /// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.

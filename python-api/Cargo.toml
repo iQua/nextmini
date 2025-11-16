@@ -21,7 +21,6 @@ nextmini = { path = "../dataplane", package = "nextmini" }
 nextmini-messages = { path = "../messages", package = "nextmini-messages" }
 
 [features]
-default = ["reliable", "python-extension"]
+default = ["python-extension"]
 python-extension = ["pyo3/extension-module"]
 dev-tests = ["pyo3/auto-initialize"]
-reliable = ["nextmini/reliable"]

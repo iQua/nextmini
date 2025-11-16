@@ -167,8 +167,9 @@ impl ReliableHandle {
     #[allow(dead_code)]
     /// Notify the runtime that destination routes for (dest, src) are in place.
     pub fn set_dest_routes_ready(&self, dest_ip: Ipv4Addr, src_node_id: usize) {
-        let _ = self
-            .tx
-            .send(Command::SetDestRoutesReady { dest_ip, src_node_id });
+        let _ = self.tx.send(Command::SetDestRoutesReady {
+            dest_ip,
+            src_node_id,
+        });
     }
 }

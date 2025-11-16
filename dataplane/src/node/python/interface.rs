@@ -11,9 +11,10 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{error, warn};
 
+use nextmini_messages::{GroupDirectoryEntry, GroupId, GroupRoutingTableEntry};
+
 use crate::node::packet::Packet;
 use crate::node::{FlowId, FlowIdExt, NodeId};
-use nextmini_messages::{GroupDirectoryEntry, GroupId, GroupRoutingTableEntry};
 
 #[derive(Clone)]
 /// Shared entry point used by the dataplane to push packets or payloads toward

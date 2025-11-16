@@ -10,7 +10,6 @@ pub mod network;
 pub mod packet;
 pub mod processor;
 pub mod python;
-#[cfg(feature = "reliable")]
 pub mod reliable;
 pub mod route;
 pub mod scheduler;

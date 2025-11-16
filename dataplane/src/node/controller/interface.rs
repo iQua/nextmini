@@ -24,9 +24,7 @@ use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
-#[cfg(feature = "reliable")]
 use crate::node::reliable::api::ReliableHandle;
-#[cfg(feature = "reliable")]
 use crate::node::reliable::unicast::ReliableUnicastFlowHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
@@ -42,7 +40,7 @@ pub struct ControllerInterfaceHandle {
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-        #[cfg(feature = "reliable")] reliable: Option<ReliableHandle>,
+        reliable: Option<ReliableHandle>,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
@@ -93,7 +91,6 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
-        #[cfg(feature = "reliable")]
         let reliable_unicast = reliable.clone().map(|handle| {
             ReliableUnicastFlowHandle::new(
                 config.clone(),
@@ -111,11 +108,8 @@ impl ControllerInterfaceHandle {
             user_space_client,
             user_space_server,
             python_interface,
-            #[cfg(feature = "reliable")]
             reliable,
-            #[cfg(feature = "reliable")]
             group_ip_by_id: HashMap::new(),
-            #[cfg(feature = "reliable")]
             reliable_unicast,
         };
 
@@ -277,11 +271,8 @@ pub struct ControllerToDataplaneReceiver {
     user_space_server: UserSpaceServerHandle,
 
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
-    #[cfg(feature = "reliable")]
     reliable: Option<ReliableHandle>,
-    #[cfg(feature = "reliable")]
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
-    #[cfg(feature = "reliable")]
     reliable_unicast: Option<ReliableUnicastFlowHandle>,
 }
 
@@ -366,7 +357,6 @@ impl ControllerToDataplaneReceiver {
 
             ControllerToDataplane::AddFlows { flows } => {
                 let mut tcp_client_flows = Vec::new();
-                #[cfg(feature = "reliable")]
                 let mut reliable_flows = Vec::new();
 
                 for flow in &flows {
@@ -382,20 +372,10 @@ impl ControllerToDataplaneReceiver {
                             }
                         }
                         FlowTransport::ReliableUnicast => {
-                            #[cfg(feature = "reliable")]
+                            if flow.src_node_id == self.config.node_id
+                                || flow.dst_node_id == self.config.node_id
                             {
-                                if flow.src_node_id == self.config.node_id
-                                    || flow.dst_node_id == self.config.node_id
-                                {
-                                    reliable_flows.push(flow.clone());
-                                }
-                            }
-                            #[cfg(not(feature = "reliable"))]
-                            {
-                                warn!(
-                                    "Node {} received reliable flow {:?}->{:?} but reliable support is disabled.",
-                                    self.config.node_id, flow.src_node_id, flow.dst_node_id
-                                );
+                                reliable_flows.push(flow.clone());
                             }
                         }
                     }
@@ -410,7 +390,6 @@ impl ControllerToDataplaneReceiver {
                     self.user_space_client.add_flows(tcp_client_flows);
                 }
 
-                #[cfg(feature = "reliable")]
                 if !reliable_flows.is_empty() {
                     if let Some(handle) = &self.reliable_unicast {
                         handle.add_flows(reliable_flows);
@@ -428,16 +407,13 @@ impl ControllerToDataplaneReceiver {
                     "Controller signaled that all nodes are connected; topology state is ready on node {}.",
                     self.config.node_id
                 );
-                #[cfg(feature = "reliable")]
-                {
-                    if let Some(handle) = &self.reliable {
-                        handle.set_topology_ready(true);
-                    } else {
-                        warn!(
-                            "TopologyReady received but reliable subsystem is not attached on node {}.",
-                            self.config.node_id
-                        );
-                    }
+                if let Some(handle) = &self.reliable {
+                    handle.set_topology_ready(true);
+                } else {
+                    warn!(
+                        "TopologyReady received but reliable subsystem is not attached on node {}.",
+                        self.config.node_id
+                    );
                 }
             }
 
@@ -469,12 +445,9 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
                 self.processors.update_group_directory(groups.clone()).await;
-                #[cfg(feature = "reliable")]
-                {
-                    self.group_ip_by_id.clear();
-                    for entry in &groups {
-                        self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
-                    }
+                self.group_ip_by_id.clear();
+                for entry in &groups {
+                    self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
                 }
 
                 if let Some(py_if) = self.python_handle().await {
@@ -501,17 +474,14 @@ impl ControllerToDataplaneReceiver {
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
 
-                #[cfg(feature = "reliable")]
-                {
-                    if let Some(handle) = &self.reliable {
-                        if let Some(ip) = self.group_ip_by_id.get(&group_id) {
-                            handle.set_dest_routes_ready(*ip, src_node_id);
-                        } else {
-                            warn!(
-                                "InstallGroupRoutes received for unknown group {}; reliable senders may block.",
-                                group_id
-                            );
-                        }
+                if let Some(handle) = &self.reliable {
+                    if let Some(ip) = self.group_ip_by_id.get(&group_id) {
+                        handle.set_dest_routes_ready(*ip, src_node_id);
+                    } else {
+                        warn!(
+                            "InstallGroupRoutes received for unknown group {}; reliable senders may block.",
+                            group_id
+                        );
                     }
                 }
 

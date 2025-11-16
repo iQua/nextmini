@@ -375,7 +375,11 @@ impl SenderState {
 
     /// Encode and hand off a chunk to the processor, updating accounting.
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
-        let frame = Bytes::from(reliable_session::encode_data(self.session_id, chunk.index, &chunk.data));
+        let frame = Bytes::from(reliable_session::encode_data(
+            self.session_id,
+            chunk.index,
+            &chunk.data,
+        ));
 
         let chunk_bytes = chunk.data.len() as u64;
         self.bytes_sent += chunk_bytes;
@@ -477,8 +481,7 @@ impl SenderState {
                 if !self.receiver_progress.contains_key(&from_node) {
                     warn!(
                         session_id = self.session_id,
-                        from_node,
-                        "Reliable sender: ignoring ACK from unexpected node"
+                        from_node, "Reliable sender: ignoring ACK from unexpected node"
                     );
                     return;
                 }

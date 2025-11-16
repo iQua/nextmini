@@ -1,11 +1,11 @@
 mod buffer;
 
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
@@ -31,12 +31,12 @@ use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
     PythonEvent, PythonInterfaceHandle,
 };
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini::node::reliable::session as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
 
 pub use crate::buffer::FrozenBuffer;
@@ -44,7 +44,7 @@ pub use crate::buffer::FrozenBuffer;
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
 
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 type BufferRegistry = Arc<StdMutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
 
 fn rt() -> &'static tokio::runtime::Runtime {
@@ -215,23 +215,23 @@ struct Dataplane {
     processor: ProcessorHandle,
     controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     reliable: Option<RustReliableHandle>,
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
 }
 
 impl Dataplane {
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     fn remember_session(&self, dest_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
         if let Ok(mut guard) = self.session_registry.lock() {
             guard.insert((dest_ip, source_node_id), session_id);
         }
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     fn lookup_session(&self, dest_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
         self.session_registry
             .lock()
@@ -239,7 +239,7 @@ impl Dataplane {
             .and_then(|guard| guard.get(&(dest_ip, source_node_id)).copied())
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
         if let Ok(mut guard) = self.buffer_registry.lock() {
             guard.insert(session_id, buf);
@@ -283,7 +283,7 @@ impl Dataplane {
 
         #[allow(unused_variables)]
         let mut sid = session_id.unwrap_or_else(next_py_message_id);
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
@@ -352,7 +352,7 @@ impl Dataplane {
         }
 
         let sid = session_id.unwrap_or_else(next_py_message_id);
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
@@ -402,7 +402,7 @@ impl Dataplane {
 
     #[pyo3(signature = (session_id, timeout_ms=None))]
     fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
                 let fut = handle.wait_completion(session_id);
@@ -424,7 +424,7 @@ impl Dataplane {
         Ok(false)
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id, consume=true))]
     fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
         let buf_arc = {
@@ -456,7 +456,7 @@ impl Dataplane {
         Ok(FrozenBuffer::from_bytes(bytes))
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     #[pyo3(signature = (dest_ip, source_node_id, session_id))]
     fn reliable_register_session_id(
         &self,
@@ -469,7 +469,7 @@ impl Dataplane {
         Ok(())
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     #[pyo3(signature = (dest_ip, source_node_id))]
     fn reliable_lookup_session_id(
         &self,
@@ -496,7 +496,7 @@ impl Dataplane {
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
 
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         let reliable = conductor.reliable_handle();
 
         // enters the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new() succeeds
@@ -513,9 +513,9 @@ impl Dataplane {
             conductor.run().await;
         });
 
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         let session_registry = Arc::new(StdMutex::new(HashMap::new()));
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         let buffer_registry = Arc::new(StdMutex::new(HashMap::new()));
 
         Ok(Self {
@@ -524,11 +524,11 @@ impl Dataplane {
             processor,
             controller,
             _join: join,
-            #[cfg(feature = "reliable")]
-            reliable,
-            #[cfg(feature = "reliable")]
+            #[cfg(feature = "python-extension")]
+            reliable: Some(reliable),
+            #[cfg(feature = "python-extension")]
             session_registry,
-            #[cfg(feature = "reliable")]
+            #[cfg(feature = "python-extension")]
             buffer_registry,
         })
     }

@@ -47,5 +47,4 @@ rtnetlink = "0.18"
 nix = { version = "0.30", features = ["sched", "hostname", "fs"] }
 
 [features]
-default = ["reliable"]
-reliable = []
+default = []

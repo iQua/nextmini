@@ -310,7 +310,10 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
 
     let payload = Bytes::copy_from_slice(ctx.body);
     if ctx.pending.insert(idx, payload) {
-        trace!(chunk_index = idx, "Reliable receiver: chunk stored for ordering");
+        trace!(
+            chunk_index = idx,
+            "Reliable receiver: chunk stored for ordering"
+        );
     }
 
     let ready_chunks = ctx.pending.take_contiguous_from(ctx.expected);
