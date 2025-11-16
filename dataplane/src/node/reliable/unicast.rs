@@ -116,7 +116,6 @@ impl ReliableUnicastFlowHandle {
                 source_buffer,
                 ready_grace_ms: reliable_cfg.ready_grace_ms,
                 topology_ready: None,
-                routes_ready: None,
             };
 
             if let Some(weight) = flow.flow_spec.flow_weight {

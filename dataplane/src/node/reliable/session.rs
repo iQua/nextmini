@@ -37,7 +37,6 @@ pub struct SenderConfig {
     pub source_buffer: Bytes,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
-    pub routes_ready: Option<watch::Receiver<bool>>,
 }
 
 /// Receiver-only configuration (source node, expected bytes, sink path, etc.).

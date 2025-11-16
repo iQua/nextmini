@@ -307,7 +307,6 @@ impl Dataplane {
                     source_buffer: buffer.inner.clone(),
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
                     topology_ready: None,
-                    routes_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
                 self.remember_session(dest_ip_addr, self.cfg.node_id, started_sid);
