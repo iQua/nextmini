@@ -58,7 +58,8 @@ pub enum ProcessorMessage {
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
-    #[allow(dead_code)] // Only emitted when the python bridge is active.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     ConnectPythonInterface(PythonInterfaceHandle),
     ConnectReliableHandle(ReliableHandle),
 }
@@ -130,7 +131,8 @@ impl ProcessorHandle {
     }
 
     /// Connects the in-process Python interface so local packets can be delivered directly.
-    #[allow(dead_code)] // Only invoked from the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn connect_python_interface(&self, interface: PythonInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -833,6 +835,7 @@ impl Processor {
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
             }
+            #[cfg(feature = "python-extension")]
             ProcessorMessage::ConnectPythonInterface(interface) => {
                 self.python_interface = Some(interface);
             }

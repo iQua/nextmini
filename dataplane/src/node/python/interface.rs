@@ -45,6 +45,7 @@ struct ReceiverEntry {
 }
 
 /// Payload delivery to Python receivers (previously supported Raw packets, now payload-only)
+#[allow(dead_code)]
 pub type PythonDelivery = PayloadDelivery;
 
 #[derive(Clone, Debug)]

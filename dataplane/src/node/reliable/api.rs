@@ -20,37 +20,16 @@ pub struct InboundFrame {
     pub source_node_id: Option<usize>,
 }
 
-impl InboundFrame {
-    #[allow(dead_code)]
-    /// Helper used by tests to fabricate inbound frames without having to plumb
-    /// every field in call sites.
-    pub fn new(
-        bytes: Vec<u8>,
-        peer_id: Option<usize>,
-        dest_ip: Option<Ipv4Addr>,
-        source_node_id: Option<usize>,
-    ) -> Self {
-        Self {
-            bytes,
-            peer_id,
-            dest_ip,
-            source_node_id,
-        }
-    }
-}
-
 /// Thin handle that lets callers enqueue commands for the reliable runtime
 /// task (sender/receiver lifecycle, frame delivery, etc.).
 #[derive(Clone, Debug)]
 pub struct ReliableHandle {
-    #[allow(dead_code)]
     tx: mpsc::UnboundedSender<Command>,
 }
 
 /// Commands processed by the reliable runtime event loop. Most commands are
 /// async (reply over oneshot) so the caller can await session IDs or
 /// completion state.
-#[allow(dead_code)]
 pub enum Command {
     StartSender {
         cfg: SenderConfig,
@@ -60,6 +39,7 @@ pub enum Command {
         cfg: ReceiverConfig,
         reply: oneshot::Sender<SessionId>,
     },
+    #[allow(dead_code)]
     StartReceiverPending {
         cfg: ReceiverConfig,
         key: PendingReceiverKey,
@@ -77,6 +57,7 @@ pub enum Command {
         session: SessionId,
         reply: oneshot::Sender<bool>,
     },
+    #[allow(dead_code)]
     AllocateSession {
         reply: oneshot::Sender<SessionId>,
     },
@@ -96,7 +77,6 @@ impl ReliableHandle {
         (Self { tx }, rx)
     }
 
-    #[allow(dead_code)]
     /// Request that the runtime spin up a sender session with the supplied
     /// configuration and return its session ID.
     pub async fn start_sender(&self, cfg: SenderConfig) -> SessionId {
@@ -105,7 +85,6 @@ impl ReliableHandle {
         rx.await.expect("start_sender reply")
     }
 
-    #[allow(dead_code)]
     /// Request that the runtime spin up a receiver immediately.
     pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
         let (tx, rx) = oneshot::channel();
@@ -113,9 +92,9 @@ impl ReliableHandle {
         rx.await.expect("start_receiver reply")
     }
 
-    #[allow(dead_code)]
     /// Request that the runtime stage a receiver that will be paired once the
     /// control-plane assigns a session ID (pending receivers cover this race).
+    #[allow(dead_code)]
     pub async fn start_receiver_pending(
         &self,
         cfg: ReceiverConfig,
@@ -130,19 +109,16 @@ impl ReliableHandle {
         rx.await.expect("start_receiver_pending reply")
     }
 
-    #[allow(dead_code)]
     /// Cancel a session regardless of whether it is a sender or receiver.
     pub fn stop(&self, session: SessionId) {
         let _ = self.tx.send(Command::Stop { session });
     }
 
-    #[allow(dead_code)]
     /// Deliver an inbound reliable frame to the owning session's queue.
     pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
         let _ = self.tx.send(Command::Deliver { session, frame });
     }
 
-    #[allow(dead_code)]
     /// Wait until the runtime observes completion (EOT/ACKs) for a session.
     pub async fn wait_completion(&self, session: SessionId) -> bool {
         let (tx, rx) = oneshot::channel();
@@ -150,21 +126,19 @@ impl ReliableHandle {
         rx.await.unwrap_or(false)
     }
 
-    #[allow(dead_code)]
     /// Reserve the next session identifier from the runtime's allocator.
+    #[allow(dead_code)]
     pub async fn allocate_session_id(&self) -> SessionId {
         let (tx, rx) = oneshot::channel();
         let _ = self.tx.send(Command::AllocateSession { reply: tx });
         rx.await.expect("allocate_session_id reply")
     }
 
-    #[allow(dead_code)]
     /// Notify the runtime that the control plane finished installing topology.
     pub fn set_topology_ready(&self, ready: bool) {
         let _ = self.tx.send(Command::SetTopologyReady { ready });
     }
 
-    #[allow(dead_code)]
     /// Notify the runtime that destination routes for (dest, src) are in place.
     pub fn set_dest_routes_ready(&self, dest_ip: Ipv4Addr, src_node_id: usize) {
         let _ = self.tx.send(Command::SetDestRoutesReady {

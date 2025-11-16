@@ -351,7 +351,8 @@ pub struct LocalConfig {
 
 impl LocalConfig {
     /// Creates a `LocalConfig` from a TOML string while applying ClapSerde defaults.
-    #[allow(dead_code)] // Parsed from the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
         let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
         Ok(LocalConfig::from(&mut opt))

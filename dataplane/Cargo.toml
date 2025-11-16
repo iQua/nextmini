@@ -48,3 +48,4 @@ nix = { version = "0.30", features = ["sched", "hostname", "fs"] }
 
 [features]
 default = []
+python-extension = []

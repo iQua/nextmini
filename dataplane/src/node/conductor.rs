@@ -33,9 +33,13 @@ pub struct Conductor {
     reporter: ControllerReporterHandle,
 
     /// controller interface handle for sending custom messages upstream
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     controller: ControllerInterfaceHandle,
 
     /// reliable session subsystem handle (initialized but not yet wired)
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     reliable: ReliableHandle,
 }
 
@@ -172,7 +176,9 @@ impl Conductor {
             local_interface,
             processors,
             reporter,
+            #[cfg(feature = "python-extension")]
             controller: controller_interface,
+            #[cfg(feature = "python-extension")]
             reliable,
         }
     }
@@ -309,26 +315,30 @@ impl Conductor {
     }
 
     /// Returns a clone of the processor handle so external callers can attach additional interfaces.
-    #[allow(dead_code)] // Consumed by the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn processor_handle(&self) -> ProcessorHandle {
         // Used by the optional `nextmini_py` extension to wire the in-process interface.
         self.processors.clone()
     }
 
     /// Exposes the loaded `LocalConfig`, useful when bridging with language bindings.
-    #[allow(dead_code)] // Consumed by the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn local_config(&self) -> LocalConfig {
         // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
         self.config.clone()
     }
 
     /// Exposes a controller handle so bindings can emit DataplaneToController messages.
+    #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn controller_handle(&self) -> ControllerInterfaceHandle {
         self.controller.clone()
     }
 
     /// Returns a clone of the reliable handle for language bindings.
+    #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn reliable_handle(&self) -> crate::node::reliable::api::ReliableHandle {
         self.reliable.clone()

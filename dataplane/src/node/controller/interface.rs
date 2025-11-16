@@ -201,6 +201,7 @@ impl ControllerInterfaceHandle {
         };
     }
 
+    #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub async fn attach_python_interface(&self, interface: PythonInterfaceHandle) {
         let mut guard = self.python_interface.lock().await;
