@@ -50,6 +50,10 @@ pub enum DataplaneToController {
     FlowFinished {
         flows: Vec<FlowFinishedInfo>,
     },
+    /// Indicates that a dataplane node has finished wiring its local topology.
+    NodeTopologyReady {
+        node_id: usize,
+    },
     UserFlowStart {
         flows: Vec<UserFlowStart>,
     },

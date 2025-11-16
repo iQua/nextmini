@@ -108,6 +108,7 @@ impl ControllerInterfaceHandle {
         );
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
+            controller: controller_interface.clone(),
             config: config.clone(),
             receiver_stream,
             processors: processors.clone(),
@@ -122,6 +123,11 @@ impl ControllerInterfaceHandle {
             topology_ready: false,
             pending_tcp_flows: Vec::new(),
             pending_reliable_flows: Vec::new(),
+            expected_neighbor_count: 0,
+            connected_neighbor_count: 0,
+            routes_installed: false,
+            group_directory_installed: false,
+            local_topology_ready_sent: false,
         };
 
         tokio::spawn(async move {
@@ -271,6 +277,7 @@ impl DataplaneToControllerSender {
 
 /// An actor used for receiving messages from the controller and broadcasts them to the processors.
 pub struct ControllerToDataplaneReceiver {
+    controller: ControllerInterfaceHandle,
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
@@ -291,6 +298,11 @@ pub struct ControllerToDataplaneReceiver {
     topology_ready: bool,
     pending_tcp_flows: Vec<Flow>,
     pending_reliable_flows: Vec<Flow>,
+    expected_neighbor_count: usize,
+    connected_neighbor_count: usize,
+    routes_installed: bool,
+    group_directory_installed: bool,
+    local_topology_ready_sent: bool,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -330,6 +342,8 @@ impl ControllerToDataplaneReceiver {
                 remote_addr,
             } => {
                 // creates a new persistent TCP connection to the remote node
+                self.expected_neighbor_count += 1;
+
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
@@ -342,6 +356,8 @@ impl ControllerToDataplaneReceiver {
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
                 let _ = self.processors.add_node(remote_node_id, scheduler);
+
+                self.record_neighbor_connected(remote_node_id).await;
             }
 
             ControllerToDataplane::AddNodeAddress {
@@ -370,6 +386,8 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.processors.update_routing_table(routes).await;
+                self.routes_installed = true;
+                self.maybe_send_local_topology_ready().await;
             }
 
             ControllerToDataplane::AddFlows { flows } => {
@@ -483,6 +501,9 @@ impl ControllerToDataplaneReceiver {
                         .publish_event(PythonEvent::GroupDirectoryUpdated { entries: groups })
                         .await;
                 }
+
+                self.group_directory_installed = true;
+                self.maybe_send_local_topology_ready().await;
             }
 
             ControllerToDataplane::InstallGroupRoutes {
@@ -533,6 +554,44 @@ impl ControllerToDataplaneReceiver {
 
             _ => error!("Received a message with an unknown type from the controller."),
         }
+    }
+
+    async fn record_neighbor_connected(&mut self, remote_node_id: usize) {
+        self.connected_neighbor_count += 1;
+        info!(
+            "Dataplane node {} connected to neighbor {} ({}/{} ready).",
+            self.config.node_id,
+            remote_node_id,
+            self.connected_neighbor_count,
+            self.expected_neighbor_count
+        );
+        self.maybe_send_local_topology_ready().await;
+    }
+
+    async fn maybe_send_local_topology_ready(&mut self) {
+        if self.local_topology_ready_sent {
+            return;
+        }
+
+        if self.connected_neighbor_count < self.expected_neighbor_count {
+            return;
+        }
+
+        if !self.routes_installed || !self.group_directory_installed {
+            return;
+        }
+
+        self.local_topology_ready_sent = true;
+        info!(
+            "Local topology ready on node {}; notifying controller.",
+            self.config.node_id
+        );
+
+        self.controller
+            .send(DataplaneToController::NodeTopologyReady {
+                node_id: self.config.node_id,
+            })
+            .await;
     }
 
     fn start_tcp_flows(&mut self, flows: Vec<Flow>) {

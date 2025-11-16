@@ -31,7 +31,7 @@ use crate::db::{
     setup_route_notification,
 };
 use crate::models::{DbGroupRoute, DbRoute, Node, Route};
-use crate::new_node::{NodeConnectedEvent, new_node_connected};
+use crate::new_node::{NodeConnectedEvent, TopologyEvent, new_node_connected};
 use crate::utils::{
     StartupResponseParams, build_group_routes_for_node, build_routes_for_node,
     build_startup_response,
@@ -62,7 +62,7 @@ async fn main() {
 
     // Set up a channel for a background task to process the event as a new node connects
     let (new_node_connected_sender, new_node_connected_receiver) =
-        broadcast::channel::<NodeConnectedEvent>(100);
+        broadcast::channel::<TopologyEvent>(100);
 
     // Spawn the centralized node connection coordinator
     tokio::spawn(new_node_connected(
@@ -442,10 +442,12 @@ async fn handle_connection(
                             node_id, connected_node_count
                         );
 
-                        let _ = new_node_connected_sender.send(NodeConnectedEvent {
-                            node_id,
-                            connected_node_count,
-                        });
+                        let _ = new_node_connected_sender.send(TopologyEvent::NodeConnected(
+                            NodeConnectedEvent {
+                                node_id,
+                                connected_node_count,
+                            },
+                        ));
                     }
 
                     DataplaneToController::Metrics { metrics } => {
@@ -478,6 +480,28 @@ async fn handle_connection(
                                 "Received metrics but no node ID is associated with this connection."
                             );
                         }
+                    }
+                    DataplaneToController::NodeTopologyReady { node_id } => {
+                        let Some(registered_id) = current_node_id else {
+                            warn!("NodeTopologyReady received before node registration; ignoring.");
+                            continue;
+                        };
+
+                        if registered_id != node_id {
+                            warn!(
+                                "Node {} reported NodeTopologyReady for {}; using registered ID.",
+                                registered_id, node_id
+                            );
+                        }
+
+                        info!(
+                            "Dataplane node {} reports its local topology is ready.",
+                            registered_id
+                        );
+
+                        let _ = new_node_connected_sender.send(TopologyEvent::NodeLocallyReady {
+                            node_id: registered_id,
+                        });
                     }
                     DataplaneToController::UserFlowStart { flows } => {
                         for flow_start in flows {
