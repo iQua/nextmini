@@ -186,10 +186,9 @@ pub async fn run(
     }
 }
 
-
-/// Encapsulates all mutable sender-side state (window, inflight map, pacing,
-/// manifest timing, etc.). Keeping the logic centralized makes the event loop
-/// above easier to read and test.
+/// Encapsulates all mutable sender-side state (window, inflight accounting,
+/// pacing, manifest timing, etc.). Keeping the logic centralized makes the event
+/// loop above easier to read and test.
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
@@ -198,7 +197,8 @@ struct SenderState {
     window: usize,
     total_chunks: u64,
     total_bytes: u64,
-    inflight: BTreeMap<u64, HashSet<usize>>,
+    receiver_progress: BTreeMap<usize, u64>,
+    retired_up_to: u64,
     ready_nodes: HashSet<usize>,
     routes_gate_open: bool,
     topology_gate_open: bool,
@@ -241,6 +241,10 @@ impl SenderState {
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.group_ip;
         let base_window = compute_window(&cfg);
+        let mut receiver_progress = BTreeMap::new();
+        for node_id in &cfg.receiver_ids {
+            receiver_progress.insert(*node_id, 0);
+        }
 
         if cfg.common.control_weight != 0 {
             tracing::debug!(
@@ -250,7 +254,7 @@ impl SenderState {
             );
         }
 
-        Self {
+        let mut state = Self {
             session_id: common.session_id,
             common,
             receiver_count,
@@ -258,7 +262,8 @@ impl SenderState {
             window: base_window,
             total_chunks,
             total_bytes: cfg.total_bytes,
-            inflight: BTreeMap::new(),
+            receiver_progress,
+            retired_up_to: 0,
             ready_nodes: HashSet::new(),
             routes_gate_open,
             topology_gate_open,
@@ -278,7 +283,9 @@ impl SenderState {
             dst_port: cfg.common.dst_port,
             manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             manifest_last_sent: Instant::now(),
-        }
+        };
+        state.update_retired_up_to();
+        state
     }
 
     fn send_manifest(&mut self, processors: &ProcessorHandle) {
@@ -313,7 +320,11 @@ impl SenderState {
     }
 
     fn inflight_len(&self) -> usize {
-        self.inflight.len()
+        self.outstanding_chunks() as usize
+    }
+
+    fn outstanding_chunks(&self) -> u64 {
+        self.primary_chunks.saturating_sub(self.retired_up_to)
     }
 
     fn should_resend_manifest(&self) -> bool {
@@ -339,9 +350,9 @@ impl SenderState {
 
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
-        self.inflight.entry(chunk.index).or_default();
         self.bytes_sent += chunk.data.len() as u64;
         self.primary_chunks += 1;
+        self.update_retired_up_to();
         tracing::debug!(
             session_id = self.session_id,
             chunk_index = chunk.index,
@@ -353,12 +364,29 @@ impl SenderState {
         self.send_frame(&frame, processors);
     }
 
+    fn update_retired_up_to(&mut self) {
+        if self.receiver_count == 0 {
+            self.retired_up_to = self.primary_chunks;
+            return;
+        }
+        if self.receiver_progress.is_empty() {
+            return;
+        }
+        let min_progress = self
+            .receiver_progress
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.retired_up_to);
+        self.retired_up_to = min_progress.min(self.total_chunks);
+    }
+
     fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
-        if self.eot_sent || !self.source_drained || !self.inflight.is_empty() {
-            if !self.eot_sent && self.source_drained && !self.inflight.is_empty() {
+        if self.eot_sent || !self.source_drained || self.outstanding_chunks() > 0 {
+            if !self.eot_sent && self.source_drained && self.outstanding_chunks() > 0 {
                 tracing::trace!(
                     session_id = self.session_id,
-                    inflight_count = self.inflight.len(),
+                    inflight_count = self.outstanding_chunks(),
                     "RLM sender: cannot send EOT - chunks still inflight"
                 );
             }
@@ -378,7 +406,7 @@ impl SenderState {
     }
 
     fn is_complete(&self) -> bool {
-        self.source_drained && self.eot_sent && self.inflight.is_empty()
+        self.source_drained && self.eot_sent && self.outstanding_chunks() == 0
     }
 
     fn handle_control(&mut self, frame: InboundFrame) {
@@ -390,19 +418,19 @@ impl SenderState {
             );
             return;
         };
-        match control {
+        match &control {
             RlmControl::Ready { node_id } => {
-                self.ready_nodes.insert(node_id as usize);
+                self.ready_nodes.insert(*node_id as usize);
                 tracing::debug!(
                     session_id = self.session_id,
-                    node_id,
+                    node_id = *node_id,
                     "RLM sender: receiver ready"
                 );
             }
             RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
                 // Ignore sender-originated control frames looped back.
             }
-            _ => {
+            RlmControl::Ack { .. } => {
                 let Some(from_node) = peer_id else {
                     tracing::warn!(
                         session_id = self.session_id,
@@ -411,33 +439,36 @@ impl SenderState {
                     );
                     return;
                 };
-                tracing::debug!(
-                    session_id = self.session_id,
-                    from_node = from_node,
-                    control_type = ?control,
-                    inflight_count = self.inflight.len(),
-                    "RLM sender: processing control frame"
-                );
-                let retired = control::process_control_event(
+                if !self.receiver_progress.contains_key(&from_node) {
+                    tracing::warn!(
+                        session_id = self.session_id,
+                        from_node,
+                        "RLM sender: ignoring ACK from unexpected node"
+                    );
+                    return;
+                }
+                let updated = control::update_receiver_progress(
                     from_node,
                     &control,
-                    &mut self.inflight,
-                    self.receiver_count.max(1),
+                    &mut self.receiver_progress,
                 );
-                if !retired.is_empty() {
+                if let Some(new_value) = updated {
+                    self.update_retired_up_to();
                     tracing::debug!(
                         session_id = self.session_id,
-                        retired_count = retired.len(),
-                        retired_indices = ?retired,
-                        "RLM sender: retiring chunks"
+                        from_node = from_node,
+                        up_to = new_value,
+                        retired_up_to = self.retired_up_to,
+                        inflight_count = self.outstanding_chunks(),
+                        "RLM sender: cumulative ACK processed"
                     );
-                    control::retire_chunks(&retired, &mut self.inflight);
+                } else {
+                    tracing::trace!(
+                        session_id = self.session_id,
+                        from_node = from_node,
+                        "RLM sender: ACK made no progress"
+                    );
                 }
-                tracing::debug!(
-                    session_id = self.session_id,
-                    inflight_count = self.inflight.len(),
-                    "RLM sender: after processing control frame"
-                );
             }
         }
     }
@@ -808,5 +839,4 @@ mod tests {
             "Timeout should be shorter than 1 hour"
         );
     }
-
 }

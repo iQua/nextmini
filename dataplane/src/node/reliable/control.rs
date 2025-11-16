@@ -1,40 +1,25 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use nextmini_messages::rlm::RlmControl;
 
-/// Process a single control event from `from_node` and update inflight state.
-/// Returns a list of chunk indices that should be retired after this event.
-pub fn process_control_event(
+/// Track cumulative ACK progress for each receiver. Returns `Some(new_value)`
+/// when the receiver reports forward progress, `None` otherwise.
+pub fn update_receiver_progress(
     from_node: usize,
     ctrl: &RlmControl,
-    inflight: &mut BTreeMap<u64, HashSet<usize>>,
-    receiver_count: usize,
-) -> Vec<u64> {
+    progress: &mut BTreeMap<usize, u64>,
+) -> Option<u64> {
     match ctrl {
         RlmControl::Ack { up_to } => {
-            let up = *up_to;
-            for (_idx, acked_by) in inflight.range_mut(..=up) {
-                acked_by.insert(from_node);
-            }
-            let mut completed = Vec::new();
-            for (idx, acked_by) in inflight.range(..=up) {
-                // a chunk should be retired when all receivers have acknowledged it
-                if acked_by.len() == receiver_count {
-                    completed.push(*idx);
+            if let Some(entry) = progress.get_mut(&from_node) {
+                if *up_to > *entry {
+                    *entry = *up_to;
+                    return Some(*entry);
                 }
             }
-            completed
+            None
         }
-        RlmControl::Manifest { .. } | RlmControl::Ready { .. } | RlmControl::Eot { .. } => {
-            Vec::new()
-        }
-    }
-}
-
-/// Helper to apply retirement (removes from inflight state).
-pub fn retire_chunks(to_retire: &[u64], inflight: &mut BTreeMap<u64, HashSet<usize>>) {
-    for idx in to_retire {
-        inflight.remove(idx);
+        RlmControl::Manifest { .. } | RlmControl::Ready { .. } | RlmControl::Eot { .. } => None,
     }
 }
 
@@ -43,40 +28,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn process_control_ack_retires_when_all_acknowledge() {
-        let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
-        for idx in 1..=3u64 {
-            inflight.insert(idx, HashSet::new());
-        }
-        let rc = 2usize;
+    fn update_receiver_progress_advances_when_monotonic() {
+        let mut progress: BTreeMap<usize, u64> = BTreeMap::new();
+        progress.insert(7, 2);
 
-        let retired1 =
-            process_control_event(1, &RlmControl::Ack { up_to: 3 }, &mut inflight, rc);
-        assert!(retired1.is_empty());
-        retire_chunks(&retired1, &mut inflight);
+        let updated = update_receiver_progress(7, &RlmControl::Ack { up_to: 5 }, &mut progress);
 
-        let retired2 =
-            process_control_event(2, &RlmControl::Ack { up_to: 2 }, &mut inflight, rc);
-        assert_eq!(retired2, vec![1, 2]);
-        retire_chunks(&retired2, &mut inflight);
-
-        let retired3 =
-            process_control_event(2, &RlmControl::Ack { up_to: 3 }, &mut inflight, rc);
-        assert_eq!(retired3, vec![3]);
+        assert_eq!(updated, Some(5));
+        assert_eq!(progress.get(&7).copied(), Some(5));
     }
 
-
     #[test]
-    fn retire_chunks_removes_indices() {
-        let mut inflight: BTreeMap<u64, HashSet<usize>> = BTreeMap::new();
-        inflight.insert(1, HashSet::new());
-        inflight.insert(2, HashSet::new());
-        inflight.insert(3, HashSet::new());
+    fn update_receiver_progress_ignores_missing_or_regressions() {
+        let mut progress: BTreeMap<usize, u64> = BTreeMap::new();
+        progress.insert(1, 4);
 
-        retire_chunks(&[1, 3], &mut inflight);
+        let regression = update_receiver_progress(1, &RlmControl::Ack { up_to: 2 }, &mut progress);
+        assert!(regression.is_none());
+        assert_eq!(progress.get(&1).copied(), Some(4));
 
-        assert!(!inflight.contains_key(&1));
-        assert!(!inflight.contains_key(&3));
-        assert!(inflight.contains_key(&2));
+        let missing = update_receiver_progress(99, &RlmControl::Ack { up_to: 10 }, &mut progress);
+        assert!(missing.is_none());
+        assert!(progress.get(&99).is_none());
     }
 }
