@@ -1,47 +1,17 @@
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use ahash::AHashMap;
-use tokio::sync::{mpsc, oneshot, watch};
+use bytes::Bytes;
+use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use nextmini_messages::TokenBucketSpec;
 
-use crate::node::config::TfmccRuntimeConfig;
 use crate::node::processor::ProcessorHandle;
 
 use super::api::{InboundFrame, SessionId};
-
-/// Configures how strongly the sender waits for receiver acknowledgements.
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Clone, Debug)]
-pub enum AckPolicy {
-    All,
-    KofN(usize),
-    Fraction(f32),
-}
-
-/// Sender-side congestion control mode.
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-pub enum CongestionControl {
-    /// Current behavior: static window + optional token bucket.
-    Static,
-    /// TFMCC: rate-based controller driven by receiver feedback.
-    Tfmcc(TfmccConfig),
-}
-
-/// Parameters that govern the TFMCC controller.
-#[derive(Clone, Debug)]
-pub struct TfmccConfig {
-    pub min_rate_bps: f64,
-    pub max_rate_bps: f64,
-    pub initial_rate_bps: f64,
-    pub feedback_interval_ms: u64,
-    pub rate_smooth_alpha: f64,
-    pub max_increase_per_rtt_pkts: f64,
-    pub clr_hysteresis_pct: f64,
-}
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
@@ -58,58 +28,25 @@ pub struct CommonConfig {
     pub local_netmask: Ipv4Addr,
 }
 
-/// Sender-only configuration (fan-out, source path, FEC knobs, etc.).
+/// Sender-only configuration (fan-out, source path, ready grace, etc.).
 #[derive(Clone, Debug)]
 pub struct SenderConfig {
     pub common: CommonConfig,
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
-    pub source_path: Option<String>,
-    pub checksum_out: bool,
-    pub ack_policy: AckPolicy,
-    pub repair_backoff_ms: u64,
-    pub fec_k: Option<u16>,
-    pub fec_p: u8,
+    pub source_buffer: Bytes,
     pub ready_grace_ms: u64,
-    pub cc: CongestionControl,
     pub topology_ready: Option<watch::Receiver<bool>>,
     pub routes_ready: Option<watch::Receiver<bool>>,
-    /// When false (channel_backpressure=true), TFMCC rate control is disabled
-    pub use_tfmcc: bool,
-    /// When false (channel_backpressure=true), SACK/NACK-based repair is disabled
-    pub enable_sack_nack: bool,
 }
 
-/// Receiver-only configuration (source node, reliability timers, sinks, etc.).
+/// Receiver-only configuration (source node, expected bytes, sink path, etc.).
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     pub common: CommonConfig,
     pub source_node_id: usize,
     pub expected_bytes: u64,
-    pub verify_checksum: bool,
-    pub sink_path: Option<String>,
-    pub nack_min_interval_ms: u64,
-    pub nack_jitter_ms: u64,
-    pub sack_interval_ms: u64,
-    pub cc: CongestionControl,
-    /// When false (channel_backpressure=true), SACK/NACK/REPAIR is disabled
-    pub enable_sack_nack: bool,
-}
-
-impl From<&TfmccRuntimeConfig> for TfmccConfig {
-    fn from(cfg: &TfmccRuntimeConfig) -> Self {
-        Self {
-            min_rate_bps: cfg.min_rate_bps.max(1.0),
-            max_rate_bps: cfg.max_rate_bps.max(cfg.min_rate_bps.max(1.0)),
-            initial_rate_bps: cfg
-                .initial_rate_bps
-                .clamp(cfg.min_rate_bps.max(1.0), cfg.max_rate_bps.max(1.0)),
-            feedback_interval_ms: cfg.feedback_interval_ms.max(10),
-            rate_smooth_alpha: cfg.rate_smooth_alpha.clamp(0.0, 1.0),
-            max_increase_per_rtt_pkts: cfg.max_increase_per_rtt_pkts.max(0.5),
-            clr_hysteresis_pct: cfg.clr_hysteresis_pct.clamp(0.0, 1.0),
-        }
-    }
+    pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
 /// Tracks running reliable sessions along with their inboxes and join handles.
@@ -244,25 +181,5 @@ impl SessionManager {
             self.pending.remove(&key);
         }
         Some((pending.cfg, pending.reply))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ack_policy_variants_constructible() {
-        let policies = [AckPolicy::All, AckPolicy::KofN(2), AckPolicy::Fraction(0.5)];
-        for policy in policies {
-            match policy {
-                AckPolicy::All => {}
-                AckPolicy::KofN(n) => assert!(n >= 1),
-                AckPolicy::Fraction(f) => {
-                    assert!(f > 0.0);
-                    assert!(f <= 1.0);
-                }
-            }
-        }
     }
 }

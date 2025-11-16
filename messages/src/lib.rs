@@ -118,7 +118,6 @@ pub struct ReliableStats {
     pub chunks: u64,
     pub resends: u64,
     pub repairs: u64,
-    pub sacks: u64,
     pub fec_used: u64,
     pub ts_ms: i64,
 }

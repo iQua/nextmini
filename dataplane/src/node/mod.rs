@@ -54,7 +54,7 @@ impl NodeIdExt for NodeId {
 }
 
 /// The maximum Maximum Transmission Unit (MTU).
-const MAX_MTU: usize = 6400;
+const MAX_MTU: usize = 9000;
 
 /// The buffer size for the network interface reader to receive a packet from the network.
 const RECEIVE_BUF_SIZE: usize = MAX_MTU + 4;

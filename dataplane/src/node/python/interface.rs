@@ -104,10 +104,7 @@ impl PythonInterfaceHandle {
     }
 
     #[allow(dead_code)]
-    pub async fn register_receiver(
-        &self,
-        flow_id: FlowId,
-    ) -> mpsc::Receiver<PythonDelivery> {
+    pub async fn register_receiver(&self, flow_id: FlowId) -> mpsc::Receiver<PythonDelivery> {
         let (tx, rx) = mpsc::channel(self.inner.capacity);
         let mut map = self.inner.senders.lock().await;
         map.insert(flow_id, ReceiverEntry { sender: tx });
@@ -143,13 +140,20 @@ impl PythonInterfaceHandle {
 
     async fn deliver_payload(&self, entry: ReceiverEntry, packet: Packet) -> Result<(), Packet> {
         let delivery = raw_payload_delivery(&packet);
-        if Self::send_payload(entry, delivery, self.inner.backpressure).await.is_err() {
+        if Self::send_payload(entry, delivery, self.inner.backpressure)
+            .await
+            .is_err()
+        {
             return Err(packet);
         }
         Ok(())
     }
 
-    async fn send_payload(entry: ReceiverEntry, payload: PayloadDelivery, backpressure: bool) -> Result<(), ()> {
+    async fn send_payload(
+        entry: ReceiverEntry,
+        payload: PayloadDelivery,
+        backpressure: bool,
+    ) -> Result<(), ()> {
         if backpressure {
             // With backpressure enabled, wait for capacity
             entry.sender.send(payload).await.map_err(|_| ())
@@ -378,9 +382,7 @@ mod tests {
 
         // Spawn delivery in background since it will block
         let handle_clone = handle.clone();
-        let deliver_task = tokio::spawn(async move {
-            handle_clone.deliver(packet2).await
-        });
+        let deliver_task = tokio::spawn(async move { handle_clone.deliver(packet2).await });
 
         // Give it a moment to start blocking
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -393,7 +395,10 @@ mod tests {
         assert!(deliver_task.await.unwrap().is_ok());
 
         // Verify second packet was received
-        let payload2 = receiver.recv().await.expect("should receive second payload");
+        let payload2 = receiver
+            .recv()
+            .await
+            .expect("should receive second payload");
         assert_eq!(payload2.bytes.as_ref(), &[5, 6, 7, 8]);
     }
 }

@@ -7,8 +7,7 @@ use super::session::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 pub type SessionId = u64;
 
 /// Metadata and payload extracted from inbound reliable frames. The control
-/// loop fills out peer/multicast context so receivers can reason about repair
-/// requests without re-parsing outer headers.
+/// loop fills out peer/multicast context without re-parsing outer headers.
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
     pub bytes: Vec<u8>,

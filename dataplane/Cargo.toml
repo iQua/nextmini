@@ -17,7 +17,7 @@ serde = "1.0"
 toml = "0.9"
 futures = "0.3"
 network-interface = "2"
-tokio = { version = "1", features = ["full", "rt"] }
+tokio = { version = "1", features = ["full", "rt", "test-util"] }
 tokio-tungstenite = "0.28"
 tokio-util = { version = "0.7", features = ["rt"] }
 tun-rs = { version = "2", features = ["async"] }

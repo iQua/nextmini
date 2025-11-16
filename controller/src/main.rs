@@ -829,7 +829,7 @@ async fn handle_connection(
                     }
                     DataplaneToController::ReliableStats { stats } => {
                         info!(
-                            "ReliableStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} sacks={} fec_used={} ts_ms={}",
+                            "ReliableStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} fec_used={} ts_ms={}",
                             stats.session_id,
                             stats.node_id,
                             stats.role,
@@ -837,7 +837,6 @@ async fn handle_connection(
                             stats.chunks,
                             stats.resends,
                             stats.repairs,
-                            stats.sacks,
                             stats.fec_used,
                             stats.ts_ms
                         );

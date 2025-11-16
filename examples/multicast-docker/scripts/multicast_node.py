@@ -5,9 +5,10 @@ import argparse
 import json
 import sys
 import time
-import torch
 from pathlib import Path
 from typing import List, Tuple
+
+import torch
 
 try:
     import nextmini_py as nm
@@ -33,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
-    parser.add_argument("--chunk-size", type=int, default=4096)
+    parser.add_argument("--chunk-size", type=int, default=8500)
     parser.add_argument("--receive-timeout-ms", type=int, default=5000)
     parser.add_argument("--group-timeout", type=int, default=90)
     parser.add_argument(
@@ -76,6 +77,17 @@ def log(message: str, quiet: bool = False) -> None:
     if quiet:
         return
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def format_throughput(bytes_transferred: int, elapsed_seconds: float) -> str:
+    if elapsed_seconds <= 0:
+        return "N/A"
+
+    bytes_per_sec = bytes_transferred / elapsed_seconds
+    mbps = (bytes_per_sec * 8) / 1_000_000
+    mib_per_sec = bytes_per_sec / (1024 * 1024)
+
+    return f"{mib_per_sec:.2f} MiB/s ({mbps:.2f} Mbps)"
 
 
 def metadata_path(args: argparse.Namespace) -> Path:
@@ -151,6 +163,7 @@ def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, st
 def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     if not args.generate_tensor:
         return
+
     if args.tensor_path is None:
         tensor_dir = Path("/workspace/tensors")
         tensor_dir.mkdir(parents=True, exist_ok=True)
@@ -158,14 +171,9 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
 
     log(f"Generating ~1GB tensor at {args.tensor_path}...", args.quiet)
     torch.manual_seed(42)
+
     # Generate ~1GB tensor: 256 * 1024 * 1024 floats * 4 bytes/float ≈ 1GB
     tensor = torch.randn(256, 1024, 1024, dtype=torch.float32).contiguous().cpu()
-
-    # For 1MB testing, uncomment the following lines and comment out the 1GB version above:
-    # args.tensor_path = tensor_dir / "tensor-auto-1m.pt"
-    # log(f"Generating ~1MB tensor at {args.tensor_path}...", args.quiet)
-    # # Generate ~1MB tensor: 256 * 1024 floats * 4 bytes/float ≈ 1MB
-    # tensor = torch.randn(256, 1024, dtype=torch.float32).contiguous().cpu()
 
     args.tensor_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(tensor, args.tensor_path)
@@ -211,26 +219,33 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    # Launch reliable multicast send via the consolidated send_file API.
-    sid = dataplane.send_file(
+    # Launch reliable multicast send from an in-memory FrozenBuffer.
+    log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
+    send_start_time = time.perf_counter()
+
+    with args.tensor_path.open("rb") as fh:
+        tensor_bytes = fh.read()
+    frozen = nm.FrozenBuffer(tensor_bytes)
+
+    sid = dataplane.send_data(
         group_ip,
         receiver_ids,
-        str(args.tensor_path),
+        frozen,
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        ack_policy="all",
     )
-    log(f"Started reliable send session sid={sid}", args.quiet)
-    if hasattr(dataplane, "reliable_wait"):
-        ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
-        log(f"Send completion: {ok}", args.quiet)
-    else:
-        log(
-            "Dataplane lacks reliable_wait; send completion signal unavailable.",
-            args.quiet,
-        )
-    log("Source issued reliable send request.", args.quiet)
+    log(f"Started reliable send session (session ID = {sid}).", args.quiet)
+
+    ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
+    send_end_time = time.perf_counter()
+    elapsed = send_end_time - send_start_time
+
+    log(f"Send completion: {ok}.", args.quiet)
+    log(
+        f"Transfer completed in {elapsed:.3f} seconds. Throughput: {format_throughput(total_bytes, elapsed)}",
+        args.quiet,
+    )
 
 
 def run_receiver(args: argparse.Namespace) -> None:
@@ -253,25 +268,40 @@ def run_receiver(args: argparse.Namespace) -> None:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
-    sid = dataplane.receive_file(
+    log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
+    recv_start_time = time.perf_counter()
+
+    sid = dataplane.receive_data(
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        sink_path=str(sink_path) if sink_path else None,
     )
 
-    log(f"Started reliable receive session sid={sid}", args.quiet)
-    if hasattr(dataplane, "reliable_wait"):
-        ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
-        log(f"Receive completion: {ok}", args.quiet)
-    else:
-        log(
-            "Dataplane lacks reliable_wait; receive completion signal unavailable.",
-            args.quiet,
-        )
+    log(f"Started reliable receive session (session ID = {sid}).", args.quiet)
+
+    payload_bytes: bytes | None = None
+
+    ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
+    recv_end_time = time.perf_counter()
+    elapsed = recv_end_time - recv_start_time
+
+    log(f"Receive completion: {ok}.", args.quiet)
+    log(
+        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
+        args.quiet,
+    )
+
+    frozen = dataplane.get_data_buffer(sid)
+    payload_bytes = bytes(frozen.read())
+    log(f"Retrieved {len(payload_bytes)} bytes into FrozenBuffer.", args.quiet)
+
+    if payload_bytes is not None and sink_path is not None:
+        sink_path.parent.mkdir(parents=True, exist_ok=True)
+        sink_path.write_bytes(payload_bytes)
+        log(f"Wrote payload to {sink_path}.", args.quiet)
 
 
 def main() -> int:

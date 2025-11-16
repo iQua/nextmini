@@ -7,3 +7,4 @@ queue_capacity = 3000
 feature = "concurrent"
 # For single path, enforce_tcp_order should be false.
 enforce_tcp_order = false
+channel_backpressure = true
