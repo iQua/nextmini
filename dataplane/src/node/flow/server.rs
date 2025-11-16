@@ -12,8 +12,7 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use nextmini_messages::Flow;
-use nextmini_messages::FlowSpec;
+use nextmini_messages::{Flow, FlowSpec};
 
 use crate::node::config::LocalConfig;
 use crate::node::flow::device::VirtualDevice;
@@ -216,12 +215,11 @@ impl UserSpaceServer {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use std::time::Duration;
 
-    use nextmini_messages::FlowLen;
-    use nextmini_messages::FlowTransport;
-
-    use super::*;
+    use nextmini_messages::{FlowLen, FlowTransport};
 
     fn make_test_config() -> LocalConfig {
         LocalConfig {
