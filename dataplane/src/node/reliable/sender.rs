@@ -11,6 +11,7 @@ use nextmini_messages::rlm::{self, RlmControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
@@ -646,111 +647,23 @@ impl ChunkSource {
 }
 
 /// Simple token-bucket pacer used to honor optional bandwidth caps.
+///
+/// This is now just a thin wrapper around the shared scheduler TokenBucket
+/// implementation so that we don't duplicate token-bucket logic here.
 struct DataPacer {
-    base_spec: Option<nextmini_messages::TokenBucketSpec>,
-    tokens: f64,
-    last: Instant,
-    rate_bytes_per_s: f64,
+    bucket: Option<TokenBucket>,
 }
 
 impl DataPacer {
     fn new(spec: Option<nextmini_messages::TokenBucketSpec>) -> Self {
-        let rate = spec.as_ref().map(|tb| tb.rate as f64).unwrap_or(0.0);
-        let tokens = spec.as_ref().map(|tb| tb.bucket_size as f64).unwrap_or(0.0);
-        Self {
-            base_spec: spec,
-            tokens,
-            last: Instant::now(),
-            rate_bytes_per_s: rate,
-        }
+        let bucket = spec.map(TokenBucket::new);
+        Self { bucket }
     }
 
     async fn wait_for(&mut self, bytes: usize) {
-        if self.base_spec.is_none() {
-            self.wait_dynamic_only(bytes).await;
-            return;
+        if let Some(bucket) = self.bucket.as_mut() {
+            bucket.wait_for_bytes(bytes).await;
         }
-        let bytes_f = bytes as f64;
-        loop {
-            self.refill();
-            if self.tokens >= bytes_f {
-                self.tokens -= bytes_f;
-                break;
-            }
-            let rate = self.effective_rate();
-            if rate <= 0.0 || !rate.is_finite() {
-                break;
-            }
-            let needed = (bytes_f - self.tokens).max(1.0);
-            let wait = (needed / rate).max(0.001);
-            tokio::time::sleep(Duration::from_secs_f64(wait)).await;
-        }
-    }
-
-    fn refill(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last).as_secs_f64();
-        if elapsed <= 0.0 {
-            return;
-        }
-        let rate = self.effective_rate();
-        if rate <= 0.0 || !rate.is_finite() {
-            self.last = now;
-            return;
-        }
-        let bucket = self.effective_bucket();
-        self.tokens = (self.tokens + elapsed * rate).min(bucket);
-        self.last = now;
-    }
-
-    fn effective_rate(&self) -> f64 {
-        if self.rate_bytes_per_s > 0.0 {
-            self.rate_bytes_per_s
-        } else if let Some(spec) = &self.base_spec {
-            spec.rate.max(1) as f64
-        } else {
-            0.0
-        }
-    }
-
-    fn effective_bucket(&self) -> f64 {
-        if let Some(spec) = &self.base_spec {
-            spec.bucket_size as f64
-        } else {
-            f64::INFINITY
-        }
-    }
-
-    async fn wait_dynamic_only(&mut self, bytes: usize) {
-        if self.rate_bytes_per_s <= 0.0 {
-            return;
-        }
-        let bytes_f = bytes as f64;
-        self.refill_dynamic();
-        if self.tokens >= bytes_f {
-            self.tokens -= bytes_f;
-            return;
-        }
-        let needed = bytes_f - self.tokens;
-        self.tokens = 0.0;
-        let wait = (needed / self.rate_bytes_per_s).max(0.0);
-        if wait > 0.0 {
-            tokio::time::sleep(Duration::from_secs_f64(wait)).await;
-        }
-        self.last = Instant::now();
-    }
-
-    fn refill_dynamic(&mut self) {
-        if self.rate_bytes_per_s <= 0.0 {
-            return;
-        }
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last).as_secs_f64();
-        if elapsed <= 0.0 {
-            return;
-        }
-        self.tokens += elapsed * self.rate_bytes_per_s;
-        self.last = now;
     }
 }
 
