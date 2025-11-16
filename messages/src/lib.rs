@@ -315,7 +315,10 @@ impl std::error::Error for FlowSpecValidationError {}
 impl FlowSpec {
     pub fn validate(&self) -> Result<(), FlowSpecValidationError> {
         match self.flow_len {
-            FlowLen::Duration(_) if self.flow_rate.is_none() => {
+            FlowLen::Duration(_)
+                if self.flow_rate.is_none()
+                    && matches!(self.transport, FlowTransport::ReliableUnicast) =>
+            {
                 Err(FlowSpecValidationError::DurationMissingRate)
             }
             _ => Ok(()),
