@@ -183,16 +183,20 @@ struct SenderState {
     routes_ready_rx: Option<watch::Receiver<bool>>,
     ready_grace: Duration,
     manifest_sent: bool,
+    manifest_last_sent: Instant,
+    manifest_interval: Duration,
     source_drained: bool,
     eot_sent: bool,
-    bytes_sent: u64,
     primary_chunks: u64,
+    bytes_sent: u64,
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
     src_port: u16,
     dst_port: u16,
-    manifest_interval: Duration,
-    manifest_last_sent: Instant,
+    // Throughput tracking
+    throughput_start: Instant,
+    throughput_last_report: Instant,
+    bytes_since_last_report: u64,
 }
 
 impl SenderState {
@@ -255,16 +259,19 @@ impl SenderState {
             routes_ready_rx,
             ready_grace,
             manifest_sent: false,
+            manifest_last_sent: Instant::now(),
+            manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             source_drained: total_chunks == 0,
             eot_sent: false,
-            bytes_sent: 0,
             primary_chunks: 0,
+            bytes_sent: 0,
             src_ip,
             dst_ip,
             src_port: cfg.common.src_port,
             dst_port: cfg.common.dst_port,
-            manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
-            manifest_last_sent: Instant::now(),
+            throughput_start: Instant::now(),
+            throughput_last_report: Instant::now(),
+            bytes_since_last_report: 0,
         };
         state.update_retired_up_to();
         state
@@ -338,13 +345,40 @@ impl SenderState {
         self.source_drained = true;
     }
 
+    // reports throughput every 1 second
+    fn report_throughput(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.throughput_last_report).as_secs_f64();
+
+        if elapsed >= 1.0 && self.bytes_since_last_report > 0 {
+            let throughput_gbps = (self.bytes_since_last_report as f64 * 8.0) / (elapsed * 1_000_000_000.0);
+            let total_elapsed = now.duration_since(self.throughput_start).as_secs_f64();
+
+            tracing::info!(
+                session_id = self.session_id,
+                throughput_gbps = format!("{:.3}", throughput_gbps),
+                bytes = self.bytes_since_last_report,
+                elapsed_s = format!("{:.3}", elapsed),
+                total_sent = self.bytes_sent,
+                total_elapsed_s = format!("{:.3}", total_elapsed),
+                "RLM sender: throughput"
+            );
+
+            self.bytes_since_last_report = 0;
+            self.throughput_last_report = now;
+        }
+    }
+
     /// Encode and hand off a chunk to the processor, updating accounting.
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
 
-        self.bytes_sent += chunk.data.len() as u64;
+        let chunk_bytes = chunk.data.len() as u64;
+        self.bytes_sent += chunk_bytes;
+        self.bytes_since_last_report += chunk_bytes;
         self.primary_chunks += 1;
         self.update_retired_up_to();
+        self.report_throughput();
         tracing::debug!(
             session_id = self.session_id,
             chunk_index = chunk.index,
