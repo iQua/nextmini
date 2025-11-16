@@ -10,6 +10,8 @@ use crate::node::{NodeId, NodeIdExt};
 use super::api::InboundFrame;
 use super::session::ReceiverConfig;
 
+const ACK_EVERY_CHUNKS: u64 = 16; // ensure <= sender DEFAULT_WINDOW
+
 /// Utility for emitting completion control traffic (ACKs) via the node
 /// processor stack using the same addressing the sender expects.
 struct ControlEmitter {
@@ -72,12 +74,16 @@ pub async fn run(
     // Stream bookkeeping: RLM chunk indices start at 1.
     let mut expected: u64 = 1;
     let per_chunk = cfg.common.chunk_size.max(1);
+
+    // Uses a sliding window size corresponding to the burst size in the token bucket
+    // If the token bucket shaper is not configured, use the default window size
     let window_size = cfg
         .common
         .data_bucket
         .as_ref()
         .map(|bucket| (bucket.bucket_size / per_chunk).max(1))
         .unwrap_or(super::sender::DEFAULT_WINDOW);
+
     let mut pending = PendingWindow::new(window_size, expected);
     let mut bytes_received: u64 = 0;
     let sink_buffer = cfg.sink_buffer.clone();
@@ -86,6 +92,7 @@ pub async fn run(
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
     let dst_ip = (cfg.source_node_id as NodeId)
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
+
     // Source control traffic from the client (src) port to match sender expectations.
     let ctrl_src_port = cfg.common.src_port;
     let ctrl_dst_port = cfg.common.dst_port;
@@ -131,14 +138,22 @@ pub async fn run(
             if outcome.advanced {
                 let base = expected.saturating_sub(1);
                 if base > last_ack_up_to {
-                    tracing::debug!(
-                        session_id = sid,
-                        up_to = base,
-                        expected = expected,
-                        "RLM receiver: sending ACK"
-                    );
-                    control_io.send(&RlmControl::Ack { up_to: base });
-                    last_ack_up_to = base;
+                    let advanced_chunks = base - last_ack_up_to;
+                    let final_chunk_reached = matches!(eot_index, Some(last) if last == base);
+                    let received_all_bytes = bytes_received >= cfg.expected_bytes;
+                    if advanced_chunks >= ACK_EVERY_CHUNKS
+                        || final_chunk_reached
+                        || received_all_bytes
+                    {
+                        tracing::debug!(
+                            session_id = sid,
+                            up_to = base,
+                            expected = expected,
+                            "RLM receiver: sending batched ACK"
+                        );
+                        control_io.send(&RlmControl::Ack { up_to: base });
+                        last_ack_up_to = base;
+                    }
                 }
             }
             continue;

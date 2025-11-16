@@ -19,7 +19,7 @@ use super::session::{CommonConfig, SenderConfig};
 pub(super) const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
 const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
-const TRANSFER_TIMEOUT_SECS: u64 = 300; // 5 minutes - configurable later
+const TRANSFER_TIMEOUT_SECS: u64 = 300;
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
 /// to control frames emitted by receivers.
