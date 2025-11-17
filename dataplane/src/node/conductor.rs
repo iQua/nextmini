@@ -15,8 +15,7 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::session::api::ReliableHandle;
-use crate::node::session::manager::SessionManagerHandle;
+use crate::node::session::api::ReliableRuntimeHandle;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -34,30 +33,22 @@ pub struct Conductor {
     #[cfg(feature = "python-extension")]
     controller: ControllerInterfaceHandle,
 
-    /// the reliable session manager
+    /// the reliable session runtime
     #[cfg(feature = "python-extension")]
-    session_manager: SessionManagerHandle,
+    reliable_runtime: ReliableRuntimeHandle,
 }
 
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
-        // creates the ReliableHandle and command receiver first
-        let (reliable, command_rx) = ReliableHandle::new();
-
         // connects the processors with its downstream local interface writers to send packets out
-        let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone(), reliable.clone()).await;
+        let (controller_interface, reliable_runtime, reporter, flowstats_reporter) =
+            ControllerInterfaceHandle::new(config.clone()).await;
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
-
-        // creates the session manager actor with the correct processors
-        let session_manager =
-            SessionManagerHandle::new(processors.clone(), reliable.clone(), command_rx);
 
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
-        processors.connect_reliable_handle(reliable.clone());
 
         Conductor {
             config,
@@ -67,7 +58,7 @@ impl Conductor {
             #[cfg(feature = "python-extension")]
             controller: controller_interface,
             #[cfg(feature = "python-extension")]
-            session_manager,
+            reliable_runtime,
         }
     }
 
@@ -224,10 +215,10 @@ impl Conductor {
         self.controller.clone()
     }
 
-    /// Returns a clone of the reliable handle for language bindings.
+    /// Returns a clone of the reliable runtime handle for language bindings.
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
-    pub fn reliable_handle(&self) -> ReliableHandle {
-        self.session_manager.reliable_handle()
+    pub fn reliable_handle(&self) -> ReliableRuntimeHandle {
+        self.reliable_runtime.clone()
     }
 }

@@ -31,7 +31,7 @@ use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PythonDelivery, PythonEvent, PythonInterfaceHandle,
 };
 #[cfg(feature = "python-extension")]
-use nextmini::node::session::api::ReliableHandle as RustReliableHandle;
+use nextmini::node::session::api::ReliableRuntimeHandle;
 #[cfg(feature = "python-extension")]
 use nextmini::node::session::manager as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
@@ -205,7 +205,7 @@ struct Dataplane {
     controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
     #[cfg(feature = "python-extension")]
-    reliable: Option<RustReliableHandle>,
+    reliable: Option<ReliableRuntimeHandle>,
     #[cfg(feature = "python-extension")]
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
     #[cfg(feature = "python-extension")]

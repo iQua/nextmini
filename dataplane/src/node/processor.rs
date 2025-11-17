@@ -31,7 +31,7 @@ use crate::node::packet::Packet;
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
-use crate::node::session::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
+use crate::node::session::api::{InboundFrame as ReliableInboundFrame, ReliableRuntimeHandle};
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
@@ -61,7 +61,7 @@ pub enum ProcessorMessage {
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
-    ConnectReliableHandle(ReliableHandle),
+    ConnectReliableHandle(ReliableRuntimeHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -145,7 +145,7 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn connect_reliable_handle(&self, handle: ReliableHandle) {
+    pub fn connect_reliable_handle(&self, handle: ReliableRuntimeHandle) {
         if let Err(e) = self
             .broadcast_sender()
             .send(ProcessorMessage::ConnectReliableHandle(handle))
@@ -743,7 +743,7 @@ struct Processor {
     // optional in-process Python delivery path
     #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
-    reliable_handle: Option<ReliableHandle>,
+    reliable_handle: Option<ReliableRuntimeHandle>,
 }
 
 impl Processor {

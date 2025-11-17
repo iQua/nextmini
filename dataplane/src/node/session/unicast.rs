@@ -9,7 +9,7 @@ use nextmini_messages::{Flow, FlowLen, TokenBucketSpec};
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::session::api::{ReliableHandle, SessionId};
+use crate::node::session::api::{ReliableRuntimeHandle, SessionId};
 use crate::node::session::manager::{
     CommonConfig, PendingReceiverKey, ReceiverConfig, SenderConfig,
 };
@@ -21,7 +21,7 @@ pub struct ReliableUnicastFlowHandle {
     cfg: LocalConfig,
     processors: ProcessorHandle,
     flowstats: FlowStatsReporterHandle,
-    reliable: ReliableHandle,
+    reliable: ReliableRuntimeHandle,
 }
 
 impl ReliableUnicastFlowHandle {
@@ -29,7 +29,7 @@ impl ReliableUnicastFlowHandle {
         cfg: LocalConfig,
         processors: ProcessorHandle,
         flowstats: FlowStatsReporterHandle,
-        reliable: ReliableHandle,
+        reliable: ReliableRuntimeHandle,
     ) -> Self {
         Self {
             cfg,

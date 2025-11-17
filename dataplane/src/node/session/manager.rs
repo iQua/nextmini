@@ -12,7 +12,7 @@ use nextmini_messages::TokenBucketSpec;
 
 use crate::node::processor::ProcessorHandle;
 
-use super::api::{Command, InboundFrame, ReliableHandle, SessionId};
+use super::api::{Command, InboundFrame, SessionId};
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
@@ -49,40 +49,104 @@ pub struct ReceiverConfig {
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
-/// Handle for communicating with the session manager actor.
+/// Handle for communicating with the reliable runtime actor.
+/// This handle can be cloned and used to manage reliable sessions.
 #[derive(Clone, Debug)]
-pub struct SessionManagerHandle {
-    reliable: ReliableHandle,
+pub struct ReliableRuntimeHandle {
+    tx: mpsc::UnboundedSender<Command>,
 }
 
-impl SessionManagerHandle {
-    /// Creates a new SessionManagerHandle and spawns the SessionManager actor.
-    /// Takes the processors and command receiver, spawning the actor task.
-    pub fn new(
-        processors: ProcessorHandle,
-        reliable: ReliableHandle,
-        command_rx: mpsc::UnboundedReceiver<Command>,
-    ) -> Self {
-        let manager = SessionManager::new(processors, command_rx);
+impl ReliableRuntimeHandle {
+    /// Creates a new ReliableRuntimeHandle and spawns the ReliableRuntime actor.
+    pub fn new(processors: ProcessorHandle) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
 
-        // Spawn the SessionManager actor task
+        let runtime = ReliableRuntime::new(processors, rx);
+
+        // Spawn the ReliableRuntime actor task
         tokio::spawn(async move {
-            let mut manager = manager;
-            manager.run().await;
+            let mut runtime = runtime;
+            runtime.run().await;
         });
 
-        Self { reliable }
+        Self { tx }
     }
 
-    /// Returns a clone of the ReliableHandle for external API access.
-    pub fn reliable_handle(&self) -> ReliableHandle {
-        self.reliable.clone()
+    /// Request that the runtime spin up a sender session with the supplied
+    /// configuration and return its session ID.
+    pub async fn start_sender(&self, cfg: SenderConfig) -> SessionId {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(Command::StartSender {
+            cfg,
+            reply: reply_tx,
+        });
+        reply_rx.await.expect("start_sender reply")
+    }
+
+    /// Request that the runtime spin up a receiver immediately.
+    #[allow(dead_code)]
+    pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(Command::StartReceiver {
+            cfg,
+            reply: reply_tx,
+        });
+        reply_rx.await.expect("start_receiver reply")
+    }
+
+    /// Request that the runtime stage a receiver that will be paired once the
+    /// control-plane assigns a session ID (pending receivers cover this race).
+    pub async fn start_receiver_pending(
+        &self,
+        cfg: ReceiverConfig,
+        key: PendingReceiverKey,
+    ) -> SessionId {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(Command::StartReceiverPending {
+            cfg,
+            key,
+            reply: reply_tx,
+        });
+        reply_rx.await.expect("start_receiver_pending reply")
+    }
+
+    /// Cancel a session regardless of whether it is a sender or receiver.
+    pub fn stop(&self, session: SessionId) {
+        let _ = self.tx.send(Command::Stop { session });
+    }
+
+    /// Deliver an inbound reliable frame to the owning session's queue.
+    pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
+        let _ = self.tx.send(Command::Deliver { session, frame });
+    }
+
+    /// Wait until the runtime observes completion (EOT/ACKs) for a session.
+    pub async fn wait_completion(&self, session: SessionId) -> bool {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(Command::Wait {
+            session,
+            reply: reply_tx,
+        });
+        reply_rx.await.unwrap_or(false)
+    }
+
+    /// Reserve the next session identifier from the runtime's allocator.
+    #[allow(dead_code)]
+    pub async fn allocate_session_id(&self) -> SessionId {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(Command::AllocateSession { reply: reply_tx });
+        reply_rx.await.expect("allocate_session_id reply")
+    }
+
+    /// Notify the runtime that the control plane finished installing topology.
+    pub fn set_topology_ready(&self, ready: bool) {
+        let _ = self.tx.send(Command::SetTopologyReady { ready });
     }
 }
 
 /// Tracks running reliable sessions along with their inboxes and join handles.
 /// This is the actor that processes commands and manages session lifecycle.
-struct SessionManager {
+struct ReliableRuntime {
     processors: ProcessorHandle,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
@@ -107,8 +171,8 @@ struct PendingReceiver {
     reply: oneshot::Sender<SessionId>,
 }
 
-impl SessionManager {
-    /// Construct a manager that can spawn sender/receiver tasks and track their lifetimes.
+impl ReliableRuntime {
+    /// Construct a runtime that can spawn sender/receiver tasks and track their lifetimes.
     fn new(processors: ProcessorHandle, command_rx: mpsc::UnboundedReceiver<Command>) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
         Self {
@@ -123,8 +187,8 @@ impl SessionManager {
         }
     }
 
-    /// Main event loop for the SessionManager actor.
-    /// Processes commands from the ReliableHandle.
+    /// Main event loop for the ReliableRuntime actor.
+    /// Processes commands from the ReliableRuntimeHandle.
     async fn run(&mut self) {
         while let Some(cmd) = self.command_rx.recv().await {
             match cmd {
@@ -158,7 +222,7 @@ impl SessionManager {
                 }
             }
         }
-        warn!("SessionManager command loop terminated.");
+        warn!("ReliableRuntime command loop terminated.");
     }
 
     /// Handles delivery of inbound frames to sessions.
