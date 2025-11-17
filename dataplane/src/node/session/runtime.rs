@@ -277,10 +277,10 @@ impl ReliableRuntime {
 
     /// Handles wait command by spawning a separate task.
     fn handle_wait(&mut self, session: SessionId, reply: oneshot::Sender<bool>) {
-        // Take ownership of the task handle and clean up inputs immediately.
-        // The task is completing, so the input channel is no longer needed.
+        // Take ownership of the task handle. Note: we don't remove inputs here
+        // because for pending receivers, the task hasn't been spawned yet and
+        // frames may still arrive. Cleanup happens in stop() after wait completes.
         let handle = self.take_task(session);
-        self.inputs.remove(&session);
 
         tokio::spawn(async move {
             if let Some(handle) = handle {
