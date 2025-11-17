@@ -11,9 +11,10 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{error, warn};
 
+use nextmini_messages::{GroupDirectoryEntry, GroupId, GroupRoutingTableEntry};
+
 use crate::node::packet::Packet;
 use crate::node::{FlowId, FlowIdExt, NodeId};
-use nextmini_messages::{GroupDirectoryEntry, GroupId, GroupRoutingTableEntry};
 
 #[derive(Clone)]
 /// Shared entry point used by the dataplane to push packets or payloads toward
@@ -58,7 +59,6 @@ pub struct PayloadDelivery {
     pub message_id: Option<u64>,
     pub total_len: Option<u32>,
     pub fragment_count: Option<u16>,
-    pub payload_format: PayloadFormat,
 }
 
 impl PayloadDelivery {
@@ -73,18 +73,10 @@ impl PayloadDelivery {
             total_len = ?self.total_len,
             fragment_count = ?self.fragment_count,
             message_id = ?self.message_id,
-            format = ?self.payload_format,
             "PythonInterface: queue unavailable for flow {}; dropping payload delivery.",
             self.flow_id
         );
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum PayloadFormat {
-    Payload,
-    RawPacket,
 }
 
 impl PythonInterfaceHandle {
@@ -218,7 +210,6 @@ fn raw_payload_delivery(packet: &Packet) -> PayloadDelivery {
         message_id: None,
         total_len: None,
         fragment_count: None,
-        payload_format: PayloadFormat::RawPacket,
     }
 }
 
@@ -346,7 +337,6 @@ mod tests {
         assert_eq!(payload.message_id, None);
         assert_eq!(payload.total_len, None);
         assert_eq!(payload.fragment_count, None);
-        assert_eq!(payload.payload_format, PayloadFormat::RawPacket);
     }
 
     #[tokio::test]

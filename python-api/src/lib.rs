@@ -1,11 +1,11 @@
 mod buffer;
 
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
@@ -23,20 +23,19 @@ use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini::node::controller::interface::ControllerInterfaceHandle;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::python::interface::{
-    PayloadDelivery as RustPayloadDelivery, PayloadFormat as RustPayloadFormat, PythonDelivery,
-    PythonEvent, PythonInterfaceHandle,
+    PayloadDelivery as RustPayloadDelivery, PythonDelivery, PythonEvent, PythonInterfaceHandle,
 };
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini::node::reliable::session as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
 
 pub use crate::buffer::FrozenBuffer;
@@ -44,7 +43,7 @@ pub use crate::buffer::FrozenBuffer;
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
 
-#[cfg(feature = "reliable")]
+#[cfg(feature = "python-extension")]
 type BufferRegistry = Arc<StdMutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
 
 fn rt() -> &'static tokio::runtime::Runtime {
@@ -127,7 +126,6 @@ struct PyPayloadDelivery {
     message_id: Option<u64>,
     total_len: Option<u32>,
     fragment_count: Option<u16>,
-    format: String,
 }
 
 #[pymethods]
@@ -181,11 +179,6 @@ impl PyPayloadDelivery {
     fn fragment_count(&self) -> Option<u16> {
         self.fragment_count
     }
-
-    #[getter]
-    fn payload_format(&self) -> &str {
-        &self.format
-    }
 }
 
 impl From<RustPayloadDelivery> for PyPayloadDelivery {
@@ -200,10 +193,6 @@ impl From<RustPayloadDelivery> for PyPayloadDelivery {
             message_id: payload.message_id,
             total_len: payload.total_len,
             fragment_count: payload.fragment_count,
-            format: match payload.payload_format {
-                RustPayloadFormat::Payload => "payload".to_string(),
-                RustPayloadFormat::RawPacket => "raw_packet".to_string(),
-            },
         }
     }
 }
@@ -215,31 +204,31 @@ struct Dataplane {
     processor: ProcessorHandle,
     controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     reliable: Option<RustReliableHandle>,
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
 }
 
 impl Dataplane {
-    #[cfg(feature = "reliable")]
-    fn remember_session(&self, group_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
+    #[cfg(feature = "python-extension")]
+    fn remember_session(&self, dest_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
         if let Ok(mut guard) = self.session_registry.lock() {
-            guard.insert((group_ip, source_node_id), session_id);
+            guard.insert((dest_ip, source_node_id), session_id);
         }
     }
 
-    #[cfg(feature = "reliable")]
-    fn lookup_session(&self, group_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
+    #[cfg(feature = "python-extension")]
+    fn lookup_session(&self, dest_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
         self.session_registry
             .lock()
             .ok()
-            .and_then(|guard| guard.get(&(group_ip, source_node_id)).copied())
+            .and_then(|guard| guard.get(&(dest_ip, source_node_id)).copied())
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
         if let Ok(mut guard) = self.buffer_registry.lock() {
             guard.insert(session_id, buf);
@@ -250,10 +239,10 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
+    #[pyo3(signature = (dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
     fn send_data(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         receiver_ids: Vec<usize>,
         buffer: FrozenBuffer,
         chunk_size: usize,
@@ -263,7 +252,7 @@ impl Dataplane {
         congestion: Option<String>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
-        let group_ip_addr = parse_ipv4(group_ip)?;
+        let dest_ip_addr = parse_ipv4(dest_ip)?;
         if receiver_ids.is_empty() {
             return Err(PyRuntimeError::new_err(
                 "receiver_ids must contain at least one entry.",
@@ -283,7 +272,7 @@ impl Dataplane {
 
         #[allow(unused_variables)]
         let mut sid = session_id.unwrap_or_else(next_py_message_id);
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
@@ -301,7 +290,7 @@ impl Dataplane {
                 }
                 let common = reliable_session::CommonConfig {
                     session_id: sid,
-                    group_ip: group_ip_addr,
+                    dest_ip: dest_ip_addr,
                     chunk_size,
                     src_port: sp,
                     dst_port: dp,
@@ -318,10 +307,9 @@ impl Dataplane {
                     source_buffer: buffer.inner.clone(),
                     ready_grace_ms: reliable_cfg.ready_grace_ms,
                     topology_ready: None,
-                    routes_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
-                self.remember_session(group_ip_addr, self.cfg.node_id, started_sid);
+                self.remember_session(dest_ip_addr, self.cfg.node_id, started_sid);
                 return Ok(started_sid);
             }
         }
@@ -330,10 +318,10 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
+    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
     fn receive_data(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         source_node_id: usize,
         expected_bytes: u64,
         chunk_size: usize,
@@ -342,7 +330,7 @@ impl Dataplane {
         session_id: Option<u64>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
-        let ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(dest_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
@@ -352,7 +340,7 @@ impl Dataplane {
         }
 
         let sid = session_id.unwrap_or_else(next_py_message_id);
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
                 let reliable_cfg = &self.cfg.reliable;
@@ -366,7 +354,7 @@ impl Dataplane {
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = reliable_session::CommonConfig {
                     session_id: resolved_sid.unwrap_or(0),
-                    group_ip: ip,
+                    dest_ip: ip,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
@@ -386,7 +374,7 @@ impl Dataplane {
                     rt().block_on(handle.start_receiver(cfg))
                 } else {
                     let key = reliable_session::PendingReceiverKey {
-                        group_ip: ip,
+                        dest_ip: ip,
                         source_node_id,
                     };
                     rt().block_on(handle.start_receiver_pending(cfg, key))
@@ -402,7 +390,7 @@ impl Dataplane {
 
     #[pyo3(signature = (session_id, timeout_ms=None))]
     fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
                 let fut = handle.wait_completion(session_id);
@@ -424,7 +412,7 @@ impl Dataplane {
         Ok(false)
     }
 
-    #[cfg(feature = "reliable")]
+    #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id, consume=true))]
     fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
         let buf_arc = {
@@ -456,27 +444,27 @@ impl Dataplane {
         Ok(FrozenBuffer::from_bytes(bytes))
     }
 
-    #[cfg(feature = "reliable")]
-    #[pyo3(signature = (group_ip, source_node_id, session_id))]
+    #[cfg(feature = "python-extension")]
+    #[pyo3(signature = (dest_ip, source_node_id, session_id))]
     fn reliable_register_session_id(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         source_node_id: usize,
         session_id: u64,
     ) -> PyResult<()> {
-        let ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(dest_ip)?;
         self.remember_session(ip, source_node_id, session_id);
         Ok(())
     }
 
-    #[cfg(feature = "reliable")]
-    #[pyo3(signature = (group_ip, source_node_id))]
+    #[cfg(feature = "python-extension")]
+    #[pyo3(signature = (dest_ip, source_node_id))]
     fn reliable_lookup_session_id(
         &self,
-        group_ip: &str,
+        dest_ip: &str,
         source_node_id: usize,
     ) -> PyResult<Option<u64>> {
-        let ip = parse_ipv4(group_ip)?;
+        let ip = parse_ipv4(dest_ip)?;
         Ok(self.lookup_session(ip, source_node_id))
     }
 
@@ -496,7 +484,7 @@ impl Dataplane {
         cfg.config_path = config_path.to_string();
         let controller = conductor.controller_handle();
 
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         let reliable = conductor.reliable_handle();
 
         // enters the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new() succeeds
@@ -513,9 +501,9 @@ impl Dataplane {
             conductor.run().await;
         });
 
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         let session_registry = Arc::new(StdMutex::new(HashMap::new()));
-        #[cfg(feature = "reliable")]
+        #[cfg(feature = "python-extension")]
         let buffer_registry = Arc::new(StdMutex::new(HashMap::new()));
 
         Ok(Self {
@@ -524,11 +512,11 @@ impl Dataplane {
             processor,
             controller,
             _join: join,
-            #[cfg(feature = "reliable")]
-            reliable,
-            #[cfg(feature = "reliable")]
+            #[cfg(feature = "python-extension")]
+            reliable: Some(reliable),
+            #[cfg(feature = "python-extension")]
             session_registry,
-            #[cfg(feature = "reliable")]
+            #[cfg(feature = "python-extension")]
             buffer_registry,
         })
     }

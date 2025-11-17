@@ -307,10 +307,14 @@ impl UserSpaceClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use tokio::time::{Duration, sleep, timeout};
+
+    use nextmini_messages::{FlowSpec, FlowTransport};
+
     use crate::node::FlowIdExt;
     use crate::node::controller::interface::ControllerInterfaceHandle;
     use crate::node::processor::ProcessorMessage;
-    use tokio::time::{Duration, sleep, timeout};
 
     fn make_test_config() -> LocalConfig {
         LocalConfig {
@@ -328,10 +332,11 @@ mod tests {
             controller_id: Some(42),
             src_node_id: 1,
             dst_node_id,
-            flow_spec: nextmini_messages::FlowSpec {
+            flow_spec: FlowSpec {
                 flow_len: FlowLen::Bytes(1024),
                 flow_rate: Some(1_000_000),
                 flow_weight: weight,
+                transport: FlowTransport::Tcp,
             },
         }
     }

@@ -276,7 +276,7 @@ impl Packet {
     }
 
     /// Compute the flow identifier directly from the IPv4+TCP tuple.
-    #[allow(dead_code)] // Only constructed through the python bindings crate.
+    #[allow(dead_code)]
     pub fn flow_id_from_parts(
         src_ip: Ipv4Addr,
         src_port: u16,
@@ -298,7 +298,6 @@ impl Packet {
 
     /// Construct a minimal IPv4/TCP packet that wraps the provided payload.
     /// Checksums are omitted—the overlay stack guarantees integrity.
-    #[allow(dead_code)] // Only constructed through the python bindings crate.
     pub fn build_ipv4_tcp_packet(
         src_ip: Ipv4Addr,
         src_port: u16,

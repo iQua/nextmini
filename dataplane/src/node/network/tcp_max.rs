@@ -14,15 +14,14 @@ use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
 
 pub struct TcpMaxServer {
-    #[allow(dead_code)] // Retained for runtime scheduler initialization.
-    config: LocalConfig,
+    // Retained for runtime scheduler initialization.
     processors: ProcessorHandle,
 }
 
 /// TcpMaxServer supports both SOCKS5 proxy requests and direct TCP max connections.
 impl TcpMaxServer {
-    pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self { config, processors }
+    pub fn new(processors: ProcessorHandle) -> Self {
+        Self { processors }
     }
 
     /// Accepts incoming TCP connections.

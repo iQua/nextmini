@@ -9,8 +9,8 @@ pub mod namespace;
 pub mod network;
 pub mod packet;
 pub mod processor;
+#[cfg(feature = "python-extension")]
 pub mod python;
-#[cfg(feature = "reliable")]
 pub mod reliable;
 pub mod route;
 pub mod scheduler;

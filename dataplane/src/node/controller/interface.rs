@@ -1,19 +1,24 @@
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+#[cfg(feature = "python-extension")]
 use std::sync::Arc;
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc};
+#[cfg(feature = "python-extension")]
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::time::{Duration, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupId};
+use nextmini_messages::{
+    ControllerToDataplane, DataplaneToController, Flow, FlowTransport, GroupId,
+};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
@@ -23,9 +28,10 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "python-extension")]
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
-#[cfg(feature = "reliable")]
 use crate::node::reliable::api::ReliableHandle;
+use crate::node::reliable::unicast::ReliableUnicastFlowHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
 #[derive(Clone)]
@@ -33,6 +39,7 @@ pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }
 
@@ -40,7 +47,7 @@ pub struct ControllerInterfaceHandle {
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-        #[cfg(feature = "reliable")] reliable: Option<ReliableHandle>,
+        reliable: ReliableHandle,
     ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
@@ -56,12 +63,14 @@ impl ControllerInterfaceHandle {
             northbridge_receiver,
         };
 
+        #[cfg(feature = "python-extension")]
         let python_interface = Arc::new(Mutex::new(None));
 
         let controller_interface = Self {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            #[cfg(feature = "python-extension")]
             python_interface: python_interface.clone(),
         };
 
@@ -91,18 +100,34 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
+        let reliable_unicast = ReliableUnicastFlowHandle::new(
+            config.clone(),
+            processors.clone(),
+            flowstats_reporter.clone(),
+            reliable.clone(),
+        );
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
+            controller: controller_interface.clone(),
             config: config.clone(),
             receiver_stream,
             processors: processors.clone(),
             reporter: reporter.clone(),
             user_space_client,
             user_space_server,
+            #[cfg(feature = "python-extension")]
             python_interface,
-            #[cfg(feature = "reliable")]
             reliable,
-            #[cfg(feature = "reliable")]
             group_ip_by_id: HashMap::new(),
+            reliable_unicast,
+            topology_ready: false,
+            pending_tcp_flows: Vec::new(),
+            pending_reliable_flows: Vec::new(),
+            expected_neighbor_count: 0,
+            connected_neighbor_count: 0,
+            routes_installed: false,
+            group_directory_installed: false,
+            local_topology_ready_sent: false,
         };
 
         tokio::spawn(async move {
@@ -193,6 +218,7 @@ impl ControllerInterfaceHandle {
         };
     }
 
+    #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub async fn attach_python_interface(&self, interface: PythonInterfaceHandle) {
         let mut guard = self.python_interface.lock().await;
@@ -251,6 +277,7 @@ impl DataplaneToControllerSender {
 
 /// An actor used for receiving messages from the controller and broadcasts them to the processors.
 pub struct ControllerToDataplaneReceiver {
+    controller: ControllerInterfaceHandle,
     config: LocalConfig,
     receiver_stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
     processors: ProcessorHandle,
@@ -262,11 +289,20 @@ pub struct ControllerToDataplaneReceiver {
     user_space_client: UserSpaceClientHandle,
     user_space_server: UserSpaceServerHandle,
 
+    #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
-    #[cfg(feature = "reliable")]
-    reliable: Option<ReliableHandle>,
-    #[cfg(feature = "reliable")]
+
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
+    reliable: ReliableHandle,
+    reliable_unicast: ReliableUnicastFlowHandle,
+    topology_ready: bool,
+    pending_tcp_flows: Vec<Flow>,
+    pending_reliable_flows: Vec<Flow>,
+    expected_neighbor_count: usize,
+    connected_neighbor_count: usize,
+    routes_installed: bool,
+    group_directory_installed: bool,
+    local_topology_ready_sent: bool,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -306,6 +342,8 @@ impl ControllerToDataplaneReceiver {
                 remote_addr,
             } => {
                 // creates a new persistent TCP connection to the remote node
+                self.expected_neighbor_count += 1;
+
                 let network_interface = NetworkInterfaceHandle::new_as_client(
                     self.config.clone(),
                     remote_node_id,
@@ -318,6 +356,8 @@ impl ControllerToDataplaneReceiver {
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
                 let _ = self.processors.add_node(remote_node_id, scheduler);
+
+                self.record_neighbor_connected(remote_node_id).await;
             }
 
             ControllerToDataplane::AddNodeAddress {
@@ -346,29 +386,66 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.processors.update_routing_table(routes).await;
+                self.routes_installed = true;
+                self.maybe_send_local_topology_ready().await;
             }
 
             ControllerToDataplane::AddFlows { flows } => {
-                let mut client_flows = Vec::new();
+                let mut tcp_flows = Vec::new();
+                let mut reliable_flows = Vec::new();
 
                 for flow in &flows {
-                    if flow.dst_node_id == self.config.node_id {
-                        // this node is the server for this flow
-                        self.user_space_server.store_flow_spec(flow.clone());
-                    }
-                    if flow.src_node_id == self.config.node_id {
-                        // this node is the client for this flow
-                        client_flows.push(flow.clone());
+                    match flow.flow_spec.transport {
+                        FlowTransport::Tcp => {
+                            if flow.dst_node_id == self.config.node_id {
+                                // this node is the server for this flow
+                                self.user_space_server.store_flow_spec(flow.clone());
+                            }
+                            if flow.src_node_id == self.config.node_id {
+                                // this node is the client for this flow
+                                tcp_flows.push(flow.clone());
+                            }
+                        }
+                        FlowTransport::ReliableUnicast => {
+                            if flow.src_node_id == self.config.node_id
+                                || flow.dst_node_id == self.config.node_id
+                            {
+                                reliable_flows.push(flow.clone());
+                            }
+                        }
                     }
                 }
 
-                if !client_flows.is_empty() {
-                    info!(
-                        "Adding {} user-space flows to node {}.",
-                        client_flows.len(),
-                        self.config.node_id
-                    );
-                    self.user_space_client.add_flows(client_flows);
+                if !tcp_flows.is_empty() {
+                    if self.topology_ready {
+                        self.start_tcp_flows(tcp_flows);
+                    } else {
+                        info!(
+                            "Deferring {} user-space TCP flows on node {} until the topology is ready.",
+                            tcp_flows.len(),
+                            self.config.node_id
+                        );
+                        self.pending_tcp_flows.extend(tcp_flows.into_iter());
+                    }
+                }
+
+                if !reliable_flows.is_empty() {
+                    if self.topology_ready {
+                        info!(
+                            "Adding {} reliable unicast flows to node {}.",
+                            reliable_flows.len(),
+                            self.config.node_id
+                        );
+                        self.reliable_unicast.add_flows(reliable_flows);
+                    } else {
+                        info!(
+                            "Deferring {} reliable unicast flows on node {} until the topology is ready.",
+                            reliable_flows.len(),
+                            self.config.node_id
+                        );
+                        self.pending_reliable_flows
+                            .extend(reliable_flows.into_iter());
+                    }
                 }
             }
 
@@ -377,17 +454,11 @@ impl ControllerToDataplaneReceiver {
                     "Controller signaled that all nodes are connected; topology state is ready on node {}.",
                     self.config.node_id
                 );
-                #[cfg(feature = "reliable")]
-                {
-                    if let Some(handle) = &self.reliable {
-                        handle.set_topology_ready(true);
-                    } else {
-                        warn!(
-                            "TopologyReady received but reliable subsystem is not attached on node {}.",
-                            self.config.node_id
-                        );
-                    }
-                }
+
+                self.topology_ready = true;
+                self.reliable.set_topology_ready(true);
+
+                self.flush_pending_flows();
             }
 
             ControllerToDataplane::GroupCreated {
@@ -400,6 +471,7 @@ impl ControllerToDataplaneReceiver {
                     group_id, group_ip, src_node_id
                 );
 
+                #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupCreated {
@@ -418,19 +490,20 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id
                 );
                 self.processors.update_group_directory(groups.clone()).await;
-                #[cfg(feature = "reliable")]
-                {
-                    self.group_ip_by_id.clear();
-                    for entry in &groups {
-                        self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
-                    }
+                self.group_ip_by_id.clear();
+                for entry in &groups {
+                    self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
                 }
 
+                #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupDirectoryUpdated { entries: groups })
                         .await;
                 }
+
+                self.group_directory_installed = true;
+                self.maybe_send_local_topology_ready().await;
             }
 
             ControllerToDataplane::InstallGroupRoutes {
@@ -445,25 +518,15 @@ impl ControllerToDataplaneReceiver {
                     self.config.node_id,
                     routes.len()
                 );
+
+                #[cfg(feature = "python-extension")]
                 let cloned_routes = routes.clone();
+
                 self.processors
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
 
-                #[cfg(feature = "reliable")]
-                {
-                    if let Some(handle) = &self.reliable {
-                        if let Some(ip) = self.group_ip_by_id.get(&group_id) {
-                            handle.set_group_routes_ready(*ip, src_node_id);
-                        } else {
-                            warn!(
-                                "InstallGroupRoutes received for unknown group {}; reliable senders may block.",
-                                group_id
-                            );
-                        }
-                    }
-                }
-
+                #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
                     py_if
                         .publish_event(PythonEvent::GroupRoutesInstalled {
@@ -489,6 +552,84 @@ impl ControllerToDataplaneReceiver {
         }
     }
 
+    async fn record_neighbor_connected(&mut self, remote_node_id: usize) {
+        self.connected_neighbor_count += 1;
+        info!(
+            "Dataplane node {} connected to neighbor {} ({}/{} ready).",
+            self.config.node_id,
+            remote_node_id,
+            self.connected_neighbor_count,
+            self.expected_neighbor_count
+        );
+        self.maybe_send_local_topology_ready().await;
+    }
+
+    async fn maybe_send_local_topology_ready(&mut self) {
+        if self.local_topology_ready_sent {
+            return;
+        }
+
+        if self.connected_neighbor_count < self.expected_neighbor_count {
+            return;
+        }
+
+        if !self.routes_installed || !self.group_directory_installed {
+            return;
+        }
+
+        self.local_topology_ready_sent = true;
+        info!(
+            "Local topology ready on node {}; notifying controller.",
+            self.config.node_id
+        );
+
+        self.controller
+            .send(DataplaneToController::NodeTopologyReady {
+                node_id: self.config.node_id,
+            })
+            .await;
+    }
+
+    fn start_tcp_flows(&mut self, flows: Vec<Flow>) {
+        if flows.is_empty() {
+            return;
+        }
+
+        info!(
+            "Adding {} user-space TCP flows to node {}.",
+            flows.len(),
+            self.config.node_id
+        );
+        self.user_space_client.add_flows(flows);
+    }
+
+    fn flush_pending_flows(&mut self) {
+        if !self.pending_tcp_flows.is_empty() {
+            let pending = std::mem::take(&mut self.pending_tcp_flows);
+
+            info!(
+                "Topology ready on node {}; starting {} deferred user-space flows.",
+                self.config.node_id,
+                pending.len()
+            );
+
+            self.start_tcp_flows(pending);
+        }
+
+        if !self.pending_reliable_flows.is_empty() {
+            let pending = std::mem::take(&mut self.pending_reliable_flows);
+
+            info!(
+                "Topology ready on node {}; starting {} deferred reliable unicast flows.",
+                self.config.node_id,
+                pending.len()
+            );
+
+            self.reliable_unicast.add_flows(pending);
+        }
+    }
+
+    #[cfg(feature = "python-extension")]
     async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
         self.python_interface.lock().await.clone()
     }

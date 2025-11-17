@@ -7,8 +7,8 @@ use petgraph::graph::DiGraph;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, GroupId, GroupRoutingTableEntry, INVALID,
-    NodeSpec, OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, GroupId, GroupRoutingTableEntry,
+    INVALID, NodeSpec, OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry,
     SchedulingDiscipline,
 };
 
@@ -74,33 +74,48 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
 }
 
 /// Builds an AddFlow message for flows.
-pub fn build_flows_for_node(flows: Vec<DbFlow>) -> ControllerToDataplane {
-    let flows: Vec<Flow> = flows
-        .into_iter()
-        .map(|flow| {
-            debug!("Building an AddFlow message for flow id {}", flow.id);
+pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> ControllerToDataplane {
+    let mut built = Vec::new();
 
-            // converts database Flow to message Flow.
-            let flow_len = match flow.flow_len_type.as_str() {
-                "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
-                "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
-                _ => FlowLen::Bytes(0), // default fallback
-            };
+    for flow in flows {
+        debug!("Building an AddFlow message for flow id {}", flow.id);
 
-            Flow {
-                controller_id: Some(flow.id),
-                src_node_id: flow.src_node_id as usize,
-                dst_node_id: flow.dst_node_id as usize,
-                flow_spec: FlowSpec {
-                    flow_len,
-                    flow_rate: flow.flow_rate.map(|r| r as usize),
-                    flow_weight: flow.flow_weight.map(|w| w as usize),
-                },
+        let flow_len = match flow.flow_len_type.as_str() {
+            "bytes" => FlowLen::Bytes(flow.flow_len_bytes.unwrap_or(0) as usize),
+            "duration" => FlowLen::Duration(flow.flow_len_duration.unwrap_or(0.0)),
+            other => {
+                warn!(
+                    "Flow {} has unsupported flow_len_type {}; skipping.",
+                    flow.id, other
+                );
+                continue;
             }
-        })
-        .collect();
+        };
 
-    ControllerToDataplane::AddFlows { flows }
+        let flow_spec = FlowSpec {
+            flow_len,
+            flow_rate: flow.flow_rate.map(|r| r as usize),
+            flow_weight: flow.flow_weight.map(|w| w as usize),
+            transport,
+        };
+
+        if let Err(err) = flow_spec.validate() {
+            warn!(
+                "Skipping flow {} ({} -> {}): {}.",
+                flow.id, flow.src_node_id, flow.dst_node_id, err
+            );
+            continue;
+        }
+
+        built.push(Flow {
+            controller_id: Some(flow.id),
+            src_node_id: flow.src_node_id as usize,
+            dst_node_id: flow.dst_node_id as usize,
+            flow_spec,
+        });
+    }
+
+    ControllerToDataplane::AddFlows { flows: built }
 }
 
 /// Creates a DiGraph with proper node mapping from edges, preserving the relationship
@@ -252,64 +267,7 @@ pub fn allocate_multicast_ip(base_addr: Ipv4Addr, mask: Ipv4Addr, ordinal: u32) 
     Ipv4Addr::from(network | offset)
 }
 
-/// Compute a multicast DAG by unioning shortest paths from src to each member.
-#[allow(dead_code)]
-pub fn compute_group_tree_edges(
-    src_node_id: u32,
-    member_node_ids: &[u32],
-    undirected_edges: &[(u32, u32)],
-) -> Vec<(u32, u32)> {
-    if member_node_ids.is_empty() || undirected_edges.is_empty() {
-        return Vec::new();
-    }
-
-    let mut bidirectional = Vec::with_capacity(undirected_edges.len() * 2);
-    for &(a, b) in undirected_edges {
-        bidirectional.push((a, b));
-        bidirectional.push((b, a));
-    }
-
-    let (_node_ids, node_map, graph) = create_graph_with_mapping(&bidirectional);
-    let Some(&src_idx) = node_map.get(&src_node_id) else {
-        warn!(
-            "Source node {} missing from topology, unable to compute multicast DAG.",
-            src_node_id
-        );
-        return Vec::new();
-    };
-
-    let mut seen = HashSet::new();
-    let mut dag = Vec::new();
-    let mut shortest_path = routing::ShortestPath::new(graph.clone());
-
-    for &member in member_node_ids {
-        if member == src_node_id {
-            continue;
-        }
-
-        let Some(&dst_idx) = node_map.get(&member) else {
-            warn!(
-                "Member node {} missing from topology; skipping in multicast tree.",
-                member
-            );
-            continue;
-        };
-
-        let path = shortest_path.compute_route(src_idx, dst_idx);
-        for window in path.windows(2) {
-            let from = graph[window[0]];
-            let to = graph[window[1]];
-            if seen.insert((from, to)) {
-                dag.push((from, to));
-            }
-        }
-    }
-
-    dag
-}
-
 /// Build per-node multicast routing entries including local delivery for members.
-#[allow(dead_code)]
 pub fn build_group_routes_for_node(
     group_id: GroupId,
     src_node_id: u32,
@@ -511,6 +469,61 @@ mod tests {
     use super::*;
     use crate::models::Route;
     use std::collections::HashSet;
+
+    /// Compute a multicast DAG by unioning shortest paths from src to each member.
+    pub fn compute_group_tree_edges(
+        src_node_id: u32,
+        member_node_ids: &[u32],
+        undirected_edges: &[(u32, u32)],
+    ) -> Vec<(u32, u32)> {
+        if member_node_ids.is_empty() || undirected_edges.is_empty() {
+            return Vec::new();
+        }
+
+        let mut bidirectional = Vec::with_capacity(undirected_edges.len() * 2);
+        for &(a, b) in undirected_edges {
+            bidirectional.push((a, b));
+            bidirectional.push((b, a));
+        }
+
+        let (_node_ids, node_map, graph) = create_graph_with_mapping(&bidirectional);
+        let Some(&src_idx) = node_map.get(&src_node_id) else {
+            warn!(
+                "Source node {} missing from topology, unable to compute multicast DAG.",
+                src_node_id
+            );
+            return Vec::new();
+        };
+
+        let mut seen = HashSet::new();
+        let mut dag = Vec::new();
+        let mut shortest_path = routing::ShortestPath::new(graph.clone());
+
+        for &member in member_node_ids {
+            if member == src_node_id {
+                continue;
+            }
+
+            let Some(&dst_idx) = node_map.get(&member) else {
+                warn!(
+                    "Member node {} missing from topology; skipping in multicast tree.",
+                    member
+                );
+                continue;
+            };
+
+            let path = shortest_path.compute_route(src_idx, dst_idx);
+            for window in path.windows(2) {
+                let from = graph[window[0]];
+                let to = graph[window[1]];
+                if seen.insert((from, to)) {
+                    dag.push((from, to));
+                }
+            }
+        }
+
+        dag
+    }
 
     #[test]
     fn test_compute_group_tree_edges_union_shortest_paths() {

@@ -11,8 +11,8 @@ use serde::Deserialize;
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, INVALID, OperatingMode, Protocol,
-    SchedulingDiscipline, TokenBucketSpec,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, INVALID, OperatingMode,
+    Protocol, SchedulingDiscipline, TokenBucketSpec,
 };
 
 use crate::node::scheduler::drop::DropStrategy;
@@ -287,6 +287,7 @@ pub struct LocalConfig {
             flow_len: FlowLen::Bytes(1_000_000_000),
             flow_rate: None,
             flow_weight: None,
+            transport: FlowTransport::Tcp,
         },
     }])]
     #[arg(skip)]
@@ -342,7 +343,7 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
 
-    /// Reliable multicast default configuration (used when the reliable subsystem is enabled).
+    /// Reliable session default configuration (used when the reliable subsystem is enabled).
     #[default(Default::default())]
     #[arg(skip)]
     pub reliable: ReliableConfig,
@@ -350,7 +351,8 @@ pub struct LocalConfig {
 
 impl LocalConfig {
     /// Creates a `LocalConfig` from a TOML string while applying ClapSerde defaults.
-    #[allow(dead_code)] // Parsed from the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
         let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
         Ok(LocalConfig::from(&mut opt))
@@ -628,8 +630,7 @@ impl LocalConfig {
     }
 }
 
-/// Reliable multicast configuration knobs (consumed when the reliable subsystem is enabled).
-#[allow(dead_code)]
+/// Reliable session configuration knobs (consumed when the reliable subsystem is enabled).
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReliableConfig {
     /// Default data chunk size in bytes.

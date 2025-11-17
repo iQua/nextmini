@@ -13,13 +13,9 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-#[cfg(feature = "reliable")]
-use nextmini_messages::INVALID;
-#[cfg(feature = "reliable")]
-use nextmini_messages::rlm;
 use nextmini_messages::{
-    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, OperatingMode, RoutingTableEntry,
-    TokenBucketSpec,
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
+    RoutingTableEntry, TokenBucketSpec, reliable_session,
 };
 
 use crate::node::config::{Feature, LocalConfig};
@@ -31,8 +27,8 @@ use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
+#[cfg(feature = "python-extension")]
 use crate::node::python::interface::PythonInterfaceHandle;
-#[cfg(feature = "reliable")]
 use crate::node::reliable::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
@@ -63,9 +59,8 @@ pub enum ProcessorMessage {
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
-    #[allow(dead_code)] // Only emitted when the python bridge is active.
+    #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
-    #[cfg(feature = "reliable")]
     ConnectReliableHandle(ReliableHandle),
 }
 
@@ -136,7 +131,8 @@ impl ProcessorHandle {
     }
 
     /// Connects the in-process Python interface so local packets can be delivered directly.
-    #[allow(dead_code)] // Only invoked from the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn connect_python_interface(&self, interface: PythonInterfaceHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -149,7 +145,6 @@ impl ProcessorHandle {
         };
     }
 
-    #[cfg(feature = "reliable")]
     pub fn connect_reliable_handle(&self, handle: ReliableHandle) {
         if let Err(e) = self
             .broadcast_sender()
@@ -746,8 +741,8 @@ struct Processor {
     schedulers: AHashMap<NodeId, SchedulerHandle>,
 
     // optional in-process Python delivery path
+    #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
-    #[cfg(feature = "reliable")]
     reliable_handle: Option<ReliableHandle>,
 }
 
@@ -767,8 +762,8 @@ impl Processor {
             flowstats_reporter: None,
             schedulers: AHashMap::new(),
             config,
+            #[cfg(feature = "python-extension")]
             python_interface: None,
-            #[cfg(feature = "reliable")]
             reliable_handle: None,
         }
     }
@@ -842,10 +837,10 @@ impl Processor {
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
             }
+            #[cfg(feature = "python-extension")]
             ProcessorMessage::ConnectPythonInterface(interface) => {
                 self.python_interface = Some(interface);
             }
-            #[cfg(feature = "reliable")]
             ProcessorMessage::ConnectReliableHandle(handle) => {
                 self.reliable_handle = Some(handle);
             }
@@ -918,12 +913,9 @@ impl Processor {
 
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
-            #[cfg(feature = "reliable")]
-            {
-                // if possible, deliver to the reliable transport subsystem
-                if self.try_deliver_reliable(&packet) {
-                    return;
-                }
+            // if possible, deliver to the reliable transport subsystem
+            if self.try_deliver_reliable(&packet) {
+                return;
             }
 
             // local TUN delivery: use the destination IP address to distinguish between the TUN interface
@@ -935,6 +927,7 @@ impl Processor {
                     error!("The local interface has not yet been connected.");
                 }
             } else {
+                #[cfg(feature = "python-extension")]
                 if let Some(ref py_if) = self.python_interface {
                     match py_if.deliver(packet).await {
                         Ok(()) => return,
@@ -950,9 +943,7 @@ impl Processor {
                 if let Some(sender) = dest
                     && sender.try_send(packet).is_err()
                 {
-                    tracing::error!(
-                        "Failed to send a packet in user-space flows to its local destination."
-                    );
+                    error!("Failed to send a packet in user-space flows to its local destination.");
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
@@ -960,7 +951,6 @@ impl Processor {
         }
     }
 
-    #[cfg(feature = "reliable")]
     fn try_deliver_reliable(&mut self, packet: &Packet) -> bool {
         let Some(handle) = self.reliable_handle.clone() else {
             return false;
@@ -968,9 +958,9 @@ impl Processor {
         let Some(payload) = packet.tcp_payload() else {
             return false;
         };
-        let session_id = if let Some((hdr, _, _)) = rlm::decode_data(payload) {
+        let session_id = if let Some((hdr, _, _)) = reliable_session::decode_data(payload) {
             hdr.session_id
-        } else if let Some((hdr, _)) = rlm::decode_control(payload) {
+        } else if let Some((hdr, _)) = reliable_session::decode_control(payload) {
             hdr.session_id
         } else {
             return false;
@@ -990,7 +980,7 @@ impl Processor {
             ReliableInboundFrame {
                 bytes: payload_vec,
                 peer_id,
-                group_ip: Some(packet.flow_id.dst_ip()),
+                dest_ip: Some(packet.flow_id.dst_ip()),
                 source_node_id: peer_id,
             },
         );

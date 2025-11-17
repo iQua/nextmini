@@ -19,7 +19,7 @@ use crate::utils::{
     build_routes_for_node, merge_all_routes,
 };
 use crate::{NodeWriterMap, WebSocketWriter};
-use nextmini_messages::{ControllerToDataplane, GroupRoutingTableEntry};
+use nextmini_messages::{ControllerToDataplane, FlowTransport, GroupRoutingTableEntry};
 use tracing::{error, info, warn};
 
 /// Creates the tables in the database, if they do not exist yet.
@@ -372,6 +372,13 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     for flow in config.flows.clone() {
         let src_node_id = flow.src_node_id as i32;
         let dst_node_id = flow.dst_node_id as i32;
+
+        if let Err(err) = flow.flow_spec.validate() {
+            panic!(
+                "Invalid custom flow {} -> {} in controller config: {}",
+                src_node_id, dst_node_id, err
+            );
+        }
 
         // converts the FlowLen to the database format
         let (flow_len_type, flow_len_bytes, flow_len_duration) = match flow.flow_spec.flow_len {
@@ -890,7 +897,11 @@ async fn recompute_and_push_group_routes(
     Ok(())
 }
 
-pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
+pub async fn setup_flow_notification(
+    db_pool: Arc<Pool<Postgres>>,
+    node_ws: NodeWriterMap,
+    flow_transport: FlowTransport,
+) {
     // creates the flow notification function and trigger
     let create_flow_function_sql = r#"
         CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
@@ -1000,7 +1011,10 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Node
                                             );
 
                                             let node_ws_guard = node_ws.read().await;
-                                            let msg = build_flows_for_node(vec![flow.clone()]);
+                                            let msg = build_flows_for_node(
+                                                vec![flow.clone()],
+                                                flow_transport,
+                                            );
                                             let msg_binary = rmp_serde::to_vec(&msg).unwrap();
 
                                             let src_node_id = flow.src_node_id as usize;

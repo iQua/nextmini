@@ -1,5 +1,6 @@
 /// Defines message enums for controller-dataplane communication.
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 
 use clap::ValueEnum;
@@ -7,7 +8,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 
 mod ip_ser;
-pub mod rlm;
+pub mod reliable_session;
 
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
@@ -49,6 +50,10 @@ pub enum DataplaneToController {
     FlowFinished {
         flows: Vec<FlowFinishedInfo>,
     },
+    /// Indicates that a dataplane node has finished wiring its local topology.
+    NodeTopologyReady {
+        node_id: usize,
+    },
     UserFlowStart {
         flows: Vec<UserFlowStart>,
     },
@@ -67,7 +72,7 @@ pub enum DataplaneToController {
     LeaveGroup {
         group_id: GroupId,
     },
-    /// Periodic reliable-multicast session stats from dataplane (feature-gated at source).
+    /// Periodic reliable session stats from dataplane (feature-gated at source).
     ReliableStats {
         stats: ReliableStats,
     },
@@ -107,7 +112,7 @@ pub struct RouteAssignment {
     pub time: i64,
 }
 
-/// Reliable-multicast session metrics (optional)
+/// Reliable session metrics (optional)
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ReliableStats {
     pub session_id: u64,
@@ -236,6 +241,15 @@ pub struct NodeSpec {
     pub operating_mode: OperatingMode,
 }
 
+/// Transport selection for controller-managed flows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowTransport {
+    #[default]
+    Tcp,
+    ReliableUnicast,
+}
+
 /// The traffic specification for a user-space TCP flow.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
@@ -246,13 +260,74 @@ pub struct Flow {
 }
 
 /// The specification of a user-space TCP flow.
-#[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Copy)]
+#[derive(Serialize, PartialEq, Debug, Clone, Copy)]
 pub struct FlowSpec {
     pub flow_len: FlowLen,
     #[serde(default)]
-    pub flow_rate: Option<usize>,
+    pub flow_rate: Option<usize>, // bytes per second
     #[serde(default)]
     pub flow_weight: Option<usize>,
+    #[serde(default)]
+    pub transport: FlowTransport,
+}
+
+impl<'de> Deserialize<'de> for FlowSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct FlowSpecSerde {
+            flow_len: FlowLen,
+            #[serde(default)]
+            flow_rate: Option<usize>,
+            #[serde(default)]
+            flow_weight: Option<usize>,
+            #[serde(default)]
+            transport: FlowTransport,
+        }
+
+        let helper = FlowSpecSerde::deserialize(deserializer)?;
+        let spec = FlowSpec {
+            flow_len: helper.flow_len,
+            flow_rate: helper.flow_rate,
+            flow_weight: helper.flow_weight,
+            transport: helper.transport,
+        };
+        spec.validate().map_err(de::Error::custom)?;
+        Ok(spec)
+    }
+}
+
+#[derive(Debug)]
+pub enum FlowSpecValidationError {
+    DurationMissingRate,
+}
+
+impl fmt::Display for FlowSpecValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FlowSpecValidationError::DurationMissingRate => {
+                write!(f, "duration-based flows require flow_rate (bytes/sec)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FlowSpecValidationError {}
+
+impl FlowSpec {
+    pub fn validate(&self) -> Result<(), FlowSpecValidationError> {
+        match self.flow_len {
+            FlowLen::Duration(_)
+                if self.flow_rate.is_none()
+                    && matches!(self.transport, FlowTransport::ReliableUnicast) =>
+            {
+                Err(FlowSpecValidationError::DurationMissingRate)
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The length of a user-space TCP flow, specified either by the number of bytes or by the duration of the flow.
@@ -267,6 +342,21 @@ impl FlowLen {
         match *self {
             FlowLen::Bytes(size) => sent_size >= size as u64,
             FlowLen::Duration(duration) => start_time.elapsed().as_secs_f64() >= duration,
+        }
+    }
+}
+
+impl Hash for FlowLen {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            FlowLen::Bytes(size) => {
+                0u8.hash(state);
+                size.hash(state);
+            }
+            FlowLen::Duration(duration) => {
+                1u8.hash(state);
+                duration.to_bits().hash(state);
+            }
         }
     }
 }

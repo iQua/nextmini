@@ -38,8 +38,8 @@ Note: This has only been tested on arbutus. Needs to change the name and version
 
 ```bash
 cd python-api
-# Build the wheel with the reliable feature enabled
-maturin build --release -F reliable
+# Build the wheel with the python-extension feature enabled
+maturin build --release -F python-extension
 cd ../examples/multicast-docker
 docker compose build
 docker compose up
@@ -54,7 +54,7 @@ cd examples/multicast-docker
 docker compose up
 ```
 
-By default `SKIP_BUILD=0`, so each container builds the `nextmini_py` extension in-place using `maturin develop -F reliable`. This works across machines (including macOS hosts) without prebuilding wheels.
+By default `SKIP_BUILD=0`, so each container builds the `nextmini_py` extension in-place using `maturin develop -F python-extension`. This works across machines (including macOS hosts) without prebuilding wheels.
 The first run will take a few minutes as the wheel is compiled.
 
 Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor, waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are negotiated inside the dataplane, and the receivers simply block in `receive_data` until the receiving completes, and then drain the payload via `get_data_buffer`.

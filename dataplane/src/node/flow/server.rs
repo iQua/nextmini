@@ -216,8 +216,10 @@ impl UserSpaceServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nextmini_messages::FlowLen;
+
     use std::time::Duration;
+
+    use nextmini_messages::{FlowLen, FlowTransport};
 
     fn make_test_config() -> LocalConfig {
         LocalConfig {
@@ -238,6 +240,7 @@ mod tests {
                 flow_len: FlowLen::Bytes(1024),
                 flow_rate: rate,
                 flow_weight: None,
+                transport: FlowTransport::Tcp,
             },
         }
     }

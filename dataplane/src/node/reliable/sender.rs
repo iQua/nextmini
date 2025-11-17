@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, HashSet};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::sync::{mpsc, watch};
+use tracing::{debug, error, info, trace, warn};
 
-use nextmini_messages::rlm::{self, RlmControl};
+use nextmini_messages::reliable_session::{self, ReliableSessionControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -37,18 +38,18 @@ pub async fn run(
         total_bytes.div_ceil(chunk_size)
     };
 
-    tracing::info!(
+    info!(
         session_id = sid,
         total_bytes,
         total_chunks,
         receivers = cfg.receiver_ids.len(),
-        "RLM sender started"
+        "Reliable sender started"
     );
 
     let chunk_bytes = cfg.common.chunk_size;
     let source_buffer = cfg.source_buffer.clone();
     let mut state = SenderState::new(cfg, total_chunks);
-    let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks);
+    let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks, total_bytes);
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
@@ -56,11 +57,11 @@ pub async fn run(
     loop {
         // checks for transfer timeout
         if transfer_start.elapsed() > transfer_timeout && !state.is_complete() {
-            tracing::error!(
+            error!(
                 session_id = sid,
                 elapsed_secs = transfer_start.elapsed().as_secs(),
                 inflight = state.inflight_len(),
-                "RLM sender: transfer timeout exceeded; forcing completion"
+                "Reliable sender: transfer timeout exceeded; forcing completion"
             );
             break;
         }
@@ -71,12 +72,11 @@ pub async fn run(
         }
 
         state.maybe_release_topology_gate();
-        state.maybe_release_routes_gate();
         state.maybe_release_ready_gate();
 
         let mut progressed = false;
 
-        tracing::trace!(
+        trace!(
             session_id = sid,
             ready_gate_open = state.ready_gate_open,
             source_drained = state.source_drained,
@@ -85,7 +85,7 @@ pub async fn run(
             inflight_len = state.inflight_len(),
             window = state.window_limit(),
             base_window = state.base_window,
-            "RLM sender: loop iteration"
+            "Reliable sender: loop iteration"
         );
 
         if state.should_emit_manifest() {
@@ -104,21 +104,21 @@ pub async fn run(
             && !chunk_source.finished()
             && state.inflight_len() < state.window_limit()
         {
-            tracing::debug!(
+            debug!(
                 session_id = sid,
                 ready_for_data = state.ready_for_data(),
                 chunk_source_finished = chunk_source.finished(),
                 inflight_len = state.inflight_len(),
                 window = state.window_limit(),
-                "RLM sender: attempting to send next chunk"
+                "Reliable sender: attempting to send next chunk"
             );
             match chunk_source.next_chunk() {
                 Some(chunk) => {
-                    tracing::debug!(
+                    debug!(
                         session_id = sid,
                         chunk_index = chunk.index,
                         chunk_size = chunk.data.len(),
-                        "RLM sender: sending data chunk"
+                        "Reliable sender: sending data chunk"
                     );
                     pacer.wait_for(state.common.chunk_size).await;
                     state.send_data_chunk(chunk, &processors);
@@ -136,11 +136,11 @@ pub async fn run(
         }
 
         if state.is_complete() {
-            tracing::info!(
+            info!(
                 session_id = sid,
                 bytes_sent = state.bytes_sent,
                 chunks_sent = state.primary_chunks,
-                "RLM sender finished with reliable delivery guarantees"
+                "Reliable sender finished with reliable delivery guarantees"
             );
             break;
         }
@@ -175,27 +175,31 @@ struct SenderState {
     receiver_progress: BTreeMap<usize, u64>,
     retired_up_to: u64,
     ready_nodes: HashSet<usize>,
-    routes_gate_open: bool,
     topology_gate_open: bool,
     ready_gate_open: bool,
     ready_deadline: Option<Instant>,
     topology_ready_rx: Option<watch::Receiver<bool>>,
-    routes_ready_rx: Option<watch::Receiver<bool>>,
     ready_grace: Duration,
     manifest_sent: bool,
+    manifest_last_sent: Instant,
+    manifest_interval: Duration,
     source_drained: bool,
     eot_sent: bool,
-    bytes_sent: u64,
     primary_chunks: u64,
+    bytes_sent: u64,
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
     src_port: u16,
     dst_port: u16,
-    manifest_interval: Duration,
-    manifest_last_sent: Instant,
+    // Throughput tracking
+    throughput_start: Instant,
+    throughput_last_report: Instant,
+    bytes_since_last_report: u64,
 }
 
 impl SenderState {
+    /// Builds a fresh state tracker for a sender session, wiring gate watchers
+    /// and initializing per-receiver progress counters.
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
@@ -209,16 +213,11 @@ impl SenderState {
             .map(|rx| *rx.borrow())
             .unwrap_or(true);
 
-        let routes_ready_rx = cfg.routes_ready.take();
-        let routes_gate_open = routes_ready_rx
-            .as_ref()
-            .map(|rx| *rx.borrow())
-            .unwrap_or(true);
         let ready_deadline = None;
 
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
-        let dst_ip = common.group_ip;
+        let dst_ip = common.dest_ip;
         let base_window = compute_window(&cfg);
 
         let mut receiver_progress = BTreeMap::new();
@@ -227,10 +226,10 @@ impl SenderState {
         }
 
         if cfg.common.control_weight != 0 {
-            tracing::debug!(
+            debug!(
                 session_id = common.session_id,
                 control_weight = cfg.common.control_weight,
-                "RLM sender: control_weight is recorded but scheduler boosts are not yet wired."
+                "Reliable sender: control_weight is recorded but scheduler boosts are not yet wired."
             );
         }
 
@@ -245,31 +244,33 @@ impl SenderState {
             receiver_progress,
             retired_up_to: 0,
             ready_nodes: HashSet::new(),
-            routes_gate_open,
             topology_gate_open,
             ready_gate_open,
             ready_deadline,
             topology_ready_rx,
-            routes_ready_rx,
             ready_grace,
             manifest_sent: false,
+            manifest_last_sent: Instant::now(),
+            manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             source_drained: total_chunks == 0,
             eot_sent: false,
-            bytes_sent: 0,
             primary_chunks: 0,
+            bytes_sent: 0,
             src_ip,
             dst_ip,
             src_port: cfg.common.src_port,
             dst_port: cfg.common.dst_port,
-            manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
-            manifest_last_sent: Instant::now(),
+            throughput_start: Instant::now(),
+            throughput_last_report: Instant::now(),
+            bytes_since_last_report: 0,
         };
         state.update_retired_up_to();
         state
     }
 
+    /// Emit a MANIFEST describing the file transfer so receivers can prime their state.
     fn send_manifest(&mut self, processors: &ProcessorHandle) {
-        let manifest = RlmControl::Manifest {
+        let manifest = ReliableSessionControl::Manifest {
             chunk_size: self.common.chunk_size as u32,
             total_bytes: self.total_bytes,
         };
@@ -279,7 +280,7 @@ impl SenderState {
             self.ready_deadline = Some(Instant::now() + self.ready_grace);
         }
         self.manifest_sent = true;
-        tracing::info!(
+        info!(
             session_id = self.session_id,
             src = %self.src_ip,
             dst = %self.dst_ip,
@@ -287,26 +288,31 @@ impl SenderState {
             total_bytes = self.total_bytes,
             chunk_size = self.common.chunk_size,
             receivers = self.receiver_count,
-            "RLM sender: MANIFEST sent"
+            "Reliable sender: MANIFEST sent"
         );
     }
 
+    /// Determines whether the sender is allowed to transmit data frames.
     fn ready_for_data(&self) -> bool {
         self.topology_gate_open && self.ready_gate_open && !self.source_drained
     }
 
+    /// Ensures the window never collapses to zero (which would deadlock the loop).
     fn window_limit(&self) -> usize {
         self.window.max(1)
     }
 
+    /// Returns the number of outstanding chunks still waiting for ACKs.
     fn inflight_len(&self) -> usize {
         self.outstanding_chunks() as usize
     }
 
+    /// Returns the number of chunks currently outside of the retired window.
     fn outstanding_chunks(&self) -> u64 {
         self.primary_chunks.saturating_sub(self.retired_up_to)
     }
 
+    /// Decide whether we should re-send the MANIFEST while the ready gate stays closed.
     fn should_resend_manifest(&self) -> bool {
         self.manifest_sent
             && self.topology_gate_open
@@ -314,8 +320,9 @@ impl SenderState {
             && self.manifest_last_sent.elapsed() >= self.manifest_interval
     }
 
+    /// Determines if the sender should emit a MANIFEST based on topology/gate state.
     fn should_emit_manifest(&self) -> bool {
-        if !self.topology_gate_open || !self.routes_gate_open {
+        if !self.topology_gate_open {
             return false;
         }
         if !self.manifest_sent {
@@ -324,27 +331,64 @@ impl SenderState {
         self.should_resend_manifest()
     }
 
+    /// Marks the source buffer as fully drained (preventing redundant reads).
     fn mark_source_drained(&mut self) {
         self.source_drained = true;
     }
 
-    fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
-        let frame = Bytes::from(rlm::encode_data(self.session_id, chunk.index, &chunk.data));
+    // reports throughput every 1 second
+    fn report_throughput(&mut self) {
+        let now = Instant::now();
+        let elapsed = now
+            .duration_since(self.throughput_last_report)
+            .as_secs_f64();
 
-        self.bytes_sent += chunk.data.len() as u64;
+        if elapsed >= 1.0 && self.bytes_since_last_report > 0 {
+            let throughput_gbps =
+                (self.bytes_since_last_report as f64 * 8.0) / (elapsed * 1_000_000_000.0);
+            let total_elapsed = now.duration_since(self.throughput_start).as_secs_f64();
+
+            info!(
+                session_id = self.session_id,
+                throughput_gbps = format!("{:.3}", throughput_gbps),
+                bytes = self.bytes_since_last_report,
+                elapsed_s = format!("{:.3}", elapsed),
+                total_sent = self.bytes_sent,
+                total_elapsed_s = format!("{:.3}", total_elapsed),
+                "Reliable sender: throughput"
+            );
+
+            self.bytes_since_last_report = 0;
+            self.throughput_last_report = now;
+        }
+    }
+
+    /// Encode and hand off a chunk to the processor, updating accounting.
+    fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
+        let frame = Bytes::from(reliable_session::encode_data(
+            self.session_id,
+            chunk.index,
+            &chunk.data,
+        ));
+
+        let chunk_bytes = chunk.data.len() as u64;
+        self.bytes_sent += chunk_bytes;
+        self.bytes_since_last_report += chunk_bytes;
         self.primary_chunks += 1;
         self.update_retired_up_to();
-        tracing::debug!(
+        self.report_throughput();
+        debug!(
             session_id = self.session_id,
             chunk_index = chunk.index,
             chunk_data_len = chunk.data.len(),
             src_ip = %self.src_ip,
             dst_ip = %self.dst_ip,
-            "RLM sender: encoded DATA chunk, sending frame to processor"
+            "Reliable sender: encoded DATA chunk, sending frame to processor"
         );
         self.send_frame(&frame, processors);
     }
 
+    /// Advance the retired watermark based on the slowest receiver.
     fn update_retired_up_to(&mut self) {
         if self.receiver_count == 0 {
             self.retired_up_to = self.primary_chunks;
@@ -362,70 +406,72 @@ impl SenderState {
         self.retired_up_to = min_progress.min(self.total_chunks);
     }
 
+    /// Emit an End-of-Transfer once all chunks have been acknowledged.
     fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
         if self.eot_sent || !self.source_drained || self.outstanding_chunks() > 0 {
             if !self.eot_sent && self.source_drained && self.outstanding_chunks() > 0 {
-                tracing::trace!(
+                trace!(
                     session_id = self.session_id,
                     inflight_count = self.outstanding_chunks(),
-                    "RLM sender: cannot send EOT - chunks still inflight"
+                    "Reliable sender: cannot send EOT - chunks still inflight"
                 );
             }
             return false;
         }
-        let eot = RlmControl::Eot {
+        let eot = ReliableSessionControl::Eot {
             last_index: self.total_chunks,
         };
         self.send_control(&eot, processors);
         self.eot_sent = true;
 
-        tracing::info!(
+        info!(
             session_id = self.session_id,
             last_index = self.total_chunks,
-            "RLM sender: EOT sent"
+            "Reliable sender: EOT sent"
         );
         true
     }
 
+    /// Returns true when the sender drained the source and all acknowledgements were processed.
     fn is_complete(&self) -> bool {
         self.source_drained && self.eot_sent && self.outstanding_chunks() == 0
     }
 
+    /// Handle READY/ACK/EOT control frames coming from receivers.
     fn handle_control(&mut self, frame: InboundFrame) {
         let InboundFrame { bytes, peer_id, .. } = frame;
-        let Some((_, control)) = rlm::decode_control(&bytes) else {
-            tracing::warn!(
+        let Some((_, control)) = reliable_session::decode_control(&bytes) else {
+            warn!(
                 session_id = self.session_id,
-                "RLM sender: failed to decode control frame"
+                "Reliable sender: failed to decode control frame"
             );
             return;
         };
         match &control {
-            RlmControl::Ready { node_id } => {
+            ReliableSessionControl::Ready { node_id } => {
                 self.ready_nodes.insert(*node_id as usize);
-                tracing::debug!(
+                debug!(
                     session_id = self.session_id,
                     node_id = *node_id,
-                    "RLM sender: receiver ready"
+                    "Reliable sender: receiver ready"
                 );
             }
-            RlmControl::Manifest { .. } | RlmControl::Eot { .. } => {
+            ReliableSessionControl::Manifest { .. } | ReliableSessionControl::Eot { .. } => {
                 // ignores if the sender-originated control frames somehow looped back
             }
-            RlmControl::Ack { .. } => {
+            ReliableSessionControl::Ack { .. } => {
                 let Some(from_node) = peer_id else {
-                    tracing::warn!(
+                    warn!(
                         session_id = self.session_id,
                         ?control,
-                        "RLM sender: dropping control without peer id"
+                        "Reliable sender: dropping control without peer id"
                     );
                     return;
                 };
                 if !self.receiver_progress.contains_key(&from_node) {
-                    tracing::warn!(
+                    warn!(
                         session_id = self.session_id,
-                        from_node,
-                        "RLM sender: ignoring ACK from unexpected node"
+                        from_node, "Reliable sender: ignoring ACK from unexpected node"
                     );
                     return;
                 }
@@ -436,25 +482,26 @@ impl SenderState {
                 );
                 if let Some(new_value) = updated {
                     self.update_retired_up_to();
-                    tracing::debug!(
+                    debug!(
                         session_id = self.session_id,
                         from_node = from_node,
                         up_to = new_value,
                         retired_up_to = self.retired_up_to,
                         inflight_count = self.outstanding_chunks(),
-                        "RLM sender: cumulative ACK processed"
+                        "Reliable sender: cumulative ACK processed"
                     );
                 } else {
-                    tracing::trace!(
+                    trace!(
                         session_id = self.session_id,
                         from_node = from_node,
-                        "RLM sender: ACK made no progress"
+                        "Reliable sender: ACK made no progress"
                     );
                 }
             }
         }
     }
 
+    /// Serialize the already-encoded payload into a packet and enqueue it.
     fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -467,8 +514,9 @@ impl SenderState {
         processors.process_packet_blocking(packet);
     }
 
-    fn send_control(&self, control: &RlmControl, processors: &ProcessorHandle) {
-        let buf = rlm::encode_control(self.session_id, control);
+    /// Convenience helper for building and sending control packets.
+    fn send_control(&self, control: &ReliableSessionControl, processors: &ProcessorHandle) {
+        let buf = reliable_session::encode_control(self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -481,6 +529,7 @@ impl SenderState {
         processors.process_packet_blocking(packet);
     }
 
+    /// Open the topology gate once the watch channel signals readiness.
     fn maybe_release_topology_gate(&mut self) {
         if self.topology_gate_open {
             return;
@@ -494,30 +543,14 @@ impl SenderState {
         if *rx.borrow() {
             self.topology_gate_open = true;
 
-            tracing::info!(
+            info!(
                 session_id = self.session_id,
-                "RLM sender: topology-ready signal received"
+                "Reliable sender: topology-ready signal received"
             );
         }
     }
 
-    fn maybe_release_routes_gate(&mut self) {
-        if self.routes_gate_open {
-            return;
-        }
-        let Some(rx) = self.routes_ready_rx.as_mut() else {
-            self.routes_gate_open = true;
-            return;
-        };
-        if *rx.borrow() {
-            self.routes_gate_open = true;
-            tracing::info!(
-                session_id = self.session_id,
-                "RLM sender: multicast routes installed for this source"
-            );
-        }
-    }
-
+    /// Once every receiver signals READY (or we time out), unblock data transfer.
     fn maybe_release_ready_gate(&mut self) {
         if self.ready_gate_open || !self.manifest_sent {
             return;
@@ -527,9 +560,9 @@ impl SenderState {
             self.ready_gate_open = true;
             self.ready_deadline = None;
 
-            tracing::info!(
+            info!(
                 session_id = self.session_id,
-                "RLM sender: all receivers ready"
+                "Reliable sender: all receivers ready"
             );
 
             return;
@@ -540,17 +573,19 @@ impl SenderState {
         {
             self.ready_gate_open = true;
             self.ready_deadline = None;
-            tracing::warn!(
+            warn!(
                 session_id = self.session_id,
                 ready = self.ready_nodes.len(),
                 total = self.receiver_count,
-                "RLM sender: proceeding without all receivers ready"
+                "Reliable sender: proceeding without all receivers ready"
             );
         }
     }
 }
 
-/// Compute a sliding window size based on the minimum of the default value and token bucket configuration.
+/// Compute a sliding window size based on the default limit and, if present,
+/// the token-bucket shaper so we never admit more inflight bytes than the
+/// pacer can service.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let mut window = DEFAULT_WINDOW;
 
@@ -562,60 +597,129 @@ fn compute_window(cfg: &SenderConfig) -> usize {
         window = window.min(bucket_chunks);
     }
 
-    tracing::info!("The sliding window size is {window} on the source.");
+    info!("The sliding window size is {window} on the source.");
 
     window
 }
 
-/// Materialized chunk that is ready to be encoded into an RLM frame.
+/// Materialized chunk that is ready to be encoded into a reliable session frame.
 struct ChunkPayload {
     index: u64,
     data: Bytes,
 }
 
-/// Reads chunk payloads from memory and hands them to the sender in strict index order.
+enum ChunkSourceKind {
+    // slices data directly from an in-memory buffer, zero-copy
+    Borrowed { bytes: Bytes, offset: usize },
+    // reuses a chunk template for synthetic payloads
+    Template { template: Bytes },
+}
+
+impl ChunkSourceKind {
+    fn borrowed(bytes: Bytes) -> Self {
+        Self::Borrowed { bytes, offset: 0 }
+    }
+
+    fn template(bytes: Bytes, chunk_size: usize) -> Self {
+        if bytes.is_empty() && chunk_size > 0 {
+            let template = Bytes::from(vec![0u8; chunk_size]);
+            Self::Template { template }
+        } else {
+            Self::Template { template: bytes }
+        }
+    }
+}
+
+/// Reads chunk payloads from memory or a template and hands them to the sender
+/// in strict index order.
 struct ChunkSource {
-    bytes: Bytes,
     chunk_size: usize,
     total_chunks: u64,
+    total_bytes: u64,
     next_index: u64,
-    buffer_offset: usize,
+    kind: ChunkSourceKind,
 }
 
 impl ChunkSource {
-    fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64) -> Self {
+    /// Construct a new chunk source that will walk through the shared buffer.
+    fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64, total_bytes: u64) -> Self {
+        let matches_len = usize::try_from(total_bytes)
+            .map(|len| len == bytes.len())
+            .unwrap_or(false);
+
+        let kind = if matches_len {
+            ChunkSourceKind::borrowed(bytes)
+        } else {
+            let template = if bytes.is_empty() {
+                Bytes::from(vec![0u8; chunk_size.max(1)])
+            } else {
+                bytes
+            };
+            ChunkSourceKind::template(template, chunk_size.max(1))
+        };
+
         Self {
-            bytes,
             chunk_size,
             total_chunks,
+            total_bytes,
             next_index: 1,
-            buffer_offset: 0,
+            kind,
         }
     }
 
+    /// Returns true when every chunk has either been produced or the transfer was zero-length.
     fn finished(&self) -> bool {
         self.total_chunks == 0 || self.next_index > self.total_chunks
     }
 
+    /// Returns the next chunk, advancing the internal cursor. For borrowed
+    /// buffers we slice without copying; template mode reuses the same chunk.
     fn next_chunk(&mut self) -> Option<ChunkPayload> {
         if self.finished() {
             return None;
         }
 
-        let start = self.buffer_offset;
-        if start >= self.bytes.len() {
+        if self.chunk_size == 0 {
             self.next_index = self.total_chunks + 1;
             return None;
         }
 
-        let end = (start + self.chunk_size).min(self.bytes.len());
-
-        // Zero-copy slice – O(1), shares underlying buffer
-        let data = self.bytes.slice(start..end);
-
-        self.buffer_offset = end;
         let idx = self.next_index;
         self.next_index += 1;
+
+        let chunk_len = if idx == self.total_chunks {
+            let rem = (self.total_bytes % self.chunk_size as u64) as usize;
+            if rem == 0 { self.chunk_size } else { rem }
+        } else {
+            self.chunk_size
+        };
+
+        let data = match &mut self.kind {
+            ChunkSourceKind::Borrowed { bytes, offset } => {
+                let start = *offset;
+                let end = start.saturating_add(chunk_len);
+                if end > bytes.len() {
+                    return None;
+                }
+                *offset = end;
+                bytes.slice(start..end)
+            }
+            ChunkSourceKind::Template { template } => {
+                if template.is_empty() {
+                    Bytes::from(vec![0u8; chunk_len])
+                } else if chunk_len <= template.len() {
+                    template.slice(0..chunk_len)
+                } else {
+                    let mut buf = BytesMut::with_capacity(chunk_len);
+                    while buf.len() < chunk_len {
+                        let remaining = chunk_len - buf.len();
+                        let take = remaining.min(template.len());
+                        buf.extend_from_slice(&template[..take]);
+                    }
+                    buf.freeze()
+                }
+            }
+        };
 
         Some(ChunkPayload { index: idx, data })
     }
@@ -630,11 +734,13 @@ struct DataPacer {
 }
 
 impl DataPacer {
+    /// Builds a pacer backed by the runtime token-bucket implementation.
     fn new(spec: Option<nextmini_messages::TokenBucketSpec>) -> Self {
         let bucket = spec.map(TokenBucket::new);
         Self { bucket }
     }
 
+    /// Await scheduling tokens before sending `bytes` worth of payload.
     async fn wait_for(&mut self, bytes: usize) {
         if let Some(bucket) = self.bucket.as_mut() {
             bucket.wait_for_bytes(bytes).await;
@@ -652,8 +758,8 @@ mod tests {
         let idx = 7;
         let plen = 4096usize;
         let payload = vec![0xAAu8; plen];
-        let buf = rlm::encode_data(sid, idx, &payload);
-        let (hdr, data, body) = rlm::decode_data(&buf).expect("decode data");
+        let buf = reliable_session::encode_data(sid, idx, &payload);
+        let (hdr, data, body) = reliable_session::decode_data(&buf).expect("decode data");
 
         assert_eq!(hdr.session_id, sid);
         assert_eq!(data.index, idx);
@@ -669,14 +775,15 @@ mod tests {
     #[test]
     fn chunk_source_finished_detection() {
         // Zero chunks should be immediately finished
-        let source = ChunkSource::new(Bytes::new(), 1024, 0);
+        let source = ChunkSource::new(Bytes::new(), 1024, 0, 0);
         assert!(
             source.finished(),
             "ChunkSource with 0 chunks should be finished immediately"
         );
 
         //Source with chunks should not be finished initially
-        let mut source = ChunkSource::new(Bytes::from(vec![0u8; 1024 * 5]), 1024, 5);
+        let mut source =
+            ChunkSource::new(Bytes::from(vec![0u8; 1024 * 5]), 1024, 5, (1024 * 5) as u64);
         assert!(
             !source.finished(),
             "ChunkSource with 5 chunks should not be finished initially"
@@ -695,6 +802,32 @@ mod tests {
         // Requesting more chunks after finished returns None
         let result = source.next_chunk();
         assert!(result.is_none(), "Should return None when finished");
+    }
+
+    #[test]
+    fn chunk_source_template_mode_reuses_buffer() {
+        let chunk_size = 1024;
+        let total_bytes = (chunk_size as u64 * 3) + 512;
+        let total_chunks = total_bytes.div_ceil(chunk_size as u64);
+        let template = Bytes::from(vec![0xBBu8; chunk_size]);
+        let mut source = ChunkSource::new(template, chunk_size, total_chunks, total_bytes);
+
+        for _ in 0..(total_chunks - 1) {
+            let chunk = source.next_chunk().expect("chunk must be available");
+            assert_eq!(
+                chunk.data.len(),
+                chunk_size,
+                "Intermediate chunks should match chunk_size"
+            );
+        }
+
+        let last = source.next_chunk().expect("last chunk must exist");
+        assert_eq!(
+            last.data.len(),
+            512,
+            "Last chunk should match the remainder size"
+        );
+        assert!(source.next_chunk().is_none(), "No extra chunks expected");
     }
 
     /// Validates the timeout constant is used correctly.

@@ -30,7 +30,7 @@ def atomic_write_json(path: Path, payload: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Reliable multicast demo")
+    parser = argparse.ArgumentParser(description="Reliable session demo")
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
@@ -219,7 +219,7 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    # Launch reliable multicast send from an in-memory FrozenBuffer.
+    # Launch reliable session send from an in-memory FrozenBuffer.
     log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
     send_start_time = time.perf_counter()
 

@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use tokio::sync::mpsc;
+use tracing::{debug, info, trace, warn};
 
-use nextmini_messages::rlm::{self, RlmControl};
+use nextmini_messages::reliable_session::{self, ReliableSessionControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -24,6 +25,8 @@ struct ControlEmitter {
 }
 
 impl ControlEmitter {
+    /// Prepare an emitter that can forward reliable session control traffic back through the
+    /// node's processor pipeline.
     fn new(
         session_id: u64,
         src_ip: std::net::Ipv4Addr,
@@ -42,8 +45,9 @@ impl ControlEmitter {
         }
     }
 
-    fn send(&self, control: &RlmControl) {
-        let buf = rlm::encode_control(self.session_id, control);
+    /// Encode and inject a single control frame.
+    fn send(&self, control: &ReliableSessionControl) {
+        let buf = reliable_session::encode_control(self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -65,13 +69,13 @@ pub async fn run(
     processors: ProcessorHandle,
 ) {
     let sid = cfg.common.session_id;
-    tracing::info!(
+    info!(
         session_id = sid,
         expected_bytes = cfg.expected_bytes,
-        "RLM receiver started"
+        "Reliable receiver started"
     );
 
-    // Stream bookkeeping: RLM chunk indices start at 1.
+    // Stream bookkeeping: reliable session chunk indices start at 1.
     let mut expected: u64 = 1;
     let per_chunk = cfg.common.chunk_size.max(1);
 
@@ -106,19 +110,19 @@ pub async fn run(
         processors.clone(),
     );
 
-    control_io.send(&RlmControl::Ready {
+    control_io.send(&ReliableSessionControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
 
     while let Some(frame) = rx.recv().await {
-        tracing::trace!(
+        trace!(
             session_id = sid,
             frame_len = frame.bytes.len(),
-            "RLM receiver: received inbound frame"
+            "Reliable receiver: received inbound frame"
         );
-        if let Some((_, data, body)) = rlm::decode_data(&frame.bytes) {
+        if let Some((_, data, body)) = reliable_session::decode_data(&frame.bytes) {
             let ctx = FrameCtx {
                 data: &data,
                 body,
@@ -145,13 +149,13 @@ pub async fn run(
                         || final_chunk_reached
                         || received_all_bytes
                     {
-                        tracing::debug!(
+                        debug!(
                             session_id = sid,
                             up_to = base,
                             expected = expected,
-                            "RLM receiver: sending batched ACK"
+                            "Reliable receiver: sending batched ACK"
                         );
-                        control_io.send(&RlmControl::Ack { up_to: base });
+                        control_io.send(&ReliableSessionControl::Ack { up_to: base });
                         last_ack_up_to = base;
                     }
                 }
@@ -168,17 +172,17 @@ pub async fn run(
             continue;
         }
 
-        tracing::warn!(
+        warn!(
             session_id = sid,
-            "RLM receiver: received frame that was neither DATA nor CONTROL"
+            "Reliable receiver: received frame that was neither DATA nor CONTROL"
         );
     }
 
-    tracing::info!(
+    info!(
         session_id = sid,
         bytes_received,
         last_index = expected.saturating_sub(1),
-        "RLM receiver finished"
+        "Reliable receiver finished"
     );
 }
 
@@ -191,6 +195,7 @@ struct PendingWindow {
 }
 
 impl PendingWindow {
+    /// Create a pending window sized to the configured sliding window.
     fn new(window_size: usize, base_index: u64) -> Self {
         let size = window_size.max(1);
         Self {
@@ -200,17 +205,19 @@ impl PendingWindow {
         }
     }
 
+    /// Attempt to store a chunk for later delivery; returns true if it landed in
+    /// the buffer and false if it was out of range or a duplicate.
     fn insert(&mut self, index: u64, payload: Bytes) -> bool {
         if index < self.base_index {
             return false;
         }
         let offset = index - self.base_index;
         if offset >= self.slots.len() as u64 {
-            tracing::warn!(
+            warn!(
                 chunk_index = index,
                 base_index = self.base_index,
                 window = self.slots.len(),
-                "RLM receiver: chunk outside pending window, dropping"
+                "Reliable receiver: chunk outside pending window, dropping"
             );
             return false;
         }
@@ -223,6 +230,8 @@ impl PendingWindow {
         }
     }
 
+    /// Drain any contiguous payloads starting at `expected`, advancing the base
+    /// index so future inserts can land.
     fn take_contiguous_from(&mut self, expected: &mut u64) -> Vec<Bytes> {
         let mut ready = Vec::new();
         loop {
@@ -246,6 +255,7 @@ impl PendingWindow {
         ready
     }
 
+    /// Translate a logical offset relative to `base_index` into a circular slot.
     fn slot_index(&self, offset: u64) -> usize {
         if self.slots.is_empty() {
             return 0;
@@ -253,6 +263,7 @@ impl PendingWindow {
         (self.head + offset as usize) % self.slots.len()
     }
 
+    /// Move the base forward by one slot, wrapping the circular buffer index.
     fn advance_window(&mut self) {
         self.base_index = self.base_index.saturating_add(1);
         if !self.slots.is_empty() {
@@ -261,33 +272,35 @@ impl PendingWindow {
     }
 }
 
-/// Returns ordering updates and ready chunks when a DATA frame is processed.
+/// Borrowed state required to evaluate a DATA frame.
 struct FrameCtx<'a> {
-    data: &'a rlm::RlmData,
+    data: &'a reliable_session::ReliableSessionData,
     body: &'a [u8],
     expected: &'a mut u64,
     pending: &'a mut PendingWindow,
     bytes_received: &'a mut u64,
 }
 
+/// Outcome describing whether the new frame unlocked bytes for delivery.
 struct DataOutcome {
     ready_chunks: Vec<Bytes>,
     advanced: bool,
 }
 
+/// Handles ordering/bookkeeping for a single reliable DATA frame.
 fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     let idx = ctx.data.index;
-    tracing::debug!(
+    debug!(
         chunk_index = idx,
         body_len = ctx.body.len(),
         expected = *ctx.expected,
-        "RLM receiver: DATA chunk received"
+        "Reliable receiver: DATA chunk received"
     );
     if idx < *ctx.expected {
-        tracing::trace!(
+        trace!(
             chunk_index = idx,
             expected = *ctx.expected,
-            "RLM receiver: ignoring duplicate/old chunk"
+            "Reliable receiver: ignoring duplicate/old chunk"
         );
         return DataOutcome {
             ready_chunks: Vec::new(),
@@ -297,7 +310,10 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
 
     let payload = Bytes::copy_from_slice(ctx.body);
     if ctx.pending.insert(idx, payload) {
-        tracing::trace!(chunk_index = idx, "RLM receiver: chunk stored for ordering");
+        trace!(
+            chunk_index = idx,
+            "Reliable receiver: chunk stored for ordering"
+        );
     }
 
     let ready_chunks = ctx.pending.take_contiguous_from(ctx.expected);
@@ -319,21 +335,21 @@ fn handle_control_frame(
     ctrl_io: &ControlEmitter,
     eot_index: &mut Option<u64>,
 ) -> bool {
-    let Some((_, control)) = rlm::decode_control(&frame.bytes) else {
+    let Some((_, control)) = reliable_session::decode_control(&frame.bytes) else {
         return false;
     };
     match control {
-        RlmControl::Manifest { .. } => {
-            ctrl_io.send(&RlmControl::Ready {
+        ReliableSessionControl::Manifest { .. } => {
+            ctrl_io.send(&ReliableSessionControl::Ready {
                 node_id: cfg.common.local_node_id as u64,
             });
             true
         }
-        RlmControl::Eot { last_index } => {
-            tracing::info!(
+        ReliableSessionControl::Eot { last_index } => {
+            info!(
                 session_id = cfg.common.session_id,
                 last_index = last_index,
-                "RLM receiver: EOT received"
+                "Reliable receiver: EOT received"
             );
             *eot_index = Some(last_index);
             true

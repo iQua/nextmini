@@ -1,7 +1,10 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor.
-use tracing::info;
+use std::sync::Arc;
+
+use tokio::sync::Mutex as AsyncMutex;
+use tracing::{info, warn};
 
 use nextmini_messages::Protocol;
 
@@ -14,14 +17,8 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-#[cfg(feature = "reliable")]
 use crate::node::reliable::api::{Command as ReliableCommand, ReliableHandle};
-#[cfg(feature = "reliable")]
 use crate::node::reliable::session::{PendingReceiverKey, SessionManager};
-#[cfg(feature = "reliable")]
-use std::sync::Arc;
-#[cfg(feature = "reliable")]
-use tokio::sync::Mutex as AsyncMutex;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -36,26 +33,22 @@ pub struct Conductor {
     reporter: ControllerReporterHandle,
 
     /// controller interface handle for sending custom messages upstream
+    #[cfg(feature = "python-extension")]
     controller: ControllerInterfaceHandle,
 
-    /// reliable multicast subsystem handle (initialized but not yet wired)
-    #[cfg(feature = "reliable")]
+    /// reliable session subsystem handle (initialized but not yet wired)
+    #[cfg(feature = "python-extension")]
     reliable: ReliableHandle,
 }
 
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
         // Initialize reliable subsystem handle (command loop wiring to follow).
-        #[cfg(feature = "reliable")]
         let (reliable, rx) = ReliableHandle::new();
 
         // connects the processors with its downstream local interface writers to send packets out
-        #[cfg(feature = "reliable")]
         let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone(), Some(reliable.clone())).await;
-        #[cfg(not(feature = "reliable"))]
-        let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone()).await;
+            ControllerInterfaceHandle::new(config.clone(), reliable.clone()).await;
 
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
@@ -63,10 +56,8 @@ impl Conductor {
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
-        #[cfg(feature = "reliable")]
         processors.connect_reliable_handle(reliable.clone());
 
-        #[cfg(feature = "reliable")]
         {
             let processors_for_mgr = processors.clone();
             let mut_rx = rx;
@@ -96,16 +87,16 @@ impl Conductor {
                             guard.stop(session).await;
                         }
                         ReliableCommand::Deliver { session, frame } => {
-                            let group_ip = frame.group_ip;
+                            let dest_ip = frame.dest_ip;
                             let source_node_id = frame.source_node_id;
                             let (sender, pending_reply) = {
                                 let mut guard = manager.lock().await;
                                 if let Some(tx) = guard.input_sender(session) {
                                     (Some(tx), None)
-                                } else if let (Some(gip), Some(src)) = (group_ip, source_node_id) {
+                                } else if let (Some(dip), Some(src)) = (dest_ip, source_node_id) {
                                     if let Some((cfg, reply)) = guard.adopt_pending_receiver(
                                         PendingReceiverKey {
-                                            group_ip: gip,
+                                            dest_ip: dip,
                                             source_node_id: src,
                                         },
                                         session,
@@ -121,7 +112,7 @@ impl Conductor {
                             };
                             if let Some(tx) = sender {
                                 if tx.send(frame).await.is_err() {
-                                    tracing::warn!(
+                                    warn!(
                                         session_id = session,
                                         "Reliable runtime: receiver dropped inbound frame"
                                     );
@@ -130,7 +121,7 @@ impl Conductor {
                                     let _ = reply.send(session);
                                 }
                             } else {
-                                tracing::warn!(
+                                warn!(
                                     session_id = session,
                                     "Reliable runtime: no receiver for inbound frame"
                                 );
@@ -162,19 +153,12 @@ impl Conductor {
                             let _ = reply.send(sid);
                         }
                         ReliableCommand::SetTopologyReady { ready } => {
-                            let guard = manager.lock().await;
-                            guard.set_topology_ready(ready);
-                        }
-                        ReliableCommand::SetGroupRoutesReady {
-                            group_ip,
-                            src_node_id,
-                        } => {
                             let mut guard = manager.lock().await;
-                            guard.set_group_routes_ready(group_ip, src_node_id);
+                            guard.set_topology_ready(ready);
                         }
                     }
                 }
-                tracing::warn!("Reliable command loop terminated.");
+                warn!("Reliable command loop terminated.");
             });
         }
 
@@ -183,8 +167,9 @@ impl Conductor {
             local_interface,
             processors,
             reporter,
+            #[cfg(feature = "python-extension")]
             controller: controller_interface,
-            #[cfg(feature = "reliable")]
+            #[cfg(feature = "python-extension")]
             reliable,
         }
     }
@@ -214,8 +199,7 @@ impl Conductor {
         match self.config.protocol {
             Protocol::Tcp => {
                 // uses TcpMaxServer to handle the connections for max operating mode
-                let mut tcp_max_server =
-                    TcpMaxServer::new(self.config.clone(), self.processors.clone());
+                let mut tcp_max_server = TcpMaxServer::new(self.processors.clone());
 
                 // uses TcpServer to handle the connections for normal operating mode
                 if public_port == private_port {
@@ -321,29 +305,32 @@ impl Conductor {
     }
 
     /// Returns a clone of the processor handle so external callers can attach additional interfaces.
-    #[allow(dead_code)] // Consumed by the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn processor_handle(&self) -> ProcessorHandle {
         // Used by the optional `nextmini_py` extension to wire the in-process interface.
         self.processors.clone()
     }
 
     /// Exposes the loaded `LocalConfig`, useful when bridging with language bindings.
-    #[allow(dead_code)] // Consumed by the python bindings crate.
+    #[cfg(feature = "python-extension")]
+    #[allow(dead_code)]
     pub fn local_config(&self) -> LocalConfig {
         // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
         self.config.clone()
     }
 
     /// Exposes a controller handle so bindings can emit DataplaneToController messages.
+    #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn controller_handle(&self) -> ControllerInterfaceHandle {
         self.controller.clone()
     }
 
-    /// Returns a clone of the reliable handle when the `reliable` feature is enabled.
-    #[cfg(feature = "reliable")]
+    /// Returns a clone of the reliable handle for language bindings.
+    #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
-    pub fn reliable_handle(&self) -> Option<crate::node::reliable::api::ReliableHandle> {
-        Some(self.reliable.clone())
+    pub fn reliable_handle(&self) -> crate::node::reliable::api::ReliableHandle {
+        self.reliable.clone()
     }
 }

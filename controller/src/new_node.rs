@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, TokenBucketSpec};
+use nextmini_messages::{ControllerToDataplane, FlowTransport, TokenBucketSpec};
 
 use crate::NodeWriterMap;
 use crate::WebSocketWriter;
@@ -25,73 +25,132 @@ pub struct NodeConnectedEvent {
     pub connected_node_count: usize,
 }
 
+#[derive(Debug, Clone)]
+pub enum TopologyEvent {
+    NodeConnected(NodeConnectedEvent),
+    NodeLocallyReady { node_id: usize },
+}
+
 /// A background task that checks if all the expected nodes have connected, and performs additional
 /// processing when this occurs.
 pub async fn new_node_connected(
-    mut event_receiver: broadcast::Receiver<NodeConnectedEvent>,
+    mut event_receiver: broadcast::Receiver<TopologyEvent>,
     config: Config,
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
     db_pool: Arc<Pool<Postgres>>,
 ) {
-    let mut all_nodes_handled = false;
+    let mut config_dispatched = false;
+    let mut topology_ready_sent = false;
     let mut start_time = None;
+    let expected_node_count = config.topology.compute_node_count();
+    let mut connected_nodes = HashSet::new();
+    let mut locally_ready_nodes = HashSet::new();
 
     while let Ok(event) = event_receiver.recv().await {
-        if all_nodes_handled {
-            continue; // already handled all the work after all nodes connected
+        match event {
+            TopologyEvent::NodeConnected(event) => {
+                if !connected_nodes.insert(event.node_id) {
+                    continue;
+                }
+
+                if start_time.is_none() {
+                    start_time = Some(Instant::now());
+                    info!("The first node has connected. Starting the timer.");
+                }
+
+                if let Some(expected_node_count) = expected_node_count {
+                    if connected_nodes.len() == expected_node_count && !config_dispatched {
+                        config_dispatched = true;
+
+                        // waits for all links to be established
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+
+                        info!(
+                            "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
+                            expected_node_count
+                        );
+
+                        // updates remote node addresses for the connector
+                        send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
+
+                        // waits for all nodes to receive the AddNode messages
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        send_link_rates(config.clone(), node_ws.clone()).await;
+
+                        // waits for all link rates to be set before sending the flows
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        send_flows(node_ws.clone(), db_pool.clone(), config.flow_transport).await;
+
+                        let duration_secs = match start_time {
+                            Some(t0) => t0.elapsed().as_secs_f32(),
+                            None => 0.0,
+                        };
+                        info!(
+                            "All dataplane nodes have connected. It takes {:.2} seconds since the first node arrived.",
+                            duration_secs
+                        );
+                    } else if !config_dispatched {
+                        info!(
+                            "Node {} connected. At time of insertion, {} nodes were connected (including this one), out of {} expected.",
+                            event.node_id, event.connected_node_count, expected_node_count
+                        );
+                    }
+                }
+            }
+            TopologyEvent::NodeLocallyReady { node_id } => {
+                if locally_ready_nodes.insert(node_id) {
+                    info!(
+                        "Dataplane node {} reports its local topology is ready.",
+                        node_id
+                    );
+                }
+            }
         }
 
-        // sends flows and link rates when all nodes are connected
-        if let Some(expected_node_count) = config.topology.compute_node_count() {
-            if start_time.is_none() {
-                start_time = Some(Instant::now());
-                info!("The first node has connected. Starting the timer.");
-            }
-
-            if event.connected_node_count == expected_node_count {
-                all_nodes_handled = true;
-
-                // waits for all links to be established
-                tokio::time::sleep(Duration::from_secs(1)).await;
-
-                info!(
-                    "All {} nodes are now connected. Sending node addresses, link rates and flows to all nodes.",
-                    expected_node_count
-                );
-
-                // updates remote node addresses for the connector
-                send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
-
-                // waits for all nodes to receive the AddNode messages
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                send_link_rates(config.clone(), node_ws.clone()).await;
-
-                // waits for all link rates to be set before sending the flows
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                send_flows(node_ws.clone(), db_pool.clone()).await;
-
-                // signal dataplane nodes that topology state is fully synced
-                send_topology_ready(node_ws.clone()).await;
-
-                let duration_secs = match start_time {
-                    Some(t0) => t0.elapsed().as_secs_f32(),
-                    None => 0.0,
-                };
-                info!(
-                    "All dataplane nodes have connected. It takes {:.2} seconds since the first node arrived.",
-                    duration_secs
-                );
-            } else {
-                info!(
-                    "Node {} connected. At time of insertion, {} nodes were connected (including this one), out of {} expected.",
-                    event.node_id, event.connected_node_count, expected_node_count
-                );
-            }
-        }
+        maybe_broadcast_topology_ready(
+            expected_node_count,
+            &connected_nodes,
+            &locally_ready_nodes,
+            &mut topology_ready_sent,
+            node_ws.clone(),
+        )
+        .await;
     }
 }
 
-async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
+async fn maybe_broadcast_topology_ready(
+    expected_node_count: Option<usize>,
+    connected_nodes: &HashSet<usize>,
+    locally_ready_nodes: &HashSet<usize>,
+    topology_ready_sent: &mut bool,
+    node_ws: NodeWriterMap,
+) {
+    let Some(expected_node_count) = expected_node_count else {
+        return;
+    };
+
+    if *topology_ready_sent {
+        return;
+    }
+
+    if connected_nodes.len() == expected_node_count
+        && locally_ready_nodes.len() == expected_node_count
+    {
+        *topology_ready_sent = true;
+
+        info!(
+            "All dataplane nodes have finished wiring their topologies. Broadcasting topology-ready signal."
+        );
+
+        send_topology_ready(node_ws).await;
+    }
+}
+
+async fn send_flows(
+    node_ws: NodeWriterMap,
+    db_pool: Arc<Pool<Postgres>>,
+    flow_transport: FlowTransport,
+) {
     let db_flows: Vec<DbFlow> =
         match sqlx::query_as("SELECT * FROM flows WHERE is_finished = false")
             .fetch_all(&*db_pool)
@@ -115,12 +174,13 @@ async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
 
         if !flows.is_empty() {
             info!(
-                "Adding {} user-space TCP flows to node {}.",
+                "Adding {} controller flows ({:?}) to node {}.",
                 flows.len(),
+                flow_transport,
                 node_id
             );
 
-            let msg = build_flows_for_node(flows);
+            let msg = build_flows_for_node(flows, flow_transport);
 
             match writer
                 .lock()
@@ -128,7 +188,7 @@ async fn send_flows(node_ws: NodeWriterMap, db_pool: Arc<Pool<Postgres>>) {
                 .send(Message::binary(match rmp_serde::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
-                        tracing::error!("Failed to encode controller message: {}", e);
+                        error!("Failed to encode controller message: {}", e);
                         continue;
                     }
                 }))
@@ -175,7 +235,7 @@ async fn send_link_rates(config: Config, node_ws: NodeWriterMap) {
                 .send(Message::binary(match rmp_serde::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
-                        tracing::error!("Failed to encode controller message: {}", e);
+                        error!("Failed to encode controller message: {}", e);
                         continue;
                     }
                 }))
@@ -236,7 +296,7 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
 
             // replace the port with the Tcp max server port
             let Some(remote_ip) = remote_addr.split(':').next() else {
-                tracing::warn!("new_node: could not parse remote ip from {}", remote_addr);
+                warn!("new_node: could not parse remote ip from {}", remote_addr);
                 continue;
             };
             let remote_addr = format!("{}:{}", remote_ip, config.max_server_port);
@@ -252,7 +312,7 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
                 .send(Message::binary(match rmp_serde::to_vec(&msg) {
                     Ok(b) => b,
                     Err(e) => {
-                        tracing::error!("Failed to encode controller message: {}", e);
+                        error!("Failed to encode controller message: {}", e);
                         continue;
                     }
                 }))

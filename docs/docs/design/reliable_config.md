@@ -1,8 +1,8 @@
-# Reliable Multicast Configuration
+# Reliable Session Configuration
 
 ## Overview
 
-- Defines default behavior for the reliable multicast engines when the `reliable` feature is enabled in the dataplane.
+- Defines default behavior for the reliable session engines when the `reliable` feature is enabled in the dataplane.
 
 ## Location
 

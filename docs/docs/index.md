@@ -11,3 +11,9 @@ Thanks to the Rust programming language, Nextmini provides three core features t
 - **Built-in performance monitoring and hot reconfiguration**. Nextmini is designed to operate in both emulated and real-world network environments. It provides the capability of both emulating and monitoring network performance at per-flow granularity, and of reconfiguring routes on-the-fly to adapt to changing network conditions.
 
 Though Nextmini runs natively on Linux, the easiest way to get started with Nextmini is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run Nextmini.
+
+## Flow transports
+
+Controller-managed flows can target multiple transports. The original smoltcp-based TCP engine remains the default, but you can now opt into reliable unicast delivery driven entirely in Rust via the `flow_transport` field in `controller/config.toml`. Setting `flow_transport = "reliable_unicast"` instructs the controller to install reliable sessions for each job. Individual flows defined in configuration or inserted through the database may also override this behavior using `flow_spec.transport`.
+
+Reliable unicast flows reuse the existing reliable session sender/receiver stack embedded in the dataplane—no Python bindings or user payload plumbing is required. Each flow still accepts `flow_rate` and `flow_len` (bytes or duration) so you can emulate specific pacing schedules; the dataplane converts those hints into token buckets that throttle the reliable sender accordingly.
