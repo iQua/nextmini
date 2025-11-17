@@ -277,16 +277,14 @@ impl ReliableRuntime {
 
     /// Handles wait command by spawning a separate task.
     fn handle_wait(&mut self, session: SessionId, reply: oneshot::Sender<bool>) {
-        // Take ownership of the task handle
+        // Take ownership of the task handle and clean up inputs immediately.
+        // The task is completing, so the input channel is no longer needed.
         let handle = self.take_task(session);
-        let inputs = Arc::new(Mutex::new(self.inputs.clone()));
+        self.inputs.remove(&session);
 
         tokio::spawn(async move {
             if let Some(handle) = handle {
                 let _ = handle.await; // ignore join errors; treat as completion
-                let mut guard = inputs.lock().await;
-                guard.remove(&session);
-                drop(guard);
                 let _ = reply.send(true);
             } else {
                 let _ = reply.send(false);
