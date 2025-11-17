@@ -15,6 +15,7 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "python-extension")]
 use crate::node::session::api::ReliableRuntimeHandle;
 
 pub struct Conductor {
@@ -43,6 +44,9 @@ impl Conductor {
         // connects the processors with its downstream local interface writers to send packets out
         let (controller_interface, reliable_runtime, reporter, flowstats_reporter) =
             ControllerInterfaceHandle::new(config.clone()).await;
+
+        #[cfg(not(feature = "python-extension"))]
+        let _ = reliable_runtime;
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
