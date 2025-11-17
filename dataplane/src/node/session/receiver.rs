@@ -122,9 +122,19 @@ pub async fn run(
             "Reliable receiver: received inbound frame"
         );
         if let Some((_, data, body)) = reliable_session::decode_data(&frame.bytes) {
+            // Map the payload slice onto the underlying Vec so we can take a zero-copy Bytes view.
+            let payload_range = {
+                let base_ptr = frame.bytes.as_ptr() as usize;
+                let start = body.as_ptr() as usize - base_ptr;
+                let end = start + body.len();
+                start..end
+            };
+            let frame_bytes = Bytes::from(frame.bytes);
+            let payload = frame_bytes.slice(payload_range);
+
             let ctx = FrameCtx {
                 data: &data,
-                body,
+                payload,
                 expected: &mut expected,
                 pending: &mut pending,
                 bytes_received: &mut bytes_received,
@@ -274,7 +284,7 @@ impl PendingWindow {
 /// Borrowed state required to evaluate a DATA frame.
 struct FrameCtx<'a> {
     data: &'a reliable_session::ReliableSessionData,
-    body: &'a [u8],
+    payload: Bytes,
     expected: &'a mut u64,
     pending: &'a mut PendingWindow,
     bytes_received: &'a mut u64,
@@ -288,39 +298,38 @@ struct DataOutcome {
 
 /// Handles ordering/bookkeeping for a single reliable DATA frame.
 fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
-    let idx = ctx.data.index;
-    debug!(
-        chunk_index = idx,
-        body_len = ctx.body.len(),
-        expected = *ctx.expected,
-        "Reliable receiver: DATA chunk received"
-    );
-    if idx < *ctx.expected {
-        trace!(
-            chunk_index = idx,
-            expected = *ctx.expected,
-            "Reliable receiver: ignoring duplicate/old chunk"
-        );
+    let FrameCtx {
+        data,
+        payload,
+        expected,
+        pending,
+        bytes_received,
+    } = ctx;
+
+    let idx = data.index;
+
+    if idx < *expected {
         return DataOutcome {
             ready_chunks: Vec::new(),
             advanced: false,
         };
     }
 
-    let payload = Bytes::copy_from_slice(ctx.body);
-    if ctx.pending.insert(idx, payload) {
+    if pending.insert(idx, payload) {
         trace!(
             chunk_index = idx,
             "Reliable receiver: chunk stored for ordering"
         );
     }
 
-    let ready_chunks = ctx.pending.take_contiguous_from(ctx.expected);
+    let ready_chunks = pending.take_contiguous_from(expected);
     if !ready_chunks.is_empty() {
         let ready_bytes: u64 = ready_chunks.iter().map(|chunk| chunk.len() as u64).sum();
-        *ctx.bytes_received += ready_bytes;
+        *bytes_received += ready_bytes;
     }
+
     let advanced = !ready_chunks.is_empty();
+
     DataOutcome {
         ready_chunks,
         advanced,
