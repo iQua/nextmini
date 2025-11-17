@@ -9,7 +9,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
-use super::manager::ReceiverConfig;
+use super::runtime::ReceiverConfig;
 
 const ACK_EVERY_CHUNKS: u64 = 16; // ensure <= sender DEFAULT_WINDOW
 

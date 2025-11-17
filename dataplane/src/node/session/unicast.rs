@@ -10,7 +10,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{ReliableRuntimeHandle, SessionId};
-use crate::node::session::manager::{
+use crate::node::session::runtime::{
     CommonConfig, PendingReceiverKey, ReceiverConfig, SenderConfig,
 };
 use crate::node::{FlowId, NodeId, NodeIdExt};

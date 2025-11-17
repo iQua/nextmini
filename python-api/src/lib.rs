@@ -33,7 +33,7 @@ use nextmini::node::python::interface::{
 #[cfg(feature = "python-extension")]
 use nextmini::node::session::api::ReliableRuntimeHandle;
 #[cfg(feature = "python-extension")]
-use nextmini::node::session::manager as reliable_session;
+use nextmini::node::session::runtime as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
