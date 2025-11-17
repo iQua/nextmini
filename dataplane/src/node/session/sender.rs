@@ -612,12 +612,23 @@ impl ChunkSourceKind {
     }
 
     fn template(bytes: Bytes, chunk_size: usize) -> Self {
-        if bytes.is_empty() && chunk_size > 0 {
-            let template = Bytes::from(vec![0u8; chunk_size]);
-            Self::Template { template }
+        // Pre-build a template that's at least chunk_size bytes to avoid
+        // per-chunk allocations when the provided bytes are smaller.
+        let template = if bytes.is_empty() && chunk_size > 0 {
+            Bytes::from(vec![0u8; chunk_size])
+        } else if chunk_size > bytes.len() {
+            // Build a template large enough for any chunk by repeating the pattern
+            let mut buf = BytesMut::with_capacity(chunk_size);
+            while buf.len() < chunk_size {
+                let remaining = chunk_size - buf.len();
+                let take = remaining.min(bytes.len());
+                buf.extend_from_slice(&bytes[..take]);
+            }
+            buf.freeze()
         } else {
-            Self::Template { template: bytes }
-        }
+            bytes
+        };
+        Self::Template { template }
     }
 }
 
@@ -641,12 +652,8 @@ impl ChunkSource {
         let kind = if matches_len {
             ChunkSourceKind::borrowed(bytes)
         } else {
-            let template = if bytes.is_empty() {
-                Bytes::from(vec![0u8; chunk_size.max(1)])
-            } else {
-                bytes
-            };
-            ChunkSourceKind::template(template, chunk_size.max(1))
+            // Template mode: pre-build the template to avoid per-chunk allocations
+            ChunkSourceKind::template(bytes, chunk_size.max(1))
         };
 
         Self {
@@ -696,18 +703,14 @@ impl ChunkSource {
                 bytes.slice(start..end)
             }
             ChunkSourceKind::Template { template } => {
-                if template.is_empty() {
-                    Bytes::from(vec![0u8; chunk_len])
-                } else if chunk_len <= template.len() {
+                // Template is pre-built to be at least chunk_size, so just slice.
+                // The only time chunk_len differs is the last chunk (remainder).
+                if chunk_len <= template.len() {
                     template.slice(0..chunk_len)
                 } else {
-                    let mut buf = BytesMut::with_capacity(chunk_len);
-                    while buf.len() < chunk_len {
-                        let remaining = chunk_len - buf.len();
-                        let take = remaining.min(template.len());
-                        buf.extend_from_slice(&template[..take]);
-                    }
-                    buf.freeze()
+                    // This should never happen with proper template pre-building,
+                    // but handle it gracefully by allocating zeroes.
+                    Bytes::from(vec![0u8; chunk_len])
                 }
             }
         };
