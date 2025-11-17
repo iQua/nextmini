@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, trace, warn};
 
@@ -49,7 +49,7 @@ pub async fn run(
     let chunk_bytes = cfg.common.chunk_size;
     let source_buffer = cfg.source_buffer.clone();
     let mut state = SenderState::new(cfg, total_chunks);
-    let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks);
+    let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks, total_bytes);
     let mut pacer = DataPacer::new(state.common.data_bucket.clone());
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
@@ -602,30 +602,68 @@ fn compute_window(cfg: &SenderConfig) -> usize {
     window
 }
 
-/// Materialized chunk that is ready to be encoded into an reliable session frame.
+/// Materialized chunk that is ready to be encoded into a reliable session frame.
 struct ChunkPayload {
     index: u64,
     data: Bytes,
 }
 
-/// Reads chunk payloads from memory and hands them to the sender in strict index order.
+enum ChunkSourceKind {
+    // slices data directly from an in-memory buffer, zero-copy
+    Borrowed { bytes: Bytes, offset: usize },
+    // reuses a chunk template for synthetic payloads
+    Template { template: Bytes },
+}
+
+impl ChunkSourceKind {
+    fn borrowed(bytes: Bytes) -> Self {
+        Self::Borrowed { bytes, offset: 0 }
+    }
+
+    fn template(bytes: Bytes, chunk_size: usize) -> Self {
+        if bytes.is_empty() && chunk_size > 0 {
+            let template = Bytes::from(vec![0u8; chunk_size]);
+            Self::Template { template }
+        } else {
+            Self::Template { template: bytes }
+        }
+    }
+}
+
+/// Reads chunk payloads from memory or a template and hands them to the sender
+/// in strict index order.
 struct ChunkSource {
-    bytes: Bytes,
     chunk_size: usize,
     total_chunks: u64,
+    total_bytes: u64,
     next_index: u64,
-    buffer_offset: usize,
+    kind: ChunkSourceKind,
 }
 
 impl ChunkSource {
     /// Construct a new chunk source that will walk through the shared buffer.
-    fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64) -> Self {
+    fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64, total_bytes: u64) -> Self {
+        let matches_len = usize::try_from(total_bytes)
+            .map(|len| len == bytes.len())
+            .unwrap_or(false);
+
+        let kind = if matches_len {
+            ChunkSourceKind::borrowed(bytes)
+        } else {
+            let template = if bytes.is_empty() {
+                Bytes::from(vec![0u8; chunk_size.max(1)])
+            } else {
+                bytes
+            };
+            ChunkSourceKind::template(template, chunk_size.max(1))
+        };
+
         Self {
-            bytes,
             chunk_size,
             total_chunks,
+            total_bytes,
             next_index: 1,
-            buffer_offset: 0,
+            kind,
         }
     }
 
@@ -634,27 +672,54 @@ impl ChunkSource {
         self.total_chunks == 0 || self.next_index > self.total_chunks
     }
 
-    /// Returns the next chunk, advancing the internal cursor and sharing the
-    /// underlying buffer instead of copying bytes.
+    /// Returns the next chunk, advancing the internal cursor. For borrowed
+    /// buffers we slice without copying; template mode reuses the same chunk.
     fn next_chunk(&mut self) -> Option<ChunkPayload> {
         if self.finished() {
             return None;
         }
 
-        let start = self.buffer_offset;
-        if start >= self.bytes.len() {
+        if self.chunk_size == 0 {
             self.next_index = self.total_chunks + 1;
             return None;
         }
 
-        let end = (start + self.chunk_size).min(self.bytes.len());
-
-        // Zero-copy slice – O(1), shares underlying buffer
-        let data = self.bytes.slice(start..end);
-
-        self.buffer_offset = end;
         let idx = self.next_index;
         self.next_index += 1;
+
+        let chunk_len = if idx == self.total_chunks {
+            let rem = (self.total_bytes % self.chunk_size as u64) as usize;
+            if rem == 0 { self.chunk_size } else { rem }
+        } else {
+            self.chunk_size
+        };
+
+        let data = match &mut self.kind {
+            ChunkSourceKind::Borrowed { bytes, offset } => {
+                let start = *offset;
+                let end = start.saturating_add(chunk_len);
+                if end > bytes.len() {
+                    return None;
+                }
+                *offset = end;
+                bytes.slice(start..end)
+            }
+            ChunkSourceKind::Template { template } => {
+                if template.is_empty() {
+                    Bytes::from(vec![0u8; chunk_len])
+                } else if chunk_len <= template.len() {
+                    template.slice(0..chunk_len)
+                } else {
+                    let mut buf = BytesMut::with_capacity(chunk_len);
+                    while buf.len() < chunk_len {
+                        let remaining = chunk_len - buf.len();
+                        let take = remaining.min(template.len());
+                        buf.extend_from_slice(&template[..take]);
+                    }
+                    buf.freeze()
+                }
+            }
+        };
 
         Some(ChunkPayload { index: idx, data })
     }
@@ -710,14 +775,15 @@ mod tests {
     #[test]
     fn chunk_source_finished_detection() {
         // Zero chunks should be immediately finished
-        let source = ChunkSource::new(Bytes::new(), 1024, 0);
+        let source = ChunkSource::new(Bytes::new(), 1024, 0, 0);
         assert!(
             source.finished(),
             "ChunkSource with 0 chunks should be finished immediately"
         );
 
         //Source with chunks should not be finished initially
-        let mut source = ChunkSource::new(Bytes::from(vec![0u8; 1024 * 5]), 1024, 5);
+        let mut source =
+            ChunkSource::new(Bytes::from(vec![0u8; 1024 * 5]), 1024, 5, (1024 * 5) as u64);
         assert!(
             !source.finished(),
             "ChunkSource with 5 chunks should not be finished initially"
@@ -736,6 +802,32 @@ mod tests {
         // Requesting more chunks after finished returns None
         let result = source.next_chunk();
         assert!(result.is_none(), "Should return None when finished");
+    }
+
+    #[test]
+    fn chunk_source_template_mode_reuses_buffer() {
+        let chunk_size = 1024;
+        let total_bytes = (chunk_size as u64 * 3) + 512;
+        let total_chunks = total_bytes.div_ceil(chunk_size as u64);
+        let template = Bytes::from(vec![0xBBu8; chunk_size]);
+        let mut source = ChunkSource::new(template, chunk_size, total_chunks, total_bytes);
+
+        for _ in 0..(total_chunks - 1) {
+            let chunk = source.next_chunk().expect("chunk must be available");
+            assert_eq!(
+                chunk.data.len(),
+                chunk_size,
+                "Intermediate chunks should match chunk_size"
+            );
+        }
+
+        let last = source.next_chunk().expect("last chunk must exist");
+        assert_eq!(
+            last.data.len(),
+            512,
+            "Last chunk should match the remainder size"
+        );
+        assert!(source.next_chunk().is_none(), "No extra chunks expected");
     }
 
     /// Validates the timeout constant is used correctly.

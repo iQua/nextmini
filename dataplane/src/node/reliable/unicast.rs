@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use bytes::Bytes;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use nextmini_messages::{Flow, FlowLen, TokenBucketSpec};
 
@@ -80,21 +80,11 @@ impl ReliableUnicastFlowHandle {
             let data_bucket =
                 bucket_from_flow_rate(flow.flow_spec.flow_rate, &reliable_cfg.data_bucket);
 
-            let total_bytes_usize = match usize::try_from(total_bytes) {
-                Ok(value) => value,
-                Err(_) => {
-                    error!(
-                        controller_id = flow.controller_id,
-                        bytes = total_bytes,
-                        "ReliableUnicastFlow: flow too large to allocate payload buffer"
-                    );
-                    return;
-                }
-            };
-
             // We currently inject a fixed pattern; higher-level APIs fill the
-            // buffer before the flow is scheduled.
-            let source_buffer = Bytes::from(vec![0xAAu8; total_bytes_usize]);
+            // buffer before the flow is scheduled. Reuse a single chunk-sized
+            // template instead of allocating the entire payload up front.
+            let template_len = reliable_cfg.default_chunk_size.max(1);
+            let source_buffer = Bytes::from(vec![0xAAu8; template_len]);
 
             let common = CommonConfig {
                 session_id: sid,
