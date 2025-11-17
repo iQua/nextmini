@@ -22,7 +22,6 @@ pub struct CommonConfig {
     pub chunk_size: usize,
     pub src_port: u16,
     pub dst_port: u16,
-    pub control_weight: usize,
     pub data_bucket: Option<TokenBucketSpec>,
     pub local_node_id: usize,
     pub user_space_base_addr: Ipv4Addr,
@@ -324,11 +323,14 @@ impl ReliableRuntime {
     /// Spawn a receiver task and hand it a bounded inbox for inbound frames.
     fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
         let sid = cfg.common.session_id;
+        let processors = self.processors.clone();
+
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
         self.inputs.insert(sid, tx);
-        let processors = self.processors.clone();
+
         let handle = tokio::spawn(receiver::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
+
         sid
     }
 

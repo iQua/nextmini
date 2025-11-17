@@ -636,9 +636,6 @@ pub struct ReliableConfig {
     /// Default data chunk size in bytes.
     pub default_chunk_size: usize,
 
-    /// Control flow weight for WRR schedulers.
-    pub control_weight: usize,
-
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
 
@@ -651,7 +648,6 @@ impl Default for ReliableConfig {
     fn default() -> Self {
         Self {
             default_chunk_size: 8500,
-            control_weight: 8,
             data_bucket: None,
             ready_grace_ms: 1500,
         }

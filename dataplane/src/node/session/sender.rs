@@ -224,14 +224,6 @@ impl SenderState {
             receiver_progress.insert(*node_id, 0);
         }
 
-        if cfg.common.control_weight != 0 {
-            debug!(
-                session_id = common.session_id,
-                control_weight = cfg.common.control_weight,
-                "Reliable sender: control_weight is recorded but scheduler boosts are not yet wired."
-            );
-        }
-
         let mut state = Self {
             session_id: common.session_id,
             common,
