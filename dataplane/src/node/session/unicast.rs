@@ -15,16 +15,16 @@ use crate::node::session::runtime::{
 };
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
-/// Handles controller-managed reliable unicast flows on a dataplane node.
+/// Manages controller-assigned reliable unicast flows on a dataplane node.
 #[derive(Clone)]
-pub struct ReliableUnicastFlowHandle {
+pub struct ReliableUnicastFlowManager {
     cfg: LocalConfig,
     processors: ProcessorHandle,
     flowstats: FlowStatsReporterHandle,
     reliable_runtime: ReliableRuntimeHandle,
 }
 
-impl ReliableUnicastFlowHandle {
+impl ReliableUnicastFlowManager {
     pub fn new(
         cfg: LocalConfig,
         processors: ProcessorHandle,

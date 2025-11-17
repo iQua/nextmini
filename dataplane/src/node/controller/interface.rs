@@ -32,7 +32,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::ReliableRuntimeHandle;
-use crate::node::session::unicast::ReliableUnicastFlowHandle;
+use crate::node::session::unicast::ReliableUnicastFlowManager;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -108,7 +108,7 @@ impl ControllerInterfaceHandle {
         let reliable_runtime = ReliableRuntimeHandle::new(processors.clone());
         processors.connect_reliable_handle(reliable_runtime.clone());
 
-        let reliable_unicast = ReliableUnicastFlowHandle::new(
+        let reliable_unicast = ReliableUnicastFlowManager::new(
             config.clone(),
             processors.clone(),
             flowstats_reporter.clone(),
@@ -307,7 +307,7 @@ pub struct ControllerToDataplaneReceiver {
 
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
     reliable_runtime: ReliableRuntimeHandle,
-    reliable_unicast: ReliableUnicastFlowHandle,
+    reliable_unicast: ReliableUnicastFlowManager,
     topology_ready: bool,
     pending_tcp_flows: Vec<Flow>,
     pending_reliable_flows: Vec<Flow>,
