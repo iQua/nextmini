@@ -17,7 +17,7 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reliable::api::{Command as ReliableCommand, ReliableHandle};
+use crate::node::reliable::api::{Command, ReliableHandle};
 use crate::node::reliable::session::{PendingReceiverKey, SessionManager};
 
 pub struct Conductor {
@@ -66,27 +66,27 @@ impl Conductor {
                 let mut rx = mut_rx;
                 while let Some(cmd) = rx.recv().await {
                     match cmd {
-                        ReliableCommand::StartSender { cfg, reply } => {
+                        Command::StartSender { cfg, reply } => {
                             let sid = cfg.common.session_id;
                             let mut guard = manager.lock().await;
                             let _ = guard.spawn_sender(cfg);
                             let _ = reply.send(sid);
                         }
-                        ReliableCommand::StartReceiver { cfg, reply } => {
+                        Command::StartReceiver { cfg, reply } => {
                             let sid = cfg.common.session_id;
                             let mut guard = manager.lock().await;
                             let _ = guard.spawn_receiver(cfg);
                             let _ = reply.send(sid);
                         }
-                        ReliableCommand::StartReceiverPending { cfg, key, reply } => {
+                        Command::StartReceiverPending { cfg, key, reply } => {
                             let mut guard = manager.lock().await;
                             guard.enqueue_pending_receiver(key, cfg, reply);
                         }
-                        ReliableCommand::Stop { session } => {
+                        Command::Stop { session } => {
                             let mut guard = manager.lock().await;
                             guard.stop(session).await;
                         }
-                        ReliableCommand::Deliver { session, frame } => {
+                        Command::Deliver { session, frame } => {
                             let dest_ip = frame.dest_ip;
                             let source_node_id = frame.source_node_id;
                             let (sender, pending_reply) = {
@@ -127,7 +127,7 @@ impl Conductor {
                                 );
                             }
                         }
-                        ReliableCommand::Wait { session, reply } => {
+                        Command::Wait { session, reply } => {
                             // Spawn a separate task to handle Wait so it doesn't block the main loop
                             let manager_clone = manager.clone();
                             tokio::spawn(async move {
@@ -147,12 +147,12 @@ impl Conductor {
                                 }
                             });
                         }
-                        ReliableCommand::AllocateSession { reply } => {
+                        Command::AllocateSession { reply } => {
                             let mut guard = manager.lock().await;
                             let sid = guard.allocate_session_id();
                             let _ = reply.send(sid);
                         }
-                        ReliableCommand::SetTopologyReady { ready } => {
+                        Command::SetTopologyReady { ready } => {
                             let mut guard = manager.lock().await;
                             guard.set_topology_ready(ready);
                         }
@@ -330,7 +330,7 @@ impl Conductor {
     /// Returns a clone of the reliable handle for language bindings.
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
-    pub fn reliable_handle(&self) -> crate::node::reliable::api::ReliableHandle {
+    pub fn reliable_handle(&self) -> ReliableHandle {
         self.reliable.clone()
     }
 }
