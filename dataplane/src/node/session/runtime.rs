@@ -81,34 +81,38 @@ impl ReliableRuntimeHandle {
             reply: reply_tx,
         });
 
-        reply_rx.await.expect("response from start_sender.")
+        reply_rx.await.expect("The session ID.")
     }
 
     /// Request that the runtime spin up a receiver immediately.
     #[allow(dead_code)]
     pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
+
         let _ = self.tx.send(Command::StartReceiver {
             cfg,
             reply: reply_tx,
         });
-        reply_rx.await.expect("start_receiver reply")
+
+        reply_rx.await.expect("The session ID.")
     }
 
     /// Request that the runtime stage a receiver that will be paired once the
-    /// control-plane assigns a session ID (pending receivers cover this race).
+    /// control-plane assigns a session ID.
     pub async fn start_receiver_pending(
         &self,
         cfg: ReceiverConfig,
         key: PendingReceiverKey,
     ) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
+
         let _ = self.tx.send(Command::StartReceiverPending {
             cfg,
             key,
             reply: reply_tx,
         });
-        reply_rx.await.expect("start_receiver_pending reply")
+
+        reply_rx.await.expect("The session ID.")
     }
 
     /// Cancel a session regardless of whether it is a sender or receiver.
@@ -135,11 +139,13 @@ impl ReliableRuntimeHandle {
     #[allow(dead_code)]
     pub async fn allocate_session_id(&self) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
+
         let _ = self.tx.send(Command::AllocateSession { reply: reply_tx });
-        reply_rx.await.expect("allocate_session_id reply")
+
+        reply_rx.await.expect("The session ID.")
     }
 
-    /// Notify the runtime that the control plane finished installing topology.
+    /// Notify the runtime that the control plane finished setting up the topology.
     pub fn set_topology_ready(&self, ready: bool) {
         let _ = self.tx.send(Command::SetTopologyReady { ready });
     }
@@ -166,7 +172,7 @@ pub struct PendingReceiverKey {
     pub source_node_id: usize,
 }
 
-/// Wrapper that stores receiver config until a session ID is assigned.
+/// Wrapper that stores the receiver config until a session ID is assigned.
 struct PendingReceiver {
     cfg: ReceiverConfig,
     reply: oneshot::Sender<SessionId>,
@@ -176,6 +182,7 @@ impl ReliableRuntime {
     /// Construct a runtime that can spawn sender/receiver tasks and track their lifetimes.
     fn new(processors: ProcessorHandle, command_rx: mpsc::UnboundedReceiver<Command>) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
+
         Self {
             processors,
             tasks: AHashMap::default(),
@@ -188,17 +195,18 @@ impl ReliableRuntime {
         }
     }
 
-    /// Main event loop for the ReliableRuntime actor.
-    /// Processes commands from the ReliableRuntimeHandle.
+    /// Main event loop for the reliable runtime actor that processes inbound commands.
     async fn run(&mut self) {
         while let Some(cmd) = self.command_rx.recv().await {
             match cmd {
                 Command::StartSender { cfg, reply } => {
                     let sid = self.spawn_sender(cfg);
+
                     let _ = reply.send(sid);
                 }
                 Command::StartReceiver { cfg, reply } => {
                     let sid = self.spawn_receiver(cfg);
+
                     let _ = reply.send(sid);
                 }
                 Command::StartReceiverPending { cfg, key, reply } => {
@@ -208,14 +216,15 @@ impl ReliableRuntime {
                     self.stop(session).await;
                 }
                 Command::Deliver { session, frame } => {
-                    self.handle_deliver(session, frame).await;
+                    self.deliver_frame(session, frame).await;
                 }
                 Command::Wait { session, reply } => {
-                    // Handle Wait asynchronously without blocking the main loop
+                    // handles a wait command asynchronously without blocking the main loop
                     self.handle_wait(session, reply);
                 }
                 Command::AllocateSession { reply } => {
                     let sid = self.allocate_session_id();
+
                     let _ = reply.send(sid);
                 }
                 Command::SetTopologyReady { ready } => {
@@ -223,21 +232,20 @@ impl ReliableRuntime {
                 }
             }
         }
-        warn!("ReliableRuntime command loop terminated.");
     }
 
-    /// Handles delivery of inbound frames to sessions.
-    async fn handle_deliver(&mut self, session: SessionId, frame: InboundFrame) {
+    /// Deliver inbound frames to sessions.
+    async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
         let dest_ip = frame.dest_ip;
         let source_node_id = frame.source_node_id;
 
         let (sender, pending_reply) = if let Some(tx) = self.input_sender(session) {
             (Some(tx), None)
-        } else if let (Some(dip), Some(src)) = (dest_ip, source_node_id) {
+        } else if let (Some(dest_ip), Some(source_node_id)) = (dest_ip, source_node_id) {
             if let Some((cfg, reply)) = self.adopt_pending_receiver(
                 PendingReceiverKey {
-                    dest_ip: dip,
-                    source_node_id: src,
+                    dest_ip,
+                    source_node_id,
                 },
                 session,
             ) {
@@ -254,7 +262,7 @@ impl ReliableRuntime {
             if tx.send(frame).await.is_err() {
                 warn!(
                     session_id = session,
-                    "Reliable runtime: receiver dropped inbound frame"
+                    "Reliable runtime: receiver dropped inbound frame."
                 );
             }
             if let Some(reply) = pending_reply {
@@ -263,7 +271,7 @@ impl ReliableRuntime {
         } else {
             warn!(
                 session_id = session,
-                "Reliable runtime: no receiver for inbound frame"
+                "Reliable runtime: no receiver for inbound frame."
             );
         }
     }
@@ -382,6 +390,7 @@ impl ReliableRuntime {
         if queue.is_empty() {
             self.pending.remove(&key);
         }
+
         Some((pending.cfg, pending.reply))
     }
 }

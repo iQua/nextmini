@@ -218,7 +218,7 @@ impl Conductor {
     /// Returns a clone of the reliable runtime handle for language bindings.
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
-    pub fn reliable_handle(&self) -> ReliableRuntimeHandle {
+    pub fn reliable_runtime_handle(&self) -> ReliableRuntimeHandle {
         self.reliable_runtime.clone()
     }
 }
