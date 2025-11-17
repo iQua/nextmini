@@ -12,6 +12,7 @@ use nextmini_messages::TokenBucketSpec;
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{Command, InboundFrame, SessionId};
+use crate::node::session::{receiver, sender};
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
@@ -314,7 +315,7 @@ impl ReliableRuntime {
         let (tx, rx) = mpsc::channel(1024);
         self.inputs.insert(sid, tx);
 
-        let handle = tokio::spawn(super::sender::run(cfg, rx, processors));
+        let handle = tokio::spawn(sender::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
 
         sid
@@ -326,7 +327,7 @@ impl ReliableRuntime {
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
         self.inputs.insert(sid, tx);
         let processors = self.processors.clone();
-        let handle = tokio::spawn(super::receiver::run(cfg, rx, processors));
+        let handle = tokio::spawn(receiver::run(cfg, rx, processors));
         self.tasks.insert(sid, handle);
         sid
     }
