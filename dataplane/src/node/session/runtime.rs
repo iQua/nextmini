@@ -57,13 +57,12 @@ pub struct ReliableRuntimeHandle {
 }
 
 impl ReliableRuntimeHandle {
-    /// Creates a new ReliableRuntimeHandle and spawns the ReliableRuntime actor.
     pub fn new(processors: ProcessorHandle) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let runtime = ReliableRuntime::new(processors, rx);
 
-        // Spawn the ReliableRuntime actor task
+        // spawns the reliable runtime actor task
         tokio::spawn(async move {
             let mut runtime = runtime;
             runtime.run().await;
@@ -76,11 +75,13 @@ impl ReliableRuntimeHandle {
     /// configuration and return its session ID.
     pub async fn start_sender(&self, cfg: SenderConfig) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
+
         let _ = self.tx.send(Command::StartSender {
             cfg,
             reply: reply_tx,
         });
-        reply_rx.await.expect("start_sender reply")
+
+        reply_rx.await.expect("response from start_sender.")
     }
 
     /// Request that the runtime spin up a receiver immediately.

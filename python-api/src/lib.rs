@@ -275,7 +275,7 @@ impl Dataplane {
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
-                let reliable_cfg = &self.cfg.reliable;
+                let runtime_config = &self.cfg.reliable_runtime_config;
                 if let Some(mode) = congestion.as_deref() {
                     if mode != "static" {
                         return Err(PyRuntimeError::new_err(format!(
@@ -294,8 +294,8 @@ impl Dataplane {
                     chunk_size,
                     src_port: sp,
                     dst_port: dp,
-                    control_weight: reliable_cfg.control_weight,
-                    data_bucket: reliable_cfg.data_bucket.clone(),
+                    control_weight: runtime_config.control_weight,
+                    data_bucket: runtime_config.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
@@ -305,7 +305,7 @@ impl Dataplane {
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
-                    ready_grace_ms: reliable_cfg.ready_grace_ms,
+                    ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
@@ -343,7 +343,7 @@ impl Dataplane {
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable {
-                let reliable_cfg = &self.cfg.reliable;
+                let runtime_config = &self.cfg.reliable_runtime_config;
                 let mut resolved_sid = session_id;
                 if resolved_sid.is_none() {
                     if let Some(known) = self.lookup_session(ip, source_node_id) {
@@ -358,8 +358,8 @@ impl Dataplane {
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
-                    control_weight: reliable_cfg.control_weight,
-                    data_bucket: reliable_cfg.data_bucket.clone(),
+                    control_weight: runtime_config.control_weight,
+                    data_bucket: runtime_config.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,

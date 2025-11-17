@@ -21,7 +21,7 @@ pub struct ReliableUnicastFlowHandle {
     cfg: LocalConfig,
     processors: ProcessorHandle,
     flowstats: FlowStatsReporterHandle,
-    reliable: ReliableRuntimeHandle,
+    reliable_runtime: ReliableRuntimeHandle,
 }
 
 impl ReliableUnicastFlowHandle {
@@ -29,17 +29,17 @@ impl ReliableUnicastFlowHandle {
         cfg: LocalConfig,
         processors: ProcessorHandle,
         flowstats: FlowStatsReporterHandle,
-        reliable: ReliableRuntimeHandle,
+        reliable_runtime: ReliableRuntimeHandle,
     ) -> Self {
         Self {
             cfg,
             processors,
             flowstats,
-            reliable,
+            reliable_runtime,
         }
     }
 
-    /// Installs any reliable-unicast flows that target the local node (as source and/or destination).
+    /// Installs any reliable unicast flows that target the local node (as source and/or destination).
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
             // Flows can involve the local node as the sender, receiver, or both
@@ -68,31 +68,31 @@ impl ReliableUnicastFlowHandle {
         let cfg = self.cfg.clone();
         let processors = self.processors.clone();
         let flowstats = self.flowstats.clone();
-        let reliable = self.reliable.clone();
+        let reliable_runtime = self.reliable_runtime.clone();
 
         tokio::spawn(async move {
             let sid = session_id_for_flow(&flow);
-            let reliable_cfg = cfg.reliable.clone();
+            let runtime_config = cfg.reliable_runtime_config.clone();
             let dst_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = cfg.user_space_client_port;
             let dst_port = cfg.user_space_server_port;
             let data_bucket =
-                bucket_from_flow_rate(flow.flow_spec.flow_rate, &reliable_cfg.data_bucket);
+                bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
 
             // We currently inject a fixed pattern; higher-level APIs fill the
             // buffer before the flow is scheduled. Reuse a single chunk-sized
             // template instead of allocating the entire payload up front.
-            let template_len = reliable_cfg.default_chunk_size.max(1);
+            let template_len = runtime_config.default_chunk_size.max(1);
             let source_buffer = Bytes::from(vec![0xAAu8; template_len]);
 
             let common = CommonConfig {
                 session_id: sid,
                 dest_ip: dst_ip,
-                chunk_size: reliable_cfg.default_chunk_size,
+                chunk_size: runtime_config.default_chunk_size,
                 src_port,
                 dst_port,
-                control_weight: reliable_cfg.control_weight,
+                control_weight: runtime_config.control_weight,
                 data_bucket,
                 local_node_id: cfg.node_id,
                 user_space_base_addr: cfg.user_space_base_addr,
@@ -104,7 +104,7 @@ impl ReliableUnicastFlowHandle {
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
-                ready_grace_ms: reliable_cfg.ready_grace_ms,
+                ready_grace_ms: runtime_config.ready_grace_ms,
                 topology_ready: None,
             };
 
@@ -128,8 +128,8 @@ impl ReliableUnicastFlowHandle {
                 );
             }
 
-            let started_sid = reliable.start_sender(sender_cfg).await;
-            let ok = reliable.wait_completion(started_sid).await;
+            let started_sid = reliable_runtime.start_sender(sender_cfg).await;
+            let ok = reliable_runtime.wait_completion(started_sid).await;
 
             let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
             flowstats.report_flow_finished(flow_id, flow.controller_id);
@@ -146,7 +146,7 @@ impl ReliableUnicastFlowHandle {
                 );
             }
 
-            reliable.stop(started_sid);
+            reliable_runtime.stop(started_sid);
         });
     }
 
@@ -162,23 +162,23 @@ impl ReliableUnicastFlowHandle {
         }
 
         let cfg = self.cfg.clone();
-        let reliable = self.reliable.clone();
+        let reliable_runtime = self.reliable_runtime.clone();
 
         tokio::spawn(async move {
-            let reliable_cfg = cfg.reliable.clone();
+            let runtime_config = cfg.reliable_runtime_config.clone();
             let dest_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let data_bucket =
-                bucket_from_flow_rate(flow.flow_spec.flow_rate, &reliable_cfg.data_bucket);
+                bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
 
             let common = CommonConfig {
                 // Placeholder; will be overwritten by adopt_pending_receiver.
                 session_id: 0,
                 dest_ip,
-                chunk_size: reliable_cfg.default_chunk_size,
+                chunk_size: runtime_config.default_chunk_size,
                 src_port: cfg.user_space_client_port,
                 dst_port: cfg.user_space_server_port,
-                control_weight: reliable_cfg.control_weight,
+                control_weight: runtime_config.control_weight,
                 data_bucket,
                 local_node_id: cfg.node_id,
                 user_space_base_addr: cfg.user_space_base_addr,
@@ -198,9 +198,11 @@ impl ReliableUnicastFlowHandle {
             };
 
             // Stage the receiver; the runtime will materialize it when the first frame arrives.
-            let started_sid = reliable.start_receiver_pending(receiver_cfg, key).await;
-            let _ = reliable.wait_completion(started_sid).await;
-            reliable.stop(started_sid);
+            let started_sid = reliable_runtime
+                .start_receiver_pending(receiver_cfg, key)
+                .await;
+            let _ = reliable_runtime.wait_completion(started_sid).await;
+            reliable_runtime.stop(started_sid);
         });
     }
 }

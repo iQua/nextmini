@@ -343,10 +343,10 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
 
-    /// Reliable session default configuration (used when the reliable subsystem is enabled).
+    /// The default configuration for the reliable runtime.
     #[default(Default::default())]
     #[arg(skip)]
-    pub reliable: ReliableConfig,
+    pub reliable_runtime_config: ReliableConfig,
 }
 
 impl LocalConfig {
