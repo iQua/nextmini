@@ -15,7 +15,7 @@ use crate::node::{NodeId, NodeIdExt};
 
 use super::api::InboundFrame;
 use super::control;
-use super::session::{CommonConfig, SenderConfig};
+use super::manager::{CommonConfig, SenderConfig};
 
 pub(super) const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;

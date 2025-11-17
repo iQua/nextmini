@@ -29,9 +29,9 @@ use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 #[cfg(feature = "python-extension")]
 use crate::node::python::interface::PythonInterfaceHandle;
-use crate::node::reliable::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
+use crate::node::session::api::{InboundFrame as ReliableInboundFrame, ReliableHandle};
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.

@@ -17,8 +17,8 @@ use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reliable::api::{Command, ReliableHandle};
-use crate::node::reliable::session::{PendingReceiverKey, SessionManager};
+use crate::node::session::api::{Command, ReliableHandle};
+use crate::node::session::manager::{PendingReceiverKey, SessionManager};
 
 pub struct Conductor {
     config: LocalConfig,

@@ -31,9 +31,9 @@ use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PythonDelivery, PythonEvent, PythonInterfaceHandle,
 };
 #[cfg(feature = "python-extension")]
-use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
+use nextmini::node::session::api::ReliableHandle as RustReliableHandle;
 #[cfg(feature = "python-extension")]
-use nextmini::node::reliable::session as reliable_session;
+use nextmini::node::session::manager as reliable_session;
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;

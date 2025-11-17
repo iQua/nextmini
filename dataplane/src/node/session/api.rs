@@ -2,7 +2,7 @@ use std::net::Ipv4Addr;
 
 use tokio::sync::{mpsc, oneshot};
 
-use super::session::{PendingReceiverKey, ReceiverConfig, SenderConfig};
+use super::manager::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 

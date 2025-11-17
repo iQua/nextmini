@@ -9,8 +9,8 @@ use nextmini_messages::{Flow, FlowLen, TokenBucketSpec};
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reliable::api::{ReliableHandle, SessionId};
-use crate::node::reliable::session::{
+use crate::node::session::api::{ReliableHandle, SessionId};
+use crate::node::session::manager::{
     CommonConfig, PendingReceiverKey, ReceiverConfig, SenderConfig,
 };
 use crate::node::{FlowId, NodeId, NodeIdExt};

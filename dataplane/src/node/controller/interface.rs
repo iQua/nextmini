@@ -30,9 +30,9 @@ use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 #[cfg(feature = "python-extension")]
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
-use crate::node::reliable::api::ReliableHandle;
-use crate::node::reliable::unicast::ReliableUnicastFlowHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
+use crate::node::session::api::ReliableHandle;
+use crate::node::session::unicast::ReliableUnicastFlowHandle;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
