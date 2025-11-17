@@ -465,10 +465,7 @@ mod tests {
         assert!(window.insert(5, payload1), "First insert should succeed");
 
         // Duplicate insert should fail
-        assert!(
-            !window.insert(5, payload2),
-            "Duplicate insert should fail"
-        );
+        assert!(!window.insert(5, payload2), "Duplicate insert should fail");
     }
 
     #[test]
