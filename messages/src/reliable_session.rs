@@ -171,49 +171,69 @@ pub fn decode_data(buf: &[u8]) -> Option<(ReliableSessionHeader, ReliableSession
     ))
 }
 
-/// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
-pub fn encode_control(session_id: u64, control: &ReliableSessionControl) -> Vec<u8> {
+/// Maximum size of a control frame: header (20) + largest body (Manifest: 12) = 32 bytes
+pub const MAX_CONTROL_FRAME_SIZE: usize = ReliableSessionHeader::LEN + 12;
+
+/// Encode a CONTROL frame into the provided buffer, returning the number of bytes written.
+/// The buffer must be at least MAX_CONTROL_FRAME_SIZE bytes.
+///
+/// Returns the slice of the buffer containing the encoded frame.
+pub fn encode_control_into<'a>(
+    buf: &'a mut [u8],
+    session_id: u64,
+    control: &ReliableSessionControl,
+) -> &'a [u8] {
     use ReliableSessionControl::*;
-    let (ctrl_kind, body_bytes) = match control {
+
+    // Encode the body directly into the buffer after the header
+    let (ctrl_kind, body_len) = match control {
         Manifest {
             chunk_size,
             total_bytes,
         } => {
-            let mut b = vec![0u8; 4 + 8];
-            b[0..4].copy_from_slice(&chunk_size.to_be_bytes());
-            b[4..12].copy_from_slice(&total_bytes.to_be_bytes());
-            (ReliableSessionCtrlKind::Manifest as u8, b)
+            let body_start = ReliableSessionHeader::LEN;
+            buf[body_start..body_start + 4].copy_from_slice(&chunk_size.to_be_bytes());
+            buf[body_start + 4..body_start + 12].copy_from_slice(&total_bytes.to_be_bytes());
+            (ReliableSessionCtrlKind::Manifest as u8, 12)
         }
         Ready { node_id } => {
-            let mut b = vec![0u8; 8];
-            b[..8].copy_from_slice(&node_id.to_be_bytes());
-            (ReliableSessionCtrlKind::Ready as u8, b)
+            let body_start = ReliableSessionHeader::LEN;
+            buf[body_start..body_start + 8].copy_from_slice(&node_id.to_be_bytes());
+            (ReliableSessionCtrlKind::Ready as u8, 8)
         }
         Ack { up_to } => {
-            let mut b = vec![0u8; 8];
-            b[..8].copy_from_slice(&up_to.to_be_bytes());
-            (ReliableSessionCtrlKind::Ack as u8, b)
+            let body_start = ReliableSessionHeader::LEN;
+            buf[body_start..body_start + 8].copy_from_slice(&up_to.to_be_bytes());
+            (ReliableSessionCtrlKind::Ack as u8, 8)
         }
         Eot { last_index } => {
-            let mut b = vec![0u8; 8];
-            b[..8].copy_from_slice(&last_index.to_be_bytes());
-            (ReliableSessionCtrlKind::Eot as u8, b)
+            let body_start = ReliableSessionHeader::LEN;
+            buf[body_start..body_start + 8].copy_from_slice(&last_index.to_be_bytes());
+            (ReliableSessionCtrlKind::Eot as u8, 8)
         }
     };
 
-    let body_len = body_bytes.len() as u32;
-    let mut out = vec![0u8; ReliableSessionHeader::LEN + body_len as usize];
+    // Encode the header at the start of the buffer
     ReliableSessionHeader {
         magic: RELIABLE_SESSION_MAGIC,
         version: RELIABLE_SESSION_VERSION,
         kind: ReliableSessionKind::Control,
         ctrl_kind,
         session_id,
-        body_len,
+        body_len: body_len as u32,
     }
-    .encode_into(&mut out[..ReliableSessionHeader::LEN]);
-    out[ReliableSessionHeader::LEN..].copy_from_slice(&body_bytes);
-    out
+    .encode_into(&mut buf[..ReliableSessionHeader::LEN]);
+
+    &buf[..ReliableSessionHeader::LEN + body_len]
+}
+
+/// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
+///
+/// Note: Consider using `encode_control_into` with a stack buffer for better performance.
+pub fn encode_control(session_id: u64, control: &ReliableSessionControl) -> Vec<u8> {
+    let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
+    let frame = encode_control_into(&mut buf, session_id, control);
+    frame.to_vec()
 }
 
 /// Try to decode a CONTROL frame; returns (header, parsed control).
@@ -319,6 +339,42 @@ mod tests {
         let pos = ReliableSessionHeader::LEN + 8;
         bad[pos..pos + 4].copy_from_slice(&(9999u32.to_be_bytes()));
         assert!(decode_data(&bad).is_none());
+    }
+
+    #[test]
+    fn encode_control_into_matches_encode_control() {
+        let ctrls = vec![
+            ReliableSessionControl::Manifest {
+                chunk_size: 4096,
+                total_bytes: 123456,
+            },
+            ReliableSessionControl::Ready { node_id: 99 },
+            ReliableSessionControl::Ack { up_to: 77 },
+            ReliableSessionControl::Eot { last_index: 15 },
+        ];
+
+        for ctrl in ctrls {
+            // Encode using the original heap-allocating version
+            let heap_encoded = encode_control(42, &ctrl);
+
+            // Encode using the stack-buffer version
+            let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
+            let stack_encoded = encode_control_into(&mut buf, 42, &ctrl);
+
+            // Should produce identical output
+            assert_eq!(
+                heap_encoded.as_slice(),
+                stack_encoded,
+                "encode_control_into should produce same output as encode_control for {:?}",
+                ctrl
+            );
+
+            // Both should decode correctly
+            let (_, decoded_heap) = decode_control(&heap_encoded).expect("decode heap");
+            let (_, decoded_stack) = decode_control(stack_encoded).expect("decode stack");
+            assert_eq!(decoded_heap, ctrl);
+            assert_eq!(decoded_stack, ctrl);
+        }
     }
 
     #[test]

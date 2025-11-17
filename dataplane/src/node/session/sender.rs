@@ -507,14 +507,16 @@ impl SenderState {
 
     /// Convenience helper for building and sending control packets.
     fn send_control(&self, control: &ReliableSessionControl, processors: &ProcessorHandle) {
-        let buf = reliable_session::encode_control(self.session_id, control);
+        // Use stack-allocated buffer to avoid heap allocation for small control frames
+        let mut buf = [0u8; reliable_session::MAX_CONTROL_FRAME_SIZE];
+        let frame = reliable_session::encode_control_into(&mut buf, self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
             self.dst_ip,
             self.dst_port,
-            &buf,
+            frame,
         );
 
         processors.process_packet_blocking(packet);

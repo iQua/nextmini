@@ -46,14 +46,16 @@ impl ControlEmitter {
 
     /// Encode and inject a single control frame.
     fn send(&self, control: &ReliableSessionControl) {
-        let buf = reliable_session::encode_control(self.session_id, control);
+        // Use stack-allocated buffer to avoid heap allocation for small control frames
+        let mut buf = [0u8; reliable_session::MAX_CONTROL_FRAME_SIZE];
+        let frame = reliable_session::encode_control_into(&mut buf, self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
             self.dst_ip,
             self.dst_port,
-            &buf,
+            frame,
         );
 
         self.processors.process_packet_blocking(packet);
@@ -243,6 +245,9 @@ impl PendingWindow {
     /// index so future inserts can land.
     fn take_contiguous_from(&mut self, expected: &mut u64) -> Vec<Bytes> {
         let mut ready = Vec::new();
+        let mut chunks_to_advance = 0u64;
+
+        // First pass: collect all contiguous chunks
         loop {
             if *expected < self.base_index {
                 break;
@@ -256,11 +261,17 @@ impl PendingWindow {
                 Some(bytes) => {
                     ready.push(bytes);
                     *expected += 1;
-                    self.advance_window();
+                    chunks_to_advance += 1;
                 }
                 None => break,
             }
         }
+
+        // Bulk advance the window (if we collected any chunks)
+        if chunks_to_advance > 0 {
+            self.advance_window_by(chunks_to_advance);
+        }
+
         ready
     }
 
@@ -272,11 +283,18 @@ impl PendingWindow {
         (self.head + offset as usize) % self.slots.len()
     }
 
-    /// Move the base forward by one slot, wrapping the circular buffer index.
-    fn advance_window(&mut self) {
-        self.base_index = self.base_index.saturating_add(1);
+    /// Advance the window by the specified number of slots.
+    /// This efficiently handles both single and bulk advances.
+    fn advance_window_by(&mut self, count: u64) {
+        if count == 0 {
+            return;
+        }
+
+        self.base_index = self.base_index.saturating_add(count);
         if !self.slots.is_empty() {
-            self.head = (self.head + 1) % self.slots.len();
+            // For large advances, use modulo to avoid overflow
+            let count_usize = count as usize;
+            self.head = (self.head + count_usize) % self.slots.len();
         }
     }
 }
@@ -363,5 +381,112 @@ fn handle_control_frame(
             true
         }
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_window_bulk_advance() {
+        let mut window = PendingWindow::new(16, 1);
+        let mut expected = 1u64;
+
+        // Insert chunks 1-5 in order
+        for i in 1..=5 {
+            let payload = Bytes::from(vec![i as u8; 100]);
+            assert!(window.insert(i, payload), "Should insert chunk {}", i);
+        }
+
+        // Drain all contiguous chunks (should advance by 5)
+        let ready = window.take_contiguous_from(&mut expected);
+        assert_eq!(ready.len(), 5, "Should have drained 5 chunks");
+        assert_eq!(expected, 6, "Expected should advance to 6");
+        assert_eq!(window.base_index, 6, "Base index should advance to 6");
+        assert_eq!(window.head, 5, "Head should advance by 5");
+
+        // Insert chunk 10 (out of order)
+        let payload = Bytes::from(vec![10u8; 100]);
+        assert!(window.insert(10, payload), "Should insert chunk 10");
+
+        // Try to drain - should get nothing since 6-9 are missing
+        let ready = window.take_contiguous_from(&mut expected);
+        assert_eq!(ready.len(), 0, "Should not drain non-contiguous chunks");
+        assert_eq!(expected, 6, "Expected should stay at 6");
+        assert_eq!(window.base_index, 6, "Base index should stay at 6");
+
+        // Fill in chunks 6-9
+        for i in 6..=9 {
+            let payload = Bytes::from(vec![i as u8; 100]);
+            assert!(window.insert(i, payload), "Should insert chunk {}", i);
+        }
+
+        // Now drain should get 6-10 (5 chunks) in one bulk operation
+        let ready = window.take_contiguous_from(&mut expected);
+        assert_eq!(ready.len(), 5, "Should drain chunks 6-10");
+        assert_eq!(expected, 11, "Expected should advance to 11");
+        assert_eq!(window.base_index, 11, "Base index should advance to 11");
+        // Head advanced by 5 from position 5: (5 + 5) % 16 = 10
+        assert_eq!(window.head, 10, "Head should wrap correctly");
+    }
+
+    #[test]
+    fn pending_window_wrapping() {
+        let mut window = PendingWindow::new(8, 1);
+        let mut expected = 1u64;
+
+        // Insert and drain enough to wrap around
+        for batch in 0..3 {
+            let start = batch * 8 + 1;
+            for i in start..start + 8 {
+                let payload = Bytes::from(vec![i as u8; 100]);
+                assert!(window.insert(i, payload));
+            }
+            let ready = window.take_contiguous_from(&mut expected);
+            assert_eq!(ready.len(), 8);
+            assert_eq!(expected, start + 8);
+        }
+
+        // After 3 batches of 8, we should have advanced 24 slots
+        assert_eq!(window.base_index, 25);
+        // Head should wrap: (0 + 24) % 8 = 0
+        assert_eq!(window.head, 0);
+    }
+
+    #[test]
+    fn pending_window_duplicate_insert() {
+        let mut window = PendingWindow::new(16, 1);
+
+        let payload1 = Bytes::from(vec![1u8; 100]);
+        let payload2 = Bytes::from(vec![2u8; 100]);
+
+        // First insert should succeed
+        assert!(window.insert(5, payload1), "First insert should succeed");
+
+        // Duplicate insert should fail
+        assert!(
+            !window.insert(5, payload2),
+            "Duplicate insert should fail"
+        );
+    }
+
+    #[test]
+    fn pending_window_out_of_range() {
+        let mut window = PendingWindow::new(8, 10);
+
+        // Below base_index
+        let payload = Bytes::from(vec![1u8; 100]);
+        assert!(
+            !window.insert(5, payload),
+            "Should reject chunk below base_index"
+        );
+
+        // Beyond window size
+        let payload = Bytes::from(vec![2u8; 100]);
+        assert!(
+            !window.insert(20, payload),
+            "Should reject chunk beyond window"
+        );
     }
 }
