@@ -6,10 +6,9 @@ use nextmini_messages::reliable_session::{self, ReliableSessionControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
+use crate::node::session::api::InboundFrame;
+use crate::node::session::runtime::ReceiverConfig;
 use crate::node::{NodeId, NodeIdExt};
-
-use super::api::InboundFrame;
-use super::runtime::ReceiverConfig;
 
 const ACK_EVERY_CHUNKS: u64 = 16; // ensure <= sender DEFAULT_WINDOW
 

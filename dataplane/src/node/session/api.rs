@@ -2,12 +2,12 @@ use std::net::Ipv4Addr;
 
 use tokio::sync::oneshot;
 
-use super::runtime::{PendingReceiverKey, ReceiverConfig, SenderConfig};
+use crate::node::session::runtime::{PendingReceiverKey, ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 
 // Re-export the ReliableRuntimeHandle as the public API
-pub use super::runtime::ReliableRuntimeHandle;
+pub use crate::node::session::runtime::ReliableRuntimeHandle;
 
 /// Metadata and payload extracted from inbound reliable frames. The control
 /// loop fills out peer/destination context without re-parsing outer headers.

@@ -11,8 +11,7 @@ use tracing::warn;
 use nextmini_messages::TokenBucketSpec;
 
 use crate::node::processor::ProcessorHandle;
-
-use super::api::{Command, InboundFrame, SessionId};
+use crate::node::session::api::{Command, InboundFrame, SessionId};
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
