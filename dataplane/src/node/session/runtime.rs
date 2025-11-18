@@ -52,14 +52,14 @@ pub struct ReceiverConfig {
 /// This handle can be cloned and used to manage reliable sessions.
 #[derive(Clone, Debug)]
 pub struct ReliableRuntimeHandle {
-    tx: mpsc::UnboundedSender<Command>,
+    command_tx: mpsc::UnboundedSender<Command>,
 }
 
 impl ReliableRuntimeHandle {
     pub fn new(processors: ProcessorHandle) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-        let runtime = ReliableRuntime::new(processors, rx);
+        let runtime = ReliableRuntime::new(processors, command_rx);
 
         // spawns the reliable runtime actor task
         tokio::spawn(async move {
@@ -68,7 +68,7 @@ impl ReliableRuntimeHandle {
             runtime.run().await;
         });
 
-        Self { tx }
+        Self { command_tx }
     }
 
     /// Requests that the runtime spin up a sender session with the supplied
@@ -76,7 +76,7 @@ impl ReliableRuntimeHandle {
     pub async fn start_sender(&self, cfg: SenderConfig) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
-        let _ = self.tx.send(Command::StartSender {
+        let _ = self.command_tx.send(Command::StartSender {
             cfg,
             reply: reply_tx,
         });
@@ -89,7 +89,7 @@ impl ReliableRuntimeHandle {
     pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
-        let _ = self.tx.send(Command::StartReceiver {
+        let _ = self.command_tx.send(Command::StartReceiver {
             cfg,
             reply: reply_tx,
         });
@@ -106,7 +106,7 @@ impl ReliableRuntimeHandle {
     ) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
-        let _ = self.tx.send(Command::StartReceiverPending {
+        let _ = self.command_tx.send(Command::StartReceiverPending {
             cfg,
             key,
             reply: reply_tx,
@@ -117,18 +117,18 @@ impl ReliableRuntimeHandle {
 
     /// Cancels a session regardless of whether it is a sender or receiver.
     pub fn stop(&self, session: SessionId) {
-        let _ = self.tx.send(Command::Stop { session });
+        let _ = self.command_tx.send(Command::Stop { session });
     }
 
     /// Delivers an inbound frame to the owning session's queue.
     pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
-        let _ = self.tx.send(Command::Deliver { session, frame });
+        let _ = self.command_tx.send(Command::Deliver { session, frame });
     }
 
     /// Waits until the runtime observes completion (EOT/ACKs) for a session.
     pub async fn wait_completion(&self, session: SessionId) -> bool {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self.tx.send(Command::Wait {
+        let _ = self.command_tx.send(Command::Wait {
             session,
             reply: reply_tx,
         });
@@ -140,14 +140,16 @@ impl ReliableRuntimeHandle {
     pub async fn allocate_session_id(&self) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
-        let _ = self.tx.send(Command::AllocateSession { reply: reply_tx });
+        let _ = self
+            .command_tx
+            .send(Command::AllocateSession { reply: reply_tx });
 
         reply_rx.await.expect("The session ID.")
     }
 
     /// Notifies the runtime that the control plane finished setting up the topology.
     pub fn set_topology_ready(&self, ready: bool) {
-        let _ = self.tx.send(Command::SetTopologyReady { ready });
+        let _ = self.command_tx.send(Command::SetTopologyReady { ready });
     }
 }
 

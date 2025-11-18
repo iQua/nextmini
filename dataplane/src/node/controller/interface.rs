@@ -108,6 +108,7 @@ impl ControllerInterfaceHandle {
         let reliable_runtime = ReliableRuntimeHandle::new(processors.clone());
         processors.connect_reliable_handle(reliable_runtime.clone());
 
+        // creates the reliable unicast flow manager with the correct processors
         let reliable_unicast = ReliableUnicastFlowManager::new(
             config.clone(),
             processors.clone(),
