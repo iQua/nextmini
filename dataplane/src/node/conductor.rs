@@ -200,7 +200,7 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn processor_handle(&self) -> ProcessorHandle {
-        // Used by the optional `nextmini_py` extension to wire the in-process interface.
+        // used by the optional `nextmini_py` extension to wire the in-process interface
         self.processors.clone()
     }
 
@@ -208,7 +208,7 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn local_config(&self) -> LocalConfig {
-        // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
+        // consumed by `nextmini_py` to mirror dataplane configuration inside Python
         self.config.clone()
     }
 
@@ -216,6 +216,7 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn controller_handle(&self) -> ControllerInterfaceHandle {
+        // consumed by `nextmini_py` to attach the Python interface and send messages upstream to the controller
         self.controller.clone()
     }
 
@@ -223,6 +224,7 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn reliable_runtime_handle(&self) -> ReliableRuntimeHandle {
+        // used by the optional `nextmini_py` extension to manage reliable sessions
         self.reliable_runtime.clone()
     }
 }

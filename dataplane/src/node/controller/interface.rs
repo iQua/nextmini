@@ -239,26 +239,6 @@ impl ControllerInterfaceHandle {
     }
 }
 
-#[cfg(test)]
-impl ControllerInterfaceHandle {
-    pub fn test_handle() -> (Self, mpsc::UnboundedReceiver<DataplaneToController>) {
-        let config = LocalConfig::default();
-        let processors = ProcessorHandle::new(config.clone());
-        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
-        let python_interface = Arc::new(Mutex::new(None));
-
-        (
-            Self {
-                config,
-                processors,
-                northbridge_sender,
-                python_interface,
-            },
-            northbridge_receiver,
-        )
-    }
-}
-
 /// An actor used for sending messages from the dataplane to the controller over WebSockets.
 pub struct DataplaneToControllerSender {
     northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
@@ -645,5 +625,25 @@ impl ControllerToDataplaneReceiver {
     #[cfg(feature = "python-extension")]
     async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
         self.python_interface.lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+impl ControllerInterfaceHandle {
+    pub fn test_handle() -> (Self, mpsc::UnboundedReceiver<DataplaneToController>) {
+        let config = LocalConfig::default();
+        let processors = ProcessorHandle::new(config.clone());
+        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        let python_interface = Arc::new(Mutex::new(None));
+
+        (
+            Self {
+                config,
+                processors,
+                northbridge_sender,
+                python_interface,
+            },
+            northbridge_receiver,
+        )
     }
 }
