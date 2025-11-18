@@ -75,18 +75,6 @@ pub async fn run(
 
         let mut progressed = false;
 
-        trace!(
-            session_id = sid,
-            ready_gate_open = state.ready_gate_open,
-            source_drained = state.source_drained,
-            ready_for_data = state.ready_for_data(),
-            chunk_source_finished = chunk_source.finished(),
-            inflight_len = state.inflight_len(),
-            window = state.window_limit(),
-            base_window = state.base_window,
-            "Reliable sender: loop iteration"
-        );
-
         if state.should_emit_manifest() {
             state.send_manifest(&processors);
             progressed = true;
