@@ -60,11 +60,11 @@ async fn main() {
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
-    // Set up a channel for a background task to process the event as a new node connects
+    // Set up a channel for a background task to process the event as a new node connects.
     let (new_node_connected_sender, new_node_connected_receiver) =
         broadcast::channel::<TopologyEvent>(100);
 
-    // Spawn the centralized node connection coordinator
+    // Spawn the centralized node connection coordinator.
     tokio::spawn(new_node_connected(
         new_node_connected_receiver,
         config.clone(),
@@ -72,7 +72,7 @@ async fn main() {
         db_pool.clone(),
     ));
 
-    // Set up database notifications
+    // Set up database notifications.
     setup_route_notification(db_pool.clone(), node_ws.clone()).await;
     setup_flow_notification(db_pool.clone(), node_ws.clone(), config.flow_transport).await;
     setup_group_notification(db_pool.clone(), node_ws.clone()).await;
@@ -339,7 +339,7 @@ async fn handle_connection(
                                         Ok(buf) => Message::binary(buf),
                                         Err(e) => {
                                             error!(
-                                                "Failed to encode AddNode for {}: {}",
+                                                "Failed to encode AddNode for {}: {}.",
                                                 node.id, e
                                             );
                                             continue;
@@ -406,7 +406,7 @@ async fn handle_connection(
                                         Ok(buf) => Message::binary(buf),
                                         Err(e) => {
                                             error!(
-                                                "Failed to encode InstallRoutes for {}: {}",
+                                                "Failed to encode InstallRoutes for {}: {}.",
                                                 node_id, e
                                             );
                                             continue;
@@ -431,7 +431,7 @@ async fn handle_connection(
                             send_multicast_state_to_node(&db_pool, node_id, &write_arc).await
                         {
                             error!(
-                                "Failed to send multicast state to node {} during startup: {}",
+                                "Failed to send multicast state to node {} during startup: {}.",
                                 node_id, e
                             );
                         }
@@ -578,7 +578,7 @@ async fn handle_connection(
                                 let start_time = flow_finished.start_time;
                                 let finish_time = flow_finished.finish_time;
 
-                                // Debug!: this message is now used for debugging
+                                // info! log for application flow finish
                                 info!(
                                     "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] at start_time {} and finish_time {}.",
                                     flow_id_slice[0],

@@ -733,8 +733,8 @@ impl DataPacer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
     use nextmini_messages::TokenBucketSpec;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn data_roundtrip_header_and_meta() {

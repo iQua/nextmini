@@ -104,7 +104,7 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
-        // Creates the reliable runtime actor with the correct processors
+        // creates the reliable runtime handle with the correct processors
         let reliable_runtime = ReliableRuntimeHandle::new(processors.clone());
         processors.connect_reliable_handle(reliable_runtime.clone());
 
