@@ -155,7 +155,6 @@ struct SenderState {
     session_id: u64,
     common: CommonConfig,
     receiver_count: usize,
-    base_window: usize,
     window: usize,
     total_chunks: u64,
     total_bytes: u64,
@@ -205,7 +204,7 @@ impl SenderState {
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.dest_ip;
-        let base_window = compute_window(&cfg);
+        let window = compute_window(&cfg);
 
         let mut receiver_progress = BTreeMap::new();
         for node_id in &cfg.receiver_ids {
@@ -216,8 +215,7 @@ impl SenderState {
             session_id: common.session_id,
             common,
             receiver_count,
-            base_window,
-            window: base_window,
+            window,
             total_chunks,
             total_bytes: cfg.total_bytes,
             receiver_progress,
