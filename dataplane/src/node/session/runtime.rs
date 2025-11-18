@@ -64,13 +64,14 @@ impl ReliableRuntimeHandle {
         // spawns the reliable runtime actor task
         tokio::spawn(async move {
             let mut runtime = runtime;
+
             runtime.run().await;
         });
 
         Self { tx }
     }
 
-    /// Request that the runtime spin up a sender session with the supplied
+    /// Requests that the runtime spin up a sender session with the supplied
     /// configuration and return its session ID.
     pub async fn start_sender(&self, cfg: SenderConfig) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -96,7 +97,7 @@ impl ReliableRuntimeHandle {
         reply_rx.await.expect("The session ID.")
     }
 
-    /// Request that the runtime stage a receiver that will be paired once the
+    /// Requests that the runtime stage a receiver that will be paired once the
     /// control-plane assigns a session ID.
     pub async fn start_receiver_pending(
         &self,
@@ -114,17 +115,17 @@ impl ReliableRuntimeHandle {
         reply_rx.await.expect("The session ID.")
     }
 
-    /// Cancel a session regardless of whether it is a sender or receiver.
+    /// Cancels a session regardless of whether it is a sender or receiver.
     pub fn stop(&self, session: SessionId) {
         let _ = self.tx.send(Command::Stop { session });
     }
 
-    /// Deliver an inbound reliable frame to the owning session's queue.
+    /// Delivers an inbound frame to the owning session's queue.
     pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
         let _ = self.tx.send(Command::Deliver { session, frame });
     }
 
-    /// Wait until the runtime observes completion (EOT/ACKs) for a session.
+    /// Waits until the runtime observes completion (EOT/ACKs) for a session.
     pub async fn wait_completion(&self, session: SessionId) -> bool {
         let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self.tx.send(Command::Wait {
@@ -134,7 +135,7 @@ impl ReliableRuntimeHandle {
         reply_rx.await.unwrap_or(false)
     }
 
-    /// Reserve the next session identifier from the runtime's allocator.
+    /// Reserves the next session identifier from the runtime's allocator.
     #[allow(dead_code)]
     pub async fn allocate_session_id(&self) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -144,7 +145,7 @@ impl ReliableRuntimeHandle {
         reply_rx.await.expect("The session ID.")
     }
 
-    /// Notify the runtime that the control plane finished setting up the topology.
+    /// Notifies the runtime that the control plane finished setting up the topology.
     pub fn set_topology_ready(&self, ready: bool) {
         let _ = self.tx.send(Command::SetTopologyReady { ready });
     }
@@ -178,7 +179,7 @@ struct PendingReceiver {
 }
 
 impl ReliableRuntime {
-    /// Construct a runtime that can spawn sender/receiver tasks and track their lifetimes.
+    /// Constructs a runtime that can spawn sender/receiver tasks and track their lifetimes.
     fn new(processors: ProcessorHandle, command_rx: mpsc::UnboundedReceiver<Command>) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
 
@@ -233,7 +234,7 @@ impl ReliableRuntime {
         }
     }
 
-    /// Deliver inbound frames to sessions.
+    /// Delivers inbound frames to sessions.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
         let dest_ip = frame.dest_ip;
         let source_node_id = frame.source_node_id;
@@ -249,6 +250,7 @@ impl ReliableRuntime {
                 session,
             ) {
                 let _ = self.spawn_receiver(cfg);
+
                 (self.input_sender(session), Some(reply))
             } else {
                 (None, None)
@@ -297,7 +299,7 @@ impl ReliableRuntime {
         self.tasks.remove(&sid)
     }
 
-    /// Spawn a sender task, wiring up control-plane readiness watchers and
+    /// Spawns a sender task, wiring up control-plane readiness watchers and
     /// returning its assigned session ID.
     fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
@@ -318,7 +320,7 @@ impl ReliableRuntime {
         sid
     }
 
-    /// Spawn a receiver task and hand it a bounded inbox for inbound frames.
+    /// Spawns a receiver task and hand it a bounded inbox for inbound frames.
     fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
@@ -332,15 +334,15 @@ impl ReliableRuntime {
         sid
     }
 
-    /// Abort a running session and drop its inbox, if still active.
+    /// Aborts a running session and drops its inbox, if still active.
     async fn stop(&mut self, sid: SessionId) {
-        if let Some(h) = self.tasks.remove(&sid) {
-            h.abort();
+        if let Some(handle) = self.tasks.remove(&sid) {
+            handle.abort();
         }
         self.remove_inputs(sid);
     }
 
-    /// Remove the inbound channel for a session ID.
+    /// Removes the inbound channel for a session ID.
     fn remove_inputs(&mut self, sid: SessionId) {
         self.inputs.remove(&sid);
     }
@@ -350,14 +352,15 @@ impl ReliableRuntime {
         self.inputs.get(&sid).cloned()
     }
 
-    /// Reserve a unique session identifier for future tasks.
+    /// Reserves a unique session identifier for future tasks.
     fn allocate_session_id(&mut self) -> SessionId {
         let sid = self.next_session_id;
         self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
+
         sid
     }
 
-    /// Broadcast topology readiness so all senders may advance their state gates.
+    /// Broadcasts topology readiness so all senders may advance their state gates.
     fn set_topology_ready(&mut self, ready: bool) {
         self.topology_ready = ready;
         let _ = self.topology_ready_tx.send(ready);
@@ -369,15 +372,15 @@ impl ReliableRuntime {
         cfg: ReceiverConfig,
         reply: oneshot::Sender<SessionId>,
     ) {
-        // Multiple listeners may race to attach; keep them queued until the
-        // control plane picks a session ID.
+        // multiple listeners may race to attach; keep them queued until the
+        // control plane picks a session ID
         self.pending
             .entry(key)
             .or_default()
             .push_back(PendingReceiver { cfg, reply });
     }
 
-    /// Pair the next pending receiver for a (destination, source) tuple with the
+    /// Pairs the next pending receiver for a (destination, source) tuple with the
     /// concrete session ID chosen by the control plane.
     fn adopt_pending_receiver(
         &mut self,
@@ -387,6 +390,7 @@ impl ReliableRuntime {
         let queue = self.pending.get_mut(&key)?;
         let mut pending = queue.pop_front()?;
         pending.cfg.common.session_id = session_id;
+
         if queue.is_empty() {
             self.pending.remove(&key);
         }

@@ -578,7 +578,6 @@ async fn handle_connection(
                                 let start_time = flow_finished.start_time;
                                 let finish_time = flow_finished.finish_time;
 
-                                // info! log for application flow finish
                                 info!(
                                     "Received FlowFinished message for application flow [{}.{}.{}.{}:{} → {}.{}.{}.{}:{}] at start_time {} and finish_time {}.",
                                     flow_id_slice[0],
