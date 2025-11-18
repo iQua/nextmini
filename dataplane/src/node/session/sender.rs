@@ -733,6 +733,8 @@ impl DataPacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
+    use nextmini_messages::TokenBucketSpec;
 
     #[test]
     fn data_roundtrip_header_and_meta() {
@@ -839,5 +841,45 @@ mod tests {
             timeout_duration.as_secs() < 3600,
             "Timeout should be shorter than 1 hour"
         );
+    }
+
+    fn sender_cfg(chunk_size: usize, bucket: Option<TokenBucketSpec>) -> SenderConfig {
+        let common = CommonConfig {
+            session_id: 1,
+            dest_ip: Ipv4Addr::new(10, 0, 0, 2),
+            chunk_size,
+            src_port: 1000,
+            dst_port: 2000,
+            data_bucket: bucket,
+            local_node_id: 1,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 1),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        };
+
+        SenderConfig {
+            common,
+            receiver_ids: vec![],
+            total_bytes: 0,
+            source_buffer: Bytes::new(),
+            ready_grace_ms: 1,
+            topology_ready: None,
+        }
+    }
+
+    #[test]
+    fn compute_window_defaults_to_constant_without_bucket() {
+        let cfg = sender_cfg(1024, None);
+        assert_eq!(compute_window(&cfg), DEFAULT_WINDOW);
+    }
+
+    #[test]
+    fn compute_window_limits_to_bucket_capacity() {
+        let bucket = TokenBucketSpec {
+            rate: 10_000,
+            bucket_size: 8_192,
+        };
+        let cfg = sender_cfg(2_048, Some(bucket));
+        // bucket_size / chunk_size = 4, lower than DEFAULT_WINDOW
+        assert_eq!(compute_window(&cfg), 4);
     }
 }
