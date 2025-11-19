@@ -154,9 +154,9 @@ impl PythonInterfaceHandle {
     }
 
     async fn send_payload(
-    entry: ReceiverEntry,
-    payload: PayloadDelivery,
-    backpressure: bool,
+        entry: ReceiverEntry,
+        payload: PayloadDelivery,
+        backpressure: bool,
     ) -> Result<(), ()> {
         if backpressure {
             // With backpressure enabled, wait for capacity

@@ -725,10 +725,7 @@ impl Dataplane {
             }
 
             let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
-            let event = match self.recv_event_with_timeout(remaining) {
-                Some(event) => event,
-                None => return None,
-            };
+            let event = self.recv_event_with_timeout(remaining)?;
 
             if matcher(&event) {
                 return Some(event);

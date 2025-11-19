@@ -231,7 +231,7 @@ mod tests {
             assert_eq!(buffer1.read(py).as_bytes(), buffer2.read(py).as_bytes());
         });
     }
-    
+
     #[test]
     fn frozen_buffer_clone_shares_memory() {
         Python::attach(|py| {
