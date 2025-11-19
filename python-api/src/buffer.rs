@@ -94,7 +94,9 @@ impl FrozenBuffer {
             (*view).suboffsets = std::ptr::null_mut();
             (*view).internal = std::ptr::null_mut();
 
-            (*view).obj = slf.into_ptr();
+            let obj_ptr = slf.into_ptr();
+            pyo3::ffi::Py_INCREF(obj_ptr);
+            (*view).obj = obj_ptr;
         }
 
         Ok(())

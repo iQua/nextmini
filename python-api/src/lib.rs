@@ -2,6 +2,7 @@ mod buffer;
 
 #[cfg(feature = "python-extension")]
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -210,6 +211,7 @@ struct Dataplane {
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
     #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
+    event_stash: Arc<std::sync::Mutex<VecDeque<PythonEvent>>>,
 }
 
 impl Dataplane {
@@ -516,6 +518,7 @@ impl Dataplane {
             session_registry,
             #[cfg(feature = "python-extension")]
             buffer_registry,
+            event_stash: Arc::new(std::sync::Mutex::new(VecDeque::new())),
         })
     }
 
@@ -699,12 +702,24 @@ impl Dataplane {
         F: FnMut(&PythonEvent) -> bool,
     {
         let deadline = timeout.map(|dur| Instant::now() + dur);
-        let mut backlog = Vec::new();
 
+        // First, check the stash
+        {
+            let mut stash = self.event_stash.lock().unwrap();
+            // We need to find the first matching event, remove it, and keep the rest in order.
+            // VecDeque doesn't have a "remove_first_matching" that preserves order easily without iteration.
+            // We can iterate indices.
+            for i in 0..stash.len() {
+                if matcher(&stash[i]) {
+                    return stash.remove(i);
+                }
+            }
+        }
+
+        // If not found in stash, poll the channel
         loop {
             if let Some(dl) = deadline {
                 if Instant::now() >= dl {
-                    self.requeue_events(backlog);
                     return None;
                 }
             }
@@ -712,17 +727,14 @@ impl Dataplane {
             let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
             let event = match self.recv_event_with_timeout(remaining) {
                 Some(event) => event,
-                None => {
-                    self.requeue_events(backlog);
-                    return None;
-                }
+                None => return None,
             };
 
             if matcher(&event) {
-                self.requeue_events(backlog);
                 return Some(event);
             } else {
-                backlog.push(event);
+                // Not a match, stash it at the back
+                self.event_stash.lock().unwrap().push_back(event);
             }
         }
     }
@@ -747,12 +759,6 @@ impl Dataplane {
         rt().block_on(async move {
             handle.publish_event(event).await;
         });
-    }
-
-    fn requeue_events(&self, backlog: Vec<PythonEvent>) {
-        for event in backlog.into_iter() {
-            self.emit_python_event(event);
-        }
     }
 }
 
