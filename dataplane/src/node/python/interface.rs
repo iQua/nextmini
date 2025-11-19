@@ -131,7 +131,19 @@ impl PythonInterfaceHandle {
     }
 
     async fn deliver_payload(&self, entry: ReceiverEntry, packet: Packet) -> Result<(), Packet> {
-        let delivery = raw_payload_delivery(&packet);
+        let slice = packet.tcp_payload().unwrap_or(packet.bytes());
+        let delivery = PayloadDelivery {
+            flow_id: packet.flow_id,
+            bytes: Bytes::copy_from_slice(slice),
+            src_ip: packet.flow_id.src_ip(),
+            dst_ip: packet.flow_id.dst_ip(),
+            src_port: packet.flow_id.src_port(),
+            dst_port: packet.flow_id.dst_port(),
+            message_id: None,
+            total_len: None,
+            fragment_count: None,
+        };
+
         if Self::send_payload(entry, delivery, self.inner.backpressure)
             .await
             .is_err()
@@ -140,78 +152,6 @@ impl PythonInterfaceHandle {
         }
         Ok(())
     }
-
-    async fn send_payload(
-        entry: ReceiverEntry,
-        payload: PayloadDelivery,
-        backpressure: bool,
-    ) -> Result<(), ()> {
-        if backpressure {
-            // With backpressure enabled, wait for capacity
-            entry.sender.send(payload).await.map_err(|_| ())
-        } else {
-            // Without backpressure, drop on full queue
-            match entry.sender.try_send(payload) {
-                Ok(()) => Ok(()),
-                Err(TrySendError::Full(dropped)) | Err(TrySendError::Closed(dropped)) => {
-                    dropped.log_queue_drop();
-                    Err(())
-                }
-            }
-        }
-    }
-
-    pub async fn publish_event(&self, event: PythonEvent) {
-        if let Err(err) = self.inner.event_tx.send(event).await {
-            error!(
-                "PythonInterface: failed to publish event to Python: {}",
-                err
-            );
-        }
-    }
-
-    #[allow(dead_code)]
-    pub async fn next_event(&self) -> Option<PythonEvent> {
-        let mut rx = self.inner.event_rx.lock().await;
-        rx.recv().await
-    }
-}
-
-fn tcp_payload_offset(bytes: &[u8]) -> Option<usize> {
-    if bytes.len() < 20 || (bytes[0] >> 4) != 4 {
-        return None;
-    }
-    let ihl = (bytes[0] & 0x0F) as usize;
-    let ip_header_len = ihl * 4;
-    if ip_header_len < 20 || bytes.len() < ip_header_len + 20 {
-        return None;
-    }
-    let tcp_data_offset = (bytes[ip_header_len + 12] >> 4) as usize;
-    let tcp_header_len = tcp_data_offset * 4;
-    if tcp_header_len < 20 || bytes.len() < ip_header_len + tcp_header_len {
-        return None;
-    }
-    Some(ip_header_len + tcp_header_len)
-}
-
-fn tcp_payload_from_frame(bytes: &[u8]) -> Option<&[u8]> {
-    tcp_payload_offset(bytes).map(|offset| &bytes[offset..])
-}
-
-fn raw_payload_delivery(packet: &Packet) -> PayloadDelivery {
-    let slice = tcp_payload_from_frame(packet.bytes()).unwrap_or(packet.bytes());
-    PayloadDelivery {
-        flow_id: packet.flow_id,
-        bytes: Bytes::copy_from_slice(slice),
-        src_ip: packet.flow_id.src_ip(),
-        dst_ip: packet.flow_id.dst_ip(),
-        src_port: packet.flow_id.src_port(),
-        dst_port: packet.flow_id.dst_port(),
-        message_id: None,
-        total_len: None,
-        fragment_count: None,
-    }
-}
 
 #[derive(Clone, Debug)]
 /// Events forwarded to Python code so it can mirror multicast group state.
