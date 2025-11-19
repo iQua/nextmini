@@ -2,7 +2,6 @@ controller_addr = "ws://controller:3000"
 private_network_interface = "eth0"
 private_network_name = "multicast_demo"
 node_id = 3
-n_nodes = 1
 num_tun_queues = 1
 num_packet_processors = 4
 channel_capacity = 3000

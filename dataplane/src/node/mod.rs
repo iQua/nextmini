@@ -11,9 +11,9 @@ pub mod packet;
 pub mod processor;
 #[cfg(feature = "python-extension")]
 pub mod python;
-pub mod reliable;
 pub mod route;
 pub mod scheduler;
+pub mod session;
 
 use std::net::Ipv4Addr;
 

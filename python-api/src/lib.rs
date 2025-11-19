@@ -31,9 +31,9 @@ use nextmini::node::python::interface::{
     PayloadDelivery as RustPayloadDelivery, PythonDelivery, PythonEvent, PythonInterfaceHandle,
 };
 #[cfg(feature = "python-extension")]
-use nextmini::node::reliable::api::ReliableHandle as RustReliableHandle;
+use nextmini::node::session;
 #[cfg(feature = "python-extension")]
-use nextmini::node::reliable::session as reliable_session;
+use nextmini::node::session::api::ReliableRuntimeHandle;
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
@@ -205,7 +205,7 @@ struct Dataplane {
     controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
     #[cfg(feature = "python-extension")]
-    reliable: Option<RustReliableHandle>,
+    reliable_runtime: Option<ReliableRuntimeHandle>,
     #[cfg(feature = "python-extension")]
     session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
     #[cfg(feature = "python-extension")]
@@ -274,8 +274,8 @@ impl Dataplane {
         let mut sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable {
-                let reliable_cfg = &self.cfg.reliable;
+            if let Some(handle) = &self.reliable_runtime {
+                let runtime_config = &self.cfg.reliable_runtime_config;
                 if let Some(mode) = congestion.as_deref() {
                     if mode != "static" {
                         return Err(PyRuntimeError::new_err(format!(
@@ -288,24 +288,23 @@ impl Dataplane {
                 if session_id.is_none() {
                     sid = rt().block_on(handle.allocate_session_id());
                 }
-                let common = reliable_session::CommonConfig {
+                let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: dest_ip_addr,
                     chunk_size,
                     src_port: sp,
                     dst_port: dp,
-                    control_weight: reliable_cfg.control_weight,
-                    data_bucket: reliable_cfg.data_bucket.clone(),
+                    data_bucket: runtime_config.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
                 };
-                let cfg = reliable_session::SenderConfig {
+                let cfg = session::runtime::SenderConfig {
                     common,
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
-                    ready_grace_ms: reliable_cfg.ready_grace_ms,
+                    ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
@@ -342,8 +341,8 @@ impl Dataplane {
         let sid = session_id.unwrap_or_else(next_py_message_id);
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable {
-                let reliable_cfg = &self.cfg.reliable;
+            if let Some(handle) = &self.reliable_runtime {
+                let runtime_config = &self.cfg.reliable_runtime_config;
                 let mut resolved_sid = session_id;
                 if resolved_sid.is_none() {
                     if let Some(known) = self.lookup_session(ip, source_node_id) {
@@ -352,19 +351,18 @@ impl Dataplane {
                 }
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
-                let common = reliable_session::CommonConfig {
+                let common = session::runtime::CommonConfig {
                     session_id: resolved_sid.unwrap_or(0),
                     dest_ip: ip,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
-                    control_weight: reliable_cfg.control_weight,
-                    data_bucket: reliable_cfg.data_bucket.clone(),
+                    data_bucket: runtime_config.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
                 };
-                let cfg = reliable_session::ReceiverConfig {
+                let cfg = session::runtime::ReceiverConfig {
                     common,
                     source_node_id,
                     expected_bytes,
@@ -373,7 +371,7 @@ impl Dataplane {
                 let started_sid = if resolved_sid.is_some() {
                     rt().block_on(handle.start_receiver(cfg))
                 } else {
-                    let key = reliable_session::PendingReceiverKey {
+                    let key = session::runtime::PendingReceiverKey {
                         dest_ip: ip,
                         source_node_id,
                     };
@@ -392,7 +390,7 @@ impl Dataplane {
     fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable {
+            if let Some(handle) = &self.reliable_runtime {
                 let fut = handle.wait_completion(session_id);
                 if let Some(ms) = timeout_ms {
                     let ok = rt().block_on(async move {
@@ -485,7 +483,7 @@ impl Dataplane {
         let controller = conductor.controller_handle();
 
         #[cfg(feature = "python-extension")]
-        let reliable = conductor.reliable_handle();
+        let reliable_runtime = conductor.reliable_runtime_handle();
 
         // enters the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new() succeeds
         let py_if = {
@@ -513,7 +511,7 @@ impl Dataplane {
             controller,
             _join: join,
             #[cfg(feature = "python-extension")]
-            reliable: Some(reliable),
+            reliable_runtime: Some(reliable_runtime),
             #[cfg(feature = "python-extension")]
             session_registry,
             #[cfg(feature = "python-extension")]

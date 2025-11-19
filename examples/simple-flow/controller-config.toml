@@ -10,12 +10,12 @@ flow_transport = "reliable_unicast"
 type = "full_mesh"
 full_mesh_config = { n_nodes = 4 }
 
-# [[link_rates]]
-# src_node_id = 1
-# dst_node_id = 2
-# # 5 Gbps ~= 625,000,000 bytes/sec
-# rate = 625_000_000
-# bucket_size = 625_000
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 2
+# 5 Gbps ~= 625,000,000 bytes/sec
+rate = 625_000_000
+bucket_size = 312_000_000
 
 # [[link_rates]]
 # src_node_id = 3
@@ -41,7 +41,7 @@ route = [4, 3]
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-flow_spec = { flow_len = { Bytes = 100_000_000_000 }, flow_weight = 1, flow_rate = 625_000_000, transport = "reliable_unicast" }
+flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_weight = 1 }
 
 # # Test Flow 2: Reliable Unicast flow
 # [[flows]]

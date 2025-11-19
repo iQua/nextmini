@@ -12,8 +12,6 @@
 
 - `default_chunk_size: u32` — default payload chunk size in bytes.
 
-- `control_weight: u32` — WRR weight for control flows to avoid starvation.
-
 - `data_bucket: Option<TokenBucketSpec>` — pacing for data flows.
 
 - Session coordination happens via explicit session IDs. Senders still allocate via `Dataplane.send_data(..., session_id=...)` (or allow the runtime to pick one), but receivers can now omit the `session_id`. When `Dataplane.receive_data` is invoked without an ID, the dataplane waits for the first inbound manifest, adopts the sender's session ID automatically, and only then spawns the reliable receiver. Advanced orchestrators may still pre-register IDs with `Dataplane.reliable_register_session_id(...)` when they need to short-circuit the wait.
@@ -25,7 +23,6 @@
 ```toml
 [reliable]
 default_chunk_size = 4096
-control_weight = 10
 # Optional pacing
 # [reliable.data_bucket]
 # rate = 50_000_000  # bytes/sec

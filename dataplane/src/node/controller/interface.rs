@@ -30,9 +30,9 @@ use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::processor::ProcessorHandle;
 #[cfg(feature = "python-extension")]
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
-use crate::node::reliable::api::ReliableHandle;
-use crate::node::reliable::unicast::ReliableUnicastFlowHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
+use crate::node::session::api::ReliableRuntimeHandle;
+use crate::node::session::unicast::ReliableUnicastFlowManager;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -47,8 +47,12 @@ pub struct ControllerInterfaceHandle {
 impl ControllerInterfaceHandle {
     pub async fn new(
         config: LocalConfig,
-        reliable: ReliableHandle,
-    ) -> (Self, ControllerReporterHandle, FlowStatsReporterHandle) {
+    ) -> (
+        Self,
+        ReliableRuntimeHandle,
+        ControllerReporterHandle,
+        FlowStatsReporterHandle,
+    ) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
 
@@ -100,11 +104,16 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
-        let reliable_unicast = ReliableUnicastFlowHandle::new(
+        // creates the reliable runtime handle with the correct processors
+        let reliable_runtime = ReliableRuntimeHandle::new(processors.clone());
+        processors.connect_reliable_handle(reliable_runtime.clone());
+
+        // creates the reliable unicast flow manager with the correct processors
+        let reliable_unicast = ReliableUnicastFlowManager::new(
             config.clone(),
             processors.clone(),
             flowstats_reporter.clone(),
-            reliable.clone(),
+            reliable_runtime.clone(),
         );
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
@@ -117,7 +126,7 @@ impl ControllerInterfaceHandle {
             user_space_server,
             #[cfg(feature = "python-extension")]
             python_interface,
-            reliable,
+            reliable_runtime: reliable_runtime.clone(),
             group_ip_by_id: HashMap::new(),
             reliable_unicast,
             topology_ready: false,
@@ -137,7 +146,12 @@ impl ControllerInterfaceHandle {
             controller_receiver.run().await;
         });
 
-        (controller_interface, reporter, flowstats_reporter)
+        (
+            controller_interface,
+            reliable_runtime,
+            reporter,
+            flowstats_reporter,
+        )
     }
 
     pub async fn connect(
@@ -226,26 +240,6 @@ impl ControllerInterfaceHandle {
     }
 }
 
-#[cfg(test)]
-impl ControllerInterfaceHandle {
-    pub fn test_handle() -> (Self, mpsc::UnboundedReceiver<DataplaneToController>) {
-        let config = LocalConfig::default();
-        let processors = ProcessorHandle::new(config.clone());
-        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
-        let python_interface = Arc::new(Mutex::new(None));
-
-        (
-            Self {
-                config,
-                processors,
-                northbridge_sender,
-                python_interface,
-            },
-            northbridge_receiver,
-        )
-    }
-}
-
 /// An actor used for sending messages from the dataplane to the controller over WebSockets.
 pub struct DataplaneToControllerSender {
     northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
@@ -293,8 +287,8 @@ pub struct ControllerToDataplaneReceiver {
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
-    reliable: ReliableHandle,
-    reliable_unicast: ReliableUnicastFlowHandle,
+    reliable_runtime: ReliableRuntimeHandle,
+    reliable_unicast: ReliableUnicastFlowManager,
     topology_ready: bool,
     pending_tcp_flows: Vec<Flow>,
     pending_reliable_flows: Vec<Flow>,
@@ -456,7 +450,7 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.topology_ready = true;
-                self.reliable.set_topology_ready(true);
+                self.reliable_runtime.set_topology_ready(true);
 
                 self.flush_pending_flows();
             }
@@ -632,5 +626,25 @@ impl ControllerToDataplaneReceiver {
     #[cfg(feature = "python-extension")]
     async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
         self.python_interface.lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+impl ControllerInterfaceHandle {
+    pub fn test_handle() -> (Self, mpsc::UnboundedReceiver<DataplaneToController>) {
+        let config = LocalConfig::default();
+        let processors = ProcessorHandle::new(config.clone());
+        let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        let python_interface = Arc::new(Mutex::new(None));
+
+        (
+            Self {
+                config,
+                processors,
+                northbridge_sender,
+                python_interface,
+            },
+            northbridge_receiver,
+        )
     }
 }

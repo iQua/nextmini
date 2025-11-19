@@ -1,24 +1,22 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
-/// interface actor.
-use std::sync::Arc;
-
-use tokio::sync::Mutex as AsyncMutex;
-use tracing::{info, warn};
+/// interface actor. Optionally, from the Python interface, it also manages the controller interface actor
+/// and the reliable session manager actor.
+use tracing::info;
 
 use nextmini_messages::Protocol;
 
-use super::controller::interface::ControllerInterfaceHandle;
-use super::controller::reporter::ControllerReporterHandle;
 use crate::node::config::LocalConfig;
+use crate::node::controller::interface::ControllerInterfaceHandle;
+use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
-use crate::node::reliable::api::{Command as ReliableCommand, ReliableHandle};
-use crate::node::reliable::session::{PendingReceiverKey, SessionManager};
+#[cfg(feature = "python-extension")]
+use crate::node::session::api::ReliableRuntimeHandle;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -32,135 +30,29 @@ pub struct Conductor {
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
 
-    /// controller interface handle for sending custom messages upstream
+    /// the controller interface for sending messages upstream to the controller
     #[cfg(feature = "python-extension")]
     controller: ControllerInterfaceHandle,
 
-    /// reliable session subsystem handle (initialized but not yet wired)
+    /// the reliable session runtime
     #[cfg(feature = "python-extension")]
-    reliable: ReliableHandle,
+    reliable_runtime: ReliableRuntimeHandle,
 }
 
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
-        // Initialize reliable subsystem handle (command loop wiring to follow).
-        let (reliable, rx) = ReliableHandle::new();
-
         // connects the processors with its downstream local interface writers to send packets out
-        let (controller_interface, reporter, flowstats_reporter) =
-            ControllerInterfaceHandle::new(config.clone(), reliable.clone()).await;
+        let (controller_interface, reliable_runtime, reporter, flowstats_reporter) =
+            ControllerInterfaceHandle::new(config.clone()).await;
 
+        #[cfg(not(feature = "python-extension"))]
+        let _ = reliable_runtime;
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
-        processors.connect_reliable_handle(reliable.clone());
-
-        {
-            let processors_for_mgr = processors.clone();
-            let mut_rx = rx;
-            tokio::spawn(async move {
-                let manager = Arc::new(AsyncMutex::new(SessionManager::new(processors_for_mgr)));
-                let mut rx = mut_rx;
-                while let Some(cmd) = rx.recv().await {
-                    match cmd {
-                        ReliableCommand::StartSender { cfg, reply } => {
-                            let sid = cfg.common.session_id;
-                            let mut guard = manager.lock().await;
-                            let _ = guard.spawn_sender(cfg);
-                            let _ = reply.send(sid);
-                        }
-                        ReliableCommand::StartReceiver { cfg, reply } => {
-                            let sid = cfg.common.session_id;
-                            let mut guard = manager.lock().await;
-                            let _ = guard.spawn_receiver(cfg);
-                            let _ = reply.send(sid);
-                        }
-                        ReliableCommand::StartReceiverPending { cfg, key, reply } => {
-                            let mut guard = manager.lock().await;
-                            guard.enqueue_pending_receiver(key, cfg, reply);
-                        }
-                        ReliableCommand::Stop { session } => {
-                            let mut guard = manager.lock().await;
-                            guard.stop(session).await;
-                        }
-                        ReliableCommand::Deliver { session, frame } => {
-                            let dest_ip = frame.dest_ip;
-                            let source_node_id = frame.source_node_id;
-                            let (sender, pending_reply) = {
-                                let mut guard = manager.lock().await;
-                                if let Some(tx) = guard.input_sender(session) {
-                                    (Some(tx), None)
-                                } else if let (Some(dip), Some(src)) = (dest_ip, source_node_id) {
-                                    if let Some((cfg, reply)) = guard.adopt_pending_receiver(
-                                        PendingReceiverKey {
-                                            dest_ip: dip,
-                                            source_node_id: src,
-                                        },
-                                        session,
-                                    ) {
-                                        let _ = guard.spawn_receiver(cfg);
-                                        (guard.input_sender(session), Some(reply))
-                                    } else {
-                                        (None, None)
-                                    }
-                                } else {
-                                    (None, None)
-                                }
-                            };
-                            if let Some(tx) = sender {
-                                if tx.send(frame).await.is_err() {
-                                    warn!(
-                                        session_id = session,
-                                        "Reliable runtime: receiver dropped inbound frame"
-                                    );
-                                }
-                                if let Some(reply) = pending_reply {
-                                    let _ = reply.send(session);
-                                }
-                            } else {
-                                warn!(
-                                    session_id = session,
-                                    "Reliable runtime: no receiver for inbound frame"
-                                );
-                            }
-                        }
-                        ReliableCommand::Wait { session, reply } => {
-                            // Spawn a separate task to handle Wait so it doesn't block the main loop
-                            let manager_clone = manager.clone();
-                            tokio::spawn(async move {
-                                // Take ownership of the task and await completion.
-                                let handle = {
-                                    let mut guard = manager_clone.lock().await;
-                                    guard.take_task(session)
-                                };
-                                if let Some(handle) = handle {
-                                    let _ = handle.await; // ignore join errors; treat as completion
-                                    let mut guard = manager_clone.lock().await;
-                                    guard.remove_inputs(session);
-                                    drop(guard);
-                                    let _ = reply.send(true);
-                                } else {
-                                    let _ = reply.send(false);
-                                }
-                            });
-                        }
-                        ReliableCommand::AllocateSession { reply } => {
-                            let mut guard = manager.lock().await;
-                            let sid = guard.allocate_session_id();
-                            let _ = reply.send(sid);
-                        }
-                        ReliableCommand::SetTopologyReady { ready } => {
-                            let mut guard = manager.lock().await;
-                            guard.set_topology_ready(ready);
-                        }
-                    }
-                }
-                warn!("Reliable command loop terminated.");
-            });
-        }
 
         Conductor {
             config,
@@ -170,7 +62,7 @@ impl Conductor {
             #[cfg(feature = "python-extension")]
             controller: controller_interface,
             #[cfg(feature = "python-extension")]
-            reliable,
+            reliable_runtime,
         }
     }
 
@@ -308,7 +200,7 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn processor_handle(&self) -> ProcessorHandle {
-        // Used by the optional `nextmini_py` extension to wire the in-process interface.
+        // used by the optional `nextmini_py` extension to wire the in-process interface
         self.processors.clone()
     }
 
@@ -316,7 +208,7 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn local_config(&self) -> LocalConfig {
-        // Consumed by `nextmini_py` to mirror dataplane configuration inside Python.
+        // consumed by `nextmini_py` to mirror dataplane configuration inside Python
         self.config.clone()
     }
 
@@ -324,13 +216,15 @@ impl Conductor {
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
     pub fn controller_handle(&self) -> ControllerInterfaceHandle {
+        // consumed by `nextmini_py` to attach the Python interface and send messages upstream to the controller
         self.controller.clone()
     }
 
-    /// Returns a clone of the reliable handle for language bindings.
+    /// Returns a clone of the reliable runtime handle for language bindings.
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
-    pub fn reliable_handle(&self) -> crate::node::reliable::api::ReliableHandle {
-        self.reliable.clone()
+    pub fn reliable_runtime_handle(&self) -> ReliableRuntimeHandle {
+        // used by the optional `nextmini_py` extension to manage reliable sessions
+        self.reliable_runtime.clone()
     }
 }

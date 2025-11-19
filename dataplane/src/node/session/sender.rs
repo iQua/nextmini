@@ -11,11 +11,10 @@ use nextmini_messages::reliable_session::{self, ReliableSessionControl};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
+use crate::node::session::api::InboundFrame;
+use crate::node::session::control;
+use crate::node::session::runtime::{CommonConfig, SenderConfig};
 use crate::node::{NodeId, NodeIdExt};
-
-use super::api::InboundFrame;
-use super::control;
-use super::session::{CommonConfig, SenderConfig};
 
 pub(super) const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
@@ -75,18 +74,6 @@ pub async fn run(
         state.maybe_release_ready_gate();
 
         let mut progressed = false;
-
-        trace!(
-            session_id = sid,
-            ready_gate_open = state.ready_gate_open,
-            source_drained = state.source_drained,
-            ready_for_data = state.ready_for_data(),
-            chunk_source_finished = chunk_source.finished(),
-            inflight_len = state.inflight_len(),
-            window = state.window_limit(),
-            base_window = state.base_window,
-            "Reliable sender: loop iteration"
-        );
 
         if state.should_emit_manifest() {
             state.send_manifest(&processors);
@@ -168,7 +155,6 @@ struct SenderState {
     session_id: u64,
     common: CommonConfig,
     receiver_count: usize,
-    base_window: usize,
     window: usize,
     total_chunks: u64,
     total_bytes: u64,
@@ -218,27 +204,18 @@ impl SenderState {
         let src_ip = (common.local_node_id as NodeId)
             .ip_addr(common.user_space_base_addr, common.local_netmask);
         let dst_ip = common.dest_ip;
-        let base_window = compute_window(&cfg);
+        let window = compute_window(&cfg);
 
         let mut receiver_progress = BTreeMap::new();
         for node_id in &cfg.receiver_ids {
             receiver_progress.insert(*node_id, 0);
         }
 
-        if cfg.common.control_weight != 0 {
-            debug!(
-                session_id = common.session_id,
-                control_weight = cfg.common.control_weight,
-                "Reliable sender: control_weight is recorded but scheduler boosts are not yet wired."
-            );
-        }
-
         let mut state = Self {
             session_id: common.session_id,
             common,
             receiver_count,
-            base_window,
-            window: base_window,
+            window,
             total_chunks,
             total_bytes: cfg.total_bytes,
             receiver_progress,
@@ -516,14 +493,16 @@ impl SenderState {
 
     /// Convenience helper for building and sending control packets.
     fn send_control(&self, control: &ReliableSessionControl, processors: &ProcessorHandle) {
-        let buf = reliable_session::encode_control(self.session_id, control);
+        // Use stack-allocated buffer to avoid heap allocation for small control frames
+        let mut buf = [0u8; reliable_session::MAX_CONTROL_FRAME_SIZE];
+        let frame = reliable_session::encode_control_into(&mut buf, self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
             self.dst_ip,
             self.dst_port,
-            &buf,
+            frame,
         );
 
         processors.process_packet_blocking(packet);
@@ -621,12 +600,23 @@ impl ChunkSourceKind {
     }
 
     fn template(bytes: Bytes, chunk_size: usize) -> Self {
-        if bytes.is_empty() && chunk_size > 0 {
-            let template = Bytes::from(vec![0u8; chunk_size]);
-            Self::Template { template }
+        // Pre-build a template that's at least chunk_size bytes to avoid
+        // per-chunk allocations when the provided bytes are smaller.
+        let template = if bytes.is_empty() && chunk_size > 0 {
+            Bytes::from(vec![0u8; chunk_size])
+        } else if chunk_size > bytes.len() {
+            // Build a template large enough for any chunk by repeating the pattern
+            let mut buf = BytesMut::with_capacity(chunk_size);
+            while buf.len() < chunk_size {
+                let remaining = chunk_size - buf.len();
+                let take = remaining.min(bytes.len());
+                buf.extend_from_slice(&bytes[..take]);
+            }
+            buf.freeze()
         } else {
-            Self::Template { template: bytes }
-        }
+            bytes
+        };
+        Self::Template { template }
     }
 }
 
@@ -650,12 +640,8 @@ impl ChunkSource {
         let kind = if matches_len {
             ChunkSourceKind::borrowed(bytes)
         } else {
-            let template = if bytes.is_empty() {
-                Bytes::from(vec![0u8; chunk_size.max(1)])
-            } else {
-                bytes
-            };
-            ChunkSourceKind::template(template, chunk_size.max(1))
+            // Template mode: pre-build the template to avoid per-chunk allocations
+            ChunkSourceKind::template(bytes, chunk_size.max(1))
         };
 
         Self {
@@ -705,18 +691,14 @@ impl ChunkSource {
                 bytes.slice(start..end)
             }
             ChunkSourceKind::Template { template } => {
-                if template.is_empty() {
-                    Bytes::from(vec![0u8; chunk_len])
-                } else if chunk_len <= template.len() {
+                // Template is pre-built to be at least chunk_size, so just slice.
+                // The only time chunk_len differs is the last chunk (remainder).
+                if chunk_len <= template.len() {
                     template.slice(0..chunk_len)
                 } else {
-                    let mut buf = BytesMut::with_capacity(chunk_len);
-                    while buf.len() < chunk_len {
-                        let remaining = chunk_len - buf.len();
-                        let take = remaining.min(template.len());
-                        buf.extend_from_slice(&template[..take]);
-                    }
-                    buf.freeze()
+                    // This should never happen with proper template pre-building,
+                    // but handle it gracefully by allocating zeroes.
+                    Bytes::from(vec![0u8; chunk_len])
                 }
             }
         };
@@ -751,6 +733,8 @@ impl DataPacer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nextmini_messages::TokenBucketSpec;
+    use std::net::Ipv4Addr;
 
     #[test]
     fn data_roundtrip_header_and_meta() {
@@ -857,5 +841,45 @@ mod tests {
             timeout_duration.as_secs() < 3600,
             "Timeout should be shorter than 1 hour"
         );
+    }
+
+    fn sender_cfg(chunk_size: usize, bucket: Option<TokenBucketSpec>) -> SenderConfig {
+        let common = CommonConfig {
+            session_id: 1,
+            dest_ip: Ipv4Addr::new(10, 0, 0, 2),
+            chunk_size,
+            src_port: 1000,
+            dst_port: 2000,
+            data_bucket: bucket,
+            local_node_id: 1,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 1),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        };
+
+        SenderConfig {
+            common,
+            receiver_ids: vec![],
+            total_bytes: 0,
+            source_buffer: Bytes::new(),
+            ready_grace_ms: 1,
+            topology_ready: None,
+        }
+    }
+
+    #[test]
+    fn compute_window_defaults_to_constant_without_bucket() {
+        let cfg = sender_cfg(1024, None);
+        assert_eq!(compute_window(&cfg), DEFAULT_WINDOW);
+    }
+
+    #[test]
+    fn compute_window_limits_to_bucket_capacity() {
+        let bucket = TokenBucketSpec {
+            rate: 10_000,
+            bucket_size: 8_192,
+        };
+        let cfg = sender_cfg(2_048, Some(bucket));
+        // bucket_size / chunk_size = 4, lower than DEFAULT_WINDOW
+        assert_eq!(compute_window(&cfg), 4);
     }
 }
