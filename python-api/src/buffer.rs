@@ -212,6 +212,7 @@ mod tests {
             assert!(err.to_string().contains("overflow"));
         });
     }
+
     #[test]
     fn frozen_buffer_from_bytes() {
         let bytes = Bytes::from_static(b"internal");
@@ -219,6 +220,7 @@ mod tests {
         assert_eq!(buffer.__len__(), 8);
         assert_eq!(&buffer.inner[..], b"internal");
     }
+
     #[test]
     fn frozen_buffer_clone() {
         Python::attach(|py| {
@@ -229,6 +231,7 @@ mod tests {
             assert_eq!(buffer1.read(py).as_bytes(), buffer2.read(py).as_bytes());
         });
     }
+    
     #[test]
     fn frozen_buffer_clone_shares_memory() {
         Python::attach(|py| {

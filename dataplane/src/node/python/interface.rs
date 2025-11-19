@@ -153,6 +153,42 @@ impl PythonInterfaceHandle {
         Ok(())
     }
 
+    async fn send_payload(
+    entry: ReceiverEntry,
+    payload: PayloadDelivery,
+    backpressure: bool,
+    ) -> Result<(), ()> {
+        if backpressure {
+            // With backpressure enabled, wait for capacity
+            entry.sender.send(payload).await.map_err(|_| ())
+        } else {
+            // Without backpressure, drop on full queue
+            match entry.sender.try_send(payload) {
+                Ok(()) => Ok(()),
+                Err(TrySendError::Full(dropped)) | Err(TrySendError::Closed(dropped)) => {
+                    dropped.log_queue_drop();
+                    Err(())
+                }
+            }
+        }
+    }
+
+    pub async fn publish_event(&self, event: PythonEvent) {
+        if let Err(err) = self.inner.event_tx.send(event).await {
+            error!(
+                "PythonInterface: failed to publish event to Python: {}",
+                err
+            );
+        }
+    }
+
+    #[allow(dead_code)]
+    pub async fn next_event(&self) -> Option<PythonEvent> {
+        let mut rx = self.inner.event_rx.lock().await;
+        rx.recv().await
+    }
+}
+
 #[derive(Clone, Debug)]
 /// Events forwarded to Python code so it can mirror multicast group state.
 #[allow(dead_code)]
