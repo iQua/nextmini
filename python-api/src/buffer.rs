@@ -94,7 +94,9 @@ impl FrozenBuffer {
             (*view).suboffsets = std::ptr::null_mut();
             (*view).internal = std::ptr::null_mut();
 
-            (*view).obj = slf.into_ptr();
+            let obj_ptr = slf.into_ptr();
+            pyo3::ffi::Py_INCREF(obj_ptr);
+            (*view).obj = obj_ptr;
         }
 
         Ok(())
@@ -210,6 +212,7 @@ mod tests {
             assert!(err.to_string().contains("overflow"));
         });
     }
+
     #[test]
     fn frozen_buffer_from_bytes() {
         let bytes = Bytes::from_static(b"internal");
@@ -217,6 +220,7 @@ mod tests {
         assert_eq!(buffer.__len__(), 8);
         assert_eq!(&buffer.inner[..], b"internal");
     }
+
     #[test]
     fn frozen_buffer_clone() {
         Python::attach(|py| {
@@ -227,6 +231,7 @@ mod tests {
             assert_eq!(buffer1.read(py).as_bytes(), buffer2.read(py).as_bytes());
         });
     }
+
     #[test]
     fn frozen_buffer_clone_shares_memory() {
         Python::attach(|py| {
