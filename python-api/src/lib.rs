@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 #[cfg(feature = "python-extension")]
-use std::sync::Mutex as StdMutex;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -45,7 +45,7 @@ static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
 
 #[cfg(feature = "python-extension")]
-type BufferRegistry = Arc<StdMutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
+type BufferRegistry = Arc<Mutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
 
 fn rt() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
@@ -113,6 +113,7 @@ impl PacketReceiver {
 fn delivery_to_pyobject(py: Python<'_>, delivery: PythonDelivery) -> PyResult<Py<PyAny>> {
     // PythonDelivery is now just PayloadDelivery (type alias)
     let obj = Py::new(py, PyPayloadDelivery::from(delivery))?;
+    
     Ok(obj.into_pyobject(py)?.unbind().into())
 }
 
@@ -208,10 +209,10 @@ struct Dataplane {
     #[cfg(feature = "python-extension")]
     reliable_runtime: Option<ReliableRuntimeHandle>,
     #[cfg(feature = "python-extension")]
-    session_registry: Arc<StdMutex<HashMap<(Ipv4Addr, usize), u64>>>,
+    session_registry: Arc<Mutex<HashMap<(Ipv4Addr, usize), u64>>>,
     #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
-    event_stash: Arc<std::sync::Mutex<VecDeque<PythonEvent>>>,
+    event_stash: Arc<Mutex<VecDeque<PythonEvent>>>,
 }
 
 impl Dataplane {
@@ -454,6 +455,7 @@ impl Dataplane {
     ) -> PyResult<()> {
         let ip = parse_ipv4(dest_ip)?;
         self.remember_session(ip, source_node_id, session_id);
+
         Ok(())
     }
 
@@ -465,7 +467,9 @@ impl Dataplane {
         source_node_id: usize,
     ) -> PyResult<Option<u64>> {
         let ip = parse_ipv4(dest_ip)?;
-        Ok(self.lookup_session(ip, source_node_id))
+        let session_id = self.lookup_session(ip, source_node_id);
+
+        Ok(session_id)
     }
 
     #[new]
@@ -502,9 +506,9 @@ impl Dataplane {
         });
 
         #[cfg(feature = "python-extension")]
-        let session_registry = Arc::new(StdMutex::new(HashMap::new()));
+        let session_registry = Arc::new(Mutex::new(HashMap::new()));
         #[cfg(feature = "python-extension")]
-        let buffer_registry = Arc::new(StdMutex::new(HashMap::new()));
+        let buffer_registry = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Self {
             cfg,
@@ -518,7 +522,7 @@ impl Dataplane {
             session_registry,
             #[cfg(feature = "python-extension")]
             buffer_registry,
-            event_stash: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+            event_stash: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
 
@@ -766,10 +770,12 @@ fn next_py_message_id() -> u64 {
 #[pymodule]
 fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     init_tracing_subscriber();
+
     m.add_class::<Dataplane>()?;
     m.add_class::<PacketReceiver>()?;
     m.add_class::<PyPayloadDelivery>()?;
     m.add_class::<FrozenBuffer>()?;
+    
     Ok(())
 }
 
