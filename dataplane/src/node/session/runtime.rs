@@ -341,11 +341,7 @@ impl ReliableRuntime {
         if let Some(handle) = self.tasks.remove(&sid) {
             handle.abort();
         }
-        self.remove_inputs(sid);
-    }
 
-    /// Removes the inbound channel for a session ID.
-    fn remove_inputs(&mut self, sid: SessionId) {
         self.inputs.remove(&sid);
     }
 
