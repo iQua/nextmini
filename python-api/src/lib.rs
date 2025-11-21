@@ -6,8 +6,6 @@ use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-#[cfg(feature = "python-extension")]
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -218,24 +216,20 @@ struct Dataplane {
 impl Dataplane {
     #[cfg(feature = "python-extension")]
     fn remember_session(&self, dest_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
-        if let Ok(mut guard) = self.session_registry.lock() {
-            guard.insert((dest_ip, source_node_id), session_id);
-        }
+        let mut guard = rt().block_on(self.session_registry.lock());
+        guard.insert((dest_ip, source_node_id), session_id);
     }
 
     #[cfg(feature = "python-extension")]
     fn lookup_session(&self, dest_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
-        self.session_registry
-            .lock()
-            .ok()
-            .and_then(|guard| guard.get(&(dest_ip, source_node_id)).copied())
+        let guard = rt().block_on(self.session_registry.lock());
+        guard.get(&(dest_ip, source_node_id)).copied()
     }
 
     #[cfg(feature = "python-extension")]
     fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
-        if let Ok(mut guard) = self.buffer_registry.lock() {
-            guard.insert(session_id, buf);
-        }
+        let mut guard = rt().block_on(self.buffer_registry.lock());
+        guard.insert(session_id, buf);
     }
 }
 
@@ -417,10 +411,7 @@ impl Dataplane {
     #[pyo3(signature = (session_id, consume=true))]
     fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
         let buf_arc = {
-            let guard = self
-                .buffer_registry
-                .lock()
-                .map_err(|_| PyRuntimeError::new_err("buffer_registry poisoned"))?;
+            let guard = rt().block_on(self.buffer_registry.lock());
             guard
                 .get(&session_id)
                 .cloned()
@@ -437,9 +428,8 @@ impl Dataplane {
         };
 
         if consume {
-            if let Ok(mut guard) = self.buffer_registry.lock() {
-                guard.remove(&session_id);
-            }
+            let mut guard = rt().block_on(self.buffer_registry.lock());
+            guard.remove(&session_id);
         }
 
         Ok(FrozenBuffer::from_bytes(bytes))
@@ -709,7 +699,7 @@ impl Dataplane {
 
         // First, check the stash
         {
-            let mut stash = self.event_stash.lock().unwrap();
+            let mut stash = rt().block_on(self.event_stash.lock());
             // We need to find the first matching event, remove it, and keep the rest in order.
             // VecDeque doesn't have a "remove_first_matching" that preserves order easily without iteration.
             // We can iterate indices.
@@ -735,7 +725,7 @@ impl Dataplane {
                 return Some(event);
             } else {
                 // Not a match, stash it at the back
-                self.event_stash.lock().unwrap().push_back(event);
+                rt().block_on(self.event_stash.lock()).push_back(event);
             }
         }
     }
