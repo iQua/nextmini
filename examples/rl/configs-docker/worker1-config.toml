@@ -1,0 +1,10 @@
+controller_addr = "ws://controller:3000"
+private_network_interface = "eth0"
+private_network_name = "rl_training"
+node_id = 3
+num_tun_queues = 1
+num_packet_processors = 4
+channel_capacity = 3000
+queue_capacity = 4000
+feature = "concurrent"
+channel_backpressure = true

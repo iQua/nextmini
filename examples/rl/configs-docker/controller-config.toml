@@ -1,0 +1,15 @@
+protocol = "tcp"
+
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 3 }
+
+[routing]
+protocol = "shortest_path"
+
+[db]
+host = "postgres"
+port = "5432"
+user = "pgusr"
+password = "pgpwrd"
+database = "nextmini"
