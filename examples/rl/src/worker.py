@@ -62,9 +62,9 @@ class Worker:
         self.local_port = local_port
         self.trainer_port = trainer_port
         
-        # Wait for routes
+        # Wait for routes to be established
         print(f"Waiting for routes to be established...", flush=True)
-        time.sleep(5)
+        time.sleep(3)  # Trainer's healthcheck ensures it's ready before Workers start
         
         print(f"Worker {rank} ready.", flush=True)
 
