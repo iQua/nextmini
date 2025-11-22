@@ -1,5 +1,6 @@
 import pickle
 import time
+import io
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from . import config
@@ -100,8 +101,46 @@ class Worker:
                 print("Trainer disconnected.")
                 break
             
-            if msg["type"] == "UPDATE_WEIGHTS":
-                print("Received weight update...")
+            if msg["type"] == "WEIGHT_METADATA":
+                print("Received weight metadata. Preparing for Multicast sync...")
+                group_id = msg["group_id"]
+                group_ip = msg["group_ip"]
+                size = msg["size"]
+                src_node_id = msg["src_node_id"]
+                
+                # 1. Join Group (idempotent)
+                print(f"Joining multicast group {group_id}...")
+                self.dataplane.join_group(group_id)
+                
+                # 2. Register Receive Session FIRST (important for timing)
+                print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...")
+                sid = self.dataplane.receive_data(
+                    group_ip,
+                    src_node_id,
+                    expected_bytes=size,
+                    chunk_size=config.CHUNK_SIZE,
+                    src_port=config.TRAINER_PORT,
+                    dst_port=config.WORKER_BASE_PORT # Must match trainer's dst_port
+                )
+                
+                # 3. Reply READY (after receive_data is registered)
+                self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
+                
+                # 4. Wait for Reliable Transfer
+                print(f"Waiting for reliable multicast transfer...")
+                ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                print(f"Receive completion: {ok}")
+                
+                if ok:
+                    frozen = self.dataplane.get_data_buffer(sid)
+                    buffer = io.BytesIO(bytes(frozen.read()))
+                    state_dict = torch.load(buffer, map_location=self.device)
+                    self.model.load_state_dict(state_dict)
+                    print("Weights loaded into model.")
+            
+            elif msg["type"] == "UPDATE_WEIGHTS":
+                # Legacy unicast update (not used anymore)
+                print("Received weight update (unicast)...")
                 self.model.load_state_dict(msg["state_dict"])
                 # Send acknowledgement
                 self.send_to_trainer({"type": "ACK_WEIGHTS"})

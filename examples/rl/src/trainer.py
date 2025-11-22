@@ -1,5 +1,6 @@
 import pickle
 import time
+import io
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -77,6 +78,12 @@ class Trainer:
         print("Waiting for routes to be established...")
         time.sleep(10)
         
+        # Create Multicast Group
+        print(f"Creating multicast group '{config.MULTICAST_GROUP_NAME}'...")
+        self.dataplane.create_group(config.MULTICAST_GROUP_NAME)
+        self.group_id, self.group_ip, _ = self.dataplane.group_is_ready(timeout_ms=30000)
+        print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
+        
         print(f"Trainer ready with {len(self.worker_connections)} workers")
 
     def accept_workers(self, num_workers=2):
@@ -125,28 +132,63 @@ class Trainer:
         return pickle.loads(delivery.payload)
 
     def broadcast_weights(self):
-        """Broadcast model weights to all workers"""
-        print("Broadcasting weights to workers...")
+        """Broadcast model weights to all workers via Multicast"""
+        print("Broadcasting weights to workers via Multicast...")
+        
         state_dict = self.policy_model.state_dict()
         # Move to CPU for serialization
         state_dict_cpu = {k: v.cpu() for k, v in state_dict.items()}
         
-        def send_to_worker_thread(i):
+        buffer = io.BytesIO()
+        torch.save(state_dict_cpu, buffer)
+        data_bytes = buffer.getvalue()
+        size = len(data_bytes)
+        
+        print(f"Serialized weights: {size} bytes ({size/1024/1024:.2f} MB)")
+        
+        # 1. Send Metadata and Wait for Ready
+        receiver_ids = []
+        
+        def handshake_worker(i):
             with self.worker_locks[i]:
-                self.send_to_worker(i, {"type": "UPDATE_WEIGHTS", "state_dict": state_dict_cpu})
-                # Wait for ACK
-                self.recv_from_worker(i)
+                # Send Metadata
+                self.send_to_worker(i, {
+                    "type": "WEIGHT_METADATA",
+                    "group_id": self.group_id,
+                    "group_ip": self.group_ip,
+                    "size": size,
+                    "src_node_id": config.TRAINER_NODE_ID
+                })
+                # Wait for READY
+                msg = self.recv_from_worker(i, timeout_ms=30000)
+                if not msg or msg.get("type") != "READY_FOR_MULTICAST":
+                    print(f"Warning: Worker {i} did not reply READY_FOR_MULTICAST (got {msg})")
         
         threads = []
         for i in range(len(self.worker_connections)):
-            t = threading.Thread(target=send_to_worker_thread, args=(i,))
+            receiver_ids.append(self.worker_connections[i]['node_id'])
+            t = threading.Thread(target=handshake_worker, args=(i,))
             t.start()
             threads.append(t)
-        
+            
         for t in threads:
             t.join()
+            
+        # 2. Send Data Reliable
+        print(f"Starting reliable multicast of {size} bytes to {receiver_ids}...")
+        frozen = nm.FrozenBuffer(data_bytes)
+        sid = self.dataplane.send_data(
+            self.group_ip,
+            receiver_ids,
+            frozen,
+            chunk_size=config.CHUNK_SIZE,
+            src_port=config.TRAINER_PORT,
+            dst_port=config.WORKER_BASE_PORT # All workers listen on BASE_PORT for multicast
+        )
         
-        print("Weights synced.")
+        print(f"Waiting for multicast transfer (SID={sid})...")
+        ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        print(f"Multicast completion: {ok}")
 
     def train_step(self, batch):
         """Execute one training step"""

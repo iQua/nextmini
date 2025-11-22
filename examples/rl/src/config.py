@@ -22,6 +22,11 @@ WORKER_NODE_IDS = [
 TRAINER_PORT = 5000
 WORKER_BASE_PORT = 5001  # Workers use BASE_PORT + rank
 
+# Multicast
+MULTICAST_GROUP_NAME = "rl_weights_sync"
+MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
+CHUNK_SIZE = 8500 # Standard chunk size
+
 # Model
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 MAX_SEQ_LEN = 1024
