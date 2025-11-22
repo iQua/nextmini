@@ -192,10 +192,10 @@ class Trainer:
                 print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
                 
                 # Wait for READY
-                msg = self.recv_from_worker(i, timeout_ms=30000)
+                msg = self.recv_from_worker(i, timeout_ms=60000)
                 
                 if not msg or msg.get("type") != "READY_FOR_MULTICAST":
-                    print(f"Warning: Worker {i} did not reply READY_FOR_MULTICAST (got {msg})", flush=True)
+                    raise RuntimeError(f"Worker {i} failed to reply READY_FOR_MULTICAST (got {msg})")
                 else:
                     print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
         
