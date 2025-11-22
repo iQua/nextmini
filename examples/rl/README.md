@@ -89,7 +89,7 @@ If you are running evaluation on a separate machine (e.g. a Linux GPU server), f
 
    ```bash
    cd examples/rl
-   uv venv
+   uv venv --python 3.13
    source .venv/bin/activate
    ```
 
