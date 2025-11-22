@@ -121,10 +121,9 @@ class Worker:
                 # 2. Register Receive Session in background task (using asyncio)
                 print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
                 
-                # Create the receive task - this will submit the request to Rust but won't block
-                # until we await it. It returns the Session ID once the first packet arrives.
-                receive_task = asyncio.create_task(
-                    self.dataplane.receive_data_async(
+                # Helper to wrap Rust Future into a Python Coroutine for create_task
+                async def receive_wrapper():
+                    return await self.dataplane.receive_data_async(
                         group_ip,
                         src_node_id,
                         expected_bytes=size,
@@ -132,7 +131,10 @@ class Worker:
                         src_port=config.TRAINER_PORT,
                         dst_port=config.WORKER_BASE_PORT
                     )
-                )
+
+                # Create the receive task - this will submit the request to Rust but won't block
+                # until we await it. It returns the Session ID once the first packet arrives.
+                receive_task = asyncio.create_task(receive_wrapper())
                 
                 print(f"Worker {self.rank} receive task created.", flush=True)
                 
