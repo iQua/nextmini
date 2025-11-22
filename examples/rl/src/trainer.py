@@ -20,7 +20,7 @@ except ImportError as exc:
 
 
 class Trainer:
-    def __init__(self):
+    def __init__(self, config_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"Trainer initializing on {self.device}...")
         
@@ -47,8 +47,9 @@ class Trainer:
         self.dataset = GSM8KLoader("train")
         
         # Initialize nextmini dataplane
-        print(f"Initializing nextmini dataplane with config: {config.TRAINER_CONFIG}")
-        self.dataplane = nm.Dataplane(config.TRAINER_CONFIG)
+        self.config_path = config_path if config_path else config.TRAINER_CONFIG
+        print(f"Initializing nextmini dataplane with config: {self.config_path}")
+        self.dataplane = nm.Dataplane(self.config_path)
         
         # Setup connections to workers
         self.worker_connections = []
@@ -362,5 +363,10 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    trainer = Trainer()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, help="Path to trainer config file")
+    args = parser.parse_args()
+    
+    trainer = Trainer(config_path=args.config)
     trainer.run()

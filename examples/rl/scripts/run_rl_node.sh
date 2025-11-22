@@ -58,15 +58,15 @@ else
 fi
 
 # Set PYTHONPATH so relative imports work
-export PYTHONPATH=/workspace/examples/rl:${PYTHONPATH:-}
+export PYTHONPATH=/workspace:${PYTHONPATH:-}
 
-# Run the appropriate role
+# Run the appropriate role using -m to support relative imports
 if [[ "${role}" == "trainer" ]]; then
   echo "Starting Trainer..."
-  exec python /workspace/examples/rl/src/trainer.py
+  exec python -m examples.rl.src.trainer --config "${config_path}"
 elif [[ "${role}" == "worker" ]]; then
   echo "Starting Worker..."
-  exec python /workspace/examples/rl/src/worker.py "$@"
+  exec python -m examples.rl.src.worker "$@" --config "${config_path}"
 else
   echo "Unknown role: ${role}" >&2
   exit 1

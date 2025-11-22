@@ -15,7 +15,7 @@ except ImportError as exc:
 
 
 class Worker:
-    def __init__(self, rank: int, device_id: int = 0):
+    def __init__(self, rank: int, device_id: int = 0, config_path: str = None):
         self.rank = rank
         self.device = f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
         
@@ -30,7 +30,11 @@ class Worker:
         self.model.eval()
         
         # Get worker configuration
-        worker_config = config.WORKER_CONFIGS[rank]
+        if config_path:
+            worker_config = config_path
+        else:
+            worker_config = config.WORKER_CONFIGS[rank]
+            
         local_node_id = config.WORKER_NODE_IDS[rank]
         trainer_node_id = config.TRAINER_NODE_ID
         local_port = config.WORKER_BASE_PORT + rank
@@ -144,7 +148,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--config", type=str, help="Path to worker config file")
     args = parser.parse_args()
     
-    worker = Worker(rank=args.rank, device_id=args.gpu)
+    worker = Worker(rank=args.rank, device_id=args.gpu, config_path=args.config)
     worker.run()
