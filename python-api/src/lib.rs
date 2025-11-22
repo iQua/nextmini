@@ -19,6 +19,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
+use tracing::info;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
@@ -384,6 +385,104 @@ impl Dataplane {
         Ok(sid)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
+    fn receive_data_async<'py>(
+        &self,
+        py: Python<'py>,
+        dest_ip: String,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        session_id: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if expected_bytes == 0 {
+            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
+        }
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+
+        let sid = session_id.unwrap_or_else(next_py_message_id);
+
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.reliable_runtime {
+                let handle = handle.clone();
+                let runtime_config = self.cfg.reliable_runtime_config.clone();
+                let session_registry = self.session_registry.clone();
+                let buffer_registry = self.buffer_registry.clone();
+                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                let local_node_id = self.cfg.node_id;
+                let base_addr = self.cfg.user_space_base_addr;
+                let netmask = self.cfg.local_netmask;
+
+                return future_into_py(py, async move {
+                    let ip = parse_ipv4(&dest_ip)?;
+
+                    // Check if session ID is already known
+                    let mut resolved_sid = session_id;
+                    if resolved_sid.is_none() {
+                        let guard = session_registry.lock().await;
+                        if let Some(known) = guard.get(&(ip, source_node_id)) {
+                            resolved_sid = Some(*known);
+                        }
+                    }
+
+                    let cap = usize::try_from(expected_bytes).unwrap_or(0);
+                    let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
+                    let common = session::runtime::CommonConfig {
+                        session_id: resolved_sid.unwrap_or(0),
+                        dest_ip: ip,
+                        chunk_size,
+                        src_port: sp,
+                        dst_port: dp,
+                        data_bucket: runtime_config.data_bucket.clone(),
+                        local_node_id,
+                        user_space_base_addr: base_addr,
+                        local_netmask: netmask,
+                    };
+                    let cfg = session::runtime::ReceiverConfig {
+                        common,
+                        source_node_id,
+                        expected_bytes,
+                        sink_buffer: Some(sink_buf.clone()),
+                    };
+
+                    let started_sid = if resolved_sid.is_some() {
+                        handle.start_receiver(cfg).await
+                    } else {
+                        let key = session::runtime::PendingReceiverKey {
+                            dest_ip: ip,
+                            source_node_id,
+                        };
+                        handle.start_receiver_pending(cfg, key).await
+                    };
+
+                    {
+                        let mut guard = session_registry.lock().await;
+                        guard.insert((ip, source_node_id), started_sid);
+                    }
+                    {
+                        let mut guard = buffer_registry.lock().await;
+                        guard.insert(started_sid, sink_buf);
+                    }
+
+                    Ok(started_sid)
+                });
+            }
+        }
+
+        // Fallback if feature disabled (immediate return)
+        future_into_py(py, async move { 
+            info!("receive_data_async: reliable runtime not available, returning immediate sid");
+            Ok(sid) 
+        })
+    }
+
     #[pyo3(signature = (session_id, timeout_ms=None))]
     fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "python-extension")]
@@ -406,6 +505,38 @@ impl Dataplane {
         // feature disabled ⇒ nothing to wait for
         let _ = (session_id, timeout_ms);
         Ok(false)
+    }
+
+    #[pyo3(signature = (session_id, timeout_ms=None))]
+    fn reliable_wait_async<'py>(
+        &self,
+        py: Python<'py>,
+        session_id: u64,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.reliable_runtime {
+                let handle = handle.clone();
+                return future_into_py(py, async move {
+                    let fut = handle.wait_completion(session_id);
+                    if let Some(ms) = timeout_ms {
+                        let ok = tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+                            .await
+                            .unwrap_or(false);
+                        Ok(ok)
+                    } else {
+                        let ok = fut.await;
+                        Ok(ok)
+                    }
+                });
+            }
+        }
+        // Fallback
+        future_into_py(py, async move { 
+            info!("reliable_wait_async: reliable runtime not available, returning false");
+            Ok(false) 
+        })
     }
 
     #[cfg(feature = "python-extension")]

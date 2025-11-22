@@ -2,6 +2,7 @@ import pickle
 import time
 import io
 import torch
+import asyncio
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from . import config
 
@@ -80,23 +81,23 @@ class Worker:
             dst_port=self.trainer_port,
         )
     
-    def recv_from_trainer(self, timeout_ms: int = 30000):
-        """Receive message from trainer"""
-        delivery = self.receiver.recv(timeout_ms=timeout_ms)
+    async def recv_from_trainer(self):
+        """Receive message from trainer (async)"""
+        delivery = await self.receiver.recv_async()
         
         if delivery is None:
             return None
         
         return pickle.loads(delivery.payload)
 
-    def run(self):
+    async def run(self):
         """Main worker loop"""
         print(f"Worker {self.rank} sending handshake...", flush=True)
         self.send_to_trainer({"type": "HANDSHAKE", "rank": self.rank})
         print(f"Worker {self.rank} handshake sent.", flush=True)
         
         while True:
-            msg = self.recv_from_trainer()
+            msg = await self.recv_from_trainer()
             if not msg:
                 print("Trainer disconnected.", flush=True)
                 break
@@ -117,52 +118,40 @@ class Worker:
                 self.dataplane.join_group(group_id)
                 print(f"Worker {self.rank} joined group command sent.", flush=True)
                 
-                # 2. Register Receive Session in a separate thread to avoid blocking
+                # 2. Register Receive Session in background task (using asyncio)
                 print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
                 
-                sid_result = {}
-                import threading
+                # Create the receive task - this will submit the request to Rust but won't block
+                # until we await it. It returns the Session ID once the first packet arrives.
+                receive_task = asyncio.create_task(
+                    self.dataplane.receive_data_async(
+                        group_ip,
+                        src_node_id,
+                        expected_bytes=size,
+                        chunk_size=config.CHUNK_SIZE,
+                        src_port=config.TRAINER_PORT,
+                        dst_port=config.WORKER_BASE_PORT
+                    )
+                )
                 
-                def register_receiver_thread():
-                    try:
-                        s = self.dataplane.receive_data(
-                            group_ip,
-                            src_node_id,
-                            expected_bytes=size,
-                            chunk_size=config.CHUNK_SIZE,
-                            src_port=config.TRAINER_PORT,
-                            dst_port=config.WORKER_BASE_PORT # Must match trainer's dst_port
-                        )
-                        sid_result['sid'] = s
-                        print(f"Worker {self.rank} receive_data unblocked. SID={s}", flush=True)
-                    except Exception as e:
-                        print(f"Worker {self.rank} receive_data failed: {e}", flush=True)
-                        sid_result['error'] = e
-
-                recv_thread = threading.Thread(target=register_receiver_thread)
-                recv_thread.start()
+                print(f"Worker {self.rank} receive task created.", flush=True)
                 
-                # Give a small moment for the thread to enter the blocking state (register pending)
-                time.sleep(0.5)
-                
-                # 3. Reply READY (safe to send now that receiver is pending)
+                # 3. Reply READY (safe to send immediately)
                 print(f"Worker {self.rank} sending READY_FOR_MULTICAST...", flush=True)
                 self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
                 print(f"Worker {self.rank} sent READY_FOR_MULTICAST.", flush=True)
                 
-                # Wait for the receiver to actually start (which happens when first packet arrives)
-                recv_thread.join()
-                
-                if 'error' in sid_result:
-                    raise sid_result['error']
-                    
-                sid = sid_result.get('sid')
-                if sid is None:
-                    raise RuntimeError("Failed to get session ID from receiver thread")
+                # 4. Wait for the Session ID (this happens when trainer starts sending)
+                try:
+                    sid = await receive_task
+                    print(f"Worker {self.rank} receive_data session established. SID={sid}", flush=True)
+                except Exception as e:
+                    print(f"Worker {self.rank} failed to establish session: {e}", flush=True)
+                    continue
 
-                # 4. Wait for Reliable Transfer
+                # 5. Wait for Reliable Transfer Completion
                 print(f"Waiting for reliable multicast transfer...")
-                ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 print(f"Receive completion: {ok}")
                 
                 if ok:
@@ -188,6 +177,9 @@ class Worker:
                 
                 results = []
                 print(f"Generating rollouts for {len(prompts)} prompts...")
+                
+                # Offload blocking generation to thread executor to not block heartbeat/other async tasks
+                # (Though here we are just waiting for result anyway, so running inline is okay for now)
                 
                 for prompt in prompts:
                     inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
@@ -225,4 +217,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     worker = Worker(rank=args.rank, device_id=args.gpu, config_path=args.config)
-    worker.run()
+    asyncio.run(worker.run())
