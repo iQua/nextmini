@@ -41,17 +41,17 @@ class Worker:
         local_port = config.WORKER_BASE_PORT + rank
         trainer_port = config.TRAINER_PORT
         
-        print(f"Worker {rank} config: {worker_config}")
-        print(f"Worker {rank} node ID: {local_node_id}")
-        print(f"Trainer node ID: {trainer_node_id}")
-        print(f"Local port: {local_port}, Trainer port: {trainer_port}")
+        print(f"Worker {rank} config: {worker_config}", flush=True)
+        print(f"Worker {rank} node ID: {local_node_id}", flush=True)
+        print(f"Trainer node ID: {trainer_node_id}", flush=True)
+        print(f"Local port: {local_port}, Trainer port: {trainer_port}", flush=True)
         
         # Initialize nextmini dataplane
-        print(f"Initializing nextmini dataplane...")
+        print(f"Initializing nextmini dataplane...", flush=True)
         self.dataplane = nm.Dataplane(worker_config)
         
         # Register receiver for trainer messages
-        print(f"Registering receiver for trainer...")
+        print(f"Registering receiver for trainer...", flush=True)
         self.receiver = self.dataplane.register_receiver_from_node(
             src_node_id=trainer_node_id,
             src_port=trainer_port,
@@ -63,10 +63,10 @@ class Worker:
         self.trainer_port = trainer_port
         
         # Wait for routes
-        print(f"Waiting for routes to be established...")
+        print(f"Waiting for routes to be established...", flush=True)
         time.sleep(5)
         
-        print(f"Worker {rank} ready.")
+        print(f"Worker {rank} ready.", flush=True)
 
     def send_to_trainer(self, data: dict):
         """Send message to trainer"""
@@ -102,14 +102,18 @@ class Worker:
                 break
             
             if msg["type"] == "WEIGHT_METADATA":
-                print("Received weight metadata. Preparing for Multicast sync...")
+                # Multicast weight synchronization
+                print(f"Worker {self.rank} received weight metadata. Preparing for Multicast sync...", flush=True)
+                
                 group_id = msg["group_id"]
                 group_ip = msg["group_ip"]
                 size = msg["size"]
                 src_node_id = msg["src_node_id"]
                 
-                # 1. Join Group (idempotent)
-                print(f"Joining multicast group {group_id}...")
+                print(f"Worker {self.rank} metadata: group_id={group_id}, group_ip={group_ip}, size={size} bytes", flush=True)
+                
+                # Join the multicast group
+                print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
                 self.dataplane.join_group(group_id)
                 
                 # 2. Register Receive Session FIRST (important for timing)

@@ -169,6 +169,7 @@ class Trainer:
         def handshake_worker(i):
             with self.worker_locks[i]:
                 # Send Metadata
+                print(f"Trainer sending WEIGHT_METADATA to Worker {i} (node {self.worker_connections[i]['node_id']}, port {self.worker_connections[i]['port']})...", flush=True)
                 self.send_to_worker(i, {
                     "type": "WEIGHT_METADATA",
                     "group_id": self.group_id,
@@ -176,10 +177,13 @@ class Trainer:
                     "size": size,
                     "src_node_id": config.TRAINER_NODE_ID
                 })
+                print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
                 # Wait for READY
                 msg = self.recv_from_worker(i, timeout_ms=30000)
                 if not msg or msg.get("type") != "READY_FOR_MULTICAST":
-                    print(f"Warning: Worker {i} did not reply READY_FOR_MULTICAST (got {msg})")
+                    print(f"Warning: Worker {i} did not reply READY_FOR_MULTICAST (got {msg})", flush=True)
+                else:
+                    print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
         
         threads = []
         for i in range(len(self.worker_connections)):
