@@ -78,18 +78,19 @@ impl PacketReceiver {
     #[pyo3(signature = (timeout_ms=None))]
     fn recv(&self, timeout_ms: Option<u64>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let inner = self.inner.clone();
-        let fut = async move {
-            match timeout_ms {
-                Some(ms) => tokio::time::timeout(
-                    std::time::Duration::from_millis(ms),
-                    inner.lock().await.recv(),
-                )
-                .await
-                .unwrap_or_default(),
-                None => inner.lock().await.recv().await,
-            }
-        };
-        let maybe_delivery = rt().block_on(fut);
+        let maybe_delivery = Python::detach(py, move || {
+            rt().block_on(async move {
+                match timeout_ms {
+                    Some(ms) => tokio::time::timeout(
+                        std::time::Duration::from_millis(ms),
+                        inner.lock().await.recv(),
+                    )
+                    .await
+                    .unwrap_or_default(),
+                    None => inner.lock().await.recv().await,
+                }
+            })
+        });
         maybe_delivery
             .map(|delivery| delivery_to_pyobject(py, delivery))
             .transpose()
