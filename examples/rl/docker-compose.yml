@@ -64,10 +64,10 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/trainer_ready"]
-      interval: 5s
+      interval: 3s
       timeout: 1s
-      retries: 60
-      start_period: 120s
+      retries: 30
+      start_period: 60s
     volumes:
       - ../../:/workspace:cached
       - ./output:/workspace/examples/rl/output

@@ -175,11 +175,18 @@ class Trainer:
         
         # 1. Send Metadata and Wait for Ready
         receiver_ids = []
+        for i in range(len(self.worker_connections)):
+            receiver_ids.append(self.worker_connections[i]['node_id'])
         
         def handshake_worker(i):
+            import time as time_module
+            thread_start = time_module.time()
+            print(f"[Thread-{i}] Started at {thread_start:.3f}", flush=True)
+            
             with self.worker_locks[i]:
                 # Send Metadata
-                print(f"Trainer sending WEIGHT_METADATA to Worker {i} (node {self.worker_connections[i]['node_id']}, port {self.worker_connections[i]['port']})...", flush=True)
+                before_send = time_module.time()
+                print(f"[Thread-{i}] Sending WEIGHT_METADATA to Worker {i} (node {self.worker_connections[i]['node_id']}, port {self.worker_connections[i]['port']}) at {before_send:.3f}...", flush=True)
                 self.send_to_worker(i, {
                     "type": "WEIGHT_METADATA",
                     "group_id": self.group_id,
@@ -187,20 +194,26 @@ class Trainer:
                     "size": size,
                     "src_node_id": config.TRAINER_NODE_ID
                 })
-                print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
+                after_send = time_module.time()
+                print(f"[Thread-{i}] Sent WEIGHT_METADATA to Worker {i} (took {after_send - before_send:.3f}s), waiting for READY...", flush=True)
+                
                 # Wait for READY
+                before_recv = time_module.time()
                 msg = self.recv_from_worker(i, timeout_ms=30000)
+                after_recv = time_module.time()
+                
                 if not msg or msg.get("type") != "READY_FOR_MULTICAST":
-                    print(f"Warning: Worker {i} did not reply READY_FOR_MULTICAST (got {msg})", flush=True)
+                    print(f"[Thread-{i}] Warning: Worker {i} did not reply READY_FOR_MULTICAST (got {msg}) after {after_recv - before_recv:.3f}s", flush=True)
                 else:
-                    print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
+                    print(f"[Thread-{i}] Worker {i} replied READY_FOR_MULTICAST after {after_recv - before_recv:.3f}s", flush=True)
         
+        print(f"Starting {len(self.worker_connections)} handshake threads...", flush=True)
         threads = []
         for i in range(len(self.worker_connections)):
-            receiver_ids.append(self.worker_connections[i]['node_id'])
-            t = threading.Thread(target=handshake_worker, args=(i,))
+            t = threading.Thread(target=handshake_worker, args=(i,), name=f"HandshakeWorker-{i}")
             t.start()
             threads.append(t)
+            print(f"Thread for Worker {i} started", flush=True)
             
         for t in threads:
             t.join()
