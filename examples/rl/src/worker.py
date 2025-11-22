@@ -162,6 +162,11 @@ class Worker:
                     state_dict = torch.load(buffer, map_location=self.device)
                     self.model.load_state_dict(state_dict)
                     print("Weights loaded into model.")
+                    
+                    # Important: Forget the session so next time we don't reuse the old SID
+                    # Since multicast group IP + src_node_id is the key, we must clear it 
+                    # to allow the 'pending' receiver logic to discover the NEW session ID (e.g. 2, 3...).
+                    self.dataplane.forget_session(group_ip, src_node_id)
             
             elif msg["type"] == "UPDATE_WEIGHTS":
                 # Legacy unicast update (not used anymore)

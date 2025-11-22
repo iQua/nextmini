@@ -594,6 +594,22 @@ impl Dataplane {
         Ok(session_id)
     }
 
+    #[cfg(feature = "python-extension")]
+    #[pyo3(signature = (dest_ip, source_node_id))]
+    fn forget_session(&self, dest_ip: &str, source_node_id: usize) -> PyResult<()> {
+        let ip = parse_ipv4(dest_ip)?;
+        let mut guard = rt().block_on(self.session_registry.lock());
+        guard.remove(&(ip, source_node_id));
+        Ok(())
+    }
+
+    #[cfg(not(feature = "python-extension"))]
+    #[pyo3(signature = (dest_ip, source_node_id))]
+    fn forget_session(&self, dest_ip: &str, source_node_id: usize) -> PyResult<()> {
+        let _ = (dest_ip, source_node_id);
+        Ok(())
+    }
+
     #[new]
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
