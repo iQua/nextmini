@@ -83,6 +83,25 @@ python src/worker.py --rank 1 --gpu 0
 
 ## Evaluation
 
-```bash
-python evaluate_comparison.py
-```
+If you are running evaluation on a separate machine (e.g. a Linux GPU server), follow these steps to set up the environment:
+
+1. **Create and activate environment**:
+
+   ```bash
+   cd examples/rl
+   uv venv
+   source .venv/bin/activate
+   ```
+
+2. **Install dependencies**:
+
+   ```bash
+   # Install requirements (nextmini_py is NOT required for evaluation)
+   uv pip install -r requirements.txt
+   ```
+
+3. **Run evaluation**:
+
+   ```bash
+   uv run evaluate_comparison.py
+   ```  
