@@ -148,15 +148,37 @@ class Trainer:
             dst_port=conn['port'],
         )
     
-    def recv_from_worker(self, worker_idx: int, timeout_ms: int = 30000):
-        """Receive message from specific worker"""
+    def recv_from_worker(self, worker_idx: int, timeout_ms: int = 30000, expected_type: str = None):
+        """Receive message from specific worker, optionally filtering by type"""
         conn = self.worker_connections[worker_idx]
-        delivery = conn['receiver'].recv(timeout_ms=timeout_ms)
         
-        if delivery is None:
-            return None
+        start_time = time.time()
         
-        return pickle.loads(delivery.payload)
+        while True:
+            # Calculate remaining timeout
+            elapsed = (time.time() - start_time) * 1000
+            remaining = max(1, int(timeout_ms - elapsed))
+            
+            delivery = conn['receiver'].recv(timeout_ms=remaining)
+            
+            if delivery is None:
+                return None
+            
+            msg = pickle.loads(delivery.payload)
+            
+            # If no type filtering is requested, return immediately
+            if expected_type is None:
+                return msg
+                
+            # Check if this is the message we are waiting for
+            if msg.get("type") == expected_type:
+                return msg
+            
+            # Otherwise, it's a stale/unexpected message. Log and continue.
+            print(f"Worker {worker_idx}: Ignoring unexpected message type '{msg.get('type')}' (expected '{expected_type}'). Content: {msg}", flush=True)
+            
+            if remaining <= 1:
+                return None
 
     def broadcast_weights(self):
         """Broadcast model weights to all workers via Multicast"""
@@ -178,6 +200,7 @@ class Trainer:
         for i in range(len(self.worker_connections)):
             receiver_ids.append(self.worker_connections[i]['node_id'])
         
+        errors = []
         def handshake_worker(i):
             with self.worker_locks[i]:
                 # Send Metadata
@@ -192,12 +215,16 @@ class Trainer:
                 print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
                 
                 # Wait for READY
-                msg = self.recv_from_worker(i, timeout_ms=60000)
-                
-                if not msg or msg.get("type") != "READY_FOR_MULTICAST":
-                    raise RuntimeError(f"Worker {i} failed to reply READY_FOR_MULTICAST (got {msg})")
-                else:
-                    print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
+                try:
+                    msg = self.recv_from_worker(i, timeout_ms=120000, expected_type="READY_FOR_MULTICAST")
+                    
+                    if not msg:
+                        raise RuntimeError(f"Worker {i} failed to reply READY_FOR_MULTICAST within timeout")
+                    else:
+                        print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
+                except Exception as e:
+                    errors.append(e)
+                    raise e
         
         print(f"Starting {len(self.worker_connections)} handshake threads...", flush=True)
         threads = []
@@ -208,6 +235,9 @@ class Trainer:
             
         for t in threads:
             t.join()
+            
+        if errors:
+            raise RuntimeError(f"Handshake failed: {errors}")
             
         # 2. Send Data Reliable
         print(f"Starting reliable multicast of {size} bytes to {receiver_ids}...")
@@ -248,7 +278,8 @@ class Trainer:
         def query_worker(i, p_batch):
             with self.worker_locks[i]:
                 self.send_to_worker(i, {"type": "ROLLOUT", "prompts": p_batch})
-                worker_results[i] = self.recv_from_worker(i)
+                # Use a long timeout for rollouts as generation can be slow
+                worker_results[i] = self.recv_from_worker(i, timeout_ms=60000, expected_type="ROLLOUT_RESULT")
         
         threads = []
         for i, p_batch in enumerate(worker_batches):
