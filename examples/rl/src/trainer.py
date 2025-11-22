@@ -88,25 +88,42 @@ class Trainer:
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
-        print(f"Waiting for {num_workers} workers to send handshake...")
+        print(f"Waiting for {num_workers} workers to send handshake...", flush=True)
         
-        for i, conn in enumerate(self.worker_connections):
-            print(f"Waiting for handshake from worker {i}...")
-            msg = conn['receiver'].recv(timeout_ms=60000)
-            
-            if msg is None:
-                raise RuntimeError(f"Timeout waiting for handshake from worker {i}")
-            
-            # Deserialize message
-            data = pickle.loads(msg.payload)
-            
-            if data and data.get("type") == "HANDSHAKE":
-                rank = data.get("rank")
-                print(f"Worker rank {rank} (node {conn['node_id']}) identified")
-            else:
-                raise RuntimeError(f"Invalid handshake from worker {i}: {data}")
+        # We need to accept handshakes from ANY worker, not just in order 0, 1, 2...
+        # Because network arrival time is non-deterministic.
         
-        print("All workers connected.")
+        connected_workers = set()
+        
+        while len(connected_workers) < num_workers:
+            # Poll all workers
+            found_new = False
+            for i in range(num_workers):
+                if i in connected_workers:
+                    continue
+                    
+                # Try to receive with a short timeout to poll
+                try:
+                    # We use a short timeout to cycle through workers
+                    msg = self.recv_from_worker(i, timeout_ms=100) 
+                    if msg:
+                        if msg.get("type") == "HANDSHAKE":
+                            rank = msg['rank']
+                            print(f"Worker rank {rank} (node {config.WORKER_NODE_IDS[rank]}) identified", flush=True)
+                            if rank != i:
+                                print(f"Warning: Worker {i} connection received handshake claiming rank {rank}", flush=True)
+                            connected_workers.add(rank)
+                            found_new = True
+                        else:
+                            print(f"Received unexpected message from worker {i}: {msg}", flush=True)
+                except Exception as e:
+                    # Ignore timeout errors during polling or if recv returns None (disconnect)
+                    pass
+            
+            if not found_new:
+                time.sleep(0.1)
+                
+        print("All workers connected.", flush=True)
 
     def send_to_worker(self, worker_idx: int, data: dict):
         """Send message to specific worker"""

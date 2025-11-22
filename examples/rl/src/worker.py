@@ -91,14 +91,14 @@ class Worker:
 
     def run(self):
         """Main worker loop"""
-        print(f"Worker {self.rank} sending handshake...")
+        print(f"Worker {self.rank} sending handshake...", flush=True)
         self.send_to_trainer({"type": "HANDSHAKE", "rank": self.rank})
-        print(f"Worker {self.rank} handshake sent.")
+        print(f"Worker {self.rank} handshake sent.", flush=True)
         
         while True:
             msg = self.recv_from_trainer()
-            if msg is None:
-                print("Trainer disconnected.")
+            if not msg:
+                print("Trainer disconnected.", flush=True)
                 break
             
             if msg["type"] == "WEIGHT_METADATA":
