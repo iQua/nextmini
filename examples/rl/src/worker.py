@@ -115,21 +115,51 @@ class Worker:
                 # Join the multicast group
                 print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
                 self.dataplane.join_group(group_id)
+                print(f"Worker {self.rank} joined group command sent.", flush=True)
                 
-                # 2. Register Receive Session FIRST (important for timing)
-                print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...")
-                sid = self.dataplane.receive_data(
-                    group_ip,
-                    src_node_id,
-                    expected_bytes=size,
-                    chunk_size=config.CHUNK_SIZE,
-                    src_port=config.TRAINER_PORT,
-                    dst_port=config.WORKER_BASE_PORT # Must match trainer's dst_port
-                )
+                # 2. Register Receive Session in a separate thread to avoid blocking
+                print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
                 
-                # 3. Reply READY (after receive_data is registered)
+                sid_result = {}
+                import threading
+                
+                def register_receiver_thread():
+                    try:
+                        s = self.dataplane.receive_data(
+                            group_ip,
+                            src_node_id,
+                            expected_bytes=size,
+                            chunk_size=config.CHUNK_SIZE,
+                            src_port=config.TRAINER_PORT,
+                            dst_port=config.WORKER_BASE_PORT # Must match trainer's dst_port
+                        )
+                        sid_result['sid'] = s
+                        print(f"Worker {self.rank} receive_data unblocked. SID={s}", flush=True)
+                    except Exception as e:
+                        print(f"Worker {self.rank} receive_data failed: {e}", flush=True)
+                        sid_result['error'] = e
+
+                recv_thread = threading.Thread(target=register_receiver_thread)
+                recv_thread.start()
+                
+                # Give a small moment for the thread to enter the blocking state (register pending)
+                time.sleep(0.5)
+                
+                # 3. Reply READY (safe to send now that receiver is pending)
+                print(f"Worker {self.rank} sending READY_FOR_MULTICAST...", flush=True)
                 self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
+                print(f"Worker {self.rank} sent READY_FOR_MULTICAST.", flush=True)
                 
+                # Wait for the receiver to actually start (which happens when first packet arrives)
+                recv_thread.join()
+                
+                if 'error' in sid_result:
+                    raise sid_result['error']
+                    
+                sid = sid_result.get('sid')
+                if sid is None:
+                    raise RuntimeError("Failed to get session ID from receiver thread")
+
                 # 4. Wait for Reliable Transfer
                 print(f"Waiting for reliable multicast transfer...")
                 ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
