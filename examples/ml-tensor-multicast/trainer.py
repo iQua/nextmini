@@ -25,7 +25,7 @@ if str(_EXAMPLE_DIR) not in sys.path:
 
 try:
     from torch_serializer import serialize_tensor, deserialize_tensor
-    from nextmini_py import Dataplane, FrozenBuffer
+    from nextmini_py import Dataplane, PacketView, PacketBuilder
 except ImportError as e:
     print(f"ERROR: Failed to import required modules: {e}")
     print("\nMake sure to:")
@@ -108,17 +108,15 @@ class MLTrainer:
         Returns:
             Number of bytes sent
         """
-        # Serialize tensor using torch.save
         data = serialize_tensor(tensor)
         data_len = len(data)
         
-        # Wrap in FrozenBuffer for efficient transmission
-        frozen = FrozenBuffer(data)
-        
-        # Send via Dataplane (multicast API uses node_id, not IP)
+        builder = PacketBuilder(size=data_len)
+        builder.write(data)
+        view = builder.freeze()
         self.dataplane.send_to_node(
             dst_node_id=self.worker_node_id,
-            frozen=frozen,
+            frozen=view,
             src_port=self.src_port,
             dst_port=self.dst_port,
         )

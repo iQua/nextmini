@@ -219,18 +219,19 @@ def run_source(args: argparse.Namespace) -> None:
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
 
-    # Launch reliable session send from an in-memory FrozenBuffer.
     log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
     send_start_time = time.perf_counter()
 
     with args.tensor_path.open("rb") as fh:
         tensor_bytes = fh.read()
-    frozen = nm.FrozenBuffer(tensor_bytes)
+    builder = nm.PacketBuilder(size=total_bytes)
+    builder.write(tensor_bytes)
+    view = builder.freeze()
 
     sid = dataplane.send_data(
         group_ip,
         receiver_ids,
-        frozen,
+        view,
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
@@ -294,9 +295,9 @@ def run_receiver(args: argparse.Namespace) -> None:
         args.quiet,
     )
 
-    frozen = dataplane.get_data_buffer(sid)
-    payload_bytes = bytes(frozen.read())
-    log(f"Retrieved {len(payload_bytes)} bytes into FrozenBuffer.", args.quiet)
+    view = dataplane.get_data_buffer(sid)
+    payload_bytes = bytes(view.read())
+    log(f"Retrieved {len(payload_bytes)} bytes into PacketView.", args.quiet)
 
     if payload_bytes is not None and sink_path is not None:
         sink_path.parent.mkdir(parents=True, exist_ok=True)

@@ -139,11 +139,11 @@ class Trainer:
         """Send message to specific worker"""
         conn = self.worker_connections[worker_idx]
         serialized = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
-        frozen = nm.FrozenBuffer(serialized)
+        view = nm.PacketView(serialized)
         
         self.dataplane.send_to_node(
             dst_node_id=conn['node_id'],
-            frozen=frozen,
+            frozen=view,
             src_port=config.TRAINER_PORT,
             dst_port=conn['port'],
         )
@@ -241,11 +241,13 @@ class Trainer:
             
         # 2. Send Data Reliable
         print(f"Starting reliable multicast of {size} bytes to {receiver_ids}...")
-        frozen = nm.FrozenBuffer(data_bytes)
+        builder = nm.PacketBuilder(size=size)
+        builder.write(data_bytes)
+        view = builder.freeze()
         sid = self.dataplane.send_data(
             self.group_ip,
             receiver_ids,
-            frozen,
+            view,
             chunk_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
             dst_port=config.WORKER_BASE_PORT # All workers listen on BASE_PORT for multicast

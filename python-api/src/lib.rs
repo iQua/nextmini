@@ -38,7 +38,7 @@ use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
 
-pub use crate::buffer::FrozenBuffer;
+pub use crate::buffer::{PacketBuilder, PacketView};
 
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
@@ -119,7 +119,7 @@ fn delivery_to_pyobject(py: Python<'_>, delivery: PythonDelivery) -> PyResult<Py
 
 #[pyclass(name = "PayloadDelivery")]
 struct PyPayloadDelivery {
-    buffer: FrozenBuffer,
+    buffer: PacketView,
     flow_id: u128,
     src_ip: String,
     dst_ip: String,
@@ -138,7 +138,7 @@ impl PyPayloadDelivery {
     }
 
     #[getter]
-    fn frozen_payload(&self) -> FrozenBuffer {
+    fn frozen_payload(&self) -> PacketView {
         self.buffer.clone()
     }
 
@@ -186,7 +186,7 @@ impl PyPayloadDelivery {
 impl From<RustPayloadDelivery> for PyPayloadDelivery {
     fn from(payload: RustPayloadDelivery) -> Self {
         Self {
-            buffer: FrozenBuffer::from_bytes(payload.bytes),
+            buffer: PacketView::from_bytes(payload.bytes),
             flow_id: payload.flow_id,
             src_ip: payload.src_ip.to_string(),
             dst_ip: payload.dst_ip.to_string(),
@@ -243,7 +243,7 @@ impl Dataplane {
         &self,
         dest_ip: &str,
         receiver_ids: Vec<usize>,
-        buffer: FrozenBuffer,
+        buffer: PacketView,
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
@@ -541,7 +541,7 @@ impl Dataplane {
 
     #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id, consume=true))]
-    fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
+    fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<PacketView> {
         let buf_arc = {
             let guard = rt().block_on(self.buffer_registry.lock());
             guard
@@ -564,7 +564,7 @@ impl Dataplane {
             guard.remove(&session_id);
         }
 
-        Ok(FrozenBuffer::from_bytes(bytes))
+        Ok(PacketView::from_bytes(bytes))
     }
 
     #[cfg(feature = "python-extension")]
@@ -732,7 +732,7 @@ impl Dataplane {
     fn send_to_node(
         &self,
         dst_node_id: usize,
-        frozen: FrozenBuffer,
+        frozen: PacketView,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
@@ -912,7 +912,8 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dataplane>()?;
     m.add_class::<PacketReceiver>()?;
     m.add_class::<PyPayloadDelivery>()?;
-    m.add_class::<FrozenBuffer>()?;
+    m.add_class::<PacketView>()?;
+    m.add_class::<PacketBuilder>()?;
     
     Ok(())
 }

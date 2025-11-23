@@ -72,11 +72,11 @@ class Worker:
     def send_to_trainer(self, data: dict):
         """Send message to trainer"""
         serialized = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
-        frozen = nm.FrozenBuffer(serialized)
+        view = nm.PacketView(serialized)
         
         self.dataplane.send_to_node(
             dst_node_id=self.trainer_node_id,
-            frozen=frozen,
+            frozen=view,
             src_port=self.local_port,
             dst_port=self.trainer_port,
         )
