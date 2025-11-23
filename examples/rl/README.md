@@ -104,4 +104,10 @@ If you are running evaluation on a separate machine (e.g. a Linux GPU server), f
 
    ```bash
    uv run evaluate_comparison.py
-   ```  
+   ```
+
+## Results
+
+- **Baseline (Qwen/Qwen2.5-0.5B-Instruct)**: 30.20% (151/500)
+
+- **Trained model (qwen-gsm8k-rl)**: 41.80% (209/500)
