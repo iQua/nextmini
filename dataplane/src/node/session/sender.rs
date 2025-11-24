@@ -106,7 +106,7 @@ pub async fn run(
                         session_id = sid,
                         chunk_index = chunk.index,
                         chunk_size = chunk.data.len(),
-                        "Reliable sender: sending data chunk"
+                        "Reliable sender: sending data chunk."
                     );
                     data_pacer.wait_for(state.common.chunk_size).await;
                     // sends the data chunk to the processors
