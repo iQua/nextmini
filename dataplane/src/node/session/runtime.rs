@@ -307,6 +307,7 @@ impl ReliableRuntime {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 
+        // subscribes to topology readiness if not already ready
         if self.topology_ready {
             cfg.topology_ready = None;
         } else {
