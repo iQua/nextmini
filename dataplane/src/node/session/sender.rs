@@ -49,7 +49,7 @@ pub async fn run(
     let source_buffer = cfg.source_buffer.clone();
     let mut state = SenderState::new(cfg, total_chunks);
     let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks, total_bytes);
-    let mut pacer = DataPacer::new(state.common.data_bucket.clone());
+    let mut data_pacer = DataPacer::new(state.common.data_bucket.clone());
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
 
@@ -83,6 +83,7 @@ pub async fn run(
         // explicitly mark source as drained when chunk source finishes
         // to prevent infinite loop waiting for source_drained to be set
         if chunk_source.finished() && !state.source_drained {
+            // marks this sender as drained
             state.mark_source_drained();
             progressed = true;
         }
@@ -97,7 +98,7 @@ pub async fn run(
                 chunk_source_finished = chunk_source.finished(),
                 inflight_len = state.inflight_len(),
                 window = state.window_limit(),
-                "Reliable sender: attempting to send next chunk"
+                "Reliable sender: attempting to send next chunk."
             );
             match chunk_source.next_chunk() {
                 Some(chunk) => {
@@ -107,7 +108,8 @@ pub async fn run(
                         chunk_size = chunk.data.len(),
                         "Reliable sender: sending data chunk"
                     );
-                    pacer.wait_for(state.common.chunk_size).await;
+                    data_pacer.wait_for(state.common.chunk_size).await;
+                    // sends the data chunk to the processors
                     state.send_data_chunk(chunk, &processors);
                     progressed = true;
                 }
@@ -414,13 +416,13 @@ impl SenderState {
         self.source_drained && self.eot_sent && self.outstanding_chunks() == 0
     }
 
-    /// Handle READY/ACK/EOT control frames coming from receivers.
+    /// Handles READY/ACK/EOT control frames coming from receivers.
     fn handle_control(&mut self, frame: InboundFrame) {
         let InboundFrame { bytes, peer_id, .. } = frame;
         let Some((_, control)) = reliable_session::decode_control(&bytes) else {
             warn!(
                 session_id = self.session_id,
-                "Reliable sender: failed to decode control frame"
+                "Reliable sender: failed to decode control frame."
             );
             return;
         };
@@ -508,7 +510,7 @@ impl SenderState {
         processors.process_packet_blocking(packet);
     }
 
-    /// Open the topology gate once the watch channel signals readiness.
+    /// Opens the topology gate once the watch channel signals readiness.
     fn maybe_release_topology_gate(&mut self) {
         if self.topology_gate_open {
             return;
@@ -524,7 +526,7 @@ impl SenderState {
 
             info!(
                 session_id = self.session_id,
-                "Reliable sender: topology-ready signal received"
+                "Reliable sender: topology-ready signal received."
             );
         }
     }
@@ -541,7 +543,7 @@ impl SenderState {
 
             info!(
                 session_id = self.session_id,
-                "Reliable sender: all receivers ready"
+                "Reliable sender: all receivers are ready."
             );
 
             return;
@@ -564,7 +566,7 @@ impl SenderState {
 
 /// Compute a sliding window size based on the default limit and, if present,
 /// the token-bucket shaper so we never admit more inflight bytes than the
-/// pacer can service.
+/// data_pacer can service.
 fn compute_window(cfg: &SenderConfig) -> usize {
     let mut window = DEFAULT_WINDOW;
 
@@ -716,7 +718,7 @@ struct DataPacer {
 }
 
 impl DataPacer {
-    /// Builds a pacer backed by the runtime token-bucket implementation.
+    /// Builds a data_pacer backed by the runtime token-bucket implementation.
     fn new(spec: Option<nextmini_messages::TokenBucketSpec>) -> Self {
         let bucket = spec.map(TokenBucket::new);
         Self { bucket }
