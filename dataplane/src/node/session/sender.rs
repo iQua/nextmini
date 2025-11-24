@@ -429,10 +429,11 @@ impl SenderState {
         match &control {
             ReliableSessionControl::Ready { node_id } => {
                 self.ready_nodes.insert(*node_id as usize);
-                debug!(
+                info!(
                     session_id = self.session_id,
                     node_id = *node_id,
-                    "Reliable sender: receiver ready"
+                    "Reliable sender: receiver node {} ready.",
+                    *node_id
                 );
             }
             ReliableSessionControl::Manifest { .. } | ReliableSessionControl::Eot { .. } => {
