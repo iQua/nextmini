@@ -503,23 +503,6 @@ class Trainer:
                  "src_node_id": config.TRAINER_NODE_ID
              })
 
-        # Wait for all workers to confirm their multicast listener is running
-        print("Waiting for workers to report MULTICAST_READY...", flush=True)
-        ready_workers = set()
-        deadline = time.time() + 120  # 2 minute safety bound
-        while len(ready_workers) < len(self.worker_connections):
-            for i in range(len(self.worker_connections)):
-                if i in ready_workers:
-                    continue
-                msg = self.recv_from_worker(i, timeout_ms=200, expected_type="MULTICAST_READY")
-                if msg:
-                    print(f"Worker {i} ready for multicast", flush=True)
-                    ready_workers.add(i)
-            if len(ready_workers) < len(self.worker_connections):
-                if time.time() > deadline:
-                    raise RuntimeError("Timed out waiting for MULTICAST_READY from all workers")
-                time.sleep(0.1)
-        
         for step in range(config.TRAIN_STEPS):
             print(f"Step {step+1}/{config.TRAIN_STEPS}")
             batch = self.dataset.get_batch(config.BATCH_SIZE)

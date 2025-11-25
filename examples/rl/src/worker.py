@@ -62,8 +62,6 @@ class Worker:
         self.trainer_node_id = trainer_node_id
         self.local_port = local_port
         self.trainer_port = trainer_port
-        self.multicast_task = None
-        self.group_ready_sent = False
         
         # Wait for routes to be established
         print(f"Waiting for routes to be established...", flush=True)
@@ -157,15 +155,8 @@ class Worker:
                 print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
                 self.dataplane.join_group(group_id)
                 
-                # Start background listener once
-                if self.multicast_task is None:
-                    self.multicast_task = asyncio.create_task(self.multicast_loop(group_ip, src_node_id))
-                
-                # Tell trainer we're ready to receive multicast
-                if not self.group_ready_sent:
-                    print(f"Worker {self.rank} sending MULTICAST_READY", flush=True)
-                    self.send_to_trainer({"type": "MULTICAST_READY"})
-                    self.group_ready_sent = True
+                # Start background listener
+                asyncio.create_task(self.multicast_loop(group_ip, src_node_id))
                 
             # elif msg["type"] == "WEIGHT_METADATA":
             #     # Legacy handler - ignore or warn
