@@ -284,7 +284,7 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     log(f"Receive completion: {ok}.", args.quiet)
     log(
-        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(expected_bytes, elapsed)}.",
+        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
         args.quiet,
     )
 
