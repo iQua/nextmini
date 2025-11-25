@@ -212,7 +212,13 @@ class Worker:
                         "completions": texts
                     })
                 
-                self.send_to_trainer({"type": "ROLLOUT_RESULT", "results": results})
+                # Add timestamp for network transmission measurement
+                send_time = time.time()
+                self.send_to_trainer({
+                    "type": "ROLLOUT_RESULT",
+                    "results": results,
+                    "send_timestamp": send_time
+                })
 
 
 if __name__ == "__main__":

@@ -303,6 +303,7 @@ class Trainer:
         # Request rollouts
         worker_results = [None] * len(self.worker_connections)
         rollout_times = [None] * len(self.worker_connections)
+        network_times = [None] * len(self.worker_connections)
         
         # ============ TIMING: Rollout Request Start ============
         rollout_start_time = time.time()
@@ -312,9 +313,15 @@ class Trainer:
                 worker_start = time.time()
                 self.send_to_worker(i, {"type": "ROLLOUT", "prompts": p_batch})
                 # Use a long timeout for rollouts as generation can be slow
-                worker_results[i] = self.recv_from_worker(i, timeout_ms=60000, expected_type="ROLLOUT_RESULT")
-                worker_end = time.time()
-                rollout_times[i] = worker_end - worker_start
+                result = self.recv_from_worker(i, timeout_ms=60000, expected_type="ROLLOUT_RESULT")
+                recv_time = time.time()
+                
+                worker_results[i] = result
+                rollout_times[i] = recv_time - worker_start
+                
+                # Calculate pure network transmission time if timestamp available
+                if result and "send_timestamp" in result:
+                    network_times[i] = recv_time - result["send_timestamp"]
         
         threads = []
         for i, p_batch in enumerate(worker_batches):
@@ -377,20 +384,33 @@ class Trainer:
         step_avg_reward = sum([1.0 if is_correct(c, gt_map.get(s["prompt"])) else 0.0 
                               for s in all_samples for c in s["completions"]]) / (len(all_samples) * config.GRPO_GROUP_SIZE)
         
-        # Calculate rollout data size
+        # Calculate rollout data size and network metrics
         total_rollout_bytes = sum(
             len(pickle.dumps(res, protocol=pickle.HIGHEST_PROTOCOL))
             for res in worker_results if res
         )
         
+        # Calculate pure network transmission metrics
+        valid_network_times = [t for t in network_times if t is not None]
+        avg_network_time = sum(valid_network_times) / len(valid_network_times) if valid_network_times else 0
+        
+        # Calculate network throughput in Gbps
+        if avg_network_time > 0:
+            avg_worker_bytes = total_rollout_bytes / len(valid_network_times) if valid_network_times else 0
+            network_throughput_gbps = (avg_worker_bytes * 8 / 1e9) / avg_network_time
+        else:
+            network_throughput_gbps = 0
+        
         print(f"\n{'='*60}")
         print(f"ROLLOUT DATA TIMING (Workers → Trainer):")
-        print(f"  Total rollout time:            {total_rollout_time:.3f}s")
+        print(f"  Total pipeline time:           {total_rollout_time:.3f}s (incl. generation)")
         for i, t in enumerate(rollout_times):
             if t is not None:
-                print(f"    Worker {i}:                      {t:.3f}s")
+                net_str = f" (network: {network_times[i]*1000:.1f}ms)" if network_times[i] else ""
+                print(f"    Worker {i}:                      {t:.3f}s{net_str}")
         print(f"  Total rollout data size:       {total_rollout_bytes/1024:.2f} KB")
-        print(f"  Avg throughput (all workers):  {(total_rollout_bytes/1024)/(total_rollout_time) if total_rollout_time > 0 else 0:.2f} KB/s")
+        print(f"  Avg network transmission:      {avg_network_time*1000:.1f}ms")
+        print(f"  Network throughput:            {network_throughput_gbps:.3f} Gbps")
         print(f"{'='*60}\n")
         
         print(f"Step Metrics | Avg Reward: {step_avg_reward:.4f}")
