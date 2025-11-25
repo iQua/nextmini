@@ -90,6 +90,47 @@ class Worker:
         
         return pickle.loads(delivery.payload)
 
+    async def multicast_loop(self, group_ip, src_node_id):
+        """Background task to listen for multicast weight updates"""
+        print(f"Worker {self.rank} starting multicast listener loop...", flush=True)
+        while True:
+            try:
+                # Wait for next session to start (first packet arrival)
+                # expected_bytes=0 signals we wait for Manifest to know the size
+                sid = await self.dataplane.receive_data_async(
+                    group_ip,
+                    src_node_id,
+                    expected_bytes=0,
+                    chunk_size=config.CHUNK_SIZE,
+                    src_port=config.TRAINER_PORT,
+                    dst_port=config.WORKER_BASE_PORT
+                )
+                print(f"Worker {self.rank} detected multicast session start. SID={sid}", flush=True)
+                
+                # Wait for completion
+                ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                
+                if ok:
+                    frozen = self.dataplane.get_data_buffer(sid)
+                    buffer = io.BytesIO(bytes(frozen.read()))
+                    state_dict = torch.load(buffer, map_location=self.device)
+                    self.model.load_state_dict(state_dict)
+                    print(f"Worker {self.rank} weights updated via multicast.", flush=True)
+                    
+                    # Clean up session to allow next one to be discovered
+                    self.dataplane.forget_session(group_ip, src_node_id)
+                else:
+                    print(f"Worker {self.rank} multicast session timed out/failed.", flush=True)
+                    # Don't forget session immediately on timeout? 
+                    # If we timed out, maybe we should to avoid getting stuck? 
+                    # Yes, safe to forget.
+                    self.dataplane.forget_session(group_ip, src_node_id)
+                    
+            except Exception as e:
+                print(f"Worker {self.rank} multicast loop error: {e}", flush=True)
+                # Avoid tight loop on error
+                await asyncio.sleep(1)
+
     async def run(self):
         """Main worker loop"""
         print(f"Worker {self.rank} sending handshake...", flush=True)
@@ -102,71 +143,24 @@ class Worker:
                 print("Trainer disconnected.", flush=True)
                 break
             
-            if msg["type"] == "WEIGHT_METADATA":
-                # Multicast weight synchronization
-                print(f"Worker {self.rank} received weight metadata. Preparing for Multicast sync...", flush=True)
-                
+            if msg["type"] == "GROUP_INFO":
+                # One-time setup for multicast
                 group_id = msg["group_id"]
                 group_ip = msg["group_ip"]
-                size = msg["size"]
                 src_node_id = msg["src_node_id"]
                 
-                print(f"Worker {self.rank} metadata: group_id={group_id}, group_ip={group_ip}, size={size} bytes", flush=True)
+                print(f"Worker {self.rank} received GROUP_INFO: {group_id} ({group_ip})", flush=True)
                 
                 # Join the multicast group
                 print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
                 self.dataplane.join_group(group_id)
-                print(f"Worker {self.rank} joined group command sent.", flush=True)
                 
-                # 2. Register Receive Session in background task (using asyncio)
-                print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
+                # Start background listener
+                asyncio.create_task(self.multicast_loop(group_ip, src_node_id))
                 
-                # Helper to wrap Rust Future into a Python Coroutine for create_task
-                async def receive_wrapper():
-                    return await self.dataplane.receive_data_async(
-                        group_ip,
-                        src_node_id,
-                        expected_bytes=size,
-                        chunk_size=config.CHUNK_SIZE,
-                        src_port=config.TRAINER_PORT,
-                        dst_port=config.WORKER_BASE_PORT
-                    )
-
-                # Create the receive task - this will submit the request to Rust but won't block
-                # until we await it. It returns the Session ID once the first packet arrives.
-                receive_task = asyncio.create_task(receive_wrapper())
-                
-                print(f"Worker {self.rank} receive task created.", flush=True)
-                
-                # 3. Reply READY (safe to send immediately)
-                print(f"Worker {self.rank} sending READY_FOR_MULTICAST...", flush=True)
-                self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
-                print(f"Worker {self.rank} sent READY_FOR_MULTICAST.", flush=True)
-                
-                # 4. Wait for the Session ID (this happens when trainer starts sending)
-                try:
-                    sid = await receive_task
-                    print(f"Worker {self.rank} receive_data session established. SID={sid}", flush=True)
-                except Exception as e:
-                    print(f"Worker {self.rank} failed to establish session: {e}", flush=True)
-                    continue
-
-                # 5. Wait for Reliable Transfer Completion
-                print(f"Waiting for reliable multicast transfer...")
-                ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
-                print(f"Receive completion: {ok}")
-                
-                if ok:
-                    frozen = self.dataplane.get_data_buffer(sid)
-                    buffer = io.BytesIO(bytes(frozen.read()))
-                    state_dict = torch.load(buffer, map_location=self.device)
-                    self.model.load_state_dict(state_dict)
-                    print("Weights loaded into model.")
-                    
-                    # Important: Forget the session so next time we don't reuse the old SID
-                    # Since multicast group IP + src_node_id is the key, we must clear it 
-                    # to allow the 'pending' receiver logic to discover the NEW session ID (e.g. 2, 3...).
-                    self.dataplane.forget_session(group_ip, src_node_id)
+            # elif msg["type"] == "WEIGHT_METADATA":
+            #     # Legacy handler - ignore or warn
+            #     print(f"Worker {self.rank} received unexpected WEIGHT_METADATA (deprecated)", flush=True)
             
             elif msg["type"] == "UPDATE_WEIGHTS":
                 # Legacy unicast update (not used anymore)

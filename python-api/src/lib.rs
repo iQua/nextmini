@@ -329,9 +329,6 @@ impl Dataplane {
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
 
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
@@ -398,9 +395,6 @@ impl Dataplane {
         dst_port: Option<u16>,
         session_id: Option<u64>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
@@ -797,6 +791,8 @@ impl Dataplane {
         }
     }
 
+    // calls right after `join_group(group_id)` to confirm 
+    // that the local node has joined the multicast group
     #[pyo3(signature = (group_id, timeout_ms=None))]
     fn wait_for_local_membership(
         &self,

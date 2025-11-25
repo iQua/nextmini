@@ -76,9 +76,9 @@ pub async fn run(
         "Reliable receiver started"
     );
 
-    // Stream bookkeeping: reliable session chunk indices start at 1.
     let mut expected: u64 = 1;
     let per_chunk = cfg.common.chunk_size.max(1);
+    let mut target_bytes = cfg.expected_bytes;
 
     // Uses a sliding window size corresponding to the burst size in the token bucket
     // If the token bucket shaper is not configured, use the default window size
@@ -111,9 +111,12 @@ pub async fn run(
         processors.clone(),
     );
 
+    // Always signal READY up front so the sender doesn't stall if a Manifest is lost.
+    // When the Manifest arrives it will update target_bytes and we'll send READY again.
     control_io.send(&ReliableSessionControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
+
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
 
@@ -155,7 +158,8 @@ pub async fn run(
                 if base > last_ack_up_to {
                     let advanced_chunks = base - last_ack_up_to;
                     let final_chunk_reached = matches!(eot_index, Some(last) if last == base);
-                    let received_all_bytes = bytes_received >= cfg.expected_bytes;
+                    // Only consider "all bytes received" if we actually know the target size
+                    let received_all_bytes = target_bytes > 0 && bytes_received >= target_bytes;
                     if advanced_chunks >= ACK_EVERY_CHUNKS
                         || final_chunk_reached
                         || received_all_bytes
@@ -174,10 +178,25 @@ pub async fn run(
             continue;
         }
 
-        if handle_control_frame(&frame, &cfg, &control_io, &mut eot_index) {
+        if handle_control_frame(
+            &frame,
+            &cfg,
+            &control_io,
+            &mut eot_index,
+            &mut target_bytes,
+            &sink_buffer,
+        )
+        .await
+        {
             if let Some(last) = eot_index
                 && expected.saturating_sub(1) >= last
             {
+                debug!(
+                    session_id = sid,
+                    up_to = last,
+                    "Reliable receiver: sending final ACK before exit"
+                );
+                control_io.send(&ReliableSessionControl::Ack { up_to: last });
                 break;
             }
             continue;
@@ -355,23 +374,80 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
 }
 
 /// Handles receiver-side control frames (Manifest/EOT/etc.).
-fn handle_control_frame(
+async fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
     ctrl_io: &ControlEmitter,
     eot_index: &mut Option<u64>,
+    target_bytes: &mut u64,
+    sink_buffer: &Option<std::sync::Arc<tokio::sync::Mutex<Vec<u8>>>>,
 ) -> bool {
     let Some((_, control)) = reliable_session::decode_control(&frame.bytes) else {
         return false;
     };
     match control {
-        ReliableSessionControl::Manifest { .. } => {
+        ReliableSessionControl::Manifest { total_bytes, .. } => {
+            // If we were waiting for the size (0), update it now.
+            if *target_bytes == 0 {
+                info!(
+                    session_id = cfg.common.session_id,
+                    total_bytes,
+                    "Reliable receiver: Manifest received, updating expected_bytes"
+                );
+                *target_bytes = total_bytes;
+
+                // Optimization: Reserve capacity in the sink buffer now that we know the size
+                if let Some(buf) = sink_buffer {
+                    let mut guard = buf.lock().await;
+                    let needed = total_bytes as usize;
+                    if needed > guard.capacity() {
+                        // Reserve enough so capacity covers the full payload size
+                        let grow = needed.saturating_sub(guard.len());
+                        if grow > 0 {
+                            guard.reserve(grow);
+                        }
+                    }
+                }
+            }
+
+            // Always reply with READY to unblock the sender
             ctrl_io.send(&ReliableSessionControl::Ready {
                 node_id: cfg.common.local_node_id as u64,
             });
             true
         }
-        ReliableSessionControl::Eot { last_index } => {
+        ReliableSessionControl::Eot {
+            last_index,
+            total_bytes,
+        } => {
+            if *target_bytes == 0 {
+                info!(
+                    session_id = cfg.common.session_id,
+                    total_bytes,
+                    "Reliable receiver: EOT received with size, updating expected_bytes"
+                );
+                *target_bytes = total_bytes;
+
+                // Optimization: Reserve capacity in the sink buffer if we missed the Manifest
+                if let Some(buf) = sink_buffer {
+                    let mut guard = buf.lock().await;
+                    let needed = total_bytes as usize;
+                    if needed > guard.capacity() {
+                        let grow = needed.saturating_sub(guard.len());
+                        if grow > 0 {
+                            guard.reserve(grow);
+                        }
+                    }
+                }
+            } else if *target_bytes != total_bytes {
+                warn!(
+                    session_id = cfg.common.session_id,
+                    expected = *target_bytes,
+                    received = total_bytes,
+                    "Reliable receiver: EOT total_bytes mismatch"
+                );
+            }
+
             info!(
                 session_id = cfg.common.session_id,
                 last_index = last_index,
@@ -380,7 +456,14 @@ fn handle_control_frame(
             *eot_index = Some(last_index);
             true
         }
-        _ => true,
+        ReliableSessionControl::Ready { .. } => {
+            // Ready frames aren't expected on the receiver; ignore.
+            false
+        }
+        ReliableSessionControl::Ack { .. } => {
+            // Ack frames should only be processed by the sender; ignore.
+            false
+        }
     }
 }
 

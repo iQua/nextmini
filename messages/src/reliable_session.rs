@@ -112,9 +112,10 @@ pub enum ReliableSessionControl {
     Ack {
         up_to: u64,
     },
-    /// End-of-transfer marker with the last expected chunk.
+    /// End-of-transfer marker with the last expected chunk and total byte count.
     Eot {
         last_index: u64,
+        total_bytes: u64,
     },
 }
 
@@ -171,8 +172,8 @@ pub fn decode_data(buf: &[u8]) -> Option<(ReliableSessionHeader, ReliableSession
     ))
 }
 
-/// Maximum size of a control frame: header (20) + largest body (Manifest: 12) = 32 bytes
-pub const MAX_CONTROL_FRAME_SIZE: usize = ReliableSessionHeader::LEN + 12;
+/// Maximum size of a control frame: header (20) + largest body (Eot: 16) = 36 bytes
+pub const MAX_CONTROL_FRAME_SIZE: usize = ReliableSessionHeader::LEN + 16;
 
 /// Encode a CONTROL frame into the provided buffer, returning the number of bytes written.
 /// The buffer must be at least MAX_CONTROL_FRAME_SIZE bytes.
@@ -206,10 +207,14 @@ pub fn encode_control_into<'a>(
             buf[body_start..body_start + 8].copy_from_slice(&up_to.to_be_bytes());
             (ReliableSessionCtrlKind::Ack as u8, 8)
         }
-        Eot { last_index } => {
+        Eot {
+            last_index,
+            total_bytes,
+        } => {
             let body_start = ReliableSessionHeader::LEN;
             buf[body_start..body_start + 8].copy_from_slice(&last_index.to_be_bytes());
-            (ReliableSessionCtrlKind::Eot as u8, 8)
+            buf[body_start + 8..body_start + 16].copy_from_slice(&total_bytes.to_be_bytes());
+            (ReliableSessionCtrlKind::Eot as u8, 16)
         }
     };
 
@@ -275,11 +280,15 @@ pub fn decode_control(buf: &[u8]) -> Option<(ReliableSessionHeader, ReliableSess
             Ack { up_to }
         }
         x if x == ReliableSessionCtrlKind::Eot as u8 => {
-            if body.len() < 8 {
+            if body.len() < 16 {
                 return None;
             }
             let last_index = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            Eot { last_index }
+            let total_bytes = u64::from_be_bytes(body[8..16].try_into().ok()?);
+            Eot {
+                last_index,
+                total_bytes,
+            }
         }
         _ => return None,
     };
@@ -313,7 +322,10 @@ mod tests {
             },
             ReliableSessionControl::Ready { node_id: 99 },
             ReliableSessionControl::Ack { up_to: 77 },
-            ReliableSessionControl::Eot { last_index: 15 },
+            ReliableSessionControl::Eot {
+                last_index: 15,
+                total_bytes: 60000,
+            },
         ];
         for ctrl in ctrls {
             let buf = encode_control(77, &ctrl);
@@ -350,7 +362,10 @@ mod tests {
             },
             ReliableSessionControl::Ready { node_id: 99 },
             ReliableSessionControl::Ack { up_to: 77 },
-            ReliableSessionControl::Eot { last_index: 15 },
+            ReliableSessionControl::Eot {
+                last_index: 15,
+                total_bytes: 60000,
+            },
         ];
 
         for ctrl in ctrls {
@@ -404,10 +419,16 @@ mod tests {
         bad_ack.truncate(ReliableSessionHeader::LEN + 6);
         assert!(decode_control(&bad_ack).is_none());
 
-        // EOT requires 8 bytes (index only)
-        let eot = encode_control(1, &ReliableSessionControl::Eot { last_index: 42 });
+        // EOT requires 16 bytes (index + total_bytes)
+        let eot = encode_control(
+            1,
+            &ReliableSessionControl::Eot {
+                last_index: 42,
+                total_bytes: 100,
+            },
+        );
         let mut bad_eot = eot.clone();
-        bad_eot.truncate(ReliableSessionHeader::LEN + 4);
+        bad_eot.truncate(ReliableSessionHeader::LEN + 12);
         assert!(decode_control(&bad_eot).is_none());
     }
 }
