@@ -38,7 +38,7 @@ BATCH_SIZE = 2  # Number of prompts per training step
 LEARNING_RATE = 1e-6
 KL_COEFF = 0.01
 CLIP_EPS = 0.2
-TRAIN_STEPS = 500
+TRAIN_STEPS = 1000
 
 # Roles
 ROLE_TRAINER = "trainer"
