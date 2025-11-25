@@ -266,21 +266,21 @@ class Trainer:
         weight_broadcast_end = time.time()
         total_broadcast_time = weight_broadcast_end - weight_broadcast_start
         actual_transfer_time = multicast_transfer_end - multicast_transfer_start
-        throughput_mbps = (size / (1024 * 1024)) / actual_transfer_time if actual_transfer_time > 0 else 0
+        throughput_gbps = (size * 8 / 1e9) / actual_transfer_time if actual_transfer_time > 0 else 0
         
         print(f"\n{'='*60}")
         print(f"WEIGHT BROADCAST TIMING (Trainer → Workers):")
         print(f"  Total time (incl. handshake): {total_broadcast_time:.3f}s")
         print(f"  Actual multicast transfer:     {actual_transfer_time:.3f}s")
         print(f"  Data size:                     {size/1024/1024:.2f} MB")
-        print(f"  Throughput:                    {throughput_mbps:.2f} MB/s")
+        print(f"  Throughput:                    {throughput_gbps:.3f} Gbps")
         print(f"{'='*60}\n")
         
         return {
             'total_time': total_broadcast_time,
             'transfer_time': actual_transfer_time,
             'size_bytes': size,
-            'throughput_mbps': throughput_mbps
+            'throughput_gbps': throughput_gbps
         }
 
     def train_step(self, batch):
