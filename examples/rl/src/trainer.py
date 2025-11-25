@@ -45,7 +45,6 @@ class Trainer:
         
         self.optimizer = AdamW(self.policy_model.parameters(), lr=config.LEARNING_RATE)
         
-        # uses the training dataset
         self.dataset = GSM8KLoader("train")
         
         # Initialize nextmini dataplane
@@ -199,7 +198,49 @@ class Trainer:
         
         print(f"Serialized weights: {size} bytes ({size/1024/1024:.2f} MB)")
         
-        receiver_ids = [c['node_id'] for c in self.worker_connections]
+        # 1. Send Metadata and Wait for Ready
+        receiver_ids = []
+        for i in range(len(self.worker_connections)):
+            receiver_ids.append(self.worker_connections[i]['node_id'])
+        
+        errors = []
+        def handshake_worker(i):
+            with self.worker_locks[i]:
+                # Send Metadata
+                print(f"Trainer sending WEIGHT_METADATA to Worker {i} (node {self.worker_connections[i]['node_id']}, port {self.worker_connections[i]['port']})...", flush=True)
+                self.send_to_worker(i, {
+                    "type": "WEIGHT_METADATA",
+                    "group_id": self.group_id,
+                    "group_ip": self.group_ip,
+                    "size": size,
+                    "src_node_id": config.TRAINER_NODE_ID
+                })
+                print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
+                
+                # Wait for READY
+                try:
+                    msg = self.recv_from_worker(i, timeout_ms=120000, expected_type="READY_FOR_MULTICAST")
+                    
+                    if not msg:
+                        raise RuntimeError(f"Worker {i} failed to reply READY_FOR_MULTICAST within timeout")
+                    else:
+                        print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
+                except Exception as e:
+                    errors.append(e)
+                    raise e
+        
+        print(f"Starting {len(self.worker_connections)} handshake threads...", flush=True)
+        threads = []
+        for i in range(len(self.worker_connections)):
+            t = threading.Thread(target=handshake_worker, args=(i,), name=f"HandshakeWorker-{i}")
+            t.start()
+            threads.append(t)
+            
+        for t in threads:
+            t.join()
+            
+        if errors:
+            raise RuntimeError(f"Handshake failed: {errors}")
             
         # 2. Send Data Reliable
         print(f"Starting reliable multicast of {size} bytes to {receiver_ids}...")
@@ -493,16 +534,6 @@ class Trainer:
         print("Trainer started.")
         self.accept_workers()
         
-        # Send Group Info to all workers so they can join and listen
-        print("Sending multicast group info to workers...")
-        for i in range(len(self.worker_connections)):
-             self.send_to_worker(i, {
-                 "type": "GROUP_INFO",
-                 "group_id": self.group_id,
-                 "group_ip": self.group_ip,
-                 "src_node_id": config.TRAINER_NODE_ID
-             })
-
         for step in range(config.TRAIN_STEPS):
             print(f"Step {step+1}/{config.TRAIN_STEPS}")
             batch = self.dataset.get_batch(config.BATCH_SIZE)

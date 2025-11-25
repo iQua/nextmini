@@ -399,7 +399,6 @@ impl SenderState {
         }
         let eot = ReliableSessionControl::Eot {
             last_index: self.total_chunks,
-            total_bytes: self.total_bytes,
         };
         self.send_control(&eot, processors);
         self.eot_sent = true;
