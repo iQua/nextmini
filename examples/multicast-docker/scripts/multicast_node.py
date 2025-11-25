@@ -37,13 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-size", type=int, default=8500)
     parser.add_argument("--receive-timeout-ms", type=int, default=5000)
     parser.add_argument("--group-timeout", type=int, default=90)
-    parser.add_argument(
-        "--payload-count",
-        type=int,
-        default=None,
-        help="Compatibility shim; when provided, expected-bytes defaults to payload-count * chunk-size.",
-    )
-    parser.add_argument("--expected-bytes", type=int, default=None)
+    parser.add_argument("--expected-bytes", type=int, default=None, help="Optional; 0/omitted to learn size from Manifest/EOT.")
     parser.add_argument("--source-node-id", type=int, default=1)
     parser.add_argument("--node-id", type=int, default=None)
     parser.add_argument("--src-port", type=int, default=None)
@@ -253,12 +247,6 @@ def run_receiver(args: argparse.Namespace) -> None:
     if args.node_id is None:
         raise SystemExit("Receiver role requires --node-id.")
 
-    load_tensor_metadata_if_needed(args)
-    if args.expected_bytes is None and args.payload_count:
-        args.expected_bytes = args.payload_count * args.chunk_size
-    if args.expected_bytes is None or args.expected_bytes <= 0:
-        raise SystemExit("expected-bytes must be known for reliable reception.")
-
     group_id, group_ip = wait_for_group_info(args, args.group_timeout)
     dataplane = nm.Dataplane(str(args.config))
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
@@ -269,13 +257,18 @@ def run_receiver(args: argparse.Namespace) -> None:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
-    log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
+    # expected_bytes can be omitted/zero; receiver learns size from Manifest/EOT
+    expected_bytes = args.expected_bytes or 0
+    if expected_bytes:
+        log(f"Starting reception of {expected_bytes} bytes...", args.quiet)
+    else:
+        log("Starting reception with unknown size (will learn from Manifest/EOT)...", args.quiet)
     recv_start_time = time.perf_counter()
 
     sid = dataplane.receive_data(
         group_ip,
         args.source_node_id,
-        expected_bytes=args.expected_bytes,
+        expected_bytes=expected_bytes,
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
