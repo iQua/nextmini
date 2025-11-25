@@ -184,6 +184,9 @@ class Trainer:
         """Broadcast model weights to all workers via Multicast"""
         print("Broadcasting weights to workers via Multicast...")
         
+        # ============ TIMING: Weight Broadcast Start ============
+        weight_broadcast_start = time.time()
+        
         state_dict = self.policy_model.state_dict()
         # Move to CPU for serialization
         state_dict_cpu = {k: v.cpu() for k, v in state_dict.items()}
@@ -254,13 +257,36 @@ class Trainer:
         )
         
         print(f"Waiting for multicast transfer (SID={sid})...")
+        multicast_transfer_start = time.time()
         ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        multicast_transfer_end = time.time()
         print(f"Multicast completion: {ok}")
+        
+        # ============ TIMING: Weight Broadcast End ============
+        weight_broadcast_end = time.time()
+        total_broadcast_time = weight_broadcast_end - weight_broadcast_start
+        actual_transfer_time = multicast_transfer_end - multicast_transfer_start
+        throughput_mbps = (size / (1024 * 1024)) / actual_transfer_time if actual_transfer_time > 0 else 0
+        
+        print(f"\n{'='*60}")
+        print(f"WEIGHT BROADCAST TIMING (Trainer → Workers):")
+        print(f"  Total time (incl. handshake): {total_broadcast_time:.3f}s")
+        print(f"  Actual multicast transfer:     {actual_transfer_time:.3f}s")
+        print(f"  Data size:                     {size/1024/1024:.2f} MB")
+        print(f"  Throughput:                    {throughput_mbps:.2f} MB/s")
+        print(f"{'='*60}\n")
+        
+        return {
+            'total_time': total_broadcast_time,
+            'transfer_time': actual_transfer_time,
+            'size_bytes': size,
+            'throughput_mbps': throughput_mbps
+        }
 
     def train_step(self, batch):
         """Execute one training step"""
         # 1. Broadcast current weights
-        self.broadcast_weights()
+        weight_metrics = self.broadcast_weights()
         
         # 2. Send prompts to workers
         prompts = [item["question"] for item in batch]
@@ -276,12 +302,19 @@ class Trainer:
         
         # Request rollouts
         worker_results = [None] * len(self.worker_connections)
+        rollout_times = [None] * len(self.worker_connections)
+        
+        # ============ TIMING: Rollout Request Start ============
+        rollout_start_time = time.time()
         
         def query_worker(i, p_batch):
             with self.worker_locks[i]:
+                worker_start = time.time()
                 self.send_to_worker(i, {"type": "ROLLOUT", "prompts": p_batch})
                 # Use a long timeout for rollouts as generation can be slow
                 worker_results[i] = self.recv_from_worker(i, timeout_ms=60000, expected_type="ROLLOUT_RESULT")
+                worker_end = time.time()
+                rollout_times[i] = worker_end - worker_start
         
         threads = []
         for i, p_batch in enumerate(worker_batches):
@@ -292,6 +325,10 @@ class Trainer:
         
         for t in threads:
             t.join()
+        
+        # ============ TIMING: Rollout Complete ============
+        rollout_end_time = time.time()
+        total_rollout_time = rollout_end_time - rollout_start_time
         
         # 3. Process results
         all_samples = []
@@ -339,7 +376,31 @@ class Trainer:
 
         step_avg_reward = sum([1.0 if is_correct(c, gt_map.get(s["prompt"])) else 0.0 
                               for s in all_samples for c in s["completions"]]) / (len(all_samples) * config.GRPO_GROUP_SIZE)
+        
+        # Calculate rollout data size
+        total_rollout_bytes = sum(
+            len(pickle.dumps(res, protocol=pickle.HIGHEST_PROTOCOL))
+            for res in worker_results if res
+        )
+        
+        print(f"\n{'='*60}")
+        print(f"ROLLOUT DATA TIMING (Workers → Trainer):")
+        print(f"  Total rollout time:            {total_rollout_time:.3f}s")
+        for i, t in enumerate(rollout_times):
+            if t is not None:
+                print(f"    Worker {i}:                      {t:.3f}s")
+        print(f"  Total rollout data size:       {total_rollout_bytes/1024:.2f} KB")
+        print(f"  Avg throughput (all workers):  {(total_rollout_bytes/1024)/(total_rollout_time) if total_rollout_time > 0 else 0:.2f} KB/s")
+        print(f"{'='*60}\n")
+        
         print(f"Step Metrics | Avg Reward: {step_avg_reward:.4f}")
+        
+        return {
+            'weight_broadcast': weight_metrics,
+            'rollout_time': total_rollout_time,
+            'rollout_size_bytes': total_rollout_bytes,
+            'avg_reward': step_avg_reward
+        }
 
     def update_model(self, samples):
         """Update policy model using collected samples"""
