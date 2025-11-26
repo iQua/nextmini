@@ -1,3 +1,5 @@
+use std::fmt;
+
 use ahash::AHashMap;
 use chrono::Utc;
 
@@ -27,6 +29,12 @@ pub enum FlowMetricMessage {
 pub struct ControllerReporterHandle {
     sender: UnboundedSender<FlowMetricMessage>,
     controller: ControllerInterfaceHandle,
+}
+
+impl fmt::Debug for ControllerReporterHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ControllerReporterHandle").finish()
+    }
 }
 
 impl ControllerReporterHandle {
@@ -132,43 +140,42 @@ impl ControllerReporter {
                             });
                         }
 
-                        if !metrics_array.is_empty() {
-                            let msg = DataplaneToController::Metrics {
-                                metrics: metrics_array,
-                            };
+                    if !metrics_array.is_empty() {
+                        let msg = DataplaneToController::Metrics {
+                            metrics: metrics_array,
+                        };
 
-                            self.controller.send(msg).await;
+                        let src_node_id = self.controller.config.node_id;
 
-                            let mut link_results = Vec::new();
-                            let interval_secs = METRICS_INTERVAL_SECS as f64;
-                            for (remote_node_id, (bytes, samples)) in per_remote {
-                                if bytes == 0 {
-                                    continue;
-                                }
+                        self.controller.send(msg).await;
 
-                                let mbps = (bytes as f64 * 8.0) / interval_secs / 1_000_000.0;
-                                link_results.push(LinkProbeResult {
-                                    src_node_id: metrics_array
-                                        .first()
-                                        .map(|m| m.local_node_id)
-                                        .unwrap_or(0),
-                                    dst_node_id: remote_node_id,
-                                    rtt_ms: None,
-                                    loss_pct: None,
-                                    mbps: Some(mbps),
-                                    samples,
-                                    time_read: now,
-                                });
+                        let mut link_results = Vec::new();
+                        let interval_secs = METRICS_INTERVAL_SECS as f64;
+                        for (remote_node_id, (bytes, samples)) in per_remote {
+                            if bytes == 0 {
+                                continue;
                             }
 
-                            if !link_results.is_empty() {
-                                self.controller
-                                    .send(DataplaneToController::LinkProbeResults {
-                                        results: link_results,
-                                    })
-                                    .await;
-                            }
+                            let mbps = (bytes as f64 * 8.0) / interval_secs / 1_000_000.0;
+                            link_results.push(LinkProbeResult {
+                                src_node_id,
+                                dst_node_id: remote_node_id,
+                                rtt_ms: None,
+                                loss_pct: None,
+                                mbps: Some(mbps),
+                                samples,
+                                time_read: now,
+                            });
                         }
+
+                        if !link_results.is_empty() {
+                            self.controller
+                                .send(DataplaneToController::LinkProbeResults {
+                                    results: link_results,
+                                })
+                                .await;
+                        }
+                    }
 
                         self.flow_metrics.clear();
                     }

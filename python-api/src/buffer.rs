@@ -302,15 +302,15 @@ mod tests {
             let mut builder = PacketBuilder::new(100);
             let chunk1 = PyBytes::new(py, b"hello");
             let chunk2 = PyBytes::new(py, b"world");
-            
+
             assert_eq!(builder.write(&chunk1), 5);
             assert_eq!(builder.write(&chunk2), 5);
             assert_eq!(builder.__len__(), 10);
-            
+
             let view = builder.freeze();
             assert_eq!(view.__len__(), 10);
             assert_eq!(view.read(py).as_bytes(), b"helloworld");
-            
+
             // Builder should be empty after freeze
             assert_eq!(builder.__len__(), 0);
         });
@@ -320,18 +320,18 @@ mod tests {
     fn packet_builder_incremental_large() {
         Python::attach(|py| {
             let mut builder = PacketBuilder::new(1024);
-            
+
             for i in 0..100 {
                 let data = format!("chunk{:03}", i);
                 let bytes = PyBytes::new(py, data.as_bytes());
                 builder.write(&bytes);
             }
-            
+
             assert_eq!(builder.__len__(), 800);
-            
+
             let view = builder.freeze();
             assert_eq!(view.__len__(), 800);
-            
+
             let content = view.read(py);
             assert!(content.as_bytes().starts_with(b"chunk000"));
             assert!(content.as_bytes().ends_with(b"chunk099"));
@@ -344,11 +344,11 @@ mod tests {
             let mut builder = PacketBuilder::new(100);
             let data = PyBytes::new(py, b"test data for zero copy");
             builder.write(&data);
-            
+
             let ptr_before = builder.inner.as_ptr();
             let view = builder.freeze();
             let ptr_after = view.inner.as_ptr();
-            
+
             assert_eq!(ptr_before, ptr_after, "freeze() should be zero-copy");
         });
     }

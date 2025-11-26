@@ -4,8 +4,8 @@ mod buffer;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -16,10 +16,10 @@ use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
+use tokio::sync::mpsc;
 use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
@@ -113,7 +113,7 @@ impl PacketReceiver {
 fn delivery_to_pyobject(py: Python<'_>, delivery: PythonDelivery) -> PyResult<Py<PyAny>> {
     // PythonDelivery is now just PayloadDelivery (type alias)
     let obj = Py::new(py, PyPayloadDelivery::from(delivery))?;
-    
+
     Ok(obj.into_pyobject(py)?.unbind().into())
 }
 
@@ -477,9 +477,9 @@ impl Dataplane {
         }
 
         // Fallback if feature disabled (immediate return)
-        future_into_py(py, async move { 
+        future_into_py(py, async move {
             info!("receive_data_async: reliable runtime not available, returning immediate sid");
-            Ok(sid) 
+            Ok(sid)
         })
     }
 
@@ -533,9 +533,9 @@ impl Dataplane {
             }
         }
         // Fallback
-        future_into_py(py, async move { 
+        future_into_py(py, async move {
             info!("reliable_wait_async: reliable runtime not available, returning false");
-            Ok(false) 
+            Ok(false)
         })
     }
 
@@ -914,7 +914,7 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPayloadDelivery>()?;
     m.add_class::<PacketView>()?;
     m.add_class::<PacketBuilder>()?;
-    
+
     Ok(())
 }
 

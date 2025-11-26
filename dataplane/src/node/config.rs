@@ -139,6 +139,26 @@ pub struct LocalConfig {
     #[arg(long)]
     pub metrics_collection_interval: u64,
 
+    /// Enables the built-in RTT probe.
+    #[default(true)]
+    #[arg(long)]
+    pub enable_probe_rtt: bool,
+
+    /// Enables the built-in throughput burst probe.
+    #[default(true)]
+    #[arg(long)]
+    pub enable_probe_throughput: bool,
+
+    /// UDP port used by the built-in connectivity probe service.
+    #[default(9090)]
+    #[arg(long)]
+    pub probe_port: u16,
+
+    /// Interval in seconds between probe rounds.
+    #[default(10)]
+    #[arg(long)]
+    pub probe_interval_secs: u64,
+
     /// The total number of dataplane nodes deployed.
     #[default(1)]
     #[arg(long)]
