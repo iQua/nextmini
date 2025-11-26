@@ -481,6 +481,48 @@ async fn handle_connection(
                             );
                         }
                     }
+                    DataplaneToController::LinkProbeResults { results } => {
+                        let Some(registered_id) = current_node_id else {
+                            warn!(
+                                "Received link probe results but no node ID is associated with this connection."
+                            );
+                            continue;
+                        };
+
+                        for result in results {
+                            if result.src_node_id != registered_id {
+                                warn!(
+                                    "LinkProbeResults src mismatch: registered {} but payload says {}.",
+                                    registered_id, result.src_node_id
+                                );
+                            }
+
+                            if result.samples == 0 {
+                                continue;
+                            }
+
+                            if let Err(e) = sqlx::query(
+                                r#"
+                                INSERT INTO link_measurements (
+                                    src_node_id, dst_node_id, rtt_ms, loss_pct, mbps, samples, time_read
+                                )
+                                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                "#,
+                            )
+                            .bind(result.src_node_id as i32)
+                            .bind(result.dst_node_id as i32)
+                            .bind(result.rtt_ms)
+                            .bind(result.loss_pct)
+                            .bind(result.mbps)
+                            .bind(result.samples as i32)
+                            .bind(result.time_read)
+                            .execute(&*db_pool)
+                            .await
+                            {
+                                error!("Failed to insert link measurement: {}", e);
+                            }
+                        }
+                    }
                     DataplaneToController::NodeTopologyReady { node_id } => {
                         let Some(registered_id) = current_node_id else {
                             warn!("NodeTopologyReady received before node registration; ignoring.");

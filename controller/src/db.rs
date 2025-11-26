@@ -118,6 +118,35 @@ async fn create_db(pool: &Pool<Postgres>) {
 
     if let Err(e) = sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS link_measurements (
+            id SERIAL PRIMARY KEY,
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
+            rtt_ms DOUBLE PRECISION,
+            loss_pct DOUBLE PRECISION,
+            mbps DOUBLE PRECISION,
+            samples INTEGER NOT NULL DEFAULT 1,
+            time_read TIMESTAMP WITH TIME ZONE NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to create link_measurements table: {}", e);
+    }
+
+    if let Err(e) = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_link_measurements_pair_time ON link_measurements (src_node_id, dst_node_id, time_read)"
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to create link_measurements index: {}", e);
+    }
+
+    if let Err(e) = sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS app_flows (
             id SERIAL PRIMARY KEY,
             flow_id BYTEA NOT NULL,
@@ -238,6 +267,13 @@ async fn reset_db(pool: &Pool<Postgres>) {
     info!("Resetting database - dropping all tables...");
 
     // drops the existing tables to ensure schema changes are applied
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS link_measurements")
+        .execute(pool)
+        .await
+    {
+        error!("Failed to drop link_measurements table: {}", e);
+    }
+
     if let Err(e) = sqlx::query("DROP TABLE IF EXISTS metrics")
         .execute(pool)
         .await

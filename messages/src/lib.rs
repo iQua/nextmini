@@ -47,6 +47,10 @@ pub enum DataplaneToController {
     Metrics {
         metrics: Vec<Metric>,
     },
+    /// Periodic link probe results reported by dataplane nodes.
+    LinkProbeResults {
+        results: Vec<LinkProbeResult>,
+    },
     FlowFinished {
         flows: Vec<FlowFinishedInfo>,
     },
@@ -134,6 +138,22 @@ pub struct Metric {
     pub local_node_id: usize,
     pub remote_node_id: usize,
     pub bytes: usize,
+    pub time_read: chrono::DateTime<chrono::Utc>,
+}
+
+/// Aggregated connectivity measurement between two nodes.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LinkProbeResult {
+    pub src_node_id: usize,
+    pub dst_node_id: usize,
+    /// Round-trip time in milliseconds, if measured this interval.
+    pub rtt_ms: Option<f64>,
+    /// Loss rate in the interval (0.0–100.0), if measured.
+    pub loss_pct: Option<f64>,
+    /// Throughput in Mbps, if measured.
+    pub mbps: Option<f64>,
+    /// Number of probes contributing to this aggregate.
+    pub samples: u32,
     pub time_read: chrono::DateTime<chrono::Utc>,
 }
 
