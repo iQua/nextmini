@@ -8,3 +8,5 @@ feature = "concurrent"
 delay_tolerance = 0
 backlog_tolerance = 1 
 enforce_tcp_order = false 
+enable_probe_rtt = true
+enable_probe_throughput = true
