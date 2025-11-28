@@ -1,0 +1,15 @@
+[project]
+name = "nextmini-helper"
+version = "0.1.0"
+description = "Helper utilities for nextmini link benchmarking"
+requires-python = ">=3.13"
+dependencies = [
+    "psycopg2-binary>=2.9.0",
+]
+
+[project.scripts]
+nextmini-link-benchmark = "tools.helper.link_benchmark:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

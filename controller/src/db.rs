@@ -230,6 +230,54 @@ async fn create_db(pool: &Pool<Postgres>) {
         error!("Failed to create membership trigger: {}", e);
     }
 
+    // link_throughput: Stores measured underlay throughput between pairs of nodes.
+    // src_node_id: The node that ran the iperf3 client.
+    // dst_node_id: The node that ran the iperf3 server.
+    // bandwidth_bps: Measured bandwidth in bits per second.
+    // bandwidth_mbps: Measured bandwidth in megabits per second.
+    // bytes_transferred: Total bytes transferred during the test.
+    // duration_secs: Duration of the test in seconds.
+    // protocol: "tcp" or "udp".
+    // retransmits: Number of TCP retransmits (null for UDP).
+    // jitter_ms: Jitter in milliseconds (UDP only).
+    // measured_at: Timestamp when the measurement was taken.
+    if let Err(e) = sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS link_throughput (
+            id SERIAL PRIMARY KEY,
+            src_node_id INTEGER NOT NULL,
+            dst_node_id INTEGER NOT NULL,
+            bandwidth_bps DOUBLE PRECISION NOT NULL,
+            bandwidth_mbps DOUBLE PRECISION NOT NULL,
+            bytes_transferred BIGINT NOT NULL,
+            duration_secs DOUBLE PRECISION NOT NULL,
+            protocol TEXT NOT NULL DEFAULT 'tcp',
+            retransmits INTEGER,
+            jitter_ms DOUBLE PRECISION,
+            measured_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            UNIQUE (src_node_id, dst_node_id, protocol, measured_at)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to create link_throughput table: {}", e);
+    }
+
+    // Create index for fast lookups by node pair
+    if let Err(e) = sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_link_throughput_nodes 
+        ON link_throughput (src_node_id, dst_node_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to create link_throughput index: {}", e);
+    }
+
     // NOTE: Add new schema changes here so init/reset paths stay in sync.
 }
 
@@ -285,6 +333,13 @@ async fn reset_db(pool: &Pool<Postgres>) {
         .await
     {
         error!("Failed to drop routes table: {}", e);
+    }
+
+    if let Err(e) = sqlx::query("DROP TABLE IF EXISTS link_throughput")
+        .execute(pool)
+        .await
+    {
+        error!("Failed to drop link_throughput table: {}", e);
     }
 
     if let Err(e) = sqlx::query("DROP TABLE IF EXISTS nodes")

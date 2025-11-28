@@ -817,6 +817,65 @@ impl Dataplane {
 
         Ok(matched.is_some())
     }
+
+    // ─── Network Info Methods (for throughput testing) ───────────────────────────
+
+    /// Returns the local node ID.
+    #[getter]
+    fn node_id(&self) -> usize {
+        self.cfg.node_id
+    }
+
+    /// Returns the private (underlay) network address of this node.
+    #[getter]
+    fn private_network_addr(&self) -> String {
+        self.cfg.private_network_addr.clone()
+    }
+
+    /// Returns the public network address of this node.
+    #[getter]
+    fn public_network_addr(&self) -> String {
+        self.cfg.public_network_addr.clone()
+    }
+
+    /// Returns the private network port.
+    #[getter]
+    fn private_network_port(&self) -> String {
+        self.cfg.private_network_port.clone()
+    }
+
+    /// Returns the public network port.
+    #[getter]
+    fn public_network_port(&self) -> String {
+        self.cfg.public_network_port.clone()
+    }
+
+    /// Returns the private network interface name.
+    #[getter]
+    fn private_network_interface(&self) -> String {
+        self.cfg.private_network_interface.clone()
+    }
+
+    /// Returns the controller address.
+    #[getter]
+    fn controller_addr(&self) -> String {
+        self.cfg.controller_addr.clone()
+    }
+
+    /// Returns a dictionary with all network configuration for this node.
+    /// Useful for throughput testing to get underlay addresses.
+    fn get_network_info(&self) -> PyResult<std::collections::HashMap<String, String>> {
+        let mut info = std::collections::HashMap::new();
+        info.insert("node_id".to_string(), self.cfg.node_id.to_string());
+        info.insert("private_network_addr".to_string(), self.cfg.private_network_addr.clone());
+        info.insert("public_network_addr".to_string(), self.cfg.public_network_addr.clone());
+        info.insert("private_network_port".to_string(), self.cfg.private_network_port.clone());
+        info.insert("public_network_port".to_string(), self.cfg.public_network_port.clone());
+        info.insert("private_network_interface".to_string(), self.cfg.private_network_interface.clone());
+        info.insert("controller_addr".to_string(), self.cfg.controller_addr.clone());
+        info.insert("user_space_address".to_string(), self.cfg.user_space_address.to_string());
+        Ok(info)
+    }
 }
 
 impl Dataplane {
