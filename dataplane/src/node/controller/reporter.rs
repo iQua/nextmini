@@ -5,7 +5,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, interval};
 use tracing::error;
 
-use nextmini_messages::{DataplaneToController, LinkProbeResult, Metric};
+use nextmini_messages::{DataplaneToController, Metric};
 
 use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::{FlowId, NodeId};
@@ -21,16 +21,14 @@ pub enum FlowMetricMessage {
     FlowMetric(FlowMetric),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ControllerReporterHandle {
     sender: UnboundedSender<FlowMetricMessage>,
-    controller: ControllerInterfaceHandle,
 }
 
 impl ControllerReporterHandle {
     pub fn new(controller: ControllerInterfaceHandle) -> Self {
         let (sender, receiver) = unbounded_channel();
-        let controller_clone = controller.clone();
 
         let mut reporter = ControllerReporter::new(controller, receiver);
 
@@ -38,10 +36,7 @@ impl ControllerReporterHandle {
             reporter.run().await;
         });
 
-        Self {
-            sender,
-            controller: controller_clone,
-        }
+        Self { sender }
     }
 
     pub fn send(&self, metrics: Vec<FlowMetric>) {
@@ -53,16 +48,6 @@ impl ControllerReporterHandle {
                 );
             }
         }
-    }
-
-    pub async fn send_link_probe_results(&self, results: Vec<LinkProbeResult>) {
-        if results.is_empty() {
-            return;
-        }
-
-        self.controller
-            .send(DataplaneToController::LinkProbeResults { results })
-            .await;
     }
 }
 
