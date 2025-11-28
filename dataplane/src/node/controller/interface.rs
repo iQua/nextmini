@@ -22,7 +22,6 @@ use nextmini_messages::{
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
-use crate::node::controller::probe::ProbeServiceHandle;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
@@ -80,14 +79,6 @@ impl ControllerInterfaceHandle {
         };
 
         let reporter = ControllerReporterHandle::new(controller_interface.clone());
-        let probe_service = ProbeServiceHandle::new(
-            config.node_id,
-            config.probe_port,
-            config.probe_interval_secs,
-            config.enable_probe_rtt,
-            config.enable_probe_throughput,
-            reporter.clone(),
-        );
 
         let flowstats_reporter =
             FlowStatsReporterHandle::new(controller_interface.clone(), config.clone());
@@ -136,7 +127,6 @@ impl ControllerInterfaceHandle {
             #[cfg(feature = "python-extension")]
             python_interface,
             reliable_runtime: reliable_runtime.clone(),
-            probe_service,
             group_ip_by_id: HashMap::new(),
             reliable_unicast,
             topology_ready: false,
@@ -288,7 +278,6 @@ pub struct ControllerToDataplaneReceiver {
 
     // reports metrics to controller
     reporter: ControllerReporterHandle,
-    probe_service: ProbeServiceHandle,
 
     // handles for user-space TCP flows
     user_space_client: UserSpaceClientHandle,
@@ -358,9 +347,6 @@ impl ControllerToDataplaneReceiver {
                 )
                 .await;
 
-                self.probe_service
-                    .register_peer(remote_node_id, remote_addr.clone());
-
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
                 let _ = self.processors.add_node(remote_node_id, scheduler);
@@ -373,11 +359,8 @@ impl ControllerToDataplaneReceiver {
                 remote_max_server_addr,
             } => {
                 self.processors
-                    .add_node_address(remote_node_id, remote_max_server_addr.clone())
+                    .add_node_address(remote_node_id, remote_max_server_addr)
                     .await;
-
-                self.probe_service
-                    .register_peer(remote_node_id, remote_max_server_addr);
             }
 
             ControllerToDataplane::SetLinkRate { node_id, spec } => {
