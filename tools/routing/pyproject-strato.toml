@@ -1,0 +1,10 @@
+[project]
+name = "strato-waterfilling"
+version = "0.1.0"
+description = "A simple waterfilling algorithm for adjusting routes in Strato at runtime."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg2-binary",
+    "numpy"
+]

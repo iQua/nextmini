@@ -1,0 +1,8 @@
+regions:
+  - nyc1: 1
+  - sfo3: 1
+  - tor1: 2
+  
+droplet_size: s-1vcpu-1gb
+controller_addr: "ws://127.0.0.1:3000"
+do_ssh_key_name: "mac"

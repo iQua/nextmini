@@ -1,0 +1,7 @@
+regions:
+  - nyc1: 1
+  - sfo3: 1
+  - tor1: 2
+  
+droplet_size: s-1vcpu-1gb
+controller_addr: "ws://165.227.32.210:3000"

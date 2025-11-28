@@ -1,0 +1,12 @@
+[project]
+name = "nextmini-routing"
+version = "2.0.0"
+description = "Dynamic routing algorithms for Nextmini"
+readme = "README.md"
+requires-python = "==3.13.*"
+dependencies = [
+    "psycopg2-binary>=2.9.0",
+]
+
+[tool.uv]
+dev-dependencies = []
