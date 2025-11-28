@@ -4,8 +4,6 @@ use std::time::Instant;
 
 use ahash::AHashMap;
 use chrono::Utc;
-use std::sync::Arc;
-
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::time::{Duration, Interval, interval};
@@ -47,6 +45,7 @@ impl ProbeServiceHandle {
             pending: HashMap::new(),
             rtts: HashMap::new(),
             sent: HashMap::new(),
+            sent_bytes: HashMap::new(),
             recv_bytes: HashMap::new(),
             seq: 1,
             interval: interval(Duration::from_secs(probe_interval_secs.max(1))),
@@ -76,6 +75,7 @@ struct ProbeService {
     pending: HashMap<u64, (NodeId, Instant)>,
     rtts: HashMap<NodeId, Vec<f64>>,
     sent: HashMap<NodeId, u32>,
+    sent_bytes: HashMap<NodeId, usize>,
     recv_bytes: HashMap<NodeId, usize>,
     seq: u64,
     interval: Interval,
@@ -93,7 +93,6 @@ impl ProbeService {
                 return;
             }
         };
-        let socket = Arc::new(socket);
 
         info!(
             "ProbeService started on port {} for node {}.",
@@ -125,9 +124,10 @@ impl ProbeService {
         }
     }
 
-    async fn start_round(&mut self, socket: &Arc<UdpSocket>) {
+    async fn start_round(&mut self, socket: &UdpSocket) {
         self.rtts.clear();
         self.sent.clear();
+        self.sent_bytes.clear();
         self.recv_bytes.clear();
         self.pending.clear();
 
@@ -145,6 +145,8 @@ impl ProbeService {
                             peer_id, dest, e
                         );
                         self.pending.remove(&seq);
+                    } else {
+                        *self.sent_bytes.entry(peer_id).or_insert(0) += payload.len();
                     }
                 }
             }
@@ -154,37 +156,48 @@ impl ProbeService {
             // Active throughput burst: small capped-size burst per peer
             let burst_payload = vec![0u8; 1200];
             let burst_duration = Duration::from_millis(500);
-            for (_peer_id, addr) in self.peers.clone() {
+            let burst_end = Instant::now() + burst_duration;
+            for (peer_id, addr) in self.peers.clone() {
                 if let Some(dest) = self.addr_with_probe_port(&addr) {
-                    let sock = socket.clone();
-                    let seq = self.next_seq();
-                    let payload = self.build_payload_with_data(seq, &burst_payload);
-                    tokio::spawn(async move {
-                        let burst_end = Instant::now() + burst_duration;
-                        while Instant::now() < burst_end {
-                            if sock.send_to(&payload, dest).await.is_err() {
+                    let mut sent_bytes = 0usize;
+                    while Instant::now() < burst_end {
+                        let seq = self.next_seq();
+                        let payload = self.build_payload_with_data(seq, &burst_payload);
+                        match socket.send_to(&payload, dest).await {
+                            Ok(n) => {
+                                sent_bytes += n;
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "ProbeService burst send failure to {} ({}): {}",
+                                    peer_id, dest, e
+                                );
                                 break;
                             }
-                            tokio::time::sleep(Duration::from_millis(5)).await;
                         }
-                    });
+                        // Light pacing to avoid hogging bandwidth
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    if sent_bytes > 0 {
+                        self.sent_bytes
+                            .entry(peer_id)
+                            .and_modify(|b| *b += sent_bytes)
+                            .or_insert(sent_bytes);
+                    }
                 }
             }
         }
     }
 
     async fn finish_round(&mut self) {
+        if self.sent.is_empty() && self.recv_bytes.is_empty() {
+            return;
+        }
+
         let mut results = Vec::new();
         let now = Utc::now();
 
-        let mut peer_ids = Vec::new();
-        peer_ids.extend(self.sent.keys().copied());
-        peer_ids.extend(self.recv_bytes.keys().copied());
-        peer_ids.sort();
-        peer_ids.dedup();
-
-        for peer_id in peer_ids {
-            let sent = self.sent.remove(&peer_id).unwrap_or(0);
+        for (peer_id, sent) in self.sent.drain() {
             let received = self.rtts.get(&peer_id).map(|v| v.len()).unwrap_or(0) as u32;
             let loss = if sent > 0 {
                 Some(((sent.saturating_sub(received)) as f64 / sent as f64) * 100.0)
@@ -200,11 +213,17 @@ impl ProbeService {
                 }
             });
 
-            let mbps = self.recv_bytes.get(&peer_id).map(|recv_b| {
-                // Use received bytes over the burst duration (fixed at 0.5s).
-                let burst_secs = 0.5f64;
-                (recv_b.to_owned() as f64 * 8.0) / burst_secs / 1_000_000.0
-            });
+            let mbps = match (
+                self.sent_bytes.get(&peer_id).copied(),
+                self.recv_bytes.get(&peer_id).copied(),
+            ) {
+                (Some(sent_b), Some(recv_b)) if sent_b > 0 && received > 0 => {
+                    // Use received bytes over the burst duration to avoid counting loss twice.
+                    let burst_secs = 0.5f64;
+                    Some((recv_b as f64 * 8.0) / burst_secs / 1_000_000.0)
+                }
+                _ => None,
+            };
 
             results.push(LinkProbeResult {
                 src_node_id: self.local_node_id,
@@ -222,7 +241,7 @@ impl ProbeService {
         }
     }
 
-    async fn handle_packet(&mut self, socket: &Arc<UdpSocket>, packet: &[u8], addr: SocketAddr) {
+    async fn handle_packet(&mut self, socket: &UdpSocket, packet: &[u8], addr: SocketAddr) {
         if packet.len() < 2 || &packet[..2] != PROBE_MAGIC {
             return;
         }
@@ -242,11 +261,6 @@ impl ProbeService {
             if let Some((peer_id, sent_at)) = self.pending.remove(&seq) {
                 let rtt = sent_at.elapsed().as_secs_f64() * 1000.0;
                 self.rtts.entry(peer_id).or_default().push(rtt);
-                self.recv_bytes
-                    .entry(peer_id)
-                    .and_modify(|b| *b += packet.len())
-                    .or_insert(packet.len());
-            } else if let Some(peer_id) = self.peer_for_addr(&addr) {
                 self.recv_bytes
                     .entry(peer_id)
                     .and_modify(|b| *b += packet.len())
@@ -275,14 +289,6 @@ impl ProbeService {
         let header_len = 14;
         payload[header_len..header_len + data.len()].copy_from_slice(data);
         payload
-    }
-
-    fn peer_for_addr(&self, addr: &SocketAddr) -> Option<NodeId> {
-        self.peers.iter().find_map(|(id, stored)| {
-            self.addr_with_probe_port(stored)
-                .filter(|a| a.ip() == addr.ip())
-                .map(|_| *id)
-        })
     }
 
     fn next_seq(&mut self) -> u64 {
