@@ -273,13 +273,12 @@ impl Dataplane {
         {
             if let Some(handle) = &self.reliable_runtime {
                 let runtime_config = &self.cfg.reliable_runtime_config;
-                if let Some(mode) = congestion.as_deref() {
-                    if mode != "static" {
+                if let Some(mode) = congestion.as_deref()
+                    && mode != "static" {
                         return Err(PyRuntimeError::new_err(format!(
                             "invalid congestion control: {mode}"
                         )));
                     }
-                }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 if session_id.is_none() {
@@ -341,11 +340,10 @@ impl Dataplane {
             if let Some(handle) = &self.reliable_runtime {
                 let runtime_config = &self.cfg.reliable_runtime_config;
                 let mut resolved_sid = session_id;
-                if resolved_sid.is_none() {
-                    if let Some(known) = self.lookup_session(ip, source_node_id) {
+                if resolved_sid.is_none()
+                    && let Some(known) = self.lookup_session(ip, source_node_id) {
                         resolved_sid = Some(known);
                     }
-                }
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = session::runtime::CommonConfig {
@@ -712,11 +710,10 @@ impl Dataplane {
 
         // If not found in stash, poll the channel
         loop {
-            if let Some(dl) = deadline {
-                if Instant::now() >= dl {
+            if let Some(dl) = deadline
+                && Instant::now() >= dl {
                     return None;
                 }
-            }
 
             let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
             let event = self.recv_event_with_timeout(remaining)?;
