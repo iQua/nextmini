@@ -818,8 +818,6 @@ impl Dataplane {
         Ok(matched.is_some())
     }
 
-    // ─── Network Info Methods (for throughput testing) ───────────────────────────
-
     /// Returns the local node ID.
     #[getter]
     fn node_id(&self) -> usize {
