@@ -489,17 +489,22 @@ impl Dataplane {
         {
             if let Some(handle) = &self.reliable_runtime {
                 let fut = handle.wait_completion(session_id);
-                if let Some(ms) = timeout_ms {
-                    let ok = rt().block_on(async move {
+                let ok = if let Some(ms) = timeout_ms {
+                    rt().block_on(async move {
                         tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
                             .await
                             .unwrap_or(false)
-                    });
-                    return Ok(ok);
+                    })
                 } else {
-                    let ok = rt().block_on(fut);
-                    return Ok(ok);
-                }
+                    rt().block_on(fut)
+                };
+
+                // Proactively stop the session to clean up runtime state (tasks, inputs).
+                // This prevents stale senders/receivers from holding onto session IDs that
+                // may be reused by subsequent reliable transfers (e.g., RL rollouts).
+                handle.stop(session_id);
+
+                return Ok(ok);
             }
         }
         // feature disabled ⇒ nothing to wait for
@@ -520,15 +525,19 @@ impl Dataplane {
                 let handle = handle.clone();
                 return future_into_py(py, async move {
                     let fut = handle.wait_completion(session_id);
-                    if let Some(ms) = timeout_ms {
-                        let ok = tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+                    let ok = if let Some(ms) = timeout_ms {
+                        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
                             .await
-                            .unwrap_or(false);
-                        Ok(ok)
+                            .unwrap_or(false)
                     } else {
-                        let ok = fut.await;
-                        Ok(ok)
-                    }
+                        fut.await
+                    };
+
+                    // After completion, stop the session to drop its task and inputs.
+                    // Safe to call even if the session was already cleaned up.
+                    handle.stop(session_id);
+
+                    Ok(ok)
                 });
             }
         }
