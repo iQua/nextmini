@@ -285,7 +285,9 @@ impl Dataplane {
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 if session_id.is_none() {
-                    sid = rt().block_on(handle.allocate_session_id());
+                    let local_seq = sid & 0x0000_FFFF_FFFF_FFFF;
+                    let node_part = ((self.cfg.node_id as u64) & 0x7FFF) << 48;
+                    sid = node_part | local_seq;
                 }
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
