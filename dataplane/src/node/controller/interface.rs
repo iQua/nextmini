@@ -635,6 +635,7 @@ impl ControllerInterfaceHandle {
         let config = LocalConfig::default();
         let processors = ProcessorHandle::new(config.clone());
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        #[cfg(feature = "python-extension")]
         let python_interface = Arc::new(Mutex::new(None));
 
         (
@@ -642,6 +643,7 @@ impl ControllerInterfaceHandle {
                 config,
                 processors,
                 northbridge_sender,
+                #[cfg(feature = "python-extension")]
                 python_interface,
             },
             northbridge_receiver,
