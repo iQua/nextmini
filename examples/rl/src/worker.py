@@ -62,6 +62,7 @@ class Worker:
         self.trainer_node_id = trainer_node_id
         self.local_port = local_port
         self.trainer_port = trainer_port
+        self.trainer_user_ip = None
         
         # Wait for routes to be established
         print(f"Waiting for routes to be established...", flush=True)
@@ -101,6 +102,12 @@ class Worker:
             if not msg:
                 print("Trainer disconnected.", flush=True)
                 break
+            
+            if msg["type"] == "HANDSHAKE_ACK":
+                # Trainer provides its user-space IP so we can target reliable unicast.
+                self.trainer_user_ip = msg.get("trainer_user_ip")
+                print(f"Worker {self.rank} received HANDSHAKE_ACK. Trainer user IP: {self.trainer_user_ip}", flush=True)
+                continue
             
             if msg["type"] == "WEIGHT_METADATA":
                 # Multicast weight synchronization
@@ -183,7 +190,7 @@ class Worker:
                 prompts = msg["prompts"]
                 
                 results = []
-                print(f"Generating rollouts for {len(prompts)} prompts...")
+                print(f"Generating rollouts for {len(prompts)} prompts...", flush=True)
                 
                 # Offload blocking generation to thread executor to not block heartbeat/other async tasks
                 # (Though here we are just waiting for result anyway, so running inline is okay for now)
@@ -212,12 +219,46 @@ class Worker:
                         "completions": texts
                     })
                 
-                # Add timestamp for network transmission measurement
+                # Serialize rollout results
+                serialized = pickle.dumps({
+                    "type": "ROLLOUT_RESULT",
+                    "results": results,
+                }, protocol=pickle.HIGHEST_PROTOCOL)
+                size = len(serialized)
+
+                # 1) Send small metadata so trainer can allocate receiver
+                self.send_to_trainer({
+                    "type": "ROLLOUT_METADATA",
+                    "size": size,
+                })
+
+                # 2) Send data reliably via ReliableRuntime using trainer user-space IP
+                if not self.trainer_user_ip:
+                    print(f"Worker {self.rank}: trainer_user_ip not set, cannot send reliable rollout.", flush=True)
+                    continue
+
+                view = nm.PacketView(serialized)
+                try:
+                    sid = self.dataplane.send_data(
+                        self.trainer_user_ip,
+                        [self.trainer_node_id],
+                        view,
+                        chunk_size=config.CHUNK_SIZE,
+                        src_port=self.local_port,
+                        dst_port=self.trainer_port,
+                    )
+                    ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                except Exception as e:
+                    print(f"Worker {self.rank}: error sending reliable rollout data: {e}", flush=True)
+                    continue
+
+                # 3) Send a tiny control message with timestamp for network timing
                 send_time = time.time()
                 self.send_to_trainer({
                     "type": "ROLLOUT_RESULT",
-                    "results": results,
-                    "send_timestamp": send_time
+                    "results": [],
+                    "send_timestamp": send_time,
+                    "reliable_ok": ok,
                 })
 
 

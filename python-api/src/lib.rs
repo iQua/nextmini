@@ -285,7 +285,9 @@ impl Dataplane {
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 if session_id.is_none() {
-                    sid = rt().block_on(handle.allocate_session_id());
+                    let local_seq = sid & 0x0000_FFFF_FFFF_FFFF;
+                    let node_part = ((self.cfg.node_id as u64) & 0x7FFF) << 48;
+                    sid = node_part | local_seq;
                 }
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
@@ -489,17 +491,22 @@ impl Dataplane {
         {
             if let Some(handle) = &self.reliable_runtime {
                 let fut = handle.wait_completion(session_id);
-                if let Some(ms) = timeout_ms {
-                    let ok = rt().block_on(async move {
+                let ok = if let Some(ms) = timeout_ms {
+                    rt().block_on(async move {
                         tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
                             .await
                             .unwrap_or(false)
-                    });
-                    return Ok(ok);
+                    })
                 } else {
-                    let ok = rt().block_on(fut);
-                    return Ok(ok);
-                }
+                    rt().block_on(fut)
+                };
+
+                // Proactively stop the session to clean up runtime state (tasks, inputs).
+                // This prevents stale senders/receivers from holding onto session IDs that
+                // may be reused by subsequent reliable transfers (e.g., RL rollouts).
+                handle.stop(session_id);
+
+                return Ok(ok);
             }
         }
         // feature disabled ⇒ nothing to wait for
@@ -520,15 +527,19 @@ impl Dataplane {
                 let handle = handle.clone();
                 return future_into_py(py, async move {
                     let fut = handle.wait_completion(session_id);
-                    if let Some(ms) = timeout_ms {
-                        let ok = tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+                    let ok = if let Some(ms) = timeout_ms {
+                        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
                             .await
-                            .unwrap_or(false);
-                        Ok(ok)
+                            .unwrap_or(false)
                     } else {
-                        let ok = fut.await;
-                        Ok(ok)
-                    }
+                        fut.await
+                    };
+
+                    // After completion, stop the session to drop its task and inputs.
+                    // Safe to call even if the session was already cleaned up.
+                    handle.stop(session_id);
+
+                    Ok(ok)
                 });
             }
         }
@@ -816,6 +827,84 @@ impl Dataplane {
         });
 
         Ok(matched.is_some())
+    }
+
+    /// Returns the local node ID.
+    #[getter]
+    fn node_id(&self) -> usize {
+        self.cfg.node_id
+    }
+
+    /// Returns the private (underlay) network address of this node.
+    #[getter]
+    fn private_network_addr(&self) -> String {
+        self.cfg.private_network_addr.clone()
+    }
+
+    /// Returns the public network address of this node.
+    #[getter]
+    fn public_network_addr(&self) -> String {
+        self.cfg.public_network_addr.clone()
+    }
+
+    /// Returns the private network port.
+    #[getter]
+    fn private_network_port(&self) -> String {
+        self.cfg.private_network_port.clone()
+    }
+
+    /// Returns the public network port.
+    #[getter]
+    fn public_network_port(&self) -> String {
+        self.cfg.public_network_port.clone()
+    }
+
+    /// Returns the private network interface name.
+    #[getter]
+    fn private_network_interface(&self) -> String {
+        self.cfg.private_network_interface.clone()
+    }
+
+    /// Returns the controller address.
+    #[getter]
+    fn controller_addr(&self) -> String {
+        self.cfg.controller_addr.clone()
+    }
+
+    /// Returns a dictionary with all network configuration for this node.
+    /// Useful for throughput testing to get underlay addresses.
+    fn get_network_info(&self) -> PyResult<std::collections::HashMap<String, String>> {
+        let mut info = std::collections::HashMap::new();
+        info.insert("node_id".to_string(), self.cfg.node_id.to_string());
+        info.insert(
+            "private_network_addr".to_string(),
+            self.cfg.private_network_addr.clone(),
+        );
+        info.insert(
+            "public_network_addr".to_string(),
+            self.cfg.public_network_addr.clone(),
+        );
+        info.insert(
+            "private_network_port".to_string(),
+            self.cfg.private_network_port.clone(),
+        );
+        info.insert(
+            "public_network_port".to_string(),
+            self.cfg.public_network_port.clone(),
+        );
+        info.insert(
+            "private_network_interface".to_string(),
+            self.cfg.private_network_interface.clone(),
+        );
+        info.insert(
+            "controller_addr".to_string(),
+            self.cfg.controller_addr.clone(),
+        );
+        info.insert(
+            "user_space_address".to_string(),
+            self.cfg.user_space_address.to_string(),
+        );
+        Ok(info)
     }
 }
 

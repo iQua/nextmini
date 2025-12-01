@@ -51,6 +51,8 @@ class Trainer:
         self.config_path = config_path if config_path else config.TRAINER_CONFIG
         print(f"Initializing nextmini dataplane with config: {self.config_path}")
         self.dataplane = nm.Dataplane(self.config_path)
+        info = self.dataplane.get_network_info()
+        self.user_space_address = info["user_space_address"]
         
         # Setup connections to workers
         self.worker_connections = []
@@ -122,6 +124,11 @@ class Trainer:
                             print(f"Worker rank {rank} (node {config.WORKER_NODE_IDS[rank]}) identified", flush=True)
                             if rank != i:
                                 print(f"Warning: Worker {i} connection received handshake claiming rank {rank}", flush=True)
+                            self.send_to_worker(i, {
+                                "type": "HANDSHAKE_ACK",
+                                "rank": rank,
+                                "trainer_user_ip": self.user_space_address,
+                            })
                             connected_workers.add(rank)
                             found_new = True
                         else:
@@ -304,6 +311,7 @@ class Trainer:
         worker_results = [None] * len(self.worker_connections)
         rollout_times = [None] * len(self.worker_connections)
         network_times = [None] * len(self.worker_connections)
+        rollout_sizes = [0] * len(self.worker_connections)
         
         # ============ TIMING: Rollout Request Start ============
         rollout_start_time = time.time()
@@ -313,15 +321,66 @@ class Trainer:
                 worker_start = time.time()
                 self.send_to_worker(i, {"type": "ROLLOUT", "prompts": p_batch})
                 # Use a long timeout for rollouts as generation can be slow
-                result = self.recv_from_worker(i, timeout_ms=60000, expected_type="ROLLOUT_RESULT")
-                recv_time = time.time()
-                
+                meta = self.recv_from_worker(i, timeout_ms=60000, expected_type="ROLLOUT_METADATA")
+                if not meta:
+                    print(f"Trainer: did not receive ROLLOUT_METADATA from worker {i}", flush=True)
+                    return
+                size = meta.get("size")
+                if not isinstance(size, int) or size <= 0:
+                    print(f"Trainer: invalid ROLLOUT_METADATA from worker {i}: {meta}", flush=True)
+                    return
+
+                rollout_sizes[i] = size
+
+                worker_node_id = self.worker_connections[i]['node_id']
+                worker_port = self.worker_connections[i]['port']
+
+                # Instruct worker to start reliable rollout send only after we've
+                # registered the receiver side.
+                self.send_to_worker(i, {"type": "READY_FOR_ROLLOUT_DATA"})
+
+                try:
+                    sid = self.dataplane.receive_data(
+                        self.user_space_address,
+                        worker_node_id,
+                        expected_bytes=size,
+                        chunk_size=config.CHUNK_SIZE,
+                        src_port=worker_port,
+                        dst_port=config.TRAINER_PORT,
+                    )
+                    transfer_start = time.time()
+                    ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                    transfer_end = time.time()
+                except Exception as e:
+                    print(f"Trainer: error receiving reliable rollout data from worker {i}: {e}", flush=True)
+                    return
+
+                if not ok:
+                    print(f"Trainer: reliable rollout transfer from worker {i} did not complete successfully", flush=True)
+                    return
+
+                frozen = self.dataplane.get_data_buffer(sid)
+                payload_bytes = bytes(frozen.read())
+                try:
+                    result = pickle.loads(payload_bytes)
+                except Exception as e:
+                    print(f"Trainer: failed to decode rollout payload from worker {i}: {e}", flush=True)
+                    return
+
+                try:
+                    self.dataplane.forget_session(self.user_space_address, worker_node_id)
+                except Exception:
+                    pass
+
                 worker_results[i] = result
+
+                # End-to-end time for this worker (send ROLLOUT → payload received and decoded)
+                recv_time = transfer_end
                 rollout_times[i] = recv_time - worker_start
-                
-                # Calculate pure network transmission time if timestamp available
-                if result and "send_timestamp" in result:
-                    network_times[i] = recv_time - result["send_timestamp"]
+
+                # Pure network transfer time on the trainer side: duration of the
+                # reliable session after the first frame arrived.
+                network_times[i] = max(transfer_end - transfer_start, 0.0)
         
         threads = []
         for i, p_batch in enumerate(worker_batches):
@@ -385,10 +444,7 @@ class Trainer:
                               for s in all_samples for c in s["completions"]]) / (len(all_samples) * config.GRPO_GROUP_SIZE)
         
         # Calculate rollout data size and network metrics
-        total_rollout_bytes = sum(
-            len(pickle.dumps(res, protocol=pickle.HIGHEST_PROTOCOL))
-            for res in worker_results if res
-        )
+        total_rollout_bytes = sum(rollout_sizes)
         
         # Calculate pure network transmission metrics
         valid_network_times = [t for t in network_times if t is not None]
