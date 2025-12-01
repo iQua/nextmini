@@ -18,6 +18,7 @@ use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
@@ -37,7 +38,7 @@ use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
 
-pub use crate::buffer::FrozenBuffer;
+pub use crate::buffer::{PacketBuilder, PacketView};
 
 static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
@@ -78,18 +79,19 @@ impl PacketReceiver {
     #[pyo3(signature = (timeout_ms=None))]
     fn recv(&self, timeout_ms: Option<u64>, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         let inner = self.inner.clone();
-        let fut = async move {
-            match timeout_ms {
-                Some(ms) => tokio::time::timeout(
-                    std::time::Duration::from_millis(ms),
-                    inner.lock().await.recv(),
-                )
-                .await
-                .unwrap_or_default(),
-                None => inner.lock().await.recv().await,
-            }
-        };
-        let maybe_delivery = rt().block_on(fut);
+        let maybe_delivery = Python::detach(py, move || {
+            rt().block_on(async move {
+                match timeout_ms {
+                    Some(ms) => tokio::time::timeout(
+                        std::time::Duration::from_millis(ms),
+                        inner.lock().await.recv(),
+                    )
+                    .await
+                    .unwrap_or_default(),
+                    None => inner.lock().await.recv().await,
+                }
+            })
+        });
         maybe_delivery
             .map(|delivery| delivery_to_pyobject(py, delivery))
             .transpose()
@@ -117,7 +119,7 @@ fn delivery_to_pyobject(py: Python<'_>, delivery: PythonDelivery) -> PyResult<Py
 
 #[pyclass(name = "PayloadDelivery")]
 struct PyPayloadDelivery {
-    buffer: FrozenBuffer,
+    buffer: PacketView,
     flow_id: u128,
     src_ip: String,
     dst_ip: String,
@@ -136,7 +138,7 @@ impl PyPayloadDelivery {
     }
 
     #[getter]
-    fn frozen_payload(&self) -> FrozenBuffer {
+    fn frozen_payload(&self) -> PacketView {
         self.buffer.clone()
     }
 
@@ -184,7 +186,7 @@ impl PyPayloadDelivery {
 impl From<RustPayloadDelivery> for PyPayloadDelivery {
     fn from(payload: RustPayloadDelivery) -> Self {
         Self {
-            buffer: FrozenBuffer::from_bytes(payload.bytes),
+            buffer: PacketView::from_bytes(payload.bytes),
             flow_id: payload.flow_id,
             src_ip: payload.src_ip.to_string(),
             dst_ip: payload.dst_ip.to_string(),
@@ -241,7 +243,7 @@ impl Dataplane {
         &self,
         dest_ip: &str,
         receiver_ids: Vec<usize>,
-        buffer: FrozenBuffer,
+        buffer: PacketView,
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
@@ -383,6 +385,104 @@ impl Dataplane {
         Ok(sid)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
+    fn receive_data_async<'py>(
+        &self,
+        py: Python<'py>,
+        dest_ip: String,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        session_id: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        if expected_bytes == 0 {
+            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
+        }
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+
+        let sid = session_id.unwrap_or_else(next_py_message_id);
+
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.reliable_runtime {
+                let handle = handle.clone();
+                let runtime_config = self.cfg.reliable_runtime_config.clone();
+                let session_registry = self.session_registry.clone();
+                let buffer_registry = self.buffer_registry.clone();
+                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                let local_node_id = self.cfg.node_id;
+                let base_addr = self.cfg.user_space_base_addr;
+                let netmask = self.cfg.local_netmask;
+
+                return future_into_py(py, async move {
+                    let ip = parse_ipv4(&dest_ip)?;
+
+                    // Check if session ID is already known
+                    let mut resolved_sid = session_id;
+                    if resolved_sid.is_none() {
+                        let guard = session_registry.lock().await;
+                        if let Some(known) = guard.get(&(ip, source_node_id)) {
+                            resolved_sid = Some(*known);
+                        }
+                    }
+
+                    let cap = usize::try_from(expected_bytes).unwrap_or(0);
+                    let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
+                    let common = session::runtime::CommonConfig {
+                        session_id: resolved_sid.unwrap_or(0),
+                        dest_ip: ip,
+                        chunk_size,
+                        src_port: sp,
+                        dst_port: dp,
+                        data_bucket: runtime_config.data_bucket.clone(),
+                        local_node_id,
+                        user_space_base_addr: base_addr,
+                        local_netmask: netmask,
+                    };
+                    let cfg = session::runtime::ReceiverConfig {
+                        common,
+                        source_node_id,
+                        expected_bytes,
+                        sink_buffer: Some(sink_buf.clone()),
+                    };
+
+                    let started_sid = if resolved_sid.is_some() {
+                        handle.start_receiver(cfg).await
+                    } else {
+                        let key = session::runtime::PendingReceiverKey {
+                            dest_ip: ip,
+                            source_node_id,
+                        };
+                        handle.start_receiver_pending(cfg, key).await
+                    };
+
+                    {
+                        let mut guard = session_registry.lock().await;
+                        guard.insert((ip, source_node_id), started_sid);
+                    }
+                    {
+                        let mut guard = buffer_registry.lock().await;
+                        guard.insert(started_sid, sink_buf);
+                    }
+
+                    Ok(started_sid)
+                });
+            }
+        }
+
+        // Fallback if feature disabled (immediate return)
+        future_into_py(py, async move {
+            info!("receive_data_async: reliable runtime not available, returning immediate sid");
+            Ok(sid)
+        })
+    }
+
     #[pyo3(signature = (session_id, timeout_ms=None))]
     fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "python-extension")]
@@ -407,9 +507,41 @@ impl Dataplane {
         Ok(false)
     }
 
+    #[pyo3(signature = (session_id, timeout_ms=None))]
+    fn reliable_wait_async<'py>(
+        &self,
+        py: Python<'py>,
+        session_id: u64,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.reliable_runtime {
+                let handle = handle.clone();
+                return future_into_py(py, async move {
+                    let fut = handle.wait_completion(session_id);
+                    if let Some(ms) = timeout_ms {
+                        let ok = tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+                            .await
+                            .unwrap_or(false);
+                        Ok(ok)
+                    } else {
+                        let ok = fut.await;
+                        Ok(ok)
+                    }
+                });
+            }
+        }
+        // Fallback
+        future_into_py(py, async move {
+            info!("reliable_wait_async: reliable runtime not available, returning false");
+            Ok(false)
+        })
+    }
+
     #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id, consume=true))]
-    fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<FrozenBuffer> {
+    fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<PacketView> {
         let buf_arc = {
             let guard = rt().block_on(self.buffer_registry.lock());
             guard
@@ -432,7 +564,7 @@ impl Dataplane {
             guard.remove(&session_id);
         }
 
-        Ok(FrozenBuffer::from_bytes(bytes))
+        Ok(PacketView::from_bytes(bytes))
     }
 
     #[cfg(feature = "python-extension")]
@@ -460,6 +592,22 @@ impl Dataplane {
         let session_id = self.lookup_session(ip, source_node_id);
 
         Ok(session_id)
+    }
+
+    #[cfg(feature = "python-extension")]
+    #[pyo3(signature = (dest_ip, source_node_id))]
+    fn forget_session(&self, dest_ip: &str, source_node_id: usize) -> PyResult<()> {
+        let ip = parse_ipv4(dest_ip)?;
+        let mut guard = rt().block_on(self.session_registry.lock());
+        guard.remove(&(ip, source_node_id));
+        Ok(())
+    }
+
+    #[cfg(not(feature = "python-extension"))]
+    #[pyo3(signature = (dest_ip, source_node_id))]
+    fn forget_session(&self, dest_ip: &str, source_node_id: usize) -> PyResult<()> {
+        let _ = (dest_ip, source_node_id);
+        Ok(())
     }
 
     #[new]
@@ -584,7 +732,7 @@ impl Dataplane {
     fn send_to_node(
         &self,
         dst_node_id: usize,
-        frozen: FrozenBuffer,
+        frozen: PacketView,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
@@ -764,7 +912,8 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dataplane>()?;
     m.add_class::<PacketReceiver>()?;
     m.add_class::<PyPayloadDelivery>()?;
-    m.add_class::<FrozenBuffer>()?;
+    m.add_class::<PacketView>()?;
+    m.add_class::<PacketBuilder>()?;
 
     Ok(())
 }

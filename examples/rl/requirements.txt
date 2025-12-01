@@ -1,0 +1,11 @@
+torch>=2.8.0
+transformers>=4.57.0
+datasets>=4.4.0
+accelerate>=1.10.0
+numpy>=1.26.0,<2.0.0
+tqdm>=4.67.0
+
+# nextmini_py must be built and installed separately:
+# cd ../../python-api
+# maturin build --release -F python-extension
+# pip install ../target/wheels/nextmini_py-*.whl

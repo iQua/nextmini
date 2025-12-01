@@ -1,0 +1,173 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: rl-postgres
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      rl_net:
+        ipv4_address: 172.31.2.2
+
+  controller:
+    build:
+      context: ../../
+      dockerfile: controller/Dockerfile
+    image: nextmini_controller
+    container_name: rl-controller
+    hostname: controller
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - ../../:/workspace:cached
+      - ./configs-docker/controller-config.toml:/var/nextmini/config.toml
+    working_dir: /var/nextmini
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+    ports:
+      - "3000:3000"
+    networks:
+      rl_net:
+        ipv4_address: 172.31.2.3
+
+  trainer:
+    build:
+      context: ../../
+      dockerfile: examples/rl/Dockerfile
+    image: nextmini_rl_python
+    container_name: rl-trainer
+    hostname: trainer
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      controller:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/trainer_ready"]
+      interval: 3s
+      timeout: 1s
+      retries: 30
+      start_period: 60s
+    volumes:
+      - ../../:/workspace:cached
+      - ./output:/workspace/examples/rl/output
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      CUDA_VISIBLE_DEVICES: "0"
+    command:
+      - bash
+      - -lc
+      - >
+        examples/rl/scripts/run_rl_node.sh trainer
+        examples/rl/configs-docker/trainer-config.toml
+    networks:
+      rl_net:
+        ipv4_address: 172.31.2.10
+
+  worker_0:
+    build:
+      context: ../../
+      dockerfile: examples/rl/Dockerfile
+    image: nextmini_rl_python
+    container_name: rl-worker-0
+    hostname: worker-0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      controller:
+        condition: service_started
+      trainer:
+        condition: service_healthy
+    volumes:
+      - ../../:/workspace:cached
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      CUDA_VISIBLE_DEVICES: "1"
+    command:
+      - bash
+      - -lc
+      - >
+        examples/rl/scripts/run_rl_node.sh worker
+        examples/rl/configs-docker/worker0-config.toml
+        --rank 0
+        --gpu 0
+    networks:
+      rl_net:
+        ipv4_address: 172.31.2.11
+
+  worker_1:
+    build:
+      context: ../../
+      dockerfile: examples/rl/Dockerfile
+    image: nextmini_rl_python
+    container_name: rl-worker-1
+    hostname: worker-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      controller:
+        condition: service_started
+      trainer:
+        condition: service_healthy
+    volumes:
+      - ../../:/workspace:cached
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      CUDA_VISIBLE_DEVICES: "2"
+    command:
+      - bash
+      - -lc
+      - >
+        examples/rl/scripts/run_rl_node.sh worker
+        examples/rl/configs-docker/worker1-config.toml
+        --rank 1
+        --gpu 0
+    networks:
+      rl_net:
+        ipv4_address: 172.31.2.12
+
+networks:
+  rl_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.2.0/24

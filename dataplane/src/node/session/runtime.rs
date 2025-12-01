@@ -307,6 +307,7 @@ impl ReliableRuntime {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 
+        // subscribes to topology readiness if not already ready
         if self.topology_ready {
             cfg.topology_ready = None;
         } else {
@@ -316,8 +317,8 @@ impl ReliableRuntime {
         let (tx, rx) = mpsc::channel(1024);
         self.inputs.insert(sid, tx);
 
-        let handle = tokio::spawn(sender::run(cfg, rx, processors));
-        self.tasks.insert(sid, handle);
+        let sender_handle = tokio::spawn(sender::run(cfg, rx, processors));
+        self.tasks.insert(sid, sender_handle);
 
         sid
     }
@@ -330,8 +331,8 @@ impl ReliableRuntime {
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
         self.inputs.insert(sid, tx);
 
-        let handle = tokio::spawn(receiver::run(cfg, rx, processors));
-        self.tasks.insert(sid, handle);
+        let receiver_handle = tokio::spawn(receiver::run(cfg, rx, processors));
+        self.tasks.insert(sid, receiver_handle);
 
         sid
     }
