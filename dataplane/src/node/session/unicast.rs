@@ -264,8 +264,13 @@ fn flow_id_for_unicast(cfg: &LocalConfig, flow: &Flow, src_port: u16, dst_port: 
         .dst_node_id
         .ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
 
+    // Encode controller_id when present to avoid collisions between multiple
+    // concurrent flows on the same (src,dst) pair under reliable_unicast.
+    let controller_bits = flow.controller_id.map(|cid| cid as u32).unwrap_or(0);
+
     ((u32::from(src_ip) as u128) << 96)
         | ((u32::from(dst_ip) as u128) << 64)
         | ((src_port as u128) << 48)
         | ((dst_port as u128) << 32)
+        | (controller_bits as u128)
 }

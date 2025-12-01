@@ -106,7 +106,11 @@ impl FlowIdExt for FlowId {
         let new_src_port = dst_port as u128;
         let new_dst_port = src_port as u128;
 
-        (new_src_ip << 96) | (new_dst_ip << 64) | (new_src_port << 48) | (new_dst_port << 32)
+        (new_src_ip << 96)
+            | (new_dst_ip << 64)
+            | (new_src_port << 48)
+            | (new_dst_port << 32)
+            | (self & 0xFFFFFFFF)
     }
 
     /// Computes the hash value using Jump Hash, a consistent hash function

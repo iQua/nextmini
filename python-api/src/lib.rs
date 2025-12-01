@@ -4,8 +4,8 @@ mod buffer;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -16,10 +16,10 @@ use pyo3::prelude::PyModuleMethods;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule};
 use pyo3_async_runtimes::tokio::future_into_py;
-use tokio::sync::mpsc;
 use tokio::sync::Mutex;
-use tracing_subscriber::EnvFilter;
+use tokio::sync::mpsc;
 use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 use nextmini::node::conductor::Conductor;
 use nextmini::node::config::LocalConfig;
@@ -113,7 +113,7 @@ impl PacketReceiver {
 fn delivery_to_pyobject(py: Python<'_>, delivery: PythonDelivery) -> PyResult<Py<PyAny>> {
     // PythonDelivery is now just PayloadDelivery (type alias)
     let obj = Py::new(py, PyPayloadDelivery::from(delivery))?;
-    
+
     Ok(obj.into_pyobject(py)?.unbind().into())
 }
 
@@ -276,11 +276,12 @@ impl Dataplane {
             if let Some(handle) = &self.reliable_runtime {
                 let runtime_config = &self.cfg.reliable_runtime_config;
                 if let Some(mode) = congestion.as_deref()
-                    && mode != "static" {
-                        return Err(PyRuntimeError::new_err(format!(
-                            "invalid congestion control: {mode}"
-                        )));
-                    }
+                    && mode != "static"
+                {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "invalid congestion control: {mode}"
+                    )));
+                }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 if session_id.is_none() {
@@ -343,9 +344,10 @@ impl Dataplane {
                 let runtime_config = &self.cfg.reliable_runtime_config;
                 let mut resolved_sid = session_id;
                 if resolved_sid.is_none()
-                    && let Some(known) = self.lookup_session(ip, source_node_id) {
-                        resolved_sid = Some(known);
-                    }
+                    && let Some(known) = self.lookup_session(ip, source_node_id)
+                {
+                    resolved_sid = Some(known);
+                }
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = session::runtime::CommonConfig {
@@ -475,9 +477,9 @@ impl Dataplane {
         }
 
         // Fallback if feature disabled (immediate return)
-        future_into_py(py, async move { 
+        future_into_py(py, async move {
             info!("receive_data_async: reliable runtime not available, returning immediate sid");
-            Ok(sid) 
+            Ok(sid)
         })
     }
 
@@ -531,9 +533,9 @@ impl Dataplane {
             }
         }
         // Fallback
-        future_into_py(py, async move { 
+        future_into_py(py, async move {
             info!("reliable_wait_async: reliable runtime not available, returning false");
-            Ok(false) 
+            Ok(false)
         })
     }
 
@@ -859,9 +861,10 @@ impl Dataplane {
         // If not found in stash, poll the channel
         loop {
             if let Some(dl) = deadline
-                && Instant::now() >= dl {
-                    return None;
-                }
+                && Instant::now() >= dl
+            {
+                return None;
+            }
 
             let remaining = deadline.map(|dl| dl.saturating_duration_since(Instant::now()));
             let event = self.recv_event_with_timeout(remaining)?;
@@ -911,7 +914,7 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPayloadDelivery>()?;
     m.add_class::<PacketView>()?;
     m.add_class::<PacketBuilder>()?;
-    
+
     Ok(())
 }
 
