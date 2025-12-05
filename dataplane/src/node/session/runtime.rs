@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -160,7 +159,7 @@ struct ReliableRuntime {
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
-    pending: AHashMap<PendingReceiverKey, VecDeque<PendingReceiver>>,
+    pending: AHashMap<PendingReceiverKey, PendingReceiver>,
     topology_ready_tx: watch::Sender<bool>,
     topology_ready: bool,
     command_rx: mpsc::UnboundedReceiver<Command>,
@@ -168,10 +167,13 @@ struct ReliableRuntime {
 
 /// Key that allows a receiver to be created speculatively and paired once the
 /// control plane decides which session ID to use for a (destination, source) tuple.
+/// Now includes session_id to ensure deterministic matching even when multiple flows
+/// share the same (dest_ip, source_node_id) pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PendingReceiverKey {
     pub dest_ip: Ipv4Addr,
     pub source_node_id: usize,
+    pub session_id: SessionId,
 }
 
 /// Wrapper that stores the receiver config until a session ID is assigned.
@@ -244,13 +246,11 @@ impl ReliableRuntime {
         let (sender, pending_reply) = if let Some(tx) = self.input_sender(session) {
             (Some(tx), None)
         } else if let (Some(dest_ip), Some(source_node_id)) = (dest_ip, source_node_id) {
-            if let Some((cfg, reply)) = self.adopt_pending_receiver(
-                PendingReceiverKey {
-                    dest_ip,
-                    source_node_id,
-                },
-                session,
-            ) {
+            if let Some((cfg, reply)) = self.adopt_pending_receiver(PendingReceiverKey {
+                dest_ip,
+                source_node_id,
+                session_id: session,
+            }) {
                 let _ = self.spawn_receiver(cfg);
 
                 (self.input_sender(session), Some(reply))
@@ -371,28 +371,20 @@ impl ReliableRuntime {
         cfg: ReceiverConfig,
         reply: oneshot::Sender<SessionId>,
     ) {
-        // multiple listeners may race to attach; keep them queued until the
-        // control plane picks a session ID
-        self.pending
-            .entry(key)
-            .or_default()
-            .push_back(PendingReceiver { cfg, reply });
+        // With session_id in the key, each receiver has a unique key.
+        // Store directly in the HashMap.
+        self.pending.insert(key, PendingReceiver { cfg, reply });
     }
 
-    /// Pairs the next pending receiver for a (destination, source) tuple with the
-    /// concrete session ID chosen by the control plane.
+    /// Pairs a pending receiver with its session ID.
+    /// The session_id is now part of the key, so we can directly lookup and remove.
     fn adopt_pending_receiver(
         &mut self,
         key: PendingReceiverKey,
-        session_id: SessionId,
     ) -> Option<(ReceiverConfig, oneshot::Sender<SessionId>)> {
-        let queue = self.pending.get_mut(&key)?;
-        let mut pending = queue.pop_front()?;
-        pending.cfg.common.session_id = session_id;
-
-        if queue.is_empty() {
-            self.pending.remove(&key);
-        }
+        let mut pending = self.pending.remove(&key)?;
+        // session_id is already in the key, so assign it to the config
+        pending.cfg.common.session_id = key.session_id;
 
         Some((pending.cfg, pending.reply))
     }

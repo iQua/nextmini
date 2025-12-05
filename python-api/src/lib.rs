@@ -375,6 +375,7 @@ impl Dataplane {
                     let key = session::runtime::PendingReceiverKey {
                         dest_ip: ip,
                         source_node_id,
+                        session_id: sid,
                     };
                     rt().block_on(handle.start_receiver_pending(cfg, key))
                 };
@@ -460,6 +461,7 @@ impl Dataplane {
                         let key = session::runtime::PendingReceiverKey {
                             dest_ip: ip,
                             source_node_id,
+                            session_id: sid,
                         };
                         handle.start_receiver_pending(cfg, key).await
                     };
