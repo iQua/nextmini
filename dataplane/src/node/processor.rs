@@ -58,6 +58,7 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    SetRouteForFlow(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
@@ -275,6 +276,18 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the SetFlowWeight message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    pub fn set_route_for_flow(&self, flow_id: FlowId, route_id: usize) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::SetRouteForFlow(flow_id, route_id))
+        {
+            error!(
+                "Error sending the SetRouteForFlow message to the processors: {}",
                 e
             );
         };
@@ -833,6 +846,9 @@ impl Processor {
                 for (_, scheduler) in self.schedulers.iter_mut() {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
+            }
+            ProcessorMessage::SetRouteForFlow(flow_id, route_id) => {
+                self.routing_table.bind_route_for_flow(flow_id, route_id);
             }
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);

@@ -35,6 +35,7 @@ pub struct DbFlow {
     pub flow_len_duration: Option<f64>,
     pub flow_rate: Option<i32>,
     pub flow_weight: Option<i32>,
+    pub route_id: Option<i32>,
     #[allow(dead_code)]
     pub is_finished: bool,
 }

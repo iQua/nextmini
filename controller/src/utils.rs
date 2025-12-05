@@ -107,10 +107,19 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> Con
             continue;
         }
 
+        // Log a warning if route_id is specified
+        if let Some(rid) = flow.route_id {
+            debug!(
+                "Flow {} ({} -> {}) has explicit route_id {}",
+                flow.id, flow.src_node_id, flow.dst_node_id, rid
+            );
+        }
+
         built.push(Flow {
             controller_id: Some(flow.id),
             src_node_id: flow.src_node_id as usize,
             dst_node_id: flow.dst_node_id as usize,
+            route_id: flow.route_id.map(|r| r as usize),
             flow_spec,
         });
     }

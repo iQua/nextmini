@@ -66,6 +66,7 @@ async fn create_db(pool: &Pool<Postgres>) {
             flow_len_duration DOUBLE PRECISION,
             flow_rate INTEGER,
             flow_weight INTEGER,
+            route_id INTEGER,
             start_time BIGINT,
             finish_time BIGINT,
             is_finished BOOLEAN NOT NULL DEFAULT FALSE
@@ -76,6 +77,18 @@ async fn create_db(pool: &Pool<Postgres>) {
     .await
     {
         error!("Failed to create flows table: {}", e);
+    }
+
+    if let Err(e) = sqlx::query(
+        r#"
+        ALTER TABLE flows
+        ADD COLUMN IF NOT EXISTS route_id INTEGER
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to ensure route_id column on flows table: {}", e);
     }
 
     // route_id: Unique identifier for the route, automatically assigned by controller.
@@ -96,6 +109,33 @@ async fn create_db(pool: &Pool<Postgres>) {
     .await
     {
         error!("Failed to create routes table: {}", e);
+    }
+
+    // Add foreign key constraint for flows.route_id -> routes.route_id
+    // This ensures data integrity: flows can only reference existing routes
+    if let Err(e) = sqlx::query(
+        r#"
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'flows_route_id_fkey'
+            ) THEN
+                ALTER TABLE flows
+                ADD CONSTRAINT flows_route_id_fkey
+                FOREIGN KEY (route_id) REFERENCES routes(route_id)
+                ON DELETE SET NULL;
+            END IF;
+        END $$;
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        warn!(
+            "Failed to add foreign key constraint on flows.route_id (this is non-critical): {}",
+            e
+        );
     }
 
     if let Err(e) = sqlx::query(
@@ -381,6 +421,9 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
     } else {
         info!("Database reset disabled via CONTROLLER_RESET_DB env var.");
     }
+
+    // Ensures schema migrations (e.g., new columns) are applied even when reset is disabled.
+    create_db(&pool).await;
 
     // adds routes derived from both custom routes and topology to the database
     let all_routes = merge_all_routes(config);

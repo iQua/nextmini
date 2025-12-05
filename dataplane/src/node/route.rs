@@ -3,7 +3,7 @@ use jumphash::JumpHasher;
 use rand::Rng;
 use smallvec::SmallVec;
 use std::net::Ipv4Addr;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, RoutingTableEntry,
@@ -42,6 +42,9 @@ pub struct RoutingTable {
 
     /// Cache for flow to route ID mappings
     cache: AHashMap<FlowId, usize>,
+
+    /// Optional explicit binding for a flow to a specific route_id.
+    forced_routes: AHashMap<FlowId, usize>,
 }
 
 const INLINE_HOPS: usize = 4;
@@ -69,6 +72,7 @@ impl RoutingTable {
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
+            forced_routes: AHashMap::default(),
         }
     }
 
@@ -85,12 +89,30 @@ impl RoutingTable {
             .copied()
             .collect();
 
+        // Track which forced routes will become invalid after reinstallation
+        let mut stale_forced_routes = Vec::new();
+
         for key in existing_unicast_keys {
             if let Some(route_ids) = self.available_routes.remove(&key) {
                 for route_id in route_ids {
+                    // Check if any forced routes point to this route_id
+                    for (flow_id, forced_route_id) in self.forced_routes.iter() {
+                        if *forced_route_id == route_id {
+                            stale_forced_routes.push(*flow_id);
+                        }
+                    }
                     self.route_next_hop.remove(&route_id);
                 }
             }
+        }
+
+        // Remove stale forced route bindings
+        for flow_id in stale_forced_routes {
+            warn!(
+                "Removing forced route binding for flow {:?} because route was removed",
+                flow_id
+            );
+            self.forced_routes.remove(&flow_id);
         }
 
         // builds the routing table from routes
@@ -139,13 +161,12 @@ impl RoutingTable {
         }
 
         for route in routes {
-            let encoded_id = encode_multicast_route_id(route.route_id);
             self.route_next_hop
-                .insert(encoded_id, route.next_hops.clone());
+                .insert(route.route_id, route.next_hops.clone());
             self.available_routes
                 .entry(key)
                 .or_default()
-                .push(encoded_id);
+                .push(route.route_id);
         }
 
         // clear cache so flows pick up the refreshed routes immediately
@@ -209,6 +230,14 @@ impl RoutingTable {
             .key_for_flow(flow_id)
             .ok_or_else(|| "Unable to build route key for flow".to_string())?;
 
+        // If an explicit route was bound for this flow, use it directly.
+        if let Some(route_id) = self.forced_routes.get(&flow_id) {
+            if let Some(next_hops) = self.route_next_hop.get(route_id) {
+                self.cache.insert(flow_id, *route_id);
+                return Self::copy_next_hops(*route_id, next_hops);
+            }
+        }
+
         let route_id = self
             .select_route_for_key(&key)
             .ok_or_else(|| "No route ids available for route key".to_string())?;
@@ -236,6 +265,36 @@ impl RoutingTable {
             .ok_or_else(|| format!("No next hops found for route {}", route_id))?;
 
         Self::copy_next_hops(route_id, hops)
+    }
+
+    /// Explicitly bind a flow ID to a given route_id (per-path enforcement).
+    pub fn bind_route_for_flow(&mut self, flow_id: FlowId, route_id: usize) {
+        // Validate that the route_id exists and has valid next hops
+        if let Some(hops) = self.route_next_hop.get(&route_id) {
+            if hops.contains(&INVALID) {
+                warn!(
+                    "Flow {:?} binding to route {} which has INVALID next hops; binding anyway but routing may fail",
+                    flow_id, route_id
+                );
+            }
+
+            debug!(
+                "Binding flow {:?} to explicit route {} with {} next hop(s): {:?}",
+                flow_id,
+                route_id,
+                hops.len(),
+                hops
+            );
+
+            self.forced_routes.insert(flow_id, route_id);
+            // Also populate cache so the first lookup is fast.
+            let _ = self.cache.insert(flow_id, route_id);
+        } else {
+            warn!(
+                "Flow {:?} attempting to bind to non-existent route {}; route binding IGNORED",
+                flow_id, route_id
+            );
+        }
     }
 
     /// Picks a single next hop from a candidate list (random when multiple options exist).
@@ -481,8 +540,7 @@ mod tests {
             let key = RouteKey::Multicast(1, 1);
             assert!(table.available_routes.contains_key(&key));
             assert_eq!(table.available_routes.get(&key).unwrap().len(), 1);
-            let encoded = encode_multicast_route_id(100);
-            assert_eq!(table.route_next_hop.get(&encoded).unwrap(), &vec![2, 3]);
+            assert_eq!(table.route_next_hop.get(&100).unwrap(), &vec![2, 3]);
         }
 
         #[test]
@@ -524,13 +582,12 @@ mod tests {
             assert!(table.route_next_hop.get(&200).is_none());
 
             // New route should be active
-            let encoded = encode_multicast_route_id(201);
-            assert_eq!(table.route_next_hop.get(&encoded).unwrap(), &vec![2, 4]);
+            assert_eq!(table.route_next_hop.get(&201).unwrap(), &vec![2, 4]);
 
             let key = RouteKey::Multicast(1, 2);
             let route_ids = table.available_routes.get(&key).unwrap();
             assert_eq!(route_ids.len(), 1);
-            assert_eq!(route_ids[0], encoded);
+            assert_eq!(route_ids[0], 201);
         }
 
         #[test]
@@ -742,10 +799,8 @@ mod tests {
             let route_ids = table.available_routes.get(&key).unwrap();
 
             assert_eq!(route_ids.len(), 2);
-            let enc1 = encode_multicast_route_id(2001);
-            let enc2 = encode_multicast_route_id(2002);
-            assert!(route_ids.contains(&enc1));
-            assert!(route_ids.contains(&enc2));
+            assert!(route_ids.contains(&2001));
+            assert!(route_ids.contains(&2002));
         }
 
         #[test]

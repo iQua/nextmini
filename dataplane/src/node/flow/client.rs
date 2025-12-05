@@ -69,6 +69,12 @@ impl UserSpaceClientHandle {
                 | ((server_port as u128) << 48)
                 | ((client_port as u128) << 32);
 
+            if let Some(route_id) = flow.route_id {
+                // route binding should follow client -> server direction
+                self.processors
+                    .set_route_for_flow(flow_id.reverse(), route_id);
+            }
+
             self.processors
                 .connect_user_space_sender(flow_id, packet_sender);
 
@@ -332,6 +338,7 @@ mod tests {
             controller_id: Some(42),
             src_node_id: 1,
             dst_node_id,
+            route_id: None,
             flow_spec: FlowSpec {
                 flow_len: FlowLen::Bytes(1024),
                 flow_rate: Some(1_000_000),

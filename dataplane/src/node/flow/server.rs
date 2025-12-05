@@ -236,6 +236,7 @@ mod tests {
             controller_id: None,
             src_node_id,
             dst_node_id,
+            route_id: None,
             flow_spec: FlowSpec {
                 flow_len: FlowLen::Bytes(1024),
                 flow_rate: rate,
