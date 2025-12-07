@@ -161,12 +161,13 @@ impl RoutingTable {
         }
 
         for route in routes {
+            let encoded_id = encode_multicast_route_id(route.route_id);
             self.route_next_hop
-                .insert(route.route_id, route.next_hops.clone());
+                .insert(encoded_id, route.next_hops.clone());
             self.available_routes
                 .entry(key)
                 .or_default()
-                .push(route.route_id);
+                .push(encoded_id);
         }
 
         // clear cache so flows pick up the refreshed routes immediately
@@ -540,7 +541,8 @@ mod tests {
             let key = RouteKey::Multicast(1, 1);
             assert!(table.available_routes.contains_key(&key));
             assert_eq!(table.available_routes.get(&key).unwrap().len(), 1);
-            assert_eq!(table.route_next_hop.get(&100).unwrap(), &vec![2, 3]);
+            let encoded = encode_multicast_route_id(100);
+            assert_eq!(table.route_next_hop.get(&encoded).unwrap(), &vec![2, 3]);
         }
 
         #[test]
@@ -582,12 +584,13 @@ mod tests {
             assert!(table.route_next_hop.get(&200).is_none());
 
             // New route should be active
-            assert_eq!(table.route_next_hop.get(&201).unwrap(), &vec![2, 4]);
+            let encoded = encode_multicast_route_id(201);
+            assert_eq!(table.route_next_hop.get(&encoded).unwrap(), &vec![2, 4]);
 
             let key = RouteKey::Multicast(1, 2);
             let route_ids = table.available_routes.get(&key).unwrap();
             assert_eq!(route_ids.len(), 1);
-            assert_eq!(route_ids[0], 201);
+            assert_eq!(route_ids[0], encoded);
         }
 
         #[test]
@@ -799,8 +802,10 @@ mod tests {
             let route_ids = table.available_routes.get(&key).unwrap();
 
             assert_eq!(route_ids.len(), 2);
-            assert!(route_ids.contains(&2001));
-            assert!(route_ids.contains(&2002));
+            let enc1 = encode_multicast_route_id(2001);
+            let enc2 = encode_multicast_route_id(2002);
+            assert!(route_ids.contains(&enc1));
+            assert!(route_ids.contains(&enc2));
         }
 
         #[test]

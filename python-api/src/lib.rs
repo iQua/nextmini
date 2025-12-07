@@ -3,6 +3,8 @@ mod buffer;
 #[cfg(feature = "python-extension")]
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -284,10 +286,10 @@ impl Dataplane {
                 }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                // Compute deterministic session_id for multicast to ensure
+                // sender and receiver(s) use the same session_id
                 if session_id.is_none() {
-                    let local_seq = sid & 0x0000_FFFF_FFFF_FFFF;
-                    let node_part = ((self.cfg.node_id as u64) & 0x7FFF) << 48;
-                    sid = node_part | local_seq;
+                    sid = session_id_for_multicast(dest_ip_addr, self.cfg.node_id, sp, dp);
                 }
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
@@ -339,7 +341,12 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
 
-        let sid = session_id.unwrap_or_else(next_py_message_id);
+        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+        // Compute deterministic session_id for multicast to match the sender
+        let sid = session_id.unwrap_or_else(|| {
+            session_id_for_multicast(ip, source_node_id, sp, dp)
+        });
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable_runtime {
@@ -350,14 +357,18 @@ impl Dataplane {
                 {
                     resolved_sid = Some(known);
                 }
+                // If still no session_id, use the deterministic one
+                if resolved_sid.is_none() {
+                    resolved_sid = Some(sid);
+                }
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = session::runtime::CommonConfig {
                     session_id: resolved_sid.unwrap_or(0),
                     dest_ip: ip,
                     chunk_size,
-                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
-                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    src_port: sp,
+                    dst_port: dp,
                     data_bucket: runtime_config.data_bucket.clone(),
                     local_node_id: self.cfg.node_id,
                     user_space_base_addr: self.cfg.user_space_base_addr,
@@ -408,7 +419,16 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
 
-        let sid = session_id.unwrap_or_else(next_py_message_id);
+        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+
+        // Parse IP early to compute session_id
+        let ip = parse_ipv4(&dest_ip)?;
+
+        // Compute deterministic session_id for multicast to match the sender
+        let sid = session_id.unwrap_or_else(|| {
+            session_id_for_multicast(ip, source_node_id, sp, dp)
+        });
 
         #[cfg(feature = "python-extension")]
         {
@@ -417,14 +437,11 @@ impl Dataplane {
                 let runtime_config = self.cfg.reliable_runtime_config.clone();
                 let session_registry = self.session_registry.clone();
                 let buffer_registry = self.buffer_registry.clone();
-                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 let local_node_id = self.cfg.node_id;
                 let base_addr = self.cfg.user_space_base_addr;
                 let netmask = self.cfg.local_netmask;
 
                 return future_into_py(py, async move {
-                    let ip = parse_ipv4(&dest_ip)?;
 
                     // Check if session ID is already known
                     let mut resolved_sid = session_id;
@@ -433,6 +450,10 @@ impl Dataplane {
                         if let Some(known) = guard.get(&(ip, source_node_id)) {
                             resolved_sid = Some(*known);
                         }
+                    }
+                    // If still no session_id, use the deterministic one
+                    if resolved_sid.is_none() {
+                        resolved_sid = Some(sid);
                     }
 
                     let cap = usize::try_from(expected_bytes).unwrap_or(0);
@@ -994,6 +1015,24 @@ impl Dataplane {
 
 fn next_py_message_id() -> u64 {
     PY_MESSAGE_ID_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Computes a deterministic session ID for multicast sessions based on
+/// (dest_ip, source_node_id, src_port, dst_port).
+/// This ensures both sender and receiver compute the same session_id.
+fn session_id_for_multicast(
+    dest_ip: Ipv4Addr,
+    source_node_id: usize,
+    src_port: u16,
+    dst_port: u16,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    dest_ip.hash(&mut hasher);
+    source_node_id.hash(&mut hasher);
+    src_port.hash(&mut hasher);
+    dst_port.hash(&mut hasher);
+    let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
+    raw | 0x8000_0000_0000_0000
 }
 
 #[pymodule]
