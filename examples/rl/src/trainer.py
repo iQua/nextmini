@@ -1,7 +1,6 @@
 import pickle
 import time
 import io
-import random
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -206,12 +205,6 @@ class Trainer:
 
         print(f"Serialized weights: {size} bytes ({size/1024/1024:.2f} MB)")
 
-        # Generate a unique session_id for this multicast transfer
-        # Encode node_id in the upper bits for uniqueness
-        local_seq = random.randint(1, 0x0000_FFFF_FFFF_FFFF)
-        node_part = (self.dataplane.node_id & 0x7FFF) << 48
-        session_id = node_part | local_seq
-
         # 1. Send Metadata and Wait for Ready
         receiver_ids = []
         for i in range(len(self.worker_connections)):
@@ -228,7 +221,6 @@ class Trainer:
                     "group_ip": self.group_ip,
                     "size": size,
                     "src_node_id": config.TRAINER_NODE_ID,
-                    "session_id": session_id,  # Include session_id for deterministic matching
                 })
                 print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
                 
@@ -269,7 +261,6 @@ class Trainer:
             chunk_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
             dst_port=config.WORKER_BASE_PORT,  # All workers listen on BASE_PORT for multicast
-            session_id=session_id,  # Use the same session_id
         )
         
         print(f"Waiting for multicast transfer (SID={sid})...")
@@ -339,12 +330,6 @@ class Trainer:
                     print(f"Trainer: invalid ROLLOUT_METADATA from worker {i}: {meta}", flush=True)
                     return
 
-                # Extract session_id from metadata for deterministic matching
-                session_id = meta.get("session_id")
-                if not isinstance(session_id, int) or session_id <= 0:
-                    print(f"Trainer: invalid or missing session_id in ROLLOUT_METADATA from worker {i}: {meta}", flush=True)
-                    return
-
                 rollout_sizes[i] = size
 
                 worker_node_id = self.worker_connections[i]['node_id']
@@ -362,7 +347,6 @@ class Trainer:
                         chunk_size=config.CHUNK_SIZE,
                         src_port=worker_port,
                         dst_port=config.TRAINER_PORT,
-                        session_id=session_id,  # Use the same session_id from metadata
                     )
                     transfer_start = time.time()
                     ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
