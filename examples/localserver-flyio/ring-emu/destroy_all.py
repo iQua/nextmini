@@ -18,7 +18,7 @@ def destroy_app(app_name: str):
         ["flyctl", "apps", "destroy", app_name, "--yes"],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
     )
     if result.returncode == 0:
         print(f"  {app_name} destroyed")
@@ -35,19 +35,19 @@ def main():
     parser = argparse.ArgumentParser(description="Destroy all baseline-ring nodes")
     parser.add_argument("--num-nodes", type=int, default=10, help="Number of nodes")
     args = parser.parse_args()
-    
+
     print("=" * 60)
     print("Destroying Baseline Ring Nodes")
     print("=" * 60)
     print(f"   Nodes: {args.num_nodes}")
     print()
-    
+
     success_count = 0
     for i in range(1, args.num_nodes + 1):
         app_name = f"baseline-ring-{i}"
         if destroy_app(app_name):
             success_count += 1
-    
+
     print()
     print("=" * 60)
     print(f"Destroyed {success_count}/{args.num_nodes} apps")
@@ -56,4 +56,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

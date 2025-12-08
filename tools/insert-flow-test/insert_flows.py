@@ -41,9 +41,9 @@ class FlowDatabase:
         cursor = self.connection.cursor()
         try:
             query = """
-                SELECT id, src_node_id, dst_node_id, flow_len_type,
-                       flow_len_bytes, flow_len_duration, flow_rate,
-                       flow_weight, start_time, finish_time, is_finished
+                  SELECT id, src_node_id, dst_node_id, flow_len_type,
+                      flow_len_bytes, flow_len_duration, flow_rate,
+                      flow_weight, route_id, start_time, finish_time, is_finished
                 FROM flows
                 ORDER BY id ASC
             """
@@ -61,9 +61,7 @@ class FlowDatabase:
             cursor.execute("SELECT COUNT(*) FROM flows")
             total = cursor.fetchone()[0]
 
-            cursor.execute(
-                "SELECT COUNT(*) FROM flows WHERE is_finished = FALSE"
-            )
+            cursor.execute("SELECT COUNT(*) FROM flows WHERE is_finished = FALSE")
             active = cursor.fetchone()[0]
 
             finished = total - active
@@ -84,6 +82,7 @@ class FlowDatabase:
         flow_len_duration: Optional[float] = None,
         flow_rate: Optional[int] = None,
         flow_weight: Optional[int] = None,
+        route_id: Optional[int] = None,
     ) -> Optional[int]:
         """Insert a new flow into the database."""
         cursor = self.connection.cursor()
@@ -107,8 +106,8 @@ class FlowDatabase:
             query = """
                 INSERT INTO flows (src_node_id, dst_node_id, flow_len_type,
                                  flow_len_bytes, flow_len_duration, flow_rate,
-                                 flow_weight, is_finished)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                 flow_weight, route_id, is_finished)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
 
@@ -122,6 +121,7 @@ class FlowDatabase:
                     flow_len_duration,
                     flow_rate,
                     flow_weight,
+                    route_id,
                     False,
                 ),
             )
@@ -154,6 +154,7 @@ def display_flows(flows: List[Tuple], console: Console):
     table.add_column("Duration (s)", justify="right", style="blue")
     table.add_column("Rate (bps)", justify="right", style="yellow")
     table.add_column("Weight", justify="right", style="yellow")
+    table.add_column("Route", justify="right", style="magenta")
     table.add_column("Start Time", justify="right", style="cyan")
     table.add_column("Finish Time", justify="right", style="cyan")
     table.add_column("Status", justify="center", style="red")
@@ -168,6 +169,7 @@ def display_flows(flows: List[Tuple], console: Console):
             flow_len_duration,
             flow_rate,
             flow_weight,
+            route_id,
             start_time,
             finish_time,
             is_finished,
@@ -193,6 +195,7 @@ def display_flows(flows: List[Tuple], console: Console):
             str(flow_len_duration) if flow_len_duration is not None else "-",
             str(flow_rate) if flow_rate is not None else "-",
             str(flow_weight) if flow_weight is not None else "-",
+            str(route_id) if route_id is not None else "-",
             str(start_time) if start_time is not None else "-",
             str(finish_time) if finish_time is not None else "-",
             f"[{status_style}]{status}[/{status_style}]",
@@ -203,7 +206,6 @@ def display_flows(flows: List[Tuple], console: Console):
 
 def display_stats(total: int, active: int, finished: int, console: Console):
     stats_text = Text()
-    stats_text.append(f"Total Flows: {total}\n", style="bold cyan")
     stats_text.append(f"Active Flows: {active}\n", style="bold green")
     stats_text.append(f"Finished Flows: {finished}", style="bold red")
 
@@ -228,7 +230,6 @@ def generate_random_flow(max_nodes: int = 2) -> dict:
     # Ensure source and destination nodes are not the same
     while src_node_id == dst_node_id:
         dst_node_id = random.randint(1, max_nodes)
-
     flow = {
         "src_node_id": src_node_id,
         "dst_node_id": dst_node_id,
@@ -237,16 +238,12 @@ def generate_random_flow(max_nodes: int = 2) -> dict:
     }
 
     if flow_type == "bytes":
-        flow["flow_len_bytes"] = random.randint(
-            5_000_000, 20_000_000
-        )  # 5MB to 20MB
+        flow["flow_len_bytes"] = random.randint(5_000_000, 20_000_000)  # 5MB to 20MB
         flow["flow_len_duration"] = None
         flow["flow_rate"] = None  # Let dataplane use default rate
     else:
         flow["flow_len_bytes"] = None
-        flow["flow_len_duration"] = round(
-            random.uniform(3.0, 8.0), 2
-        )  # 3 to 8 seconds
+        flow["flow_len_duration"] = round(random.uniform(3.0, 8.0), 2)  # 3 to 8 seconds
         flow["flow_rate"] = random.randint(
             1_000_000, 3_000_000
         )  # 1-3 Mbps for duration flows
@@ -273,9 +270,7 @@ def main():
             console.clear()
 
             current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-            console.print(
-                f"[bold blue]Current Time: {current_time}[/bold blue]\n"
-            )
+            console.print(f"[bold blue]Current Time: {current_time}[/bold blue]\n")
 
             flows = db.get_all_flows()
             display_flows(flows, console)
@@ -298,9 +293,7 @@ def main():
                     f"   [dim]Type: {new_flow['flow_len_type']}, Rate: {new_flow['flow_rate']} bps[/dim]"
                 )
             else:
-                console.print(
-                    "\n[bold red]Failed to insert new flow[/bold red]"
-                )
+                console.print("\n[bold red]Failed to insert new flow[/bold red]")
 
             console.print("\n[dim]Next update in 5 seconds...[/dim]")
 
@@ -308,9 +301,7 @@ def main():
             time.sleep(5)
 
     except KeyboardInterrupt:
-        console.print(
-            "\n\n[bold yellow]Flow Manager stopped by user[/bold yellow]"
-        )
+        console.print("\n\n[bold yellow]Flow Manager stopped by user[/bold yellow]")
     except Exception as e:
         console.print(f"\n\n[bold red]Error: {e}[/bold red]")
     finally:

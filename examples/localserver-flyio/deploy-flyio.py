@@ -16,9 +16,7 @@ from pathlib import Path
 def run_command(cmd, check=True, capture_output=False):
     """Run a shell command."""
     print(f"Running command: {' '.join(cmd)}")
-    result = subprocess.run(
-        cmd, check=check, capture_output=capture_output, text=True
-    )
+    result = subprocess.run(cmd, check=check, capture_output=capture_output, text=True)
     return result
 
 
@@ -32,9 +30,7 @@ def check_flyctl():
     )
     if result.returncode != 0:
         print("flyctl is not installed!")
-        print(
-            "   Install it from: https://fly.io/docs/hands-on/install-flyctl/"
-        )
+        print("   Install it from: https://fly.io/docs/hands-on/install-flyctl/")
         sys.exit(1)
 
 
@@ -162,11 +158,11 @@ def deploy_node(repo_root, script_dir, public_ip, node_id, vm_size=None):
         "--no-public-ips",
         "--yes",
     ]
-    
+
     # Add vm-size if specified
     if vm_size:
         deploy_cmd.extend(["--vm-size", vm_size])
-    
+
     run_command(deploy_cmd)
 
     # Clean up temp files
@@ -193,9 +189,7 @@ def main():
         default=2,
         help="Number of nodes to deploy (default: 2)",
     )
-    parser.add_argument(
-        "--region", default="iad", help="Fly.io region (default: iad)"
-    )
+    parser.add_argument("--region", default="iad", help="Fly.io region (default: iad)")
     parser.add_argument(
         "--vm-size",
         default=None,
@@ -226,7 +220,9 @@ def main():
     deployed_apps = []
     for i in range(1, args.nodes + 1):
         try:
-            app_name = deploy_node(repo_root, script_dir, args.public_ip, i, args.vm_size)
+            app_name = deploy_node(
+                repo_root, script_dir, args.public_ip, i, args.vm_size
+            )
             deployed_apps.append(app_name)
         except Exception as e:
             print(f"Failed to deploy node {i}: {e}")

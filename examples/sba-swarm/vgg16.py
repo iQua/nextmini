@@ -41,9 +41,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument("--data_dir", type=str, default=None,
-                        help="Root directory holding ImageFolder-style data. "
-                             "If omitted, a synthetic FakeData dataset is used.")
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=None,
+        help="Root directory holding ImageFolder-style data. "
+        "If omitted, a synthetic FakeData dataset is used.",
+    )
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_epochs", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=0.01)

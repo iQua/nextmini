@@ -34,7 +34,7 @@ async def run_rank(app_name, rank, args):
         "-a",
         app_name,
         "-C",
-        f"sh -c \"{cmdline}\"",
+        f'sh -c "{cmdline}"',
     ]
 
     # Create subprocess
@@ -134,4 +134,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

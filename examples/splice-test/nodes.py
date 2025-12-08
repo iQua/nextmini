@@ -11,6 +11,7 @@ DOCKER_COMPOSE_FILE = os.path.join(SCRIPT_DIR, "docker-compose.yml")
 CONTROLLER_CONFIG_FILE = os.path.join(SCRIPT_DIR, "controller-config.toml")
 CLIENT_FILE = os.path.join(SCRIPT_DIR, "src", "client.rs")
 
+
 def generate_node_service(node_id):
     """Generates the YAML configuration for a single node service."""
     # IP addresses start from 172.16.8.5 for node2
@@ -51,12 +52,13 @@ def generate_node_service(node_id):
     volumes:
       - ./config.toml:/var/nextmini/config.toml
       - ../../tools/:/var/nextmini/tools
-{textwrap.indent(depends_on_block, '    ')}
+{textwrap.indent(depends_on_block, "    ")}
     cap_add:
       - NET_ADMIN
     command: /bin/bash -c "sleep {sleep_time} && /var/nextmini/nextmini ws://controller:3000"
 """
     return service
+
 
 def generate_external_server_service(last_node_id):
     """Generates the YAML configuration for the external_server service."""
@@ -85,17 +87,18 @@ def generate_external_server_service(last_node_id):
 """
     return service
 
+
 def update_controller_config(num_nodes):
     """Updates the controller-config.toml file based on the number of dataplane nodes."""
     try:
-        with open(CONTROLLER_CONFIG_FILE, 'r') as f:
+        with open(CONTROLLER_CONFIG_FILE, "r") as f:
             content = f.read()
     except FileNotFoundError:
         print(f"Error: {CONTROLLER_CONFIG_FILE} not found.")
         return False
 
     # Update n_nodes value
-    content = re.sub(r'n_nodes = \d+', f'n_nodes = {num_nodes}', content)
+    content = re.sub(r"n_nodes = \d+", f"n_nodes = {num_nodes}", content)
 
     # Generate new route: [1, 2, 3, ..., num_nodes+1, num_nodes+2]
     # Node 1 = external client, Nodes 2 to num_nodes+1 = dataplane nodes, Node num_nodes+2 = external server
@@ -103,20 +106,21 @@ def update_controller_config(num_nodes):
     new_route = f"route = {route_nodes}"
 
     # Replace the existing route line
-    content = re.sub(r'route = \[.*?\]', new_route, content)
+    content = re.sub(r"route = \[.*?\]", new_route, content)
 
     try:
-        with open(CONTROLLER_CONFIG_FILE, 'w') as f:
+        with open(CONTROLLER_CONFIG_FILE, "w") as f:
             f.write(content)
         return True
     except IOError as e:
         print(f"Error writing to {CONTROLLER_CONFIG_FILE}: {e}")
         return False
 
+
 def update_client_rs(num_nodes):
     """Updates the client.rs file with the correct target server IP address."""
     try:
-        with open(CLIENT_FILE, 'r') as f:
+        with open(CLIENT_FILE, "r") as f:
             content = f.read()
     except FileNotFoundError:
         print(f"Error: {CLIENT_FILE} not found.")
@@ -127,27 +131,35 @@ def update_client_rs(num_nodes):
     server_ip_last_octet = num_nodes + 5
 
     # Update the target_ip line
-    old_pattern = r'let target_ip = Ipv4Addr::new\(172, 16, 8, \d+\);'
-    new_line = f'let target_ip = Ipv4Addr::new(172, 16, 8, {server_ip_last_octet});'
+    old_pattern = r"let target_ip = Ipv4Addr::new\(172, 16, 8, \d+\);"
+    new_line = f"let target_ip = Ipv4Addr::new(172, 16, 8, {server_ip_last_octet});"
 
     content = re.sub(old_pattern, new_line, content)
 
     try:
-        with open(CLIENT_FILE, 'w') as f:
+        with open(CLIENT_FILE, "w") as f:
             f.write(content)
         return True
     except IOError as e:
         print(f"Error writing to {CLIENT_FILE}: {e}")
         return False
 
+
 def main():
     """
     Overwrites the docker-compose.yml to generate configurations for a specified number of dataplane nodes.
     It preserves the content of the file up to the 'node2:' service definition and generates all nodes from scratch.
     """
-    parser = argparse.ArgumentParser(description='Generate docker-compose.yml with specified number of dataplane nodes')
-    parser.add_argument('--nodes', '-n', type=int, default=3,
-                        help='Number of dataplane nodes to generate (default: 3, generates node2 to node4)')
+    parser = argparse.ArgumentParser(
+        description="Generate docker-compose.yml with specified number of dataplane nodes"
+    )
+    parser.add_argument(
+        "--nodes",
+        "-n",
+        type=int,
+        default=3,
+        help="Number of dataplane nodes to generate (default: 3, generates node2 to node4)",
+    )
     args = parser.parse_args()
 
     num_nodes = args.nodes
@@ -156,7 +168,7 @@ def main():
         return
 
     try:
-        with open(DOCKER_COMPOSE_FILE, 'r') as f:
+        with open(DOCKER_COMPOSE_FILE, "r") as f:
             lines = f.readlines()
     except FileNotFoundError:
         print(f"Error: {DOCKER_COMPOSE_FILE} not found.")
@@ -171,10 +183,12 @@ def main():
         content_before_nodes.append(line)
 
     if not node2_found:
-        print("Warning: 'node2:' service not found in the original docker-compose.yml. The script will append nodes to the end.")
+        print(
+            "Warning: 'node2:' service not found in the original docker-compose.yml. The script will append nodes to the end."
+        )
 
     try:
-        with open(DOCKER_COMPOSE_FILE, 'w') as f:
+        with open(DOCKER_COMPOSE_FILE, "w") as f:
             f.writelines(content_before_nodes)
 
             # Generate dataplane nodes from node2 to node(num_nodes+1)
@@ -185,25 +199,34 @@ def main():
             # Generate external_server service
             f.write(generate_external_server_service(last_node_id))
 
-        print(f"Successfully generated {DOCKER_COMPOSE_FILE} with {num_nodes} dataplane nodes (node2 to node{last_node_id}).")
+        print(
+            f"Successfully generated {DOCKER_COMPOSE_FILE} with {num_nodes} dataplane nodes (node2 to node{last_node_id})."
+        )
         print(f"External server IP: 172.16.8.{3 + last_node_id + 1}")
 
         # Update controller config
         if update_controller_config(num_nodes):
-            print(f"Successfully updated {CONTROLLER_CONFIG_FILE} for {num_nodes} dataplane nodes.")
-            print(f"Route: [1, 2, ..., {last_node_id}, {last_node_id + 1}] (client -> dataplane nodes -> server)")
+            print(
+                f"Successfully updated {CONTROLLER_CONFIG_FILE} for {num_nodes} dataplane nodes."
+            )
+            print(
+                f"Route: [1, 2, ..., {last_node_id}, {last_node_id + 1}] (client -> dataplane nodes -> server)"
+            )
         else:
             print(f"Warning: Failed to update {CONTROLLER_CONFIG_FILE}")
 
         # Update client.rs
         if update_client_rs(num_nodes):
             server_ip = f"172.16.8.{num_nodes + 5}"
-            print(f"Successfully updated {CLIENT_FILE} with target server IP: {server_ip}")
+            print(
+                f"Successfully updated {CLIENT_FILE} with target server IP: {server_ip}"
+            )
         else:
             print(f"Warning: Failed to update {CLIENT_FILE}")
 
     except IOError as e:
         print(f"Error writing to {DOCKER_COMPOSE_FILE}: {e}")
+
 
 if __name__ == "__main__":
     main()
