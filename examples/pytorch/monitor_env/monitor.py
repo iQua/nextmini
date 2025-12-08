@@ -26,7 +26,8 @@ def make_conn_string() -> str:
 
 
 def query_app_flows(conn: psycopg.Connection):
-    sql = """
+    sql = (
+        """
         SELECT af.id,
                encode(af.flow_id, 'hex') AS flow_hex,
                format('%s.%s.%s.%s:%s → %s.%s.%s.%s:%s',
@@ -42,13 +43,15 @@ def query_app_flows(conn: psycopg.Connection):
         ORDER BY af.id DESC
         LIMIT 30
         """
+    )
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql)
         return cur.fetchall()
 
 
 def query_metrics(conn: psycopg.Connection):
-    sql = """
+    sql = (
+        """
         SELECT to_char(time_read, 'HH24:MI:SS') AS ts,
                encode(flow_id, 'hex') AS flow_hex,
                format('%s.%s.%s.%s:%s → %s.%s.%s.%s:%s',
@@ -63,6 +66,7 @@ def query_metrics(conn: psycopg.Connection):
         ORDER BY id DESC
         LIMIT 30
         """
+    )
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(sql)
         return cur.fetchall()
@@ -84,7 +88,7 @@ def build_app_flows_table(rows):
             r.get("tuple") or "",
             src_dst,
             str(r.get("route_id")) if r.get("route_id") is not None else "",
-            finished_mark,
+            finished_mark
         )
     return table
 
@@ -118,25 +122,19 @@ def main():
         conn.read_only = True
         conn.autocommit = True
 
-        with Live(
-            console=console, refresh_per_second=max(1, int(1 / REFRESH_INTERVAL_SEC))
-        ) as live:
+        with Live(console=console, refresh_per_second=max(1, int(1/REFRESH_INTERVAL_SEC))) as live:
             while True:
                 try:
                     flows = query_app_flows(conn)
                     metrics = query_metrics(conn)
 
                     layout = Table.grid(padding=(0, 1))
-                    layout.add_row(
-                        Panel(build_app_flows_table(flows), border_style="cyan")
-                    )
-                    layout.add_row(
-                        Panel(build_metrics_table(metrics), border_style="magenta")
-                    )
+                    layout.add_row(Panel(build_app_flows_table(flows), border_style="cyan"))
+                    layout.add_row(Panel(build_metrics_table(metrics), border_style="magenta"))
                     layout.add_row(
                         Panel(
                             f"Updated: {datetime.now().strftime('%H:%M:%S')}  DB: {DB_HOST}:{DB_PORT}/{DB_NAME}",
-                            border_style="green",
+                            border_style="green"
                         )
                     )
 
@@ -151,3 +149,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

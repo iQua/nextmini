@@ -75,7 +75,9 @@ def build_app_flows_table(rows):
 
     for r in rows:
         src_dst = f"{r.get('src_node_id')}→{r.get('dst_node_id')}"
-        finished_mark = "[green]✓[/green]" if r.get("is_finished") else "[red]✗[/red]"
+        finished_mark = (
+            "[green]✓[/green]" if r.get("is_finished") else "[red]✗[/red]"
+        )
         table.add_row(
             str(r.get("id")),
             r.get("tuple") or "",
@@ -129,7 +131,9 @@ def main():
                         Panel(build_app_flows_table(flows), border_style="cyan")
                     )
                     layout.add_row(
-                        Panel(build_metrics_table(metrics), border_style="magenta")
+                        Panel(
+                            build_metrics_table(metrics), border_style="magenta"
+                        )
                     )
                     layout.add_row(
                         Panel(

@@ -8,11 +8,10 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 DOCKER_COMPOSE_FILE = os.path.join(SCRIPT_DIR, "docker-compose.yml")
 NUM_NODES = 100
 
-
 def generate_node_service(node_id):
     """Generates the YAML configuration for a single node service."""
     ip_last_octet = 3 + node_id
-
+    
     base_indent = "        "
 
     if node_id == 1:
@@ -54,14 +53,13 @@ def generate_node_service(node_id):
 """
     return service
 
-
 def main():
     """
     Overwrites the docker-compose.yml to generate configurations for a specified number of nodes.
     It preserves the content of the file up to the 'node1:' service definition and generates all nodes from scratch.
     """
     try:
-        with open(DOCKER_COMPOSE_FILE, "r") as f:
+        with open(DOCKER_COMPOSE_FILE, 'r') as f:
             lines = f.readlines()
     except FileNotFoundError:
         print(f"Error: {DOCKER_COMPOSE_FILE} not found.")
@@ -76,20 +74,17 @@ def main():
         content_before_nodes.append(line)
 
     if not node1_found:
-        print(
-            "Warning: 'node1:' service not found in the original docker-compose.yml. The script will append nodes to the end."
-        )
-
+        print("Warning: 'node1:' service not found in the original docker-compose.yml. The script will append nodes to the end.")
+    
     try:
-        with open(DOCKER_COMPOSE_FILE, "w") as f:
+        with open(DOCKER_COMPOSE_FILE, 'w') as f:
             f.writelines(content_before_nodes)
-
+            
             for i in range(1, NUM_NODES + 1):
                 f.write(generate_node_service(i))
         print(f"Successfully generated {DOCKER_COMPOSE_FILE} with {NUM_NODES} nodes.")
     except IOError as e:
         print(f"Error writing to {DOCKER_COMPOSE_FILE}: {e}")
 
-
 if __name__ == "__main__":
-    main()
+    main() 

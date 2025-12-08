@@ -82,9 +82,7 @@ if __name__ == "__main__":
     raw_directory = input("Enter the directory to analyze: ")
     target_directory = sanitize_base_directory(raw_directory)
 
-    if raw_directory.strip() and target_directory != os.path.normpath(
-        raw_directory.strip()
-    ):
+    if raw_directory.strip() and target_directory != os.path.normpath(raw_directory.strip()):
         print(f"Sanitized base directory to exclude 'target/': {target_directory}")
 
     if not os.path.isdir(target_directory):

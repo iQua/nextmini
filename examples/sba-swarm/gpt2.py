@@ -53,7 +53,9 @@ def main():
     # Distributed initialisation (GLOO backend for CPU)
     # --------------------------------------------------
     world_size = int(
-        os.environ.get("WORLD_SIZE", os.environ.get("OMPI_COMM_WORLD_SIZE", "1"))
+        os.environ.get(
+            "WORLD_SIZE", os.environ.get("OMPI_COMM_WORLD_SIZE", "1")
+        )
     )
     distributed = world_size > 1
     if distributed:

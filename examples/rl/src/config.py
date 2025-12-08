@@ -2,7 +2,10 @@ import os
 
 # Nextmini Node Configuration
 # Paths to node config files (TOML)
-TRAINER_CONFIG = os.environ.get("TRAINER_CONFIG", "configs/trainer-config.toml")
+TRAINER_CONFIG = os.environ.get(
+    "TRAINER_CONFIG",
+    "configs/trainer-config.toml"
+)
 WORKER_CONFIGS = [
     os.environ.get("WORKER0_CONFIG", "configs/worker0-config.toml"),
     os.environ.get("WORKER1_CONFIG", "configs/worker1-config.toml"),
@@ -21,8 +24,8 @@ WORKER_BASE_PORT = 5001  # Workers use BASE_PORT + rank
 
 # Multicast
 MULTICAST_GROUP_NAME = "rl_weights_sync"
-MULTICAST_TIMEOUT_MS = 60000  # 60s timeout for large weights
-CHUNK_SIZE = 8500  # Standard chunk size
+MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
+CHUNK_SIZE = 8500 # Standard chunk size
 
 # Model
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"

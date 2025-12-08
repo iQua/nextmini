@@ -9,13 +9,9 @@ def evaluate_model(model_name_or_path, split="test", num_samples=50, device=None
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print(
-        f"Evaluating model: {model_name_or_path} on split='{split}', num_samples={num_samples}"
-    )
+    print(f"Evaluating model: {model_name_or_path} on split='{split}', num_samples={num_samples}")
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name_or_path, trust_remote_code=True
-    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         trust_remote_code=True,
@@ -51,7 +47,7 @@ def evaluate_model(model_name_or_path, split="test", num_samples=50, device=None
 
         full_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
         if full_text.startswith(prompt):
-            completion = full_text[len(prompt) :]
+            completion = full_text[len(prompt):]
         else:
             completion = full_text
 

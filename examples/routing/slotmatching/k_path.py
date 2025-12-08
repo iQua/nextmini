@@ -2,7 +2,6 @@ import json
 import itertools
 import heapq
 
-
 class Graph:
     def __init__(self, num_nodes):
         self.nodes = range(1, num_nodes + 1)
@@ -12,8 +11,7 @@ class Graph:
         return [v for u, v in self.edges if u == node]
 
     def get_edge_weight(self, u, v):
-        return self.edges.get((u, v), float("inf"))
-
+        return self.edges.get((u, v), float('inf'))
 
 def k_shortest_paths(graph, start, end, k):
     paths = [(0, [start])]
@@ -33,7 +31,6 @@ def k_shortest_paths(graph, start, end, k):
 
     return shortest_paths
 
-
 def generate_routes(num_nodes, k):
     graph = Graph(num_nodes)
     all_pairs = itertools.permutations(graph.nodes, 2)
@@ -47,21 +44,20 @@ def generate_routes(num_nodes, k):
                 "route_id": route_id,
                 "src_node_id": src,
                 "dst_node_id": dst,
-                "hops": path,
+                "hops": path
             }
             routes.append(route)
             route_id += 1
 
     return routes
 
-
 # Example usage
 num_nodes = 6  # Number of nodes in the graph
-k = 5  # Number of shortest paths to find
+k = 5    # Number of shortest paths to find
 routes = generate_routes(num_nodes, k)
 
 # Output to JSON
-with open("routes.json", "w") as file:
+with open('routes.json', 'w') as file:
     json.dump(routes, file, indent=4)
 
 print("Generated routes saved to 'routes.json'")

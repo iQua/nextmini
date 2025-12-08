@@ -30,11 +30,11 @@ def format_rate(rate_mbps):
 def format_bytes(bytes_val):
     """Format bytes with appropriate unit"""
     if bytes_val >= 1e9:
-        return f"{bytes_val / 1e9} GB"
+        return f"{bytes_val/1e9} GB"
     elif bytes_val >= 1e6:
-        return f"{bytes_val / 1e6} MB"
+        return f"{bytes_val/1e6} MB"
     elif bytes_val >= 1e3:
-        return f"{bytes_val / 1e3} KB"
+        return f"{bytes_val/1e3} KB"
     else:
         return f"{bytes_val} B"
 
@@ -184,7 +184,9 @@ class Database:
         cursor.execute(query)
         metrics = cursor.fetchall()
 
-        self.t_flow = Table(title="Data Rate Per Flow (Last 5s)", show_header=True)
+        self.t_flow = Table(
+            title="Data Rate Per Flow (Last 5s)", show_header=True
+        )
         self.t_flow.add_column("Flow ID", overflow="fold", style="dim")
         self.t_flow.add_column("Local→Remote", justify="center")
         self.t_flow.add_column("Rate (Mbps)", justify="center")
@@ -224,7 +226,9 @@ class Database:
         cursor.execute(query)
         flows = cursor.fetchall()
 
-        self.t_app_flows = Table(title="App Flows (TUN Interface)", show_header=True)
+        self.t_app_flows = Table(
+            title="App Flows (TUN Interface)", show_header=True
+        )
         self.t_app_flows.add_column("ID", justify="left", style="bold")
         self.t_app_flows.add_column("Flow ID", overflow="fold", style="dim")
         self.t_app_flows.add_column("Src→Dst", justify="center")
@@ -234,30 +238,21 @@ class Database:
         self.t_app_flows.add_column("Duration (ms)", justify="center")
         self.t_app_flows.add_column("Status", justify="center")
 
-        for (
-            flow_id_int,
-            flow_tuple,
-            src,
-            dst,
-            route_id,
-            is_finished,
-            start_time_ms,
-            finish_time_ms,
-        ) in flows:
+        for flow_id_int, flow_tuple, src, dst, route_id, is_finished, start_time_ms, finish_time_ms in flows:
             src_dst = (
                 f"[cyan]{src}[/cyan]→[magenta]{dst}[/magenta]"
                 if src and dst
                 else "[dim]N/A[/dim]"
             )
-            route_str = f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
-
+            route_str = (
+                f"[yellow]{route_id}[/yellow]" if route_id else "[dim]-[/dim]"
+            )
+            
             start_time_display = styled_timestamp(start_time_ms)
             finish_time_display = styled_timestamp(finish_time_ms)
 
             duration_value = (
-                format_duration_ms(start_time_ms, finish_time_ms)
-                if is_finished
-                else None
+                format_duration_ms(start_time_ms, finish_time_ms) if is_finished else None
             )
             duration_display = styled_duration(duration_value)
 
@@ -346,9 +341,13 @@ class Database:
                 length = "[dim]-[/dim]"
 
             rate_str = (
-                f"[blue]{format_bytes(rate)}/s[/blue]" if rate else "[dim]-[/dim]"
+                f"[blue]{format_bytes(rate)}/s[/blue]"
+                if rate
+                else "[dim]-[/dim]"
             )
-            weight_str = f"[magenta]{weight}[/magenta]" if weight else "[dim]-[/dim]"
+            weight_str = (
+                f"[magenta]{weight}[/magenta]" if weight else "[dim]-[/dim]"
+            )
 
             if is_finished:
                 finished_mark = "[green]✓[/green]"
@@ -367,7 +366,9 @@ class Database:
                 start_display,
                 finish_display,
                 styled_duration(
-                    format_duration_ms(start_time, finish_time) if is_finished else None
+                    format_duration_ms(start_time, finish_time)
+                    if is_finished
+                    else None
                 ),
                 length,
                 rate_str,
@@ -387,8 +388,12 @@ def show(live):
         db.update_t_flow()
 
         layout = Table.grid(padding=(0, 1))
-        layout.add_row(Panel(db.t_app_flows, border_style="cyan", padding=(1, 2)))
-        layout.add_row(Panel(db.t_user_flows, border_style="green", padding=(1, 2)))
+        layout.add_row(
+            Panel(db.t_app_flows, border_style="cyan", padding=(1, 2))
+        )
+        layout.add_row(
+            Panel(db.t_user_flows, border_style="green", padding=(1, 2))
+        )
         layout.add_row(Panel(db.t_node, border_style="yellow", padding=(1, 2)))
         layout.add_row(Panel(db.t_link, border_style="magenta", padding=(1, 2)))
         layout.add_row(Panel(db.t_flow, border_style="blue", padding=(1, 2)))
@@ -426,11 +431,15 @@ if __name__ == "__main__":
     banner.append("\n", style="bold yellow")
     banner.append("NextMini Network Dashboard", style="bold magenta")
     banner.append("\n", style="bold yellow")
-    banner.append(f"Connected to: {DB_HOST}:{DB_PORT}/{DB_NAME}\n", style="cyan")
+    banner.append(
+        f"Connected to: {DB_HOST}:{DB_PORT}/{DB_NAME}\n", style="cyan"
+    )
     banner.append("Press Ctrl+C to exit\n", style="dim")
 
     console.print(
-        Panel(Align.center(banner), border_style="bright_magenta", padding=(1, 2))
+        Panel(
+            Align.center(banner), border_style="bright_magenta", padding=(1, 2)
+        )
     )
     sleep(1)
 

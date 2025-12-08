@@ -30,10 +30,8 @@ if sys.version_info < (3, 13):
 
 # Add routing tools to path (works both in container and on host)
 tools_paths = [
-    "/var/nextmini/tools/routing",  # Container path
-    os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "tools", "routing"
-    ),  # Relative path
+    '/var/nextmini/tools/routing',  # Container path
+    os.path.join(os.path.dirname(__file__), '..', '..', '..', 'tools', 'routing'),  # Relative path
 ]
 
 for path in tools_paths:
@@ -55,12 +53,12 @@ except ImportError as e:
 
 def main():
     """Run waterfilling algorithm for the example."""
-
+    
     print("=" * 60)
     print("Waterfilling Algorithm - Example")
     print(f"Python version: {sys.version}")
     print("=" * 60)
-
+    
     creds = {
         "user": "pgusr",
         "password": "pgpwrd",
@@ -68,7 +66,7 @@ def main():
         "port": "5432",
         "database": "nextmini",
     }
-
+    
     print("\nWaiting for database to be ready...")
     max_retries = 30
     for i in range(max_retries):
@@ -79,12 +77,12 @@ def main():
             break
         except Exception as e:
             if i < max_retries - 1:
-                print(f"  Waiting... ({i + 1}/{max_retries})")
+                print(f"  Waiting... ({i+1}/{max_retries})")
                 time.sleep(2)
             else:
                 print(f"✗ Failed to connect to database: {e}")
                 return 1
-
+    
     print("\n" + "=" * 60)
     print("Starting Waterfilling Algorithm")
     print("=" * 60)
@@ -102,11 +100,14 @@ def main():
     print("  - More route copies → more flows assigned")
     print("  - Traffic distribution matches capacity ratio")
     print("\n" + "=" * 60)
-
-    alg = WaterfillingAlgorithm(creds, max_routes_per_pair=10)
-
+    
+    alg = WaterfillingAlgorithm(
+        creds,
+        max_routes_per_pair=10
+    )
+    
     alg.run(update_interval=10)
-
+    
     return 0
 
 

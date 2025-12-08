@@ -136,10 +136,14 @@ def main():
     optimizer = optim.Adam(ddp_model.parameters(), lr=learning_rate)
 
     for epoch in range(num_epochs):
-        print("World Rank: {}, Epoch: {}, Training...".format(world_rank, epoch))
+        print(
+            "World Rank: {}, Epoch: {}, Training...".format(world_rank, epoch)
+        )
 
         if local_rank == 0:
-            accuracy = evaluate(model=ddp_model, device=device, test_loader=test_loader)
+            accuracy = evaluate(
+                model=ddp_model, device=device, test_loader=test_loader
+            )
 
             print("-" * 75)
             print(
@@ -162,6 +166,7 @@ def main():
             end_time = time.time()
             print(f"Time taken: {end_time - start_time} seconds")
             break
+                
 
 
 if __name__ == "__main__":

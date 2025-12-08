@@ -61,7 +61,9 @@ def main():
     # Check if port 3000 is available
     if not check_port_available(3000):
         print("Port 3000 is already in use!")
-        print("Stop the conflicting service or change the port in docker-compose.yml.")
+        print(
+            "Stop the conflicting service or change the port in docker-compose.yml."
+        )
         sys.exit(1)
 
     # Check if Docker is running
