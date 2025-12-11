@@ -74,16 +74,16 @@ impl QuicServer {
             let remote_addr_snapshot = connection.remote_addr();
             info!("Connection accepted from {:?}.", remote_addr_snapshot);
 
-            // Accept the first stream and read the handshake (node ID)
+            // accepts the first stream and reads the handshake (node ID)
             let first_stream = match connection.accept_bidirectional_stream().await {
                 Ok(Some(stream)) => stream,
                 Ok(None) => {
-                    info!("Connection closed before first stream");
+                    info!("Connection closed before first stream.");
                     connection.close(0u32.into());
                     continue;
                 }
                 Err(e) => {
-                    info!("Failed to accept first stream: {}", e);
+                    info!("Failed to accept first stream: {}.", e);
                     connection.close(0u32.into());
                     continue;
                 }
@@ -93,7 +93,7 @@ impl QuicServer {
             let mut first_stream = first_stream;
 
             if let Err(e) = first_stream.read_exact(&mut node_id_buf).await {
-                info!("Failed to read node ID: {}", e);
+                info!("Failed to read node ID: {}.", e);
                 connection.close(0u32.into());
                 continue;
             }
@@ -105,11 +105,11 @@ impl QuicServer {
                 remote_node_id, num_streams
             );
 
-            // Collect all streams (first one and additional ones).
+            // collects all streams (first one and additional ones)
             let mut streams = Vec::with_capacity(num_streams);
             streams.push(first_stream);
 
-            // Accept remaining streams.
+            // accepts remaining streams
             for i in 1..num_streams {
                 match connection.accept_bidirectional_stream().await {
                     Ok(Some(stream)) => {
