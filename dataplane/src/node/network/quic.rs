@@ -105,11 +105,11 @@ impl QuicServer {
                 remote_node_id, num_streams
             );
 
-            // Collect all streams (first one + additional ones)
+            // Collect all streams (first one and additional ones).
             let mut streams = Vec::with_capacity(num_streams);
             streams.push(first_stream);
 
-            // Accept remaining streams
+            // Accept remaining streams.
             for i in 1..num_streams {
                 match connection.accept_bidirectional_stream().await {
                     Ok(Some(stream)) => {
@@ -117,7 +117,7 @@ impl QuicServer {
                     }
                     Ok(None) => {
                         error!(
-                            "Connection closed before all streams accepted (got {}/{})",
+                            "Connection closed before all streams accepted (got {}/{}).",
                             i, num_streams
                         );
                         connection.close(0u32.into());
@@ -154,7 +154,7 @@ impl QuicServer {
                     .map(|addr| addr.to_string())
                     .unwrap_or_else(|_| "unknown:0".to_string());
                 error!(
-                    "Failed to add node {} with address {}: {}",
+                    "Failed to add node {} with address {}: {}.",
                     remote_node_id, remote_addr_for_log, e
                 );
                 connection.close(0u32.into());
