@@ -28,8 +28,8 @@ MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
 CHUNK_SIZE = 8500 # Standard chunk size
 
 # Sharded Checkpoint (for large models)
-USE_SHARDED_WEIGHTS = os.environ.get("USE_SHARDED_WEIGHTS", "true").lower() == "true"
-SHARD_SIZE = os.environ.get("SHARD_SIZE", "100MB")  # For testing; use 8GB+ for production
+USE_SHARDED_WEIGHTS = os.environ.get("USE_SHARDED_WEIGHTS", "false").lower() == "true"
+SHARD_SIZE = os.environ.get("SHARD_SIZE", "8GB")  # Default shard size for large models
 
 # Model
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
