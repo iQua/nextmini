@@ -134,10 +134,10 @@ impl QuicServer {
                 }
             }
 
-            // handles an inbound connection from a new client with multi-stream
+            // handles an inbound connection from a new client
             let network_interface = NetworkInterfaceHandle::new(
                 config.clone(),
-                NetworkStream::QuicMultiStream(streams),
+                NetworkStream::Quic(streams),
                 processors.clone(),
                 self.reporter.clone(),
                 remote_node_id,
@@ -289,48 +289,6 @@ impl QuicReader {
             .await?;
 
         Ok(Packet::new(msg_len, buf))
-    }
-}
-
-/// An actor that writes packets to a QUIC stream.
-pub struct QuicWriter {
-    stream: SendStream,
-}
-
-impl QuicWriter {
-    pub fn new(stream: SendStream) -> Self {
-        Self { stream }
-    }
-
-    /// Writes multiple packets to the QUIC network stream.
-    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
-        if packets.is_empty() {
-            return Ok(());
-        }
-
-        // first creates IoSlice objects from packet buffers
-        let mut io_slices: Vec<IoSlice> = packets
-            .iter()
-            .map(|packet| IoSlice::new(packet.bytes()))
-            .collect();
-
-        let mut slices = io_slices.as_mut_slice();
-
-        while !slices.is_empty() {
-            let written_this_call = self.stream.write_vectored(slices).await?;
-
-            if written_this_call == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "write_vectored returned 0",
-                ));
-            }
-
-            // advances the slices to skip the written data
-            IoSlice::advance_slices(&mut slices, written_this_call);
-        }
-
-        Ok(())
     }
 }
 
