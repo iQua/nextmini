@@ -247,13 +247,6 @@ pub struct LocalConfig {
     #[arg(long, value_enum)]
     pub protocol: Protocol,
 
-    /// Number of QUIC streams per node pair (for multi-stream mode).
-    /// Each flow is assigned to a stream via hash(flow_id) % num_quic_streams.
-    /// Set to 1 for backward-compatible single-stream behavior.
-    #[default(1)]
-    #[arg(long)]
-    pub num_quic_streams: usize,
-
     /// The scheduling discipline.
     #[default(SchedulingDiscipline::Fifo)]
     #[arg(long, value_enum)]

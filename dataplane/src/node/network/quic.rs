@@ -7,11 +7,14 @@ use std::io::IoSlice;
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use s2n_quic::connection::Handle as QuicConnectionHandle;
 use s2n_quic::provider::congestion_controller;
-use s2n_quic::stream::BidirectionalStream;
+
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
-use tracing::{error, info};
+use tracing::{error, info, trace};
+
+use ahash::AHashMap;
 
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
@@ -21,6 +24,7 @@ use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
+use crate::node::FlowId;
 
 pub struct QuicServer {
     config: LocalConfig,
@@ -69,7 +73,6 @@ impl QuicServer {
             let _ = connection.keep_alive(true);
             let config = self.config.clone();
             let processors = self.processors.clone();
-            let num_streams = config.num_quic_streams.max(1);
 
             let remote_addr_snapshot = connection.remote_addr();
             info!("Connection accepted from {:?}.", remote_addr_snapshot);
@@ -101,53 +104,59 @@ impl QuicServer {
             let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
 
             info!(
-                "Incoming connection from node {} ({} streams expected)...",
-                remote_node_id, num_streams
+                "Incoming connection from node {} (per-flow streams)...",
+                remote_node_id
             );
 
-            // collects all streams (first one and additional ones)
-            let mut streams = Vec::with_capacity(num_streams);
-            streams.push(first_stream);
+            // splits connection into handle (for opening streams) and acceptor (for receiving).
+            let (handle, mut acceptor) = connection.split();
 
-            // accepts remaining streams
-            for i in 1..num_streams {
-                match connection.accept_bidirectional_stream().await {
-                    Ok(Some(stream)) => {
-                        streams.push(stream);
-                    }
-                    Ok(None) => {
-                        error!(
-                            "Connection closed before all streams accepted (got {}/{}).",
-                            i, num_streams
-                        );
-                        connection.close(0u32.into());
-                        continue;
-                    }
-                    Err(e) => {
-                        error!(
-                            "Failed to accept stream {} of {}: {}",
-                            i, num_streams, e
-                        );
-                        connection.close(0u32.into());
-                        continue;
+            // spawns a task to accept incoming streams (for receive side).
+            let proc_clone = processors.clone();
+            tokio::spawn(async move {
+                // processes the handshake stream for reading.
+                let (receive_stream, _send_stream) = first_stream.split();
+                let mut quic_reader = QuicReader::new(receive_stream, proc_clone.clone());
+                tokio::spawn(async move {
+                    quic_reader.run().await;
+                });
+
+                // accepts additional streams as they come.
+                loop {
+                    match acceptor.accept_bidirectional_stream().await {
+                        Ok(Some(stream)) => {
+                            let (receive_stream, _send_stream) = stream.split();
+                            let mut reader = QuicReader::new(receive_stream, proc_clone.clone());
+                            tokio::spawn(async move {
+                                reader.run().await;
+                            });
+                        }
+                        Ok(None) => {
+                            info!("Connection closed by peer.");
+                            break;
+                        }
+                        Err(e) => {
+                            error!("Error accepting stream: {}", e);
+                            break;
+                        }
                     }
                 }
-            }
+            });
 
-            // handles an inbound connection from a new client
+            // handles an inbound connection from a new client with per-flow writer.
             let network_interface = NetworkInterfaceHandle::new(
                 config.clone(),
-                NetworkStream::Quic(streams),
+                NetworkStream::QuicPerFlow(handle),
                 processors.clone(),
                 self.reporter.clone(),
                 remote_node_id,
             )
             .await;
 
-            // creates the scheduler handle
+            // creates the scheduler handle.
             let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
-            // adds the scheduler to send packets to the new node
+            // adds the scheduler to send packets to the new node.
             if let Err(e) = processors.add_node(remote_node_id, scheduler) {
                 let remote_addr_for_log = remote_addr_snapshot
                     .as_ref()
@@ -157,13 +166,12 @@ impl QuicServer {
                     "Failed to add node {} with address {}: {}.",
                     remote_node_id, remote_addr_for_log, e
                 );
-                connection.close(0u32.into());
                 continue;
             }
 
             info!(
-                "Connected to node {} with QUIC ({} streams).",
-                remote_node_id, num_streams
+                "Connected to node {} with QUIC (per-flow streams).",
+                remote_node_id
             );
         }
     }
@@ -174,10 +182,15 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    /// Connects to a remote node and opens `num_quic_streams` bidirectional streams.
-    /// The first stream is used for the handshake (sending local node ID).
-    /// Returns a Vec of streams for multi-stream packet dispatch.
-    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> Vec<BidirectionalStream> {
+    /// Connects to a remote node and returns a connection Handle for per-flow stream creation.
+    /// Opens one handshake stream to send the local node ID.
+    /// Returns the connection Handle for dynamic stream creation per flow_id.
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+        processors: ProcessorHandle,
+    ) -> QuicConnectionHandle {
         let client = Client::builder()
             .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
@@ -189,7 +202,7 @@ impl QuicClient {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
 
-        let mut connection = loop {
+        let connection = loop {
             let addr: SocketAddr = remote_addr.parse().unwrap();
             let connect = client::Connect::new(addr).with_server_name("Nextmini");
 
@@ -218,36 +231,63 @@ impl QuicClient {
             }
         };
 
-        let num_streams = self.config.num_quic_streams.max(1);
-        let mut streams = Vec::with_capacity(num_streams);
-
-        // Open all streams
-        for i in 0..num_streams {
-            let stream = connection
-                .open_bidirectional_stream()
-                .await
-                .expect(&format!("Failed to open QUIC stream {}", i));
-            streams.push(stream);
-        }
-
         info!(
-            "Connecting to node {} with QUIC ({} streams)...",
-            remote_node_id, num_streams
+            "Connecting to node {} with QUIC (per-flow streams)...",
+            remote_node_id
         );
 
-        // Send handshake on the first stream
+        // splits connection into handle (for sending) and acceptor (for receiving)
+        let (mut handle, mut acceptor) = connection.split();
+
+        // opens and sends handshake on first stream
+        let mut handshake_stream = handle
+            .open_bidirectional_stream()
+            .await
+            .expect("Failed to open handshake stream");
+
         let local_node_id = self.config.node_id;
-        streams[0]
+        handshake_stream
             .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
             .await
             .expect("Failed to send local node id to the node");
 
+        // spawns receiver task to handle incoming streams
+        tokio::spawn(async move {
+            // processes handshake stream for reading
+            let (receive_stream, _send_stream) = handshake_stream.split();
+            let mut quic_reader = QuicReader::new(receive_stream, processors.clone());
+            tokio::spawn(async move {
+                quic_reader.run().await;
+            });
+
+            // accepts additional streams as they come
+            loop {
+                match acceptor.accept_bidirectional_stream().await {
+                    Ok(Some(stream)) => {
+                        let (receive_stream, _send_stream) = stream.split();
+                        let mut reader = QuicReader::new(receive_stream, processors.clone());
+                        tokio::spawn(async move {
+                            reader.run().await;
+                        });
+                    }
+                    Ok(None) => {
+                        info!("Connection closed by peer.");
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Error accepting stream: {}.", e);
+                        break;
+                    }
+                }
+            }
+        });
+
         info!(
-            "Connected to node {} with QUIC ({} streams).",
-            remote_node_id, num_streams
+            "Connected to node {} with QUIC (per-flow streams).",
+            remote_node_id
         );
 
-        streams
+        handle
     }
 }
 
@@ -292,75 +332,75 @@ impl QuicReader {
     }
 }
 
-/// An actor that writes packets to multiple QUIC streams with flow-based dispatch.
-/// Uses hash(flow_id) % num_streams to select which stream to use for each packet.
-pub struct QuicMultiWriter {
-    streams: Vec<SendStream>,
+/// Per-flow QUIC writer that dynamically creates one stream per flow_id.
+/// Each unique flow_id gets its own dedicated QUIC stream for true HoL blocking avoidance.
+pub struct QuicPerFlowWriter {
+    /// Connection handle for opening new streams
+    handle: QuicConnectionHandle,
+    /// Map from flow_id to its dedicated send stream
+    streams: AHashMap<FlowId, SendStream>,
 }
 
-impl QuicMultiWriter {
-    pub fn new(streams: Vec<SendStream>) -> Self {
-        Self { streams }
+impl QuicPerFlowWriter {
+    pub fn new(handle: QuicConnectionHandle) -> Self {
+        Self {
+            handle,
+            streams: AHashMap::new(),
+        }
     }
 
-    /// Selects a stream index based on flow_id using simple modulo hash
-    #[inline]
-    fn select_stream(&self, flow_id: u128, num_streams: usize) -> usize {
-        (flow_id as usize) % num_streams
+    /// Gets or creates a stream for the given flow_id.
+    /// Returns None if stream creation fails.
+    async fn get_or_create_stream(&mut self, flow_id: FlowId) -> Option<&mut SendStream> {
+        if !self.streams.contains_key(&flow_id) {
+            match self.handle.open_bidirectional_stream().await {
+                Ok(stream) => {
+                    let (_recv, send) = stream.split();
+                    trace!(flow_id = flow_id, "Opened new QUIC stream for flow");
+                    self.streams.insert(flow_id, send);
+                }
+                Err(e) => {
+                    error!(flow_id = flow_id, error = %e, "Failed to open QUIC stream for flow");
+                    return None;
+                }
+            }
+        }
+        self.streams.get_mut(&flow_id)
     }
 
-    /// Writes multiple packets to the appropriate QUIC streams based on flow_id.
-    /// Packets are grouped by their target stream and written in PARALLEL.
+    /// Writes packets to their respective per-flow streams.
+    /// Creates new streams on-demand for new flow_ids.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         if packets.is_empty() {
             return Ok(());
         }
 
-        let num_streams = self.streams.len();
-
-        // For single stream, use the simple fast path
-        if num_streams == 1 {
-            return Self::write_packets_to_stream(&mut self.streams[0], packets).await;
-        }
-
-        // Group packets by target stream
-        let mut stream_packets: Vec<Vec<Packet>> = vec![Vec::new(); num_streams];
+        // groups packets by flow_id
+        let mut flow_packets: AHashMap<FlowId, Vec<Packet>> = AHashMap::new();
         for packet in packets {
-            let stream_idx = self.select_stream(packet.flow_id, num_streams);
-            stream_packets[stream_idx].push(packet);
+            flow_packets.entry(packet.flow_id).or_default().push(packet);
         }
 
-        // Write to ALL streams in PARALLEL using futures
-        let write_futures: Vec<_> = self.streams
-            .iter_mut()
-            .zip(stream_packets.into_iter())
-            .filter_map(|(stream, packets)| {
-                if packets.is_empty() {
-                    None
-                } else {
-                    Some(Self::write_packets_to_stream(stream, packets))
-                }
-            })
-            .collect();
-
-        // Wait for all writes to complete
-        let results = futures::future::join_all(write_futures).await;
-        
-        // Check for any errors
-        for result in results {
-            result?;
+        // writes each group to its dedicated stream
+        for (flow_id, packets) in flow_packets {
+            if let Some(stream) = self.get_or_create_stream(flow_id).await {
+                Self::write_packets_to_stream(stream, packets).await?;
+            } else {
+                // packets are dropped if stream creation fails
+                error!(flow_id = flow_id, count = packets.len(), "Dropping packets due to stream creation failure.");
+            }
         }
 
         Ok(())
     }
 
-    /// Writes packets to a specific stream (static method to avoid borrow issues)
+    /// Writes packets to a specific stream
     async fn write_packets_to_stream(stream: &mut SendStream, packets: Vec<Packet>) -> Result<()> {
         if packets.is_empty() {
             return Ok(());
         }
 
-        // Creates IoSlice objects from packet buffers
+        // creates IoSlice objects from packet buffers.
         let mut io_slices: Vec<IoSlice> = packets
             .iter()
             .map(|packet| IoSlice::new(packet.bytes()))
@@ -378,10 +418,11 @@ impl QuicMultiWriter {
                 ));
             }
 
-            // Advances the slices to skip the written data
+            // advances the slices to skip the written data.
             IoSlice::advance_slices(&mut slices, written_this_call);
         }
 
         Ok(())
     }
 }
+

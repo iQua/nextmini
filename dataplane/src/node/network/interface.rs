@@ -2,7 +2,7 @@ use std::io::Error;
 
 use tokio::net::TcpStream;
 
-use s2n_quic::stream::BidirectionalStream;
+use s2n_quic::connection::Handle as QuicConnectionHandle;
 
 use nextmini_messages::Protocol;
 
@@ -10,7 +10,7 @@ use ahash::AHashMap;
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
-use crate::node::network::quic::{QuicClient, QuicMultiWriter, QuicReader};
+use crate::node::network::quic::{QuicClient, QuicPerFlowWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::network::udp::{UdpClient, UdpReader, UdpStream, UdpWriter};
 use crate::node::packet::Packet;
@@ -19,15 +19,15 @@ use crate::node::{FlowId, NodeId};
 
 pub enum NetworkStream {
     Tcp(TcpStream),
-    /// QUIC streams per connection (supports multi-stream mode)
-    Quic(Vec<BidirectionalStream>),
+    /// QUIC per-flow mode: connection handle for dynamic stream creation
+    QuicPerFlow(QuicConnectionHandle),
     Udp(UdpStream),
 }
 
 pub enum ProtocolWriter {
     Tcp(TcpWriter),
-    /// Multi-stream QUIC writer for flow-based dispatch
-    Quic(QuicMultiWriter),
+    /// Per-flow QUIC writer that creates streams dynamically per flow_id
+    Quic(QuicPerFlowWriter),
     Udp(UdpWriter),
 }
 
@@ -163,11 +163,11 @@ impl NetworkInterface {
                     config: self.config.clone(),
                 };
 
-                let quic_streams = quic_client
-                    .connect(remote_node_id, remote_addr.as_str())
+                let quic_handle = quic_client
+                    .connect(remote_node_id, remote_addr.as_str(), self.processors.clone())
                     .await;
 
-                self.init(NetworkStream::Quic(quic_streams))
+                self.init(NetworkStream::QuicPerFlow(quic_handle))
             }
             Protocol::Udp => {
                 let udp_client = UdpClient {
@@ -197,23 +197,10 @@ impl NetworkInterface {
 
                 ProtocolWriter::Tcp(tcp_writer)
             }
-            NetworkStream::Quic(streams) => {
-                // splits all streams and spawn readers for each
-                let mut send_streams = Vec::with_capacity(streams.len());
-                
-                for stream in streams {
-                    let (receive_stream, send_stream) = stream.split();
-                    send_streams.push(send_stream);
-                    
-                    // spawns a reader for each receive stream
-                    let mut quic_reader = QuicReader::new(receive_stream, self.processors.clone());
-                    tokio::spawn(async move {
-                        quic_reader.run().await;
-                    });
-                }
-                
-                // creates multi-writer with all send streams
-                let quic_writer = QuicMultiWriter::new(send_streams);
+            NetworkStream::QuicPerFlow(handle) => {
+                // Per-flow mode: readers are already spawned by QuicServer/QuicClient.
+                // Just create the per-flow writer with the connection handle.
+                let quic_writer = QuicPerFlowWriter::new(handle);
                 ProtocolWriter::Quic(quic_writer)
             }
             NetworkStream::Udp(udp_stream) => {
