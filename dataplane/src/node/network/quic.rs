@@ -69,54 +69,102 @@ impl QuicServer {
             let _ = connection.keep_alive(true);
             let config = self.config.clone();
             let processors = self.processors.clone();
+            let num_streams = config.num_quic_streams.max(1);
 
             let remote_addr_snapshot = connection.remote_addr();
             info!("Connection accepted from {:?}.", remote_addr_snapshot);
 
-            if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
-                let mut node_id_buf: [u8; 8] = [0; 8];
-
-                if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                    info!("Failed to read node ID: {}", e);
-                    connection.close(0u32.into());
-                    return;
-                }
-
-                let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
-
-                info!("Incoming connection from node {}...", remote_node_id);
-
-                // handles an inbound connection from a new client
-                let network_interface = NetworkInterfaceHandle::new(
-                    config.clone(),
-                    NetworkStream::Quic(stream),
-                    processors.clone(),
-                    self.reporter.clone(),
-                    remote_node_id,
-                )
-                .await;
-
-                // creates the scheduler handle
-                let scheduler = SchedulerHandle::new(config.clone(), network_interface);
-
-                // adds the scheduler to send packets to the new node
-                if let Err(e) = processors.add_node(remote_node_id, scheduler) {
-                    let remote_addr_for_log = remote_addr_snapshot
-                        .as_ref()
-                        .map(|addr| addr.to_string())
-                        .unwrap_or_else(|_| "unknown:0".to_string());
-                    error!(
-                        "Failed to add node {} with address {}: {}",
-                        remote_node_id, remote_addr_for_log, e
-                    );
+            // Accept the first stream and read the handshake (node ID)
+            let first_stream = match connection.accept_bidirectional_stream().await {
+                Ok(Some(stream)) => stream,
+                Ok(None) => {
+                    info!("Connection closed before first stream");
                     connection.close(0u32.into());
                     continue;
                 }
+                Err(e) => {
+                    info!("Failed to accept first stream: {}", e);
+                    connection.close(0u32.into());
+                    continue;
+                }
+            };
 
-                info!("Connected to node {} with QUIC.", remote_node_id);
-            } else {
+            let mut node_id_buf: [u8; 8] = [0; 8];
+            let mut first_stream = first_stream;
+
+            if let Err(e) = first_stream.read_exact(&mut node_id_buf).await {
+                info!("Failed to read node ID: {}", e);
                 connection.close(0u32.into());
+                continue;
             }
+
+            let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
+
+            info!(
+                "Incoming connection from node {} ({} streams expected)...",
+                remote_node_id, num_streams
+            );
+
+            // Collect all streams (first one + additional ones)
+            let mut streams = Vec::with_capacity(num_streams);
+            streams.push(first_stream);
+
+            // Accept remaining streams
+            for i in 1..num_streams {
+                match connection.accept_bidirectional_stream().await {
+                    Ok(Some(stream)) => {
+                        streams.push(stream);
+                    }
+                    Ok(None) => {
+                        error!(
+                            "Connection closed before all streams accepted (got {}/{})",
+                            i, num_streams
+                        );
+                        connection.close(0u32.into());
+                        continue;
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to accept stream {} of {}: {}",
+                            i, num_streams, e
+                        );
+                        connection.close(0u32.into());
+                        continue;
+                    }
+                }
+            }
+
+            // handles an inbound connection from a new client with multi-stream
+            let network_interface = NetworkInterfaceHandle::new(
+                config.clone(),
+                NetworkStream::QuicMultiStream(streams),
+                processors.clone(),
+                self.reporter.clone(),
+                remote_node_id,
+            )
+            .await;
+
+            // creates the scheduler handle
+            let scheduler = SchedulerHandle::new(config.clone(), network_interface);
+
+            // adds the scheduler to send packets to the new node
+            if let Err(e) = processors.add_node(remote_node_id, scheduler) {
+                let remote_addr_for_log = remote_addr_snapshot
+                    .as_ref()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|_| "unknown:0".to_string());
+                error!(
+                    "Failed to add node {} with address {}: {}",
+                    remote_node_id, remote_addr_for_log, e
+                );
+                connection.close(0u32.into());
+                continue;
+            }
+
+            info!(
+                "Connected to node {} with QUIC ({} streams).",
+                remote_node_id, num_streams
+            );
         }
     }
 }
@@ -126,7 +174,10 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
+    /// Connects to a remote node and opens `num_quic_streams` bidirectional streams.
+    /// The first stream is used for the handshake (sending local node ID).
+    /// Returns a Vec of streams for multi-stream packet dispatch.
+    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> Vec<BidirectionalStream> {
         let client = Client::builder()
             .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
@@ -167,23 +218,36 @@ impl QuicClient {
             }
         };
 
-        let mut stream = connection
-            .open_bidirectional_stream()
-            .await
-            .expect("Failed to establish handshake stream");
+        let num_streams = self.config.num_quic_streams.max(1);
+        let mut streams = Vec::with_capacity(num_streams);
 
-        info!("Connecting to node {} with QUIC...", remote_node_id);
+        // Open all streams
+        for i in 0..num_streams {
+            let stream = connection
+                .open_bidirectional_stream()
+                .await
+                .expect(&format!("Failed to open QUIC stream {}", i));
+            streams.push(stream);
+        }
 
+        info!(
+            "Connecting to node {} with QUIC ({} streams)...",
+            remote_node_id, num_streams
+        );
+
+        // Send handshake on the first stream
         let local_node_id = self.config.node_id;
-
-        stream
+        streams[0]
             .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
             .await
             .expect("Failed to send local node id to the node");
 
-        info!("Connected to node {} with QUIC.", remote_node_id);
+        info!(
+            "Connected to node {} with QUIC ({} streams).",
+            remote_node_id, num_streams
+        );
 
-        stream
+        streams
     }
 }
 
@@ -263,6 +327,100 @@ impl QuicWriter {
             }
 
             // advances the slices to skip the written data
+            IoSlice::advance_slices(&mut slices, written_this_call);
+        }
+
+        Ok(())
+    }
+}
+
+/// An actor that writes packets to multiple QUIC streams with flow-based dispatch.
+/// Uses hash(flow_id) % num_streams to select which stream to use for each packet.
+pub struct QuicMultiWriter {
+    streams: Vec<SendStream>,
+}
+
+impl QuicMultiWriter {
+    pub fn new(streams: Vec<SendStream>) -> Self {
+        Self { streams }
+    }
+
+    /// Selects a stream index based on flow_id using simple modulo hash
+    #[inline]
+    fn select_stream(&self, flow_id: u128, num_streams: usize) -> usize {
+        (flow_id as usize) % num_streams
+    }
+
+    /// Writes multiple packets to the appropriate QUIC streams based on flow_id.
+    /// Packets are grouped by their target stream and written in PARALLEL.
+    pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        let num_streams = self.streams.len();
+
+        // For single stream, use the simple fast path
+        if num_streams == 1 {
+            return Self::write_packets_to_stream(&mut self.streams[0], packets).await;
+        }
+
+        // Group packets by target stream
+        let mut stream_packets: Vec<Vec<Packet>> = vec![Vec::new(); num_streams];
+        for packet in packets {
+            let stream_idx = self.select_stream(packet.flow_id, num_streams);
+            stream_packets[stream_idx].push(packet);
+        }
+
+        // Write to ALL streams in PARALLEL using futures
+        let write_futures: Vec<_> = self.streams
+            .iter_mut()
+            .zip(stream_packets.into_iter())
+            .filter_map(|(stream, packets)| {
+                if packets.is_empty() {
+                    None
+                } else {
+                    Some(Self::write_packets_to_stream(stream, packets))
+                }
+            })
+            .collect();
+
+        // Wait for all writes to complete
+        let results = futures::future::join_all(write_futures).await;
+        
+        // Check for any errors
+        for result in results {
+            result?;
+        }
+
+        Ok(())
+    }
+
+    /// Writes packets to a specific stream (static method to avoid borrow issues)
+    async fn write_packets_to_stream(stream: &mut SendStream, packets: Vec<Packet>) -> Result<()> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+
+        // Creates IoSlice objects from packet buffers
+        let mut io_slices: Vec<IoSlice> = packets
+            .iter()
+            .map(|packet| IoSlice::new(packet.bytes()))
+            .collect();
+
+        let mut slices = io_slices.as_mut_slice();
+
+        while !slices.is_empty() {
+            let written_this_call = stream.write_vectored(slices).await?;
+
+            if written_this_call == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "write_vectored returned 0",
+                ));
+            }
+
+            // Advances the slices to skip the written data
             IoSlice::advance_slices(&mut slices, written_this_call);
         }
 
