@@ -1,0 +1,13 @@
+[project]
+name = "lp-multicast"
+version = "0.1.0"
+description = "LP-computed multicast trees for Nextmini"
+readme = "README.md"
+requires-python = "==3.13.*"
+dependencies = [
+    "tomli",
+    "psycopg2-binary",
+    "cvxopt",
+    "numpy",
+    "Mosek",
+]
