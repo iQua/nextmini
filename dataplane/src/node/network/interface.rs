@@ -1,12 +1,10 @@
 use std::io::Error;
 
+use ahash::AHashMap;
+use s2n_quic::connection::Handle as QuicConnectionHandle;
 use tokio::net::TcpStream;
 
-use s2n_quic::connection::Handle as QuicConnectionHandle;
-
 use nextmini_messages::Protocol;
-
-use ahash::AHashMap;
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
