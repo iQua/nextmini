@@ -344,9 +344,8 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         // Compute deterministic session_id for multicast to match the sender
-        let sid = session_id.unwrap_or_else(|| {
-            session_id_for_multicast(ip, source_node_id, sp, dp)
-        });
+        let sid =
+            session_id.unwrap_or_else(|| session_id_for_multicast(ip, source_node_id, sp, dp));
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable_runtime {
@@ -426,9 +425,8 @@ impl Dataplane {
         let ip = parse_ipv4(&dest_ip)?;
 
         // Compute deterministic session_id for multicast to match the sender
-        let sid = session_id.unwrap_or_else(|| {
-            session_id_for_multicast(ip, source_node_id, sp, dp)
-        });
+        let sid =
+            session_id.unwrap_or_else(|| session_id_for_multicast(ip, source_node_id, sp, dp));
 
         #[cfg(feature = "python-extension")]
         {
@@ -442,7 +440,6 @@ impl Dataplane {
                 let netmask = self.cfg.local_netmask;
 
                 return future_into_py(py, async move {
-
                     // Check if session ID is already known
                     let mut resolved_sid = session_id;
                     if resolved_sid.is_none() {
