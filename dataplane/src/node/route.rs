@@ -232,11 +232,11 @@ impl RoutingTable {
             .ok_or_else(|| "Unable to build route key for flow".to_string())?;
 
         // If an explicit route was bound for this flow, use it directly.
-        if let Some(route_id) = self.forced_routes.get(&flow_id)
-            && let Some(next_hops) = self.route_next_hop.get(route_id)
-        {
-            self.cache.insert(flow_id, *route_id);
-            return Self::copy_next_hops(*route_id, next_hops);
+        if let Some(route_id) = self.forced_routes.get(&flow_id) {
+            if let Some(next_hops) = self.route_next_hop.get(route_id) {
+                self.cache.insert(flow_id, *route_id);
+                return Self::copy_next_hops(*route_id, next_hops);
+            }
         }
 
         let route_id = self
