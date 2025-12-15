@@ -1,10 +1,10 @@
-use bytes::Bytes;
+use std::collections::VecDeque;
+use std::io::{Error as IoError, IoSlice};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use std::collections::VecDeque;
-use std::io::{Error as IoError, ErrorKind, IoSlice};
+use bytes::Bytes;
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -373,14 +373,13 @@ impl QuicPerFlowWriter {
         }
 
         // evicts oldest if we're at capacity.
-        if self.streams.len() >= Self::MAX_OPEN_STREAMS {
-            if let Some(evicted_flow) = self.lru.pop_front() {
-                if let Some(mut old_stream) = self.streams.remove(&evicted_flow) {
-                    // Finish the send side to release stream credit; ignore errors.
-                    if let Err(e) = old_stream.finish() {
-                        warn!(flow_id = evicted_flow, error = %e, "Failed to finish QUIC stream during eviction");
-                    }
-                }
+        if self.streams.len() >= Self::MAX_OPEN_STREAMS
+            && let Some(evicted_flow) = self.lru.pop_front()
+            && let Some(mut old_stream) = self.streams.remove(&evicted_flow)
+        {
+            // Finish the send side to release stream credit; ignore errors.
+            if let Err(e) = old_stream.finish() {
+                warn!(flow_id = evicted_flow, error = %e, "Failed to finish QUIC stream during eviction");
             }
         }
 
@@ -396,7 +395,7 @@ impl QuicPerFlowWriter {
             }
             Err(e) => {
                 error!(flow_id = flow_id, error = %e, "Failed to open QUIC stream for flow");
-                Err(IoError::new(ErrorKind::Other, e.to_string()))
+                Err(IoError::other(e.to_string()))
             }
         }
     }
