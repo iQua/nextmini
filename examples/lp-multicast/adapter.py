@@ -93,8 +93,8 @@ class NextminiAdapter:
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO groups (label, src_node_id, group_ip, is_lp_managed)
-                VALUES (%s, %s, %s, TRUE)
+                INSERT INTO groups (label, src_node_id, group_ip)
+                VALUES (%s, %s, %s)
                 RETURNING id, label, src_node_id, group_ip
                 """,
                 (label, src_node_id, group_ip)
@@ -190,17 +190,17 @@ class NextminiAdapter:
             self.conn.commit()
     
     def clear_all_groups(self) -> int:
-        """Delete only LP-managed groups (is_lp_managed = TRUE)."""
+        """Delete all multicast groups."""
         with self.conn.cursor() as cur:
-            # Get LP-managed group IDs
-            cur.execute("SELECT id FROM groups WHERE is_lp_managed = TRUE")
-            lp_groups = [row[0] for row in cur.fetchall()]
+            # Get all group IDs
+            cur.execute("SELECT id FROM groups")
+            all_groups = [row[0] for row in cur.fetchall()]
             
-            # Delete their routes, members, and groups (CASCADE should handle this, but explicit is safer)
-            for gid in lp_groups:
+            # Delete their routes, members, and groups
+            for gid in all_groups:
                 cur.execute("DELETE FROM group_routes WHERE group_id = %s", (gid,))
                 cur.execute("DELETE FROM group_members WHERE group_id = %s", (gid,))
                 cur.execute("DELETE FROM groups WHERE id = %s", (gid,))
             
             self.conn.commit()
-            return len(lp_groups)
+            return len(all_groups)

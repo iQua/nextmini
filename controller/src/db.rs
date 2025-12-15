@@ -144,7 +144,6 @@ async fn create_db(pool: &Pool<Postgres>) {
             label TEXT UNIQUE NOT NULL,
             src_node_id INTEGER NOT NULL,
             group_ip TEXT UNIQUE NOT NULL,
-            is_lp_managed BOOLEAN NOT NULL DEFAULT FALSE,
             created_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW())::BIGINT*1000)
         )
         "#,
@@ -493,7 +492,7 @@ pub async fn create_group(
         r#"
         INSERT INTO groups (id, label, src_node_id, group_ip)
         VALUES ($1, $2, $3, $4)
-        RETURNING id, label, src_node_id, group_ip, is_lp_managed
+        RETURNING id, label, src_node_id, group_ip
         "#,
     )
     .bind(next_id as i32)
@@ -547,7 +546,7 @@ pub async fn remove_group_member(
 pub async fn load_group_directory(db_pool: &Pool<Postgres>) -> AnyResult<Vec<Group>> {
     let groups = sqlx::query_as::<_, Group>(
         r#"
-        SELECT id, label, src_node_id, group_ip, is_lp_managed
+        SELECT id, label, src_node_id, group_ip
         FROM groups
         ORDER BY id
         "#,
@@ -802,7 +801,7 @@ async fn recompute_and_push_group_routes(
     node_ws: &NodeWriterMap,
 ) -> AnyResult<()> {
     let Some(group) = sqlx::query_as::<_, Group>(
-        "SELECT id, label, src_node_id, group_ip, is_lp_managed FROM groups WHERE id = $1",
+        "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
     )
     .bind(group_id)
     .fetch_optional(db_pool)
@@ -841,73 +840,21 @@ async fn recompute_and_push_group_routes(
     let member_node_ids: Vec<u32> = members.iter().map(|m| m.node_id as u32).collect();
     let member_node_set: HashSet<u32> = member_node_ids.iter().copied().collect();
 
-    // If group is LP-managed and edges exist, use them directly.
-    // Otherwise, recompute from unicast routes to members.
-    let dag_edges: Vec<(u32, u32)> = if group.is_lp_managed && !previous_edges.is_empty() {
-        // uses existing edges calculated by LP
+    // Use pre-injected edges from group_routes (LP computed).
+    // If no edges exist, the group has no routes to push.
+    let dag_edges: Vec<(u32, u32)> = if !previous_edges.is_empty() {
         info!(
-            "Using pre-injected edges for group {} (LP mode): {} edges",
+            "Using pre-injected edges for group {}: {} edges",
             group_id,
             previous_edges.len()
         );
         previous_edges.clone()
     } else {
-        // recomputes DAG from unicast routes to members
-        let mut dag_edges_set: HashSet<(u32, u32)> = HashSet::new();
-
-        for member in &member_node_ids {
-            let route_row = sqlx::query(
-                r#"SELECT edges FROM routes WHERE src_node_id = $1 AND dst_node_id = $2 ORDER BY route_id LIMIT 1"#,
-            )
-            .bind(group.src_node_id)
-            .bind(*member as i32)
-            .fetch_optional(db_pool)
-            .await?;
-
-            let Some(row) = route_row else {
-                warn!(
-                    "No unicast route from {} to member {} when recomputing multicast group {}.",
-                    group.src_node_id, member, group_id
-                );
-                continue;
-            };
-
-            let edges_json: serde_json::Value = row.get("edges");
-            let edges_i32: Vec<(i32, i32)> = serde_json::from_value(edges_json).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to decode route edges for multicast member {} in group {}: {}",
-                    member,
-                    group_id,
-                    e
-                )
-            })?;
-
-            if edges_i32.is_empty() {
-                warn!(
-                    "Route from {} to member {} has no edges; skipping in multicast DAG.",
-                    group.src_node_id, member
-                );
-                continue;
-            }
-
-            for (from, to) in edges_i32 {
-                dag_edges_set.insert((from as u32, to as u32));
-            }
-        }
-
-        let mut edges: Vec<(u32, u32)> = dag_edges_set.into_iter().collect();
-        edges.sort_unstable();
-
-        // Persist computed DAG edges (even empty) for audit and diff.
-        let dag_json = serde_json::to_value(
-            edges
-                .iter()
-                .map(|(a, b)| [(*a), (*b)])
-                .collect::<Vec<[u32; 2]>>(),
-        )?;
-        upsert_group_routes(db_pool, group_id, group.src_node_id, dag_json).await?;
-
-        edges
+        warn!(
+            "No edges found in group_routes for group {}. Skipping route push.",
+            group_id
+        );
+        return Ok(());
     };
 
     let mut dag_nodes: HashSet<u32> = HashSet::new();

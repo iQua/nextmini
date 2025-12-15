@@ -46,7 +46,6 @@ pub struct Group {
     pub label: String,
     pub src_node_id: i32,
     pub group_ip: String,
-    pub is_lp_managed: bool,
 }
 
 #[allow(dead_code)]
