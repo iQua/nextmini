@@ -366,7 +366,8 @@ impl QuicPerFlowWriter {
         // fast path: stream exists, mark recent use
         if self.streams.contains_key(&flow_id) {
             self.mark_used(flow_id);
-            // Safe unwrap; we just checked.
+
+            // safe unwrap; we just checked
             return Ok(self.streams.get_mut(&flow_id).unwrap());
         }
 
@@ -381,14 +382,14 @@ impl QuicPerFlowWriter {
             }
         }
 
-        // creates a fresh bidirectional stream for this flow
-        match self.handle.open_bidirectional_stream().await {
-            Ok(stream) => {
-                let (_recv, send) = stream.split();
+        // creates a fresh unidirectional send stream for this flow
+        match self.handle.open_send_stream().await {
+            Ok(send) => {
                 trace!(flow_id = flow_id, "Opened new QUIC stream for flow");
                 self.streams.insert(flow_id, send);
                 self.mark_used(flow_id);
-                // Safe unwrap; just inserted.
+
+                // safe unwrap; just inserted
                 Ok(self.streams.get_mut(&flow_id).unwrap())
             }
             Err(e) => {
@@ -427,7 +428,14 @@ impl QuicPerFlowWriter {
             if let Err(e) = Self::write_packets_to_stream(stream, packets).await {
                 // drops the broken stream to allow future recreation
                 self.streams.remove(&flow_id);
+
+                // also removes from LRU to maintain consistency
+                if let Some(pos) = self.lru.iter().position(|f| *f == flow_id) {
+                    self.lru.remove(pos);
+                }
+
                 warn!(flow_id = flow_id, error = %e, "QUIC stream write failed; stream removed and packets not sent");
+
                 return Err(e);
             }
         }
