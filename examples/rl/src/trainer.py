@@ -1,6 +1,10 @@
 import pickle
 import time
 import io
+import os
+import json
+import tempfile
+from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
@@ -290,10 +294,168 @@ class Trainer:
             'throughput_gbps': throughput_gbps
         }
 
+    def broadcast_weights_sharded(self):
+        """Broadcast model weights using sharded checkpoints for large models.
+        
+        This method saves the model as multiple shard files and sends them
+        one by one, avoiding OOM for 32GB+ models.
+        """
+        print("Broadcasting weights using SHARDED CHECKPOINT mode...")
+        
+        weight_broadcast_start = time.time()
+        
+        receiver_ids = [conn['node_id'] for conn in self.worker_connections]
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            
+            # 1. Save model as sharded checkpoint
+            print(f"Saving model as sharded checkpoint (max_shard_size={config.SHARD_SIZE})...")
+            save_start = time.time()
+            self.policy_model.save_pretrained(
+                str(tmpdir),
+                max_shard_size=config.SHARD_SIZE,
+                safe_serialization=True
+            )
+            save_time = time.time() - save_start
+            print(f"Model saved in {save_time:.2f}s")
+            
+            # 2. Find shard files and index
+            shard_files = sorted(tmpdir.glob("*.safetensors"))
+            index_file = tmpdir / "model.safetensors.index.json"
+            
+            # Check if model is actually sharded (small models won't be)
+            if not index_file.exists():
+                # Single file mode - model is too small for sharding
+                print("Model is not sharded (too small). Using single file mode.")
+                shard_files = sorted(tmpdir.glob("*.safetensors"))
+                num_shards = len(shard_files)
+                index_data = None
+            else:
+                with open(index_file, 'r') as f:
+                    index_data = f.read()
+                num_shards = len(shard_files)
+                print(f"Model sharded into {num_shards} files")
+            
+            # Read config.json (required for from_pretrained)
+            config_file = tmpdir / "config.json"
+            if config_file.exists():
+                with open(config_file, 'r') as f:
+                    config_json_data = f.read()
+            else:
+                raise RuntimeError("config.json not found in saved checkpoint")
+            
+            # 3. Notify workers about sharded transfer
+            total_size = sum(f.stat().st_size for f in shard_files)
+            shard_names = [f.name for f in shard_files]
+            shard_sizes = {f.name: f.stat().st_size for f in shard_files}
+            shard_sizes["config.json"] = len(config_json_data.encode('utf-8'))
+            if index_data is not None:
+                shard_sizes["index"] = len(index_data.encode('utf-8'))
+            
+            errors = []
+            def handshake_worker(i):
+                with self.worker_locks[i]:
+                    self.send_to_worker(i, {
+                        "type": "WEIGHT_METADATA_SHARDED",
+                        "group_id": self.group_id,
+                        "group_ip": self.group_ip,
+                        "num_shards": num_shards,
+                        "shard_names": shard_names,
+                        "shard_sizes": shard_sizes,
+                        "has_index": index_data is not None,
+                        "total_size": total_size,
+                        "src_node_id": config.TRAINER_NODE_ID
+                    })
+                    try:
+                        msg = self.recv_from_worker(i, timeout_ms=120000, 
+                                                    expected_type="READY_FOR_SHARDED_MULTICAST")
+                        if not msg:
+                            raise RuntimeError(f"Worker {i} failed to reply READY")
+                        print(f"Worker {i} ready for sharded transfer", flush=True)
+                    except Exception as e:
+                        errors.append(e)
+                        raise e
+            
+            # Parallel handshake
+            threads = [threading.Thread(target=handshake_worker, args=(i,)) 
+                       for i in range(len(self.worker_connections))]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            if errors:
+                raise RuntimeError(f"Handshake failed: {errors}")
+            
+            # 4. Send config.json first (required for from_pretrained)
+            transfer_start = time.time()
+            print("Sending config.json...")
+            config_bytes = config_json_data.encode('utf-8')
+            self._send_shard_data("config.json", config_bytes, receiver_ids)
+            
+            # 5. Send index (if exists)
+            if index_data is not None:
+                print("Sending index file...")
+                index_bytes = index_data.encode('utf-8')
+                self._send_shard_data("index", index_bytes, receiver_ids)
+            
+            # 6. Send each shard
+            for shard_path in shard_files:
+                shard_data = shard_path.read_bytes()
+                print(f"Sending shard {shard_path.name} ({len(shard_data)/1024/1024:.1f} MB)...")
+                self._send_shard_data(shard_path.name, shard_data, receiver_ids)
+            
+            transfer_end = time.time()
+        
+        weight_broadcast_end = time.time()
+        total_time = weight_broadcast_end - weight_broadcast_start
+        transfer_time = transfer_end - transfer_start
+        throughput_gbps = (total_size * 8 / 1e9) / transfer_time if transfer_time > 0 else 0
+        
+        print(f"\n{'='*60}")
+        print(f"SHARDED WEIGHT BROADCAST TIMING:")
+        print(f"  Total time (incl. save):       {total_time:.3f}s")
+        print(f"  Save checkpoint time:          {save_time:.3f}s")
+        print(f"  Transfer time:                 {transfer_time:.3f}s")
+        print(f"  Total data size:               {total_size/1024/1024:.2f} MB")
+        print(f"  Number of shards:              {num_shards}")
+        print(f"  Throughput:                    {throughput_gbps:.3f} Gbps")
+        print(f"{'='*60}\n")
+        
+        return {
+            'total_time': total_time,
+            'transfer_time': transfer_time,
+            'size_bytes': total_size,
+            'throughput_gbps': throughput_gbps,
+            'num_shards': num_shards
+        }
+
+    def _send_shard_data(self, name: str, data: bytes, receiver_ids: list):
+        """Send a single shard via multicast."""
+        builder = nm.PacketBuilder(size=len(data))
+        builder.write(data)
+        view = builder.freeze()
+        
+        sid = self.dataplane.send_data(
+            self.group_ip,
+            receiver_ids,
+            view,
+            chunk_size=config.CHUNK_SIZE,
+            src_port=config.TRAINER_PORT,
+            dst_port=config.WORKER_BASE_PORT
+        )
+        
+        ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        if not ok:
+            raise RuntimeError(f"Failed to send shard {name}")
+
     def train_step(self, batch):
         """Execute one training step"""
-        # 1. Broadcast current weights
-        weight_metrics = self.broadcast_weights()
+        # 1. Broadcast current weights (choose mode based on config)
+        if config.USE_SHARDED_WEIGHTS:
+            weight_metrics = self.broadcast_weights_sharded()
+        else:
+            weight_metrics = self.broadcast_weights()
         
         # 2. Send prompts to workers
         prompts = [item["question"] for item in batch]
