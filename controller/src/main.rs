@@ -1,5 +1,6 @@
 mod config;
 mod db;
+mod db_sync;
 mod models;
 mod new_node;
 mod route_ser;
@@ -16,7 +17,7 @@ use futures_util::{SinkExt, StreamExt};
 use sqlx::{Pool, Postgres};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
@@ -30,6 +31,7 @@ use crate::db::{
     remove_group_member, setup_flow_notification, setup_group_notification,
     setup_route_notification,
 };
+use crate::db_sync::spawn_db_sync;
 use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, TopologyEvent, new_node_connected};
 use crate::utils::{
@@ -72,10 +74,18 @@ async fn main() {
         db_pool.clone(),
     ));
 
+    let (db_event_sender, db_event_receiver) = mpsc::channel(256);
+    spawn_db_sync(
+        db_pool.clone(),
+        node_ws.clone(),
+        db_event_receiver,
+        config.flow_transport,
+    );
+
     // Set up database notifications.
-    setup_route_notification(db_pool.clone(), node_ws.clone()).await;
-    setup_flow_notification(db_pool.clone(), node_ws.clone(), config.flow_transport).await;
-    setup_group_notification(db_pool.clone(), node_ws.clone()).await;
+    setup_route_notification(db_pool.clone(), db_event_sender.clone()).await;
+    setup_flow_notification(db_pool.clone(), db_event_sender.clone()).await;
+    setup_group_notification(db_pool.clone(), db_event_sender.clone()).await;
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer = match stream.peer_addr() {
