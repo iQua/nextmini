@@ -1,4 +1,4 @@
-# Configuration for lp-multicast tool (main.py)
+# This is the config for main.py.
 
 [database]
 host = "localhost"
