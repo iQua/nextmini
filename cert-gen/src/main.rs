@@ -5,7 +5,7 @@ use std::io::Write;
 fn main() {
     let certified_key = generate_simple_self_signed(vec!["Nextmini".into()]).unwrap();
     let cert_pem = certified_key.cert.pem();
-    let key_pem = certified_key.key_pair.serialize_pem();
+    let key_pem = certified_key.signing_key.serialize_pem();
     File::create("server_cert.pem")
         .unwrap()
         .write_all(cert_pem.as_bytes())
