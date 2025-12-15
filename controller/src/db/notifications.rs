@@ -9,69 +9,6 @@ use tracing::{error, info, warn};
 use super::events::DbEvent;
 
 pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc::Sender<DbEvent>) {
-    let flow_table_name = "routes";
-
-    let create_function_sql = r#"
-        CREATE OR REPLACE FUNCTION notify_trigger_function()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            PERFORM pg_notify('auto_sync_routes', '{"op":"' || TG_OP || '","route_id":"' || NEW.route_id || '"}');
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-    "#;
-
-    let create_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER new_flow_trigger
-        AFTER INSERT OR UPDATE ON "{}"
-        FOR EACH ROW
-        EXECUTE FUNCTION notify_trigger_function();
-        "#,
-        flow_table_name
-    );
-
-    let check_trigger_sql = format!(
-        r#"
-        SELECT 1
-        FROM pg_trigger
-        WHERE tgname = 'new_flow_trigger'
-        AND tgrelid = '"{}"'::regclass;
-        "#,
-        flow_table_name
-    );
-
-    let mut conn = match db_pool.acquire().await {
-        Ok(c) => c,
-        Err(e) => {
-            error!(
-                "Failed to acquire connection for route trigger setup: {}",
-                e
-            );
-            return;
-        }
-    };
-
-    let row: Option<(i32,)> = match sqlx::query_as(&check_trigger_sql)
-        .fetch_optional(&mut *conn)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to check route trigger existence: {}", e);
-            return;
-        }
-    };
-
-    if row.is_none() {
-        if let Err(e) = sqlx::query(create_function_sql).execute(&mut *conn).await {
-            error!("Failed to create route notification function: {}", e);
-        }
-        if let Err(e) = sqlx::query(&create_trigger_sql).execute(&mut *conn).await {
-            error!("Failed to create route trigger: {}", e);
-        }
-    }
-
     let mut listener = match PgListener::connect_with(&db_pool).await {
         Ok(l) => l,
         Err(e) => {
@@ -146,65 +83,6 @@ pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc
 }
 
 pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc::Sender<DbEvent>) {
-    let create_flow_function_sql = r#"
-        CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            PERFORM pg_notify('auto_sync_flows', '{"newly_inserted_id":"'|| NEW.id || '","src_node_id":"' || NEW.src_node_id || '","dst_node_id":"' || NEW.dst_node_id || '"}');
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-    "#;
-
-    let create_flow_trigger_sql = r#"
-        CREATE TRIGGER flow_notification_trigger
-        AFTER INSERT ON "flows"
-        FOR EACH ROW
-        EXECUTE FUNCTION notify_flow_trigger_function();
-    "#;
-
-    let check_flow_trigger_sql = r#"
-        SELECT 1
-        FROM pg_trigger
-        WHERE tgname = 'flow_notification_trigger'
-        AND tgrelid = '"flows"'::regclass;
-    "#;
-
-    let mut conn = match db_pool.acquire().await {
-        Ok(c) => c,
-        Err(e) => {
-            error!("Failed to acquire connection for flow trigger setup: {}", e);
-            return;
-        }
-    };
-
-    let flow_row: Option<(i32,)> = match sqlx::query_as(check_flow_trigger_sql)
-        .fetch_optional(&mut *conn)
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            error!("Failed to check flow trigger existence: {}", e);
-            return;
-        }
-    };
-
-    if flow_row.is_none() {
-        if let Err(e) = sqlx::query(create_flow_function_sql)
-            .execute(&mut *conn)
-            .await
-        {
-            error!("Failed to create flow notification function: {}", e);
-        }
-        if let Err(e) = sqlx::query(create_flow_trigger_sql)
-            .execute(&mut *conn)
-            .await
-        {
-            error!("Failed to create flow trigger: {}", e);
-        }
-        info!("Created flow notification trigger.");
-    }
-
     let mut listener = match PgListener::connect_with(&db_pool).await {
         Ok(l) => l,
         Err(e) => {

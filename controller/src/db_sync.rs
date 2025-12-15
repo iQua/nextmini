@@ -7,11 +7,12 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
+use nextmini_messages::{ControllerToDataplane, FlowTransport, GroupRoutingTableEntry};
+
 use crate::db::{DbEvent, RecomputedGroupRoutes};
 use crate::models::{DbFlow, DbRoute, Route};
 use crate::utils::{build_flows_for_node, build_group_routes_for_node, build_routes_for_node};
 use crate::{NodeWriterMap, WebSocketWriter};
-use nextmini_messages::{ControllerToDataplane, FlowTransport, GroupRoutingTableEntry};
 
 pub fn spawn_db_sync(
     db_pool: Arc<Pool<Postgres>>,
