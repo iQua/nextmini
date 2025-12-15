@@ -24,6 +24,29 @@ use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
+pub(crate) fn spawn_receive_stream_accept_loop<F>(
+    mut acceptor: s2n_quic::connection::StreamAcceptor,
+    mut on_stream: F,
+) where
+    F: FnMut(ReceiveStream) + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            match acceptor.accept_receive_stream().await {
+                Ok(Some(stream)) => on_stream(stream),
+                Ok(None) => {
+                    info!("Connection closed by peer.");
+                    break;
+                }
+                Err(e) => {
+                    error!("Error accepting stream: {}.", e);
+                    break;
+                }
+            }
+        }
+    });
+}
+
 pub struct QuicServer {
     config: LocalConfig,
     processors: ProcessorHandle,
@@ -107,38 +130,22 @@ impl QuicServer {
             );
 
             // splits connection into handle (for opening streams) and acceptor (for receiving)
-            let (handle, mut acceptor) = connection.split();
+            let (handle, acceptor) = connection.split();
 
-            // spawns a task to accept incoming streams (for receive side)
-            let proc_clone = processors.clone();
+            // processes the handshake stream for reading
+            let (receive_stream, _send_stream) = first_stream.split();
+            let mut handshake_reader = QuicReader::new(receive_stream, processors.clone());
             tokio::spawn(async move {
-                // processes the handshake stream for reading.
-                let (receive_stream, _send_stream) = first_stream.split();
-                let mut quic_reader = QuicReader::new(receive_stream, proc_clone.clone());
-                tokio::spawn(async move {
-                    quic_reader.run().await;
-                });
+                handshake_reader.run().await;
+            });
 
-                // accepts additional streams as they come
-                loop {
-                    match acceptor.accept_bidirectional_stream().await {
-                        Ok(Some(stream)) => {
-                            let (receive_stream, _send_stream) = stream.split();
-                            let mut reader = QuicReader::new(receive_stream, proc_clone.clone());
-                            tokio::spawn(async move {
-                                reader.run().await;
-                            });
-                        }
-                        Ok(None) => {
-                            info!("Connection closed by peer.");
-                            break;
-                        }
-                        Err(e) => {
-                            error!("Error accepting stream: {}", e);
-                            break;
-                        }
-                    }
-                }
+            // spawns a task to accept incoming unidirectional streams (for receive side)
+            let processors_for_streams = processors.clone();
+            spawn_receive_stream_accept_loop(acceptor, move |receive_stream| {
+                let mut reader = QuicReader::new(receive_stream, processors_for_streams.clone());
+                tokio::spawn(async move {
+                    reader.run().await;
+                });
             });
 
             // handles an inbound connection from a new client with per-flow writer.
@@ -236,7 +243,7 @@ impl QuicClient {
         );
 
         // splits connection into handle (for sending) and acceptor (for receiving)
-        let (mut handle, mut acceptor) = connection.split();
+        let (mut handle, acceptor) = connection.split();
 
         // opens and sends handshake on first stream
         let mut handshake_stream = handle
@@ -253,35 +260,20 @@ impl QuicClient {
         // closes our send direction for the handshake stream so the peer reader can exit cleanly
         let _ = handshake_stream.finish();
 
-        // spawns receiver task to handle incoming streams
+        // processes handshake stream for reading
+        let (receive_stream, _send_stream) = handshake_stream.split();
+        let mut handshake_reader = QuicReader::new(receive_stream, processors.clone());
         tokio::spawn(async move {
-            // processes handshake stream for reading
-            let (receive_stream, _send_stream) = handshake_stream.split();
-            let mut quic_reader = QuicReader::new(receive_stream, processors.clone());
-            tokio::spawn(async move {
-                quic_reader.run().await;
-            });
+            handshake_reader.run().await;
+        });
 
-            // accepts additional streams as they come
-            loop {
-                match acceptor.accept_bidirectional_stream().await {
-                    Ok(Some(stream)) => {
-                        let (receive_stream, _send_stream) = stream.split();
-                        let mut reader = QuicReader::new(receive_stream, processors.clone());
-                        tokio::spawn(async move {
-                            reader.run().await;
-                        });
-                    }
-                    Ok(None) => {
-                        info!("Connection closed by peer.");
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Error accepting stream: {}.", e);
-                        break;
-                    }
-                }
-            }
+        // accepts additional unidirectional streams as they come
+        let processors_for_streams = processors.clone();
+        spawn_receive_stream_accept_loop(acceptor, move |receive_stream| {
+            let mut reader = QuicReader::new(receive_stream, processors_for_streams.clone());
+            tokio::spawn(async move {
+                reader.run().await;
+            });
         });
 
         info!(
@@ -490,5 +482,133 @@ impl Drop for QuicPerFlowWriter {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use bytes::Bytes;
+    use rcgen::generate_simple_self_signed;
+    use s2n_quic::{Client, Server, client};
+    use tokio::io::AsyncReadExt;
+    use tokio::sync::oneshot;
+
+    use super::spawn_receive_stream_accept_loop;
+
+    fn write_test_certs() -> (PathBuf, PathBuf, PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "nextmini-quic-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let certified_key = generate_simple_self_signed(vec!["Nextmini".into()]).unwrap();
+        let cert_pem = certified_key.cert.pem();
+        let key_pem = certified_key.key_pair.serialize_pem();
+
+        let cert_path = dir.join("cert.pem");
+        let key_path = dir.join("key.pem");
+
+        fs::File::create(&cert_path)
+            .unwrap()
+            .write_all(cert_pem.as_bytes())
+            .unwrap();
+        fs::File::create(&key_path)
+            .unwrap()
+            .write_all(key_pem.as_bytes())
+            .unwrap();
+
+        (dir, cert_path, key_path)
+    }
+
+    #[tokio::test]
+    async fn accept_loop_handles_unidirectional_streams() {
+        let (dir, cert_path, key_path) = write_test_certs();
+
+        let mut server = Server::builder()
+            .with_tls((cert_path.as_path(), key_path.as_path()))
+            .unwrap()
+            .with_io("127.0.0.1:0")
+            .unwrap()
+            .start()
+            .unwrap();
+
+        let server_addr = server.local_addr().unwrap();
+
+        let (received_tx, received_rx) = oneshot::channel::<[u8; 4]>();
+
+        tokio::spawn(async move {
+            let mut connection = server.accept().await.unwrap();
+
+            // handshake: client sends 8 bytes of node id on the first bidirectional stream
+            let mut first_stream = connection
+                .accept_bidirectional_stream()
+                .await
+                .unwrap()
+                .unwrap();
+            let mut node_id_buf = [0u8; 8];
+            first_stream.read_exact(&mut node_id_buf).await.unwrap();
+
+            let (_handle, acceptor) = connection.split();
+
+            let mut tx = Some(received_tx);
+            spawn_receive_stream_accept_loop(acceptor, move |mut receive_stream| {
+                let Some(tx) = tx.take() else {
+                    return;
+                };
+
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4];
+                    receive_stream.read_exact(&mut buf).await.unwrap();
+                    let _ = tx.send(buf);
+                });
+            });
+        });
+
+        let client = Client::builder()
+            .with_tls(cert_path.as_path())
+            .unwrap()
+            .with_io("127.0.0.1:0")
+            .unwrap()
+            .start()
+            .unwrap();
+
+        let connect = client::Connect::new(server_addr).with_server_name("Nextmini");
+        let mut connection = client.connect(connect).await.unwrap();
+        connection.keep_alive(true).unwrap();
+
+        let (mut handle, _acceptor) = connection.split();
+
+        let mut handshake_stream = handle.open_bidirectional_stream().await.unwrap();
+        handshake_stream
+            .send(Bytes::copy_from_slice(&1u64.to_be_bytes()))
+            .await
+            .unwrap();
+        let _ = handshake_stream.finish();
+
+        let mut send_stream = handle.open_send_stream().await.unwrap();
+        send_stream
+            .send(Bytes::copy_from_slice(&[1, 2, 3, 4]))
+            .await
+            .unwrap();
+        let _ = send_stream.finish();
+
+        let received = tokio::time::timeout(Duration::from_secs(2), received_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(received, [1, 2, 3, 4]);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }
