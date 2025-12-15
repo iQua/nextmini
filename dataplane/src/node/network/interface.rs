@@ -164,7 +164,11 @@ impl NetworkInterface {
                 };
 
                 let quic_handle = quic_client
-                    .connect(remote_node_id, remote_addr.as_str(), self.processors.clone())
+                    .connect(
+                        remote_node_id,
+                        remote_addr.as_str(),
+                        self.processors.clone(),
+                    )
                     .await;
 
                 self.init(NetworkStream::QuicPerFlow(quic_handle))

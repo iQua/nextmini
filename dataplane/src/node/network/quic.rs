@@ -3,7 +3,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use std::io::IoSlice;
+use std::collections::VecDeque;
+use std::io::{Error as IoError, ErrorKind, IoSlice};
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -12,10 +13,11 @@ use s2n_quic::provider::congestion_controller;
 
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn};
 
 use ahash::AHashMap;
 
+use crate::node::FlowId;
 use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
@@ -24,7 +26,6 @@ use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
-use crate::node::FlowId;
 
 pub struct QuicServer {
     config: LocalConfig,
@@ -251,6 +252,9 @@ impl QuicClient {
             .await
             .expect("Failed to send local node id to the node");
 
+        // closes our send direction for the handshake stream so the peer reader can exit cleanly
+        let _ = handshake_stream.finish();
+
         // spawns receiver task to handle incoming streams
         tokio::spawn(async move {
             // processes handshake stream for reading
@@ -303,11 +307,12 @@ impl QuicReader {
     }
 
     pub async fn run(&mut self) {
-        loop {
-            if let Ok(packet) = self.read_packet().await {
-                self.processors.process_packet(packet).await;
-            }
+        while let Ok(packet) = self.read_packet().await {
+            self.processors.process_packet(packet).await;
         }
+
+        // exits once the stream ends or an error occurs (e.g., peer reset)
+        trace!("QUIC receive stream closed; reader task exiting");
     }
 
     async fn read_packet(&mut self) -> Result<Packet> {
@@ -317,12 +322,14 @@ impl QuicReader {
 
         let header = buf.as_slice();
         let msg_len = header[2] as usize * 256 + header[3] as usize;
+
         if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid IPv4 total length: {}", msg_len),
             ));
         }
+
         buf.prepare_uninit(msg_len);
         self.stream
             .read_exact(&mut buf.as_mut_slice()[4..msg_len])
@@ -339,33 +346,67 @@ pub struct QuicPerFlowWriter {
     handle: QuicConnectionHandle,
     /// Map from flow_id to its dedicated send stream
     streams: AHashMap<FlowId, SendStream>,
+    /// FIFO of stream usage for cheap eviction when too many flows accumulate
+    lru: VecDeque<FlowId>,
 }
 
 impl QuicPerFlowWriter {
+    // Limit open streams per connection to avoid exhausting stream credits / memory.
+    const MAX_OPEN_STREAMS: usize = 1024;
+
     pub fn new(handle: QuicConnectionHandle) -> Self {
         Self {
             handle,
             streams: AHashMap::new(),
+            lru: VecDeque::new(),
         }
     }
 
     /// Gets or creates a stream for the given flow_id.
     /// Returns None if stream creation fails.
-    async fn get_or_create_stream(&mut self, flow_id: FlowId) -> Option<&mut SendStream> {
-        if !self.streams.contains_key(&flow_id) {
-            match self.handle.open_bidirectional_stream().await {
-                Ok(stream) => {
-                    let (_recv, send) = stream.split();
-                    trace!(flow_id = flow_id, "Opened new QUIC stream for flow");
-                    self.streams.insert(flow_id, send);
-                }
-                Err(e) => {
-                    error!(flow_id = flow_id, error = %e, "Failed to open QUIC stream for flow");
-                    return None;
+    async fn get_or_create_stream(&mut self, flow_id: FlowId) -> std::io::Result<&mut SendStream> {
+        // Fast path: stream exists, mark recent use.
+        if self.streams.contains_key(&flow_id) {
+            self.mark_used(flow_id);
+            // Safe unwrap; we just checked.
+            return Ok(self.streams.get_mut(&flow_id).unwrap());
+        }
+
+        // evicts oldest if we're at capacity.
+        if self.streams.len() >= Self::MAX_OPEN_STREAMS {
+            if let Some(evicted_flow) = self.lru.pop_front() {
+                if let Some(mut old_stream) = self.streams.remove(&evicted_flow) {
+                    // Finish the send side to release stream credit; ignore errors.
+                    if let Err(e) = old_stream.finish() {
+                        warn!(flow_id = evicted_flow, error = %e, "Failed to finish QUIC stream during eviction");
+                    }
                 }
             }
         }
-        self.streams.get_mut(&flow_id)
+
+        // Create a fresh bidirectional stream for this flow.
+        match self.handle.open_bidirectional_stream().await {
+            Ok(stream) => {
+                let (_recv, send) = stream.split();
+                trace!(flow_id = flow_id, "Opened new QUIC stream for flow");
+                self.streams.insert(flow_id, send);
+                self.mark_used(flow_id);
+                // Safe unwrap; just inserted.
+                Ok(self.streams.get_mut(&flow_id).unwrap())
+            }
+            Err(e) => {
+                error!(flow_id = flow_id, error = %e, "Failed to open QUIC stream for flow");
+                Err(IoError::new(ErrorKind::Other, e.to_string()))
+            }
+        }
+    }
+
+    fn mark_used(&mut self, flow_id: FlowId) {
+        // Remove any existing entry then push to back (most recently used).
+        if let Some(pos) = self.lru.iter().position(|f| *f == flow_id) {
+            self.lru.remove(pos);
+        }
+        self.lru.push_back(flow_id);
     }
 
     /// Writes packets to their respective per-flow streams.
@@ -383,11 +424,13 @@ impl QuicPerFlowWriter {
 
         // writes each group to its dedicated stream
         for (flow_id, packets) in flow_packets {
-            if let Some(stream) = self.get_or_create_stream(flow_id).await {
-                Self::write_packets_to_stream(stream, packets).await?;
-            } else {
-                // packets are dropped if stream creation fails
-                error!(flow_id = flow_id, count = packets.len(), "Dropping packets due to stream creation failure.");
+            let stream = self.get_or_create_stream(flow_id).await?;
+
+            if let Err(e) = Self::write_packets_to_stream(stream, packets).await {
+                // Drop the broken stream to allow future recreation.
+                self.streams.remove(&flow_id);
+                warn!(flow_id = flow_id, error = %e, "QUIC stream write failed; stream removed and packets not sent");
+                return Err(e);
             }
         }
 
@@ -426,3 +469,19 @@ impl QuicPerFlowWriter {
     }
 }
 
+impl Drop for QuicPerFlowWriter {
+    fn drop(&mut self) {
+        // Best-effort FIN on all active streams to free peer resources.
+        let mut streams = std::mem::take(&mut self.streams);
+        // Spawn async tasks because Drop cannot block; they will finish/close in the background.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                for (flow_id, mut stream) in streams.drain() {
+                    if let Err(e) = stream.finish() {
+                        warn!(flow_id = flow_id, error = %e, "Failed to finish QUIC stream on drop");
+                    }
+                }
+            });
+        }
+    }
+}
