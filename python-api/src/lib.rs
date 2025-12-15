@@ -3,7 +3,7 @@ mod buffer;
 #[cfg(feature = "python-extension")]
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use rustc_hash::FxHasher;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -240,7 +240,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, transfer_id=None, congestion=None))]
+    #[pyo3(signature = (dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
     fn send_data(
         &self,
         dest_ip: &str,
@@ -250,7 +250,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         session_id: Option<u64>,
-        transfer_id: Option<u64>,
         congestion: Option<String>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
@@ -290,7 +289,7 @@ impl Dataplane {
                 // Compute deterministic session_id for multicast to ensure
                 // sender and receiver(s) use the same session_id
                 if session_id.is_none() {
-                    sid = session_id_for_multicast(dest_ip_addr, self.cfg.node_id, sp, dp, transfer_id.unwrap_or(0));
+                    sid = session_id_for_multicast(dest_ip_addr, self.cfg.node_id, sp, dp);
                 }
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
@@ -321,7 +320,7 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, transfer_id=None))]
+    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
     fn receive_data(
         &self,
         dest_ip: &str,
@@ -331,7 +330,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         session_id: Option<u64>,
-        transfer_id: Option<u64>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
@@ -347,7 +345,7 @@ impl Dataplane {
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         // Compute deterministic session_id for multicast to match the sender
         let sid = session_id.unwrap_or_else(|| {
-            session_id_for_multicast(ip, source_node_id, sp, dp, transfer_id.unwrap_or(0))
+            session_id_for_multicast(ip, source_node_id, sp, dp)
         });
         #[cfg(feature = "python-extension")]
         {
@@ -402,7 +400,7 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, transfer_id=None))]
+    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
@@ -413,7 +411,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         session_id: Option<u64>,
-        transfer_id: Option<u64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
@@ -430,7 +427,7 @@ impl Dataplane {
 
         // Compute deterministic session_id for multicast to match the sender
         let sid = session_id.unwrap_or_else(|| {
-            session_id_for_multicast(ip, source_node_id, sp, dp, transfer_id.unwrap_or(0))
+            session_id_for_multicast(ip, source_node_id, sp, dp)
         });
 
         #[cfg(feature = "python-extension")]
@@ -1021,56 +1018,21 @@ fn next_py_message_id() -> u64 {
 }
 
 /// Computes a deterministic session ID for multicast sessions based on
-/// (dest_ip, source_node_id, src_port, dst_port, transfer_id).
-/// Uses FxHash for guaranteed cross-platform determinism.
-/// The transfer_id allows differentiating concurrent transfers on the same tuple.
+/// (dest_ip, source_node_id, src_port, dst_port).
+/// This ensures both sender and receiver compute the same session_id.
 fn session_id_for_multicast(
     dest_ip: Ipv4Addr,
     source_node_id: usize,
     src_port: u16,
     dst_port: u16,
-    transfer_id: u64,
 ) -> u64 {
-    let mut hasher = FxHasher::default();
+    let mut hasher = DefaultHasher::new();
     dest_ip.hash(&mut hasher);
     source_node_id.hash(&mut hasher);
     src_port.hash(&mut hasher);
     dst_port.hash(&mut hasher);
-    transfer_id.hash(&mut hasher);
     let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
     raw | 0x8000_0000_0000_0000
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn multicast_session_ids_are_deterministic() {
-        let ip = Ipv4Addr::new(239, 0, 0, 1);
-        let first = session_id_for_multicast(ip, 7, 1000, 2000, 0);
-        let second = session_id_for_multicast(ip, 7, 1000, 2000, 0);
-        assert_eq!(first, second, "same inputs should produce same session_id");
-
-        // Different inputs should produce different session_id
-        let different = session_id_for_multicast(ip, 8, 1000, 2000, 0);
-        assert_ne!(first, different, "different inputs should produce different session_id");
-    }
-
-    #[test]
-    fn multicast_session_ids_vary_with_transfer_id() {
-        let ip = Ipv4Addr::new(239, 0, 0, 1);
-        let transfer_0 = session_id_for_multicast(ip, 7, 1000, 2000, 0);
-        let transfer_1 = session_id_for_multicast(ip, 7, 1000, 2000, 1);
-        let transfer_2 = session_id_for_multicast(ip, 7, 1000, 2000, 2);
-        
-        assert_ne!(transfer_0, transfer_1, "different transfer_id should produce different session_id");
-        assert_ne!(transfer_1, transfer_2, "different transfer_id should produce different session_id");
-        
-        // Same transfer_id should produce same session_id
-        let transfer_1_again = session_id_for_multicast(ip, 7, 1000, 2000, 1);
-        assert_eq!(transfer_1, transfer_1_again, "same transfer_id should reproduce session_id");
-    }
 }
 
 #[pymodule]

@@ -16,7 +16,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-rustc-hash = "2.1.1"
 
 nextmini = { path = "../dataplane", package = "nextmini" }
 nextmini-messages = { path = "../messages", package = "nextmini-messages" }

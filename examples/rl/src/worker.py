@@ -1,6 +1,7 @@
 import pickle
 import time
 import io
+import random
 import torch
 import asyncio
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -117,8 +118,13 @@ class Worker:
                 group_ip = msg["group_ip"]
                 size = msg["size"]
                 src_node_id = msg["src_node_id"]
+                session_id = msg.get("session_id")
 
-                print(f"Worker {self.rank} metadata: group_id={group_id}, group_ip={group_ip}, size={size} bytes", flush=True)
+                if not isinstance(session_id, int) or session_id <= 0:
+                    print(f"Worker {self.rank}: invalid or missing session_id in WEIGHT_METADATA: {msg}", flush=True)
+                    continue
+
+                print(f"Worker {self.rank} metadata: group_id={group_id}, group_ip={group_ip}, size={size} bytes, session_id={session_id}", flush=True)
 
                 # Join the multicast group
                 print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
@@ -137,6 +143,7 @@ class Worker:
                         chunk_size=config.CHUNK_SIZE,
                         src_port=config.TRAINER_PORT,
                         dst_port=config.WORKER_BASE_PORT,
+                        session_id=session_id,  # Use the same session_id from metadata
                     )
 
                 # Create the receive task - this will submit the request to Rust but won't block
@@ -226,10 +233,17 @@ class Worker:
                 }, protocol=pickle.HIGHEST_PROTOCOL)
                 size = len(serialized)
 
+                # Generate a unique session_id for this transfer
+                # Encode node_id in the upper bits for uniqueness across nodes
+                local_seq = random.randint(1, 0x0000_FFFF_FFFF_FFFF)
+                node_part = (self.dataplane.node_id & 0x7FFF) << 48
+                session_id = node_part | local_seq
+
                 # 1) Send small metadata so trainer can allocate receiver
                 self.send_to_trainer({
                     "type": "ROLLOUT_METADATA",
                     "size": size,
+                    "session_id": session_id,  # Include session_id for deterministic matching
                 })
 
                 # 2) Send data reliably via ReliableRuntime using trainer user-space IP
@@ -246,6 +260,7 @@ class Worker:
                         chunk_size=config.CHUNK_SIZE,
                         src_port=self.local_port,
                         dst_port=self.trainer_port,
+                        session_id=session_id,  # Use the same session_id
                     )
                     ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 except Exception as e:
