@@ -1,24 +1,14 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use sqlx::postgres::PgListener;
 use sqlx::{Pool, Postgres};
-use tokio::sync::{Mutex, RwLockReadGuard};
-use tokio_tungstenite::tungstenite::Message;
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
-use crate::models::{DbFlow, DbRoute, Route};
-use crate::utils::{build_flows_for_node, build_routes_for_node};
-use crate::{NodeWriterMap, WebSocketWriter};
-use nextmini_messages::FlowTransport;
+use super::events::DbEvent;
 
-use super::group_routes::recompute_and_push_group_routes;
-
-type NodeWsGuard<'a> = RwLockReadGuard<'a, HashMap<usize, Arc<Mutex<WebSocketWriter>>>>;
-
-pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
-    // creates the notification function and trigger
+pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc::Sender<DbEvent>) {
     let flow_table_name = "routes";
 
     let create_function_sql = r#"
@@ -82,7 +72,6 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
         }
     }
 
-    // sets up a listener
     let mut listener = match PgListener::connect_with(&db_pool).await {
         Ok(l) => l,
         Err(e) => {
@@ -99,81 +88,28 @@ pub async fn setup_route_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
         return;
     }
 
-    // spawns a task to handle notifications by installing the routes to all available nodes
     tokio::spawn(async move {
-        let mut stream = listener.into_stream(); // converts listener to stream
-
+        let mut stream = listener.into_stream();
         while let Some(notification) = stream.next().await {
             match notification {
                 Ok(notif) => {
                     let channel = notif.channel();
-
-                    if channel != "auto_sync_routes" {
+                    if channel != "auto_sync_routes" && channel != "sync_routes" {
                         continue;
                     }
-
-                    // Nextmini does not support installing routes individually, so we need to find
-                    // all routes from the database and re-install them all.
-                    info!("Installing route updates into the dataplane.");
-
-                    let routes_db: Vec<DbRoute> =
-                        match sqlx::query_as::<_, DbRoute>("SELECT * FROM routes")
-                            .fetch_all(&*db_pool)
-                            .await
-                        {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("Failed to fetch routes: {}", e);
-                                continue;
-                            }
-                        };
-
-                    let routes: Vec<Route> = routes_db
-                        .iter()
-                        .map(|r| {
-                            let edges_i32: Vec<(i32, i32)> =
-                                serde_json::from_value(r.edges.clone()).unwrap_or_default();
-                            let edges: Vec<(u32, u32)> = edges_i32
-                                .into_iter()
-                                .map(|(a, b)| (a as u32, b as u32))
-                                .collect();
-
-                            Route {
-                                route_id: r.route_id as usize,
-                                src_node_id: r.src_node_id as u32,
-                                dst_node_id: r.dst_node_id as u32,
-                                edges,
-                            }
-                        })
-                        .collect();
-
-                    // sends install routes message to all nodes
-                    let node_ws_guard = node_ws.read().await;
-
-                    for (node_id, ws_arc) in node_ws_guard.iter() {
-                        if let Some(msg) = build_routes_for_node(routes.clone(), *node_id as u32) {
-                            let msg_binary = rmp_serde::to_vec(&msg).unwrap();
-                            if let Err(e) =
-                                ws_arc.lock().await.send(Message::binary(msg_binary)).await
-                            {
-                                error!("Failed to install routes on node {}: {}", node_id, e);
-                            } else {
-                                info!("Installing routes on node {}.", node_id);
-                            }
-                        } else {
-                            warn!("No routes to install for node {}.", node_id);
-                        }
+                    info!("Received route notification on channel {}.", channel);
+                    if let Err(e) = sender.send(DbEvent::RoutesChanged).await {
+                        warn!("Dropping route event (receiver closed): {}", e);
+                        return;
                     }
                 }
-                Err(e) => {
-                    error!("Error receiving notification: {}", e);
-                }
+                Err(e) => error!("Error receiving route notification: {}", e),
             }
         }
     });
 }
 
-pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, node_ws: NodeWriterMap) {
+pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc::Sender<DbEvent>) {
     let mut listener = match PgListener::connect_with(&db_pool).await {
         Ok(l) => l,
         Err(e) => {
@@ -194,15 +130,10 @@ pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
                 Ok(notif) => {
                     let payload = notif.payload();
                     let group_id_opt = parse_group_id(payload);
-
                     if let Some(group_id) = group_id_opt {
-                        if let Err(err) =
-                            recompute_and_push_group_routes(group_id, &db_pool, &node_ws).await
-                        {
-                            error!(
-                                "Failed to recompute multicast routes for group {}: {}",
-                                group_id, err
-                            );
+                        if let Err(e) = sender.send(DbEvent::GroupRoutesSync { group_id }).await {
+                            warn!("Dropping group event (receiver closed): {}", e);
+                            return;
                         }
                     } else {
                         warn!("Ignored malformed sync_group_routes payload: {}", payload);
@@ -214,12 +145,7 @@ pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, node_ws: Nod
     });
 }
 
-pub async fn setup_flow_notification(
-    db_pool: Arc<Pool<Postgres>>,
-    node_ws: NodeWriterMap,
-    flow_transport: FlowTransport,
-) {
-    // creates the flow notification function and trigger
+pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc::Sender<DbEvent>) {
     let create_flow_function_sql = r#"
         CREATE OR REPLACE FUNCTION notify_flow_trigger_function()
         RETURNS TRIGGER AS $$
@@ -252,7 +178,6 @@ pub async fn setup_flow_notification(
         }
     };
 
-    // checks and creates a flow trigger if it doesn't exist
     let flow_row: Option<(i32,)> = match sqlx::query_as(check_flow_trigger_sql)
         .fetch_optional(&mut *conn)
         .await
@@ -280,7 +205,6 @@ pub async fn setup_flow_notification(
         info!("Created flow notification trigger.");
     }
 
-    // sets up a listener for flow notifications
     let mut listener = match PgListener::connect_with(&db_pool).await {
         Ok(l) => l,
         Err(e) => {
@@ -293,56 +217,26 @@ pub async fn setup_flow_notification(
         return;
     }
 
-    // spawns a task to handle flow notifications by installing flows to relevant nodes
     tokio::spawn(async move {
         let mut stream = listener.into_stream();
-
         while let Some(notification) = stream.next().await {
             match notification {
                 Ok(notif) => {
-                    let channel = notif.channel();
-                    if channel != "auto_sync_flows" {
+                    if notif.channel() != "auto_sync_flows" {
                         continue;
                     }
-
                     let payload = notif.payload();
                     info!("Received flow notification: {}", payload);
-
-                    let Some(id) = parse_new_flow_id(payload) else {
-                        error!(
-                            "Failed to parse newly_inserted_id from notification payload: {}",
-                            payload
-                        );
+                    let Some(flow_id) = parse_new_flow_id(payload) else {
+                        warn!("Ignored malformed auto_sync_flows payload: {}", payload);
                         continue;
                     };
-
-                    let flow =
-                        match sqlx::query_as::<_, DbFlow>("SELECT * FROM flows WHERE id = $1")
-                            .bind(id)
-                            .fetch_one(&*db_pool)
-                            .await
-                        {
-                            Ok(flow) => flow,
-                            Err(e) => {
-                                error!("Failed to fetch newly inserted flow {}: {}", id, e);
-                                continue;
-                            }
-                        };
-
-                    info!("Installing newly inserted flow {} into the dataplane.", id);
-                    let node_ws_guard = node_ws.read().await;
-                    let msg = build_flows_for_node(vec![flow.clone()], flow_transport);
-                    let msg_binary = rmp_serde::to_vec(&msg).unwrap();
-
-                    let src_node_id = flow.src_node_id as usize;
-                    let dst_node_id = flow.dst_node_id as usize;
-
-                    send_to_node(&node_ws_guard, src_node_id, &msg_binary, id, "source").await;
-                    send_to_node(&node_ws_guard, dst_node_id, &msg_binary, id, "destination").await;
+                    if let Err(e) = sender.send(DbEvent::FlowInserted { flow_id }).await {
+                        warn!("Dropping flow event (receiver closed): {}", e);
+                        return;
+                    }
                 }
-                Err(e) => {
-                    error!("Error receiving notification: {}", e);
-                }
+                Err(e) => error!("Error receiving flow notification: {}", e),
             }
         }
     });
@@ -361,27 +255,4 @@ fn parse_new_flow_id(payload: &str) -> Option<i32> {
     json.get("newly_inserted_id")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<i32>().ok())
-}
-
-async fn send_to_node(
-    node_ws_guard: &NodeWsGuard<'_>,
-    node_id: usize,
-    msg_binary: &[u8],
-    flow_id: i32,
-    label: &str,
-) {
-    if let Some(ws_arc) = node_ws_guard.get(&node_id) {
-        match ws_arc
-            .lock()
-            .await
-            .send(Message::binary(msg_binary.to_vec()))
-            .await
-        {
-            Ok(_) => info!("Sent new flow {} to {} node {}.", flow_id, label, node_id),
-            Err(e) => error!(
-                "Failed to send flow {} to {} node {}: {}",
-                flow_id, label, node_id, e
-            ),
-        }
-    }
 }
