@@ -129,9 +129,6 @@ class Worker:
                 print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
 
                 # Helper to wrap Rust Future into a Python Coroutine for create_task
-                # NOTE: For parallel/concurrent transfers (e.g., striped multicast),
-                # pass transfer_id=<stripe_id> to match the sender's transfer_id.
-                # Current sequential usage works fine with default transfer_id=0.
                 async def receive_wrapper():
                     return await self.dataplane.receive_data_async(
                         group_ip,

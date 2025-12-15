@@ -250,10 +250,6 @@ class Trainer:
             raise RuntimeError(f"Handshake failed: {errors}")
             
         # 2. Send Data Reliable
-        # NOTE: For parallel/concurrent transfers (e.g., striped multicast or overlapping epochs),
-        # pass transfer_id=<iteration> or transfer_id=<stripe_id> to both send_data and receive_data.
-        # This ensures each concurrent transfer gets a unique session_id.
-        # Current sequential usage (one transfer at a time) works fine with default transfer_id=0.
         print(f"Starting reliable multicast of {size} bytes to {receiver_ids}...")
         builder = nm.PacketBuilder(size=size)
         builder.write(data_bytes)
