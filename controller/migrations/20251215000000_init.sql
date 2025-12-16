@@ -91,23 +91,6 @@ CREATE TABLE IF NOT EXISTS group_routes (
     PRIMARY KEY (group_id)
 );
 
-CREATE TABLE IF NOT EXISTS link_throughput (
-    id SERIAL PRIMARY KEY,
-    src_node_id INTEGER NOT NULL,
-    dst_node_id INTEGER NOT NULL,
-    bandwidth_bps DOUBLE PRECISION NOT NULL,
-    bandwidth_mbps DOUBLE PRECISION NOT NULL,
-    bytes_transferred BIGINT NOT NULL,
-    duration_secs DOUBLE PRECISION NOT NULL,
-    protocol TEXT NOT NULL DEFAULT 'tcp',
-    retransmits INTEGER,
-    jitter_ms DOUBLE PRECISION,
-    measured_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE (src_node_id, dst_node_id, protocol, measured_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_link_throughput_nodes ON link_throughput (src_node_id, dst_node_id);
-
 -- Group membership changes: recompute multicast routes.
 CREATE OR REPLACE FUNCTION notify_group_membership_change()
 RETURNS TRIGGER AS $$

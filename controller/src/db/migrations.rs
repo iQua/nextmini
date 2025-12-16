@@ -26,10 +26,6 @@ pub(super) async fn reset_db(pool: &Pool<Postgres>) -> AnyResult<()> {
         ),
         ("groups", "DROP TABLE IF EXISTS groups CASCADE"),
         ("routes", "DROP TABLE IF EXISTS routes CASCADE"),
-        (
-            "link_throughput",
-            "DROP TABLE IF EXISTS link_throughput CASCADE",
-        ),
         ("nodes", "DROP TABLE IF EXISTS nodes CASCADE"),
         (
             "_sqlx_migrations",
