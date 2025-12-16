@@ -153,16 +153,16 @@ c = matrix([-1.0] + [0.0]*(sum([len(paths[key]) for key in paths])+session_num))
 print("Producing matrix G: first constraints...")
 # initial constraint matrix constr_1
 constr_1_num_row = (len(sources)*len(destinations))
-constr_1_num_colume = 1 + sum([len(paths[key]) for key in paths])+session_num
+constr_1_num_column = 1 + sum([len(paths[key]) for key in paths])+session_num
 constr_1 = matrix(
         0.0,
         (constr_1_num_row,
-        constr_1_num_colume),
+        constr_1_num_column),
     )
 
 constr_1[:, 0]=1.0
 
-# find the colume_index that should be -1 in constr_1
+# find the column_index that should be -1 in constr_1
 path_indexes = {}
 for key, value in paths.items():
     path_indexes.update({tuple(path): path_idx + len(path_indexes) + 1 for path_idx, path in enumerate(value)})
@@ -237,11 +237,11 @@ for assign in constr_2_matched_assignment_minus_1:
 print("Producing matrix G: third constraints...")
 # initial constraint matrix constr_1
 constr_3_num_row = len(edges)
-constr_3_num_colume = 1 + sum([len(paths[key]) for key in paths])+session_num
+constr_3_num_column = 1 + sum([len(paths[key]) for key in paths])+session_num
 constr_3 = matrix(
         0.0,
         (constr_3_num_row,
-        constr_3_num_colume),
+        constr_3_num_column),
     )
 
 # find the index that should be 1 in constr_3
@@ -255,11 +255,11 @@ for assign in assign_positions:
 print("Producing matrix G: x >= 0 constraints...")
 # initial constraint matrix constr_4
 constr_4_num_row = 1 + sum([len(paths[key]) for key in paths])+session_num
-constr_4_num_colume = 1 + sum([len(paths[key]) for key in paths])+session_num
+constr_4_num_column = 1 + sum([len(paths[key]) for key in paths])+session_num
 constr_4= spmatrix(
         -1.0,
         range(constr_4_num_row),
-        range(constr_4_num_colume),
+        range(constr_4_num_column),
     )
 
 # print(constr_4.size) # (17, 17)
