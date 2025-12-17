@@ -104,7 +104,21 @@ async fn sync_flow(
         .fetch_one(db_pool)
         .await?;
 
-    let msg = build_flows_for_node(vec![flow.clone()], flow_transport);
+    // Query flow_routes table to get route assignment for this flow
+    let flow_routes: std::collections::HashMap<i32, i32> =
+        match sqlx::query_as::<_, (i32, i32)>("SELECT flow_id, route_id FROM flow_routes WHERE flow_id = $1")
+            .bind(flow_id)
+            .fetch_all(db_pool)
+            .await
+        {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                warn!("Failed to query flow_routes for flow {}: {}", flow_id, e);
+                std::collections::HashMap::new()
+            }
+        };
+
+    let msg = build_flows_for_node(vec![flow.clone()], flow_transport, &flow_routes);
     let msg_binary = rmp_serde::to_vec(&msg)?;
 
     let src_node_id = flow.src_node_id as usize;

@@ -25,6 +25,7 @@ pub struct DbRoute {
     pub edges: serde_json::Value,
 }
 
+/// Represents a flow record in the flows table.
 #[derive(Clone, FromRow, Debug)]
 pub struct DbFlow {
     pub id: i32,
@@ -35,9 +36,17 @@ pub struct DbFlow {
     pub flow_len_duration: Option<f64>,
     pub flow_rate: Option<i32>,
     pub flow_weight: Option<i32>,
-    pub route_id: Option<i32>,
     #[allow(dead_code)]
     pub is_finished: bool,
+}
+
+/// Represents a flow-route relationship in the flow_routes table.
+/// This documents which flows have been assigned to specific routes
+/// by routing algorithms or bandwidth allocation policies.
+#[derive(Clone, FromRow, Debug)]
+pub struct DbFlowRoute {
+    pub flow_id: i32,
+    pub route_id: i32,
 }
 
 #[allow(dead_code)]

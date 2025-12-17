@@ -74,7 +74,13 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
 }
 
 /// Builds an AddFlow message for flows.
-pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> ControllerToDataplane {
+/// flow_routes: Mapping of flow_id -> route_id from the flow_routes relationship table.
+/// This documents which flows have been assigned specific routes by routing algorithms.
+pub fn build_flows_for_node(
+    flows: Vec<DbFlow>,
+    transport: FlowTransport,
+    flow_routes: &std::collections::HashMap<i32, i32>,
+) -> ControllerToDataplane {
     let mut built = Vec::new();
 
     for flow in flows {
@@ -107,10 +113,12 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> Con
             continue;
         }
 
-        // Log a warning if route_id is specified
-        if let Some(rid) = flow.route_id {
+        // Look up route_id from the flow_routes relationship table
+        let route_id = flow_routes.get(&flow.id).copied();
+
+        if let Some(rid) = route_id {
             debug!(
-                "Flow {} ({} -> {}) has explicit route_id {}",
+                "Flow {} ({} -> {}) assigned to explicit route_id {} (from flow_routes table)",
                 flow.id, flow.src_node_id, flow.dst_node_id, rid
             );
         }
@@ -119,7 +127,7 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> Con
             controller_id: Some(flow.id),
             src_node_id: flow.src_node_id as usize,
             dst_node_id: flow.dst_node_id as usize,
-            route_id: flow.route_id.map(|r| r as usize),
+            route_id: route_id.map(|r| r as usize),
             flow_spec,
         });
     }

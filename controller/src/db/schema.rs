@@ -78,6 +78,41 @@ pub(super) async fn create_db(pool: &Pool<Postgres>) {
         error!("Failed to create routes table: {}", e);
     }
 
+    // flow_routes: Relationship table documenting which flows use which routes.
+    // This is a proper normalized design - the route assignment is a relationship,
+    // not an inherent property of a flow. Flows may be assigned specific routes
+    // by routing algorithms or bandwidth allocation policies.
+    // flow_id: References flows.id - which flow is being routed
+    // route_id: References routes.route_id - which route this flow should use
+    if let Err(e) = sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS flow_routes (
+            flow_id INTEGER NOT NULL,
+            route_id INTEGER NOT NULL,
+            PRIMARY KEY (flow_id, route_id),
+            FOREIGN KEY (flow_id) REFERENCES flows(id) ON DELETE CASCADE,
+            FOREIGN KEY (route_id) REFERENCES routes(route_id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to create flow_routes table: {}", e);
+    }
+
+    // Index for fast lookups by flow_id (most common query pattern)
+    if let Err(e) = sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_flow_routes_flow_id ON flow_routes(flow_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    {
+        error!("Failed to create flow_routes index: {}", e);
+    }
+
     if let Err(e) = sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS metrics (
@@ -269,6 +304,7 @@ pub(super) async fn reset_db(pool: &Pool<Postgres>) {
     for (table, sql) in [
         ("metrics", "DROP TABLE IF EXISTS metrics"),
         ("app_flows", "DROP TABLE IF EXISTS app_flows"),
+        ("flow_routes", "DROP TABLE IF EXISTS flow_routes"),
         ("flows", "DROP TABLE IF EXISTS flows"),
         ("group_routes", "DROP TABLE IF EXISTS group_routes"),
         ("group_members", "DROP TABLE IF EXISTS group_members"),

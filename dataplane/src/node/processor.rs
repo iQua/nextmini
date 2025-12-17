@@ -11,7 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
@@ -58,7 +58,10 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
-    SetRouteForFlow(FlowId, usize),
+    /// Resolve next_hops for a route_id and pin them for a flow (replaces SetRouteForFlow).
+    /// Processor will call routing_table.resolve_next_hops_for_route() internally.
+    /// This avoids routing table lookups on the critical packet processing path.
+    ResolveAndPinRoute(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
@@ -281,13 +284,18 @@ impl ProcessorHandle {
         };
     }
 
+    /// Assigns a flow to use a specific route_id.
+    /// The processor will resolve next_hops for this route ONCE during setup
+    /// and use them directly during packet processing (avoiding routing table lookups).
+    ///
+    /// This is called from flow setup code and is NOT on the critical packet path.
     pub fn set_route_for_flow(&self, flow_id: FlowId, route_id: usize) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::SetRouteForFlow(flow_id, route_id))
+            .send(ProcessorMessage::ResolveAndPinRoute(flow_id, route_id))
         {
             error!(
-                "Error sending the SetRouteForFlow message to the processors: {}",
+                "Error sending ResolveAndPinRoute message to processors: {}",
                 e
             );
         };
@@ -847,8 +855,24 @@ impl Processor {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
             }
-            ProcessorMessage::SetRouteForFlow(flow_id, route_id) => {
-                self.routing_table.bind_route_for_flow(flow_id, route_id);
+            ProcessorMessage::ResolveAndPinRoute(flow_id, route_id) => {
+                // Pin the route_id for this flow by inserting it into the routing table's cache.
+                // This is called once during flow setup, not on the packet processing path.
+                // The flow will hit the cache on its first packet, avoiding route selection overhead.
+                match self.routing_table.pin_route_for_flow(flow_id, route_id) {
+                    Ok(()) => {
+                        debug!(
+                            "Pinned route {} for flow {:?} into routing cache",
+                            route_id, flow_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to pin route {} for flow {:?}: {}. Flow will use normal routing.",
+                            route_id, flow_id, e
+                        );
+                    }
+                }
             }
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
@@ -867,11 +891,13 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
 
+        // Get next_hops from routing table (uses cache internally).
+        // Flows with pinned routes hit the cache immediately, avoiding route selection.
         let reporter = self.flowstats_reporter.as_ref();
-        match self
-            .routing_table
-            .get_next_hops_by_flow(packet_flow_id, reporter)
-        {
+        let next_hops_result = self.routing_table
+            .get_next_hops_by_flow(packet_flow_id, reporter);
+
+        match next_hops_result {
             Ok(next_hops) => {
                 if next_hops.is_empty() {
                     error!("No next hops available for flow {}.", packet_flow_id);

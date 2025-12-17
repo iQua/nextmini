@@ -163,6 +163,21 @@ async fn send_flows(
             }
         };
 
+    // Query flow_routes table to get flow-to-route assignments.
+    // This reads from the relationship table that documents which flows
+    // have been assigned to specific routes by routing algorithms.
+    let flow_routes: std::collections::HashMap<i32, i32> =
+        match sqlx::query_as::<_, (i32, i32)>("SELECT flow_id, route_id FROM flow_routes")
+            .fetch_all(&*db_pool)
+            .await
+        {
+            Ok(rows) => rows.into_iter().collect(),
+            Err(e) => {
+                warn!("Failed to query flow_routes table: {}", e);
+                std::collections::HashMap::new()
+            }
+        };
+
     let node_ws_guard = node_ws.read().await;
 
     for (&node_id, writer) in node_ws_guard.iter() {
@@ -180,7 +195,7 @@ async fn send_flows(
                 node_id
             );
 
-            let msg = build_flows_for_node(flows, flow_transport);
+            let msg = build_flows_for_node(flows, flow_transport, &flow_routes);
 
             match writer
                 .lock()
