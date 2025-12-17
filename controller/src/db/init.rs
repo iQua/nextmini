@@ -5,7 +5,7 @@ use tracing::{error, info};
 use crate::config;
 use crate::utils::merge_all_routes;
 
-use super::schema::{reset_db, schema_smoke_check};
+use super::migrations::{reset_db, run_migrations};
 
 /// Connects to and initializes the PostgreSQL database.
 pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
@@ -25,17 +25,18 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             panic!("Failed to connect to database: {}", e);
         });
 
-    if let Err(e) = schema_smoke_check(&pool).await {
-        panic!("Database connection check failed: {}", e);
-    }
-
     // Controls initial database reset for dev/test. Default: enabled, unless CONTROLLER_RESET_DB explicitly disables it.
     let reset_enabled = std::env::var("CONTROLLER_RESET_DB")
         .map(|v| matches!(v.as_str(), "1" | "true" | "yes"))
         .unwrap_or(true);
     if reset_enabled {
-        reset_db(&pool).await;
+        reset_db(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to reset database: {}", e));
     } else {
+        run_migrations(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("Failed to run migrations: {}", e));
         info!("Database reset disabled via CONTROLLER_RESET_DB env var.");
     }
 

@@ -34,13 +34,8 @@ pub(crate) async fn recompute_group_routes(
     let member_node_ids: Vec<u32> = members.iter().map(|m| m.node_id as u32).collect();
     let member_node_set: HashSet<u32> = member_node_ids.iter().copied().collect();
 
-    let (dag_edges, dag_nodes) = compute_multicast_dag(
-        db_pool,
-        group.src_node_id as i32,
-        &member_node_ids,
-        group_id,
-    )
-    .await?;
+    let (dag_edges, dag_nodes) =
+        compute_multicast_dag(db_pool, group.src_node_id, &member_node_ids, group_id).await?;
 
     persist_multicast_dag(db_pool, group_id, group.src_node_id, &dag_edges).await?;
 
