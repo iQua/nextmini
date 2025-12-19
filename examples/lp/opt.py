@@ -295,30 +295,28 @@ print(session_rate)
 
 
 def convert_to_multicast_trees(
-    variables: t.Dict[str, int],
-    sol: t.List[float],
+    path_rates: t.Dict[t.Tuple[int, ...], float],
 ) -> t.Tuple[t.List[int], t.List[t.List[t.Tuple[t.List[t.List[int]], float]]]]:
     """
     Convert LP solution to multicast trees.
     
-    This implementation uses a robust "single parent" consistency check
-    to merge paths into trees, rather than a simple heuristic.
+    Args:
+        path_rates: Dict mapping path tuples to their throughput, e.g. {(1,2,4): 10.0, ...}
+    
+    Returns:
+        (sources, session_trees) where session_trees[i] contains trees for sources[i]
     """
     # all paths with nonzero throughput
     paths = []
-    for var, idx in variables.items():
-        if round(sol[idx], 5) != 0 and var.startswith('p'):
-            path_str = var.split('_')[1:]
-            path = list(map(int, path_str))
-           
-            throughput = round(sol[idx], 5)
-            paths.append((path, throughput))
+    for path_tuple, throughput in path_rates.items():
+        if round(throughput, 5) != 0:
+            paths.append((list(path_tuple), round(throughput, 5)))
 
     # All sessions, indexed by src
     # We use a set first to get unique sources, then sort to ensure deterministic order if needed
     sources = list(set([path[0] for path, _ in paths]))
     
-    # List to store resulting multicast trees
+    # stores resulting multicast trees
     session_trees = []
     
     # Group conceptual flows in each session into multicast trees
@@ -398,18 +396,14 @@ def convert_to_multicast_trees(
 
     return sources, session_trees
 
-# Construct variables dict for conversion
-variables = {}
-solution_vals = list(sol["x"])
-
-# path_indexes maps tuple path -> index in sol['x']
-# format in mFlow is "p_{n1}_{n2}_..."
-for path_tuple, idx in path_indexes.items():
-    name = f"p_{'_'.join(map(str, path_tuple))}"
-    variables[name] = idx
+# Construct path_rates dict for conversion: {path_tuple: throughput}
+path_rates = {
+    path_tuple: abs(list(sol["x"])[idx])
+    for path_tuple, idx in path_indexes.items()
+}
 
 print("\n--- Multicast Tree Conversion Result ---")
-sources, session_trees = convert_to_multicast_trees(variables, solution_vals)
+sources, session_trees = convert_to_multicast_trees(path_rates)
 print(f"Sources: {sources}")
 for i, src in enumerate(sources):
     print(f"Source {src} Trees:")
