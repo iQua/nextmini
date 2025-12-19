@@ -212,8 +212,6 @@ def convert_mc_to_trees(
     """
     Convert multi_commodity LP solution to multicast trees.
     
-    Adapted from: examples/sqaure/experiments/utils/generate_config_v2.py::with_multi_commodity
-    
     NOTE: multi_commodity uses variable format p_n1_..._nm_k where k is the flow index.
     We need to strip the trailing _k to get the actual path.
     
@@ -247,22 +245,43 @@ def convert_mc_to_trees(
         while len(current) > 0:
             path, throughput = current.pop()
             
-            # Build tree from paths with same second node (if they have one)
+            # Initialize parent_map for tree consistency check
+            parent_map = {}
+            for i in range(len(path) - 1):
+                u, v = path[i], path[i+1]
+                parent_map[v] = u
+            
             dst_set = {path[-1]}
             candidate_tree = [path]
             
             for candidate_path, candidate_throughput in current:
                 if candidate_throughput < throughput:
                     continue
-                # Check second node matches (for paths with length > 1)
-                if len(candidate_path) > 1 and len(path) > 1:
-                    if candidate_path[1] != path[1]:
-                        continue
+                
+                # Check 1: Must NOT share destination
                 if candidate_path[-1] in dst_set:
                     continue
+                
+                # Check 2: Tree Consistency (Single Parent Rule)
+                compatible = True
+                for i in range(len(candidate_path) - 1):
+                    u, v = candidate_path[i], candidate_path[i+1]
+                    if v in parent_map and parent_map[v] != u:
+                        compatible = False
+                        break
+                
+                if not compatible:
+                    continue
 
+                # Add to tree
                 dst_set.add(candidate_path[-1])
                 candidate_tree.append(candidate_path)
+                
+                # Update parent_map
+                for i in range(len(candidate_path) - 1):
+                    u, v = candidate_path[i], candidate_path[i+1]
+                    if v not in parent_map:
+                        parent_map[v] = u
 
             trees.append((candidate_tree, throughput))
 
