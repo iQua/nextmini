@@ -28,15 +28,9 @@ services:
     volumes:
       - ./controller-config.toml:/var/nextmini/config.toml
     working_dir: /var/nextmini
-    command: /bin/bash -c "sleep 2 && /var/nextmini/controller"
+    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
     ports:
       - "3000:3000"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3000' || exit 1"]
-      interval: 2s
-      timeout: 5s
-      retries: 30
-      start_period: 5s
 
   node1:
     build:
@@ -45,7 +39,7 @@ services:
     image: nextmini_lp_toy_python
     depends_on:
       controller:
-        condition: service_healthy
+        condition: service_started
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
@@ -63,7 +57,7 @@ services:
       node1:
         condition: service_started
       controller:
-        condition: service_healthy
+        condition: service_started
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
@@ -81,7 +75,7 @@ services:
       node1:
         condition: service_started
       controller:
-        condition: service_healthy
+        condition: service_started
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
