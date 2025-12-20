@@ -14,7 +14,7 @@ try:
     from .tree_conversion import convert_to_multicast_trees, paths_to_edges
 except ImportError:  # pragma: no cover
     # Fallback for running as a script from inside this directory.
-    from graph import Graph
+from graph import Graph
     from tree_conversion import convert_to_multicast_trees, paths_to_edges
 
 # Try to import solvers, provide helpful error if missing

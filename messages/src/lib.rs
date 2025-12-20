@@ -72,8 +72,8 @@ pub enum DataplaneToController {
     LeaveGroup {
         group_id: GroupId,
     },
-    /// Sets (overrides) multicast DAG edges for a group. Intended for external optimizers (e.g. LP)
-    /// that want to directly control the multicast tree without rewriting unicast routes.
+    /// Sets multicast DAG edges for a group. Intended for external optimizers (e.g. LP) that want
+    /// to directly control the multicast tree without rewriting unicast routes.
     ///
     /// The controller is expected to validate that the sender is the group's source node.
     SetGroupRoutes {

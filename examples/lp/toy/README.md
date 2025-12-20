@@ -12,11 +12,10 @@ From the repo root:
 
 ```bash
 cd examples/lp/toy
-rm -f ./shared/group.json ./shared/joined_*
 docker compose up --build
 ```
 
 Look for logs like:
 
-- source: `toy conversion ... edges=[(1, 2), (1, 3)]`
+- source: `conversion solver=mflow ... edges=[...]`
 - receivers: `payload=b'hello-nextmini'`

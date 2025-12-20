@@ -10,9 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
-from pathlib import Path
 
 import nextmini_py as nm
 
@@ -21,28 +19,14 @@ from examples.lp.solver import build_graph_from_controller_config
 from examples.lp import mFlow
 
 
-def load_toml(path: str) -> dict:
-    try:
-        import tomllib  # py3.11+
-    except ImportError:  # pragma: no cover
-        import tomli as tomllib  # type: ignore[no-redef]
-
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+CTRL_SRC_PORT = 40100
+CTRL_DST_PORT = 40101
 
 
-def wait_for_file(path: Path, timeout_s: int) -> None:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if path.exists():
-            return
-        time.sleep(0.2)
-    raise TimeoutError(f"Timed out waiting for file: {path}")
-
-
-def write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+def _send_ctrl(dp: nm.Dataplane, *, dst_node_id: int, msg: dict, src_port: int, dst_port: int) -> None:
+    payload = json.dumps(msg).encode("utf-8")
+    view = nm.PacketView(payload)
+    dp.send_to_node(dst_node_id, view, src_port=src_port, dst_port=dst_port)
 
 
 def pick_best_tree(
@@ -61,38 +45,86 @@ def pick_best_tree(
 
 
 def run_source(args: argparse.Namespace) -> None:
-    shared = Path(args.shared_dir)
-    group_info_path = shared / "group.json"
-
     dp = nm.Dataplane(args.config)
     src_node_id = dp.node_id
 
     receiver_ids = [int(x) for x in args.receiver_ids.split(",") if x.strip()]
     payload = args.payload.encode("utf-8")
 
-    # Create group (owner is this node).
+    # Control-plane receivers for HELLO/READY from each receiver.
+    ctrl_rxs: dict[int, nm.PacketReceiver] = {}
+    for rid in receiver_ids:
+        ctrl_rxs[rid] = dp.register_receiver_from_node(
+            src_node_id=rid,
+            src_port=CTRL_DST_PORT,  # receiver -> source
+            dst_port=CTRL_SRC_PORT,
+        )
+
+    # 1) RL-style handshake barrier: wait for receivers to say HELLO before we send metadata.
+    hello: set[int] = set()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and len(hello) < len(receiver_ids):
+        for rid, rx in ctrl_rxs.items():
+            if rid in hello:
+                continue
+            delivery = rx.recv(timeout_ms=50)
+            if delivery is None:
+                continue
+            try:
+                msg = json.loads(delivery.payload)
+            except Exception:
+                continue
+            if msg.get("type") == "HELLO":
+                hello.add(rid)
+                print(f"[src] got HELLO from {rid}", flush=True)
+        if len(hello) < len(receiver_ids):
+            time.sleep(0.05)
+    if len(hello) < len(receiver_ids):
+        raise TimeoutError(f"Timed out waiting for HELLO from receivers. got={sorted(hello)} expected={receiver_ids}")
+
+    # 2) Create group (owner is this node).
     dp.create_group(args.label)
     group_id, group_ip, _ = dp.group_is_ready(timeout_ms=30_000)
     print(f"[src] group created: id={group_id} ip={group_ip} src={src_node_id}", flush=True)
 
-    write_json(
-        group_info_path,
-        {
-            "group_id": group_id,
-            "group_ip": group_ip,
-            "src_node_id": src_node_id,
-            "receiver_ids": receiver_ids,
-            "expected_bytes": len(payload),
-        },
-    )
-
-    # Wait for receivers to join (signaled via files).
+    # 3) Send metadata to receivers.
     for rid in receiver_ids:
-        wait_for_file(shared / f"joined_{rid}", timeout_s=600)
-        print(f"[src] receiver {rid} joined", flush=True)
+        _send_ctrl(
+            dp,
+            dst_node_id=rid,
+            msg={
+                "type": "META",
+                "group_id": group_id,
+                "group_ip": group_ip,
+                "src_node_id": src_node_id,
+                "expected_bytes": len(payload),
+                "chunk_size": args.chunk_size,
+            },
+            src_port=CTRL_SRC_PORT,  # source -> receiver
+            dst_port=CTRL_DST_PORT,
+        )
 
-    # Give the controller a moment to persist membership rows before we override routes.
-    time.sleep(0.5)
+    # 4) Wait for READY from all receivers (after they join and register receive).
+    ready: set[int] = set()
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and len(ready) < len(receiver_ids):
+        for rid, rx in ctrl_rxs.items():
+            if rid in ready:
+                continue
+            delivery = rx.recv(timeout_ms=50)
+            if delivery is None:
+                continue
+            try:
+                msg = json.loads(delivery.payload)
+            except Exception:
+                continue
+            if msg.get("type") == "READY":
+                ready.add(rid)
+                print(f"[src] got READY from {rid}", flush=True)
+        if len(ready) < len(receiver_ids):
+            time.sleep(0.05)
+    if len(ready) < len(receiver_ids):
+        raise TimeoutError(f"Timed out waiting for READY from receivers. got={sorted(ready)} expected={receiver_ids}")
 
     # Compute a real mFlow LP solution, then convert → edges.
     graph = build_graph_from_controller_config(args.controller_config)
@@ -120,28 +152,61 @@ def run_source(args: argparse.Namespace) -> None:
 
 
 def run_receiver(args: argparse.Namespace) -> None:
-    shared = Path(args.shared_dir)
-    group_info_path = shared / "group.json"
-
     dp = nm.Dataplane(args.config)
     node_id = dp.node_id
+    src_node_id = int(args.source_node_id)
 
-    wait_for_file(group_info_path, timeout_s=600)
-    info = json.loads(group_info_path.read_text())
-    group_id = int(info["group_id"])
-    group_ip = str(info["group_ip"])
-    src_node_id = int(info["src_node_id"])
-    expected_bytes = int(info["expected_bytes"])
+    # Control receiver for metadata from source.
+    ctrl_rx = dp.register_receiver_from_node(
+        src_node_id=src_node_id,
+        src_port=CTRL_SRC_PORT,  # source -> receiver
+        dst_port=CTRL_DST_PORT,
+    )
+
+    # Send HELLO periodically until META arrives (prevents "source sent META too early" races).
+    meta: dict | None = None
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline and meta is None:
+        _send_ctrl(
+            dp,
+            dst_node_id=src_node_id,
+            msg={"type": "HELLO", "node_id": node_id},
+            src_port=CTRL_DST_PORT,  # receiver -> source
+            dst_port=CTRL_SRC_PORT,
+        )
+        delivery = ctrl_rx.recv(timeout_ms=1000)
+        if delivery is None:
+            continue
+        try:
+            msg = json.loads(delivery.payload)
+        except Exception:
+            continue
+        if msg.get("type") == "META":
+            meta = msg
+            break
+
+    if meta is None:
+        raise TimeoutError("Timed out waiting for META from source.")
+
+    group_id = int(meta["group_id"])
+    group_ip = str(meta["group_ip"])
+    expected_bytes = int(meta["expected_bytes"])
 
     dp.join_group(group_id)
-    (shared / f"joined_{node_id}").write_text("1")
-    print(f"[dst {node_id}] joined group {group_id} ({group_ip})", flush=True)
 
-    # Wait until routes include local delivery (InstallGroupRoutes received).
-    ready = dp.wait_for_local_membership(group_id, timeout_ms=60_000)
-    print(f"[dst {node_id}] local membership ready={ready}", flush=True)
+    # Register receive session before we tell source we're ready.
+    sid = dp.receive_data(group_ip, src_node_id, expected_bytes=expected_bytes, chunk_size=int(meta.get("chunk_size", args.chunk_size)))
 
-    sid = dp.receive_data(group_ip, src_node_id, expected_bytes=expected_bytes, chunk_size=args.chunk_size)
+    _send_ctrl(
+        dp,
+        dst_node_id=src_node_id,
+        msg={"type": "READY", "node_id": node_id},
+        src_port=CTRL_DST_PORT,
+        dst_port=CTRL_SRC_PORT,
+    )
+
+    print(f"[dst {node_id}] joined group {group_id} ({group_ip}) and READY", flush=True)
+
     ok = dp.reliable_wait(sid, timeout_ms=60_000)
     view = dp.get_data_buffer(sid)
     payload = bytes(view.read())
@@ -152,14 +217,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--role", choices=["source", "receiver"], required=True)
     parser.add_argument("--config", required=True, help="Path to node config TOML")
-    parser.add_argument("--shared-dir", default=os.environ.get("TOY_SHARED_DIR", "/shared"))
     parser.add_argument(
         "--controller-config",
-        default=os.environ.get("TOY_CONTROLLER_CONFIG", "examples/lp/toy/controller-config.toml"),
-        help="Topology source for --solver=mflow (controller-config.toml)",
+        default="examples/lp/toy/controller-config.toml",
+        help="Topology source for mFlow (controller-config.toml)",
     )
     parser.add_argument("--label", default="toy-lp-group")
     parser.add_argument("--receiver-ids", default="2,3")
+    parser.add_argument("--source-node-id", default="1", help="Source node ID (receivers use this for handshake)")
     parser.add_argument("--payload", default="hello-nextmini")
     parser.add_argument("--chunk-size", type=int, default=8500)
     args = parser.parse_args()

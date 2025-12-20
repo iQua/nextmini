@@ -791,7 +791,7 @@ impl Dataplane {
         Ok(())
     }
 
-    /// Override multicast DAG edges for a group (directed edges).
+    /// Set multicast DAG edges for a group (directed edges).
     ///
     /// Intended for external optimizers (e.g. LP solvers) that want the controller to install a
     /// specific multicast tree without rewriting unicast routes.

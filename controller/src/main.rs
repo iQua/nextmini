@@ -900,7 +900,7 @@ async fn handle_connection(
                         }
 
                         // Fetch previous edges so we can clear stale routes on nodes that are no
-                        // longer part of the DAG after the override.
+                        // longer part of the DAG after the update.
                         let previous_edges_value: Option<serde_json::Value> =
                             match sqlx::query_scalar("SELECT edges FROM group_routes WHERE group_id = $1")
                                 .bind(group_id as i32)
@@ -925,7 +925,7 @@ async fn handle_connection(
                             })
                             .unwrap_or_default();
 
-                        // Persist override edges.
+                        // Persist edges for this group.
                         let edges_json = match serde_json::to_value(
                             edges.iter().map(|(a, b)| [*a, *b]).collect::<Vec<[u32; 2]>>(),
                         ) {
@@ -1045,7 +1045,7 @@ async fn handle_connection(
                         }
 
                         info!(
-                            "SetGroupRoutes: installed override DAG ({} edges) for group {} (src {}).",
+                            "SetGroupRoutes: installed DAG ({} edges) for group {} (src {}).",
                             edges.len(),
                             group_id,
                             group.src_node_id
