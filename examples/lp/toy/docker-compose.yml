@@ -50,14 +50,12 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command:
-      - /bin/bash
-      - -c
-      - |
-        python /workspace/examples/lp/toy/toy_demo.py \
-          --role source \
-          --config examples/lp/toy/node1-config.toml && \
-        echo "[node1] Demo completed successfully. Staying alive..." && \
-        sleep infinity
+      - python
+      - /workspace/examples/lp/toy/toy_demo.py
+      - --role
+      - source
+      - --config
+      - examples/lp/toy/node1-config.toml
 
   node2:
     image: nextmini_lp_toy_python
@@ -70,14 +68,12 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command:
-      - /bin/bash
-      - -c
-      - |
-        python /workspace/examples/lp/toy/toy_demo.py \
-          --role receiver \
-          --config examples/lp/toy/node2-config.toml && \
-        echo "[node2] Demo completed successfully. Staying alive..." && \
-        sleep infinity
+      - python
+      - /workspace/examples/lp/toy/toy_demo.py
+      - --role
+      - receiver
+      - --config
+      - examples/lp/toy/node2-config.toml
 
   node3:
     image: nextmini_lp_toy_python
@@ -90,13 +86,11 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command:
-      - /bin/bash
-      - -c
-      - |
-        python /workspace/examples/lp/toy/toy_demo.py \
-          --role receiver \
-          --config examples/lp/toy/node3-config.toml && \
-        echo "[node3] Demo completed successfully. Staying alive..." && \
-        sleep infinity
+      - python
+      - /workspace/examples/lp/toy/toy_demo.py
+      - --role
+      - receiver
+      - --config
+      - examples/lp/toy/node3-config.toml
 
 

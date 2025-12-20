@@ -47,7 +47,7 @@ def pick_best_tree(
     return max(tree_candidates, key=score)
 
 
-def run_source(args: argparse.Namespace) -> None:
+def run_source(args: argparse.Namespace) -> nm.Dataplane:
     dp = nm.Dataplane(args.config)
     src_node_id = dp.node_id
 
@@ -160,9 +160,10 @@ def run_source(args: argparse.Namespace) -> None:
     sid = dp.send_data(group_ip, receiver_ids, view, chunk_size=args.chunk_size)
     ok = dp.reliable_wait(sid, timeout_ms=60_000)
     print(f"[src] send done ok={ok} sid={sid}", flush=True)
+    return dp
 
 
-def run_receiver(args: argparse.Namespace) -> None:
+def run_receiver(args: argparse.Namespace) -> nm.Dataplane:
     dp = nm.Dataplane(args.config)
     node_id = dp.node_id
     src_node_id = int(args.source_node_id)
@@ -250,6 +251,7 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     ok, payload, sid = asyncio.run(receive_payload())
     print(f"[dst {node_id}] recv ok={ok} sid={sid} payload={payload!r}", flush=True)
+    return dp
 
 
 def main() -> int:
@@ -273,10 +275,14 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.role == "source":
-        run_source(args)
+        dp = run_source(args)
     else:
-        run_receiver(args)
-    return 0
+        dp = run_receiver(args)
+
+    # Keep the dataplane alive after demo completes.
+    print(f"[node {dp.node_id}] Demo completed. Staying alive...", flush=True)
+    while True:
+        time.sleep(60)
 
 
 if __name__ == "__main__":
