@@ -9,6 +9,7 @@ This avoids the full RL pipeline and focuses on:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import time
 
@@ -116,8 +117,6 @@ def run_source(args: argparse.Namespace) -> None:
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline and len(ready) < len(receiver_ids):
         for rid, rx in ctrl_rxs.items():
-            if rid in ready:
-                continue
             delivery = rx.recv(timeout_ms=50)
             if delivery is None:
                 continue
@@ -125,7 +124,7 @@ def run_source(args: argparse.Namespace) -> None:
                 msg = json.loads(delivery.payload)
             except Exception:
                 continue
-            if msg.get("type") == "READY":
+            if msg.get("type") == "READY" and rid not in ready:
                 ready.add(rid)
                 print(f"[src] got READY from {rid}", flush=True)
         if len(ready) < len(receiver_ids):
@@ -206,27 +205,32 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     dp.join_group(group_id)
 
-    # Register receive session before we tell source we're ready.
-    sid = dp.receive_data(
-        group_ip,
-        src_node_id,
-        expected_bytes=expected_bytes,
-        chunk_size=int(meta.get("chunk_size", args.chunk_size)),
-    )
-
-    _send_ctrl(
-        dp,
-        dst_node_id=src_node_id,
-        msg={"type": "READY", "node_id": node_id},
-        src_port=CTRL_DST_PORT,
-        dst_port=CTRL_SRC_PORT,
-    )
+    async def receive_payload() -> tuple[bool, bytes, int]:
+        # Start the async receive before we tell the source we're ready.
+        receive_task = asyncio.create_task(
+            dp.receive_data_async(
+                group_ip,
+                src_node_id,
+                expected_bytes=expected_bytes,
+                chunk_size=int(meta.get("chunk_size", args.chunk_size)),
+            )
+        )
+        _send_ctrl(
+            dp,
+            dst_node_id=src_node_id,
+            msg={"type": "READY", "node_id": node_id},
+            src_port=CTRL_DST_PORT,
+            dst_port=CTRL_SRC_PORT,
+        )
+        sid = await receive_task
+        ok = await dp.reliable_wait_async(sid, timeout_ms=60_000)
+        view = dp.get_data_buffer(sid)
+        payload = bytes(view.read())
+        return ok, payload, sid
 
     print(f"[dst {node_id}] joined group {group_id} ({group_ip}) and READY", flush=True)
 
-    ok = dp.reliable_wait(sid, timeout_ms=60_000)
-    view = dp.get_data_buffer(sid)
-    payload = bytes(view.read())
+    ok, payload, sid = asyncio.run(receive_payload())
     print(f"[dst {node_id}] recv ok={ok} sid={sid} payload={payload!r}", flush=True)
 
 
