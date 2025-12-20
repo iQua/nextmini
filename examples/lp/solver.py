@@ -88,5 +88,3 @@ def compute_mflow_tree_edges(
     best_paths, best_throughput = max(trees, key=score)
     edges = mFlow.paths_to_edges(best_paths)
     return edges, best_throughput
-
-

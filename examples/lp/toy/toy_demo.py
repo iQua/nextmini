@@ -23,7 +23,9 @@ CTRL_SRC_PORT = 40100
 CTRL_DST_PORT = 40101
 
 
-def _send_ctrl(dp: nm.Dataplane, *, dst_node_id: int, msg: dict, src_port: int, dst_port: int) -> None:
+def _send_ctrl(
+    dp: nm.Dataplane, *, dst_node_id: int, msg: dict, src_port: int, dst_port: int
+) -> None:
     payload = json.dumps(msg).encode("utf-8")
     view = nm.PacketView(payload)
     dp.send_to_node(dst_node_id, view, src_port=src_port, dst_port=dst_port)
@@ -80,12 +82,17 @@ def run_source(args: argparse.Namespace) -> None:
         if len(hello) < len(receiver_ids):
             time.sleep(0.05)
     if len(hello) < len(receiver_ids):
-        raise TimeoutError(f"Timed out waiting for HELLO from receivers. got={sorted(hello)} expected={receiver_ids}")
+        raise TimeoutError(
+            f"Timed out waiting for HELLO from receivers. got={sorted(hello)} expected={receiver_ids}"
+        )
 
     # 2) Create group (owner is this node).
     dp.create_group(args.label)
     group_id, group_ip, _ = dp.group_is_ready(timeout_ms=30_000)
-    print(f"[src] group created: id={group_id} ip={group_ip} src={src_node_id}", flush=True)
+    print(
+        f"[src] group created: id={group_id} ip={group_ip} src={src_node_id}",
+        flush=True,
+    )
 
     # 3) Send metadata to receivers.
     for rid in receiver_ids:
@@ -124,7 +131,9 @@ def run_source(args: argparse.Namespace) -> None:
         if len(ready) < len(receiver_ids):
             time.sleep(0.05)
     if len(ready) < len(receiver_ids):
-        raise TimeoutError(f"Timed out waiting for READY from receivers. got={sorted(ready)} expected={receiver_ids}")
+        raise TimeoutError(
+            f"Timed out waiting for READY from receivers. got={sorted(ready)} expected={receiver_ids}"
+        )
 
     # Compute a real mFlow LP solution, then convert → edges.
     graph = build_graph_from_controller_config(args.controller_config)
@@ -135,7 +144,10 @@ def run_source(args: argparse.Namespace) -> None:
     best_paths, throughput = pick_best_tree(session_trees[idx], receiver_ids)
     edges = paths_to_edges(best_paths)
 
-    print(f"[src] conversion solver=mflow throughput={throughput} edges={edges}", flush=True)
+    print(
+        f"[src] conversion solver=mflow throughput={throughput} edges={edges}",
+        flush=True,
+    )
 
     # Install override DAG into controller.
     dp.set_group_routes(group_id, edges)
@@ -195,7 +207,12 @@ def run_receiver(args: argparse.Namespace) -> None:
     dp.join_group(group_id)
 
     # Register receive session before we tell source we're ready.
-    sid = dp.receive_data(group_ip, src_node_id, expected_bytes=expected_bytes, chunk_size=int(meta.get("chunk_size", args.chunk_size)))
+    sid = dp.receive_data(
+        group_ip,
+        src_node_id,
+        expected_bytes=expected_bytes,
+        chunk_size=int(meta.get("chunk_size", args.chunk_size)),
+    )
 
     _send_ctrl(
         dp,
@@ -224,7 +241,11 @@ def main() -> int:
     )
     parser.add_argument("--label", default="toy-lp-group")
     parser.add_argument("--receiver-ids", default="2,3")
-    parser.add_argument("--source-node-id", default="1", help="Source node ID (receivers use this for handshake)")
+    parser.add_argument(
+        "--source-node-id",
+        default="1",
+        help="Source node ID (receivers use this for handshake)",
+    )
     parser.add_argument("--payload", default="hello-nextmini")
     parser.add_argument("--chunk-size", type=int, default=8500)
     args = parser.parse_args()
@@ -238,5 +259,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

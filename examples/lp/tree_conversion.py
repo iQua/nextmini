@@ -117,5 +117,3 @@ def paths_to_edges(paths: t.List[t.List[int]]) -> t.List[t.Tuple[int, int]]:
         for i in range(len(path) - 1):
             edges.add((path[i], path[i + 1]))
     return sorted(edges)
-
-

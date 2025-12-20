@@ -39,14 +39,18 @@ def _parse_node_list(spec: str) -> list[int]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compute multicast DAG edges for Nextmini")
+    parser = argparse.ArgumentParser(
+        description="Compute multicast DAG edges for Nextmini"
+    )
     parser.add_argument(
         "--controller-config",
         type=str,
         required=True,
         help="Path to controller-config.toml (topology source)",
     )
-    parser.add_argument("--src", type=int, required=True, help="Source node ID (e.g. trainer)")
+    parser.add_argument(
+        "--src", type=int, required=True, help="Source node ID (e.g. trainer)"
+    )
     parser.add_argument(
         "--dests",
         type=str,
@@ -66,9 +70,19 @@ def main() -> int:
     )
 
     # Optional apply step (requires nextmini_py and must run as the source node).
-    parser.add_argument("--apply", action="store_true", help="Apply edges via nextmini_py.set_group_routes()")
-    parser.add_argument("--node-config", type=str, help="Path to the SOURCE node's dataplane config.toml")
-    parser.add_argument("--group-id", type=int, help="Existing multicast group_id to override")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply edges via nextmini_py.set_group_routes()",
+    )
+    parser.add_argument(
+        "--node-config",
+        type=str,
+        help="Path to the SOURCE node's dataplane config.toml",
+    )
+    parser.add_argument(
+        "--group-id", type=int, help="Existing multicast group_id to override"
+    )
 
     args = parser.parse_args()
 
@@ -81,7 +95,9 @@ def main() -> int:
         args.controller_config, default_capacity=args.default_capacity
     )
 
-    edges, throughput = compute_mflow_tree_edges(graph, src=args.src, destinations=destinations)
+    edges, throughput = compute_mflow_tree_edges(
+        graph, src=args.src, destinations=destinations
+    )
 
     if args.json:
         print(json.dumps([[a, b] for (a, b) in edges]))
@@ -92,7 +108,9 @@ def main() -> int:
 
     if args.apply:
         if args.node_config is None or args.group_id is None:
-            print("Error: --apply requires --node-config and --group-id", file=sys.stderr)
+            print(
+                "Error: --apply requires --node-config and --group-id", file=sys.stderr
+            )
             return 2
 
         node_cfg_path = Path(args.node_config)
@@ -117,5 +135,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

@@ -4,6 +4,7 @@ Adapted from examples/sqaure/experiments/optimization/mFlow.py
 
 Reference: https://iqua.ece.toronto.edu/papers/cflow-infocom05.pdf
 """
+
 import typing as t
 import numpy as np
 from collections import defaultdict
@@ -14,12 +15,13 @@ try:
     from .tree_conversion import convert_to_multicast_trees, paths_to_edges
 except ImportError:  # pragma: no cover
     # Fallback for running as a script from inside this directory.
-from graph import Graph
+    from graph import Graph
     from tree_conversion import convert_to_multicast_trees, paths_to_edges
 
 # Try to import solvers, provide helpful error if missing
 try:
     from cvxopt import matrix, solvers
+
     CVXOPT_AVAILABLE = True
 except ImportError:
     CVXOPT_AVAILABLE = False
@@ -27,6 +29,7 @@ except ImportError:
 
 try:
     import mosek
+
     MOSEK_AVAILABLE = True
 except ImportError:
     MOSEK_AVAILABLE = False
@@ -43,7 +46,7 @@ def solve(
 ) -> t.Tuple[t.Dict[str, int], t.List[float]]:
     """
     Solve the modified mFlow LP.
-    
+
     Args:
         graph: Network topology
         sources: List of source node IDs
@@ -51,16 +54,16 @@ def solve(
         max_length: Maximum path length to consider
         sort_by: Path selection strategy ("shortest" or "random")
         num_paths: Number of paths to consider per (src, dst) pair
-        
+
     Returns:
         Tuple of (variable_name_to_index, solution_values)
     """
     if not CVXOPT_AVAILABLE:
         raise ImportError("cvxopt is required for LP solving")
-    
+
     # Get all paths
     paths = graph.get_paths(sources, destinations, max_length=max_length)
-    
+
     # Filter paths
     if sort_by == "shortest":
         for flow in paths:
@@ -78,7 +81,7 @@ def solve(
     ###################################################
     variable_counter = 0
     variables = {}
-    
+
     # x: max min multicast flow
     variables["x"] = 0
     variable_counter += 1
@@ -99,7 +102,7 @@ def solve(
                 n1, n2 = path[i], path[i + 1]
                 edges.add((n1, n2))
                 src_dst_n1_n2_to_path[(src, dst, n1, n2)].append(path)
-        for (n1, n2) in edges:
+        for n1, n2 in edges:
             name = f"e_{src}_{n1}_{n2}"
             if name in variables:
                 continue
@@ -136,7 +139,9 @@ def solve(
 
     # Edge capacity constraints
     for (n1, n2), capacity in graph.capacities.items():
-        names = [f"e_{src}_{n1}_{n2}" for src in sources if f"e_{src}_{n1}_{n2}" in variables]
+        names = [
+            f"e_{src}_{n1}_{n2}" for src in sources if f"e_{src}_{n1}_{n2}" in variables
+        ]
         if len(names) == 0:
             continue
         columns = [variables[name] for name in names]
@@ -147,7 +152,7 @@ def solve(
 
     G = np.array(G_rows, dtype=np.float64)
     h = np.array(h_rows, dtype=np.float64)
-        
+
     # All variables >= 0
     G = np.vstack([G, -np.eye(variable_counter)])
     h = np.hstack([h, np.zeros(variable_counter)])
@@ -171,7 +176,7 @@ def solve(
             sol = list(solvers.lp(c, G, h, solver="glpk")["x"])
     else:
         sol = list(solvers.lp(c, G, h, solver="glpk")["x"])
-    
+
     return variables, sol
 
 
