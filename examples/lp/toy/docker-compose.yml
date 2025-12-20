@@ -31,6 +31,12 @@ services:
     command: /bin/bash -c "sleep 2 && /var/nextmini/controller"
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3000' || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
 
   node1:
     build:
@@ -39,48 +45,60 @@ services:
     image: nextmini_lp_toy_python
     depends_on:
       controller:
-        condition: service_started
+        condition: service_healthy
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command:
-      - python
-      - /workspace/examples/lp/toy/toy_demo.py
-      - --role
-      - source
-      - --config
-      - examples/lp/toy/node1-config.toml
+      - /bin/bash
+      - -c
+      - |
+        python /workspace/examples/lp/toy/toy_demo.py \
+          --role source \
+          --config examples/lp/toy/node1-config.toml && \
+        echo "[node1] Demo completed successfully. Staying alive..." && \
+        sleep infinity
 
   node2:
+    build:
+      context: ../../../
+      dockerfile: examples/lp/toy/Dockerfile
     image: nextmini_lp_toy_python
     depends_on:
       controller:
-        condition: service_started
+        condition: service_healthy
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command:
-      - python
-      - /workspace/examples/lp/toy/toy_demo.py
-      - --role
-      - receiver
-      - --config
-      - examples/lp/toy/node2-config.toml
+      - /bin/bash
+      - -c
+      - |
+        python /workspace/examples/lp/toy/toy_demo.py \
+          --role receiver \
+          --config examples/lp/toy/node2-config.toml && \
+        echo "[node2] Demo completed successfully. Staying alive..." && \
+        sleep infinity
 
   node3:
+    build:
+      context: ../../../
+      dockerfile: examples/lp/toy/Dockerfile
     image: nextmini_lp_toy_python
     depends_on:
       controller:
-        condition: service_started
+        condition: service_healthy
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command:
-      - python
-      - /workspace/examples/lp/toy/toy_demo.py
-      - --role
-      - receiver
-      - --config
-      - examples/lp/toy/node3-config.toml
+      - /bin/bash
+      - -c
+      - |
+        python /workspace/examples/lp/toy/toy_demo.py \
+          --role receiver \
+          --config examples/lp/toy/node3-config.toml && \
+        echo "[node3] Demo completed successfully. Staying alive..." && \
+        sleep infinity
 
 
