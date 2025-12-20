@@ -43,13 +43,7 @@ services:
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-    command:
-      - python
-      - /workspace/examples/lp/toy/toy_demo.py
-      - --role
-      - source
-      - --config
-      - examples/lp/toy/node1-config.toml
+    command: /bin/bash -c "sleep 7 && python /workspace/examples/lp/toy/toy_demo.py --role source --config examples/lp/toy/node1-config.toml"
 
   node2:
     image: nextmini_lp_toy_python
@@ -61,13 +55,7 @@ services:
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-    command:
-      - python
-      - /workspace/examples/lp/toy/toy_demo.py
-      - --role
-      - receiver
-      - --config
-      - examples/lp/toy/node2-config.toml
+    command: /bin/bash -c "sleep 7 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node2-config.toml"
 
   node3:
     image: nextmini_lp_toy_python
@@ -79,12 +67,6 @@ services:
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-    command:
-      - python
-      - /workspace/examples/lp/toy/toy_demo.py
-      - --role
-      - receiver
-      - --config
-      - examples/lp/toy/node3-config.toml
+    command: /bin/bash -c "sleep 7 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node3-config.toml"
 
 
