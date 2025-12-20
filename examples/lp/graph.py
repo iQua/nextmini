@@ -64,21 +64,6 @@ class Graph:
             self.find_paths(neighbor, dst, path, all_paths, max_length=max_length)
             path.pop()
 
-    def find_shortest_path_from_src(self, src: int) -> t.Dict[int, int]:
-        """BFS to find shortest path tree from src."""
-        visited = {src}
-        parent = {src: None}
-        queue = [src]
-        while queue:
-            node = queue.pop(0)
-            for neighbor, _ in self.adj[node]:
-                if neighbor in visited:
-                    continue
-                parent[neighbor] = node
-                visited.add(neighbor)
-                queue.append(neighbor)
-        return parent
-
     def get_paths(
         self, 
         sources: t.List[int], 
@@ -98,8 +83,38 @@ class Graph:
     def from_toml(cls, toml_dict: dict) -> "Graph":
         """Create Graph from TOML topology definition."""
         topo = toml_dict.get("topology", {})
-        nodes = topo.get("nodes", [])
-        edge_list = topo.get("edges", [])
+        # Nodes can be explicitly provided, inferred from edges, or derived from n_nodes.
+        nodes = topo.get("nodes")
+        edge_list = topo.get("edges")
+
+        if nodes is None:
+            # Derive nodes from controller-style config if present (optional convenience).
+            full_mesh_cfg = topo.get("full_mesh_config") if isinstance(topo, dict) else None
+            if isinstance(full_mesh_cfg, dict) and "n_nodes" in full_mesh_cfg:
+                n_nodes = int(full_mesh_cfg["n_nodes"])
+                nodes = list(range(1, n_nodes + 1))
+            elif "n_nodes" in topo:
+                n_nodes = int(topo["n_nodes"])
+                nodes = list(range(1, n_nodes + 1))
+            elif edge_list:
+                # Infer nodes from edges list.
+                uniq = set()
+                for e in edge_list:
+                    uniq.add(int(e[0]))
+                    uniq.add(int(e[1]))
+                nodes = sorted(uniq)
+            else:
+                nodes = []
+        else:
+            nodes = [int(n) for n in nodes]
+
+        # If edges are omitted, assume a full-mesh among the declared nodes.
+        # This keeps configs concise for common "full mesh N nodes" examples.
+        if edge_list is None:
+            edge_list = [[a, b] for i, a in enumerate(nodes) for b in nodes[i + 1 :]]
+        else:
+            edge_list = list(edge_list)
+
         default_capacity = topo.get("default_capacity", 1000)
         
         # Convert to bidirectional edges

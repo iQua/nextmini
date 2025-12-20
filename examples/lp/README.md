@@ -1,29 +1,34 @@
-# LP Result for Multicast Integration with Nextmini
+# LP helpers for multicast tree selection (used by `examples/rl`)
 
-## How it works
+## What this folder is for
 
-```
-LP Solver → Tree Edges → Nextmini DB → pg_notify → Controller → Dataplane
-```
+- Compute a multicast DAG (tree) given a controller topology and `(src → destinations)` demand.
+- Optionally push that DAG to the controller via `nextmini_py.Dataplane.set_group_routes(...)`.
 
-## Usage
+## Why only the source node can push (`set_group_routes`)
 
-# Step 1: Start Nextmini
+Nextmini multicast groups are `(S, G)` (source-selected). Letting only the **group owner/source**
+override routes avoids conflicting updates and prevents non-owners from hijacking delivery.
+
+Practically for RL: the **trainer** (src) can compute and install the tree for the weight multicast.
+
+## CLI usage (debugging)
 
 ```bash
-cd examples/routes
-docker compose build; docker compose up
+python -m examples.lp.main \
+  --controller-config examples/rl/configs-docker/controller-config.toml \
+  --src 1 --dests 2,3
 ```
 
-# Step 2: Run LP Solver
+To apply the result live (must run as the **source node** and the group must already exist):
+
 ```bash
-cd examples/lp-multicast
-
-# Dry run (solve LP, show results)
-uv run main.py --topo topo.toml --dry-run
-
-# Inject into Nextmini (requires running controller)
-uv run main.py --topo topo.toml --clear
+python -m examples.lp.main \
+  --controller-config examples/rl/configs-docker/controller-config.toml \
+  --src 1 --dests 2,3 \
+  --apply --node-config examples/rl/configs-docker/trainer-config.toml --group-id 7
 ```
 
-Note: This integration is for topology construction. Haven't integrated all the square experiments yet.
+## Legacy DB injection
+
+If you still need the older “write Postgres + pg_notify” flow, see `examples/lp/legacy_db/`.

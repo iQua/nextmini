@@ -1,0 +1,128 @@
+services:
+  postgres:
+    image: postgres:alpine
+    container_name: lp-toy-postgres
+    hostname: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - ../../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      toy_net:
+        ipv4_address: 172.31.3.2
+
+  controller:
+    build:
+      context: ../../../
+      dockerfile: controller/Dockerfile
+    image: nextmini_controller
+    container_name: lp-toy-controller
+    hostname: controller
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - ../../../:/workspace:cached
+      - ./controller-config.toml:/var/nextmini/config.toml
+    working_dir: /var/nextmini
+    command: /bin/bash -c "sleep 2 && /var/nextmini/controller"
+    ports:
+      - "3000:3000"
+    networks:
+      toy_net:
+        ipv4_address: 172.31.3.3
+
+  node1:
+    build:
+      context: ../../../
+      dockerfile: examples/rl/Dockerfile
+    image: nextmini_lp_toy_python
+    container_name: lp-toy-node1
+    hostname: node1
+    depends_on:
+      controller:
+        condition: service_started
+    volumes:
+      - ../../../:/workspace:cached
+      - ./shared:/shared
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      TOY_SHARED_DIR: "/shared"
+    command:
+      - bash
+      - -lc
+      - >
+        chmod +x examples/lp/toy/run_toy_node.sh &&
+        examples/lp/toy/run_toy_node.sh source examples/lp/toy/node1-config.toml
+    networks:
+      toy_net:
+        ipv4_address: 172.31.3.10
+
+  node2:
+    image: nextmini_lp_toy_python
+    container_name: lp-toy-node2
+    hostname: node2
+    depends_on:
+      controller:
+        condition: service_started
+    volumes:
+      - ../../../:/workspace:cached
+      - ./shared:/shared
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      TOY_SHARED_DIR: "/shared"
+    command:
+      - bash
+      - -lc
+      - >
+        chmod +x examples/lp/toy/run_toy_node.sh &&
+        examples/lp/toy/run_toy_node.sh receiver examples/lp/toy/node2-config.toml
+    networks:
+      toy_net:
+        ipv4_address: 172.31.3.11
+
+  node3:
+    image: nextmini_lp_toy_python
+    container_name: lp-toy-node3
+    hostname: node3
+    depends_on:
+      controller:
+        condition: service_started
+    volumes:
+      - ../../../:/workspace:cached
+      - ./shared:/shared
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      TOY_SHARED_DIR: "/shared"
+    command:
+      - bash
+      - -lc
+      - >
+        chmod +x examples/lp/toy/run_toy_node.sh &&
+        examples/lp/toy/run_toy_node.sh receiver examples/lp/toy/node3-config.toml
+    networks:
+      toy_net:
+        ipv4_address: 172.31.3.12
+
+networks:
+  toy_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.31.3.0/24
+
+

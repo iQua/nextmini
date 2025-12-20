@@ -23,7 +23,9 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tracing::{error, info, warn};
 
 use anyhow::Result as AnyResult;
-use nextmini_messages::{ControllerToDataplane, DataplaneToController, GroupDirectoryEntry};
+use nextmini_messages::{
+    ControllerToDataplane, DataplaneToController, GroupDirectoryEntry, GroupRoutingTableEntry,
+};
 
 use crate::config::{Config, get_config};
 use crate::db::{
@@ -859,6 +861,195 @@ async fn handle_connection(
                         } else {
                             info!("Node {} left multicast group {}.", node_id, group_id);
                         }
+                    }
+                    DataplaneToController::SetGroupRoutes { group_id, edges } => {
+                        let Some(node_id) = current_node_id else {
+                            warn!("SetGroupRoutes received before node registration; ignoring.");
+                            continue;
+                        };
+
+                        // Load group to validate ownership and get src_node_id.
+                        let group = match sqlx::query_as::<_, crate::models::Group>(
+                            "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
+                        )
+                        .bind(group_id as i32)
+                        .fetch_optional(&*db_pool)
+                        .await
+                        {
+                            Ok(opt) => opt,
+                            Err(e) => {
+                                error!(
+                                    "SetGroupRoutes: failed to load group {} from DB: {}",
+                                    group_id, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        let Some(group) = group else {
+                            warn!("SetGroupRoutes: unknown group id {}; ignoring.", group_id);
+                            continue;
+                        };
+
+                        if group.src_node_id as usize != node_id {
+                            warn!(
+                                "SetGroupRoutes: node {} attempted to set routes for group {} owned by node {}. Ignoring.",
+                                node_id, group_id, group.src_node_id
+                            );
+                            continue;
+                        }
+
+                        // Fetch previous edges so we can clear stale routes on nodes that are no
+                        // longer part of the DAG after the override.
+                        let previous_edges_value: Option<serde_json::Value> =
+                            match sqlx::query_scalar("SELECT edges FROM group_routes WHERE group_id = $1")
+                                .bind(group_id as i32)
+                                .fetch_optional(&*db_pool)
+                                .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!(
+                                        "SetGroupRoutes: failed to read previous group_routes for group {}: {}",
+                                        group_id, e
+                                    );
+                                    None
+                                }
+                            };
+
+                        let previous_edges: Vec<(u32, u32)> = previous_edges_value
+                            .as_ref()
+                            .map(|value| {
+                                serde_json::from_value::<Vec<(u32, u32)>>(value.clone())
+                                    .unwrap_or_default()
+                            })
+                            .unwrap_or_default();
+
+                        // Persist override edges.
+                        let edges_json = match serde_json::to_value(
+                            edges.iter().map(|(a, b)| [*a, *b]).collect::<Vec<[u32; 2]>>(),
+                        ) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!(
+                                    "SetGroupRoutes: failed to encode edges JSON for group {}: {}",
+                                    group_id, e
+                                );
+                                continue;
+                            }
+                        };
+
+                        if let Err(e) = sqlx::query(
+                            r#"
+                            INSERT INTO group_routes (group_id, src_node_id, edges)
+                            VALUES ($1, $2, $3)
+                            ON CONFLICT (group_id)
+                            DO UPDATE SET
+                                src_node_id = EXCLUDED.src_node_id,
+                                edges = EXCLUDED.edges,
+                                updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
+                            "#,
+                        )
+                        .bind(group_id as i32)
+                        .bind(group.src_node_id)
+                        .bind(edges_json)
+                        .execute(&*db_pool)
+                        .await
+                        {
+                            error!(
+                                "SetGroupRoutes: failed to upsert group_routes for group {}: {}",
+                                group_id, e
+                            );
+                            continue;
+                        }
+
+                        // Load members and compute node set for delivery and notifications.
+                        let members = match load_group_members(&db_pool, group_id as i32).await {
+                            Ok(m) => m,
+                            Err(e) => {
+                                error!(
+                                    "SetGroupRoutes: failed to load members for group {}: {}",
+                                    group_id, e
+                                );
+                                continue;
+                            }
+                        };
+                        let member_node_ids: Vec<u32> =
+                            members.iter().map(|m| m.node_id as u32).collect();
+                        let member_node_set: HashSet<u32> =
+                            member_node_ids.iter().copied().collect();
+
+                        // Notify union(previous_nodes, new_nodes, src, members) so stale entries are cleared.
+                        let mut nodes_to_notify: HashSet<u32> = previous_edges
+                            .iter()
+                            .flat_map(|(a, b)| [*a, *b])
+                            .collect();
+                        nodes_to_notify.extend(edges.iter().flat_map(|(a, b)| [*a, *b]));
+                        nodes_to_notify.insert(group.src_node_id as u32);
+                        nodes_to_notify.extend(member_node_ids.iter().copied());
+
+                        // Snapshot writers to avoid holding the lock while sending.
+                        let send_targets: Vec<(u32, Arc<tokio::sync::Mutex<WebSocketWriter>>)> = {
+                            let guard = node_ws.read().await;
+                            nodes_to_notify
+                                .iter()
+                                .filter_map(|node| {
+                                    guard
+                                        .get(&(*node as usize))
+                                        .map(|writer| (*node, Arc::clone(writer)))
+                                })
+                                .collect()
+                        };
+
+                        if send_targets.is_empty() {
+                            warn!(
+                                "SetGroupRoutes: no active websocket connections for group {} update.",
+                                group_id
+                            );
+                            continue;
+                        }
+
+                        for (target_node_id, writer) in send_targets {
+                            let entry = build_group_routes_for_node(
+                                group.id as usize,
+                                group.src_node_id as u32,
+                                &edges,
+                                target_node_id,
+                                &member_node_set,
+                            );
+                            let routes: Vec<GroupRoutingTableEntry> = entry.into_iter().collect();
+                            let message = ControllerToDataplane::InstallGroupRoutes {
+                                group_id: group.id as usize,
+                                src_node_id: group.src_node_id as usize,
+                                routes,
+                            };
+
+                            let payload = match rmp_serde::to_vec(&message) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    error!(
+                                        "SetGroupRoutes: failed to encode InstallGroupRoutes for group {}: {}",
+                                        group_id, e
+                                    );
+                                    continue;
+                                }
+                            };
+                            if let Err(e) =
+                                writer.lock().await.send(Message::binary(payload)).await
+                            {
+                                error!(
+                                    "SetGroupRoutes: failed to send InstallGroupRoutes for group {} to node {}: {}",
+                                    group_id, target_node_id, e
+                                );
+                            }
+                        }
+
+                        info!(
+                            "SetGroupRoutes: installed override DAG ({} edges) for group {} (src {}).",
+                            edges.len(),
+                            group_id,
+                            group.src_node_id
+                        );
                     }
                     DataplaneToController::ReliableStats { stats } => {
                         info!(

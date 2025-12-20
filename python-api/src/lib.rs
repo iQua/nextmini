@@ -791,6 +791,20 @@ impl Dataplane {
         Ok(())
     }
 
+    /// Override multicast DAG edges for a group (directed edges).
+    ///
+    /// Intended for external optimizers (e.g. LP solvers) that want the controller to install a
+    /// specific multicast tree without rewriting unicast routes.
+    #[pyo3(signature = (group_id, edges))]
+    fn set_group_routes(&self, group_id: usize, edges: Vec<(u32, u32)>) -> PyResult<()> {
+        rt().block_on(async {
+            self.controller
+                .send(DataplaneToController::SetGroupRoutes { group_id, edges })
+                .await;
+        });
+        Ok(())
+    }
+
     #[pyo3(signature = (timeout_ms=None))]
     fn group_is_ready(&self, timeout_ms: Option<u64>) -> PyResult<Option<(usize, String, usize)>> {
         let timeout = timeout_ms.map(Duration::from_millis);
