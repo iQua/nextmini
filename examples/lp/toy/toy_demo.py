@@ -207,22 +207,40 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     async def receive_payload() -> tuple[bool, bytes, int]:
         # Start the async receive before we tell the source we're ready.
-        receive_task = asyncio.create_task(
-            dp.receive_data_async(
+        async def receive_wrapper() -> int:
+            return await dp.receive_data_async(
                 group_ip,
                 src_node_id,
                 expected_bytes=expected_bytes,
                 chunk_size=int(meta.get("chunk_size", args.chunk_size)),
             )
-        )
-        _send_ctrl(
-            dp,
-            dst_node_id=src_node_id,
-            msg={"type": "READY", "node_id": node_id},
-            src_port=CTRL_DST_PORT,
-            dst_port=CTRL_SRC_PORT,
-        )
-        sid = await receive_task
+
+        receive_task = asyncio.create_task(receive_wrapper())
+        last_ready = 0.0
+        deadline = time.monotonic() + 120
+        sid: int | None = None
+
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            if now - last_ready >= 1.0:
+                _send_ctrl(
+                    dp,
+                    dst_node_id=src_node_id,
+                    msg={"type": "READY", "node_id": node_id},
+                    src_port=CTRL_DST_PORT,
+                    dst_port=CTRL_SRC_PORT,
+                )
+                last_ready = now
+
+            done, _ = await asyncio.wait({receive_task}, timeout=0.25)
+            if receive_task in done:
+                sid = receive_task.result()
+                break
+
+        if sid is None:
+            receive_task.cancel()
+            raise TimeoutError("Timed out waiting for multicast session to start.")
+
         ok = await dp.reliable_wait_async(sid, timeout_ms=60_000)
         view = dp.get_data_buffer(sid)
         payload = bytes(view.read())
