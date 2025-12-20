@@ -60,11 +60,10 @@ services:
         sleep infinity
 
   node2:
-    build:
-      context: ../../../
-      dockerfile: examples/lp/toy/Dockerfile
     image: nextmini_lp_toy_python
     depends_on:
+      node1:
+        condition: service_started
       controller:
         condition: service_healthy
     working_dir: /workspace
@@ -81,11 +80,10 @@ services:
         sleep infinity
 
   node3:
-    build:
-      context: ../../../
-      dockerfile: examples/lp/toy/Dockerfile
     image: nextmini_lp_toy_python
     depends_on:
+      node1:
+        condition: service_started
       controller:
         condition: service_healthy
     working_dir: /workspace
