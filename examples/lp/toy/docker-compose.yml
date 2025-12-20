@@ -28,7 +28,7 @@ services:
     volumes:
       - ./controller-config.toml:/var/nextmini/config.toml
     working_dir: /var/nextmini
-    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+    command: /bin/bash -c "sleep 3 && /var/nextmini/controller"
     ports:
       - "3000:3000"
 
@@ -55,7 +55,7 @@ services:
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-    command: /bin/bash -c "sleep 7 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node2-config.toml"
+    command: /bin/bash -c "sleep 8 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node2-config.toml"
 
   node3:
     image: nextmini_lp_toy_python
@@ -67,6 +67,6 @@ services:
     working_dir: /workspace
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
-    command: /bin/bash -c "sleep 7 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node3-config.toml"
+    command: /bin/bash -c "sleep 9 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node3-config.toml"
 
 
