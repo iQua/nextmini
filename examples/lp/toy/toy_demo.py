@@ -63,7 +63,7 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
             dst_port=CTRL_SRC_PORT,
         )
 
-    # 1) The handshake waits for receivers to say HELLO before sending metadata.
+    # 1) RL-style handshake barrier: wait for receivers to say HELLO before we send metadata.
     hello: set[int] = set()
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline and len(hello) < len(receiver_ids):

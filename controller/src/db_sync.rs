@@ -159,10 +159,6 @@ async fn sync_group_routes(
             &plan.member_node_set,
         );
         let routes: Vec<GroupRoutingTableEntry> = entry.into_iter().collect();
-        // Skip empty updates until a DAG exists so we don't clear routes before LP sets them.
-        if routes.is_empty() && !plan.has_group_routes {
-            continue;
-        }
         let message = ControllerToDataplane::InstallGroupRoutes {
             group_id: plan.group.id as usize,
             src_node_id: plan.group.src_node_id as usize,
