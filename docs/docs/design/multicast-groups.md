@@ -140,6 +140,12 @@ creation or membership changes.
 - **Configuration** – The multicast pool defaults to `239.255.0.0/16`. Override `controller.config.multicast_pool_base` / `multicast_pool_mask` to carve a different range.
 - **Resilience** – Controller retries on serialization errors and warns when websocket writers vanish. Dataplane caches clear on every install so stale entries never linger.
 
+### Ordering Caveat (Known Risk)
+
+Membership-triggered syncs (`sync_group_routes`) are sent from a DB notification task, while `SetGroupRoutes` is handled in the controller websocket task. Both emit `InstallGroupRoutes` over the same websocket writer, but acquisition order is nondeterministic. Since `InstallGroupRoutes` replaces the per-(src, group) route set, a stale snapshot (including an empty DAG) can overwrite a newer LP DAG if it arrives later. This is timing dependent and may not reproduce consistently.
+
+**Planned mitigation:** add a monotonically increasing `routes_version` to `InstallGroupRoutes` and ignore older installs in the dataplane so stale updates cannot roll back newer DAGs.
+
 ---
 
 ## Testing & Verification
