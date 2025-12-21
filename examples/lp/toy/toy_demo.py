@@ -148,9 +148,10 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
         flush=True,
     )
 
-    # Install override DAG into controller.
+    # Install override DAG into controller and wait for local installation.
     dp.set_group_routes(group_id, edges)
-    time.sleep(0.3)  # give controller time to push InstallGroupRoutes
+    if not dp.wait_for_group_routes(group_id, src_node_id, timeout_ms=30_000):
+        raise TimeoutError("Timed out waiting for multicast routes to install.")
 
     # Send payload via reliable multicast.
     builder = nm.PacketBuilder(size=len(payload))

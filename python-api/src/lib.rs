@@ -843,6 +843,29 @@ impl Dataplane {
         Ok(matched.is_some())
     }
 
+    #[pyo3(signature = (group_id, src_node_id, min_routes=1, timeout_ms=None))]
+    fn wait_for_group_routes(
+        &self,
+        group_id: usize,
+        src_node_id: usize,
+        min_routes: usize,
+        timeout_ms: Option<u64>,
+    ) -> PyResult<bool> {
+        let timeout = timeout_ms.map(Duration::from_millis);
+        let matched = self.wait_for_event_matching(timeout, |event| {
+            matches!(
+                event,
+                PythonEvent::GroupRoutesInstalled {
+                    group_id: gid,
+                    src_node_id: sid,
+                    routes,
+                } if *gid == group_id && *sid == src_node_id && routes.len() >= min_routes
+            )
+        });
+
+        Ok(matched.is_some())
+    }
+
     /// Returns the local node ID.
     #[getter]
     fn node_id(&self) -> usize {
