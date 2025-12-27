@@ -326,9 +326,12 @@ def main() -> int:
             )
             if not probe_ids:
                 print("No probe flows inserted; no edges found.", file=sys.stderr)
-            sleep(args.probe_window_secs)
-            rates = _fetch_link_rates(conn, args.probe_window_secs)
-            _apply_link_rates(graph, rates)
+            else:
+                # Wait for probes to finish
+                _wait_for_probe_finish(conn, probe_ids, timeout_secs=args.probe_window_secs)
+                # Use actual probe durations from flows table (more accurate)
+                rates = _fetch_link_rates_from_probes(conn, probe_ids)
+                _apply_link_rates(graph, rates)
         finally:
             conn.close()
 
