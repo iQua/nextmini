@@ -163,7 +163,63 @@ def _wait_for_probe_finish(
             sleep(poll_interval_secs)
 
 
+def _fetch_link_rates_from_probes(
+    conn, probe_ids: list[int]
+) -> dict[tuple[int, int], float]:
+    """Fetch link rates using actual probe flow durations from the flows table.
+    
+    This computes the rate as: flow_len_bytes * 8 / (finish_time - start_time)
+    where times are in milliseconds. Returns rates in bps.
+    
+    This is more accurate than using a fixed time window because it uses the
+    actual duration each probe flow ran for.
+    """
+    if not probe_ids:
+        return {}
+
+    query = """
+        SELECT src_node_id,
+               dst_node_id,
+               flow_len_bytes,
+               start_time,
+               finish_time
+        FROM flows
+        WHERE id = ANY(%s)
+          AND is_finished = TRUE
+          AND start_time IS NOT NULL
+          AND finish_time IS NOT NULL
+          AND finish_time > start_time
+    """
+
+    with conn.cursor() as cursor:
+        cursor.execute(query, (probe_ids,))
+        rows = cursor.fetchall()
+
+    # Compute per-flow rates
+    flow_rates: dict[tuple[int, int], list[float]] = {}
+    for src, dst, flow_bytes, start_ms, finish_ms in rows:
+        duration_secs = (finish_ms - start_ms) / 1000.0
+        if duration_secs <= 0:
+            continue
+        rate_bps = (flow_bytes * 8.0) / duration_secs
+        key = (int(src), int(dst))
+        if key not in flow_rates:
+            flow_rates[key] = []
+        flow_rates[key].append(rate_bps)
+
+    # Average rates per link (if multiple probes for same link)
+    result: dict[tuple[int, int], float] = {}
+    for (src, dst), rates in flow_rates.items():
+        result[(src, dst)] = sum(rates) / len(rates)
+
+    return result
+
+
 def _fetch_link_rates(conn, window_secs: float) -> dict[tuple[int, int], float]:
+    """Legacy function: fetch link rates using a time window (less accurate).
+    
+    Prefer _fetch_link_rates_from_probes() when probe_ids are available.
+    """
     query = """
         SELECT local_node_id,
                remote_node_id,

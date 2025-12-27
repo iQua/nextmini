@@ -19,7 +19,7 @@ from examples.lp.main import (
     _apply_link_rates,
     _connect_db,
     _db_settings,
-    _fetch_link_rates,
+    _fetch_link_rates_from_probes,
     _request_link_probes,
     _wait_for_probe_finish,
 )
@@ -33,7 +33,6 @@ CTRL_DST_PORT = 40101
 
 # Probe settings for the toy demo (kept simple; tweak here if needed).
 PROBE_BYTES = 1_000_000_000
-PROBE_WINDOW_SECS = 6.0
 PROBE_TIMEOUT_SECS = 30.0
 
 
@@ -149,7 +148,7 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
 
     # Compute a real mFlow LP solution, then convert → edges.
     graph = build_graph_from_controller_config(args.controller_config)
-    print(f"[src] initial graph capacities (Mbps): {dict(list(graph.capacities.items())[:3])}...", flush=True)
+    print(f"[src] initial graph capacities (Mbps): {dict(graph.capacities.items())}", flush=True)
     
     controller_cfg = load_toml(args.controller_config)
     settings = _db_settings(controller_cfg)
@@ -165,13 +164,14 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
             print("[src] probe timeout; using default capacities", flush=True)
         else:
             print("[src] probes finished, fetching measured rates...", flush=True)
-            rates = _fetch_link_rates(conn, PROBE_WINDOW_SECS)
+            # Use actual probe durations from flows table (more accurate than time window)
+            rates = _fetch_link_rates_from_probes(conn, probe_ids)
             if rates:
-                print(f"[src] fetched {len(rates)} link rates from metrics", flush=True)
-                print(f"[src] measured rates (Mbps): {dict((k, round(v/1_000_000, 2)) for k, v in list(rates.items())[:3])}...", flush=True)
+                print(f"[src] fetched {len(rates)} link rates from probe flows", flush=True)
+                print(f"[src] measured rates (Mbps): {dict((k, round(v/1_000_000, 2)) for k, v in rates.items())}", flush=True)
                 _apply_link_rates(graph, rates)
                 print(f"[src] applied probed capacities to graph", flush=True)
-                print(f"[src] updated graph capacities (Mbps): {dict(list(graph.capacities.items())[:3])}...", flush=True)
+                print(f"[src] updated graph capacities (Mbps): {dict(graph.capacities.items())}", flush=True)
             else:
                 print(
                     "[src] probe produced no metrics; using default capacities", flush=True
@@ -179,7 +179,7 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
     finally:
         conn.close()
     
-    print(f"[src] running LP solver with capacities: {dict(list(graph.capacities.items())[:3])}...", flush=True)
+    print(f"[src] running LP solver with capacities: {dict(graph.capacities.items())}", flush=True)
     variables, sol = mFlow.solve(graph, [src_node_id], {src_node_id: receiver_ids})
 
     sources, session_trees = convert_to_multicast_trees(variables, sol)
