@@ -29,5 +29,6 @@ The compose stack runs **probe → LP** automatically on node1 using the default
 Notes:
 - This is a one-shot measurement; re-run `docker compose up --build` to re-measure.
 - The probe uses the controller DB settings from `controller-config.toml`.
+- The demo waits for probe flows to finish (up to the timeout) before sending the payload.
 - If you want per-second sampling, set `metrics_collection_interval = 1` in the node configs
   and change `PROBE_WINDOW_SECS = 1.0` in `examples/lp/toy/toy_demo.py`.

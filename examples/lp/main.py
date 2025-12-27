@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from time import sleep
 
@@ -97,7 +98,9 @@ def _connect_db(settings: dict):
     return conn
 
 
-def _request_link_probes(conn, edges: list[tuple[int, int]], bytes_per_flow: int) -> int:
+def _request_link_probes(
+    conn, edges: list[tuple[int, int]], bytes_per_flow: int
+) -> list[int]:
     insert_sql = """
         INSERT INTO flows (
             src_node_id,
@@ -111,13 +114,53 @@ def _request_link_probes(conn, edges: list[tuple[int, int]], bytes_per_flow: int
             is_probe
         )
         VALUES (%s, %s, 'bytes', %s, NULL, NULL, NULL, FALSE, TRUE)
+        RETURNING id
     """
     rows = [(src, dst, bytes_per_flow) for src, dst in edges if src != dst]
+    if not rows:
+        return []
 
+    ids: list[int] = []
     with conn.cursor() as cursor:
-        cursor.executemany(insert_sql, rows)
+        for src, dst, size in rows:
+            cursor.execute(insert_sql, (src, dst, size))
+            row = cursor.fetchone()
+            if row:
+                ids.append(int(row[0]))
 
-    return len(rows)
+    return ids
+
+
+def _wait_for_probe_finish(
+    conn,
+    probe_ids: list[int],
+    *,
+    timeout_secs: float,
+    poll_interval_secs: float = 0.5,
+) -> bool:
+    if not probe_ids:
+        return True
+
+    query = """
+        SELECT COUNT(*)
+        FROM flows
+        WHERE id = ANY(%s) AND is_finished = FALSE
+    """
+
+    deadline = None
+    if timeout_secs > 0:
+        deadline = time.monotonic() + timeout_secs
+
+    while True:
+        with conn.cursor() as cursor:
+            cursor.execute(query, (probe_ids,))
+            remaining = cursor.fetchone()[0]
+        if remaining == 0:
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
+        if poll_interval_secs > 0:
+            sleep(poll_interval_secs)
 
 
 def _fetch_link_rates(conn, window_secs: float) -> dict[tuple[int, int], float]:
@@ -222,10 +265,10 @@ def main() -> int:
         settings = _db_settings(controller_cfg)
         conn = _connect_db(settings)
         try:
-            inserted = _request_link_probes(
+            probe_ids = _request_link_probes(
                 conn, graph.edges, bytes_per_flow=args.probe_bytes
             )
-            if inserted == 0:
+            if not probe_ids:
                 print("No probe flows inserted; no edges found.", file=sys.stderr)
             sleep(args.probe_window_secs)
             rates = _fetch_link_rates(conn, args.probe_window_secs)

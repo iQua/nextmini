@@ -21,6 +21,7 @@ from examples.lp.main import (
     _db_settings,
     _fetch_link_rates,
     _request_link_probes,
+    _wait_for_probe_finish,
 )
 from examples.lp.tree_conversion import convert_to_multicast_trees, paths_to_edges
 from examples.lp.solver import build_graph_from_controller_config, load_toml
@@ -152,18 +153,20 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
     settings = _db_settings(controller_cfg)
     conn = _connect_db(settings)
     try:
-        _request_link_probes(conn, graph.edges, bytes_per_flow=PROBE_BYTES)
-        deadline = time.monotonic() + PROBE_TIMEOUT_SECS
-        rates: dict[tuple[int, int], float] = {}
-        while time.monotonic() < deadline:
-            time.sleep(PROBE_WINDOW_SECS)
+        probe_ids = _request_link_probes(conn, graph.edges, bytes_per_flow=PROBE_BYTES)
+        finished = _wait_for_probe_finish(
+            conn, probe_ids, timeout_secs=PROBE_TIMEOUT_SECS
+        )
+        if not finished:
+            print("[src] probe timeout; using default capacities", flush=True)
+        else:
             rates = _fetch_link_rates(conn, PROBE_WINDOW_SECS)
             if rates:
-                break
-        if rates:
-            _apply_link_rates(graph, rates)
-        else:
-            print("[src] probe produced no metrics; using default capacities", flush=True)
+                _apply_link_rates(graph, rates)
+            else:
+                print(
+                    "[src] probe produced no metrics; using default capacities", flush=True
+                )
     finally:
         conn.close()
     variables, sol = mFlow.solve(graph, [src_node_id], {src_node_id: receiver_ids})
