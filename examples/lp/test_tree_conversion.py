@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Unit tests for tree_conversion.py
 
 Tests the convert_to_multicast_trees() algorithm to ensure:

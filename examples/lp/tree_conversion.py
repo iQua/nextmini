@@ -45,7 +45,7 @@ def convert_to_multicast_trees(
         trees: list[tuple[list[list[int]], float]] = []
 
         while len(current) > 0:
-            path, throughput = current.pop()
+            path, throughput = current.pop(0)
 
             # Initialize a new tree with the base path
             # We track parents to ensure tree property (each node has exactly one parent)
