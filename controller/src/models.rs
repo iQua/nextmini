@@ -37,6 +37,8 @@ pub struct DbFlow {
     pub flow_weight: Option<i32>,
     #[allow(dead_code)]
     pub is_finished: bool,
+    #[allow(dead_code)]
+    pub is_probe: bool,
 }
 
 #[allow(dead_code)]

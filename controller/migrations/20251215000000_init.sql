@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 -- start_time: When a flow starts.
 -- finish_time: When a flow finishes.
 -- is_finished: Whether this flow has completed.
+-- is_probe: Whether this flow is a probe-only measurement flow.
 CREATE TABLE IF NOT EXISTS flows (
     id SERIAL PRIMARY KEY,
     src_node_id INTEGER NOT NULL,
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS flows (
     flow_weight INTEGER,
     start_time BIGINT,
     finish_time BIGINT,
-    is_finished BOOLEAN NOT NULL DEFAULT FALSE
+    is_finished BOOLEAN NOT NULL DEFAULT FALSE,
+    is_probe BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- route_id: Unique identifier for the route, automatically assigned by controller.

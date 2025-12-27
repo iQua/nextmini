@@ -78,7 +78,10 @@ impl ControllerInterfaceHandle {
             python_interface: python_interface.clone(),
         };
 
-        let reporter = ControllerReporterHandle::new(controller_interface.clone());
+        let reporter = ControllerReporterHandle::new(
+            controller_interface.clone(),
+            config.metrics_collection_interval,
+        );
 
         let flowstats_reporter =
             FlowStatsReporterHandle::new(controller_interface.clone(), config.clone());

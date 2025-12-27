@@ -22,8 +22,8 @@ RUN apt-get update \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Python deps for the toy demo (LP solver + wheel builder).
-RUN pip install --no-cache-dir maturin numpy cvxopt
+# Python deps for the toy demo (LP solver + wheel builder + DB access).
+RUN pip install --no-cache-dir maturin numpy cvxopt "psycopg[binary]"
 
 WORKDIR /workspace
 COPY . /workspace
@@ -35,5 +35,4 @@ RUN maturin build --release -m python-api/Cargo.toml -F python-extension -o /tmp
 ENV PYTHONPATH=/workspace
 
 CMD ["sleep", "infinity"]
-
 

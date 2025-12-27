@@ -22,10 +22,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+from time import sleep
 
-from .solver import build_graph_from_controller_config, compute_mflow_tree_edges
+from .solver import (
+    build_graph_from_controller_config,
+    compute_mflow_tree_edges,
+    load_toml,
+)
 
 
 def _parse_node_list(spec: str) -> list[int]:
@@ -36,6 +42,105 @@ def _parse_node_list(spec: str) -> list[int]:
             continue
         out.append(int(item))
     return out
+
+
+def _db_settings(controller_cfg: dict) -> dict:
+    db = dict(controller_cfg.get("db") or {})
+
+    def pick(key: str, env: str, default: str) -> str:
+        value = db.get(key)
+        if value:
+            return str(value)
+        return os.environ.get(env, default)
+
+    return {
+        "user": pick("user", "NEXTMINI_DB_USER", "pgusr"),
+        "password": pick("password", "NEXTMINI_DB_PASSWORD", "pgpwrd"),
+        "host": pick("host", "NEXTMINI_DB_HOST", "localhost"),
+        "port": pick("port", "NEXTMINI_DB_PORT", "5432"),
+        "database": pick("database", "NEXTMINI_DB_NAME", "nextmini"),
+    }
+
+
+def _connect_db(settings: dict):
+    try:
+        import psycopg
+
+        conn = psycopg.connect(
+            dbname=settings["database"],
+            user=settings["user"],
+            password=settings["password"],
+            host=settings["host"],
+            port=settings["port"],
+        )
+        conn.autocommit = True
+        return conn
+    except ImportError:
+        pass
+
+    try:
+        import psycopg2
+    except ImportError as exc:
+        raise SystemExit(
+            "DB probe mode requires psycopg. Install with:\n"
+            "  uv pip install 'psycopg[binary]'"
+        ) from exc
+
+    conn = psycopg2.connect(
+        dbname=settings["database"],
+        user=settings["user"],
+        password=settings["password"],
+        host=settings["host"],
+        port=settings["port"],
+    )
+    conn.autocommit = True
+    return conn
+
+
+def _request_link_probes(conn, edges: list[tuple[int, int]], bytes_per_flow: int) -> int:
+    insert_sql = """
+        INSERT INTO flows (
+            src_node_id,
+            dst_node_id,
+            flow_len_type,
+            flow_len_bytes,
+            flow_len_duration,
+            flow_rate,
+            flow_weight,
+            is_finished,
+            is_probe
+        )
+        VALUES (%s, %s, 'bytes', %s, NULL, NULL, NULL, FALSE, TRUE)
+    """
+    rows = [(src, dst, bytes_per_flow) for src, dst in edges if src != dst]
+
+    with conn.cursor() as cursor:
+        cursor.executemany(insert_sql, rows)
+
+    return len(rows)
+
+
+def _fetch_link_rates(conn, window_secs: float) -> dict[tuple[int, int], float]:
+    query = """
+        SELECT local_node_id,
+               remote_node_id,
+               SUM(bytes) * 8.0 / %s AS rate_bps
+        FROM metrics
+        WHERE time_read >= NOW() - (%s * INTERVAL '1 second')
+        GROUP BY local_node_id, remote_node_id
+    """
+
+    with conn.cursor() as cursor:
+        cursor.execute(query, (window_secs, window_secs))
+        rows = cursor.fetchall()
+
+    return {(int(src), int(dst)): float(rate_bps or 0.0) for src, dst, rate_bps in rows}
+
+
+def _apply_link_rates(graph, rates_bps: dict[tuple[int, int], float]) -> None:
+    for key, rate_bps in rates_bps.items():
+        if key in graph.capacities:
+            graph.capacities[key] = rate_bps / 1_000_000.0
 
 
 def main() -> int:
@@ -62,6 +167,23 @@ def main() -> int:
         type=int,
         default=None,
         help="Optional default link capacity override (Mbps) for the LP graph",
+    )
+    parser.add_argument(
+        "--probe-links",
+        action="store_true",
+        help="Insert probe flows and overwrite link capacities from recent metrics",
+    )
+    parser.add_argument(
+        "--probe-bytes",
+        type=int,
+        default=1_000_000_000,
+        help="Bytes to send per probe flow (larger keeps the link busy longer)",
+    )
+    parser.add_argument(
+        "--probe-window-secs",
+        type=float,
+        default=6.0,
+        help="Seconds to wait and query for link metrics after probes start",
     )
     parser.add_argument(
         "--json",
@@ -94,6 +216,22 @@ def main() -> int:
     graph = build_graph_from_controller_config(
         args.controller_config, default_capacity=args.default_capacity
     )
+
+    if args.probe_links:
+        controller_cfg = load_toml(args.controller_config)
+        settings = _db_settings(controller_cfg)
+        conn = _connect_db(settings)
+        try:
+            inserted = _request_link_probes(
+                conn, graph.edges, bytes_per_flow=args.probe_bytes
+            )
+            if inserted == 0:
+                print("No probe flows inserted; no edges found.", file=sys.stderr)
+            sleep(args.probe_window_secs)
+            rates = _fetch_link_rates(conn, args.probe_window_secs)
+            _apply_link_rates(graph, rates)
+        finally:
+            conn.close()
 
     edges, throughput = compute_mflow_tree_edges(
         graph, src=args.src, destinations=destinations
