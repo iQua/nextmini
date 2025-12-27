@@ -149,26 +149,37 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
 
     # Compute a real mFlow LP solution, then convert → edges.
     graph = build_graph_from_controller_config(args.controller_config)
+    print(f"[src] initial graph capacities (Mbps): {dict(list(graph.capacities.items())[:3])}...", flush=True)
+    
     controller_cfg = load_toml(args.controller_config)
     settings = _db_settings(controller_cfg)
     conn = _connect_db(settings)
     try:
+        print(f"[src] inserting {len(graph.edges)} probe flows...", flush=True)
         probe_ids = _request_link_probes(conn, graph.edges, bytes_per_flow=PROBE_BYTES)
+        print(f"[src] waiting for {len(probe_ids)} probes to finish (timeout={PROBE_TIMEOUT_SECS}s)...", flush=True)
         finished = _wait_for_probe_finish(
             conn, probe_ids, timeout_secs=PROBE_TIMEOUT_SECS
         )
         if not finished:
             print("[src] probe timeout; using default capacities", flush=True)
         else:
+            print("[src] probes finished, fetching measured rates...", flush=True)
             rates = _fetch_link_rates(conn, PROBE_WINDOW_SECS)
             if rates:
+                print(f"[src] fetched {len(rates)} link rates from metrics", flush=True)
+                print(f"[src] measured rates (Mbps): {dict((k, round(v/1_000_000, 2)) for k, v in list(rates.items())[:3])}...", flush=True)
                 _apply_link_rates(graph, rates)
+                print(f"[src] applied probed capacities to graph", flush=True)
+                print(f"[src] updated graph capacities (Mbps): {dict(list(graph.capacities.items())[:3])}...", flush=True)
             else:
                 print(
                     "[src] probe produced no metrics; using default capacities", flush=True
                 )
     finally:
         conn.close()
+    
+    print(f"[src] running LP solver with capacities: {dict(list(graph.capacities.items())[:3])}...", flush=True)
     variables, sol = mFlow.solve(graph, [src_node_id], {src_node_id: receiver_ids})
 
     sources, session_trees = convert_to_multicast_trees(variables, sol)
