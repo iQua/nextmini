@@ -32,3 +32,4 @@ Notes:
 - The demo waits for probe flows to finish (up to the timeout) before sending the payload.
 - If you want per-second sampling, set `metrics_collection_interval = 1` in the node configs
   and change `PROBE_WINDOW_SECS = 1.0` in `examples/lp/toy/toy_demo.py`.
+- We should let `PROBE_WINDOW_SECS >= metrics_collection_interval`.
