@@ -62,7 +62,3 @@ python -m examples.lp.main \
   --src 1 --dests 2,3 \
   --apply --node-config examples/rl/configs-docker/trainer-config.toml --group-id 7
 ```
-
-## Legacy DB injection
-
-If you still need the older “write Postgres + pg_notify” flow, see `examples/lp/legacy_db/`.
