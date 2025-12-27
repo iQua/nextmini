@@ -59,9 +59,6 @@ def convert_to_multicast_trees(
             candidate_tree = [path]
 
             for candidate_path, candidate_throughput in current:
-                if candidate_throughput < throughput:
-                    continue
-
                 # Check 1: Must NOT share destination (multicast tree delivers to unique dests)
                 if candidate_path[-1] in dst_set:
                     continue
