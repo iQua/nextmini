@@ -68,5 +68,3 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
     command: /bin/bash -c "sleep 9 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node3-config.toml"
-
-

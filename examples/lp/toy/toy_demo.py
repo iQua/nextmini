@@ -15,13 +15,25 @@ import time
 
 import nextmini_py as nm
 
+from examples.lp.main import (
+    _apply_link_rates,
+    _connect_db,
+    _db_settings,
+    _fetch_link_rates,
+    _request_link_probes,
+)
 from examples.lp.tree_conversion import convert_to_multicast_trees, paths_to_edges
-from examples.lp.solver import build_graph_from_controller_config
+from examples.lp.solver import build_graph_from_controller_config, load_toml
 from examples.lp import mFlow
 
 
 CTRL_SRC_PORT = 40100
 CTRL_DST_PORT = 40101
+
+# Probe settings for the toy demo (kept simple; tweak here if needed).
+PROBE_BYTES = 1_000_000_000
+PROBE_WINDOW_SECS = 6.0
+PROBE_TIMEOUT_SECS = 30.0
 
 
 def _send_ctrl(
@@ -136,6 +148,24 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
 
     # Compute a real mFlow LP solution, then convert → edges.
     graph = build_graph_from_controller_config(args.controller_config)
+    controller_cfg = load_toml(args.controller_config)
+    settings = _db_settings(controller_cfg)
+    conn = _connect_db(settings)
+    try:
+        _request_link_probes(conn, graph.edges, bytes_per_flow=PROBE_BYTES)
+        deadline = time.monotonic() + PROBE_TIMEOUT_SECS
+        rates: dict[tuple[int, int], float] = {}
+        while time.monotonic() < deadline:
+            time.sleep(PROBE_WINDOW_SECS)
+            rates = _fetch_link_rates(conn, PROBE_WINDOW_SECS)
+            if rates:
+                break
+        if rates:
+            _apply_link_rates(graph, rates)
+        else:
+            print("[src] probe produced no metrics; using default capacities", flush=True)
+    finally:
+        conn.close()
     variables, sol = mFlow.solve(graph, [src_node_id], {src_node_id: receiver_ids})
 
     sources, session_trees = convert_to_multicast_trees(variables, sol)
