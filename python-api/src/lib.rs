@@ -2,8 +2,8 @@ mod buffer;
 
 #[cfg(feature = "python-extension")]
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -775,9 +775,8 @@ impl Dataplane {
     #[pyo3(signature = (timeout_ms=None))]
     fn wait_for_topology_ready(&self, timeout_ms: Option<u64>) -> PyResult<bool> {
         let timeout = timeout_ms.map(Duration::from_millis);
-        let matched = self.wait_for_event_matching(timeout, |event| {
-            matches!(event, PythonEvent::TopologyReady)
-        });
+        let matched = self
+            .wait_for_event_matching(timeout, |event| matches!(event, PythonEvent::TopologyReady));
 
         Ok(matched.is_some())
     }
