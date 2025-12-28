@@ -208,7 +208,7 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
     builder.write(payload)
     view = builder.freeze()
 
-    sid = dp.send_data(group_ip, receiver_ids, view, chunk_size=args.chunk_size)
+    sid = dp.send_data(group_id, group_ip, receiver_ids, view, chunk_size=args.chunk_size)
     ok = dp.reliable_wait(sid, timeout_ms=60_000)
     print(f"[src] send done ok={ok} sid={sid}", flush=True)
     return dp
@@ -261,6 +261,7 @@ def run_receiver(args: argparse.Namespace) -> nm.Dataplane:
         # Start the async receive before we tell the source we're ready.
         async def receive_wrapper() -> int:
             return await dp.receive_data_async(
+                group_id,
                 group_ip,
                 src_node_id,
                 expected_bytes=expected_bytes,

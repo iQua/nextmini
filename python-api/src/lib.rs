@@ -2,7 +2,9 @@ mod buffer;
 
 #[cfg(feature = "python-extension")]
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -209,7 +211,7 @@ struct Dataplane {
     #[cfg(feature = "python-extension")]
     reliable_runtime: Option<ReliableRuntimeHandle>,
     #[cfg(feature = "python-extension")]
-    session_registry: Arc<Mutex<HashMap<(Ipv4Addr, usize), u64>>>,
+    session_registry: Arc<Mutex<HashMap<u64, u64>>>,  // group_id -> session_id
     #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
     event_stash: Arc<Mutex<VecDeque<PythonEvent>>>,
@@ -217,15 +219,15 @@ struct Dataplane {
 
 impl Dataplane {
     #[cfg(feature = "python-extension")]
-    fn remember_session(&self, dest_ip: Ipv4Addr, source_node_id: usize, session_id: u64) {
+    fn remember_session(&self, group_id: u64, session_id: u64) {
         let mut guard = rt().block_on(self.session_registry.lock());
-        guard.insert((dest_ip, source_node_id), session_id);
+        guard.insert(group_id, session_id);
     }
 
     #[cfg(feature = "python-extension")]
-    fn lookup_session(&self, dest_ip: Ipv4Addr, source_node_id: usize) -> Option<u64> {
+    fn lookup_session(&self, group_id: u64) -> Option<u64> {
         let guard = rt().block_on(self.session_registry.lock());
-        guard.get(&(dest_ip, source_node_id)).copied()
+        guard.get(&group_id).copied()
     }
 
     #[cfg(feature = "python-extension")]
@@ -238,16 +240,16 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None, congestion=None))]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None))]
     fn send_data(
         &self,
+        group_id: u64,
         dest_ip: &str,
         receiver_ids: Vec<usize>,
         buffer: PacketView,
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        session_id: Option<u64>,
         congestion: Option<String>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
@@ -269,8 +271,9 @@ impl Dataplane {
             ));
         }
 
+        // Compute deterministic session_id from group_id and source_node_id
         #[allow(unused_variables)]
-        let mut sid = session_id.unwrap_or_else(next_py_message_id);
+        let sid = multicast_session_id(group_id, self.cfg.node_id);
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable_runtime {
@@ -284,11 +287,6 @@ impl Dataplane {
                 }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                if session_id.is_none() {
-                    let local_seq = sid & 0x0000_FFFF_FFFF_FFFF;
-                    let node_part = ((self.cfg.node_id as u64) & 0x7FFF) << 48;
-                    sid = node_part | local_seq;
-                }
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: dest_ip_addr,
@@ -309,7 +307,7 @@ impl Dataplane {
                     topology_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
-                self.remember_session(dest_ip_addr, self.cfg.node_id, started_sid);
+                self.remember_session(group_id, started_sid);
                 return Ok(started_sid);
             }
         }
@@ -318,16 +316,16 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
     fn receive_data(
         &self,
+        group_id: u64,
         dest_ip: &str,
         source_node_id: usize,
         expected_bytes: u64,
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        session_id: Option<u64>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
@@ -339,21 +337,17 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
 
-        let sid = session_id.unwrap_or_else(next_py_message_id);
+        // Compute deterministic session_id from group_id and source_node_id
+        #[allow(unused_variables)]
+        let sid = multicast_session_id(group_id, source_node_id);
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.reliable_runtime {
                 let runtime_config = &self.cfg.reliable_runtime_config;
-                let mut resolved_sid = session_id;
-                if resolved_sid.is_none()
-                    && let Some(known) = self.lookup_session(ip, source_node_id)
-                {
-                    resolved_sid = Some(known);
-                }
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = session::runtime::CommonConfig {
-                    session_id: resolved_sid.unwrap_or(0),
+                    session_id: sid,
                     dest_ip: ip,
                     chunk_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
@@ -369,16 +363,9 @@ impl Dataplane {
                     expected_bytes,
                     sink_buffer: Some(sink_buf.clone()),
                 };
-                let started_sid = if resolved_sid.is_some() {
-                    rt().block_on(handle.start_receiver(cfg))
-                } else {
-                    let key = session::runtime::PendingReceiverKey {
-                        dest_ip: ip,
-                        source_node_id,
-                    };
-                    rt().block_on(handle.start_receiver_pending(cfg, key))
-                };
-                self.remember_session(ip, source_node_id, started_sid);
+                // Direct registration - both sender and receiver compute same session_id
+                let started_sid = rt().block_on(handle.start_receiver(cfg));
+                self.remember_session(group_id, started_sid);
                 self.remember_buffer_sink(started_sid, sink_buf);
                 return Ok(started_sid);
             }
@@ -388,17 +375,17 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, session_id=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
+        group_id: u64,
         dest_ip: String,
         source_node_id: usize,
         expected_bytes: u64,
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        session_id: Option<u64>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
@@ -407,7 +394,8 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
         }
 
-        let sid = session_id.unwrap_or_else(next_py_message_id);
+        // Compute deterministic session_id from group_id and source_node_id
+        let sid = multicast_session_id(group_id, source_node_id);
 
         #[cfg(feature = "python-extension")]
         {
@@ -425,19 +413,10 @@ impl Dataplane {
                 return future_into_py(py, async move {
                     let ip = parse_ipv4(&dest_ip)?;
 
-                    // Check if session ID is already known
-                    let mut resolved_sid = session_id;
-                    if resolved_sid.is_none() {
-                        let guard = session_registry.lock().await;
-                        if let Some(known) = guard.get(&(ip, source_node_id)) {
-                            resolved_sid = Some(*known);
-                        }
-                    }
-
                     let cap = usize::try_from(expected_bytes).unwrap_or(0);
                     let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                     let common = session::runtime::CommonConfig {
-                        session_id: resolved_sid.unwrap_or(0),
+                        session_id: sid,
                         dest_ip: ip,
                         chunk_size,
                         src_port: sp,
@@ -454,19 +433,12 @@ impl Dataplane {
                         sink_buffer: Some(sink_buf.clone()),
                     };
 
-                    let started_sid = if resolved_sid.is_some() {
-                        handle.start_receiver(cfg).await
-                    } else {
-                        let key = session::runtime::PendingReceiverKey {
-                            dest_ip: ip,
-                            source_node_id,
-                        };
-                        handle.start_receiver_pending(cfg, key).await
-                    };
+                    // Direct registration - both sender and receiver compute same session_id
+                    let started_sid = handle.start_receiver(cfg).await;
 
                     {
                         let mut guard = session_registry.lock().await;
-                        guard.insert((ip, source_node_id), started_sid);
+                        guard.insert(group_id, started_sid);
                     }
                     {
                         let mut guard = buffer_registry.lock().await;
@@ -579,45 +551,35 @@ impl Dataplane {
     }
 
     #[cfg(feature = "python-extension")]
-    #[pyo3(signature = (dest_ip, source_node_id, session_id))]
+    #[pyo3(signature = (group_id, session_id))]
     fn reliable_register_session_id(
         &self,
-        dest_ip: &str,
-        source_node_id: usize,
+        group_id: u64,
         session_id: u64,
     ) -> PyResult<()> {
-        let ip = parse_ipv4(dest_ip)?;
-        self.remember_session(ip, source_node_id, session_id);
-
+        self.remember_session(group_id, session_id);
         Ok(())
     }
 
     #[cfg(feature = "python-extension")]
-    #[pyo3(signature = (dest_ip, source_node_id))]
-    fn reliable_lookup_session_id(
-        &self,
-        dest_ip: &str,
-        source_node_id: usize,
-    ) -> PyResult<Option<u64>> {
-        let ip = parse_ipv4(dest_ip)?;
-        let session_id = self.lookup_session(ip, source_node_id);
-
+    #[pyo3(signature = (group_id))]
+    fn reliable_lookup_session_id(&self, group_id: u64) -> PyResult<Option<u64>> {
+        let session_id = self.lookup_session(group_id);
         Ok(session_id)
     }
 
     #[cfg(feature = "python-extension")]
-    #[pyo3(signature = (dest_ip, source_node_id))]
-    fn forget_session(&self, dest_ip: &str, source_node_id: usize) -> PyResult<()> {
-        let ip = parse_ipv4(dest_ip)?;
+    #[pyo3(signature = (group_id))]
+    fn forget_session(&self, group_id: u64) -> PyResult<()> {
         let mut guard = rt().block_on(self.session_registry.lock());
-        guard.remove(&(ip, source_node_id));
+        guard.remove(&group_id);
         Ok(())
     }
 
     #[cfg(not(feature = "python-extension"))]
-    #[pyo3(signature = (dest_ip, source_node_id))]
-    fn forget_session(&self, dest_ip: &str, source_node_id: usize) -> PyResult<()> {
-        let _ = (dest_ip, source_node_id);
+    #[pyo3(signature = (group_id))]
+    fn forget_session(&self, group_id: u64) -> PyResult<()> {
+        let _ = group_id;
         Ok(())
     }
 
@@ -1041,6 +1003,17 @@ impl Dataplane {
 
 fn next_py_message_id() -> u64 {
     PY_MESSAGE_ID_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Generates a deterministic session ID from group_id and source_node_id.
+/// Both sender and receiver compute the same session_id, enabling direct matching
+/// without needing the pending receiver mechanism.
+fn multicast_session_id(group_id: u64, source_node_id: usize) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    group_id.hash(&mut hasher);
+    source_node_id.hash(&mut hasher);
+    let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
+    raw | 0x8000_0000_0000_0000
 }
 
 #[pymodule]

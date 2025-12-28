@@ -229,6 +229,7 @@ def run_source(args: argparse.Namespace) -> None:
     view = builder.freeze()
 
     sid = dataplane.send_data(
+        group_id,
         group_ip,
         receiver_ids,
         view,
@@ -273,6 +274,7 @@ def run_receiver(args: argparse.Namespace) -> None:
     recv_start_time = time.perf_counter()
 
     sid = dataplane.receive_data(
+        group_id,
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,

@@ -261,6 +261,7 @@ class Trainer:
         builder.write(data_bytes)
         view = builder.freeze()
         sid = self.dataplane.send_data(
+            self.group_id,
             self.group_ip,
             receiver_ids,
             view,
@@ -439,6 +440,7 @@ class Trainer:
         view = builder.freeze()
         
         sid = self.dataplane.send_data(
+            self.group_id,
             self.group_ip,
             receiver_ids,
             view,

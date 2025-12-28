@@ -10,9 +10,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{ReliableRuntimeHandle, SessionId};
-use crate::node::session::runtime::{
-    CommonConfig, PendingReceiverKey, ReceiverConfig, SenderConfig,
-};
+use crate::node::session::runtime::{CommonConfig, ReceiverConfig, SenderConfig};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
 /// Manages controller-assigned reliable unicast flows on a dataplane node.
@@ -42,18 +40,23 @@ impl ReliableUnicastFlowManager {
     /// Installs any reliable unicast flows that target the local node (as source and/or destination).
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
+            // Compute deterministic session_id and client_port from Flow fields.
+            // Both sender and receiver compute the same values, enabling proper matching.
+            let session_id = session_id_for_flow(&flow);
+            let client_port = client_port_for_flow(&flow, self.cfg.user_space_client_port);
+
             // Flows can involve the local node as the sender, receiver, or both
             // (loopback). Spin up whichever side matches.
             if flow.src_node_id == self.cfg.node_id {
-                self.spawn_sender(flow.clone());
+                self.spawn_sender(flow.clone(), session_id, client_port);
             }
             if flow.dst_node_id == self.cfg.node_id {
-                self.spawn_receiver(flow.clone());
+                self.spawn_receiver(flow.clone(), session_id, client_port);
             }
         }
     }
 
-    fn spawn_sender(&self, flow: Flow) {
+    fn spawn_sender(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The controller might hand us duration-based flows that do not resolve
         // to a byte count; we skip those early so we do not start half-baked
         // sessions.
@@ -71,11 +74,10 @@ impl ReliableUnicastFlowManager {
         let reliable_runtime = self.reliable_runtime.clone();
 
         tokio::spawn(async move {
-            let sid = session_id_for_flow(&flow);
             let runtime_config = cfg.reliable_runtime_config.clone();
             let dst_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
-            let src_port = cfg.user_space_client_port;
+            let src_port = client_port;
             let dst_port = cfg.user_space_server_port;
             let data_bucket =
                 bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
@@ -87,7 +89,7 @@ impl ReliableUnicastFlowManager {
             let source_buffer = Bytes::from(vec![0xAAu8; template_len]);
 
             let common = CommonConfig {
-                session_id: sid,
+                session_id,
                 dest_ip: dst_ip,
                 chunk_size: runtime_config.default_chunk_size,
                 src_port,
@@ -149,7 +151,7 @@ impl ReliableUnicastFlowManager {
         });
     }
 
-    fn spawn_receiver(&self, flow: Flow) {
+    fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The receiver mirrors the sender's byte budget so the two sides agree
         // on when to terminate.
         let Some(expected_bytes) = flow_bytes(&flow) else {
@@ -167,16 +169,17 @@ impl ReliableUnicastFlowManager {
             let runtime_config = cfg.reliable_runtime_config.clone();
             let dest_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+            let src_port = client_port;
+            let dst_port = cfg.user_space_server_port;
             let data_bucket =
                 bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
 
             let common = CommonConfig {
-                // Placeholder; will be overwritten by adopt_pending_receiver.
-                session_id: 0,
+                session_id,
                 dest_ip,
                 chunk_size: runtime_config.default_chunk_size,
-                src_port: cfg.user_space_client_port,
-                dst_port: cfg.user_space_server_port,
+                src_port,
+                dst_port,
                 data_bucket,
                 local_node_id: cfg.node_id,
                 user_space_base_addr: cfg.user_space_base_addr,
@@ -190,23 +193,19 @@ impl ReliableUnicastFlowManager {
                 sink_buffer: None,
             };
 
-            let key = PendingReceiverKey {
-                dest_ip,
-                source_node_id: flow.src_node_id,
-            };
-
-            // Stage the receiver; the runtime will materialize it when the first frame arrives.
-            let started_sid = reliable_runtime
-                .start_receiver_pending(receiver_cfg, key)
-                .await;
+            // Register receiver directly with the pre-computed session_id.
+            // Both sender and receiver compute the same session_id from Flow fields,
+            // so packets will be routed correctly.
+            let started_sid = reliable_runtime.start_receiver(receiver_cfg).await;
             let _ = reliable_runtime.wait_completion(started_sid).await;
             reliable_runtime.stop(started_sid);
         });
     }
 }
 
-/// Generates a deterministic session ID for a flow so senders and receivers can
-/// rendezvous without additional signaling.
+/// Generates a deterministic session ID from Flow fields.
+/// Both sender and receiver compute the same session_id, enabling direct matching
+/// without needing the pending receiver mechanism.
 fn session_id_for_flow(flow: &Flow) -> SessionId {
     let mut hasher = DefaultHasher::new();
     flow.controller_id.hash(&mut hasher);
@@ -215,6 +214,16 @@ fn session_id_for_flow(flow: &Flow) -> SessionId {
     flow.flow_spec.flow_len.hash(&mut hasher);
     let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
     raw | 0x8000_0000_0000_0000
+}
+
+/// Generates a deterministic client port from Flow fields.
+/// Both sender and receiver compute the same port, ensuring ACKs are routed correctly.
+/// Uses controller_id directly (not hashed) since it's unique per flow.
+fn client_port_for_flow(flow: &Flow, base_port: u16) -> u16 {
+    // controller_id is unique per flow from the controller, use it directly
+    // to guarantee unique ports for concurrent flows.
+    let offset = flow.controller_id.unwrap_or(0) as u16;
+    base_port.wrapping_add(offset)
 }
 
 /// Converts user-visible flow specs into the exact number of bytes the runtime
