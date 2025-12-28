@@ -211,25 +211,11 @@ struct Dataplane {
     #[cfg(feature = "python-extension")]
     reliable_runtime: Option<ReliableRuntimeHandle>,
     #[cfg(feature = "python-extension")]
-    session_registry: Arc<Mutex<HashMap<u64, u64>>>,  // group_id -> session_id
-    #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
     event_stash: Arc<Mutex<VecDeque<PythonEvent>>>,
 }
 
 impl Dataplane {
-    #[cfg(feature = "python-extension")]
-    fn remember_session(&self, group_id: u64, session_id: u64) {
-        let mut guard = rt().block_on(self.session_registry.lock());
-        guard.insert(group_id, session_id);
-    }
-
-    #[cfg(feature = "python-extension")]
-    fn lookup_session(&self, group_id: u64) -> Option<u64> {
-        let guard = rt().block_on(self.session_registry.lock());
-        guard.get(&group_id).copied()
-    }
-
     #[cfg(feature = "python-extension")]
     fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
         let mut guard = rt().block_on(self.buffer_registry.lock());
@@ -307,7 +293,6 @@ impl Dataplane {
                     topology_ready: None,
                 };
                 let started_sid = rt().block_on(handle.start_sender(cfg));
-                self.remember_session(group_id, started_sid);
                 return Ok(started_sid);
             }
         }
@@ -365,7 +350,6 @@ impl Dataplane {
                 };
                 // Direct registration - both sender and receiver compute same session_id
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
-                self.remember_session(group_id, started_sid);
                 self.remember_buffer_sink(started_sid, sink_buf);
                 return Ok(started_sid);
             }
@@ -402,7 +386,6 @@ impl Dataplane {
             if let Some(handle) = &self.reliable_runtime {
                 let handle = handle.clone();
                 let runtime_config = self.cfg.reliable_runtime_config.clone();
-                let session_registry = self.session_registry.clone();
                 let buffer_registry = self.buffer_registry.clone();
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
@@ -436,10 +419,6 @@ impl Dataplane {
                     // Direct registration - both sender and receiver compute same session_id
                     let started_sid = handle.start_receiver(cfg).await;
 
-                    {
-                        let mut guard = session_registry.lock().await;
-                        guard.insert(group_id, started_sid);
-                    }
                     {
                         let mut guard = buffer_registry.lock().await;
                         guard.insert(started_sid, sink_buf);
@@ -550,39 +529,6 @@ impl Dataplane {
         Ok(PacketView::from_bytes(bytes))
     }
 
-    #[cfg(feature = "python-extension")]
-    #[pyo3(signature = (group_id, session_id))]
-    fn reliable_register_session_id(
-        &self,
-        group_id: u64,
-        session_id: u64,
-    ) -> PyResult<()> {
-        self.remember_session(group_id, session_id);
-        Ok(())
-    }
-
-    #[cfg(feature = "python-extension")]
-    #[pyo3(signature = (group_id))]
-    fn reliable_lookup_session_id(&self, group_id: u64) -> PyResult<Option<u64>> {
-        let session_id = self.lookup_session(group_id);
-        Ok(session_id)
-    }
-
-    #[cfg(feature = "python-extension")]
-    #[pyo3(signature = (group_id))]
-    fn forget_session(&self, group_id: u64) -> PyResult<()> {
-        let mut guard = rt().block_on(self.session_registry.lock());
-        guard.remove(&group_id);
-        Ok(())
-    }
-
-    #[cfg(not(feature = "python-extension"))]
-    #[pyo3(signature = (group_id))]
-    fn forget_session(&self, group_id: u64) -> PyResult<()> {
-        let _ = group_id;
-        Ok(())
-    }
-
     #[new]
     fn new(config_path: &str) -> PyResult<Self> {
         let toml_str = std::fs::read_to_string(config_path)
@@ -617,8 +563,6 @@ impl Dataplane {
         });
 
         #[cfg(feature = "python-extension")]
-        let session_registry = Arc::new(Mutex::new(HashMap::new()));
-        #[cfg(feature = "python-extension")]
         let buffer_registry = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Self {
@@ -629,8 +573,6 @@ impl Dataplane {
             _join: join,
             #[cfg(feature = "python-extension")]
             reliable_runtime: Some(reliable_runtime),
-            #[cfg(feature = "python-extension")]
-            session_registry,
             #[cfg(feature = "python-extension")]
             buffer_registry,
             event_stash: Arc::new(Mutex::new(VecDeque::new())),

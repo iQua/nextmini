@@ -529,11 +529,8 @@ class Trainer:
                 worker_port = self.worker_connections[i]['port']
                 rollout_group_id = config.rollout_group_id(worker_node_id)
 
-                # Instruct worker to start reliable rollout send only after we've
-                # registered the receiver side.
-                self.send_to_worker(i, {"type": "READY_FOR_ROLLOUT_DATA"})
-
                 try:
+                    # IMPORTANT: Register receiver FIRST, before signaling worker
                     sid = self.dataplane.receive_data(
                         rollout_group_id,
                         self.user_space_address,
@@ -543,6 +540,10 @@ class Trainer:
                         src_port=worker_port,
                         dst_port=config.TRAINER_PORT,
                     )
+
+                    # Now signal worker that we're ready to receive
+                    self.send_to_worker(i, {"type": "READY_FOR_ROLLOUT_DATA"})
+
                     transfer_start = time.time()
                     ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                     transfer_end = time.time()
@@ -561,11 +562,6 @@ class Trainer:
                 except Exception as e:
                     print(f"Trainer: failed to decode rollout payload from worker {i}: {e}", flush=True)
                     return
-
-                try:
-                    self.dataplane.forget_session(rollout_group_id)
-                except Exception:
-                    pass
 
                 worker_results[i] = result
 

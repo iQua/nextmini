@@ -203,10 +203,6 @@ class Worker:
                     state_dict = torch.load(buffer, map_location=self.device)
                     self.model.load_state_dict(state_dict)
                     print("Weights loaded into model.")
-                    
-                    # Important: Forget the session so next time we don't reuse the old SID
-                    # Session registry is keyed by group_id, so clear it before the next transfer.
-                    self.dataplane.forget_session(group_id)
             
             elif msg["type"] == "WEIGHT_METADATA_SHARDED":
                 # Sharded weight synchronization for large models
@@ -238,7 +234,6 @@ class Worker:
                     print(f"Worker {self.rank}: Receiving config.json ({config_size} bytes)...", flush=True)
                     config_data = await self._receive_shard(group_id, group_ip, src_node_id, config_size)
                     (tmpdir / "config.json").write_bytes(config_data)
-                    self.dataplane.forget_session(group_id)
 
                     # Receive index (if exists)
                     if has_index:
@@ -246,7 +241,6 @@ class Worker:
                         print(f"Worker {self.rank}: Receiving index file ({index_size} bytes)...", flush=True)
                         index_data = await self._receive_shard(group_id, group_ip, src_node_id, index_size)
                         (tmpdir / "model.safetensors.index.json").write_bytes(index_data)
-                        self.dataplane.forget_session(group_id)
 
                     # Receive each shard with precise size
                     for shard_name in shard_names:
@@ -255,7 +249,6 @@ class Worker:
                         shard_data = await self._receive_shard(group_id, group_ip, src_node_id, expected_size)
                         (tmpdir / shard_name).write_bytes(shard_data)
                         print(f"Worker {self.rank}: Saved {shard_name} ({len(shard_data)/1024/1024:.1f} MB)", flush=True)
-                        self.dataplane.forget_session(group_id)
                     
                     # Load model from sharded checkpoint
                     print(f"Worker {self.rank}: Loading model from sharded checkpoint...", flush=True)
@@ -325,7 +318,13 @@ class Worker:
                     "size": size,
                 })
 
-                # 2) Send data reliably via ReliableRuntime using trainer user-space IP
+                # 2) Wait for trainer to signal it's ready to receive
+                ready_msg = await self.recv_from_trainer()
+                if not ready_msg or ready_msg.get("type") != "READY_FOR_ROLLOUT_DATA":
+                    print(f"Worker {self.rank}: expected READY_FOR_ROLLOUT_DATA, got {ready_msg}", flush=True)
+                    continue
+
+                # 3) Send data reliably via ReliableRuntime using trainer user-space IP
                 if not self.trainer_user_ip:
                     print(f"Worker {self.rank}: trainer_user_ip not set, cannot send reliable rollout.", flush=True)
                     continue
@@ -347,7 +346,7 @@ class Worker:
                     print(f"Worker {self.rank}: error sending reliable rollout data: {e}", flush=True)
                     continue
 
-                # 3) Send a tiny control message with timestamp for network timing
+                # 4) Send a tiny control message with timestamp for network timing
                 send_time = time.time()
                 self.send_to_trainer({
                     "type": "ROLLOUT_RESULT",
