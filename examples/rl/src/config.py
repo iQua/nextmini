@@ -32,6 +32,11 @@ WORKER_BASE_PORT = 5001  # Workers use BASE_PORT + rank
 MULTICAST_GROUP_NAME = "rl_weights_sync"
 MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
 CHUNK_SIZE = 8500 # Standard chunk size
+ROLLOUT_GROUP_ID_BASE = int(os.environ.get("ROLLOUT_GROUP_ID_BASE", "1000"))
+
+
+def rollout_group_id(node_id: int) -> int:
+    return ROLLOUT_GROUP_ID_BASE + int(node_id)
 
 # Sharded Checkpoint (for large models)
 USE_SHARDED_WEIGHTS = os.environ.get("USE_SHARDED_WEIGHTS", "false").lower() == "true"

@@ -527,6 +527,7 @@ class Trainer:
 
                 worker_node_id = self.worker_connections[i]['node_id']
                 worker_port = self.worker_connections[i]['port']
+                rollout_group_id = config.rollout_group_id(worker_node_id)
 
                 # Instruct worker to start reliable rollout send only after we've
                 # registered the receiver side.
@@ -534,6 +535,7 @@ class Trainer:
 
                 try:
                     sid = self.dataplane.receive_data(
+                        rollout_group_id,
                         self.user_space_address,
                         worker_node_id,
                         expected_bytes=size,
@@ -561,7 +563,7 @@ class Trainer:
                     return
 
                 try:
-                    self.dataplane.forget_session(self.user_space_address, worker_node_id)
+                    self.dataplane.forget_session(rollout_group_id)
                 except Exception:
                     pass
 

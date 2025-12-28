@@ -332,7 +332,9 @@ class Worker:
 
                 view = nm.PacketView(serialized)
                 try:
+                    rollout_group_id = config.rollout_group_id(config.WORKER_NODE_IDS[self.rank])
                     sid = self.dataplane.send_data(
+                        rollout_group_id,
                         self.trainer_user_ip,
                         [self.trainer_node_id],
                         view,
