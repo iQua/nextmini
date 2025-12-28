@@ -205,9 +205,8 @@ class Worker:
                     print("Weights loaded into model.")
                     
                     # Important: Forget the session so next time we don't reuse the old SID
-                    # Since multicast group IP + src_node_id is the key, we must clear it 
-                    # to allow the 'pending' receiver logic to discover the NEW session ID (e.g. 2, 3...).
-                    self.dataplane.forget_session(group_ip, src_node_id)
+                    # Session registry is keyed by group_id, so clear it before the next transfer.
+                    self.dataplane.forget_session(group_id)
             
             elif msg["type"] == "WEIGHT_METADATA_SHARDED":
                 # Sharded weight synchronization for large models

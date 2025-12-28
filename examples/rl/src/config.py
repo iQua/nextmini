@@ -11,6 +11,12 @@ WORKER_CONFIGS = [
     os.environ.get("WORKER1_CONFIG", "configs/worker1-config.toml"),
 ]
 
+# Controller config (for LP multicast routing)
+CONTROLLER_CONFIG = os.environ.get(
+    "CONTROLLER_CONFIG",
+    "examples/rl/configs-docker/controller-config.toml",
+)
+
 # Node IDs (must match node_id in config files)
 TRAINER_NODE_ID = int(os.environ.get("TRAINER_NODE_ID", "1"))
 WORKER_NODE_IDS = [

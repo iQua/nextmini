@@ -57,6 +57,7 @@ class Trainer:
         self.dataplane = nm.Dataplane(self.config_path)
         info = self.dataplane.get_network_info()
         self.user_space_address = info["user_space_address"]
+        self.node_id = int(info["node_id"])
         
         # Setup connections to workers
         self.worker_connections = []
@@ -90,8 +91,45 @@ class Trainer:
         self.dataplane.create_group(config.MULTICAST_GROUP_NAME)
         self.group_id, self.group_ip, _ = self.dataplane.group_is_ready(timeout_ms=30000)
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
+
+        receiver_ids = [conn["node_id"] for conn in self.worker_connections]
+        edges, throughput = self._compute_multicast_routes(receiver_ids)
+        self.dataplane.set_group_routes(self.group_id, edges)
+        if throughput is not None:
+            print(f"Applied LP multicast routes (throughput={throughput:.3f})")
+        print(f"Installed multicast routes for group {self.group_id} ({len(edges)} edges)")
         
         print(f"Trainer ready with {len(self.worker_connections)} workers")
+
+    def _compute_multicast_routes(self, receiver_ids):
+        controller_path = Path(config.CONTROLLER_CONFIG)
+        if not controller_path.is_absolute():
+            controller_path = (Path(__file__).resolve().parents[3] / controller_path).resolve()
+        if not controller_path.is_file():
+            raise RuntimeError(f"Controller config not found: {controller_path}")
+
+        try:
+            from examples.lp.solver import (
+                build_graph_from_controller_config,
+                compute_mflow_tree_edges,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "LP solver unavailable. Ensure examples/lp dependencies are installed."
+            ) from exc
+
+        graph = build_graph_from_controller_config(str(controller_path))
+        edges, throughput = compute_mflow_tree_edges(
+            graph,
+            src=self.node_id,
+            destinations=receiver_ids,
+        )
+        if not edges:
+            raise RuntimeError(
+                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}"
+            )
+
+        return edges, throughput
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
