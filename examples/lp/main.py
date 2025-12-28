@@ -215,27 +215,6 @@ def _fetch_link_rates_from_probes(
     return result
 
 
-def _fetch_link_rates(conn, window_secs: float) -> dict[tuple[int, int], float]:
-    """Legacy function: fetch link rates using a time window (less accurate).
-    
-    Prefer _fetch_link_rates_from_probes() when probe_ids are available.
-    """
-    query = """
-        SELECT local_node_id,
-               remote_node_id,
-               SUM(bytes) * 8.0 / %s AS rate_bps
-        FROM metrics
-        WHERE time_read >= NOW() - (%s * INTERVAL '1 second')
-        GROUP BY local_node_id, remote_node_id
-    """
-
-    with conn.cursor() as cursor:
-        cursor.execute(query, (window_secs, window_secs))
-        rows = cursor.fetchall()
-
-    return {(int(src), int(dst)): float(rate_bps or 0.0) for src, dst, rate_bps in rows}
-
-
 def _apply_link_rates(graph, rates_bps: dict[tuple[int, int], float]) -> None:
     for key, rate_bps in rates_bps.items():
         if key in graph.capacities:
@@ -279,10 +258,10 @@ def main() -> int:
         help="Bytes to send per probe flow (larger keeps the link busy longer)",
     )
     parser.add_argument(
-        "--probe-window-secs",
+        "--probe-timeout-secs",
         type=float,
-        default=6.0,
-        help="Seconds to wait and query for link metrics after probes start",
+        default=30.0,
+        help="Timeout in seconds for probe flows to finish",
     )
     parser.add_argument(
         "--json",
@@ -328,7 +307,7 @@ def main() -> int:
                 print("No probe flows inserted; no edges found.", file=sys.stderr)
             else:
                 # Wait for probes to finish
-                _wait_for_probe_finish(conn, probe_ids, timeout_secs=args.probe_window_secs)
+                _wait_for_probe_finish(conn, probe_ids, timeout_secs=args.probe_timeout_secs)
                 # Use actual probe durations from flows table (more accurate)
                 rates = _fetch_link_rates_from_probes(conn, probe_ids)
                 _apply_link_rates(graph, rates)
