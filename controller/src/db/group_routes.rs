@@ -4,8 +4,8 @@ use anyhow::Result as AnyResult;
 use sqlx::{Pool, Postgres};
 use tracing::warn;
 
-use crate::models::Group;
 use super::groups::load_group_members;
+use crate::models::Group;
 
 pub(crate) struct RecomputedGroupRoutes {
     pub group: Group,

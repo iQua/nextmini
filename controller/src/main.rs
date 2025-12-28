@@ -902,10 +902,12 @@ async fn handle_connection(
                         // Fetch previous edges so we can clear stale routes on nodes that are no
                         // longer part of the DAG after the update.
                         let previous_edges_value: Option<serde_json::Value> =
-                            match sqlx::query_scalar("SELECT edges FROM group_routes WHERE group_id = $1")
-                                .bind(group_id as i32)
-                                .fetch_optional(&*db_pool)
-                                .await
+                            match sqlx::query_scalar(
+                                "SELECT edges FROM group_routes WHERE group_id = $1",
+                            )
+                            .bind(group_id as i32)
+                            .fetch_optional(&*db_pool)
+                            .await
                             {
                                 Ok(v) => v,
                                 Err(e) => {
@@ -927,7 +929,10 @@ async fn handle_connection(
 
                         // Persist edges for this group.
                         let edges_json = match serde_json::to_value(
-                            edges.iter().map(|(a, b)| [*a, *b]).collect::<Vec<[u32; 2]>>(),
+                            edges
+                                .iter()
+                                .map(|(a, b)| [*a, *b])
+                                .collect::<Vec<[u32; 2]>>(),
                         ) {
                             Ok(v) => v,
                             Err(e) => {
@@ -980,10 +985,8 @@ async fn handle_connection(
                             member_node_ids.iter().copied().collect();
 
                         // Notify union(previous_nodes, new_nodes, src, members) so stale entries are cleared.
-                        let mut nodes_to_notify: HashSet<u32> = previous_edges
-                            .iter()
-                            .flat_map(|(a, b)| [*a, *b])
-                            .collect();
+                        let mut nodes_to_notify: HashSet<u32> =
+                            previous_edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
                         nodes_to_notify.extend(edges.iter().flat_map(|(a, b)| [*a, *b]));
                         nodes_to_notify.insert(group.src_node_id as u32);
                         nodes_to_notify.extend(member_node_ids.iter().copied());
@@ -1034,8 +1037,7 @@ async fn handle_connection(
                                     continue;
                                 }
                             };
-                            if let Err(e) =
-                                writer.lock().await.send(Message::binary(payload)).await
+                            if let Err(e) = writer.lock().await.send(Message::binary(payload)).await
                             {
                                 error!(
                                     "SetGroupRoutes: failed to send InstallGroupRoutes for group {} to node {}: {}",
