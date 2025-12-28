@@ -157,13 +157,12 @@ class Worker:
                 print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
                 self.dataplane.join_group(group_id)
                 print(f"Worker {self.rank} joined group command sent.", flush=True)
-                
-                # 2. Register Receive Session in background task (using asyncio)
+
+                # 2. Register receiver BEFORE signaling ready
+                # Await the async call to ensure registration completes before sending READY
                 print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
-                
-                # Helper to wrap Rust Future into a Python Coroutine for create_task
-                async def receive_wrapper():
-                    return await self.dataplane.receive_data_async(
+                try:
+                    sid = await self.dataplane.receive_data_async(
                         group_id,
                         group_ip,
                         src_node_id,
@@ -172,27 +171,17 @@ class Worker:
                         src_port=config.TRAINER_PORT,
                         dst_port=config.WORKER_BASE_PORT
                     )
+                    print(f"Worker {self.rank} receiver registered. SID={sid}", flush=True)
+                except Exception as e:
+                    print(f"Worker {self.rank} failed to register receiver: {e}", flush=True)
+                    continue
 
-                # Create the receive task - this will submit the request to Rust but won't block
-                # until we await it. It returns the Session ID once the first packet arrives.
-                receive_task = asyncio.create_task(receive_wrapper())
-                
-                print(f"Worker {self.rank} receive task created.", flush=True)
-                
-                # 3. Reply READY (safe to send immediately)
+                # 3. Now signal trainer that we're ready to receive
                 print(f"Worker {self.rank} sending READY_FOR_MULTICAST...", flush=True)
                 self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
                 print(f"Worker {self.rank} sent READY_FOR_MULTICAST.", flush=True)
-                
-                # 4. Wait for the Session ID (this happens when trainer starts sending)
-                try:
-                    sid = await receive_task
-                    print(f"Worker {self.rank} receive_data session established. SID={sid}", flush=True)
-                except Exception as e:
-                    print(f"Worker {self.rank} failed to establish session: {e}", flush=True)
-                    continue
 
-                # 5. Wait for Reliable Transfer Completion
+                # 4. Wait for Reliable Transfer Completion
                 print(f"Waiting for reliable multicast transfer...")
                 ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 print(f"Receive completion: {ok}")
