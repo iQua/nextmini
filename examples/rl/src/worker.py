@@ -1,5 +1,4 @@
 import pickle
-import time
 import io
 import tempfile
 from pathlib import Path
@@ -334,15 +333,6 @@ class Worker:
                 except Exception as e:
                     print(f"Worker {self.rank}: error sending reliable rollout data: {e}", flush=True)
                     continue
-
-                # 4) Send a tiny control message with timestamp for network timing
-                send_time = time.time()
-                self.send_to_trainer({
-                    "type": "ROLLOUT_RESULT",
-                    "results": [],
-                    "send_timestamp": send_time,
-                    "reliable_ok": ok,
-                })
 
 
 if __name__ == "__main__":
