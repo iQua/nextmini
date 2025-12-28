@@ -79,11 +79,10 @@ class Trainer:
                 'receiver': receiver
             })
             self.worker_locks.append(threading.Lock())
-        
+
         # Wait for topology to be ready (all nodes connected and routes installed)
         print("Waiting for topology to be ready...")
-        if not self.dataplane.wait_for_topology_ready(timeout_ms=30_000):
-            raise TimeoutError("Topology not ready after 30 seconds")
+        self.dataplane.wait_for_topology_ready()
         print("Topology is ready!")
         
         # Create Multicast Group
@@ -93,16 +92,6 @@ class Trainer:
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
         
         print(f"Trainer ready with {len(self.worker_connections)} workers")
-        
-        # Signal readiness for Docker healthcheck
-        import os
-        ready_file = os.environ.get("TRAINER_READY_FILE", "/tmp/trainer_ready")
-        try:
-            with open(ready_file, "w") as f:
-                f.write("ready\n")
-            print(f"Trainer readiness signaled to: {ready_file}", flush=True)
-        except Exception as e:
-            print(f"Warning: Could not write readiness file: {e}", flush=True)
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""

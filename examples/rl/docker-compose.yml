@@ -62,12 +62,6 @@ services:
     depends_on:
       controller:
         condition: service_started
-    healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/trainer_ready"]
-      interval: 3s
-      timeout: 1s
-      retries: 30
-      start_period: 60s
     volumes:
       - ../../:/workspace:cached
       - ./output:/workspace/examples/rl/output
@@ -104,8 +98,6 @@ services:
     depends_on:
       controller:
         condition: service_started
-      trainer:
-        condition: service_healthy
     volumes:
       - ../../:/workspace:cached
     working_dir: /workspace
@@ -143,8 +135,6 @@ services:
     depends_on:
       controller:
         condition: service_started
-      trainer:
-        condition: service_healthy
     volumes:
       - ../../:/workspace:cached
     working_dir: /workspace
