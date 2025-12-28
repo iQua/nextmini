@@ -66,9 +66,11 @@ class Worker:
         self.trainer_port = trainer_port
         self.trainer_user_ip = None
         
-        # Wait for routes to be established
-        print(f"Waiting for routes to be established...", flush=True)
-        time.sleep(3)  # Trainer's healthcheck ensures it's ready before Workers start
+        # Wait for topology to be ready (all nodes connected and routes installed)
+        print(f"Waiting for topology to be ready...", flush=True)
+        if not self.dataplane.wait_for_topology_ready(timeout_ms=30_000):
+            raise TimeoutError("Topology not ready after 30 seconds")
+        print(f"Topology is ready!", flush=True)
         
         print(f"Worker {rank} ready.", flush=True)
 

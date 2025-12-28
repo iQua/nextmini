@@ -80,9 +80,11 @@ class Trainer:
             })
             self.worker_locks.append(threading.Lock())
         
-        # Wait for routes to be established
-        print("Waiting for routes to be established...")
-        time.sleep(10)
+        # Wait for topology to be ready (all nodes connected and routes installed)
+        print("Waiting for topology to be ready...")
+        if not self.dataplane.wait_for_topology_ready(timeout_ms=30_000):
+            raise TimeoutError("Topology not ready after 30 seconds")
+        print("Topology is ready!")
         
         # Create Multicast Group
         print(f"Creating multicast group '{config.MULTICAST_GROUP_NAME}'...")

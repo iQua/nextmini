@@ -146,6 +146,12 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
             f"Timed out waiting for READY from receivers. got={sorted(ready)} expected={receiver_ids}"
         )
 
+    # Wait for topology to be ready before inserting probe flows
+    print("[src] waiting for topology ready...", flush=True)
+    if not dp.wait_for_topology_ready(timeout_ms=30_000):
+        raise TimeoutError("Topology not ready after 30 seconds")
+    print("[src] topology is ready!", flush=True)
+
     # Compute a real mFlow LP solution, then convert → edges.
     graph = build_graph_from_controller_config(args.controller_config)
     print(f"[src] initial graph capacities (Mbps): {dict(graph.capacities.items())}", flush=True)

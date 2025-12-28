@@ -866,6 +866,18 @@ impl Dataplane {
         Ok(matched.is_some())
     }
 
+    /// Waits for the topology to be ready (all nodes connected and routes installed).
+    /// Returns True if topology is ready, False if timeout occurred.
+    #[pyo3(signature = (timeout_ms=None))]
+    fn wait_for_topology_ready(&self, timeout_ms: Option<u64>) -> PyResult<bool> {
+        let timeout = timeout_ms.map(Duration::from_millis);
+        let matched = self.wait_for_event_matching(timeout, |event| {
+            matches!(event, PythonEvent::TopologyReady)
+        });
+
+        Ok(matched.is_some())
+    }
+
     /// Returns the local node ID.
     #[getter]
     fn node_id(&self) -> usize {

@@ -440,8 +440,7 @@ impl ControllerToDataplaneReceiver {
                             reliable_flows.len(),
                             self.config.node_id
                         );
-                        self.pending_reliable_flows
-                            .extend(reliable_flows.into_iter());
+                        self.pending_reliable_flows.extend(reliable_flows);
                     }
                 }
             }
@@ -454,6 +453,12 @@ impl ControllerToDataplaneReceiver {
 
                 self.topology_ready = true;
                 self.reliable_runtime.set_topology_ready(true);
+
+                // Emit Python event so Python code can wait for topology ready
+                #[cfg(feature = "python-extension")]
+                if let Some(py_if) = self.python_handle().await {
+                    py_if.publish_event(PythonEvent::TopologyReady).await;
+                }
 
                 self.flush_pending_flows();
             }
