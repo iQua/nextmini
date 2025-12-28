@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -85,30 +84,11 @@ impl ReliableRuntimeHandle {
     }
 
     /// Request that the runtime spin up a receiver immediately.
-    #[allow(dead_code)]
     pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
         let _ = self.command_tx.send(Command::StartReceiver {
             cfg,
-            reply: reply_tx,
-        });
-
-        reply_rx.await.expect("The session ID.")
-    }
-
-    /// Requests that the runtime stage a receiver that will be paired once the
-    /// control-plane assigns a session ID.
-    pub async fn start_receiver_pending(
-        &self,
-        cfg: ReceiverConfig,
-        key: PendingReceiverKey,
-    ) -> SessionId {
-        let (reply_tx, reply_rx) = oneshot::channel();
-
-        let _ = self.command_tx.send(Command::StartReceiverPending {
-            cfg,
-            key,
             reply: reply_tx,
         });
 
@@ -160,24 +140,9 @@ struct ReliableRuntime {
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
-    pending: AHashMap<PendingReceiverKey, VecDeque<PendingReceiver>>,
     topology_ready_tx: watch::Sender<bool>,
     topology_ready: bool,
     command_rx: mpsc::UnboundedReceiver<Command>,
-}
-
-/// Key that allows a receiver to be created speculatively and paired once the
-/// control plane decides which session ID to use for a (destination, source) tuple.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PendingReceiverKey {
-    pub dest_ip: Ipv4Addr,
-    pub source_node_id: usize,
-}
-
-/// Wrapper that stores the receiver config until a session ID is assigned.
-struct PendingReceiver {
-    cfg: ReceiverConfig,
-    reply: oneshot::Sender<SessionId>,
 }
 
 impl ReliableRuntime {
@@ -190,7 +155,6 @@ impl ReliableRuntime {
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
             next_session_id: 1,
-            pending: AHashMap::default(),
             topology_ready_tx,
             topology_ready: false,
             command_rx,
@@ -210,9 +174,6 @@ impl ReliableRuntime {
                     let sid = self.spawn_receiver(cfg);
 
                     let _ = reply.send(sid);
-                }
-                Command::StartReceiverPending { cfg, key, reply } => {
-                    self.enqueue_pending_receiver(key, cfg, reply);
                 }
                 Command::Stop { session } => {
                     self.stop(session).await;
@@ -238,38 +199,12 @@ impl ReliableRuntime {
 
     /// Delivers inbound frames to sessions.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
-        let dest_ip = frame.dest_ip;
-        let source_node_id = frame.source_node_id;
-
-        let (sender, pending_reply) = if let Some(tx) = self.input_sender(session) {
-            (Some(tx), None)
-        } else if let (Some(dest_ip), Some(source_node_id)) = (dest_ip, source_node_id) {
-            if let Some((cfg, reply)) = self.adopt_pending_receiver(
-                PendingReceiverKey {
-                    dest_ip,
-                    source_node_id,
-                },
-                session,
-            ) {
-                let _ = self.spawn_receiver(cfg);
-
-                (self.input_sender(session), Some(reply))
-            } else {
-                (None, None)
-            }
-        } else {
-            (None, None)
-        };
-
-        if let Some(tx) = sender {
+        if let Some(tx) = self.input_sender(session) {
             if tx.send(frame).await.is_err() {
                 warn!(
                     session_id = session,
                     "Reliable runtime: receiver dropped inbound frame."
                 );
-            }
-            if let Some(reply) = pending_reply {
-                let _ = reply.send(session);
             }
         } else {
             warn!(
@@ -363,37 +298,5 @@ impl ReliableRuntime {
     fn set_topology_ready(&mut self, ready: bool) {
         self.topology_ready = ready;
         let _ = self.topology_ready_tx.send(ready);
-    }
-
-    fn enqueue_pending_receiver(
-        &mut self,
-        key: PendingReceiverKey,
-        cfg: ReceiverConfig,
-        reply: oneshot::Sender<SessionId>,
-    ) {
-        // multiple listeners may race to attach; keep them queued until the
-        // control plane picks a session ID
-        self.pending
-            .entry(key)
-            .or_default()
-            .push_back(PendingReceiver { cfg, reply });
-    }
-
-    /// Pairs the next pending receiver for a (destination, source) tuple with the
-    /// concrete session ID chosen by the control plane.
-    fn adopt_pending_receiver(
-        &mut self,
-        key: PendingReceiverKey,
-        session_id: SessionId,
-    ) -> Option<(ReceiverConfig, oneshot::Sender<SessionId>)> {
-        let queue = self.pending.get_mut(&key)?;
-        let mut pending = queue.pop_front()?;
-        pending.cfg.common.session_id = session_id;
-
-        if queue.is_empty() {
-            self.pending.remove(&key);
-        }
-
-        Some((pending.cfg, pending.reply))
     }
 }

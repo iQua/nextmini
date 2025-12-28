@@ -980,8 +980,6 @@ impl Processor {
             ReliableInboundFrame {
                 bytes: payload_vec,
                 peer_id,
-                dest_ip: Some(packet.flow_id.dst_ip()),
-                source_node_id: peer_id,
             },
         );
         true
