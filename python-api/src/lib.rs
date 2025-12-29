@@ -579,23 +579,6 @@ impl Dataplane {
         })
     }
 
-    #[pyo3(signature = (src_node_id, dst_node_id, src_port=None, dst_port=None))]
-    fn flow_id_from_nodes(
-        &self,
-        src_node_id: usize,
-        dst_node_id: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<u128> {
-        let src_ip =
-            (src_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
-        let dst_ip =
-            (dst_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
-        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-        Ok(Packet::flow_id_from_parts(src_ip, sp, dst_ip, dp))
-    }
-
     #[pyo3(signature = (src_node_id, src_port=None, dst_port=None))]
     fn register_receiver_from_node(
         &self,
