@@ -30,20 +30,16 @@ Dataplane updates its `group_ip → group_id` directory upon receiving the direc
 
 ---
 
-## 2. Members Join
+## 2. Source Installs a Multicast DAG
 
-Nodes `3` and `6` issue join requests:
+The source (or an external solver) supplies explicit DAG edges for the group:
 
 ```
-JoinGroup { group_id: 7 }
+SetGroupRoutes { group_id: 7, edges: [(1, 3), (1, 6)] }
 ```
 
-Each membership change triggers a Postgres notification. The controller:
-
-1. Fetches all members for group `7`.
-2. Reuses the stored unicast topology to compute the multicast DAG.
-3. Persists the DAG in `group_routes`.
-4. Sends `InstallGroupRoutes` to every node affected by the DAG (including source and members).
+The controller stores the edges in `group_routes` and pushes `InstallGroupRoutes` to
+nodes referenced by the DAG.
 
 Example payload for node `2` (an intermediate hop):
 
@@ -59,6 +55,23 @@ InstallGroupRoutes {
     }]
 }
 ```
+
+---
+
+## 3. Members Join
+
+Nodes `3` and `6` issue join requests:
+
+```
+JoinGroup { group_id: 7 }
+```
+
+Each membership change triggers a Postgres notification. The controller:
+
+1. Fetches all members for group `7`.
+2. Reuses the stored DAG edges from `group_routes`.
+3. Rebuilds per-node routes (including local delivery for members).
+4. Sends `InstallGroupRoutes` to every node affected by the DAG (including source and members).
 
 Node `3` receives a payload that includes local delivery:
 
@@ -77,7 +90,7 @@ InstallGroupRoutes {
 
 ---
 
-## 3. Traffic Delivery
+## 4. Traffic Delivery
 
 The source application sends packets to `239.255.0.10`.
 
@@ -88,7 +101,7 @@ The source application sends packets to `239.255.0.10`.
 
 ---
 
-## 4. Member Leaves
+## 5. Member Leaves
 
 When node `6` leaves:
 
@@ -96,7 +109,7 @@ When node `6` leaves:
 LeaveGroup { group_id: 7 }
 ```
 
-The controller recomputes the DAG, persists the new edge set, and sends `InstallGroupRoutes` updates. Nodes that no longer participate receive an empty route list (or no message if they have no active connection), effectively removing the fan-out.
+The controller reuses the stored DAG edges, rebuilds per-node routes (dropping local delivery for the departed member), and sends `InstallGroupRoutes` updates. Nodes that no longer participate receive an empty route list (or no message if they have no active connection), effectively removing the fan-out.
 
 ---
 
@@ -114,6 +127,9 @@ dp.create_group("job-42")
 group = dp.group_is_ready(timeout_ms=5_000)
 assert group, "controller did not acknowledge the group"
 group_id, group_ip, src_node_id = group
+edges = [(src_node_id, 3), (src_node_id, 6)]
+dp.set_group_routes(group_id, edges)
+dp.wait_for_group_routes(group_id, src_node_id, timeout_ms=5_000)
 
 # Receiver node
 rx_dp = nm.Dataplane("/abs/path/receiver-config.toml")

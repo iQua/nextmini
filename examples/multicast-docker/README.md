@@ -57,16 +57,15 @@ docker compose up
 By default `SKIP_BUILD=0`, so each container builds the `nextmini_py` extension in-place using `maturin develop -F python-extension`. This works across machines (including macOS hosts) without prebuilding wheels.
 The first run will take a few minutes as the wheel is compiled.
 
-Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor, waits for both receivers to report readiness, multicasts the data chunk-by-chunk, and shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are negotiated inside the dataplane, and the receivers simply block in `receive_data` until the receiving completes, and then drain the payload via `get_data_buffer`.
+Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor, installs a simple multicast DAG via `set_group_routes`, waits for both receivers to register their receive sessions (signaled through `artifacts/receiver-ready-<node_id>.json`), multicasts the data chunk-by-chunk, and shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are negotiated inside the dataplane, and the receivers register via `receive_data` before blocking on `reliable_wait`, then drain the payload via `get_data_buffer`.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):
 
 - `GROUP_LABEL` – label used when creating the multicast group (default `demo-multicast`).
-- `EXPECTED_SUBSCRIBERS` – number of receivers that must be both joined and ready before the source starts sending (defaults to 2).
-- `RECEIVER_EXPECTED` – chunk count each receiver waits for (auto-derived from `EXPECTED_BYTES`).
-- `GROUP_TIMEOUT`, `MEMBER_TIMEOUT`, `RECEIVE_TIMEOUT_MS` – tweak the various waits when
-  running on slower machines or remote builders.
+- `RECEIVER_IDS` – comma-separated receiver node IDs the source waits for (default `2,3`).
+- `SOURCE_NODE_ID` – source node ID used by receivers when registering.
+- `GROUP_TIMEOUT`, `RECEIVE_TIMEOUT_MS` – tweak the various waits when running on slower machines or remote builders.
 - `TENSOR_PATH` – optional path (inside the repo) to a tensor/binary blob that should be
   multicast chunk-by-chunk. When omitted, the source auto-generates a ≈1 GB tensor at
   `/workspace/tensors/tensor-auto-1g.pt` before every run.

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,7 @@ except ImportError as exc:  # pragma: no cover - surfaced at launch time
 
 METADATA_FILE = "tensor-metadata.json"
 GROUP_INFO_FILE = "group-info.json"
+READY_FILE_TEMPLATE = "receiver-ready-{}.json"
 
 
 def atomic_write_json(path: Path, payload: dict) -> None:
@@ -35,8 +37,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
     parser.add_argument("--chunk-size", type=int, default=8500)
-    parser.add_argument("--receive-timeout-ms", type=int, default=5000)
-    parser.add_argument("--group-timeout", type=int, default=90)
+    parser.add_argument(
+        "--receive-timeout-ms",
+        type=int,
+        default=int(os.environ.get("RECEIVE_TIMEOUT_MS", "5000")),
+    )
+    parser.add_argument(
+        "--group-timeout", type=int, default=int(os.environ.get("GROUP_TIMEOUT", "90"))
+    )
     parser.add_argument(
         "--payload-count",
         type=int,
@@ -44,14 +52,18 @@ def parse_args() -> argparse.Namespace:
         help="Compatibility shim; when provided, expected-bytes defaults to payload-count * chunk-size.",
     )
     parser.add_argument("--expected-bytes", type=int, default=None)
-    parser.add_argument("--source-node-id", type=int, default=1)
+    parser.add_argument(
+        "--source-node-id",
+        type=int,
+        default=int(os.environ.get("SOURCE_NODE_ID", "1")),
+    )
     parser.add_argument("--node-id", type=int, default=None)
     parser.add_argument("--src-port", type=int, default=None)
     parser.add_argument("--dst-port", type=int, default=None)
     parser.add_argument(
         "--receiver-ids",
         type=str,
-        default="",
+        default=os.environ.get("RECEIVER_IDS", ""),
         help="Comma-separated list of receiver node IDs (source role only).",
     )
     parser.add_argument(
@@ -61,7 +73,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional tensor path to stream; defaults to generated tensor.",
     )
     parser.add_argument("--generate-tensor", action="store_true")
-    parser.add_argument("--artifact-dir", type=Path, default=Path("/artifacts"))
+    parser.add_argument(
+        "--artifact-dir",
+        type=Path,
+        default=Path(os.environ.get("ARTIFACT_DIR", "/artifacts")),
+    )
     parser.add_argument("--sink-path", type=Path, default=None)
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
@@ -71,6 +87,15 @@ def parse_receiver_ids(value: str) -> List[int]:
     if not value:
         return []
     return [int(part.strip()) for part in value.split(",") if part.strip()]
+
+
+def build_star_edges(source_node_id: int, receiver_ids: List[int]) -> List[Tuple[int, int]]:
+    edges: List[Tuple[int, int]] = []
+    for node_id in sorted(set(receiver_ids)):
+        if node_id == source_node_id:
+            continue
+        edges.append((source_node_id, node_id))
+    return edges
 
 
 def log(message: str, quiet: bool = False) -> None:
@@ -131,6 +156,32 @@ def group_info_path(args: argparse.Namespace) -> Path:
     return args.artifact_dir / GROUP_INFO_FILE
 
 
+def receiver_ready_path(args: argparse.Namespace, node_id: int) -> Path:
+    return args.artifact_dir / READY_FILE_TEMPLATE.format(node_id)
+
+
+def write_receiver_ready(args: argparse.Namespace, node_id: int) -> None:
+    payload = {"node_id": node_id, "ready_at": time.time()}
+    atomic_write_json(receiver_ready_path(args, node_id), payload)
+
+
+def wait_for_receivers_ready(args: argparse.Namespace, receiver_ids: List[int]) -> None:
+    if not receiver_ids:
+        return
+    pending = set(receiver_ids)
+    deadline = time.monotonic() + args.group_timeout
+    while time.monotonic() < deadline:
+        for node_id in list(pending):
+            if receiver_ready_path(args, node_id).exists():
+                pending.remove(node_id)
+        if not pending:
+            return
+        time.sleep(1)
+    raise TimeoutError(
+        f"Timed out waiting for receiver readiness files: {sorted(pending)}"
+    )
+
+
 def write_group_info(
     args: argparse.Namespace,
     *,
@@ -189,6 +240,7 @@ def run_source(args: argparse.Namespace) -> None:
         raise SystemExit("Source role requires --receiver-ids=<id1,id2,...>.")
 
     dataplane = nm.Dataplane(str(args.config))
+    source_node_id = dataplane.node_id
     log(f"Creating multicast group '{args.group_label}'...", args.quiet)
     dataplane.create_group(args.group_label)
     group_id, group_ip, _ = dataplane.group_is_ready(
@@ -205,6 +257,25 @@ def run_source(args: argparse.Namespace) -> None:
         f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
         args.quiet,
     )
+
+    if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
+        raise TimeoutError("Timed out waiting for topology readiness.")
+
+    edges = build_star_edges(source_node_id, receiver_ids)
+    if not edges:
+        raise SystemExit("No multicast DAG edges computed; check receiver IDs.")
+    log(f"Installing multicast DAG edges={edges}", args.quiet)
+    dataplane.set_group_routes(group_id, edges)
+    if not dataplane.wait_for_group_routes(
+        group_id,
+        source_node_id,
+        timeout_ms=args.group_timeout * 1000,
+    ):
+        raise TimeoutError("Timed out waiting for multicast routes to install.")
+
+    log("Waiting for receivers to register receive sessions...", args.quiet)
+    wait_for_receivers_ready(args, receiver_ids)
+    log("All receivers are ready; starting send.", args.quiet)
 
     if args.tensor_path is None:
         raise SystemExit(
@@ -262,6 +333,7 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     group_id, group_ip = wait_for_group_info(args, args.group_timeout)
     dataplane = nm.Dataplane(str(args.config))
+    local_node_id = dataplane.node_id
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
 
@@ -282,6 +354,9 @@ def run_receiver(args: argparse.Namespace) -> None:
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
+
+    write_receiver_ready(args, local_node_id)
+    log(f"Receiver ready file written for node {local_node_id}.", args.quiet)
 
     log(f"Started reliable receive session (session ID = {sid}).", args.quiet)
 
