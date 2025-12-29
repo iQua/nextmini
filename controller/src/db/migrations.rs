@@ -18,6 +18,7 @@ pub(super) async fn reset_db(pool: &Pool<Postgres>) -> AnyResult<()> {
     for (table, sql) in [
         ("metrics", "DROP TABLE IF EXISTS metrics CASCADE"),
         ("app_flows", "DROP TABLE IF EXISTS app_flows CASCADE"),
+        ("flow_routes", "DROP TABLE IF EXISTS flow_routes CASCADE"),
         ("flows", "DROP TABLE IF EXISTS flows CASCADE"),
         ("group_routes", "DROP TABLE IF EXISTS group_routes CASCADE"),
         (
