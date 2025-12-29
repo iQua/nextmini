@@ -49,6 +49,18 @@ CREATE TABLE IF NOT EXISTS routes (
     edges JSONB NOT NULL
 );
 
+-- flow_routes: Relationship table documenting route assignments for flows.
+-- This supports "route pinning": forcing a flow to use a specific controller-provided route_id.
+CREATE TABLE IF NOT EXISTS flow_routes (
+    flow_id INTEGER NOT NULL,
+    route_id INTEGER NOT NULL,
+    PRIMARY KEY (flow_id, route_id),
+    FOREIGN KEY (flow_id) REFERENCES flows(id) ON DELETE CASCADE,
+    FOREIGN KEY (route_id) REFERENCES routes(route_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_routes_flow_id ON flow_routes(flow_id);
+
 CREATE TABLE IF NOT EXISTS metrics (
     id SERIAL PRIMARY KEY,
     flow_id BYTEA NOT NULL,

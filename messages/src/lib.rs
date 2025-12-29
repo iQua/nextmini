@@ -265,6 +265,8 @@ pub struct Flow {
     pub controller_id: Option<i32>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
+    #[serde(default)]
+    pub route_id: Option<usize>,
     pub flow_spec: FlowSpec,
 }
 

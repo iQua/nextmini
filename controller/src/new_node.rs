@@ -15,7 +15,7 @@ use nextmini_messages::{ControllerToDataplane, FlowTransport, TokenBucketSpec};
 use crate::NodeWriterMap;
 use crate::WebSocketWriter;
 use crate::config::Config;
-use crate::models::{DbFlow, Node};
+use crate::models::{DbFlow, DbFlowRoute, Node};
 use crate::utils::build_flows_for_node;
 
 // Event to be sent when a new node has connected to the controller.
@@ -163,6 +163,18 @@ async fn send_flows(
             }
         };
 
+    // Query all flow routes for route pinning
+    let flow_routes: Vec<DbFlowRoute> = match sqlx::query_as("SELECT * FROM flow_routes")
+        .fetch_all(&*db_pool)
+        .await
+    {
+        Ok(routes) => routes,
+        Err(e) => {
+            error!("Failed to fetch flow routes from database: {}.", e);
+            Vec::new()
+        }
+    };
+
     let node_ws_guard = node_ws.read().await;
 
     for (&node_id, writer) in node_ws_guard.iter() {
@@ -180,7 +192,7 @@ async fn send_flows(
                 node_id
             );
 
-            let msg = build_flows_for_node(flows, flow_transport);
+            let msg = build_flows_for_node(flows, &flow_routes, flow_transport);
 
             match writer
                 .lock()

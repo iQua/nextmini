@@ -13,7 +13,7 @@ use nextmini_messages::{
 };
 
 use crate::config;
-use crate::models::{DbFlow, Route};
+use crate::models::{DbFlow, DbFlowRoute, Route};
 use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topology::topo;
@@ -74,7 +74,17 @@ pub fn build_startup_response(params: StartupResponseParams) -> ControllerToData
 }
 
 /// Builds an AddFlow message for flows.
-pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> ControllerToDataplane {
+pub fn build_flows_for_node(
+    flows: Vec<DbFlow>,
+    flow_routes: &[DbFlowRoute],
+    transport: FlowTransport,
+) -> ControllerToDataplane {
+    // Build a lookup map from flow_id to route_id
+    let route_map: HashMap<i32, i32> = flow_routes
+        .iter()
+        .map(|fr| (fr.flow_id, fr.route_id))
+        .collect();
+
     let mut built = Vec::new();
 
     for flow in flows {
@@ -107,10 +117,14 @@ pub fn build_flows_for_node(flows: Vec<DbFlow>, transport: FlowTransport) -> Con
             continue;
         }
 
+        // Look up route_id from flow_routes table
+        let route_id = route_map.get(&flow.id).map(|&r| r as usize);
+
         built.push(Flow {
             controller_id: Some(flow.id),
             src_node_id: flow.src_node_id as usize,
             dst_node_id: flow.dst_node_id as usize,
+            route_id,
             flow_spec,
         });
     }

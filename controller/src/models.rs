@@ -64,3 +64,10 @@ pub struct DbGroupRoute {
     pub src_node_id: i32,
     pub edges: serde_json::Value,
 }
+
+/// Maps a flow to a specific route for route pinning.
+#[derive(Clone, FromRow, Debug)]
+pub struct DbFlowRoute {
+    pub flow_id: i32,
+    pub route_id: i32,
+}

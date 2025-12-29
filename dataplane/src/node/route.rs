@@ -238,6 +238,36 @@ impl RoutingTable {
         Self::copy_next_hops(route_id, hops)
     }
 
+    /// Pins a specific route for a flow by pre-populating the cache.
+    ///
+    /// This allows controller-assigned flows to use a specific route rather than
+    /// going through normal route selection. The pinned route takes effect on the
+    /// flow's first packet (cache hit).
+    ///
+    /// Note: Pinned routes are cleared when routes are reinstalled (topology changes).
+    /// The controller should re-pin routes after topology stabilizes if needed.
+    pub fn pin_route_for_flow(&mut self, flow_id: FlowId, route_id: usize) -> Result<(), String> {
+        // Validate route exists
+        let next_hops = self
+            .route_next_hop
+            .get(&route_id)
+            .ok_or_else(|| format!("Route {} not found in routing table", route_id))?;
+
+        if next_hops.is_empty() {
+            return Err(format!("Route {} has no next hops", route_id));
+        }
+
+        if next_hops.contains(&INVALID) {
+            return Err(format!("Route {} contains invalid next hops", route_id));
+        }
+
+        // Pre-populate cache - flow will hit cache on first packet
+        self.cache.insert(flow_id, route_id);
+        debug!("Pinned route {} for flow {:032x}", route_id, flow_id);
+
+        Ok(())
+    }
+
     /// Picks a single next hop from a candidate list (random when multiple options exist).
     fn pick_single_hop(next_hops: &[NodeId]) -> Result<NodeId, String> {
         match next_hops.len() {

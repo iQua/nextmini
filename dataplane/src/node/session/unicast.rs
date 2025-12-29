@@ -82,6 +82,11 @@ impl ReliableUnicastFlowManager {
             let dst_port = cfg.user_space_server_port;
             let data_bucket =
                 bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
+            let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
+
+            if let Some(route_id) = flow.route_id {
+                processors.pin_route_for_flow(flow_id, route_id);
+            }
 
             // We currently inject a fixed pattern; higher-level APIs fill the
             // buffer before the flow is scheduled. Reuse a single chunk-sized
@@ -114,14 +119,12 @@ impl ReliableUnicastFlowManager {
                 // Update the processor scheduler before any packets leave the
                 // node so the control plane's prioritization takes effect
                 // immediately.
-                let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
                 processors.set_flow_weight(flow_id, weight);
             }
 
             if let Some(controller_id) = flow.controller_id {
                 // Report flow start once we know the flow ID so the controller
                 // can track successes as soon as the sender is live.
-                let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
                 flowstats.report_user_flow_start(flow_id, controller_id);
             } else {
                 warn!(
@@ -133,7 +136,6 @@ impl ReliableUnicastFlowManager {
             let started_sid = reliable_runtime.start_sender(sender_cfg).await;
             let ok = reliable_runtime.wait_completion(started_sid).await;
 
-            let flow_id = flow_id_for_unicast(&cfg, &flow, src_port, dst_port);
             flowstats.report_flow_finished(flow_id, flow.controller_id);
 
             if !ok {
