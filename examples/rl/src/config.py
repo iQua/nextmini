@@ -38,6 +38,14 @@ ROLLOUT_GROUP_ID_BASE = int(os.environ.get("ROLLOUT_GROUP_ID_BASE", "1000"))
 def rollout_group_id(node_id: int) -> int:
     return ROLLOUT_GROUP_ID_BASE + int(node_id)
 
+
+# Multicast Routing Algorithm
+# Options: "mflow" (original), "cf_tree" (LP-guided), "basic_tree" (capacity-only)
+ROUTING_ALGORITHM = os.environ.get("ROUTING_ALGORITHM", "cf_tree")
+# CF-Tree parameters
+CF_TREE_HOP_LIMIT = int(os.environ.get("CF_TREE_HOP_LIMIT", "3"))  # Max hops from source
+CF_TREE_ETA = float(os.environ.get("CF_TREE_ETA", "0.1"))  # LP guidance weight
+
 # Sharded Checkpoint (for large models)
 USE_SHARDED_WEIGHTS = os.environ.get("USE_SHARDED_WEIGHTS", "false").lower() == "true"
 SHARD_SIZE = os.environ.get("SHARD_SIZE", "8GB")  # Default shard size for large models
