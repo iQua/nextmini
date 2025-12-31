@@ -203,13 +203,13 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
     if not dp.wait_for_group_routes(group_id, src_node_id, timeout_ms=30_000):
         raise TimeoutError("Timed out waiting for multicast routes to install.")
 
-    # Send payload via reliable multicast.
+    # Send payload via lossless multicast.
     builder = nm.PacketBuilder(size=len(payload))
     builder.write(payload)
     view = builder.freeze()
 
     sid = dp.send_data(group_id, group_ip, receiver_ids, view, chunk_size=args.chunk_size)
-    ok = dp.reliable_wait(sid, timeout_ms=60_000)
+    ok = dp.lossless_wait(sid, timeout_ms=60_000)
     print(f"[src] send done ok={ok} sid={sid}", flush=True)
     return dp
 
@@ -294,7 +294,7 @@ def run_receiver(args: argparse.Namespace) -> nm.Dataplane:
             receive_task.cancel()
             raise TimeoutError("Timed out waiting for multicast session to start.")
 
-        ok = await dp.reliable_wait_async(sid, timeout_ms=60_000)
+        ok = await dp.lossless_wait_async(sid, timeout_ms=60_000)
         view = dp.get_data_buffer(sid)
         payload = bytes(view.read())
         return ok, payload, sid

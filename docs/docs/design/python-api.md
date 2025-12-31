@@ -66,7 +66,7 @@ payload = frozen_from_tensor(loss_tensor)
 dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
-`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the reliable session APIs to transmit payloads.
+`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the lossless session APIs to transmit payloads.
 
 ### Frozen buffers in detail
 
@@ -125,7 +125,7 @@ delivered to Python receivers that have called one of the waiters above; they ar
 
 ## Payload size behavior
 
-The bindings now ship every payload as a single TCP frame; there is no application-level fragmentation to configure. The operating system handles any link-layer segmentation, and the dataplane enforces the configured MTU when chunking reliable session transfers. This keeps the API predictable: the bytes you send are the bytes delivered.
+The bindings now ship every payload as a single TCP frame; there is no application-level fragmentation to configure. The operating system handles any link-layer segmentation, and the dataplane enforces the configured MTU when chunking lossless session transfers. This keeps the API predictable: the bytes you send are the bytes delivered.
 
 ## Telemetry and troubleshooting
 

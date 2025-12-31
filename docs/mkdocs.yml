@@ -55,7 +55,9 @@ nav:
   - Design:
       - Introduction: design/introduction.md
       - Architecture: design/architecture.md
-      - Configuration Settings: design/configuration.md
+      - Configuration Reference: design/config-reference.md
+      - Transport Configuration: design/configuration.md
+      - Lossless Sessions: design/lossless_config.md
       - Multicast Groups: design/multicast-groups.md
       - Python Dataplane API: design/python-api.md
   - Examples:

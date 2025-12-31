@@ -225,9 +225,9 @@ fn default_multicast_pool_mask() -> Ipv4Addr {
     Ipv4Addr::new(255, 255, 0, 0)
 }
 
-/// The default transport protocol: QUIC
+/// The default transport protocol: TCP
 fn default_protocol() -> Protocol {
-    Protocol::Quic
+    Protocol::Tcp
 }
 
 /// The default scheduler type: FIFO

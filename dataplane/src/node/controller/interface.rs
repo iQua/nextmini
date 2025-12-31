@@ -31,8 +31,8 @@ use crate::node::processor::ProcessorHandle;
 #[cfg(feature = "python-extension")]
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
-use crate::node::session::api::ReliableRuntimeHandle;
-use crate::node::session::unicast::ReliableUnicastFlowManager;
+use crate::node::session::api::LosslessRuntimeHandle;
+use crate::node::session::unicast::LosslessUnicastFlowManager;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -49,7 +49,7 @@ impl ControllerInterfaceHandle {
         config: LocalConfig,
     ) -> (
         Self,
-        ReliableRuntimeHandle,
+        LosslessRuntimeHandle,
         ControllerReporterHandle,
         FlowStatsReporterHandle,
     ) {
@@ -107,16 +107,16 @@ impl ControllerInterfaceHandle {
             TcpMaxClient::new(config.clone(), processors.clone(), reporter.clone());
         processors.connect_tcp_max_client(tcp_max_client).await;
 
-        // creates the reliable runtime handle with the correct processors
-        let reliable_runtime = ReliableRuntimeHandle::new(processors.clone());
-        processors.connect_reliable_handle(reliable_runtime.clone());
+        // creates the lossless runtime handle with the correct processors
+        let lossless_runtime = LosslessRuntimeHandle::new(processors.clone());
+        processors.connect_lossless_handle(lossless_runtime.clone());
 
-        // creates the reliable unicast flow manager with the correct processors
-        let reliable_unicast = ReliableUnicastFlowManager::new(
+        // creates the lossless unicast flow manager with the correct processors
+        let lossless_unicast = LosslessUnicastFlowManager::new(
             config.clone(),
             processors.clone(),
             flowstats_reporter.clone(),
-            reliable_runtime.clone(),
+            lossless_runtime.clone(),
         );
 
         let mut controller_receiver = ControllerToDataplaneReceiver {
@@ -129,12 +129,12 @@ impl ControllerInterfaceHandle {
             user_space_server,
             #[cfg(feature = "python-extension")]
             python_interface,
-            reliable_runtime: reliable_runtime.clone(),
+            lossless_runtime: lossless_runtime.clone(),
             group_ip_by_id: HashMap::new(),
-            reliable_unicast,
+            lossless_unicast,
             topology_ready: false,
             pending_tcp_flows: Vec::new(),
-            pending_reliable_flows: Vec::new(),
+            pending_lossless_flows: Vec::new(),
             expected_neighbor_count: 0,
             connected_neighbor_count: 0,
             routes_installed: false,
@@ -151,7 +151,7 @@ impl ControllerInterfaceHandle {
 
         (
             controller_interface,
-            reliable_runtime,
+            lossless_runtime,
             reporter,
             flowstats_reporter,
         )
@@ -290,11 +290,11 @@ pub struct ControllerToDataplaneReceiver {
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 
     group_ip_by_id: HashMap<GroupId, Ipv4Addr>,
-    reliable_runtime: ReliableRuntimeHandle,
-    reliable_unicast: ReliableUnicastFlowManager,
+    lossless_runtime: LosslessRuntimeHandle,
+    lossless_unicast: LosslessUnicastFlowManager,
     topology_ready: bool,
     pending_tcp_flows: Vec<Flow>,
-    pending_reliable_flows: Vec<Flow>,
+    pending_lossless_flows: Vec<Flow>,
     expected_neighbor_count: usize,
     connected_neighbor_count: usize,
     routes_installed: bool,
@@ -389,7 +389,7 @@ impl ControllerToDataplaneReceiver {
 
             ControllerToDataplane::AddFlows { flows } => {
                 let mut tcp_flows = Vec::new();
-                let mut reliable_flows = Vec::new();
+                let mut lossless_flows = Vec::new();
 
                 for flow in &flows {
                     match flow.flow_spec.transport {
@@ -403,11 +403,11 @@ impl ControllerToDataplaneReceiver {
                                 tcp_flows.push(flow.clone());
                             }
                         }
-                        FlowTransport::ReliableUnicast => {
+                        FlowTransport::LosslessUnicast => {
                             if flow.src_node_id == self.config.node_id
                                 || flow.dst_node_id == self.config.node_id
                             {
-                                reliable_flows.push(flow.clone());
+                                lossless_flows.push(flow.clone());
                             }
                         }
                     }
@@ -426,21 +426,21 @@ impl ControllerToDataplaneReceiver {
                     }
                 }
 
-                if !reliable_flows.is_empty() {
+                if !lossless_flows.is_empty() {
                     if self.topology_ready {
                         info!(
-                            "Adding {} reliable unicast flows to node {}.",
-                            reliable_flows.len(),
+                            "Adding {} lossless unicast flows to node {}.",
+                            lossless_flows.len(),
                             self.config.node_id
                         );
-                        self.reliable_unicast.add_flows(reliable_flows);
+                        self.lossless_unicast.add_flows(lossless_flows);
                     } else {
                         info!(
-                            "Deferring {} reliable unicast flows on node {} until the topology is ready.",
-                            reliable_flows.len(),
+                            "Deferring {} lossless unicast flows on node {} until the topology is ready.",
+                            lossless_flows.len(),
                             self.config.node_id
                         );
-                        self.pending_reliable_flows.extend(reliable_flows);
+                        self.pending_lossless_flows.extend(lossless_flows);
                     }
                 }
             }
@@ -452,7 +452,7 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.topology_ready = true;
-                self.reliable_runtime.set_topology_ready(true);
+                self.lossless_runtime.set_topology_ready(true);
 
                 // Emit Python event so Python code can wait for topology ready
                 #[cfg(feature = "python-extension")]
@@ -618,16 +618,16 @@ impl ControllerToDataplaneReceiver {
             self.start_tcp_flows(pending);
         }
 
-        if !self.pending_reliable_flows.is_empty() {
-            let pending = std::mem::take(&mut self.pending_reliable_flows);
+        if !self.pending_lossless_flows.is_empty() {
+            let pending = std::mem::take(&mut self.pending_lossless_flows);
 
             info!(
-                "Topology ready on node {}; starting {} deferred reliable unicast flows.",
+                "Topology ready on node {}; starting {} deferred lossless unicast flows.",
                 self.config.node_id,
                 pending.len()
             );
 
-            self.reliable_unicast.add_flows(pending);
+            self.lossless_unicast.add_flows(pending);
         }
     }
 

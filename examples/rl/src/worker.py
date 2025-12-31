@@ -95,7 +95,7 @@ class Worker:
         return pickle.loads(delivery.payload)
 
     async def _receive_shard(self, group_id: int, group_ip: str, src_node_id: int, expected_bytes: int) -> bytes:
-        """Receive a single shard via reliable multicast.
+        """Receive a single shard via lossless multicast.
 
         Args:
             group_id: Multicast group ID
@@ -116,7 +116,7 @@ class Worker:
             dst_port=config.WORKER_BASE_PORT
         )
         
-        ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        ok = await self.dataplane.lossless_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
         if not ok:
             raise RuntimeError(f"Failed to receive shard from {src_node_id}")
         
@@ -136,7 +136,7 @@ class Worker:
                 break
             
             if msg["type"] == "HANDSHAKE_ACK":
-                # Trainer provides its user-space IP so we can target reliable unicast.
+                # Trainer provides its user-space IP so we can target lossless unicast.
                 self.trainer_user_ip = msg.get("trainer_user_ip")
                 print(f"Worker {self.rank} received HANDSHAKE_ACK. Trainer user IP: {self.trainer_user_ip}", flush=True)
                 continue
@@ -180,9 +180,9 @@ class Worker:
                 self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
                 print(f"Worker {self.rank} sent READY_FOR_MULTICAST.", flush=True)
 
-                # 4. Wait for Reliable Transfer Completion
-                print(f"Waiting for reliable multicast transfer...")
-                ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                # 4. Wait for Lossless Transfer Completion
+                print(f"Waiting for lossless multicast transfer...")
+                ok = await self.dataplane.lossless_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 print(f"Receive completion: {ok}")
                 
                 if ok:
@@ -312,9 +312,9 @@ class Worker:
                     print(f"Worker {self.rank}: expected READY_FOR_ROLLOUT_DATA, got {ready_msg}", flush=True)
                     continue
 
-                # 3) Send data reliably via ReliableRuntime using trainer user-space IP
+                # 3) Send data reliably via LosslessRuntime using trainer user-space IP
                 if not self.trainer_user_ip:
-                    print(f"Worker {self.rank}: trainer_user_ip not set, cannot send reliable rollout.", flush=True)
+                    print(f"Worker {self.rank}: trainer_user_ip not set, cannot send lossless rollout.", flush=True)
                     continue
 
                 view = nm.PacketView(serialized)
@@ -329,9 +329,9 @@ class Worker:
                         src_port=self.local_port,
                         dst_port=self.trainer_port,
                     )
-                    ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                    ok = await self.dataplane.lossless_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 except Exception as e:
-                    print(f"Worker {self.rank}: error sending reliable rollout data: {e}", flush=True)
+                    print(f"Worker {self.rank}: error sending lossless rollout data: {e}", flush=True)
                     continue
 
 

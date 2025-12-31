@@ -1,4 +1,4 @@
-//! The reliable session subsystem, shared by the dataplane sender and receiver tasks.
+//! The lossless session subsystem, shared by the dataplane sender and receiver tasks.
 
 pub mod api;
 pub mod control;

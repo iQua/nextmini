@@ -46,7 +46,7 @@ impl TokenBucket {
     /// consume those tokens.
     ///
     /// This is a generic pacing primitive that can be reused by components
-    /// that don't own a `NetworkInterfaceHandle` (e.g. the reliable sender).
+    /// that don't own a `NetworkInterfaceHandle` (e.g. the lossless sender).
     pub async fn wait_for_bytes(&mut self, bytes: usize) {
         if bytes == 0 {
             return;

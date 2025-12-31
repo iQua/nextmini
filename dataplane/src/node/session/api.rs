@@ -4,10 +4,10 @@ use crate::node::session::runtime::{ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 
-// Re-export the ReliableRuntimeHandle as the public API
-pub use crate::node::session::runtime::ReliableRuntimeHandle;
+// Re-export the LosslessRuntimeHandle as the public API
+pub use crate::node::session::runtime::LosslessRuntimeHandle;
 
-/// Metadata and payload extracted from inbound reliable frames.
+/// Metadata and payload extracted from inbound lossless frames.
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
     /// Raw payload extracted from the transport pipeline.
@@ -16,7 +16,7 @@ pub struct InboundFrame {
     pub peer_id: Option<usize>,
 }
 
-/// Commands processed by the reliable runtime event loop. Most commands are
+/// Commands processed by the lossless runtime event loop. Most commands are
 /// async (reply over oneshot) so the caller can await session IDs or
 /// completion state.
 pub(super) enum Command {
@@ -31,7 +31,7 @@ pub(super) enum Command {
     Stop {
         session: SessionId,
     },
-    /// Deliver an inbound reliable frame (bytes) to a receiver session.
+    /// Deliver an inbound lossless frame (bytes) to a receiver session.
     Deliver {
         session: SessionId,
         frame: InboundFrame,

@@ -6,7 +6,7 @@ use bytes::{Bytes, BytesMut};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, trace, warn};
 
-use nextmini_messages::reliable_session::{self, ReliableSessionControl};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -42,7 +42,7 @@ pub async fn run(
         total_bytes,
         total_chunks,
         receivers = cfg.receiver_ids.len(),
-        "Reliable sender started"
+        "Lossless sender started"
     );
 
     let chunk_bytes = cfg.common.chunk_size;
@@ -60,7 +60,7 @@ pub async fn run(
                 session_id = sid,
                 elapsed_secs = transfer_start.elapsed().as_secs(),
                 inflight = state.inflight_len(),
-                "Reliable sender: transfer timeout exceeded; forcing completion"
+                "Lossless sender: transfer timeout exceeded; forcing completion"
             );
             break;
         }
@@ -98,7 +98,7 @@ pub async fn run(
                 chunk_source_finished = chunk_source.finished(),
                 inflight_len = state.inflight_len(),
                 window = state.window_limit(),
-                "Reliable sender: attempting to send next chunk."
+                "Lossless sender: attempting to send next chunk."
             );
             match chunk_source.next_chunk() {
                 Some(chunk) => {
@@ -106,7 +106,7 @@ pub async fn run(
                         session_id = sid,
                         chunk_index = chunk.index,
                         chunk_size = chunk.data.len(),
-                        "Reliable sender: sending data chunk."
+                        "Lossless sender: sending data chunk."
                     );
                     data_pacer.wait_for(state.common.chunk_size).await;
                     // sends the data chunk to the processors
@@ -129,7 +129,7 @@ pub async fn run(
                 session_id = sid,
                 bytes_sent = state.bytes_sent,
                 chunks_sent = state.primary_chunks,
-                "Reliable sender finished with reliable delivery guarantees"
+                "Lossless sender finished with lossless delivery guarantees"
             );
             break;
         }
@@ -249,7 +249,7 @@ impl SenderState {
 
     /// Emit a MANIFEST describing the file transfer so receivers can prime their state.
     fn send_manifest(&mut self, processors: &ProcessorHandle) {
-        let manifest = ReliableSessionControl::Manifest {
+        let manifest = LosslessSessionControl::Manifest {
             chunk_size: self.common.chunk_size as u32,
             total_bytes: self.total_bytes,
         };
@@ -267,7 +267,7 @@ impl SenderState {
             total_bytes = self.total_bytes,
             chunk_size = self.common.chunk_size,
             receivers = self.receiver_count,
-            "Reliable sender: MANIFEST sent"
+            "Lossless sender: MANIFEST sent"
         );
     }
 
@@ -334,7 +334,7 @@ impl SenderState {
                 elapsed_s = format!("{:.3}", elapsed),
                 total_sent = self.bytes_sent,
                 total_elapsed_s = format!("{:.3}", total_elapsed),
-                "Reliable sender: throughput"
+                "Lossless sender: throughput"
             );
 
             self.bytes_since_last_report = 0;
@@ -344,7 +344,7 @@ impl SenderState {
 
     /// Encode and hand off a chunk to the processor, updating accounting.
     fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
-        let frame = Bytes::from(reliable_session::encode_data(
+        let frame = Bytes::from(lossless_session::encode_data(
             self.session_id,
             chunk.index,
             &chunk.data,
@@ -362,7 +362,7 @@ impl SenderState {
             chunk_data_len = chunk.data.len(),
             src_ip = %self.src_ip,
             dst_ip = %self.dst_ip,
-            "Reliable sender: encoded DATA chunk, sending frame to processor"
+            "Lossless sender: encoded DATA chunk, sending frame to processor"
         );
         self.send_frame(&frame, processors);
     }
@@ -392,12 +392,12 @@ impl SenderState {
                 trace!(
                     session_id = self.session_id,
                     inflight_count = self.outstanding_chunks(),
-                    "Reliable sender: cannot send EOT - chunks still inflight"
+                    "Lossless sender: cannot send EOT - chunks still inflight"
                 );
             }
             return false;
         }
-        let eot = ReliableSessionControl::Eot {
+        let eot = LosslessSessionControl::Eot {
             last_index: self.total_chunks,
         };
         self.send_control(&eot, processors);
@@ -406,7 +406,7 @@ impl SenderState {
         info!(
             session_id = self.session_id,
             last_index = self.total_chunks,
-            "Reliable sender: EOT sent"
+            "Lossless sender: EOT sent"
         );
         true
     }
@@ -419,39 +419,39 @@ impl SenderState {
     /// Handles READY/ACK/EOT control frames coming from receivers.
     fn handle_control(&mut self, frame: InboundFrame) {
         let InboundFrame { bytes, peer_id, .. } = frame;
-        let Some((_, control)) = reliable_session::decode_control(&bytes) else {
+        let Some((_, control)) = lossless_session::decode_control(&bytes) else {
             warn!(
                 session_id = self.session_id,
-                "Reliable sender: failed to decode control frame."
+                "Lossless sender: failed to decode control frame."
             );
             return;
         };
         match &control {
-            ReliableSessionControl::Ready { node_id } => {
+            LosslessSessionControl::Ready { node_id } => {
                 self.ready_nodes.insert(*node_id as usize);
                 info!(
                     session_id = self.session_id,
                     node_id = *node_id,
-                    "Reliable sender: receiver node {} ready.",
+                    "Lossless sender: receiver node {} ready.",
                     *node_id
                 );
             }
-            ReliableSessionControl::Manifest { .. } | ReliableSessionControl::Eot { .. } => {
+            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot { .. } => {
                 // ignores if the sender-originated control frames somehow looped back
             }
-            ReliableSessionControl::Ack { .. } => {
+            LosslessSessionControl::Ack { .. } => {
                 let Some(from_node) = peer_id else {
                     warn!(
                         session_id = self.session_id,
                         ?control,
-                        "Reliable sender: dropping control without peer id"
+                        "Lossless sender: dropping control without peer id"
                     );
                     return;
                 };
                 if !self.receiver_progress.contains_key(&from_node) {
                     warn!(
                         session_id = self.session_id,
-                        from_node, "Reliable sender: ignoring ACK from unexpected node"
+                        from_node, "Lossless sender: ignoring ACK from unexpected node"
                     );
                     return;
                 }
@@ -468,13 +468,13 @@ impl SenderState {
                         up_to = new_value,
                         retired_up_to = self.retired_up_to,
                         inflight_count = self.outstanding_chunks(),
-                        "Reliable sender: cumulative ACK processed"
+                        "Lossless sender: cumulative ACK processed"
                     );
                 } else {
                     trace!(
                         session_id = self.session_id,
                         from_node = from_node,
-                        "Reliable sender: ACK made no progress"
+                        "Lossless sender: ACK made no progress"
                     );
                 }
             }
@@ -495,10 +495,10 @@ impl SenderState {
     }
 
     /// Convenience helper for building and sending control packets.
-    fn send_control(&self, control: &ReliableSessionControl, processors: &ProcessorHandle) {
+    fn send_control(&self, control: &LosslessSessionControl, processors: &ProcessorHandle) {
         // Use stack-allocated buffer to avoid heap allocation for small control frames
-        let mut buf = [0u8; reliable_session::MAX_CONTROL_FRAME_SIZE];
-        let frame = reliable_session::encode_control_into(&mut buf, self.session_id, control);
+        let mut buf = [0u8; lossless_session::MAX_CONTROL_FRAME_SIZE];
+        let frame = lossless_session::encode_control_into(&mut buf, self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -527,7 +527,7 @@ impl SenderState {
 
             info!(
                 session_id = self.session_id,
-                "Reliable sender: topology-ready signal received."
+                "Lossless sender: topology-ready signal received."
             );
         }
     }
@@ -544,7 +544,7 @@ impl SenderState {
 
             info!(
                 session_id = self.session_id,
-                "Reliable sender: all receivers are ready."
+                "Lossless sender: all receivers are ready."
             );
 
             return;
@@ -559,7 +559,7 @@ impl SenderState {
                 session_id = self.session_id,
                 ready = self.ready_nodes.len(),
                 total = self.receiver_count,
-                "Reliable sender: proceeding without all receivers ready"
+                "Lossless sender: proceeding without all receivers ready"
             );
         }
     }
@@ -584,7 +584,7 @@ fn compute_window(cfg: &SenderConfig) -> usize {
     window
 }
 
-/// Materialized chunk that is ready to be encoded into a reliable session frame.
+/// Materialized chunk that is ready to be encoded into a lossless session frame.
 struct ChunkPayload {
     index: u64,
     data: Bytes,
@@ -745,8 +745,8 @@ mod tests {
         let idx = 7;
         let plen = 4096usize;
         let payload = vec![0xAAu8; plen];
-        let buf = reliable_session::encode_data(sid, idx, &payload);
-        let (hdr, data, body) = reliable_session::decode_data(&buf).expect("decode data");
+        let buf = lossless_session::encode_data(sid, idx, &payload);
+        let (hdr, data, body) = lossless_session::decode_data(&buf).expect("decode data");
 
         assert_eq!(hdr.session_id, sid);
         assert_eq!(data.index, idx);

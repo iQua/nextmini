@@ -26,7 +26,7 @@ to deliver multicast packets locally.
   the container (via `maturin develop`) and launches the Python driver.
 - `docker-compose.yml` – wires the services together on a dedicated bridge network.
 - `artifacts/group-info.json` – shared metadata surface with the controller-assigned
-  group id/IP so receivers can learn the multicast address out-of-band. Reliable session
+  group id/IP so receivers can learn the multicast address out-of-band. Lossless session
   IDs are now adopted automatically once manifests arrive, so no additional coordination
   is required.
 
@@ -57,7 +57,7 @@ docker compose up
 By default `SKIP_BUILD=0`, so each container builds the `nextmini_py` extension in-place using `maturin develop -F python-extension`. This works across machines (including macOS hosts) without prebuilding wheels.
 The first run will take a few minutes as the wheel is compiled.
 
-Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor, installs a simple multicast DAG via `set_group_routes`, waits for both receivers to register their receive sessions (signaled through `artifacts/receiver-ready-<node_id>.json`), multicasts the data chunk-by-chunk, and shuts down once the reconstructed outputs land in `artifacts/`. Reliable session IDs are negotiated inside the dataplane, and the receivers register via `receive_data` before blocking on `reliable_wait`, then drain the payload via `get_data_buffer`.
+Every run now streams a tensor end-to-end: the source synthesizes (or loads) a tensor, installs a simple multicast DAG via `set_group_routes`, waits for both receivers to register their receive sessions (signaled through `artifacts/receiver-ready-<node_id>.json`), multicasts the data chunk-by-chunk, and shuts down once the reconstructed outputs land in `artifacts/`. Lossless session IDs are negotiated inside the dataplane, and the receivers register via `receive_data` before blocking on `lossless_wait`, then drain the payload via `get_data_buffer`.
 
 Key environment overrides (set via `docker compose run -e ...` or exported before
 `docker compose up`):
@@ -71,7 +71,7 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
   `/workspace/tensors/tensor-auto-1g.pt` before every run.
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
-- `CHUNK_SIZE` – payload slice size (defaults to 8500 bytes; reliable senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
+- `CHUNK_SIZE` – payload slice size (defaults to 8500 bytes; lossless senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
 - `ARTIFACT_DIR` – shared volume for tensors and metadata.

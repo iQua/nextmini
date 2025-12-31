@@ -1,19 +1,31 @@
-## QUIC Transport Basics
+# Transport Configuration
 
-The dataplane currently exposes a single QUIC transport mode that sends all TUN traffic over one reliable stream.
+This page covers transport protocol settings. For a complete list of all configuration options, see the [Configuration Reference](config-reference.md).
+
+## Transport Protocol Configuration
+
+The dataplane supports multiple transport protocols for inter-node communication. The default protocol is **TCP**.
 
 ### Runtime Configuration
 
 All tuning happens through the standard dataplane configuration (`config.toml` or CLI flags):
 
-```
-protocol = "quic"
+```toml
+# Transport protocol: tcp (default) | quic
+protocol = "tcp"
 
-# QUIC congestion control algorithm (bbr | cubic)
+# When using QUIC, configure congestion control (bbr | cubic)
+# quic_congestion_control = "bbr"
+```
+
+To use QUIC instead of TCP:
+
+```toml
+protocol = "quic"
 quic_congestion_control = "bbr"
 ```
 
-Use `--quic-congestion-control cubic` on the CLI to switch away from the default BBR controller.
+Use `--protocol quic --quic-congestion-control cubic` on the CLI to switch to QUIC with CUBIC congestion control.
 
 ### Operational Notes
 
@@ -23,4 +35,4 @@ Use `--quic-congestion-control cubic` on the CLI to switch away from the default
 
 ## Python API payloads
 
-The Python bindings always send a single TCP frame per `send_to_node` call. There are no `python_fragmentation_*` fields anymore; the OS networking stack handles any link-layer segmentation automatically, and the dataplane clamps reliable chunk sizes to respect the configured MTU. That keeps configuration simple—set `mtu` once, and both the Rust dataplane and the Python bindings inherit the same envelope.
+The Python bindings always send a single TCP frame per `send_to_node` call. There are no `python_fragmentation_*` fields anymore; the OS networking stack handles any link-layer segmentation automatically, and the dataplane clamps lossless chunk sizes to respect the configured MTU. That keeps configuration simple—set `mtu` once, and both the Rust dataplane and the Python bindings inherit the same envelope.

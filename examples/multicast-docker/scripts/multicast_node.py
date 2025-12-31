@@ -32,7 +32,7 @@ def atomic_write_json(path: Path, payload: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Reliable session demo")
+    parser = argparse.ArgumentParser(description="Lossless session demo")
     parser.add_argument("--role", choices=("source", "receiver"), required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--group-label", required=True)
@@ -308,9 +308,9 @@ def run_source(args: argparse.Namespace) -> None:
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
-    log(f"Started reliable send session (session ID = {sid}).", args.quiet)
+    log(f"Started lossless send session (session ID = {sid}).", args.quiet)
 
-    ok = dataplane.reliable_wait(sid, timeout_ms=args.group_timeout * 1000)
+    ok = dataplane.lossless_wait(sid, timeout_ms=args.group_timeout * 1000)
     send_end_time = time.perf_counter()
     elapsed = send_end_time - send_start_time
 
@@ -329,7 +329,7 @@ def run_receiver(args: argparse.Namespace) -> None:
     if args.expected_bytes is None and args.payload_count:
         args.expected_bytes = args.payload_count * args.chunk_size
     if args.expected_bytes is None or args.expected_bytes <= 0:
-        raise SystemExit("expected-bytes must be known for reliable reception.")
+        raise SystemExit("expected-bytes must be known for lossless reception.")
 
     group_id, group_ip = wait_for_group_info(args, args.group_timeout)
     dataplane = nm.Dataplane(str(args.config))
@@ -358,11 +358,11 @@ def run_receiver(args: argparse.Namespace) -> None:
     write_receiver_ready(args, local_node_id)
     log(f"Receiver ready file written for node {local_node_id}.", args.quiet)
 
-    log(f"Started reliable receive session (session ID = {sid}).", args.quiet)
+    log(f"Started lossless receive session (session ID = {sid}).", args.quiet)
 
     payload_bytes: bytes | None = None
 
-    ok = dataplane.reliable_wait(sid, timeout_ms=args.receive_timeout_ms)
+    ok = dataplane.lossless_wait(sid, timeout_ms=args.receive_timeout_ms)
     recv_end_time = time.perf_counter()
     elapsed = recv_end_time - recv_start_time
 
