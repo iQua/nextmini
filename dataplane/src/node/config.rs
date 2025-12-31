@@ -66,6 +66,11 @@ pub struct LocalConfig {
     #[arg(long)]
     pub controller_addr: String,
 
+    /// Timeout (ms) for establishing the initial WebSocket connection to the controller.
+    #[default(5000)]
+    #[arg(skip)]
+    pub controller_connect_timeout_ms: u64,
+
     /// The path of the configuration file.
     /// This is used to remember which config file produced this configuration so namespace children can reuse it.
     #[default("".to_string())]

@@ -2,7 +2,6 @@ use std::net::Ipv4Addr;
 use std::num::NonZeroUsize;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr::NonNull;
-use std::thread;
 use std::time;
 
 use nix::fcntl::{FcntlArg, OFlag, fcntl};
@@ -26,6 +25,36 @@ use crate::node::namespace::network::{
 };
 
 const STACK_SIZE: usize = 1024 * 1024;
+
+// Linux bridge ports are capped (often 1024). Shard namespace nodes across multiple bridges to allow
+// large experiments (e.g., 10,000 nodes).
+const BRIDGE_SHARD_SUBNET: u8 = 22; // 1024 addresses per bridge subnet
+const BRIDGE_NODE_OFFSET: u32 = 2; // reserve: network (.0), gateway (.1)
+
+fn bridge_name_for_shard(base: &str, shard: usize) -> String {
+    if shard == 0 {
+        return base.to_string();
+    }
+
+    let prefix = base.trim_end_matches(|c: char| c.is_ascii_digit());
+    if prefix.is_empty() || prefix == base {
+        format!("{base}{shard}")
+    } else {
+        format!("{prefix}{shard}")
+    }
+}
+
+fn is_bridge_full_error(err: &crate::node::namespace::network::NetworkError) -> bool {
+    match err {
+        crate::node::namespace::network::NetworkError::OperationError(msg) => {
+            msg.contains("Exchange full") || msg.contains("os error 54")
+        }
+        crate::node::namespace::network::NetworkError::ConnectionError(e) => {
+            e.to_string().contains("Exchange full") || e.to_string().contains("os error 54")
+        }
+        _ => false,
+    }
+}
 
 struct MmapStack {
     ptr: NonNull<std::ffi::c_void>,
@@ -153,42 +182,150 @@ impl NamespaceManager {
             }
         }
 
-        // computes the namespace IP addresses
-        let ns_ips = self.compute_namespace_ips();
+        let Ok(base_gateway_ip) = self.config.bridge_ip.parse::<Ipv4Addr>() else {
+            error!(
+                "Invalid bridge_ip '{}' for namespace configuration.",
+                self.config.bridge_ip
+            );
+            return;
+        };
 
-        let mut child_pids = Vec::with_capacity(ns_ips.len());
-        let mut bridge_idx: Option<u32> = None;
+        let subnet_mask = if BRIDGE_SHARD_SUBNET == 0 {
+            0
+        } else {
+            (!0u32) << (32 - BRIDGE_SHARD_SUBNET)
+        };
+        let gateway_u32 = u32::from(base_gateway_ip);
+        let shard_network_base = gateway_u32 & subnet_mask;
+        let shard_size: u32 = if BRIDGE_SHARD_SUBNET == 32 {
+            1
+        } else {
+            1u32 << (32 - BRIDGE_SHARD_SUBNET)
+        };
+        let gateway_offset = gateway_u32.saturating_sub(shard_network_base);
+
+        if gateway_offset == 0 || gateway_offset >= shard_size.saturating_sub(1) {
+            error!(
+                "bridge_ip '{}' is invalid for /{} sharded namespace mode.",
+                self.config.bridge_ip, BRIDGE_SHARD_SUBNET
+            );
+            return;
+        }
+
+        // Allow for the worst case where we skip over the gateway offset when assigning node IPs.
+        let max_nodes_per_shard = shard_size
+            .saturating_sub(BRIDGE_NODE_OFFSET)
+            .saturating_sub(2) as usize;
+        if max_nodes_per_shard == 0 {
+            error!(
+                "bridge subnet /{} is too small for namespace nodes.",
+                BRIDGE_SHARD_SUBNET
+            );
+            return;
+        }
+
+        let mut child_pids = Vec::with_capacity(self.config.n_nodes);
+        let mut bridge_indices: Vec<u32> = Vec::new();
+
+        let mut shard: usize = 0;
+        let mut shard_node_idx: usize = 0;
+        let mut spawn_failed = false;
 
         // spawns each namespace
-        for (idx, ns_ip) in ns_ips.iter().enumerate() {
+        'spawn: for idx in 0..self.config.n_nodes {
             let veth_name = format!("veth{}a", idx);
-            let veth_idx;
-            let veth2_idx;
 
-            // prepares bridge + a fresh veth pair (bridge creation is idempotent)
-            match rt.block_on(prepare_net(
-                self.config.bridge_name.clone(),
-                &self.config.bridge_ip,
-                self.config.subnet,
-                idx,
-            )) {
-                Ok((bridge_idx_val, veth_index, veth2_index)) => {
-                    bridge_idx = Some(bridge_idx_val);
-                    veth_idx = veth_index;
-                    veth2_idx = veth2_index;
+            // prepares bridge shard + a fresh veth pair (bridge creation is idempotent)
+            let mut attempts: u32 = 0;
+            let mut prepared: Option<(String, String, u32, u32, u32)> = None;
+            loop {
+                if shard_node_idx >= max_nodes_per_shard {
+                    shard += 1;
+                    shard_node_idx = 0;
                 }
-                Err(e) => {
-                    error!("Failed to prepare network: {}. Retrying...", e);
-                    continue;
+
+                let shard_base = shard_network_base as u64 + (shard as u64) * (shard_size as u64);
+                if shard_base.saturating_add(shard_size as u64) > u32::MAX as u64 {
+                    error!("Out of address space: increase bridge_ip range or reduce n_nodes.");
+                    spawn_failed = true;
+                    break 'spawn;
+                }
+
+                let bridge_name = bridge_name_for_shard(&self.config.bridge_name, shard);
+                let bridge_ip = Ipv4Addr::from((shard_base + gateway_offset as u64) as u32);
+
+                let mut host_offset = BRIDGE_NODE_OFFSET + shard_node_idx as u32;
+                if gateway_offset >= BRIDGE_NODE_OFFSET && host_offset >= gateway_offset {
+                    host_offset = host_offset.saturating_add(1);
+                }
+                let ns_ip = Ipv4Addr::from((shard_base + host_offset as u64) as u32);
+
+                match rt.block_on(prepare_net(
+                    bridge_name.clone(),
+                    &bridge_ip.to_string(),
+                    BRIDGE_SHARD_SUBNET,
+                    idx,
+                )) {
+                    Ok((bridge_idx_val, veth_index, veth2_index)) => {
+                        prepared = Some((
+                            bridge_ip.to_string(),
+                            ns_ip.to_string(),
+                            bridge_idx_val,
+                            veth_index,
+                            veth2_index,
+                        ));
+                        break;
+                    }
+                    Err(e) => {
+                        attempts += 1;
+                        error!(
+                            "Failed to prepare network for node {} (attempt {}): {}.",
+                            idx, attempts, e
+                        );
+
+                        if let Err(e) = rt.block_on(async { delete_link_by_name(&veth_name).await })
+                        {
+                            error!("Failed to delete veth '{}': {}.", veth_name, e);
+                        }
+
+                        if is_bridge_full_error(&e) {
+                            shard += 1;
+                            shard_node_idx = 0;
+                            attempts = 0;
+                            continue;
+                        }
+
+                        if attempts >= 10 {
+                            error!(
+                                "Giving up preparing network for node {} after {} attempts.",
+                                idx, attempts
+                            );
+                            spawn_failed = true;
+                            break 'spawn;
+                        }
+
+                        rt.block_on(tokio::time::sleep(time::Duration::from_millis(
+                            20 * attempts as u64,
+                        )));
+                    }
                 }
             }
 
+            let Some((bridge_ip, ns_ip, bridge_idx_val, veth_idx, veth2_idx)) = prepared else {
+                spawn_failed = true;
+                break 'spawn;
+            };
+
+            if !bridge_indices.contains(&bridge_idx_val) {
+                bridge_indices.push(bridge_idx_val);
+            }
+
             // prepares child process
-            let bridge_ip = self.config.bridge_ip.clone();
             let node_id_offset = self.config.node_id_offset;
             let mut child_config = self.config.clone();
             child_config.n_nodes = 1;
             child_config.node_id = idx + node_id_offset + 1;
+            child_config.subnet = BRIDGE_SHARD_SUBNET;
             let mut child_config = Some(child_config);
 
             // create a pipe for handshake (child signals network ready)
@@ -249,9 +386,9 @@ impl NamespaceManager {
 
             // gives the child process time to start and configure its peer interface
             // adds an initial, configurable small sleep to let child process start
-            thread::sleep(time::Duration::from_millis(
+            rt.block_on(tokio::time::sleep(time::Duration::from_millis(
                 self.config.child_start_delay_ms,
-            ));
+            )));
 
             // waits for child handshake that peer interface is configured before bringing up master
             let handshake_deadline = time::Instant::now()
@@ -272,7 +409,7 @@ impl NamespaceManager {
                     }
                     Ok(2..) => break,
                     Err(nix::errno::Errno::EAGAIN) => {
-                        thread::sleep(time::Duration::from_millis(10));
+                        rt.block_on(tokio::time::sleep(time::Duration::from_millis(10)));
                         continue;
                     }
                     Err(_) => {
@@ -334,33 +471,24 @@ impl NamespaceManager {
             }
 
             // sleeps between node creation to prevent overwhelming the system
-            thread::sleep(time::Duration::from_millis(
+            rt.block_on(tokio::time::sleep(time::Duration::from_millis(
                 self.config.interval_between_spawn,
-            ));
+            )));
+
+            shard_node_idx += 1;
+        }
+
+        if spawn_failed {
+            rt.block_on(self.cleanup(bridge_indices, child_pids));
+            return;
         }
 
         // waits for shutdown signal
-        rt.block_on(self.wait_for_shutdown(bridge_idx, child_pids));
-    }
-
-    // Computes the namespace IP addresses.
-    fn compute_namespace_ips(&self) -> Vec<String> {
-        let base: u32 = self
-            .config
-            .bridge_ip
-            .parse::<Ipv4Addr>()
-            .expect("Invalid bridge IP")
-            .into();
-
-        // IP addresses: bridge_ip + 3 to bridge_ip + n_nodes + 2.
-        // offsets: 1 for controller, 1 for database, the rest for nodes.
-        (3..=self.config.n_nodes + 2)
-            .map(|offset| Ipv4Addr::from(base + offset as u32).to_string())
-            .collect()
+        rt.block_on(self.wait_for_shutdown(bridge_indices, child_pids));
     }
 
     // Waits for the Ctrl + C shutdown signal.
-    async fn wait_for_shutdown(&self, bridge_idx: Option<u32>, child_pids: Vec<Pid>) {
+    async fn wait_for_shutdown(&self, bridge_indices: Vec<u32>, child_pids: Vec<Pid>) {
         match tokio::signal::ctrl_c().await {
             Ok(_) => {
                 info!("Received Ctrl + C. Shutting down Nextmini gracefully...");
@@ -370,6 +498,10 @@ impl NamespaceManager {
             }
         }
 
+        self.cleanup(bridge_indices, child_pids).await;
+    }
+
+    async fn cleanup(&self, bridge_indices: Vec<u32>, child_pids: Vec<Pid>) {
         // terminates child processes (best effort)
         if !child_pids.is_empty() {
             info!(
@@ -421,11 +553,11 @@ impl NamespaceManager {
             }
         }
 
-        // cleans up the bridge
-        if let Some(bridge_idx) = bridge_idx
-            && let Err(e) = delete_namespace(bridge_idx).await
-        {
-            error!("Failed to delete namespace: {}", e);
+        // cleans up bridges
+        for bridge_idx in bridge_indices {
+            if let Err(e) = delete_namespace(bridge_idx).await {
+                error!("Failed to delete namespace bridge {}: {}", bridge_idx, e);
+            }
         }
     }
 }

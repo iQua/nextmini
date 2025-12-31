@@ -166,11 +166,12 @@ impl ControllerInterfaceHandle {
     ) {
         let url = url::Url::parse(&config.controller_addr).unwrap();
         let mut ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>;
+        let connect_timeout = Duration::from_millis(config.controller_connect_timeout_ms.max(1));
 
         loop {
             let connect_fut = connect_async(url.as_str());
 
-            match timeout(Duration::from_secs(5), connect_fut).await {
+            match timeout(connect_timeout, connect_fut).await {
                 Ok(Ok((ws, _))) => {
                     ws_stream = ws;
                     info!("WebSocket handshake has been successfully completed.");
@@ -183,7 +184,8 @@ impl ControllerInterfaceHandle {
                 Err(_) => {
                     // Timed out
                     warn!(
-                        "Timed out attempting to connect to the controller after 5s. Retrying..."
+                        "Timed out attempting to connect to the controller after {:?}. Retrying...",
+                        connect_timeout
                     );
                 }
             }
