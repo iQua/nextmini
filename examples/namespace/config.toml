@@ -1,5 +1,6 @@
 private_network_interface = "eth0"
 private_network_name = "net1"
+n_nodes = 400
 num_tun_queues = 1
 num_packet_processors = 1
 channel_capacity = 4000
