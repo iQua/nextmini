@@ -112,16 +112,20 @@ def compute_cf_weights(
 ) -> dict[Edge, float]:
     """Compute CF-Tree edge weights.
 
-    omega_cf(e) = 1/C(e) + eta * (-log(p(e) + delta))
+    omega_cf(e) = 1/C(e) + eta * (-log(max{p(e), delta}))
+
+    The max{} formulation ensures the penalty term is always nonnegative:
+    - When p(e) = 1 (high importance): -log(1) = 0 (no penalty)
+    - When p(e) = 0 (low importance): -log(delta) >> 0 (high penalty)
 
     Args:
         graph: Network topology with capacities
-        importance: Edge importance scores p(e)
+        importance: Edge importance scores p(e) in [0, 1]
         eta: Weight for LP guidance term (0 = pure capacity-based)
-        delta: Small value to prevent log(0)
+        delta: Floor for importance to prevent log(0), must be in (0, 1)
 
     Returns:
-        Dict mapping edges to CF-Tree weights
+        Dict mapping edges to CF-Tree weights (all nonnegative)
     """
     weights: dict[Edge, float] = {}
 
@@ -130,8 +134,9 @@ def compute_cf_weights(
         w_basic = 1.0 / capacity if capacity > 0 else float("inf")
 
         # LP guidance: prefer edges with high importance
+        # Use max{p, delta} to ensure penalty is nonnegative
         p = importance.get(edge, 0.0)
-        w_lp = -math.log(p + delta)
+        w_lp = -math.log(max(p, delta))
 
         weights[edge] = w_basic + eta * w_lp
 
