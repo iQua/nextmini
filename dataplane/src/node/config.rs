@@ -375,12 +375,16 @@ impl LocalConfig {
         let external_base = u32::from(self.external_base_addr);
 
         match ip_addr & netmask {
-            subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
-            subnet if subnet == (user_space_base & netmask) => {
+            subnet if subnet == (tun_base & netmask) && ip_addr >= tun_base => {
+                (ip_addr - tun_base) as NodeId
+            }
+            subnet if subnet == (user_space_base & netmask) && ip_addr >= user_space_base => {
                 (ip_addr - user_space_base) as NodeId
             }
             // binds the external client/server address to the node ID
-            subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
+            subnet if subnet == (external_base & netmask) && ip_addr >= external_base => {
+                (ip_addr - external_base) as NodeId
+            }
             _ => INVALID,
         }
     }
@@ -508,30 +512,44 @@ impl LocalConfig {
             // obtains the ipv4 address of the dataplane node
             self.private_network_addr = ipv4addr;
 
-            // computes the node_id from private_network_addr using external_base_addr
-            if let Ok(real_ip) = self.private_network_addr.parse::<Ipv4Addr>() {
-                let ip = u32::from(real_ip);
-                // external_base_addr is used to compute the node_id
-                // as it has the same prefix with the private_network_addr
-                let base = u32::from(self.external_base_addr);
-                let computed_node_id = (ip - base) as NodeId;
-                if computed_node_id != 0 && self.node_id == 0 {
-                    self.node_id = computed_node_id;
-                    info!(
-                        "From real IP {} using external_base_addr, node_id is: {}.",
-                        self.private_network_addr, self.node_id
-                    );
-                } else if self.node_id != 0 {
-                    info!(
-                        "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
-                        self.node_id, computed_node_id, self.private_network_addr
+            if self.node_id == 0 && self.n_nodes == 1 {
+                // Computes node_id from private_network_addr using external_base_addr for external
+                // client/server deployments. Only do this when the real IP shares the same prefix
+                // as external_base_addr; otherwise the subtraction underflows and produces a huge ID.
+                if let Ok(real_ip) = self.private_network_addr.parse::<Ipv4Addr>() {
+                    let ip = u32::from(real_ip);
+                    let base = u32::from(self.external_base_addr);
+                    let netmask = u32::from(self.local_netmask);
+
+                    let same_subnet = (ip & netmask) == (base & netmask);
+                    if same_subnet && ip >= base {
+                        let computed_node_id = (ip - base) as NodeId;
+                        if computed_node_id != 0 {
+                            self.node_id = computed_node_id;
+                            info!(
+                                "From real IP {} using external_base_addr, node_id is: {}.",
+                                self.private_network_addr, self.node_id
+                            );
+                        }
+                    } else if !same_subnet {
+                        warn!(
+                            "Real IP {} does not match external_base_addr {} under netmask {}; \
+                            leaving node_id unset. Set node_id explicitly if needed.",
+                            real_ip, self.external_base_addr, self.local_netmask
+                        );
+                    } else {
+                        warn!(
+                            "Real IP {} is lower than external_base_addr {} under netmask {}; \
+                            leaving node_id unset. Set node_id explicitly if needed.",
+                            real_ip, self.external_base_addr, self.local_netmask
+                        );
+                    }
+                } else if !self.private_network_addr.is_empty() {
+                    error!(
+                        "Failed to parse private_network_addr as Ipv4Addr: {}.",
+                        self.private_network_addr
                     );
                 }
-            } else if !self.private_network_addr.is_empty() {
-                error!(
-                    "Failed to parse private_network_addr as Ipv4Addr: {}.",
-                    self.private_network_addr
-                );
             }
         }
 
@@ -714,6 +732,7 @@ fn default_netmask() -> Ipv4Addr {
 #[cfg(test)]
 mod tests {
     use super::LocalConfig;
+    use std::net::Ipv4Addr;
     use std::time::Duration;
 
     #[test]
@@ -774,5 +793,12 @@ mod tests {
 
         cfg.normalize_controller_addr();
         assert_eq!(cfg.controller_addr, "wss://controller.example:3000");
+    }
+
+    #[test]
+    fn ip_to_node_id_returns_invalid_when_ip_below_external_base() {
+        let cfg = LocalConfig::default();
+        let ip = Ipv4Addr::new(172, 16, 8, 2); // below default external_base_addr (172.16.8.3)
+        assert_eq!(cfg.ip_to_node_id(ip), nextmini_messages::INVALID);
     }
 }
