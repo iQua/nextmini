@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::process::Command;
 use std::process::Stdio;
 use std::{fmt, net::Ipv4Addr, str::FromStr, sync::Arc, time::Instant};
@@ -389,17 +389,36 @@ pub async fn setup_veth_peer(veth_idx: u32, ns_ip: &str, subnet: u8) -> Result<(
     // sets veth peer address
     let veth_2_addr = std::net::IpAddr::V4(Ipv4Addr::from_str(ns_ip)?);
 
-    // keeps retrying until successful
-    loop {
+    // retry for a bounded amount of time; a permanent failure should not spin forever
+    const ADDR_ADD_MAX_RETRIES: u32 = 100;
+    const ADDR_ADD_RETRY_DELAY_MS: u64 = 200;
+
+    for attempt in 1..=ADDR_ADD_MAX_RETRIES {
         match AddressHandle::new(handle.clone())
             .add(veth_idx, veth_2_addr, subnet)
             .execute()
             .await
         {
             Ok(_) => break,
+            Err(rtnetlink::Error::NetlinkError(msg))
+                if msg.to_io().kind() == ErrorKind::AlreadyExists =>
+            {
+                // The address is already configured; treat as success.
+                break;
+            }
             Err(e) => {
-                error!("Retrying in 200 ms...{}.", e);
-                sleep(Duration::from_millis(200)).await;
+                if attempt == ADDR_ADD_MAX_RETRIES {
+                    return Err(NetworkError::OperationError(format!(
+                        "Failed to add address {} on ifindex {} after {} attempts: {}.",
+                        ns_ip, veth_idx, ADDR_ADD_MAX_RETRIES, e
+                    )));
+                }
+
+                error!(
+                    "Failed to add address {} on ifindex {} (attempt {} of {}): {}. Retrying in {} ms...",
+                    ns_ip, veth_idx, attempt, ADDR_ADD_MAX_RETRIES, e, ADDR_ADD_RETRY_DELAY_MS
+                );
+                sleep(Duration::from_millis(ADDR_ADD_RETRY_DELAY_MS)).await;
             }
         }
     }
@@ -645,6 +664,35 @@ pub async fn delete_namespace(bridge_idx: u32) -> Result<(), NetworkError> {
             bridge_idx, e
         ))
     })?;
+
+    Ok(())
+}
+
+pub async fn delete_link_by_name(link_name: &str) -> Result<(), NetworkError> {
+    let handle = get_global_handle().await?;
+
+    let Some(link) = handle
+        .link()
+        .get()
+        .match_name(link_name.to_string())
+        .execute()
+        .try_next()
+        .await?
+    else {
+        return Ok(());
+    };
+
+    handle
+        .link()
+        .del(link.header.index)
+        .execute()
+        .await
+        .map_err(|e| {
+            NetworkError::OperationError(format!(
+                "Delete link '{}' with idx {} failed: {}.",
+                link_name, link.header.index, e
+            ))
+        })?;
 
     Ok(())
 }

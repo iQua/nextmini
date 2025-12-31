@@ -10,6 +10,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
+use nextmini_messages::OperatingMode;
 use nextmini_messages::{ControllerToDataplane, FlowTransport, TokenBucketSpec};
 
 use crate::NodeWriterMap;
@@ -43,10 +44,26 @@ pub async fn new_node_connected(
     let mut topology_ready_sent = false;
     let mut start_time = None;
     let expected_node_count = config.topology.compute_node_count();
+    let needs_node_addresses = config
+        .nodes
+        .iter()
+        .any(|spec| spec.operating_mode == OperatingMode::Max);
     let mut connected_nodes = HashSet::new();
     let mut locally_ready_nodes = HashSet::new();
 
-    while let Ok(event) = event_receiver.recv().await {
+    loop {
+        let event = match event_receiver.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                warn!(
+                    "New node coordinator lagged; skipped {} events. Continuing.",
+                    skipped
+                );
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
+
         match event {
             TopologyEvent::NodeConnected(event) => {
                 if !connected_nodes.insert(event.node_id) {
@@ -70,8 +87,15 @@ pub async fn new_node_connected(
                             expected_node_count
                         );
 
-                        // updates remote node addresses for the connector
-                        send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone()).await;
+                        if needs_node_addresses {
+                            // updates remote node addresses for the connector
+                            send_node_addresses(config.clone(), node_ws.clone(), db_pool.clone())
+                                .await;
+                        } else {
+                            info!(
+                                "Skipping AddNodeAddress broadcast (no Max-mode nodes configured)."
+                            );
+                        }
 
                         // waits for all nodes to receive the AddNode messages
                         tokio::time::sleep(Duration::from_millis(100)).await;

@@ -751,10 +751,14 @@ impl FlowStatsReporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::Mutex;
     use tokio::sync::mpsc::unbounded_channel;
+
+    static TEST_TIME_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[tokio::test]
     async fn pending_route_survives_long_gap_before_start() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(0);
 
         let (controller, mut controller_rx) = ControllerInterfaceHandle::test_handle();
@@ -833,6 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_flowid_reuse_with_late_finish() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -888,6 +893,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_duplicate_app_flow_start() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -923,6 +929,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_route_changes_for_active_flow() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -968,6 +975,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_flow_without_start() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -996,6 +1004,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_flow_controller_id_mismatch() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -1031,6 +1040,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_finished_flow_ttl_cleanup() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -1086,6 +1096,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_send_multiple_flows() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();
@@ -1114,6 +1125,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_route_assignment_for_finished_flow() {
+        let _guard = TEST_TIME_LOCK.lock().await;
         set_current_time_millis_for_test(1000);
         let (controller, mut rx) = ControllerInterfaceHandle::test_handle();
         let (_sender, receiver) = unbounded_channel();

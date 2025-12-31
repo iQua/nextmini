@@ -5,4 +5,6 @@ num_packet_processors = 1
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
+# Disable per-node TUN interface for the namespace scaling example.
+enable_local_interface = false
 controller_addr = "127.0.0.1:3000"

@@ -1,0 +1,14 @@
+protocol = "tcp"
+
+# Connection-only scaling:
+# - no topology edges => no AddNode messages => no node-to-node wiring
+# - omit [routing] and [[flows]] for a clean startup/memory baseline
+[topology]
+n_nodes = 10000
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "170.16.8.2"
+database = "nextmini"
+port = "5432"

@@ -46,7 +46,8 @@ pub enum Feature {
 #[command(author, version, about)]
 pub struct Args {
     /// The address of the controller to connect to (e.g., 128.100.100.128).
-    pub controller_addr: Option<String>,
+    #[arg(value_name = "CONTROLLER_ADDR")]
+    pub controller_addr_override: Option<String>,
 
     /// The path to the configuration file.
     #[arg(short, long, default_value = "config.toml")]
@@ -430,7 +431,7 @@ impl LocalConfig {
             }
         };
 
-        let controller_addr_args = args.controller_addr;
+        let controller_addr_args = args.controller_addr_override;
 
         // remembers which config file produced this configuration so namespace children can reuse it
         cfgs.config_path = args.config_path.clone();
@@ -447,9 +448,25 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
+        cfgs.normalize_controller_addr();
         cfgs.populate_runtime_defaults();
 
         cfgs
+    }
+
+    fn normalize_controller_addr(&mut self) {
+        let trimmed = self.controller_addr.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        // Allow controller_addr to be specified as either a full websocket URL (ws:// / wss://)
+        // or as a host:port pair (e.g., 127.0.0.1:3000).
+        if trimmed.contains("://") {
+            self.controller_addr = trimmed.to_string();
+        } else {
+            self.controller_addr = format!("ws://{trimmed}");
+        }
     }
 
     /// Populates runtime-derived defaults such as interface addresses when they are missing.
@@ -730,5 +747,27 @@ mod tests {
         let (_, gap, backlog) = cfg.reorder_tolerances();
         assert_eq!(gap, None);
         assert_eq!(backlog, 0);
+    }
+
+    #[test]
+    fn normalize_controller_addr_prepends_ws_scheme_when_missing() {
+        let mut cfg = LocalConfig {
+            controller_addr: "127.0.0.1:3000".to_string(),
+            ..Default::default()
+        };
+
+        cfg.normalize_controller_addr();
+        assert_eq!(cfg.controller_addr, "ws://127.0.0.1:3000");
+    }
+
+    #[test]
+    fn normalize_controller_addr_keeps_existing_scheme() {
+        let mut cfg = LocalConfig {
+            controller_addr: "wss://controller.example:3000".to_string(),
+            ..Default::default()
+        };
+
+        cfg.normalize_controller_addr();
+        assert_eq!(cfg.controller_addr, "wss://controller.example:3000");
     }
 }

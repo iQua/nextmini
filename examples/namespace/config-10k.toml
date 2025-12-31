@@ -1,0 +1,27 @@
+private_network_interface = "eth0"
+private_network_name = "net1"
+
+# Faster startup/memory-footprint experiments:
+# - disables per-namespace TUN device + local reader/writer tasks
+# - stretches metrics reporting interval to reduce timer wakeups
+enable_local_interface = false
+metrics_collection_interval = 3600
+
+# Keep per-node CPU usage low during spawn.
+num_tun_queues = 1
+num_packet_processors = 1
+channel_capacity = 4000
+queue_capacity = 3000
+feature = "concurrent"
+
+# Controller runs in docker-compose and publishes port 3000 on the host.
+# Namespace children will rewrite loopback to the bridge gateway automatically.
+controller_addr = "127.0.0.1:3000"
+
+# Namespace-mode tuning (all values in ms).
+# Defaults are conservative and add a lot of per-node latency at large N.
+interval_between_spawn = 0
+child_start_delay_ms = 0
+
+# Run 10,000 namespace nodes.
+n_nodes = 10000

@@ -12,6 +12,7 @@ lightning_logs/
 **/__pycache__
 **/server_cert.pem
 **/server_key.pem
+.cargo-home/
 
 # Rust build artifacts - match all target directories
 target/

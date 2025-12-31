@@ -15,6 +15,14 @@ sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
 sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
 ```
 
+For large experiments (e.g., 10,000 namespace nodes), increase these further (example values):
+
+```bash
+sudo sysctl net.ipv4.neigh.default.gc_thresh1=32768
+sudo sysctl net.ipv4.neigh.default.gc_thresh2=65536
+sudo sysctl net.ipv4.neigh.default.gc_thresh3=131072
+```
+
 where:
 
 - `gc_thresh1` **(2048)**: _Soft minimum threshold_ — The minimum number of entries to maintain in the ARP table.
@@ -36,6 +44,13 @@ cd nextmini/examples/namespace
 docker compose build; docker compose up
 ```
 
+For a 10,000-node, connection-only scaling run, use the 10k compose file:
+
+```bash
+cd nextmini/examples/namespace
+docker compose -f docker-compose-10k.yml up --build
+```
+
 ### Step 4: Running the project
 
 To build the dataplane that allows super-user execution (required for this example), use the following commands that builds the binary `nextmini` and installs it in `/usr/local/bin`:
@@ -50,6 +65,19 @@ To run this example with a specific number of nodes in a virtual or physical mac
 
 ```bash
 sudo nextmini --config-path examples/namespace/config.toml --n-nodes 5
+```
+
+To run a 10,000-node namespace experiment (connection-only baseline), use:
+
+```bash
+sudo RUST_LOG=info nextmini --config-path examples/namespace/config-10k.toml
+```
+
+For this scale, ensure the host allows enough processes and open files (examples):
+
+```bash
+ulimit -u 20000
+ulimit -n 200000
 ```
 
 You can also run `nextmini --help` to see all command-line arguments.
