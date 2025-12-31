@@ -214,6 +214,7 @@ pub enum PythonEvent {
         group_id: GroupId,
         node_id: NodeId,
     },
+    TopologyReady,
 }
 
 #[cfg(test)]

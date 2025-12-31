@@ -27,10 +27,10 @@ pub struct ControllerReporterHandle {
 }
 
 impl ControllerReporterHandle {
-    pub fn new(controller: ControllerInterfaceHandle) -> Self {
+    pub fn new(controller: ControllerInterfaceHandle, interval_secs: u64) -> Self {
         let (sender, receiver) = unbounded_channel();
 
-        let mut reporter = ControllerReporter::new(controller, receiver);
+        let mut reporter = ControllerReporter::new(controller, receiver, interval_secs);
 
         tokio::spawn(async move {
             reporter.run().await;
@@ -55,23 +55,26 @@ pub struct ControllerReporter {
     controller: ControllerInterfaceHandle,
     receiver: UnboundedReceiver<FlowMetricMessage>,
     flow_metrics: AHashMap<FlowId, FlowMetric>,
+    interval_secs: u64,
 }
 
 impl ControllerReporter {
     pub fn new(
         controller: ControllerInterfaceHandle,
         receiver: UnboundedReceiver<FlowMetricMessage>,
+        interval_secs: u64,
     ) -> Self {
         Self {
             controller,
             receiver,
             flow_metrics: AHashMap::default(),
+            interval_secs: interval_secs.max(1),
         }
     }
 
     pub async fn run(&mut self) {
-        // transmits metrics every 5 seconds
-        let mut metrics_tick = interval(Duration::from_secs(5));
+        // transmits metrics every interval
+        let mut metrics_tick = interval(Duration::from_secs(self.interval_secs));
 
         loop {
             tokio::select! {

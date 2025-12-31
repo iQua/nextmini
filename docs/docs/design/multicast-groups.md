@@ -1,13 +1,13 @@
 # Multicast Groups in Nextmini
 
-Multicast groups let a single source node deliver packets to many receivers through one logical destination IP. The controller owns group lifecycle, persistence, and tree computation; the dataplane mirrors the group directory, fans out packets hop-by-hop, and preserves the existing scheduling pipeline.
+Multicast groups let a single source node deliver packets to many receivers through one logical destination IP. The controller owns group lifecycle and persistence; multicast DAG edges are supplied externally and pushed to the dataplane, which mirrors the group directory, fans out packets hop-by-hop, and preserves the existing scheduling pipeline.
 
 ---
 
 ## Feature Goals
 
 - **(S, G) semantics** – each group `G` belongs to one source node `S`; the source pushes traffic to the group IP.
-- **Dynamic membership** – destinations may join and leave while the system runs; the controller recomputes trees and ships incremental updates.
+- **Dynamic membership** – destinations may join and leave while the system runs; the controller reapplies stored DAG edges and ships incremental updates for local delivery.
 - **Fast-path fan-out** – branching dataplane nodes clone packets for every next hop, both in normal and Max scheduling paths.
 - **Backwards compatibility** – unicast routing, flow installation, and rollout tooling continue to behave unchanged.
 
@@ -41,13 +41,13 @@ The controller persists multicast data in Postgres:
 | `group_members` | Join table keyed by `(group_id, member_node_id)` with timestamps. |
 | `group_routes` | Cached DAG edges (JSON) for each `(src, group)` combination. |
 
-`controller/src/db.rs` installs database triggers so that any insert/delete on `group_members` fires `pg_notify('sync_group_routes', ...)`. A Tokio task (`setup_group_notification`) listens on that channel, recomputes the DAG via `compute_group_tree_edges` and `build_group_routes_for_node` (`controller/src/utils.rs`), persists the results, and pushes fresh routes.
+`controller/src/db.rs` installs database triggers so that any insert/delete on `group_members` fires `pg_notify('sync_group_routes', ...)`. A Tokio task (`setup_group_notification`) listens on that channel, reloads the stored DAG edges from `group_routes` (written via `SetGroupRoutes`), rebuilds per-node routes with `build_group_routes_for_node` (`controller/src/utils.rs`), and pushes fresh routes. Membership changes now only affect local delivery; the DAG itself is externally supplied.
 
 ### Message Surface
 
 New MessagePack payloads (defined in `messages/src/lib.rs`):
 
-- **Dataplane → Controller**: `CreateGroup`, `JoinGroup`, `LeaveGroup`.
+- **Dataplane → Controller**: `CreateGroup`, `JoinGroup`, `LeaveGroup`, `SetGroupRoutes`.
 - **Controller → Dataplane**:
   - `GroupCreated { group_id, group_ip, src_node_id }` (acknowledges creation back to the source).
   - `InstallGroupDirectory { groups }` (broadcast directory refresh for every node).
@@ -56,9 +56,10 @@ New MessagePack payloads (defined in `messages/src/lib.rs`):
 ### Lifecycle Walkthrough
 
 1. **Create** – A node invokes `CreateGroup`. The controller reserves an IP from the configured pool, stores the group, and replies with `GroupCreated`. It then calls `broadcast_group_directory` so every node learns the new mapping.
-2. **Join / Leave** – Each member submits `JoinGroup` or `LeaveGroup`. The resulting database mutation triggers `sync_group_routes`. The controller recomputes the DAG, persists `group_routes`, and calls `push_group_routes` to send `InstallGroupRoutes` to all affected nodes.
-3. **Delivery** – Once the directory is replicated, the source sends packets toward `group_ip`. Membership changes eventually propagate through the same notification channel.
-4. **Tear-down** – When the last member leaves, the group remains until explicitly deleted or garbage-collected; future work may add timers to prune empty groups.
+2. **Install DAG** – The source (or an external solver) calls `SetGroupRoutes` with explicit DAG edges. The controller persists the edges in `group_routes` and pushes `InstallGroupRoutes` to nodes referenced by the DAG.
+3. **Join / Leave** – Each member submits `JoinGroup` or `LeaveGroup`. The resulting database mutation triggers `sync_group_routes`. The controller reuses the stored DAG edges, rebuilds per-node routes (including local delivery for members), and calls `push_group_routes` to send `InstallGroupRoutes` updates.
+4. **Delivery** – Once the directory is replicated, the source sends packets toward `group_ip`. Membership changes eventually propagate through the same notification channel.
+5. **Tear-down** – When the last member leaves, the group remains until explicitly deleted or garbage-collected; future work may add timers to prune empty groups.
 
 The controller tolerates intermittent websocket outages—if a node lacks an active writer when routes are pushed, the update is skipped and retried once the node reconnects (leveraging the full snapshot sent during handshake).
 
@@ -96,6 +97,8 @@ the controller CLI:
 | --- | --- |
 | `create_group(label)` | Requests a new `(group_id, group_ip)` pair for the local node (the source). |
 | `group_is_ready(timeout_ms=None)` | Blocks until the controller acknowledges a group and returns `(group_id, group_ip, src_node_id)`. |
+| `set_group_routes(group_id, edges)` | Persists DAG edges for a multicast group so the controller can install routes. |
+| `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)` | Blocks until multicast routes are installed on the local node. |
 | `join_group(group_id)` / `leave_group(group_id)` | Adds or drops the local node from the specified group. |
 | `register_receiver_for_group(src_node_id, group_ip, payload_only=False)` | Binds a Python-side queue to packets sourced from `src_node_id` and destined for `group_ip`. |
 
@@ -109,6 +112,9 @@ dp.create_group("training-run-42")
 group = dp.group_is_ready(timeout_ms=5_000)
 assert group, "controller never acknowledged the group"
 group_id, group_ip, _ = group
+edges = [(1, 2), (1, 3)]
+dp.set_group_routes(group_id, edges)
+dp.wait_for_group_routes(group_id, 1, timeout_ms=5_000)
 ```
 
 Example receiver workflow:

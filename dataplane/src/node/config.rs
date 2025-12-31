@@ -283,6 +283,7 @@ pub struct LocalConfig {
         controller_id: None,
         src_node_id: 0,
         dst_node_id: 0,
+        route_id: None,
         flow_spec: FlowSpec {
             flow_len: FlowLen::Bytes(1_000_000_000),
             flow_rate: None,

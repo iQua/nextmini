@@ -30,7 +30,7 @@ govern fragmentation, telemetry, and group coordination.
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
-| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `flow_id_from_nodes` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
+| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
 | `nextmini_py.FrozenBuffer` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
 | `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns `bytes` when the receiver was registered in raw mode or a `PayloadDelivery` object when `payload_only=True`. |
 | `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count`, `.payload_format` | Metadata-rich wrapper populated when payload-only receivers are used. Fragmentation metadata is only set when the feature flag is enabled. |
@@ -66,7 +66,7 @@ payload = frozen_from_tensor(loss_tensor)
 dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
-`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, rely on controller helpers (for example `create_group` plus the reliable session APIs) and distribute traffic per node ID when you need to fan out from Python.
+`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the reliable session APIs to transmit payloads.
 
 ### Frozen buffers in detail
 
@@ -113,10 +113,12 @@ secondary CLI:
 
 | Method | Description |
 | --- | --- |
-| `flow_id_from_nodes(src_node_id, dst_node_id, src_port=None, dst_port=None)` | Computes the `FlowId` used by sender/receiver helpers; useful when correlating controller logs. |
 | `create_group(label)` | Requests a new multicast group through the controller. |
 | `join_group(group_id)` / `leave_group(group_id)` | Adds or removes the local node from a multicast group. |
 | `group_is_ready(timeout_ms=None)` | Waits for a `GroupCreated` event and returns `(group_id, group_ip, src_node_id)` when the controller finishes provisioning. |
+| `set_group_routes(group_id, edges)` | Persists DAG edges for a multicast group so the controller can install routes. |
+| `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)` | Waits until the controller installs multicast routes for a group. |
+| `wait_for_topology_ready(timeout_ms=None)` | Waits until all nodes have installed the base route tables. |
 
 Each method leverages the `PythonEvent` queue maintained inside the dataplane (`PythonInterfaceHandle`). Events are only
 delivered to Python receivers that have called one of the waiters above; they are not broadcast globally.

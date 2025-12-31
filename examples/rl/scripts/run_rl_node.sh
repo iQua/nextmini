@@ -33,6 +33,9 @@ source "${CONTAINER_VENV}/bin/activate"
 echo "Installing Python dependencies..."
 uv pip install "psycopg[binary]" >/dev/null
 uv pip install numpy >/dev/null
+if [[ "${role}" == "trainer" ]]; then
+  uv pip install cvxopt >/dev/null
+fi
 uv pip install torch>=2.4.0 >/dev/null
 uv pip install transformers>=4.30.0 >/dev/null
 uv pip install datasets>=2.0.0 >/dev/null

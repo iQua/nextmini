@@ -11,6 +11,12 @@ WORKER_CONFIGS = [
     os.environ.get("WORKER1_CONFIG", "configs/worker1-config.toml"),
 ]
 
+# Controller config (for LP multicast routing)
+CONTROLLER_CONFIG = os.environ.get(
+    "CONTROLLER_CONFIG",
+    "examples/rl/configs-docker/controller-config.toml",
+)
+
 # Node IDs (must match node_id in config files)
 TRAINER_NODE_ID = int(os.environ.get("TRAINER_NODE_ID", "1"))
 WORKER_NODE_IDS = [
@@ -26,6 +32,11 @@ WORKER_BASE_PORT = 5001  # Workers use BASE_PORT + rank
 MULTICAST_GROUP_NAME = "rl_weights_sync"
 MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
 CHUNK_SIZE = 8500 # Standard chunk size
+ROLLOUT_GROUP_ID_BASE = int(os.environ.get("ROLLOUT_GROUP_ID_BASE", "1000"))
+
+
+def rollout_group_id(node_id: int) -> int:
+    return ROLLOUT_GROUP_ID_BASE + int(node_id)
 
 # Sharded Checkpoint (for large models)
 USE_SHARDED_WEIGHTS = os.environ.get("USE_SHARDED_WEIGHTS", "false").lower() == "true"

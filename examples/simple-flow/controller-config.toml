@@ -13,15 +13,14 @@ full_mesh_config = { n_nodes = 4 }
 [[link_rates]]
 src_node_id = 1
 dst_node_id = 2
-# 5 Gbps ~= 625,000,000 bytes/sec
-rate = 625_000_000
+rate = 100_000_000
 bucket_size = 312_000_000
 
-# [[link_rates]]
-# src_node_id = 3
-# dst_node_id = 4
-# rate = 1_000_000_000
-# bucket_size = 10_250_000
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 1
+rate = 100_000_000
+bucket_size = 312_000_000
 
 # the route from node 1 and node 2 is [1, 3, 4, 2]
 [[routes]]
@@ -37,20 +36,15 @@ route = [3, 4]
 [[routes]]
 route = [4, 3]
 
-# Test Flow 1: Reliable Unicast flow
 [[flows]]
 src_node_id = 1
 dst_node_id = 2
-flow_spec = { flow_len = { Bytes = 10_000_000_000 }, flow_weight = 1 }
-
-# # Test Flow 2: Reliable Unicast flow
-# [[flows]]
-# src_node_id = 3
-# dst_node_id = 4
-# flow_spec = { flow_len = { Bytes = 100_000_000_000 }, flow_weight = 2, flow_rate = 10_000_000_000, transport = "reliable_unicast" }
-
-# Test Flow 3: TCP flow(smoltcp)
-# [[flows]]
-# src_node_id = 2
-# dst_node_id = 1
-# flow_spec = { flow_len = { Bytes = 100_000_000 }, flow_weight = 1, flow_rate = 10_000_000, transport = "tcp" }
+flow_spec = { flow_len = { Bytes = 10_000_000 }, flow_rate = 10_000_000, flow_weight = 1 }
+[[flows]]
+src_node_id = 1
+dst_node_id = 2
+flow_spec = { flow_len = { Bytes = 20_000_000 }, flow_rate = 10_000_000, flow_weight = 1 }
+[[flows]]
+src_node_id = 1
+dst_node_id = 2
+flow_spec = { flow_len = { Bytes = 10_000_000 }, flow_rate = 10_000_000, flow_weight = 1 } 

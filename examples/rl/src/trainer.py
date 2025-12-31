@@ -57,6 +57,7 @@ class Trainer:
         self.dataplane = nm.Dataplane(self.config_path)
         info = self.dataplane.get_network_info()
         self.user_space_address = info["user_space_address"]
+        self.node_id = int(info["node_id"])
         
         # Setup connections to workers
         self.worker_connections = []
@@ -79,28 +80,56 @@ class Trainer:
                 'receiver': receiver
             })
             self.worker_locks.append(threading.Lock())
-        
-        # Wait for routes to be established
-        print("Waiting for routes to be established...")
-        time.sleep(10)
+
+        # Wait for topology to be ready (all nodes connected and routes installed)
+        print("Waiting for topology to be ready...")
+        self.dataplane.wait_for_topology_ready()
+        print("Topology is ready!")
         
         # Create Multicast Group
         print(f"Creating multicast group '{config.MULTICAST_GROUP_NAME}'...")
         self.dataplane.create_group(config.MULTICAST_GROUP_NAME)
         self.group_id, self.group_ip, _ = self.dataplane.group_is_ready(timeout_ms=30000)
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
+
+        receiver_ids = [conn["node_id"] for conn in self.worker_connections]
+        edges, throughput = self._compute_multicast_routes(receiver_ids)
+        self.dataplane.set_group_routes(self.group_id, edges)
+        if throughput is not None:
+            print(f"Applied LP multicast routes (throughput={throughput:.3f})")
+        print(f"Installed multicast routes for group {self.group_id} ({len(edges)} edges)")
         
         print(f"Trainer ready with {len(self.worker_connections)} workers")
-        
-        # Signal readiness for Docker healthcheck
-        import os
-        ready_file = os.environ.get("TRAINER_READY_FILE", "/tmp/trainer_ready")
+
+    def _compute_multicast_routes(self, receiver_ids):
+        controller_path = Path(config.CONTROLLER_CONFIG)
+        if not controller_path.is_absolute():
+            controller_path = (Path(__file__).resolve().parents[3] / controller_path).resolve()
+        if not controller_path.is_file():
+            raise RuntimeError(f"Controller config not found: {controller_path}")
+
         try:
-            with open(ready_file, "w") as f:
-                f.write("ready\n")
-            print(f"Trainer readiness signaled to: {ready_file}", flush=True)
-        except Exception as e:
-            print(f"Warning: Could not write readiness file: {e}", flush=True)
+            from examples.lp.solver import (
+                build_graph_from_controller_config,
+                compute_mflow_tree_edges,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "LP solver unavailable. Ensure examples/lp dependencies are installed."
+            ) from exc
+
+        graph = build_graph_from_controller_config(str(controller_path))
+        edges, throughput = compute_mflow_tree_edges(
+            graph,
+            src=self.node_id,
+            destinations=receiver_ids,
+        )
+        if not edges:
+            raise RuntimeError(
+                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}"
+            )
+
+        return edges, throughput
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
@@ -259,6 +288,7 @@ class Trainer:
         builder.write(data_bytes)
         view = builder.freeze()
         sid = self.dataplane.send_data(
+            self.group_id,
             self.group_ip,
             receiver_ids,
             view,
@@ -437,6 +467,7 @@ class Trainer:
         view = builder.freeze()
         
         sid = self.dataplane.send_data(
+            self.group_id,
             self.group_ip,
             receiver_ids,
             view,
@@ -496,13 +527,12 @@ class Trainer:
 
                 worker_node_id = self.worker_connections[i]['node_id']
                 worker_port = self.worker_connections[i]['port']
-
-                # Instruct worker to start reliable rollout send only after we've
-                # registered the receiver side.
-                self.send_to_worker(i, {"type": "READY_FOR_ROLLOUT_DATA"})
+                rollout_group_id = config.rollout_group_id(worker_node_id)
 
                 try:
+                    # IMPORTANT: Register receiver FIRST, before signaling worker
                     sid = self.dataplane.receive_data(
+                        rollout_group_id,
                         self.user_space_address,
                         worker_node_id,
                         expected_bytes=size,
@@ -510,6 +540,10 @@ class Trainer:
                         src_port=worker_port,
                         dst_port=config.TRAINER_PORT,
                     )
+
+                    # Now signal worker that we're ready to receive
+                    self.send_to_worker(i, {"type": "READY_FOR_ROLLOUT_DATA"})
+
                     transfer_start = time.time()
                     ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                     transfer_end = time.time()
@@ -528,11 +562,6 @@ class Trainer:
                 except Exception as e:
                     print(f"Trainer: failed to decode rollout payload from worker {i}: {e}", flush=True)
                     return
-
-                try:
-                    self.dataplane.forget_session(self.user_space_address, worker_node_id)
-                except Exception:
-                    pass
 
                 worker_results[i] = result
 

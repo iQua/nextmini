@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pgusr
+      POSTGRES_PASSWORD: pgpwrd
+      POSTGRES_DB: nextmini
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    volumes:
+      - ../../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  controller:
+    build:
+      context: ../../../
+      dockerfile: controller/Dockerfile
+    image: nextmini_controller
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - ./controller-config.toml:/var/nextmini/config.toml
+    working_dir: /var/nextmini
+    command: /bin/bash -c "sleep 3 && /var/nextmini/controller"
+    ports:
+      - "3000:3000"
+
+  node1:
+    build:
+      context: ../../../
+      dockerfile: examples/lp/toy/Dockerfile
+    image: nextmini_lp_toy_python
+    depends_on:
+      controller:
+        condition: service_started
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    command: /bin/bash -c "sleep 7 && python /workspace/examples/lp/toy/toy_demo.py --role source --config examples/lp/toy/node1-config.toml"
+
+  node2:
+    image: nextmini_lp_toy_python
+    depends_on:
+      node1:
+        condition: service_started
+      controller:
+        condition: service_started
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    command: /bin/bash -c "sleep 8 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node2-config.toml"
+
+  node3:
+    image: nextmini_lp_toy_python
+    depends_on:
+      node1:
+        condition: service_started
+      controller:
+        condition: service_started
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    command: /bin/bash -c "sleep 9 && python /workspace/examples/lp/toy/toy_demo.py --role receiver --config examples/lp/toy/node3-config.toml"

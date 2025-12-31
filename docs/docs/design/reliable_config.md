@@ -14,7 +14,7 @@
 
 - `data_bucket: Option<TokenBucketSpec>` — pacing for data flows.
 
-- Session coordination happens via explicit session IDs. Senders still allocate via `Dataplane.send_data(..., session_id=...)` (or allow the runtime to pick one), but receivers can now omit the `session_id`. When `Dataplane.receive_data` is invoked without an ID, the dataplane waits for the first inbound manifest, adopts the sender's session ID automatically, and only then spawns the reliable receiver. Advanced orchestrators may still pre-register IDs with `Dataplane.reliable_register_session_id(...)` when they need to short-circuit the wait.
+- Session coordination uses deterministic session IDs derived from flow metadata (controller-assigned flows) or `(group_id, source_node_id)` for Python multicast helpers. Receivers must be registered before send; if no receiver is active for a session, inbound frames are dropped.
 
 - `ready_grace_ms: u64` — grace window before the sender starts streaming when not all receivers have reported `Ready` (default 1500 ms).
 

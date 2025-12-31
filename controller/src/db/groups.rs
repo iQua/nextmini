@@ -106,25 +106,3 @@ pub async fn load_group_members(
     .await?;
     Ok(members)
 }
-
-pub(super) async fn upsert_group_routes(
-    db_pool: &Pool<Postgres>,
-    group_id: i32,
-    src_node_id: i32,
-    edges: serde_json::Value,
-) -> AnyResult<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO group_routes (group_id, src_node_id, edges)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (group_id)
-        DO UPDATE SET src_node_id = EXCLUDED.src_node_id, edges = EXCLUDED.edges, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT*1000
-        "#,
-    )
-    .bind(group_id)
-    .bind(src_node_id)
-    .bind(edges)
-    .execute(db_pool)
-    .await?;
-    Ok(())
-}

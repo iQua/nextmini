@@ -58,6 +58,7 @@ pub enum ProcessorMessage {
     DisconnectUserSpaceSender(FlowId),
     RateLimit(NodeId, TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    PinRouteForFlow(FlowId, usize),
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
@@ -275,6 +276,19 @@ impl ProcessorHandle {
         {
             error!(
                 "Error sending the SetFlowWeight message to the processors: {}",
+                e
+            );
+        };
+    }
+
+    /// Pins a specific route for a flow, bypassing normal route selection.
+    pub fn pin_route_for_flow(&self, flow_id: FlowId, route_id: usize) {
+        if let Err(e) = self
+            .broadcast_sender()
+            .send(ProcessorMessage::PinRouteForFlow(flow_id, route_id))
+        {
+            error!(
+                "Error sending the PinRouteForFlow message to the processors: {}",
                 e
             );
         };
@@ -834,6 +848,14 @@ impl Processor {
                     scheduler.set_flow_weight(flow_id, weight);
                 }
             }
+            ProcessorMessage::PinRouteForFlow(flow_id, route_id) => {
+                if let Err(e) = self.routing_table.pin_route_for_flow(flow_id, route_id) {
+                    warn!(
+                        "Failed to pin route {} for flow {:032x}: {}",
+                        route_id, flow_id, e
+                    );
+                }
+            }
             ProcessorMessage::SetFlowStatsReporter(flowstats_reporter) => {
                 self.flowstats_reporter = Some(*flowstats_reporter);
             }
@@ -980,8 +1002,6 @@ impl Processor {
             ReliableInboundFrame {
                 bytes: payload_vec,
                 peer_id,
-                dest_ip: Some(packet.flow_id.dst_ip()),
-                source_node_id: peer_id,
             },
         );
         true

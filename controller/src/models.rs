@@ -37,6 +37,8 @@ pub struct DbFlow {
     pub flow_weight: Option<i32>,
     #[allow(dead_code)]
     pub is_finished: bool,
+    #[allow(dead_code)]
+    pub is_probe: bool,
 }
 
 #[allow(dead_code)]
@@ -61,4 +63,11 @@ pub struct DbGroupRoute {
     pub group_id: i32,
     pub src_node_id: i32,
     pub edges: serde_json::Value,
+}
+
+/// Maps a flow to a specific route for route pinning.
+#[derive(Clone, FromRow, Debug)]
+pub struct DbFlowRoute {
+    pub flow_id: i32,
+    pub route_id: i32,
 }

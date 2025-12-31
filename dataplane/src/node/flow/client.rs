@@ -83,6 +83,18 @@ impl UserSpaceClientHandle {
                 self.processors.set_flow_weight(flow_id, weight);
             }
 
+            // pins a specific route for this flow if route_id is specified
+            if let Some(route_id) = flow.route_id {
+                // use reverse flow_id: client -> server direction
+                let flow_id = flow_id.reverse();
+
+                info!(
+                    "Pinning route {} for user space TCP flow from node {} to node {}.",
+                    route_id, flow.src_node_id, flow.dst_node_id
+                );
+                self.processors.pin_route_for_flow(flow_id, route_id);
+            }
+
             let client = UserSpaceClient::new(
                 config,
                 flow,
@@ -332,6 +344,7 @@ mod tests {
             controller_id: Some(42),
             src_node_id: 1,
             dst_node_id,
+            route_id: None,
             flow_spec: FlowSpec {
                 flow_len: FlowLen::Bytes(1024),
                 flow_rate: Some(1_000_000),

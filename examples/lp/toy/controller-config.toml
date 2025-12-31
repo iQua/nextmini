@@ -1,0 +1,19 @@
+protocol = "tcp"
+flow_transport = "reliable_unicast"
+
+[topology]
+# 3-node full mesh so the toy DAG can use direct edges (1->2, 1->3).
+type = "full_mesh"
+full_mesh_config = { n_nodes = 3 }
+
+[routing]
+protocol = "shortest_path"
+
+[db]
+host = "postgres"
+port = "5432"
+user = "pgusr"
+password = "pgpwrd"
+database = "nextmini"
+
+

@@ -1,5 +1,4 @@
 import pickle
-import time
 import io
 import tempfile
 from pathlib import Path
@@ -66,9 +65,11 @@ class Worker:
         self.trainer_port = trainer_port
         self.trainer_user_ip = None
         
-        # Wait for routes to be established
-        print(f"Waiting for routes to be established...", flush=True)
-        time.sleep(3)  # Trainer's healthcheck ensures it's ready before Workers start
+        # Wait for topology to be ready (all nodes connected and routes installed)
+        print(f"Waiting for topology to be ready...", flush=True)
+        if not self.dataplane.wait_for_topology_ready(timeout_ms=30_000):
+            raise TimeoutError("Topology not ready after 30 seconds")
+        print(f"Topology is ready!", flush=True)
         
         print(f"Worker {rank} ready.", flush=True)
 
@@ -93,18 +94,20 @@ class Worker:
         
         return pickle.loads(delivery.payload)
 
-    async def _receive_shard(self, group_ip: str, src_node_id: int, expected_bytes: int) -> bytes:
+    async def _receive_shard(self, group_id: int, group_ip: str, src_node_id: int, expected_bytes: int) -> bytes:
         """Receive a single shard via reliable multicast.
-        
+
         Args:
+            group_id: Multicast group ID
             group_ip: Multicast group IP
             src_node_id: Source node ID (trainer)
             expected_bytes: Expected size of this shard in bytes
-        
+
         Returns:
             Raw bytes of the received shard
         """
         sid = await self.dataplane.receive_data_async(
+            group_id,
             group_ip,
             src_node_id,
             expected_bytes=expected_bytes,
@@ -153,13 +156,13 @@ class Worker:
                 print(f"Worker {self.rank} joining multicast group {group_id}...", flush=True)
                 self.dataplane.join_group(group_id)
                 print(f"Worker {self.rank} joined group command sent.", flush=True)
-                
-                # 2. Register Receive Session in background task (using asyncio)
+
+                # 2. Register receiver BEFORE signaling ready
+                # Await the async call to ensure registration completes before sending READY
                 print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
-                
-                # Helper to wrap Rust Future into a Python Coroutine for create_task
-                async def receive_wrapper():
-                    return await self.dataplane.receive_data_async(
+                try:
+                    sid = await self.dataplane.receive_data_async(
+                        group_id,
                         group_ip,
                         src_node_id,
                         expected_bytes=size,
@@ -167,27 +170,17 @@ class Worker:
                         src_port=config.TRAINER_PORT,
                         dst_port=config.WORKER_BASE_PORT
                     )
+                    print(f"Worker {self.rank} receiver registered. SID={sid}", flush=True)
+                except Exception as e:
+                    print(f"Worker {self.rank} failed to register receiver: {e}", flush=True)
+                    continue
 
-                # Create the receive task - this will submit the request to Rust but won't block
-                # until we await it. It returns the Session ID once the first packet arrives.
-                receive_task = asyncio.create_task(receive_wrapper())
-                
-                print(f"Worker {self.rank} receive task created.", flush=True)
-                
-                # 3. Reply READY (safe to send immediately)
+                # 3. Now signal trainer that we're ready to receive
                 print(f"Worker {self.rank} sending READY_FOR_MULTICAST...", flush=True)
                 self.send_to_trainer({"type": "READY_FOR_MULTICAST"})
                 print(f"Worker {self.rank} sent READY_FOR_MULTICAST.", flush=True)
-                
-                # 4. Wait for the Session ID (this happens when trainer starts sending)
-                try:
-                    sid = await receive_task
-                    print(f"Worker {self.rank} receive_data session established. SID={sid}", flush=True)
-                except Exception as e:
-                    print(f"Worker {self.rank} failed to establish session: {e}", flush=True)
-                    continue
 
-                # 5. Wait for Reliable Transfer Completion
+                # 4. Wait for Reliable Transfer Completion
                 print(f"Waiting for reliable multicast transfer...")
                 ok = await self.dataplane.reliable_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 print(f"Receive completion: {ok}")
@@ -198,11 +191,6 @@ class Worker:
                     state_dict = torch.load(buffer, map_location=self.device)
                     self.model.load_state_dict(state_dict)
                     print("Weights loaded into model.")
-                    
-                    # Important: Forget the session so next time we don't reuse the old SID
-                    # Since multicast group IP + src_node_id is the key, we must clear it 
-                    # to allow the 'pending' receiver logic to discover the NEW session ID (e.g. 2, 3...).
-                    self.dataplane.forget_session(group_ip, src_node_id)
             
             elif msg["type"] == "WEIGHT_METADATA_SHARDED":
                 # Sharded weight synchronization for large models
@@ -232,26 +220,23 @@ class Worker:
                     # Receive config.json first (required for from_pretrained)
                     config_size = shard_sizes.get("config.json", 1024 * 1024)  # Default 1MB
                     print(f"Worker {self.rank}: Receiving config.json ({config_size} bytes)...", flush=True)
-                    config_data = await self._receive_shard(group_ip, src_node_id, config_size)
+                    config_data = await self._receive_shard(group_id, group_ip, src_node_id, config_size)
                     (tmpdir / "config.json").write_bytes(config_data)
-                    self.dataplane.forget_session(group_ip, src_node_id)
-                    
+
                     # Receive index (if exists)
                     if has_index:
                         index_size = shard_sizes.get("index", 1024 * 1024)  # Default 1MB
                         print(f"Worker {self.rank}: Receiving index file ({index_size} bytes)...", flush=True)
-                        index_data = await self._receive_shard(group_ip, src_node_id, index_size)
+                        index_data = await self._receive_shard(group_id, group_ip, src_node_id, index_size)
                         (tmpdir / "model.safetensors.index.json").write_bytes(index_data)
-                        self.dataplane.forget_session(group_ip, src_node_id)
-                    
+
                     # Receive each shard with precise size
                     for shard_name in shard_names:
                         expected_size = shard_sizes.get(shard_name, 8 * 1024 * 1024 * 1024)  # Default 8GB
                         print(f"Worker {self.rank}: Receiving shard {shard_name} ({expected_size/1024/1024:.1f} MB)...", flush=True)
-                        shard_data = await self._receive_shard(group_ip, src_node_id, expected_size)
+                        shard_data = await self._receive_shard(group_id, group_ip, src_node_id, expected_size)
                         (tmpdir / shard_name).write_bytes(shard_data)
                         print(f"Worker {self.rank}: Saved {shard_name} ({len(shard_data)/1024/1024:.1f} MB)", flush=True)
-                        self.dataplane.forget_session(group_ip, src_node_id)
                     
                     # Load model from sharded checkpoint
                     print(f"Worker {self.rank}: Loading model from sharded checkpoint...", flush=True)
@@ -321,14 +306,22 @@ class Worker:
                     "size": size,
                 })
 
-                # 2) Send data reliably via ReliableRuntime using trainer user-space IP
+                # 2) Wait for trainer to signal it's ready to receive
+                ready_msg = await self.recv_from_trainer()
+                if not ready_msg or ready_msg.get("type") != "READY_FOR_ROLLOUT_DATA":
+                    print(f"Worker {self.rank}: expected READY_FOR_ROLLOUT_DATA, got {ready_msg}", flush=True)
+                    continue
+
+                # 3) Send data reliably via ReliableRuntime using trainer user-space IP
                 if not self.trainer_user_ip:
                     print(f"Worker {self.rank}: trainer_user_ip not set, cannot send reliable rollout.", flush=True)
                     continue
 
                 view = nm.PacketView(serialized)
                 try:
+                    rollout_group_id = config.rollout_group_id(config.WORKER_NODE_IDS[self.rank])
                     sid = self.dataplane.send_data(
+                        rollout_group_id,
                         self.trainer_user_ip,
                         [self.trainer_node_id],
                         view,
@@ -340,15 +333,6 @@ class Worker:
                 except Exception as e:
                     print(f"Worker {self.rank}: error sending reliable rollout data: {e}", flush=True)
                     continue
-
-                # 3) Send a tiny control message with timestamp for network timing
-                send_time = time.time()
-                self.send_to_trainer({
-                    "type": "ROLLOUT_RESULT",
-                    "results": [],
-                    "send_timestamp": send_time,
-                    "reliable_ok": ok,
-                })
 
 
 if __name__ == "__main__":

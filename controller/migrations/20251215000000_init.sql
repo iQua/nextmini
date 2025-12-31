@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 -- start_time: When a flow starts.
 -- finish_time: When a flow finishes.
 -- is_finished: Whether this flow has completed.
+-- is_probe: Whether this flow is a probe-only measurement flow.
 CREATE TABLE IF NOT EXISTS flows (
     id SERIAL PRIMARY KEY,
     src_node_id INTEGER NOT NULL,
@@ -33,7 +34,8 @@ CREATE TABLE IF NOT EXISTS flows (
     flow_weight INTEGER,
     start_time BIGINT,
     finish_time BIGINT,
-    is_finished BOOLEAN NOT NULL DEFAULT FALSE
+    is_finished BOOLEAN NOT NULL DEFAULT FALSE,
+    is_probe BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 -- route_id: Unique identifier for the route, automatically assigned by controller.
@@ -46,6 +48,18 @@ CREATE TABLE IF NOT EXISTS routes (
     dst_node_id INTEGER NOT NULL,
     edges JSONB NOT NULL
 );
+
+-- flow_routes: Relationship table documenting route assignments for flows.
+-- This supports "route pinning": forcing a flow to use a specific controller-provided route_id.
+CREATE TABLE IF NOT EXISTS flow_routes (
+    flow_id INTEGER NOT NULL,
+    route_id INTEGER NOT NULL,
+    PRIMARY KEY (flow_id, route_id),
+    FOREIGN KEY (flow_id) REFERENCES flows(id) ON DELETE CASCADE,
+    FOREIGN KEY (route_id) REFERENCES routes(route_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_flow_routes_flow_id ON flow_routes(flow_id);
 
 CREATE TABLE IF NOT EXISTS metrics (
     id SERIAL PRIMARY KEY,
@@ -90,23 +104,6 @@ CREATE TABLE IF NOT EXISTS group_routes (
     updated_at BIGINT DEFAULT (EXTRACT(EPOCH FROM NOW())::BIGINT * 1000),
     PRIMARY KEY (group_id)
 );
-
-CREATE TABLE IF NOT EXISTS link_throughput (
-    id SERIAL PRIMARY KEY,
-    src_node_id INTEGER NOT NULL,
-    dst_node_id INTEGER NOT NULL,
-    bandwidth_bps DOUBLE PRECISION NOT NULL,
-    bandwidth_mbps DOUBLE PRECISION NOT NULL,
-    bytes_transferred BIGINT NOT NULL,
-    duration_secs DOUBLE PRECISION NOT NULL,
-    protocol TEXT NOT NULL DEFAULT 'tcp',
-    retransmits INTEGER,
-    jitter_ms DOUBLE PRECISION,
-    measured_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE (src_node_id, dst_node_id, protocol, measured_at)
-);
-
-CREATE INDEX IF NOT EXISTS idx_link_throughput_nodes ON link_throughput (src_node_id, dst_node_id);
 
 -- Group membership changes: recompute multicast routes.
 CREATE OR REPLACE FUNCTION notify_group_membership_change()
