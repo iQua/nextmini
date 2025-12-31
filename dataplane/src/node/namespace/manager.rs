@@ -304,9 +304,10 @@ impl NamespaceManager {
                             break 'spawn;
                         }
 
-                        rt.block_on(tokio::time::sleep(time::Duration::from_millis(
-                            20 * attempts as u64,
-                        )));
+                        rt.block_on(async {
+                            tokio::time::sleep(time::Duration::from_millis(20 * attempts as u64))
+                                .await;
+                        });
                     }
                 }
             }
@@ -386,9 +387,12 @@ impl NamespaceManager {
 
             // gives the child process time to start and configure its peer interface
             // adds an initial, configurable small sleep to let child process start
-            rt.block_on(tokio::time::sleep(time::Duration::from_millis(
-                self.config.child_start_delay_ms,
-            )));
+            rt.block_on(async {
+                tokio::time::sleep(time::Duration::from_millis(
+                    self.config.child_start_delay_ms,
+                ))
+                .await;
+            });
 
             // waits for child handshake that peer interface is configured before bringing up master
             let handshake_deadline = time::Instant::now()
@@ -409,7 +413,9 @@ impl NamespaceManager {
                     }
                     Ok(2..) => break,
                     Err(nix::errno::Errno::EAGAIN) => {
-                        rt.block_on(tokio::time::sleep(time::Duration::from_millis(10)));
+                        rt.block_on(async {
+                            tokio::time::sleep(time::Duration::from_millis(10)).await
+                        });
                         continue;
                     }
                     Err(_) => {
@@ -471,9 +477,12 @@ impl NamespaceManager {
             }
 
             // sleeps between node creation to prevent overwhelming the system
-            rt.block_on(tokio::time::sleep(time::Duration::from_millis(
-                self.config.interval_between_spawn,
-            )));
+            rt.block_on(async {
+                tokio::time::sleep(time::Duration::from_millis(
+                    self.config.interval_between_spawn,
+                ))
+                .await;
+            });
 
             shard_node_idx += 1;
         }
