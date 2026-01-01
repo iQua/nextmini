@@ -47,6 +47,9 @@ apply_sysctl() {
   sudo sysctl -w net.ipv4.neigh.default.gc_thresh1=32768
   sudo sysctl -w net.ipv4.neigh.default.gc_thresh2=65536
   sudo sysctl -w net.ipv4.neigh.default.gc_thresh3=131072
+  sudo sysctl -w net.core.somaxconn=131070
+  sudo sysctl -w net.core.netdev_max_backlog=262144
+  sudo sysctl -w net.core.netdev_budget=2400
   sudo sysctl -w net.core.rmem_max=536870912
   sudo sysctl -w net.core.wmem_max=536870912
   sudo sysctl -w net.core.rmem_default=2097152
