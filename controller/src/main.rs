@@ -16,7 +16,7 @@ use std::time::Duration;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use sqlx::{Pool, Postgres};
-use tokio::net::TcpListener;
+use tokio::net::TcpSocket;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tokio_tungstenite::WebSocketStream;
@@ -88,9 +88,17 @@ fn build_neighbor_index(edges: &[(u32, u32)]) -> Vec<Vec<i32>> {
 async fn main() {
     tracing_subscriber::fmt().init();
     let config = get_config("config.toml");
+    let expected_node_count = config.topology.compute_node_count().unwrap_or(1024);
     let db_pool = Arc::new(init_db(&config).await);
-    let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.port)).await {
-        Ok(l) => l,
+
+    let listen_backlog = expected_node_count.saturating_mul(2).max(1024).min(131_072) as u32;
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
+    let listener = match TcpSocket::new_v4().and_then(|socket| {
+        let _ = socket.set_reuseaddr(true);
+        socket.bind(addr)?;
+        socket.listen(listen_backlog)
+    }) {
+        Ok(listener) => listener,
         Err(e) => {
             error!(
                 "Failed to bind controller port {}: {}. Exiting.",
@@ -99,7 +107,10 @@ async fn main() {
             return;
         }
     };
-    info!("The controller is now listening on port {}.", config.port);
+    info!(
+        "The controller is now listening on port {} (backlog requested: {}).",
+        config.port, listen_backlog
+    );
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
@@ -122,7 +133,6 @@ async fn main() {
     };
 
     // Set up a channel for a background task to process the event as a new node connects.
-    let expected_node_count = config.topology.compute_node_count().unwrap_or(1024);
     let event_capacity = expected_node_count.saturating_mul(2).max(1024);
     let (new_node_connected_sender, new_node_connected_receiver) =
         broadcast::channel::<TopologyEvent>(event_capacity);
@@ -367,76 +377,77 @@ async fn handle_connection(
 
                         current_node_id = Some(node_id);
 
-                        // fetch neighbor nodes only (instead of scanning the whole node table)
+                        // Fetch neighbor nodes only (instead of scanning the whole node table). If the
+                        // topology has no edges, skip neighbor wiring but still continue with startup
+                        // (routes, multicast snapshots, and NodeConnected event emission).
                         let neighbor_ids =
                             topology_neighbors.get(node_id).cloned().unwrap_or_default();
 
-                        if neighbor_ids.is_empty() {
-                            continue;
-                        }
-                        let nodes: Vec<Node> = match sqlx::query_as(
-                            "SELECT * FROM nodes WHERE id = ANY($1)",
-                        )
-                        .bind(&neighbor_ids)
-                        .fetch_all(&*db_pool)
-                        .await
-                        {
-                            Ok(nodes) => nodes,
-                            Err(e) => {
-                                error!(
-                                    "Failed to fetch neighbor nodes for node {}: {}. Skipping neighbor setup.",
-                                    node_id, e
-                                );
-                                Vec::new()
-                            }
-                        };
-
-                        // establishes connections between the new node and its neighbors by sending AddNode messages
-                        for node in nodes {
-                            // determines the address to use (private or public)
-                            // if two nodes share the same private network name, then we use the private
-                            // network address for this connection; otherwise, we use the public network
-                            // address.
-                            let addr = if node.private_network_name
-                                == Some(private_network_name.clone())
+                        if !neighbor_ids.is_empty() {
+                            let nodes: Vec<Node> = match sqlx::query_as(
+                                "SELECT * FROM nodes WHERE id = ANY($1)",
+                            )
+                            .bind(&neighbor_ids)
+                            .fetch_all(&*db_pool)
+                            .await
                             {
-                                node.private_network_addr
-                            } else {
-                                node.public_network_addr
+                                Ok(nodes) => nodes,
+                                Err(e) => {
+                                    error!(
+                                        "Failed to fetch neighbor nodes for node {}: {}. Skipping neighbor setup.",
+                                        node_id, e
+                                    );
+                                    Vec::new()
+                                }
                             };
 
-                            // sends an AddNode message to the new node
-                            let msg = ControllerToDataplane::AddNode {
-                                remote_node_id: node.id as usize,
-                                remote_addr: addr,
-                            };
+                            // establishes connections between the new node and its neighbors by sending AddNode messages
+                            for node in nodes {
+                                // determines the address to use (private or public)
+                                // if two nodes share the same private network name, then we use the private
+                                // network address for this connection; otherwise, we use the public network
+                                // address.
+                                let addr = if node.private_network_name
+                                    == Some(private_network_name.clone())
+                                {
+                                    node.private_network_addr
+                                } else {
+                                    node.public_network_addr
+                                };
 
-                            // informs the new node to connect to the existing node
-                            match write_arc
-                                .lock()
-                                .await
-                                .send({
-                                    match rmp_serde::to_vec(&msg) {
-                                        Ok(buf) => Message::binary(buf),
-                                        Err(e) => {
-                                            error!(
-                                                "Failed to encode AddNode for {}: {}.",
-                                                node.id, e
-                                            );
-                                            continue;
+                                // sends an AddNode message to the new node
+                                let msg = ControllerToDataplane::AddNode {
+                                    remote_node_id: node.id as usize,
+                                    remote_addr: addr,
+                                };
+
+                                // informs the new node to connect to the existing node
+                                match write_arc
+                                    .lock()
+                                    .await
+                                    .send({
+                                        match rmp_serde::to_vec(&msg) {
+                                            Ok(buf) => Message::binary(buf),
+                                            Err(e) => {
+                                                error!(
+                                                    "Failed to encode AddNode for {}: {}.",
+                                                    node.id, e
+                                                );
+                                                continue;
+                                            }
                                         }
-                                    }
-                                })
-                                .await
-                            {
-                                Ok(_) => info!(
-                                    "Sent an AddNode message for node {} to node {}.",
-                                    node.id, node_id
-                                ),
-                                Err(e) => error!(
-                                    "Failed to send an AddNode message to node {}: {}.",
-                                    node_id, e
-                                ),
+                                    })
+                                    .await
+                                {
+                                    Ok(_) => info!(
+                                        "Sent an AddNode message for node {} to node {}.",
+                                        node.id, node_id
+                                    ),
+                                    Err(e) => error!(
+                                        "Failed to send an AddNode message to node {}: {}.",
+                                        node_id, e
+                                    ),
+                                }
                             }
                         }
 
