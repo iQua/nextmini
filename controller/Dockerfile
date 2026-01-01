@@ -1,11 +1,14 @@
-FROM rust:alpine AS build
+FROM rust:latest AS build
 
-RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
-    build-base \
-    openssl \
-    ca-certificates
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    bash \
+    build-essential \
+    libssl-dev \
+    ca-certificates \
+    pkg-config && \
+    rm -rf /var/lib/apt/lists/*
 
 # First, create directories and copy files
 WORKDIR /var/nextmini
@@ -17,25 +20,28 @@ WORKDIR /var/nextmini/server
 # Build the Rust controller
 RUN cargo build --release
 
-FROM alpine:latest
+FROM ubuntu:24.04
 
 ENV TZ=America/Toronto
+ENV DEBIAN_FRONTEND=noninteractive
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-RUN apk update && \
-    apk upgrade --no-cache && \
-    apk add curl bash \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl \
+    bash \
     openssh-client \
     openssh-server \
-    git\
+    git \
     vim \
-    build-base \
+    build-essential \
     net-tools \
     iputils-ping \
     iperf3 \
     openssl \
     ca-certificates \
-    htop
+    htop && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /var/nextmini
 COPY --from=build /var/nextmini/server/target/release/controller /var/nextmini/controller
