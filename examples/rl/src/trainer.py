@@ -111,7 +111,7 @@ class Trainer:
         try:
             from examples.lp.solver import (
                 build_graph_from_controller_config,
-                compute_tree_edges,
+                compute_mflow_tree_edges,
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -119,29 +119,17 @@ class Trainer:
             ) from exc
 
         graph = build_graph_from_controller_config(str(controller_path))
-
-        # Use configurable routing algorithm (mflow, cf_tree, or basic_tree)
-        result = compute_tree_edges(
+        edges, throughput = compute_mflow_tree_edges(
             graph,
             src=self.node_id,
             destinations=receiver_ids,
-            algorithm=config.ROUTING_ALGORITHM,
-            hop_limit=config.CF_TREE_HOP_LIMIT,
-            eta=config.CF_TREE_ETA,
         )
-
-        if not result.edges:
+        if not edges:
             raise RuntimeError(
-                f"Routing algorithm '{config.ROUTING_ALGORITHM}' returned no edges "
-                f"for src={self.node_id} dests={receiver_ids}"
+                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}"
             )
 
-        print(f"Routing algorithm: {result.algorithm}")
-        if result.lp_upper_bound is not None:
-            print(f"  LP upper bound: {result.lp_upper_bound:.3f}")
-        print(f"  Tree throughput: {result.throughput:.3f}" if result.throughput else "")
-
-        return result.edges, result.throughput
+        return edges, throughput
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
