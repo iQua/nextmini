@@ -31,9 +31,9 @@ govern fragmentation, telemetry, and group coordination.
 | Python type | Key members | Notes |
 | --- | --- | --- |
 | `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
-| `nextmini_py.FrozenBuffer` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
-| `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns `bytes` when the receiver was registered in raw mode or a `PayloadDelivery` object when `payload_only=True`. |
-| `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count`, `.payload_format` | Metadata-rich wrapper populated when payload-only receivers are used. Fragmentation metadata is only set when the feature flag is enabled. |
+| `nextmini_py.PacketView` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
+| `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns a `PayloadDelivery` object containing the payload and metadata. |
+| `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Metadata-rich wrapper returned by receivers. Fragmentation metadata fields are optional and may be `None`. |
 
 ## Dataplane lifecycle
 
@@ -51,33 +51,33 @@ multiple `Dataplane` objects inside one interpreter.
 
 ## Sending payloads
 
-All outbound APIs accept a `FrozenBuffer`. Creating one from NumPy or PyTorch tensors looks like:
+All outbound APIs accept a `PacketView`. Creating one from NumPy or PyTorch tensors looks like:
 
 ```python
 import numpy as np
 import nextmini_py as nm
 
-def frozen_from_tensor(tensor) -> nm.FrozenBuffer:
+def packet_view_from_tensor(tensor) -> nm.PacketView:
     host_tensor = tensor.detach().contiguous().cpu()
-    return nm.FrozenBuffer(host_tensor.numpy().tobytes())
+    return nm.PacketView(host_tensor.numpy().tobytes())
 
 dp = nm.Dataplane("/abs/path/to/node-config.toml")
-payload = frozen_from_tensor(loss_tensor)
+payload = packet_view_from_tensor(loss_tensor)
 dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
 `send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the lossless session APIs to transmit payloads.
 
-### Frozen buffers in detail
+### PacketView in detail
 
-`FrozenBuffer` keeps a reference-counted `Bytes` backing store so cloners are cheap. The object:
+`PacketView` keeps a reference-counted `Bytes` backing store so clones are cheap. The object:
 
 - Accepts any `bytes` value in its constructor.
-- Implements `memoryview(frozen_buffer)`/`np.frombuffer(...)` via the Python buffer protocol.
+- Implements `memoryview(packet_view)`/`np.frombuffer(...)` via the Python buffer protocol.
 - Provides `slice(start, length=None)` for zero-copy views into subranges.
 - Supplies `read()` if you need an owned `bytes` copy on the Python side.
 
-The Rust bindings treat a `FrozenBuffer` as immutable; if you need to mutate the payload, build a new instance.
+The Rust bindings treat a `PacketView` as immutable; if you need to mutate the payload, build a new instance.
 
 ## Receiving payloads
 
@@ -88,10 +88,7 @@ import numpy as np
 import nextmini_py as nm
 
 dp = nm.Dataplane("/abs/path/to/node-config.toml")
-rx = dp.register_receiver_from_node(
-    src_node_id=1,
-    payload_only=True,   # recommended
-)
+rx = dp.register_receiver_from_node(src_node_id=1)
 
 delivery = rx.recv(timeout_ms=5_000)
 if delivery:
@@ -99,10 +96,10 @@ if delivery:
     print("flow:", delivery.flow_id, "message:", delivery.message_id)
 ```
 
-- `payload_only=True` delivers `PayloadDelivery` objects whose `.payload` is already stripped of IPv4/TCP headers, and
-  whose metadata reflects the reconstructed message. Leave it at `False` for legacy tooling that expects raw packets.
-- `register_receiver_for_group(src_node_id=…, group_ip="239.1.1.1", payload_only=True)` uses the same interface for
-  multicast traffic.
+- Receivers deliver `PayloadDelivery` objects whose `.payload` is already stripped of IPv4/TCP headers, and
+  whose metadata reflects the reconstructed message.
+- `register_receiver_for_group(src_node_id=…, group_ip="239.1.1.1")` uses the same interface for
+  multicast traffic. Both methods accept optional `src_port` and `dst_port` parameters to override the defaults.
 - `PacketReceiver.recv(timeout_ms)` blocks until a payload becomes available or the deadline expires, returning `None`
   on timeout. `recv_async()` returns an awaitable compatible with `asyncio`.
 
@@ -154,10 +151,9 @@ dp = nm.Dataplane(os.environ["NEXTMINI_CONFIG"])
 tx = dp.send_to_node
 rx = dp.register_receiver_from_node(
     src_node_id=int(os.environ["NEXTMINI_DST_NODE"]),
-    payload_only=True,
 )
 
-frozen = nm.FrozenBuffer(loss_tensor.detach().contiguous().cpu().numpy().tobytes())
+frozen = nm.PacketView(loss_tensor.detach().contiguous().cpu().numpy().tobytes())
 tx(dst_node_id=int(os.environ["NEXTMINI_DST_NODE"]), frozen=frozen)
 maybe_delivery = rx.recv(timeout_ms=200)
 ```

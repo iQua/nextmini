@@ -100,7 +100,7 @@ the controller CLI:
 | `set_group_routes(group_id, edges)` | Persists DAG edges for a multicast group so the controller can install routes. |
 | `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)` | Blocks until multicast routes are installed on the local node. |
 | `join_group(group_id)` / `leave_group(group_id)` | Adds or drops the local node from the specified group. |
-| `register_receiver_for_group(src_node_id, group_ip, payload_only=False)` | Binds a Python-side queue to packets sourced from `src_node_id` and destined for `group_ip`. |
+| `register_receiver_for_group(src_node_id, group_ip, src_port=None, dst_port=None)` | Binds a Python-side queue to packets sourced from `src_node_id` and destined for `group_ip`. |
 
 Example sender workflow:
 
@@ -127,7 +127,6 @@ dp.join_group(group_id)
 rx = dp.register_receiver_for_group(
     src_node_id=1,
     group_ip=group_ip,
-    payload_only=True,
 )
 payload = rx.recv(timeout_ms=2_000)
 dp.leave_group(group_id)
