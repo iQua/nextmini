@@ -62,47 +62,29 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_edge_pairs_format() {
-        // Test format: [[1, 2], [2, 3], [3, 4]]
-        let toml_str = r#"edges = [[1, 2], [2, 3], [3, 4]]"#;
-        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+    fn test_deserialize_edge_pairs_formats() {
+        let cases = [
+            (r#"edges = [[1, 2]]"#, vec![(1, 2)]),
+            (r#"edges = [[1, 2], [2, 3], [3, 4]]"#, vec![(1, 2), (2, 3), (3, 4)]),
+        ];
 
-        assert_eq!(result.edges.len(), 3);
-        assert_eq!(result.edges[0], (1, 2));
-        assert_eq!(result.edges[1], (2, 3));
-        assert_eq!(result.edges[2], (3, 4));
+        for (toml_str, expected) in cases {
+            let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
+            assert_eq!(result.edges, expected);
+        }
     }
 
     #[test]
-    fn test_deserialize_node_sequence_format() {
-        // Test format: [1, 2, 3, 4]
-        let toml_str = r#"edges = [1, 2, 3, 4]"#;
-        let result: TestRouteNodeSeq = toml::from_str(toml_str).unwrap();
+    fn test_deserialize_node_sequence_formats() {
+        let cases = [
+            (r#"edges = [1, 2]"#, vec![(1, 2)]),
+            (r#"edges = [1, 2, 3, 4]"#, vec![(1, 2), (2, 3), (3, 4)]),
+        ];
 
-        assert_eq!(result.edges.len(), 3);
-        assert_eq!(result.edges[0], (1, 2));
-        assert_eq!(result.edges[1], (2, 3));
-        assert_eq!(result.edges[2], (3, 4));
-    }
-
-    #[test]
-    fn test_deserialize_single_edge() {
-        // Single edge route
-        let toml_str = r#"edges = [[1, 2]]"#;
-        let result: TestRouteEdgePairs = toml::from_str(toml_str).unwrap();
-
-        assert_eq!(result.edges.len(), 1);
-        assert_eq!(result.edges[0], (1, 2));
-    }
-
-    #[test]
-    fn test_deserialize_single_edge_node_seq() {
-        // Single edge as node sequence
-        let toml_str = r#"edges = [1, 2]"#;
-        let result: TestRouteNodeSeq = toml::from_str(toml_str).unwrap();
-
-        assert_eq!(result.edges.len(), 1);
-        assert_eq!(result.edges[0], (1, 2));
+        for (toml_str, expected) in cases {
+            let result: TestRouteNodeSeq = toml::from_str(toml_str).unwrap();
+            assert_eq!(result.edges, expected);
+        }
     }
 
     #[test]

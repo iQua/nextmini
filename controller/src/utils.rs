@@ -487,6 +487,13 @@ mod tests {
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
 
+    fn expect_install_routes(result: Option<ControllerToDataplane>) -> Vec<RoutingTableEntry> {
+        match result {
+            Some(ControllerToDataplane::InstallRoutes { routes }) => routes,
+            _ => panic!("Expected InstallRoutes message."),
+        }
+    }
+
     #[test]
     fn test_build_startup_response_defaults_node_spec() {
         let params = StartupResponseParams {
@@ -623,6 +630,51 @@ mod tests {
     }
 
     #[test]
+    fn test_build_flows_for_node_accepts_duration_without_rate_for_tcp() {
+        let flows = vec![
+            DbFlow {
+                id: 1,
+                src_node_id: 1,
+                dst_node_id: 2,
+                flow_len_type: "duration".to_string(),
+                flow_len_bytes: None,
+                flow_len_duration: Some(2.5),
+                flow_rate: None,
+                flow_weight: None,
+                is_finished: false,
+                is_probe: false,
+            },
+            DbFlow {
+                id: 2,
+                src_node_id: 2,
+                dst_node_id: 3,
+                flow_len_type: "bytes".to_string(),
+                flow_len_bytes: None,
+                flow_len_duration: None,
+                flow_rate: None,
+                flow_weight: None,
+                is_finished: false,
+                is_probe: false,
+            },
+        ];
+
+        let message = build_flows_for_node(flows, &[], FlowTransport::Tcp);
+        match message {
+            ControllerToDataplane::AddFlows { flows } => {
+                assert_eq!(flows.len(), 2);
+                let duration_flow = flows.iter().find(|f| f.controller_id == Some(1)).unwrap();
+                let bytes_flow = flows.iter().find(|f| f.controller_id == Some(2)).unwrap();
+
+                assert_eq!(duration_flow.flow_spec.flow_len, FlowLen::Duration(2.5));
+                assert_eq!(bytes_flow.flow_spec.flow_len, FlowLen::Bytes(0));
+                assert_eq!(duration_flow.route_id, None);
+                assert_eq!(bytes_flow.route_id, None);
+            }
+            _ => panic!("Expected AddFlows message."),
+        }
+    }
+
+    #[test]
     fn test_route_has_multiple_destinations_unicast_linear() {
         // Linear path: 1 -> 2 -> 3
         let route = Route {
@@ -718,6 +770,13 @@ mod tests {
     }
 
     #[test]
+    fn test_build_routes_from_topology_empty_edges() {
+        let protocol = Some(config::RoutingProtocol::ShortestPath);
+        let routes = build_routes_from_topology(&[], &protocol);
+        assert!(routes.is_empty());
+    }
+
+    #[test]
     fn test_build_routes_from_topology_shortest_path() {
         let protocol = Some(config::RoutingProtocol::ShortestPath);
         let routes = build_routes_from_topology(&[(1, 2)], &protocol);
@@ -729,6 +788,19 @@ mod tests {
         assert!(routes
             .iter()
             .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)]));
+    }
+
+    #[test]
+    fn test_build_routes_from_topology_multihop_path() {
+        let protocol = Some(config::RoutingProtocol::ShortestPath);
+        let routes = build_routes_from_topology(&[(1, 2), (2, 3)], &protocol);
+
+        assert!(routes
+            .iter()
+            .any(|(src, dst, edges)| *src == 1 && *dst == 3 && *edges == vec![(1, 2), (2, 3)]));
+        assert!(routes
+            .iter()
+            .any(|(src, dst, edges)| *src == 3 && *dst == 1 && *edges == vec![(3, 2), (2, 1)]));
     }
 
     #[test]
@@ -749,6 +821,20 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_all_routes_non_contiguous_node_ids() {
+        let mut config = config::Config::default();
+        config.routes = vec![config::Route {
+            route: vec![(10, 20), (20, 30)],
+        }];
+
+        let routes = merge_all_routes(&config);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].0, 10);
+        assert_eq!(routes[0].1, 30);
+        assert_eq!(routes[0].2, vec![(10, 20), (20, 30)]);
+    }
+
+    #[test]
     fn test_merge_all_routes_includes_topology_routes() {
         let mut config = config::Config::default();
         config.routing.protocol = Some(config::RoutingProtocol::ShortestPath);
@@ -765,8 +851,26 @@ mod tests {
     }
 
     #[test]
-    fn test_build_routes_for_node_unicast_mode() {
-        // Test that unicast routes get RouteForwardingMode::Unicast
+    fn test_build_routes_for_node_empty_routes() {
+        let result = build_routes_for_node(Vec::new(), 1);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_routes_for_node_empty_edges_skipped() {
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 2,
+            edges: Vec::new(),
+        }];
+
+        let result = build_routes_for_node(routes, 1);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_build_routes_for_node_unicast_entries() {
         let routes = vec![Route {
             route_id: 1,
             src_node_id: 1,
@@ -774,42 +878,20 @@ mod tests {
             edges: vec![(1, 2), (2, 3)],
         }];
 
-        let result = build_routes_for_node(routes, 1);
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+        let cases = [(1, vec![2]), (3, vec![3])];
+        for (node_id, expected_next_hops) in cases {
+            let entries = expect_install_routes(build_routes_for_node(routes.clone(), node_id));
             assert_eq!(entries.len(), 1);
             let entry = &entries[0];
             assert_eq!(entry.route_id, 1);
             assert_eq!(entry.src_node_id, 1);
             assert_eq!(entry.dst_node_id, 3);
             assert!(matches!(entry.forward_mode, RouteForwardingMode::Unicast));
-            // Node 1 is the source, should have next_hop to node 2
-            assert_eq!(entry.next_hops, vec![2]);
-        } else {
-            panic!("Expected InstallRoutes message.");
+            assert_eq!(entry.next_hops, expected_next_hops);
         }
-    }
 
-    #[test]
-    fn test_build_routes_for_node_unicast_destination_local_delivery() {
-        let routes = vec![Route {
-            route_id: 1,
-            src_node_id: 1,
-            dst_node_id: 3,
-            edges: vec![(1, 2), (2, 3)],
-        }];
-
-        let result = build_routes_for_node(routes, 3);
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
-            let entry = &entries[0];
-            assert!(matches!(entry.forward_mode, RouteForwardingMode::Unicast));
-            assert_eq!(entry.next_hops, vec![3]);
-        } else {
-            panic!("Expected InstallRoutes message.");
-        }
+        let result = build_routes_for_node(routes, 5);
+        assert!(result.is_none());
     }
 
     #[test]
@@ -821,45 +903,12 @@ mod tests {
             edges: vec![(1, 2), (1, 2)],
         }];
 
-        let result = build_routes_for_node(routes, 1);
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
-            let entry = &entries[0];
-            assert_eq!(entry.next_hops, vec![2]);
-        } else {
-            panic!("Expected InstallRoutes message.");
-        }
+        let entries = expect_install_routes(build_routes_for_node(routes, 1));
+        assert_eq!(entries[0].next_hops, vec![2]);
     }
 
     #[test]
-    fn test_build_routes_for_node_multicast_mode() {
-        // Test that multicast routes get RouteForwardingMode::Multicast
-        let routes = vec![Route {
-            route_id: 1,
-            src_node_id: 1,
-            dst_node_id: 3,
-            edges: vec![(1, 2), (2, 3), (2, 4)], // Multicast to both 3 and 4
-        }];
-
-        let result = build_routes_for_node(routes, 1);
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
-            assert_eq!(entries.len(), 1);
-            let entry = &entries[0];
-            assert_eq!(entry.route_id, 1);
-            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
-            // Node 1 should have next_hop to node 2
-            assert_eq!(entry.next_hops, vec![2]);
-        } else {
-            panic!("Expected InstallRoutes message.");
-        }
-    }
-
-    #[test]
-    fn test_build_routes_for_node_multicast_intermediate_node() {
-        // Test multicast routing table for intermediate node with multiple next hops
+    fn test_build_routes_for_node_multicast_entries() {
         let routes = vec![Route {
             route_id: 1,
             src_node_id: 1,
@@ -867,88 +916,23 @@ mod tests {
             edges: vec![(1, 2), (2, 3), (2, 4)],
         }];
 
-        let result = build_routes_for_node(routes, 2);
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+        let cases = [
+            (1, vec![2]),
+            (2, vec![3, 4]),
+            (3, vec![3]),
+            (4, vec![4]),
+        ];
+        for (node_id, mut expected_next_hops) in cases {
+            let entries = expect_install_routes(build_routes_for_node(routes.clone(), node_id));
             assert_eq!(entries.len(), 1);
             let entry = &entries[0];
             assert_eq!(entry.route_id, 1);
             assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
-            // Node 2 is the branch point, should have next_hops to both 3 and 4
-            let mut next_hops = entry.next_hops.clone();
-            next_hops.sort();
-            assert_eq!(next_hops, vec![3, 4]);
-        } else {
-            panic!("Expected InstallRoutes message.");
+            expected_next_hops.sort();
+            let mut actual_next_hops = entry.next_hops.clone();
+            actual_next_hops.sort();
+            assert_eq!(actual_next_hops, expected_next_hops);
         }
-    }
-
-    #[test]
-    fn test_build_routes_for_node_multicast_destination() {
-        // Test multicast routing table for a destination node
-        let routes = vec![Route {
-            route_id: 1,
-            src_node_id: 1,
-            dst_node_id: 3,
-            edges: vec![(1, 2), (2, 3), (2, 4)],
-        }];
-
-        let result = build_routes_for_node(routes, 3);
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
-            assert_eq!(entries.len(), 1);
-            let entry = &entries[0];
-            assert_eq!(entry.route_id, 1);
-            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
-            // Node 3 is a destination, should have next_hop to itself
-            assert_eq!(entry.next_hops, vec![3]);
-        } else {
-            panic!("Expected InstallRoutes message.");
-        }
-    }
-
-    #[test]
-    fn test_build_routes_for_node_multicast_second_destination() {
-        // Test multicast routing table for the second destination node (not in dst_node_id)
-        // This test verifies the fix for the multicast bug where only the first destination
-        let routes = vec![Route {
-            route_id: 1,
-            src_node_id: 1,
-            dst_node_id: 3, // dst_node_id only records the first destination
-            edges: vec![(1, 2), (2, 3), (2, 4)], // but edges include path to node 4
-        }];
-
-        let result = build_routes_for_node(routes, 4); // Test node 4
-        assert!(result.is_some());
-
-        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
-            assert_eq!(entries.len(), 1);
-            let entry = &entries[0];
-            assert_eq!(entry.route_id, 1);
-            assert!(matches!(entry.forward_mode, RouteForwardingMode::Multicast));
-            assert_eq!(entry.next_hops, vec![4]);
-        } else {
-            panic!("Expected InstallRoutes message.");
-        }
-    }
-
-    #[test]
-    fn test_build_routes_for_node_not_in_route() {
-        // Test routing table for a node not in the route
-        let routes = vec![Route {
-            route_id: 1,
-            src_node_id: 1,
-            dst_node_id: 3,
-            edges: vec![(1, 2), (2, 3)],
-        }];
-
-        let result = build_routes_for_node(routes, 5); // Node 5 is not in the route
-        assert!(
-            result.is_none(),
-            "Nodes that are not part of a route should not receive dummy entries"
-        );
     }
 
     #[test]
@@ -1080,11 +1064,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_group_routes_for_node_member_without_edges() {
-        let dag_edges = Vec::new();
+    fn test_build_group_routes_for_node_member_not_in_graph() {
         let member_nodes = HashSet::from_iter([9u32]);
+        let cases = [Vec::new(), vec![(1, 2)]];
 
-        let entry = build_group_routes_for_node(7, 1, &dag_edges, 9, &member_nodes).unwrap();
-        assert_eq!(entry.next_hops, vec![9]);
+        for dag_edges in cases {
+            let entry = build_group_routes_for_node(7, 1, &dag_edges, 9, &member_nodes).unwrap();
+            assert_eq!(entry.next_hops, vec![9]);
+        }
     }
 }
