@@ -9,7 +9,9 @@ networks:
 services:
   postgres:
     container_name: postgres
-    image: postgres:latest
+    build:
+      context: .
+      dockerfile: postgres.Dockerfile
     hostname: postgres
     # command: postgres -c max_connections=<number_of_max_connections> -c shared_preload_libraries=pg_stat_statements
     environment:
