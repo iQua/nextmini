@@ -426,84 +426,103 @@ async fn handle_connection(
                             }
                         }
 
-                        // installs routes
-                        let needs_routes =
-                            config.routing.protocol.is_some() || !config.routes.is_empty();
-                        if needs_routes {
-                            info!("Installing routes for node {}.", node_id);
+                        // installs routes (always send, even if empty, so dataplane can mark routes_installed)
+                        info!("Installing routes for node {}.", node_id);
 
-                            let routes = match sqlx::query_as(
-                                r#"SELECT route_id, src_node_id, dst_node_id, edges FROM routes"#,
-                            )
-                            .fetch_all(&*db_pool)
-                            .await
-                            {
-                                Ok(rows) => rows
-                                    .into_iter()
-                                    .map(|row: DbRoute| {
-                                        // converts i32 to u32 edges
-                                        let edges: Vec<(i32, i32)> =
-                                            serde_json::from_value(row.edges.clone())
-                                                .unwrap_or_default();
-                                        let edges: Vec<(u32, u32)> = edges
-                                            .into_iter()
-                                            .map(|(a, b)| (a as u32, b as u32))
-                                            .collect();
+                        let routes = match sqlx::query_as(
+                            r#"SELECT route_id, src_node_id, dst_node_id, edges FROM routes"#,
+                        )
+                        .fetch_all(&*db_pool)
+                        .await
+                        {
+                            Ok(rows) => rows
+                                .into_iter()
+                                .map(|row: DbRoute| {
+                                    // converts i32 to u32 edges
+                                    let edges: Vec<(i32, i32)> =
+                                        serde_json::from_value(row.edges.clone())
+                                            .unwrap_or_default();
+                                    let edges: Vec<(u32, u32)> = edges
+                                        .into_iter()
+                                        .map(|(a, b)| (a as u32, b as u32))
+                                        .collect();
 
-                                        Route {
-                                            route_id: row.route_id as usize,
-                                            src_node_id: row.src_node_id as u32,
-                                            dst_node_id: row.dst_node_id as u32,
-                                            edges,
-                                        }
-                                    })
-                                    .collect::<Vec<_>>(),
-                                Err(e) => {
-                                    error!(
-                                        "Failed to fetch routes for node {}: {}. Skipping route installation.",
-                                        node_id, e
-                                    );
-                                    Vec::new() // Continue with empty route list
-                                }
-                            };
-
-                            if let Some(msg) = build_routes_for_node(routes, node_id as u32) {
-                                match write_arc
-                                    .lock()
-                                    .await
-                                    .send({
-                                        match rmp_serde::to_vec(&msg) {
-                                            Ok(buf) => Message::binary(buf),
-                                            Err(e) => {
-                                                error!(
-                                                    "Failed to encode InstallRoutes for {}: {}.",
-                                                    node_id, e
-                                                );
-                                                continue;
-                                            }
-                                        }
-                                    })
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        info!("Sent an InstallRoutes message to node {}.", node_id)
+                                    Route {
+                                        route_id: row.route_id as usize,
+                                        src_node_id: row.src_node_id as u32,
+                                        dst_node_id: row.dst_node_id as u32,
+                                        edges,
                                     }
-                                    Err(e) => error!(
-                                        "Failed to send InstallRoutes message to node {}: {}.",
-                                        node_id, e
-                                    ),
-                                }
+                                })
+                                .collect::<Vec<_>>(),
+                            Err(e) => {
+                                error!(
+                                    "Failed to fetch routes for node {}: {}. Sending empty route list.",
+                                    node_id, e
+                                );
+                                Vec::new()
                             }
+                        };
+
+                        // Always send InstallRoutes (even empty) so dataplane sets routes_installed = true
+                        let msg = build_routes_for_node(routes, node_id as u32)
+                            .unwrap_or(ControllerToDataplane::InstallRoutes { routes: vec![] });
+                        match write_arc
+                            .lock()
+                            .await
+                            .send({
+                                match rmp_serde::to_vec(&msg) {
+                                    Ok(buf) => Message::binary(buf),
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to encode InstallRoutes for {}: {}.",
+                                            node_id, e
+                                        );
+                                        continue;
+                                    }
+                                }
+                            })
+                            .await
+                        {
+                            Ok(_) => {
+                                info!("Sent an InstallRoutes message to node {}.", node_id)
+                            }
+                            Err(e) => error!(
+                                "Failed to send InstallRoutes message to node {}: {}.",
+                                node_id, e
+                            ),
                         }
 
-                        if multicast_snapshot_needed
-                            && let Err(e) =
+                        if multicast_snapshot_needed {
+                            if let Err(e) =
                                 send_multicast_state_to_node(&db_pool, node_id, &write_arc).await
-                        {
-                            error!(
-                                "Failed to send multicast state to node {} during startup: {}.",
-                                node_id, e
-                            );
+                            {
+                                error!(
+                                    "Failed to send multicast state to node {} during startup: {}.",
+                                    node_id, e
+                                );
+                            }
+                        } else {
+                            let message =
+                                ControllerToDataplane::InstallGroupDirectory { groups: Vec::new() };
+                            match rmp_serde::to_vec(&message) {
+                                Ok(payload) => {
+                                    if let Err(e) =
+                                        write_arc.lock().await.send(Message::binary(payload)).await
+                                    {
+                                        error!(
+                                            "Failed to send InstallGroupDirectory to node {}: {}",
+                                            node_id, e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to encode InstallGroupDirectory for node {}: {}",
+                                        node_id, e
+                                    );
+                                }
+                            }
                         }
 
                         // as a new node connects, checks if all the expected nodes are now connected
