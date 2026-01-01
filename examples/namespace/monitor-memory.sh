@@ -97,6 +97,9 @@ echo "--- Summary ---"
 } | tee -a "$memory_report"
 
 echo "Report appended to: $memory_report"
-echo ""
-echo "Press Enter to close this pane..."
-read -r
+
+if [[ -n "${TMUX:-}" ]]; then
+  echo ""
+  echo "Press Enter to close this pane..."
+  read -r
+fi

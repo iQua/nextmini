@@ -91,7 +91,7 @@ async fn main() {
     let expected_node_count = config.topology.compute_node_count().unwrap_or(1024);
     let db_pool = Arc::new(init_db(&config).await);
 
-    let listen_backlog = expected_node_count.saturating_mul(2).max(1024).min(131_072) as u32;
+    let listen_backlog = expected_node_count.saturating_mul(2).clamp(1024, 131_072) as u32;
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = match TcpSocket::new_v4().and_then(|socket| {
         let _ = socket.set_reuseaddr(true);

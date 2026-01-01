@@ -237,8 +237,7 @@ impl NamespaceManager {
 
             // prepares bridge shard + a fresh veth pair (bridge creation is idempotent)
             let mut attempts: u32 = 0;
-            let mut prepared: Option<(String, String, u32, u32, u32)> = None;
-            loop {
+            let prepared = loop {
                 if shard_node_idx >= max_nodes_per_shard {
                     shard += 1;
                     shard_node_idx = 0;
@@ -248,7 +247,7 @@ impl NamespaceManager {
                 if shard_base.saturating_add(shard_size as u64) > u32::MAX as u64 {
                     error!("Out of address space: increase bridge_ip range or reduce n_nodes.");
                     spawn_failed = true;
-                    break 'spawn;
+                    break None;
                 }
 
                 let bridge_name = bridge_name_for_shard(&self.config.bridge_name, shard);
@@ -267,14 +266,13 @@ impl NamespaceManager {
                     idx,
                 )) {
                     Ok((bridge_idx_val, veth_index, veth2_index)) => {
-                        prepared = Some((
+                        break Some((
                             bridge_ip.to_string(),
                             ns_ip.to_string(),
                             bridge_idx_val,
                             veth_index,
                             veth2_index,
                         ));
-                        break;
                     }
                     Err(e) => {
                         attempts += 1;
@@ -301,7 +299,7 @@ impl NamespaceManager {
                                 idx, attempts
                             );
                             spawn_failed = true;
-                            break 'spawn;
+                            break None;
                         }
 
                         rt.block_on(async {
@@ -310,7 +308,7 @@ impl NamespaceManager {
                         });
                     }
                 }
-            }
+            };
 
             let Some((bridge_ip, ns_ip, bridge_idx_val, veth_idx, veth2_idx)) = prepared else {
                 spawn_failed = true;

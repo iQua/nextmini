@@ -163,13 +163,15 @@ signal_file="/tmp/nextmini-start-signal-$$"
 compose_dir="$(dirname "$compose_file")"
 compose_cmd="cd \"$compose_dir\" && docker compose -f \"$compose_file\" up --build"
 
-dataplane_cmd="cd \"$root_dir\" && ulimit -u 20000 && ulimit -n 200000 && cargo build -p nextmini --release"
+build_cmd="cd \"$root_dir\" && ulimit -u 20000 && ulimit -n 200000 && cargo build -p nextmini --release"
+run_cmd="cd \"$root_dir\" && ulimit -u 20000 && ulimit -n 200000 && sudo -E RUST_LOG=\"$log_level\" ./target/release/nextmini --config-path \"$config_path\""
+dataplane_cmd="$build_cmd"
 if [[ "$monitor_memory" == "true" ]]; then
   dataplane_cmd+=" && echo 'Waiting for memory monitor to record baseline...'"
   dataplane_cmd+=" && while [ ! -f \"$signal_file\" ]; do sleep 0.5; done"
   dataplane_cmd+=" && rm -f \"$signal_file\""
 fi
-dataplane_cmd+=" && sudo -E RUST_LOG=\"$log_level\" ./target/release/nextmini --config-path \"$config_path\""
+dataplane_cmd+=" && $run_cmd"
 if [[ -n "$n_nodes" ]]; then
   dataplane_cmd+=" --n-nodes \"$n_nodes\""
 fi
