@@ -46,7 +46,8 @@ pub enum Feature {
 #[command(author, version, about)]
 pub struct Args {
     /// The address of the controller to connect to (e.g., 128.100.100.128).
-    pub controller_addr: Option<String>,
+    #[arg(value_name = "CONTROLLER_ADDR")]
+    pub controller_addr_override: Option<String>,
 
     /// The path to the configuration file.
     #[arg(short, long, default_value = "config.toml")]
@@ -64,6 +65,11 @@ pub struct LocalConfig {
     #[default("".to_string())]
     #[arg(long)]
     pub controller_addr: String,
+
+    /// Timeout (ms) for establishing the initial WebSocket connection to the controller.
+    #[default(5000)]
+    #[arg(skip)]
+    pub controller_connect_timeout_ms: u64,
 
     /// The path of the configuration file.
     /// This is used to remember which config file produced this configuration so namespace children can reuse it.
@@ -369,12 +375,16 @@ impl LocalConfig {
         let external_base = u32::from(self.external_base_addr);
 
         match ip_addr & netmask {
-            subnet if subnet == (tun_base & netmask) => (ip_addr - tun_base) as NodeId,
-            subnet if subnet == (user_space_base & netmask) => {
+            subnet if subnet == (tun_base & netmask) && ip_addr >= tun_base => {
+                (ip_addr - tun_base) as NodeId
+            }
+            subnet if subnet == (user_space_base & netmask) && ip_addr >= user_space_base => {
                 (ip_addr - user_space_base) as NodeId
             }
             // binds the external client/server address to the node ID
-            subnet if subnet == (external_base & netmask) => (ip_addr - external_base) as NodeId,
+            subnet if subnet == (external_base & netmask) && ip_addr >= external_base => {
+                (ip_addr - external_base) as NodeId
+            }
             _ => INVALID,
         }
     }
@@ -430,7 +440,7 @@ impl LocalConfig {
             }
         };
 
-        let controller_addr_args = args.controller_addr;
+        let controller_addr_args = args.controller_addr_override;
 
         // remembers which config file produced this configuration so namespace children can reuse it
         cfgs.config_path = args.config_path.clone();
@@ -447,9 +457,25 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
+        cfgs.normalize_controller_addr();
         cfgs.populate_runtime_defaults();
 
         cfgs
+    }
+
+    fn normalize_controller_addr(&mut self) {
+        let trimmed = self.controller_addr.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+
+        // Allow controller_addr to be specified as either a full websocket URL (ws:// / wss://)
+        // or as a host:port pair (e.g., 127.0.0.1:3000).
+        if trimmed.contains("://") {
+            self.controller_addr = trimmed.to_string();
+        } else {
+            self.controller_addr = format!("ws://{trimmed}");
+        }
     }
 
     /// Populates runtime-derived defaults such as interface addresses when they are missing.
@@ -486,30 +512,44 @@ impl LocalConfig {
             // obtains the ipv4 address of the dataplane node
             self.private_network_addr = ipv4addr;
 
-            // computes the node_id from private_network_addr using external_base_addr
-            if let Ok(real_ip) = self.private_network_addr.parse::<Ipv4Addr>() {
-                let ip = u32::from(real_ip);
-                // external_base_addr is used to compute the node_id
-                // as it has the same prefix with the private_network_addr
-                let base = u32::from(self.external_base_addr);
-                let computed_node_id = (ip - base) as NodeId;
-                if computed_node_id != 0 && self.node_id == 0 {
-                    self.node_id = computed_node_id;
-                    info!(
-                        "From real IP {} using external_base_addr, node_id is: {}.",
-                        self.private_network_addr, self.node_id
-                    );
-                } else if self.node_id != 0 {
-                    info!(
-                        "Using configured node_id: {}, ignoring computed node_id: {} from IP {}.",
-                        self.node_id, computed_node_id, self.private_network_addr
+            if self.node_id == 0 && self.n_nodes == 1 {
+                // Computes node_id from private_network_addr using external_base_addr for external
+                // client/server deployments. Only do this when the real IP shares the same prefix
+                // as external_base_addr; otherwise the subtraction underflows and produces a huge ID.
+                if let Ok(real_ip) = self.private_network_addr.parse::<Ipv4Addr>() {
+                    let ip = u32::from(real_ip);
+                    let base = u32::from(self.external_base_addr);
+                    let netmask = u32::from(self.local_netmask);
+
+                    let same_subnet = (ip & netmask) == (base & netmask);
+                    if same_subnet && ip >= base {
+                        let computed_node_id = (ip - base) as NodeId;
+                        if computed_node_id != 0 {
+                            self.node_id = computed_node_id;
+                            info!(
+                                "From real IP {} using external_base_addr, node_id is: {}.",
+                                self.private_network_addr, self.node_id
+                            );
+                        }
+                    } else if !same_subnet {
+                        warn!(
+                            "Real IP {} does not match external_base_addr {} under netmask {}; \
+                            leaving node_id unset. Set node_id explicitly if needed.",
+                            real_ip, self.external_base_addr, self.local_netmask
+                        );
+                    } else {
+                        warn!(
+                            "Real IP {} is lower than external_base_addr {} under netmask {}; \
+                            leaving node_id unset. Set node_id explicitly if needed.",
+                            real_ip, self.external_base_addr, self.local_netmask
+                        );
+                    }
+                } else if !self.private_network_addr.is_empty() {
+                    error!(
+                        "Failed to parse private_network_addr as Ipv4Addr: {}.",
+                        self.private_network_addr
                     );
                 }
-            } else if !self.private_network_addr.is_empty() {
-                error!(
-                    "Failed to parse private_network_addr as Ipv4Addr: {}.",
-                    self.private_network_addr
-                );
             }
         }
 
@@ -692,6 +732,7 @@ fn default_netmask() -> Ipv4Addr {
 #[cfg(test)]
 mod tests {
     use super::LocalConfig;
+    use std::net::Ipv4Addr;
     use std::time::Duration;
 
     #[test]
@@ -730,5 +771,34 @@ mod tests {
         let (_, gap, backlog) = cfg.reorder_tolerances();
         assert_eq!(gap, None);
         assert_eq!(backlog, 0);
+    }
+
+    #[test]
+    fn normalize_controller_addr_prepends_ws_scheme_when_missing() {
+        let mut cfg = LocalConfig {
+            controller_addr: "127.0.0.1:3000".to_string(),
+            ..Default::default()
+        };
+
+        cfg.normalize_controller_addr();
+        assert_eq!(cfg.controller_addr, "ws://127.0.0.1:3000");
+    }
+
+    #[test]
+    fn normalize_controller_addr_keeps_existing_scheme() {
+        let mut cfg = LocalConfig {
+            controller_addr: "wss://controller.example:3000".to_string(),
+            ..Default::default()
+        };
+
+        cfg.normalize_controller_addr();
+        assert_eq!(cfg.controller_addr, "wss://controller.example:3000");
+    }
+
+    #[test]
+    fn ip_to_node_id_returns_invalid_when_ip_below_external_base() {
+        let cfg = LocalConfig::default();
+        let ip = Ipv4Addr::new(172, 16, 8, 2); // below default external_base_addr (172.16.8.3)
+        assert_eq!(cfg.ip_to_node_id(ip), nextmini_messages::INVALID);
     }
 }

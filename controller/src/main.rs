@@ -45,6 +45,44 @@ type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
 pub type WebSocketWriter = SplitSink<WebSocketStream<TcpStream>, Message>;
 pub type NodeWriterMap = Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>;
 
+struct ConnectionContext {
+    db_pool: Arc<Pool<Postgres>>,
+    config: Config,
+    node_ws: NodeWriterMap,
+    new_node_connected_sender: broadcast::Sender<TopologyEvent>,
+    topology_neighbors: Arc<Vec<Vec<i32>>>,
+    multicast_snapshot_needed: bool,
+}
+
+fn build_neighbor_index(edges: &[(u32, u32)]) -> Vec<Vec<i32>> {
+    let mut max_node_id = 0usize;
+    for &(a, b) in edges {
+        max_node_id = max_node_id.max(a as usize).max(b as usize);
+    }
+
+    let mut neighbors: Vec<Vec<i32>> = vec![Vec::new(); max_node_id.saturating_add(1)];
+    for &(a, b) in edges {
+        let a = a as usize;
+        let b = b as usize;
+
+        if a < neighbors.len() {
+            neighbors[a].push(b as i32);
+        }
+        if b < neighbors.len() {
+            neighbors[b].push(a as i32);
+        }
+    }
+
+    for list in &mut neighbors {
+        if list.len() > 1 {
+            list.sort_unstable();
+            list.dedup();
+        }
+    }
+
+    neighbors
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
@@ -64,9 +102,29 @@ async fn main() {
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
 
+    let topology_edges = topology::topo::build_topology(&config).unwrap_or_default();
+    let topology_neighbors = Arc::new(build_neighbor_index(&topology_edges));
+    let multicast_snapshot_needed = match sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM groups) OR EXISTS (SELECT 1 FROM group_routes)",
+    )
+    .fetch_one(&*db_pool)
+    .await
+    {
+        Ok(enabled) => enabled,
+        Err(e) => {
+            warn!(
+                "Failed to determine multicast snapshot state ({}); sending snapshots by default.",
+                e
+            );
+            true
+        }
+    };
+
     // Set up a channel for a background task to process the event as a new node connects.
+    let expected_node_count = config.topology.compute_node_count().unwrap_or(1024);
+    let event_capacity = expected_node_count.saturating_mul(2).max(1024);
     let (new_node_connected_sender, new_node_connected_receiver) =
-        broadcast::channel::<TopologyEvent>(100);
+        broadcast::channel::<TopologyEvent>(event_capacity);
 
     // Spawn the centralized node connection coordinator.
     tokio::spawn(new_node_connected(
@@ -100,38 +158,51 @@ async fn main() {
 
         info!("New connection from {}.", peer);
 
-        let ws_stream = match accept_async(stream).await {
-            Ok(ws) => ws,
-            Err(e) => {
-                error!(
-                    "Failed to accept WebSocket connection from {}: {}. Skipping.",
-                    peer, e
-                );
-                continue;
-            }
+        let db_pool = Arc::clone(&db_pool);
+        let config = config.clone();
+        let node_ws = Arc::clone(&node_ws);
+        let new_node_connected_sender = new_node_connected_sender.clone();
+        let topology_neighbors = Arc::clone(&topology_neighbors);
+        let context = ConnectionContext {
+            db_pool,
+            config,
+            node_ws,
+            new_node_connected_sender,
+            topology_neighbors,
+            multicast_snapshot_needed,
         };
 
-        let (write, read) = ws_stream.split();
+        tokio::spawn(async move {
+            let ws_stream = match accept_async(stream).await {
+                Ok(ws) => ws,
+                Err(e) => {
+                    error!(
+                        "Failed to accept WebSocket connection from {}: {}. Skipping.",
+                        peer, e
+                    );
+                    return;
+                }
+            };
 
-        tokio::spawn(handle_connection(
-            read,
-            write,
-            Arc::clone(&db_pool),
-            config.clone(),
-            Arc::clone(&node_ws),
-            new_node_connected_sender.clone(),
-        ));
+            let (write, read) = ws_stream.split();
+            handle_connection(read, write, context).await;
+        });
     }
 }
 
 async fn handle_connection(
     mut read: WebSocketReader,
     write: WebSocketWriter,
-    db_pool: Arc<Pool<Postgres>>,
-    config: Config,
-    node_ws: NodeWriterMap,
-    new_node_connected_sender: broadcast::Sender<TopologyEvent>,
+    context: ConnectionContext,
 ) {
+    let ConnectionContext {
+        db_pool,
+        config,
+        node_ws,
+        new_node_connected_sender,
+        topology_neighbors,
+        multicast_snapshot_needed,
+    } = context;
     let write_arc = Arc::new(Mutex::new(write));
     let mut current_node_id = None;
 
@@ -282,48 +353,32 @@ async fn handle_connection(
 
                         current_node_id = Some(node_id);
 
-                        // asks the new node to connect to other nodes in the route
+                        // fetch neighbor nodes only (instead of scanning the whole node table)
+                        let neighbor_ids =
+                            topology_neighbors.get(node_id).cloned().unwrap_or_default();
 
-                        // first fetches all nodes from the database
-                        let nodes: Vec<Node> = match sqlx::query_as("SELECT * FROM nodes")
-                            .fetch_all(&*db_pool)
-                            .await
+                        if neighbor_ids.is_empty() {
+                            continue;
+                        }
+                        let nodes: Vec<Node> = match sqlx::query_as(
+                            "SELECT * FROM nodes WHERE id = ANY($1)",
+                        )
+                        .bind(&neighbor_ids)
+                        .fetch_all(&*db_pool)
+                        .await
                         {
                             Ok(nodes) => nodes,
                             Err(e) => {
                                 error!(
-                                    "Failed to fetch nodes for node {}: {}. Skipping neighbor setup.",
+                                    "Failed to fetch neighbor nodes for node {}: {}. Skipping neighbor setup.",
                                     node_id, e
                                 );
-                                Vec::new() // Continue with empty node list
+                                Vec::new()
                             }
                         };
 
-                        // gets the topology edges
-                        let topology_edges =
-                            topology::topo::build_topology(&config).unwrap_or_default();
-
-                        // collects neighbors of the new node
-                        let mut neighbors: HashSet<i32> = HashSet::new();
-
-                        for &(a, b) in &topology_edges {
-                            if a == node_id as u32 {
-                                neighbors.insert(b as i32);
-                            } else if b == node_id as u32 {
-                                neighbors.insert(a as i32);
-                            }
-                        }
-
                         // establishes connections between the new node and its neighbors by sending AddNode messages
                         for node in nodes {
-                            if node.id == node_id as i32 {
-                                continue;
-                            }
-
-                            if !neighbors.contains(&node.id) {
-                                continue;
-                            }
-
                             // determines the address to use (private or public)
                             // if two nodes share the same private network name, then we use the private
                             // network address for this connection; otherwise, we use the public network
@@ -371,7 +426,7 @@ async fn handle_connection(
                             }
                         }
 
-                        // installs routes
+                        // installs routes (always send, even if empty, so dataplane can mark routes_installed)
                         info!("Installing routes for node {}.", node_id);
 
                         let routes = match sqlx::query_as(
@@ -402,50 +457,72 @@ async fn handle_connection(
                                 .collect::<Vec<_>>(),
                             Err(e) => {
                                 error!(
-                                    "Failed to fetch routes for node {}: {}. Skipping route installation.",
+                                    "Failed to fetch routes for node {}: {}. Sending empty route list.",
                                     node_id, e
                                 );
-                                Vec::new() // Continue with empty route list
+                                Vec::new()
                             }
                         };
 
-                        if let Some(msg) = build_routes_for_node(routes, node_id as u32) {
-                            match write_arc
-                                .lock()
-                                .await
-                                .send({
-                                    match rmp_serde::to_vec(&msg) {
-                                        Ok(buf) => Message::binary(buf),
-                                        Err(e) => {
-                                            error!(
-                                                "Failed to encode InstallRoutes for {}: {}.",
-                                                node_id, e
-                                            );
-                                            continue;
-                                        }
+                        // Always send InstallRoutes (even empty) so dataplane sets routes_installed = true
+                        let msg = build_routes_for_node(routes, node_id as u32)
+                            .unwrap_or(ControllerToDataplane::InstallRoutes { routes: vec![] });
+                        match write_arc
+                            .lock()
+                            .await
+                            .send({
+                                match rmp_serde::to_vec(&msg) {
+                                    Ok(buf) => Message::binary(buf),
+                                    Err(e) => {
+                                        error!(
+                                            "Failed to encode InstallRoutes for {}: {}.",
+                                            node_id, e
+                                        );
+                                        continue;
                                     }
-                                })
-                                .await
-                            {
-                                Ok(_) => {
-                                    info!("Sent an InstallRoutes message to node {}.", node_id)
                                 }
-                                Err(e) => error!(
-                                    "Failed to send InstallRoutes message to node {}: {}.",
-                                    node_id, e
-                                ),
+                            })
+                            .await
+                        {
+                            Ok(_) => {
+                                info!("Sent an InstallRoutes message to node {}.", node_id)
                             }
-                        } else {
-                            error!("No routes to install for node {}.", node_id);
+                            Err(e) => error!(
+                                "Failed to send InstallRoutes message to node {}: {}.",
+                                node_id, e
+                            ),
                         }
 
-                        if let Err(e) =
-                            send_multicast_state_to_node(&db_pool, node_id, &write_arc).await
-                        {
-                            error!(
-                                "Failed to send multicast state to node {} during startup: {}.",
-                                node_id, e
-                            );
+                        if multicast_snapshot_needed {
+                            if let Err(e) =
+                                send_multicast_state_to_node(&db_pool, node_id, &write_arc).await
+                            {
+                                error!(
+                                    "Failed to send multicast state to node {} during startup: {}.",
+                                    node_id, e
+                                );
+                            }
+                        } else {
+                            let message =
+                                ControllerToDataplane::InstallGroupDirectory { groups: Vec::new() };
+                            match rmp_serde::to_vec(&message) {
+                                Ok(payload) => {
+                                    if let Err(e) =
+                                        write_arc.lock().await.send(Message::binary(payload)).await
+                                    {
+                                        error!(
+                                            "Failed to send InstallGroupDirectory to node {}: {}",
+                                            node_id, e
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to encode InstallGroupDirectory for node {}: {}",
+                                        node_id, e
+                                    );
+                                }
+                            }
                         }
 
                         // as a new node connects, checks if all the expected nodes are now connected
