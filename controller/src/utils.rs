@@ -481,94 +481,145 @@ pub fn build_routes_for_node(routes: Vec<Route>, node_id: u32) -> Option<Control
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Route;
+    use crate::config;
+    use crate::models::{DbFlow, DbFlowRoute, Route};
+    use nextmini_messages::{FlowLen, FlowTransport, NodeSpec, OperatingMode, Protocol};
     use std::collections::HashSet;
+    use std::net::Ipv4Addr;
 
-    /// Compute a multicast DAG by unioning shortest paths from src to each member.
-    pub fn compute_group_tree_edges(
-        src_node_id: u32,
-        member_node_ids: &[u32],
-        undirected_edges: &[(u32, u32)],
-    ) -> Vec<(u32, u32)> {
-        if member_node_ids.is_empty() || undirected_edges.is_empty() {
-            return Vec::new();
-        }
-
-        let mut bidirectional = Vec::with_capacity(undirected_edges.len() * 2);
-        for &(a, b) in undirected_edges {
-            bidirectional.push((a, b));
-            bidirectional.push((b, a));
-        }
-
-        let (_node_ids, node_map, graph) = create_graph_with_mapping(&bidirectional);
-        let Some(&src_idx) = node_map.get(&src_node_id) else {
-            warn!(
-                "Source node {} missing from topology, unable to compute multicast DAG.",
-                src_node_id
-            );
-            return Vec::new();
+    #[test]
+    fn test_build_startup_response_defaults_node_spec() {
+        let params = StartupResponseParams {
+            node_id: 3,
+            net_mask: Ipv4Addr::new(255, 255, 0, 0),
+            virtual_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            user_space_base_addr: Ipv4Addr::new(192, 168, 0, 0),
+            external_base_addr: Ipv4Addr::new(172, 16, 0, 0),
+            max_server_port: 8081,
+            protocol: Protocol::Tcp,
+            scheduler_type: SchedulingDiscipline::Fifo,
+            node_spec: None,
         };
 
-        let mut seen = HashSet::new();
-        let mut dag = Vec::new();
-        let mut shortest_path = routing::ShortestPath::new(graph.clone());
-
-        for &member in member_node_ids {
-            if member == src_node_id {
-                continue;
-            }
-
-            let Some(&dst_idx) = node_map.get(&member) else {
-                warn!(
-                    "Member node {} missing from topology; skipping in multicast tree.",
-                    member
+        let message = build_startup_response(params);
+        match message {
+            ControllerToDataplane::StartUp { node_id, node_spec, .. } => {
+                assert_eq!(node_id, 3);
+                assert_eq!(
+                    node_spec,
+                    NodeSpec {
+                        node_id: 3,
+                        operating_mode: OperatingMode::Normal,
+                    }
                 );
-                continue;
-            };
-
-            let path = shortest_path.compute_route(src_idx, dst_idx);
-            for window in path.windows(2) {
-                let from = graph[window[0]];
-                let to = graph[window[1]];
-                if seen.insert((from, to)) {
-                    dag.push((from, to));
-                }
             }
+            _ => panic!("Expected StartUp message."),
         }
-
-        dag
     }
 
     #[test]
-    fn test_compute_group_tree_edges_union_shortest_paths() {
-        let dag =
-            compute_group_tree_edges(1, &[3, 4, 5], &[(1, 2), (2, 3), (2, 4), (4, 5), (5, 6)]);
+    fn test_build_startup_response_uses_node_spec() {
+        let params = StartupResponseParams {
+            node_id: 5,
+            net_mask: Ipv4Addr::new(255, 255, 0, 0),
+            virtual_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            user_space_base_addr: Ipv4Addr::new(192, 168, 0, 0),
+            external_base_addr: Ipv4Addr::new(172, 16, 0, 0),
+            max_server_port: 8081,
+            protocol: Protocol::Tcp,
+            scheduler_type: SchedulingDiscipline::Fifo,
+            node_spec: Some(NodeSpec {
+                node_id: 5,
+                operating_mode: OperatingMode::Max,
+            }),
+        };
 
-        let expected: HashSet<(u32, u32)> = [(1, 2), (2, 3), (2, 4), (4, 5)].into_iter().collect();
-        let actual: HashSet<(u32, u32)> = dag.into_iter().collect();
-
-        assert_eq!(actual, expected);
+        let message = build_startup_response(params);
+        match message {
+            ControllerToDataplane::StartUp { node_spec, .. } => {
+                assert_eq!(
+                    node_spec,
+                    NodeSpec {
+                        node_id: 5,
+                        operating_mode: OperatingMode::Max,
+                    }
+                );
+            }
+            _ => panic!("Expected StartUp message."),
+        }
     }
 
     #[test]
-    fn test_multicast_group_routes_include_member_delivery() {
-        let dag_edges = vec![(1, 2), (2, 3), (2, 4)];
-        let mut members = HashSet::new();
-        members.insert(3);
-        members.insert(4);
+    fn test_build_flows_for_node_skips_invalid_and_missing_routes() {
+        let flows = vec![
+            DbFlow {
+                id: 1,
+                src_node_id: 1,
+                dst_node_id: 2,
+                flow_len_type: "bytes".to_string(),
+                flow_len_bytes: Some(128),
+                flow_len_duration: None,
+                flow_rate: Some(64),
+                flow_weight: Some(1),
+                is_finished: false,
+                is_probe: false,
+            },
+            DbFlow {
+                id: 2,
+                src_node_id: 1,
+                dst_node_id: 3,
+                flow_len_type: "duration".to_string(),
+                flow_len_bytes: None,
+                flow_len_duration: Some(1.0),
+                flow_rate: None,
+                flow_weight: None,
+                is_finished: false,
+                is_probe: false,
+            },
+            DbFlow {
+                id: 3,
+                src_node_id: 1,
+                dst_node_id: 4,
+                flow_len_type: "unknown".to_string(),
+                flow_len_bytes: None,
+                flow_len_duration: None,
+                flow_rate: None,
+                flow_weight: None,
+                is_finished: false,
+                is_probe: false,
+            },
+            DbFlow {
+                id: 4,
+                src_node_id: 2,
+                dst_node_id: 5,
+                flow_len_type: "bytes".to_string(),
+                flow_len_bytes: Some(32),
+                flow_len_duration: None,
+                flow_rate: None,
+                flow_weight: None,
+                is_finished: false,
+                is_probe: false,
+            },
+        ];
+        let flow_routes = vec![DbFlowRoute {
+            flow_id: 1,
+            route_id: 99,
+        }];
 
-        let branch_entry =
-            build_group_routes_for_node(7, 1, &dag_edges, 2, &members).expect("branch node");
-        let mut next_hops = branch_entry.next_hops.clone();
-        next_hops.sort();
-        assert_eq!(next_hops, vec![3, 4]);
+        let message = build_flows_for_node(flows, &flow_routes, FlowTransport::LosslessUnicast);
+        match message {
+            ControllerToDataplane::AddFlows { flows } => {
+                assert_eq!(flows.len(), 2);
+                let flow_one = flows.iter().find(|f| f.controller_id == Some(1)).unwrap();
+                let flow_four = flows.iter().find(|f| f.controller_id == Some(4)).unwrap();
 
-        let leaf_entry =
-            build_group_routes_for_node(7, 1, &dag_edges, 3, &members).expect("member leaf");
-        assert_eq!(leaf_entry.next_hops, vec![3]);
-
-        let non_member = build_group_routes_for_node(7, 1, &dag_edges, 5, &members);
-        assert!(non_member.is_none());
+                assert_eq!(flow_one.route_id, Some(99));
+                assert_eq!(flow_one.flow_spec.flow_len, FlowLen::Bytes(128));
+                assert_eq!(flow_four.route_id, None);
+                assert_eq!(flow_four.flow_spec.flow_len, FlowLen::Bytes(32));
+            }
+            _ => panic!("Expected AddFlows message."),
+        }
     }
 
     #[test]
@@ -585,13 +636,24 @@ mod tests {
     }
 
     #[test]
-    fn test_route_has_multiple_destinations_unicast_single_hop() {
-        // Direct path: 1 -> 2
+    fn test_route_has_multiple_destinations_missing_source() {
+        let route = Route {
+            route_id: 0,
+            src_node_id: 9,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3)],
+        };
+
+        assert!(!route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_route_has_multiple_destinations_unreachable_sink_ignored() {
         let route = Route {
             route_id: 0,
             src_node_id: 1,
-            dst_node_id: 2,
-            edges: vec![(1, 2)],
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3), (4, 5)],
         };
 
         assert!(!route_has_multiple_destinations(&route));
@@ -605,31 +667,6 @@ mod tests {
             src_node_id: 1,
             dst_node_id: 3, // Primary destination
             edges: vec![(1, 2), (2, 3), (2, 4)],
-        };
-
-        assert!(route_has_multiple_destinations(&route));
-    }
-
-    #[test]
-    fn test_route_has_multiple_destinations_multicast_complex() {
-        // Complex multicast tree
-        let route = Route {
-            route_id: 0,
-            src_node_id: 1,
-            dst_node_id: 5,
-            edges: vec![(1, 2), (2, 3), (2, 4), (3, 5), (4, 6)],
-        };
-
-        assert!(route_has_multiple_destinations(&route));
-    }
-
-    #[test]
-    fn test_route_has_multiple_destinations_multicast_three_branches() {
-        let route = Route {
-            route_id: 0,
-            src_node_id: 1,
-            dst_node_id: 3,
-            edges: vec![(1, 2), (2, 3), (2, 4), (2, 5)],
         };
 
         assert!(route_has_multiple_destinations(&route));
@@ -662,19 +699,6 @@ mod tests {
     }
 
     #[test]
-    fn test_route_has_multiple_destinations_dag_different_edge_order() {
-        let route = Route {
-            route_id: 0,
-            src_node_id: 1,
-            dst_node_id: 4,
-            edges: vec![(1, 2), (2, 4), (1, 3), (3, 4)],
-        };
-
-        // Same result: still unicast (only one final destination)
-        assert!(!route_has_multiple_destinations(&route));
-    }
-
-    #[test]
     fn test_route_has_multiple_destinations_diamond_with_multiple_dsts() {
         // Diamond with multiple destinations
         let route = Route {
@@ -685,6 +709,59 @@ mod tests {
         };
 
         assert!(route_has_multiple_destinations(&route));
+    }
+
+    #[test]
+    fn test_build_routes_from_topology_none() {
+        let routes = build_routes_from_topology(&[(1, 2)], &None);
+        assert!(routes.is_empty());
+    }
+
+    #[test]
+    fn test_build_routes_from_topology_shortest_path() {
+        let protocol = Some(config::RoutingProtocol::ShortestPath);
+        let routes = build_routes_from_topology(&[(1, 2)], &protocol);
+
+        assert_eq!(routes.len(), 2);
+        assert!(routes
+            .iter()
+            .any(|(src, dst, edges)| *src == 1 && *dst == 2 && *edges == vec![(1, 2)]));
+        assert!(routes
+            .iter()
+            .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)]));
+    }
+
+    #[test]
+    fn test_merge_all_routes_prefers_non_empty_custom_routes() {
+        let mut config = config::Config::default();
+        config.routes = vec![
+            config::Route { route: Vec::new() },
+            config::Route {
+                route: vec![(0, 1), (1, 2)],
+            },
+        ];
+
+        let routes = merge_all_routes(&config);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].0, 0);
+        assert_eq!(routes[0].1, 2);
+        assert_eq!(routes[0].2, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn test_merge_all_routes_includes_topology_routes() {
+        let mut config = config::Config::default();
+        config.routing.protocol = Some(config::RoutingProtocol::ShortestPath);
+        config.topology.edges = Some(vec![(1, 2)]);
+
+        let routes = merge_all_routes(&config);
+        assert_eq!(routes.len(), 2);
+        assert!(routes
+            .iter()
+            .any(|(src, dst, edges)| *src == 1 && *dst == 2 && *edges == vec![(1, 2)]));
+        assert!(routes
+            .iter()
+            .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)]));
     }
 
     #[test]
@@ -708,6 +785,47 @@ mod tests {
             assert_eq!(entry.dst_node_id, 3);
             assert!(matches!(entry.forward_mode, RouteForwardingMode::Unicast));
             // Node 1 is the source, should have next_hop to node 2
+            assert_eq!(entry.next_hops, vec![2]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_unicast_destination_local_delivery() {
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 3,
+            edges: vec![(1, 2), (2, 3)],
+        }];
+
+        let result = build_routes_for_node(routes, 3);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            let entry = &entries[0];
+            assert!(matches!(entry.forward_mode, RouteForwardingMode::Unicast));
+            assert_eq!(entry.next_hops, vec![3]);
+        } else {
+            panic!("Expected InstallRoutes message.");
+        }
+    }
+
+    #[test]
+    fn test_build_routes_for_node_deduplicates_next_hops() {
+        let routes = vec![Route {
+            route_id: 1,
+            src_node_id: 1,
+            dst_node_id: 2,
+            edges: vec![(1, 2), (1, 2)],
+        }];
+
+        let result = build_routes_for_node(routes, 1);
+        assert!(result.is_some());
+
+        if let Some(ControllerToDataplane::InstallRoutes { routes: entries }) = result {
+            let entry = &entries[0];
             assert_eq!(entry.next_hops, vec![2]);
         } else {
             panic!("Expected InstallRoutes message.");
@@ -916,13 +1034,21 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_group_tree_edges_handles_multiple_branches() {
-        let edges = vec![(1, 2), (2, 3), (2, 4), (4, 5)];
-        let dag = compute_group_tree_edges(1, &[3, 5], &edges);
-        let dag_set: HashSet<(u32, u32)> = dag.into_iter().collect();
+    fn test_allocate_multicast_ip_uses_base_when_mask_is_full() {
+        let base = Ipv4Addr::new(239, 255, 0, 0);
+        let mask = Ipv4Addr::new(255, 255, 255, 255);
 
-        let expected = HashSet::from_iter([(1, 2), (2, 3), (2, 4), (4, 5)]);
-        assert_eq!(dag_set, expected);
+        let addr = allocate_multicast_ip(base, mask, 42);
+        assert_eq!(addr, base);
+    }
+
+    #[test]
+    fn test_allocate_multicast_ip_zero_ordinal_returns_network_base() {
+        let base = Ipv4Addr::new(239, 255, 0, 0);
+        let mask = Ipv4Addr::new(255, 255, 0, 0);
+
+        let addr = allocate_multicast_ip(base, mask, 0);
+        assert_eq!(addr, base);
     }
 
     #[test]
@@ -940,5 +1066,25 @@ mod tests {
             build_group_routes_for_node(7, 1, &dag_edges, 5, &member_nodes).is_none(),
             "Non-participants should not receive route entries"
         );
+    }
+
+    #[test]
+    fn test_build_group_routes_for_node_member_with_forwarding() {
+        let dag_edges = vec![(1, 2), (2, 3)];
+        let member_nodes = HashSet::from_iter([2u32]);
+
+        let entry = build_group_routes_for_node(7, 1, &dag_edges, 2, &member_nodes).unwrap();
+        let mut next_hops = entry.next_hops.clone();
+        next_hops.sort();
+        assert_eq!(next_hops, vec![2, 3]);
+    }
+
+    #[test]
+    fn test_build_group_routes_for_node_member_without_edges() {
+        let dag_edges = Vec::new();
+        let member_nodes = HashSet::from_iter([9u32]);
+
+        let entry = build_group_routes_for_node(7, 1, &dag_edges, 9, &member_nodes).unwrap();
+        assert_eq!(entry.next_hops, vec![9]);
     }
 }
