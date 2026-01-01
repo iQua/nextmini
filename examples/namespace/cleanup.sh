@@ -8,10 +8,14 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     SUDO="sudo"
 fi
 
-# Stop tmux session
+# Stop tmux session (send Ctrl+C first for graceful shutdown)
 if tmux has-session -t nextmini-namespace 2>/dev/null; then
-    echo "Stopping tmux session: nextmini-namespace"
-    tmux kill-session -t nextmini-namespace
+    echo "Sending Ctrl+C to tmux panes..."
+    tmux send-keys -t nextmini-namespace:0.0 C-c
+    tmux send-keys -t nextmini-namespace:0.1 C-c
+    sleep 3
+    echo "Killing tmux session: nextmini-namespace"
+    tmux kill-session -t nextmini-namespace 2>/dev/null || true
 fi
 
 # Stop docker containers
