@@ -149,8 +149,8 @@ rx_dp.leave_group(group_id)
 ## Verification Checklist
 
 - `cargo check --workspace`
-- `cargo test -p controller compute_group_tree_edges`
 - `cargo test -p controller build_group_routes_for_node_includes_local_delivery`
+- `cargo test -p controller build_routes_for_node_multicast_entries`
 - `cargo test -p dataplane returns_multicast_next_hops_from_group_routes`
 - Follow the integration recipe in `docs/testing/python_api_validation.md` to exercise membership churn once the docker-compose harness is available.
 
