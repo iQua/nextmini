@@ -5,110 +5,40 @@ This example demonstrates and tests the startup time and memory usage when spawn
 
 ## Running the Single Host Example
 
-### Step 1: Increasing the ARP Table Limits
+### Step 1: Run the Launcher Script
 
-These commands increase the Linux kernel's ARP (Address Resolution Protocol) neighbor table thresholds to handle a large number of network devices:
-
-```bash
-sudo sysctl net.ipv4.neigh.default.gc_thresh1=2048
-sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
-sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
-```
-
-For large experiments (e.g., 10,000 namespace nodes), increase these further (example values):
+Run the launcher script to apply sysctl tuning and start a tmux session with the controller on the left and the dataplane on the right:
 
 ```bash
-sudo sysctl net.ipv4.neigh.default.gc_thresh1=32768
-sudo sysctl net.ipv4.neigh.default.gc_thresh2=65536
-sudo sysctl net.ipv4.neigh.default.gc_thresh3=131072
+./examples/namespace/run.sh --n-nodes 800
 ```
 
-where:
+The `--n-nodes` flag updates both the controller config and dataplane automatically.
 
-- `gc_thresh1` **(2048)**: _Soft minimum threshold_ — The minimum number of entries to maintain in the ARP table.
+The script raises ARP neighbor table thresholds and netlink socket buffers to avoid "Exchange full (os error 54)" errors during rapid veth creation. Pass `--sysctl-only` to apply tuning without starting tmux. The tmux session requires `tmux` to be installed on the host.
 
-- `gc_thresh2` **(4096)**: _Soft maximum threshold_ — When the ARP table reaches this size, the kernel becomes more aggressive about garbage collection and starts removing stale entries.
+The sysctl parameters:
 
-- `gc_thresh3` **(8192)**: _Hard maximum threshold_ — The absolute maximum number of ARP entries allowed.
+- `gc_thresh1`: Soft minimum — minimum ARP entries to maintain
+- `gc_thresh2`: Soft maximum — triggers aggressive garbage collection
+- `gc_thresh3`: Hard maximum — absolute limit on ARP entries
 
-### Step 2: Configuring the number of nodes in the controller
+The script also sets `ulimit -u 20000` and `ulimit -n 200000` for large node counts.
 
-To change the number of nodes, you need to update the `n_nodes` field in the controller's configuration file, `controller-config.toml`, or specify the network topology to make sure that the number of nodes coincides with the configuration in the data plane.
-
-### Step 3: Starting the controller and database engine
-
-To start the controller and database engine:
-
-```bash
-cd nextmini/examples/namespace
-docker compose build; docker compose up
-```
-
-For a 10,000-node, connection-only scaling run, use the 10k compose file:
-
-```bash
-cd nextmini/examples/namespace
-docker compose -f docker-compose-10k.yml up --build
-```
-
-### Step 4: Running the project
-
-To build the dataplane that allows super-user execution (required for this example), use the following commands that builds the binary `nextmini` and installs it in `/usr/local/bin`:
-
-```bash
-cd ~/nextmini
-sudo env "PATH=$HOME/.cargo/bin:$PATH" rustup default stable
-sudo env "PATH=$HOME/.cargo/bin:$PATH" cargo install --path dataplane --root /usr/local
-```
-
-To run this example with a specific number of nodes in a virtual or physical machine, you may use command-line arguments to specify the number of nodes:
-
-```bash
-sudo nextmini --config-path examples/namespace/config.toml --n-nodes 5
-```
-
-To run a 10,000-node namespace experiment (connection-only baseline), use:
-
-```bash
-sudo RUST_LOG=info nextmini --config-path examples/namespace/config-10k.toml
-```
-
-For this scale, ensure the host allows enough processes and open files (examples):
-
-```bash
-ulimit -u 20000
-ulimit -n 200000
-```
-
-You can also run `nextmini --help` to see all command-line arguments.
-
-Alternatively, you may specify the number of nodes in the configuration file, such as `examples/namespace/config.toml`:
-
-```toml
-n_nodes = 5
-```
-
-Then run:
-
-```bash
-sudo nextmini --config-path examples/namespace/config.toml
-```
-
-To see detailed logs, set the `RUST_LOG` environment variable to `info`. For example:
-
-```bash
-sudo RUST_LOG=info nextmini --config-path examples/namespace/config.toml --n-nodes 5
-```
-
-### Step 5: Observing the results
+### Step 2: Observing the results
 
 You should see output similar to the following in the controller terminal:
 
 ```bash
-controller  | 2025-09-30T18:06:00.639257Z  INFO controller::new_node: All 5 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
-controller  | 2025-09-30T18:06:00.642056Z  INFO controller::new_node: Sending AddNodeAddress messages to 5 nodes.
-controller  | 2025-09-30T18:06:00.848173Z  INFO controller::new_node: All dataplane nodes have connected. It takes 2.90 seconds since the first node arrived.
+controller  | 2026-01-01T00:46:19.983746Z  INFO controller::new_node: All 800 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
+controller  | 2026-01-01T00:46:19.983773Z  INFO controller::new_node: Skipping AddNodeAddress broadcast (no Max-mode nodes configured).
+controller  | 2026-01-01T00:46:20.187730Z  INFO controller::new_node: All dataplane nodes have connected. It takes 55.40 seconds since the first node arrived.
+controller  | 2026-01-01T00:46:20.187754Z  INFO controller::new_node: Dataplane node 786 reports its local topology is ready.
+controller  | 2026-01-01T00:46:20.187757Z  INFO controller::new_node: All dataplane nodes have finished wiring their topologies. Broadcasting topology-ready signal.
+controller  | 2026-01-01T00:46:20.187760Z  INFO controller::new_node: Broadcasting topology-ready signal to 800 dataplane nodes.
 ```
+
+Note: the controller log "All ... nodes are now connected" refers to nodes connecting to the controller and completing `StartUp`. If your controller config includes a topology (e.g., `type = "ring"`), dataplane nodes will continue wiring node-to-node connections after this point. For the connection-only scaling baseline, use a controller config with no topology edges (e.g., `examples/namespace/controller-config-10k.toml`).
 
 Monitor memory usage in a new terminal:
 
@@ -116,15 +46,14 @@ Monitor memory usage in a new terminal:
 free -h
 ```
 
-### Step 6: Cleaning up
+### Step 3: Cleaning up
 
 To clean up the environment:
 
 Press `Control + C` in both the controller and namespace terminals, and then remove the active `veth` interfaces:
 
 ```bash
-cd nextmini/examples/namespace
-./cleanup.sh
+./examples/namespace/cleanup.sh
 ```
 
 You should see:
@@ -133,28 +62,7 @@ You should see:
 The virtual network environment has been successfully cleaned up. You can now run the controller containers again.
 ```
 
-3. To verify that the clean-up process was completed successfully, confirm that the following command would print `0`:
-
-```bash
-ip link show | grep veth | wc -l
-```
-
 ## Development and Testing Notes
-
-### Entering the namespace
-
-To enter a node's network namespace, you need to target a **child process**:
-
-```bash
-# List all nextmini processes.
-ps -eo pid,ppid,cmd | grep "nextmini" | grep -v grep | sort -n
-
-# Manually specify a child PID.
-sudo nsenter -t <child_pid> -n bash  # uses any child PID from pstree
-
-# Verify you're in a namespace.
-ip addr show
-```
 
 ### Launching a virtual machine
 
@@ -189,6 +97,28 @@ database = "nextmini"
 port = "5432"
 ```
 
+### Benchmark Results
+
+The following benchmarks were recorded:
+
+| Topology | Nodes | Wiring Time | Memory Before | Memory After | Per Node | Notes |
+|----------|-------|-------------|---------------|--------------|----------|-------|
+| Ring | 100 | 5.87s | 1.5GB | 1.8GB | ~3MB | |
+| Ring | 200 | 11.20s | 1.5GB | 2.0GB | ~2.5MB | |
+| Ring | 300 | 47.22s | 1.5GB | 2.2GB | ~2.3MB | |
+| Ring | 400 | 77.63s | 1.5GB | 2.5GB | ~2.5MB | |
+| Ring | 500 | 165.30s | 1.6GB | 2.7GB | ~2.2MB | Before ARP fix |
+| Ring | 500 | 32.64s | 1.5GB | 2.8GB | ~2.6MB | After ARP fix |
+| Ring | 600 | 42.52s | 1.5GB | 2.9GB | ~2.3MB | After ARP fix |
+| Ring | 700 | 48.85s | 1.5GB | 3.1GB | ~2.3MB | After ARP fix |
+| Ring | 800 | 55.40s | 1.6GB | 3.3GB | ~2.1MB | After ARP fix |
+
+Example controller log output:
+
+```
+controller  | 2026-01-01T00:46:20.187730Z  INFO controller::new_node: All dataplane nodes have connected. It takes 55.40 seconds since the first node arrived.
+```
+
 First check the initial memory consumption:
 
 ```bash
@@ -202,12 +132,7 @@ Mem:           176Gi       3.3Gi       162Gi       1.2Mi        12Gi       173Gi
 Swap:             0B          0B          0B
 ```
 
-After starting the controller and the database with:
-```bash
-docker compose build; docker compose up
-```
-
-Check the memory consumption again:
+After starting the controller and the database (see Step 3), check the memory consumption again:
 
 ```text
                total        used        free      shared  buff/cache   available
@@ -218,52 +143,6 @@ Swap:             0B          0B          0B
 It can be seen that approximately 0.8 GB (4.1 - 3.3) is used by the controller and PostgreSQL services.
 
 ### Monitoring the database
-
-To check the number of maximum connections:
-
-```bash
-docker exec postgres psql -U pgusr -d nextmini -c "SHOW max_connections;"
-```
-
-To monitor the number of active connections:
-
-```bash
-docker exec postgres psql -U pgusr -d nextmini -c "
-SELECT
-    state,
-    count(*) as connection_count,
-    application_name
-FROM pg_stat_activity
-GROUP BY state, application_name
-ORDER BY connection_count DESC;"
-```
-
-To count the number of established connections to the controller:
-
-```bash
-docker exec controller netstat -an | grep :3000 | grep ESTABLISHED | wc -l
-```
-
-### Monitoring the network Interface
-
-To check the number of created veth pairs:
-
-```bash
-ip link show | grep veth | wc -l
-```
-
-Alternatively, to check a specific veth pair:
-
-```bash
-ip link show | grep "veth<idx>[ab]"
-```
-
-Here is an example for `veth0`:
-
-```bash
-ip link show | grep "veth0[ab]"
-```
-
 ### The logic of assigning IP addresses
 
 With `bridge_ip = 172.16.8.1`, IP addresses are assigned as:
@@ -274,45 +153,8 @@ With `bridge_ip = 172.16.8.1`, IP addresses are assigned as:
 
 - Therefore: `veth0a → node_id 1`
 
-### ARP monitoring
-
-Real-time monitoring of ARP entries and system status:
-
-```bash
-watch -n 1 'echo "=== $(date +%H:%M:%S) ==="; echo "ARP: $(arp -a | wc -l)/$(cat /proc/sys/net/ipv4/neigh/default/gc_thresh1)"; echo "Veth UP: $(ip link show | grep "veth.*state UP" | wc -l)"; echo "Controller CPU: $(docker stats controller --no-stream | grep controller | awk '\''{print $3}'\'')"'
-```
-
-### Troubleshooting
-
-Identify nodes that failed to connect (example for 600 nodes):
-
-```bash
-docker exec postgres psql -U pgusr -d nextmini -c "
-WITH RECURSIVE expected_nodes AS (
-    SELECT 1 as node_id
-    UNION ALL
-    SELECT node_id + 1
-    FROM expected_nodes
-    WHERE node_id < <number_of_n_nodes>
-)
-SELECT en.node_id as missing_node_id
-FROM expected_nodes en
-LEFT JOIN nodes n ON en.node_id = n.id
-WHERE n.id IS NULL
-ORDER BY en.node_id
-LIMIT 10;"
-```
-
-After finding the missing nodes, you could know about the `<idx>` of the node, which is `node_id-1`.
-
-Then check the status of `veth<idx>a` using:
-
-```bash
-ip link show | grep "veth<idx>[ab]"
-```
-
 !!! warning
-    
+
     The following instructions have not been verified to work correctly.
 
 
@@ -335,12 +177,10 @@ There is an instruction for running multi-host example in `examples/ns-public`.
 
 ### Step 1: Increasing the ARP Table Limits
 
-These commands increase the Linux kernel's ARP (Address Resolution Protocol) neighbor table thresholds to handle a large number of network devices:
+Run the sysctl tuning script on each VM:
 
 ```bash
-sudo sysctl net.ipv4.neigh.default.gc_thresh1=2048
-sudo sysctl net.ipv4.neigh.default.gc_thresh2=4096
-sudo sysctl net.ipv4.neigh.default.gc_thresh3=8192
+./examples/namespace/run.sh --sysctl-only
 ```
 
 ### Step 2: Configuring the number of nodes in the controller
@@ -351,36 +191,15 @@ In this ns-public example, we use 10 nodes for quick test. Each VM instance runs
 
 ### Step 3: Starting the controller and database engine
 
-To start the controller and database engine:
-
-```bash
-cd nextmini/examples/namespace
-docker compose build; docker compose up
-```
+Start the controller and database engine using the compose file in `examples/ns-public` on the controller VM.
 
 ### Step 4: Running the project
 
-To build the dataplane that allows super-user execution (required for this example), use the following commands that builds the binary `nextmini` and installs it in `/usr/local/bin`:
-
-```bash
-cd ~/nextmini
-sudo env "PATH=$HOME/.cargo/bin:$PATH" rustup default stable
-sudo env "PATH=$HOME/.cargo/bin:$PATH" cargo install --path dataplane --root /usr/local
-```
-
-In the first VM, enter the following command:
-
-```bash
-sudo RUST_LOG=info nextmini --config-path examples/ns-public/VM1-config.toml
-```
+On the first VM, run the dataplane using `examples/ns-public/VM1-config.toml`.
 
 Then the logs on Controller terminal would be observed.
 
-Then on another VM, repeat **step 4** with:
-
-```bash
-sudo RUST_LOG=info nextmini --config-path examples/ns-public/VM2-config.toml
-```
+Then on another VM, repeat **step 4** with `examples/ns-public/VM2-config.toml`.
 
 Note that `node_id_offset = 5` is set in `VM2-config.toml` to make sure that the node IDs do not overlap with those in the first VM.
 
@@ -392,6 +211,5 @@ To clean up the environment on all dataplane VM instances:
 2. Remove created veth interfaces:
 
 ```bash
-cd nextmini/examples/namespace
-./cleanup.sh
+./examples/ns-public/cleanup.sh
 ```
