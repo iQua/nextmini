@@ -11,6 +11,7 @@ mod utils;
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
@@ -147,7 +148,20 @@ async fn main() {
     setup_flow_notification(db_pool.clone(), db_event_sender.clone()).await;
     setup_group_notification(db_pool.clone(), db_event_sender.clone()).await;
 
-    while let Ok((stream, _)) = listener.accept().await {
+    loop {
+        let (stream, _) = match listener.accept().await {
+            Ok(result) => result,
+            Err(e) => {
+                error!(
+                    "Failed to accept an incoming connection: {}. \
+                     This can happen when the process hits the file descriptor limit (ulimit -n). \
+                     Retrying in 1s.",
+                    e
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+        };
         let peer = match stream.peer_addr() {
             Ok(p) => p,
             Err(e) => {

@@ -65,7 +65,10 @@ mod tests {
     fn test_deserialize_edge_pairs_formats() {
         let cases = [
             (r#"edges = [[1, 2]]"#, vec![(1, 2)]),
-            (r#"edges = [[1, 2], [2, 3], [3, 4]]"#, vec![(1, 2), (2, 3), (3, 4)]),
+            (
+                r#"edges = [[1, 2], [2, 3], [3, 4]]"#,
+                vec![(1, 2), (2, 3), (3, 4)],
+            ),
         ];
 
         for (toml_str, expected) in cases {

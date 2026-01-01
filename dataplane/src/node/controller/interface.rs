@@ -258,19 +258,28 @@ impl DataplaneToControllerSender {
         loop {
             tokio::select! {
                 Some(msg) = self.northbridge_receiver.recv() => {
-                    self.sender_stream
+                    if let Err(e) = self.sender_stream
                         .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                         .await
-                        .expect("Failed to send message to controller");
+                    {
+                        error!("Failed to send message to controller: {}. Closing sender.", e);
+                        break;
+                    }
                 }
                 _ = ping_interval.tick() => {
-                    self.sender_stream
-                        .send(Message::Ping(vec![].into()))
+                    if let Err(e) = self
+                        .sender_stream
+                        .send(Message::Ping(Vec::new().into()))
                         .await
-                        .expect("Failed to send ping to controller");
+                    {
+                        warn!("Failed to send ping to controller: {}. Closing sender.", e);
+                        break;
+                    }
                 }
             }
         }
+
+        info!("DataplaneToController sender stopped.");
     }
 }
 

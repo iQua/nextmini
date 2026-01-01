@@ -32,6 +32,9 @@ echo "--- Memory BEFORE nodes connect ---"
 free -h
 mem_before=$(free -b | awk '/Mem:/ {print $3}')
 
+# Follow controller logs from the moment we signal the dataplane.
+since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # Signal dataplane to start (if signal file specified)
 if [[ -n "$signal_file" ]]; then
   echo ""
@@ -44,12 +47,14 @@ echo ""
 echo "Waiting for all nodes to connect..."
 wiring_time=""
 while read -r line; do
-  if echo "$line" | grep -q 'All dataplane nodes have connected'; then
+  if [[ "$line" == *"All dataplane nodes have connected"* ]]; then
     echo "$line"
-    wiring_time=$(echo "$line" | sed -n 's/.*It takes \([0-9.]*\) seconds.*/\1/p')
+    if [[ "$line" =~ It\ takes\ ([0-9.]+)\ seconds ]]; then
+      wiring_time="${BASH_REMATCH[1]}"
+    fi
     break
   fi
-done < <(docker logs -f controller 2>&1)
+done < <(docker logs -f --since "$since" controller 2>&1)
 
 sleep 1
 

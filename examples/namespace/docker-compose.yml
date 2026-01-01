@@ -37,6 +37,10 @@ services:
     build:
       context: ../../
       dockerfile: ./controller/Dockerfile
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
     networks:
       network:
         ipv4_address: 170.16.8.3
