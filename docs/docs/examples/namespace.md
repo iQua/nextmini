@@ -48,19 +48,13 @@ free -h
 
 ### Step 3: Cleaning up
 
-To clean up the environment:
-
-Press `Control + C` in both the controller and namespace terminals, and then remove the active `veth` interfaces:
+To clean up the environment, run:
 
 ```bash
 ./examples/namespace/cleanup.sh
 ```
 
-You should see:
-
-```bash
-The virtual network environment has been successfully cleaned up. You can now run the controller containers again.
-```
+This script stops the tmux session (if present), brings down the controller containers, and removes created `veth*`/`isobr*` devices.
 
 ## Development and Testing Notes
 
@@ -143,15 +137,24 @@ Swap:             0B          0B          0B
 It can be seen that approximately 0.8 GB (4.1 - 3.3) is used by the controller and PostgreSQL services.
 
 ### Monitoring the database
+
+To see how many nodes have registered with the controller:
+
+```bash
+docker exec postgres psql -U pgusr -d nextmini -c "SELECT COUNT(*) AS nodes_connected FROM nodes;"
+```
+
 ### The logic of assigning IP addresses
 
-With `bridge_ip = 172.16.8.1`, IP addresses are assigned as:
+Namespace nodes are assigned sequential node IDs and per-namespace IPs:
 
-- `idx = 0 → offset = 3 → IP = 172.16.8.4`
+- Node IDs: `node_id = idx + node_id_offset + 1` (set by the parent in `dataplane/src/node/namespace/manager.rs`).
+- IPs: with the default `bridge_ip = 172.16.8.1`, the first node gets `ns_ip = 172.16.8.2` (network `.0` and gateway `.1` are reserved).
+- For large runs, nodes are sharded across multiple `isobr*` bridges to avoid per-bridge port limits; each shard uses a `/22` subnet.
 
-- Node ID calculation: `node_id = (ip - base) = ((k + 4) - 3) = k + 1`
+Example (default settings):
 
-- Therefore: `veth0a → node_id 1`
+- `idx = 0 → ns_ip = 172.16.8.2 → node_id = 1` (host veth: `veth0a`, namespace veth: `veth0b`)
 
 !!! warning
 
