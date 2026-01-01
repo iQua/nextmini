@@ -1,5 +1,5 @@
 protocol = "tcp"
-flow_transport = "reliable_unicast"
+flow_transport = "lossless_unicast"
 
 [topology]
 # 3-node full mesh so the toy DAG can use direct edges (1->2, 1->3).

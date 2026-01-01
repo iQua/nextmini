@@ -8,7 +8,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 
 mod ip_ser;
-pub mod reliable_session;
+pub mod lossless_session;
 
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
@@ -81,9 +81,9 @@ pub enum DataplaneToController {
         /// Directed edges (from_node_id, to_node_id) describing the multicast DAG.
         edges: Vec<(u32, u32)>,
     },
-    /// Periodic reliable session stats from dataplane (feature-gated at source).
-    ReliableStats {
-        stats: ReliableStats,
+    /// Periodic lossless session stats from dataplane (feature-gated at source).
+    LosslessStats {
+        stats: LosslessStats,
     },
 }
 
@@ -121,9 +121,9 @@ pub struct RouteAssignment {
     pub time: i64,
 }
 
-/// Reliable session metrics (optional)
+/// Lossless session metrics (optional)
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ReliableStats {
+pub struct LosslessStats {
     pub session_id: u64,
     pub node_id: usize,
     /// "sender" | "receiver"
@@ -256,7 +256,7 @@ pub struct NodeSpec {
 pub enum FlowTransport {
     #[default]
     Tcp,
-    ReliableUnicast,
+    LosslessUnicast,
 }
 
 /// The traffic specification for a user-space TCP flow.
@@ -332,7 +332,7 @@ impl FlowSpec {
         match self.flow_len {
             FlowLen::Duration(_)
                 if self.flow_rate.is_none()
-                    && matches!(self.transport, FlowTransport::ReliableUnicast) =>
+                    && matches!(self.transport, FlowTransport::LosslessUnicast) =>
             {
                 Err(FlowSpecValidationError::DurationMissingRate)
             }

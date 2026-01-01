@@ -59,7 +59,7 @@ fat_tree_config = { k = 4 }
 ```toml
 [topology]
 type = "torus"
-ring_config = { dim = 3, n = 4 }
+torus_config = { dim = 3, n = 4 }
 ```
 
 Alternatively, one can choose to define the edges in the network topology directly:

@@ -1130,9 +1130,9 @@ async fn handle_connection(
                             group.src_node_id
                         );
                     }
-                    DataplaneToController::ReliableStats { stats } => {
+                    DataplaneToController::LosslessStats { stats } => {
                         info!(
-                            "ReliableStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} fec_used={} ts_ms={}",
+                            "LosslessStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} fec_used={} ts_ms={}",
                             stats.session_id,
                             stats.node_id,
                             stats.role,

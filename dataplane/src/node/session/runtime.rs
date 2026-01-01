@@ -47,20 +47,20 @@ pub struct ReceiverConfig {
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
-/// Handle for communicating with the reliable runtime actor.
-/// This handle can be cloned and used to manage reliable sessions.
+/// Handle for communicating with the lossless runtime actor.
+/// This handle can be cloned and used to manage lossless sessions.
 #[derive(Clone, Debug)]
-pub struct ReliableRuntimeHandle {
+pub struct LosslessRuntimeHandle {
     command_tx: mpsc::UnboundedSender<Command>,
 }
 
-impl ReliableRuntimeHandle {
+impl LosslessRuntimeHandle {
     pub fn new(processors: ProcessorHandle) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-        let runtime = ReliableRuntime::new(processors, command_rx);
+        let runtime = LosslessRuntime::new(processors, command_rx);
 
-        // spawns the reliable runtime actor task
+        // spawns the lossless runtime actor task
         tokio::spawn(async move {
             let mut runtime = runtime;
 
@@ -133,9 +133,9 @@ impl ReliableRuntimeHandle {
     }
 }
 
-/// Tracks running reliable sessions along with their inboxes and join handles.
+/// Tracks running lossless sessions along with their inboxes and join handles.
 /// This is the actor that processes commands and manages session lifecycle.
-struct ReliableRuntime {
+struct LosslessRuntime {
     processors: ProcessorHandle,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
@@ -145,7 +145,7 @@ struct ReliableRuntime {
     command_rx: mpsc::UnboundedReceiver<Command>,
 }
 
-impl ReliableRuntime {
+impl LosslessRuntime {
     /// Constructs a runtime that can spawn sender/receiver tasks and track their lifetimes.
     fn new(processors: ProcessorHandle, command_rx: mpsc::UnboundedReceiver<Command>) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
@@ -161,7 +161,7 @@ impl ReliableRuntime {
         }
     }
 
-    /// Main event loop for the reliable runtime actor that processes inbound commands.
+    /// Main event loop for the lossless runtime actor that processes inbound commands.
     async fn run(&mut self) {
         while let Some(cmd) = self.command_rx.recv().await {
             match cmd {
@@ -203,13 +203,13 @@ impl ReliableRuntime {
             if tx.send(frame).await.is_err() {
                 warn!(
                     session_id = session,
-                    "Reliable runtime: receiver dropped inbound frame."
+                    "Lossless runtime: receiver dropped inbound frame."
                 );
             }
         } else {
             warn!(
                 session_id = session,
-                "Reliable runtime: no receiver for inbound frame."
+                "Lossless runtime: no receiver for inbound frame."
             );
         }
     }

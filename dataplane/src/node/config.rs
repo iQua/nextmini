@@ -249,7 +249,7 @@ pub struct LocalConfig {
     pub local_netmask: Ipv4Addr,
 
     /// The transport protocol: TCP or QUIC.
-    #[default(Protocol::Quic)]
+    #[default(Protocol::Tcp)]
     #[arg(long, value_enum)]
     pub protocol: Protocol,
 
@@ -350,10 +350,10 @@ pub struct LocalConfig {
     #[arg(skip)]
     pub handshake_timeout_ms: u64,
 
-    /// The default configuration for the reliable runtime.
+    /// The default configuration for the lossless runtime.
     #[default(Default::default())]
     #[arg(skip)]
-    pub reliable_runtime_config: ReliableConfig,
+    pub lossless_runtime_config: LosslessConfig,
 }
 
 impl LocalConfig {
@@ -671,9 +671,9 @@ impl LocalConfig {
     }
 }
 
-/// Reliable session configuration knobs (consumed when the reliable subsystem is enabled).
+/// Lossless session configuration knobs (consumed when the lossless subsystem is enabled).
 #[derive(Debug, Clone, Deserialize)]
-pub struct ReliableConfig {
+pub struct LosslessConfig {
     /// Default data chunk size in bytes.
     pub default_chunk_size: usize,
 
@@ -685,7 +685,7 @@ pub struct ReliableConfig {
     pub ready_grace_ms: u64,
 }
 
-impl Default for ReliableConfig {
+impl Default for LosslessConfig {
     fn default() -> Self {
         Self {
             default_chunk_size: 8500,

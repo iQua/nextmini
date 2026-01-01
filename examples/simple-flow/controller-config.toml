@@ -3,7 +3,7 @@ protocol = "tcp"
 # scheduler_type can be "fifo" or "wrr"
 scheduler_type = "fifo"
 
-flow_transport = "reliable_unicast"
+flow_transport = "lossless_unicast"
 
 # creates a full mesh topology with 4 nodes
 [topology]

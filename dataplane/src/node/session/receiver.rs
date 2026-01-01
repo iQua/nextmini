@@ -2,7 +2,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
-use nextmini_messages::reliable_session::{self, ReliableSessionControl};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -24,7 +24,7 @@ struct ControlEmitter {
 }
 
 impl ControlEmitter {
-    /// Prepare an emitter that can forward reliable session control traffic back through the
+    /// Prepare an emitter that can forward lossless session control traffic back through the
     /// node's processor pipeline.
     fn new(
         session_id: u64,
@@ -45,10 +45,10 @@ impl ControlEmitter {
     }
 
     /// Encode and inject a single control frame.
-    fn send(&self, control: &ReliableSessionControl) {
+    fn send(&self, control: &LosslessSessionControl) {
         // Use stack-allocated buffer to avoid heap allocation for small control frames
-        let mut buf = [0u8; reliable_session::MAX_CONTROL_FRAME_SIZE];
-        let frame = reliable_session::encode_control_into(&mut buf, self.session_id, control);
+        let mut buf = [0u8; lossless_session::MAX_CONTROL_FRAME_SIZE];
+        let frame = lossless_session::encode_control_into(&mut buf, self.session_id, control);
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -73,10 +73,10 @@ pub async fn run(
     info!(
         session_id = sid,
         expected_bytes = cfg.expected_bytes,
-        "Reliable receiver started"
+        "Lossless receiver started"
     );
 
-    // Stream bookkeeping: reliable session chunk indices start at 1.
+    // Stream bookkeeping: lossless session chunk indices start at 1.
     let mut expected: u64 = 1;
     let per_chunk = cfg.common.chunk_size.max(1);
 
@@ -111,7 +111,7 @@ pub async fn run(
         processors.clone(),
     );
 
-    control_io.send(&ReliableSessionControl::Ready {
+    control_io.send(&LosslessSessionControl::Ready {
         node_id: cfg.common.local_node_id as u64,
     });
     let mut last_ack_up_to: u64 = 0;
@@ -121,9 +121,9 @@ pub async fn run(
         trace!(
             session_id = sid,
             frame_len = frame.bytes.len(),
-            "Reliable receiver: received inbound frame"
+            "Lossless receiver: received inbound frame"
         );
-        if let Some((_, data, body)) = reliable_session::decode_data(&frame.bytes) {
+        if let Some((_, data, body)) = lossless_session::decode_data(&frame.bytes) {
             // Map the payload slice onto the underlying Vec so we can take a zero-copy Bytes view.
             let payload_range = {
                 let base_ptr = frame.bytes.as_ptr() as usize;
@@ -164,9 +164,9 @@ pub async fn run(
                             session_id = sid,
                             up_to = base,
                             expected = expected,
-                            "Reliable receiver: sending batched ACK"
+                            "Lossless receiver: sending batched ACK"
                         );
-                        control_io.send(&ReliableSessionControl::Ack { up_to: base });
+                        control_io.send(&LosslessSessionControl::Ack { up_to: base });
                         last_ack_up_to = base;
                     }
                 }
@@ -185,7 +185,7 @@ pub async fn run(
 
         warn!(
             session_id = sid,
-            "Reliable receiver: received frame that was neither DATA nor CONTROL"
+            "Lossless receiver: received frame that was neither DATA nor CONTROL"
         );
     }
 
@@ -193,7 +193,7 @@ pub async fn run(
         session_id = sid,
         bytes_received,
         last_index = expected.saturating_sub(1),
-        "Reliable receiver finished"
+        "Lossless receiver finished"
     );
 }
 
@@ -228,7 +228,7 @@ impl PendingWindow {
                 chunk_index = index,
                 base_index = self.base_index,
                 window = self.slots.len(),
-                "Reliable receiver: chunk outside pending window, dropping"
+                "Lossless receiver: chunk outside pending window, dropping"
             );
             return false;
         }
@@ -301,7 +301,7 @@ impl PendingWindow {
 
 /// Borrowed state required to evaluate a DATA frame.
 struct FrameCtx<'a> {
-    data: &'a reliable_session::ReliableSessionData,
+    data: &'a lossless_session::LosslessSessionData,
     payload: Bytes,
     expected: &'a mut u64,
     pending: &'a mut PendingWindow,
@@ -314,7 +314,7 @@ struct DataOutcome {
     advanced: bool,
 }
 
-/// Handles ordering/bookkeeping for a single reliable DATA frame.
+/// Handles ordering/bookkeeping for a single lossless DATA frame.
 fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     let FrameCtx {
         data,
@@ -336,7 +336,7 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
     if pending.insert(idx, payload) {
         trace!(
             chunk_index = idx,
-            "Reliable receiver: chunk stored for ordering"
+            "Lossless receiver: chunk stored for ordering"
         );
     }
 
@@ -361,21 +361,21 @@ fn handle_control_frame(
     ctrl_io: &ControlEmitter,
     eot_index: &mut Option<u64>,
 ) -> bool {
-    let Some((_, control)) = reliable_session::decode_control(&frame.bytes) else {
+    let Some((_, control)) = lossless_session::decode_control(&frame.bytes) else {
         return false;
     };
     match control {
-        ReliableSessionControl::Manifest { .. } => {
-            ctrl_io.send(&ReliableSessionControl::Ready {
+        LosslessSessionControl::Manifest { .. } => {
+            ctrl_io.send(&LosslessSessionControl::Ready {
                 node_id: cfg.common.local_node_id as u64,
             });
             true
         }
-        ReliableSessionControl::Eot { last_index } => {
+        LosslessSessionControl::Eot { last_index } => {
             info!(
                 session_id = cfg.common.session_id,
                 last_index = last_index,
-                "Reliable receiver: EOT received"
+                "Lossless receiver: EOT received"
             );
             *eot_index = Some(last_index);
             true

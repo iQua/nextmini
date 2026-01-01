@@ -1,7 +1,7 @@
 /// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
 /// the dataplane node, including the controller interface actor, the processors actor, and the local
 /// interface actor. Optionally, from the Python interface, it also manages the controller interface actor
-/// and the reliable session manager actor.
+/// and the lossless session manager actor.
 use tracing::info;
 
 use nextmini_messages::Protocol;
@@ -16,7 +16,7 @@ use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
 #[cfg(feature = "python-extension")]
-use crate::node::session::api::ReliableRuntimeHandle;
+use crate::node::session::api::LosslessRuntimeHandle;
 
 pub struct Conductor {
     config: LocalConfig,
@@ -34,19 +34,19 @@ pub struct Conductor {
     #[cfg(feature = "python-extension")]
     controller: ControllerInterfaceHandle,
 
-    /// the reliable session runtime
+    /// the lossless session runtime
     #[cfg(feature = "python-extension")]
-    reliable_runtime: ReliableRuntimeHandle,
+    lossless_runtime: LosslessRuntimeHandle,
 }
 
 impl Conductor {
     pub async fn new(config: LocalConfig) -> Self {
         // connects the processors with its downstream local interface writers to send packets out
-        let (controller_interface, reliable_runtime, reporter, flowstats_reporter) =
+        let (controller_interface, lossless_runtime, reporter, flowstats_reporter) =
             ControllerInterfaceHandle::new(config.clone()).await;
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = reliable_runtime;
+        let _ = lossless_runtime;
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
 
@@ -62,7 +62,7 @@ impl Conductor {
             #[cfg(feature = "python-extension")]
             controller: controller_interface,
             #[cfg(feature = "python-extension")]
-            reliable_runtime,
+            lossless_runtime,
         }
     }
 
@@ -220,11 +220,11 @@ impl Conductor {
         self.controller.clone()
     }
 
-    /// Returns a clone of the reliable runtime handle for language bindings.
+    /// Returns a clone of the lossless runtime handle for language bindings.
     #[cfg(feature = "python-extension")]
     #[allow(dead_code)]
-    pub fn reliable_runtime_handle(&self) -> ReliableRuntimeHandle {
-        // used by the optional `nextmini_py` extension to manage reliable sessions
-        self.reliable_runtime.clone()
+    pub fn lossless_runtime_handle(&self) -> LosslessRuntimeHandle {
+        // used by the optional `nextmini_py` extension to manage lossless sessions
+        self.lossless_runtime.clone()
     }
 }

@@ -294,8 +294,8 @@ class Trainer:
         if errors:
             raise RuntimeError(f"Handshake failed: {errors}")
             
-        # 2. Send Data Reliable
-        print(f"Starting reliable multicast of {size} bytes to {receiver_ids}...")
+        # 2. Send Data Lossless
+        print(f"Starting lossless multicast of {size} bytes to {receiver_ids}...")
         builder = nm.PacketBuilder(size=size)
         builder.write(data_bytes)
         view = builder.freeze()
@@ -311,7 +311,7 @@ class Trainer:
         
         print(f"Waiting for multicast transfer (SID={sid})...")
         multicast_transfer_start = time.time()
-        ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
         multicast_transfer_end = time.time()
         print(f"Multicast completion: {ok}")
         
@@ -488,7 +488,7 @@ class Trainer:
             dst_port=config.WORKER_BASE_PORT
         )
         
-        ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
         if not ok:
             raise RuntimeError(f"Failed to send shard {name}")
 
@@ -557,14 +557,14 @@ class Trainer:
                     self.send_to_worker(i, {"type": "READY_FOR_ROLLOUT_DATA"})
 
                     transfer_start = time.time()
-                    ok = self.dataplane.reliable_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+                    ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                     transfer_end = time.time()
                 except Exception as e:
-                    print(f"Trainer: error receiving reliable rollout data from worker {i}: {e}", flush=True)
+                    print(f"Trainer: error receiving lossless rollout data from worker {i}: {e}", flush=True)
                     return
 
                 if not ok:
-                    print(f"Trainer: reliable rollout transfer from worker {i} did not complete successfully", flush=True)
+                    print(f"Trainer: lossless rollout transfer from worker {i} did not complete successfully", flush=True)
                     return
 
                 frozen = self.dataplane.get_data_buffer(sid)
@@ -582,7 +582,7 @@ class Trainer:
                 rollout_times[i] = recv_time - worker_start
 
                 # Pure network transfer time on the trainer side: duration of the
-                # reliable session after the first frame arrived.
+                # lossless session after the first frame arrived.
                 network_times[i] = max(transfer_end - transfer_start, 0.0)
         
         threads = []

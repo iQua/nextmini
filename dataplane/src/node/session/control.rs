@@ -1,18 +1,18 @@
-//! Helpers for interpreting and tracking reliable session control frames.
+//! Helpers for interpreting and tracking lossless session control frames.
 
 use std::collections::BTreeMap;
 
-use nextmini_messages::reliable_session::ReliableSessionControl;
+use nextmini_messages::lossless_session::LosslessSessionControl;
 
 /// Track cumulative ACK progress for each receiver. Returns `Some(new_value)`
 /// when the receiver reports forward progress, `None` otherwise.
 pub fn update_receiver_progress(
     from_node: usize,
-    ctrl: &ReliableSessionControl,
+    ctrl: &LosslessSessionControl,
     progress: &mut BTreeMap<usize, u64>,
 ) -> Option<u64> {
     match ctrl {
-        ReliableSessionControl::Ack { up_to } => {
+        LosslessSessionControl::Ack { up_to } => {
             if let Some(entry) = progress.get_mut(&from_node)
                 && *up_to > *entry
             {
@@ -21,9 +21,9 @@ pub fn update_receiver_progress(
             }
             None
         }
-        ReliableSessionControl::Manifest { .. }
-        | ReliableSessionControl::Ready { .. }
-        | ReliableSessionControl::Eot { .. } => None,
+        LosslessSessionControl::Manifest { .. }
+        | LosslessSessionControl::Ready { .. }
+        | LosslessSessionControl::Eot { .. } => None,
     }
 }
 
@@ -37,7 +37,7 @@ mod tests {
         progress.insert(7, 2);
 
         let updated =
-            update_receiver_progress(7, &ReliableSessionControl::Ack { up_to: 5 }, &mut progress);
+            update_receiver_progress(7, &LosslessSessionControl::Ack { up_to: 5 }, &mut progress);
 
         assert_eq!(updated, Some(5));
         assert_eq!(progress.get(&7).copied(), Some(5));
@@ -49,13 +49,13 @@ mod tests {
         progress.insert(1, 4);
 
         let regression =
-            update_receiver_progress(1, &ReliableSessionControl::Ack { up_to: 2 }, &mut progress);
+            update_receiver_progress(1, &LosslessSessionControl::Ack { up_to: 2 }, &mut progress);
         assert!(regression.is_none());
         assert_eq!(progress.get(&1).copied(), Some(4));
 
         let missing = update_receiver_progress(
             99,
-            &ReliableSessionControl::Ack { up_to: 10 },
+            &LosslessSessionControl::Ack { up_to: 10 },
             &mut progress,
         );
         assert!(missing.is_none());

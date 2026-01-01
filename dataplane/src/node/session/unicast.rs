@@ -10,35 +10,35 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::session::api::{ReliableRuntimeHandle, SessionId};
+use crate::node::session::api::{LosslessRuntimeHandle, SessionId};
 use crate::node::session::runtime::{CommonConfig, ReceiverConfig, SenderConfig};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
-/// Manages controller-assigned reliable unicast flows on a dataplane node.
+/// Manages controller-assigned lossless unicast flows on a dataplane node.
 #[derive(Clone)]
-pub struct ReliableUnicastFlowManager {
+pub struct LosslessUnicastFlowManager {
     cfg: LocalConfig,
     processors: ProcessorHandle,
     flowstats: FlowStatsReporterHandle,
-    reliable_runtime: ReliableRuntimeHandle,
+    lossless_runtime: LosslessRuntimeHandle,
 }
 
-impl ReliableUnicastFlowManager {
+impl LosslessUnicastFlowManager {
     pub fn new(
         cfg: LocalConfig,
         processors: ProcessorHandle,
         flowstats: FlowStatsReporterHandle,
-        reliable_runtime: ReliableRuntimeHandle,
+        lossless_runtime: LosslessRuntimeHandle,
     ) -> Self {
         Self {
             cfg,
             processors,
             flowstats,
-            reliable_runtime,
+            lossless_runtime,
         }
     }
 
-    /// Installs any reliable unicast flows that target the local node (as source and/or destination).
+    /// Installs any lossless unicast flows that target the local node (as source and/or destination).
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
             // Compute deterministic session_id and client_port from Flow fields.
@@ -65,17 +65,17 @@ impl ReliableUnicastFlowManager {
             return;
         };
         if total_bytes == 0 {
-            warn!("ReliableUnicastFlow: sender received zero-byte flow; skipping");
+            warn!("LosslessUnicastFlow: sender received zero-byte flow; skipping");
             return;
         }
 
         let cfg = self.cfg.clone();
         let processors = self.processors.clone();
         let flowstats = self.flowstats.clone();
-        let reliable_runtime = self.reliable_runtime.clone();
+        let lossless_runtime = self.lossless_runtime.clone();
 
         tokio::spawn(async move {
-            let runtime_config = cfg.reliable_runtime_config.clone();
+            let runtime_config = cfg.lossless_runtime_config.clone();
             let dst_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
@@ -128,29 +128,29 @@ impl ReliableUnicastFlowManager {
                 flowstats.report_user_flow_start(flow_id, controller_id);
             } else {
                 warn!(
-                    "ReliableUnicastFlow: flow {:?}->{:?} missing controller_id; start not reported",
+                    "LosslessUnicastFlow: flow {:?}->{:?} missing controller_id; start not reported",
                     flow.src_node_id, flow.dst_node_id
                 );
             }
 
-            let started_sid = reliable_runtime.start_sender(sender_cfg).await;
-            let ok = reliable_runtime.wait_completion(started_sid).await;
+            let started_sid = lossless_runtime.start_sender(sender_cfg).await;
+            let ok = lossless_runtime.wait_completion(started_sid).await;
 
             flowstats.report_flow_finished(flow_id, flow.controller_id);
 
             if !ok {
                 warn!(
                     session_id = started_sid,
-                    "ReliableUnicastFlow: sender completion reported failure"
+                    "LosslessUnicastFlow: sender completion reported failure"
                 );
             } else {
                 debug!(
                     session_id = started_sid,
-                    "ReliableUnicastFlow: sender finished"
+                    "LosslessUnicastFlow: sender finished"
                 );
             }
 
-            reliable_runtime.stop(started_sid);
+            lossless_runtime.stop(started_sid);
         });
     }
 
@@ -161,15 +161,15 @@ impl ReliableUnicastFlowManager {
             return;
         };
         if expected_bytes == 0 {
-            warn!("ReliableUnicastFlow: receiver expected zero bytes; skipping");
+            warn!("LosslessUnicastFlow: receiver expected zero bytes; skipping");
             return;
         }
 
         let cfg = self.cfg.clone();
-        let reliable_runtime = self.reliable_runtime.clone();
+        let lossless_runtime = self.lossless_runtime.clone();
 
         tokio::spawn(async move {
-            let runtime_config = cfg.reliable_runtime_config.clone();
+            let runtime_config = cfg.lossless_runtime_config.clone();
             let dest_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
@@ -199,9 +199,9 @@ impl ReliableUnicastFlowManager {
             // Register receiver directly with the pre-computed session_id.
             // Both sender and receiver compute the same session_id from Flow fields,
             // so packets will be routed correctly.
-            let started_sid = reliable_runtime.start_receiver(receiver_cfg).await;
-            let _ = reliable_runtime.wait_completion(started_sid).await;
-            reliable_runtime.stop(started_sid);
+            let started_sid = lossless_runtime.start_receiver(receiver_cfg).await;
+            let _ = lossless_runtime.wait_completion(started_sid).await;
+            lossless_runtime.stop(started_sid);
         });
     }
 }
@@ -238,7 +238,7 @@ fn flow_bytes(flow: &Flow) -> Option<u64> {
             let Some(rate) = flow.flow_spec.flow_rate else {
                 warn!(
                     controller_id = flow.controller_id,
-                    "ReliableUnicastFlow: duration-based flow without flow_rate"
+                    "LosslessUnicastFlow: duration-based flow without flow_rate"
                 );
                 return None;
             };
@@ -250,7 +250,7 @@ fn flow_bytes(flow: &Flow) -> Option<u64> {
 }
 
 /// Builds a per-flow token bucket so bandwidth can be shaped in line with the
-/// controller's desired rate, falling back to the reliable defaults when no
+/// controller's desired rate, falling back to the lossless defaults when no
 /// rate override was provided.
 fn bucket_from_flow_rate(
     flow_rate: Option<usize>,

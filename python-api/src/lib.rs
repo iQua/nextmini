@@ -35,7 +35,7 @@ use nextmini::node::python::interface::{
 #[cfg(feature = "python-extension")]
 use nextmini::node::session;
 #[cfg(feature = "python-extension")]
-use nextmini::node::session::api::ReliableRuntimeHandle;
+use nextmini::node::session::api::LosslessRuntimeHandle;
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
@@ -209,7 +209,7 @@ struct Dataplane {
     controller: ControllerInterfaceHandle,
     _join: tokio::task::JoinHandle<()>,
     #[cfg(feature = "python-extension")]
-    reliable_runtime: Option<ReliableRuntimeHandle>,
+    lossless_runtime: Option<LosslessRuntimeHandle>,
     #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
     event_stash: Arc<Mutex<VecDeque<PythonEvent>>>,
@@ -262,8 +262,8 @@ impl Dataplane {
         let sid = multicast_session_id(group_id, self.cfg.node_id);
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable_runtime {
-                let runtime_config = &self.cfg.reliable_runtime_config;
+            if let Some(handle) = &self.lossless_runtime {
+                let runtime_config = &self.cfg.lossless_runtime_config;
                 if let Some(mode) = congestion.as_deref()
                     && mode != "static"
                 {
@@ -327,8 +327,8 @@ impl Dataplane {
         let sid = multicast_session_id(group_id, source_node_id);
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable_runtime {
-                let runtime_config = &self.cfg.reliable_runtime_config;
+            if let Some(handle) = &self.lossless_runtime {
+                let runtime_config = &self.cfg.lossless_runtime_config;
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = session::runtime::CommonConfig {
@@ -383,9 +383,9 @@ impl Dataplane {
 
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable_runtime {
+            if let Some(handle) = &self.lossless_runtime {
                 let handle = handle.clone();
-                let runtime_config = self.cfg.reliable_runtime_config.clone();
+                let runtime_config = self.cfg.lossless_runtime_config.clone();
                 let buffer_registry = self.buffer_registry.clone();
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
@@ -431,16 +431,16 @@ impl Dataplane {
 
         // Fallback if feature disabled (immediate return)
         future_into_py(py, async move {
-            info!("receive_data_async: reliable runtime not available, returning immediate sid");
+            info!("receive_data_async: lossless runtime not available, returning immediate sid");
             Ok(sid)
         })
     }
 
     #[pyo3(signature = (session_id, timeout_ms=None))]
-    fn reliable_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
+    fn lossless_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable_runtime {
+            if let Some(handle) = &self.lossless_runtime {
                 let fut = handle.wait_completion(session_id);
                 let ok = if let Some(ms) = timeout_ms {
                     rt().block_on(async move {
@@ -454,7 +454,7 @@ impl Dataplane {
 
                 // Proactively stop the session to clean up runtime state (tasks, inputs).
                 // This prevents stale senders/receivers from holding onto session IDs that
-                // may be reused by subsequent reliable transfers (e.g., RL rollouts).
+                // may be reused by subsequent lossless transfers (e.g., RL rollouts).
                 handle.stop(session_id);
 
                 return Ok(ok);
@@ -466,7 +466,7 @@ impl Dataplane {
     }
 
     #[pyo3(signature = (session_id, timeout_ms=None))]
-    fn reliable_wait_async<'py>(
+    fn lossless_wait_async<'py>(
         &self,
         py: Python<'py>,
         session_id: u64,
@@ -474,7 +474,7 @@ impl Dataplane {
     ) -> PyResult<Bound<'py, PyAny>> {
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.reliable_runtime {
+            if let Some(handle) = &self.lossless_runtime {
                 let handle = handle.clone();
                 return future_into_py(py, async move {
                     let fut = handle.wait_completion(session_id);
@@ -496,7 +496,7 @@ impl Dataplane {
         }
         // Fallback
         future_into_py(py, async move {
-            info!("reliable_wait_async: reliable runtime not available, returning false");
+            info!("lossless_wait_async: lossless runtime not available, returning false");
             Ok(false)
         })
     }
@@ -546,7 +546,7 @@ impl Dataplane {
         let controller = conductor.controller_handle();
 
         #[cfg(feature = "python-extension")]
-        let reliable_runtime = conductor.reliable_runtime_handle();
+        let lossless_runtime = conductor.lossless_runtime_handle();
 
         // enters the bindings runtime so tokio::spawn inside PythonInterfaceHandle::new() succeeds
         let py_if = {
@@ -572,7 +572,7 @@ impl Dataplane {
             controller,
             _join: join,
             #[cfg(feature = "python-extension")]
-            reliable_runtime: Some(reliable_runtime),
+            lossless_runtime: Some(lossless_runtime),
             #[cfg(feature = "python-extension")]
             buffer_registry,
             event_stash: Arc::new(Mutex::new(VecDeque::new())),

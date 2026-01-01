@@ -15,7 +15,7 @@ use tracing::{error, warn};
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
-    RoutingTableEntry, TokenBucketSpec, reliable_session,
+    RoutingTableEntry, TokenBucketSpec, lossless_session,
 };
 
 use crate::node::config::{Feature, LocalConfig};
@@ -31,7 +31,7 @@ use crate::node::packet::Packet;
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::route::RoutingTable;
 use crate::node::scheduler::sched::SchedulerHandle;
-use crate::node::session::api::{InboundFrame as ReliableInboundFrame, ReliableRuntimeHandle};
+use crate::node::session::api::{InboundFrame as LosslessInboundFrame, LosslessRuntimeHandle};
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Message types for the processor actor.
@@ -62,7 +62,7 @@ pub enum ProcessorMessage {
     SetFlowStatsReporter(Box<FlowStatsReporterHandle>),
     #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
-    ConnectReliableHandle(ReliableRuntimeHandle),
+    ConnectLosslessHandle(LosslessRuntimeHandle),
 }
 
 #[derive(Clone, Debug)]
@@ -146,13 +146,13 @@ impl ProcessorHandle {
         };
     }
 
-    pub fn connect_reliable_handle(&self, handle: ReliableRuntimeHandle) {
+    pub fn connect_lossless_handle(&self, handle: LosslessRuntimeHandle) {
         if let Err(e) = self
             .broadcast_sender()
-            .send(ProcessorMessage::ConnectReliableHandle(handle))
+            .send(ProcessorMessage::ConnectLosslessHandle(handle))
         {
             error!(
-                "Error sending the ConnectReliableHandle message to the processors: {}",
+                "Error sending the ConnectLosslessHandle message to the processors: {}",
                 e
             );
         };
@@ -757,7 +757,7 @@ struct Processor {
     // optional in-process Python delivery path
     #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
-    reliable_handle: Option<ReliableRuntimeHandle>,
+    lossless_handle: Option<LosslessRuntimeHandle>,
 }
 
 impl Processor {
@@ -778,7 +778,7 @@ impl Processor {
             config,
             #[cfg(feature = "python-extension")]
             python_interface: None,
-            reliable_handle: None,
+            lossless_handle: None,
         }
     }
 
@@ -863,8 +863,8 @@ impl Processor {
             ProcessorMessage::ConnectPythonInterface(interface) => {
                 self.python_interface = Some(interface);
             }
-            ProcessorMessage::ConnectReliableHandle(handle) => {
-                self.reliable_handle = Some(handle);
+            ProcessorMessage::ConnectLosslessHandle(handle) => {
+                self.lossless_handle = Some(handle);
             }
         }
     }
@@ -935,8 +935,8 @@ impl Processor {
 
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
-            // if possible, deliver to the reliable transport subsystem
-            if self.try_deliver_reliable(&packet) {
+            // if possible, deliver to the lossless transport subsystem
+            if self.try_deliver_lossless(&packet) {
                 return;
             }
 
@@ -973,16 +973,16 @@ impl Processor {
         }
     }
 
-    fn try_deliver_reliable(&mut self, packet: &Packet) -> bool {
-        let Some(handle) = self.reliable_handle.clone() else {
+    fn try_deliver_lossless(&mut self, packet: &Packet) -> bool {
+        let Some(handle) = self.lossless_handle.clone() else {
             return false;
         };
         let Some(payload) = packet.tcp_payload() else {
             return false;
         };
-        let session_id = if let Some((hdr, _, _)) = reliable_session::decode_data(payload) {
+        let session_id = if let Some((hdr, _, _)) = lossless_session::decode_data(payload) {
             hdr.session_id
-        } else if let Some((hdr, _)) = reliable_session::decode_control(payload) {
+        } else if let Some((hdr, _)) = lossless_session::decode_control(payload) {
             hdr.session_id
         } else {
             return false;
@@ -999,7 +999,7 @@ impl Processor {
 
         handle.deliver(
             session_id,
-            ReliableInboundFrame {
+            LosslessInboundFrame {
                 bytes: payload_vec,
                 peer_id,
             },

@@ -29,7 +29,7 @@ cargo build --release -p nextmini
 ### Optional Step: Start Database (One-time)
 
 ```bash
-./start-database.sh
+./utils/start-database.sh
 ```
 
 ### Step 2: Deploy Controller
@@ -62,6 +62,8 @@ source ~/.bashrc
 Enter passphrase once, it will persist across terminal sessions.
 
 ### Step 4: Configure
+
+For a complete list of configuration options, see the [Configuration Reference](../design/config-reference.md).
 
 Edit `controller/config.toml`:
 
