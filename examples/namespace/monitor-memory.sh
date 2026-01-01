@@ -83,7 +83,7 @@ echo "--- Summary ---"
     echo "Wiring time:   n/a"
   fi
   if [[ "$n_nodes" -gt 0 ]]; then
-    per_node_mb=$((mem_diff_mb / n_nodes))
+    per_node_mb=$(awk -v diff="$mem_diff" -v nodes="$n_nodes" 'BEGIN { printf "%.1f", diff / (1024*1024*nodes) }')
     echo "Per-node:      ${per_node_mb} MB"
   else
     echo "Per-node:      n/a"
