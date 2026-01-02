@@ -35,3 +35,6 @@ tensors/**
 
 # artifacts
 **/artifacts
+
+# Memory report
+memory-report.txt
