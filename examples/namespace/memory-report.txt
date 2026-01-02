@@ -1,0 +1,198 @@
+
+========================================
+Run: n_nodes=100 at 2026-01-02T08:00:58+08:00
+========================================
+Memory before: 10898 MB
+Memory after:  10405 MB
+Difference:    -493 MB
+Nodes:         100
+Wiring time:   n/a
+Per-node:      -4.9 MB
+
+
+========================================
+Run: n_nodes=100 at 2026-01-02T08:02:32+08:00
+========================================
+Memory before: 10161 MB
+Memory after:  10600 MB
+Difference:    439 MB
+Nodes:         100
+Wiring time:   18.30s
+Per-node:      4.4 MB
+
+
+========================================
+Run: n_nodes=200 at 2026-01-02T08:04:09+08:00
+========================================
+Memory before: 10057 MB
+Memory after:  10092 MB
+Difference:    35 MB
+Nodes:         200
+Wiring time:   n/a
+Per-node:      0.2 MB
+
+
+========================================
+Run: n_nodes=200 at 2026-01-02T08:05:17+08:00
+========================================
+Memory before: 10144 MB
+Memory after:  11004 MB
+Difference:    860 MB
+Nodes:         200
+Wiring time:   29.23s
+Per-node:      4.3 MB
+
+
+========================================
+Run: n_nodes=300 at 2026-01-02T08:06:12+08:00
+========================================
+Memory before: 10228 MB
+Memory after:  10218 MB
+Difference:    -10 MB
+Nodes:         300
+Wiring time:   n/a
+Per-node:      -0.0 MB
+
+
+========================================
+Run: n_nodes=300 at 2026-01-02T08:06:35+08:00
+========================================
+Memory before: 10183 MB
+Memory after:  10198 MB
+Difference:    14 MB
+Nodes:         300
+Wiring time:   n/a
+Per-node:      0.0 MB
+
+
+========================================
+Run: n_nodes=300 at 2026-01-02T08:06:53+08:00
+========================================
+Memory before: 10192 MB
+Memory after:  10234 MB
+Difference:    41 MB
+Nodes:         300
+Wiring time:   n/a
+Per-node:      0.1 MB
+
+
+========================================
+Run: n_nodes=300 at 2026-01-02T08:08:50+08:00
+========================================
+Memory before: 10190 MB
+Memory after:  11492 MB
+Difference:    1301 MB
+Nodes:         300
+Wiring time:   48.03s
+Per-node:      4.3 MB
+
+
+========================================
+Run: n_nodes=400 at 2026-01-02T08:09:35+08:00
+========================================
+Memory before: 10227 MB
+Memory after:  10236 MB
+Difference:    8 MB
+Nodes:         400
+Wiring time:   n/a
+Per-node:      0.0 MB
+
+
+========================================
+Run: n_nodes=400 at 2026-01-02T08:09:53+08:00
+========================================
+Memory before: 10231 MB
+Memory after:  10265 MB
+Difference:    33 MB
+Nodes:         400
+Wiring time:   n/a
+Per-node:      0.1 MB
+
+
+========================================
+Run: n_nodes=400 at 2026-01-02T08:10:12+08:00
+========================================
+Memory before: 10230 MB
+Memory after:  10237 MB
+Difference:    7 MB
+Nodes:         400
+Wiring time:   n/a
+Per-node:      0.0 MB
+
+
+========================================
+Run: n_nodes=400 at 2026-01-02T08:11:57+08:00
+========================================
+Memory before: 10298 MB
+Memory after:  11976 MB
+Difference:    1678 MB
+Nodes:         400
+Wiring time:   61.55s
+Per-node:      4.2 MB
+
+
+========================================
+Run: n_nodes=500 at 2026-01-02T08:12:41+08:00
+========================================
+Memory before: 10255 MB
+Memory after:  10319 MB
+Difference:    63 MB
+Nodes:         500
+Wiring time:   n/a
+Per-node:      0.1 MB
+
+
+========================================
+Run: n_nodes=500 at 2026-01-02T08:13:02+08:00
+========================================
+Memory before: 10271 MB
+Memory after:  10277 MB
+Difference:    6 MB
+Nodes:         500
+Wiring time:   n/a
+Per-node:      0.0 MB
+
+
+========================================
+Run: n_nodes=500 at 2026-01-02T08:13:36+08:00
+========================================
+Memory before: 10480 MB
+Memory after:  10390 MB
+Difference:    -90 MB
+Nodes:         500
+Wiring time:   n/a
+Per-node:      -0.2 MB
+
+
+========================================
+Run: n_nodes=500 at 2026-01-02T08:13:52+08:00
+========================================
+Memory before: 10378 MB
+Memory after:  10397 MB
+Difference:    19 MB
+Nodes:         500
+Wiring time:   n/a
+Per-node:      0.0 MB
+
+
+========================================
+Run: n_nodes=500 at 2026-01-02T08:14:12+08:00
+========================================
+Memory before: 10288 MB
+Memory after:  10295 MB
+Difference:    6 MB
+Nodes:         500
+Wiring time:   n/a
+Per-node:      0.0 MB
+
+
+========================================
+Run: n_nodes=500 at 2026-01-02T08:18:35+08:00
+========================================
+Memory before: 10272 MB
+Memory after:  12359 MB
+Difference:    2086 MB
+Nodes:         500
+Wiring time:   77.81s
+Per-node:      4.2 MB
+
