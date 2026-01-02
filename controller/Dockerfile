@@ -1,24 +1,11 @@
-FROM rust:latest AS build
+FROM rust:alpine AS build
 
-# Use USTC mirror for Debian apt
-RUN sed -i 's/deb.debian.org/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/debian.sources
-
-# Use USTC mirror for Cargo/crates.io
-ENV CARGO_HTTP_MULTIPLEXING=false
-RUN mkdir -p ~/.cargo && echo '[source.crates-io]' > ~/.cargo/config.toml && \
-    echo 'replace-with = "ustc"' >> ~/.cargo/config.toml && \
-    echo '[source.ustc]' >> ~/.cargo/config.toml && \
-    echo 'registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"' >> ~/.cargo/config.toml
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
-    bash \
-    build-essential \
-    libssl-dev \
-    ca-certificates \
-    pkg-config && \
-    rm -rf /var/lib/apt/lists/*
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add curl bash \
+    build-base \
+    openssl \
+    ca-certificates
 
 # First, create directories and copy files
 WORKDIR /var/nextmini
@@ -30,32 +17,25 @@ WORKDIR /var/nextmini/server
 # Build the Rust controller
 RUN cargo build --release
 
-FROM ubuntu:24.04
+FROM alpine:latest
 
-# Use USTC mirror for Ubuntu apt
-RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources && \
-    sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources
-
-ENV TZ=Asia/Shanghai
-ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=America/Toronto
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
-    bash \
+RUN apk update && \
+    apk upgrade --no-cache && \
+    apk add curl bash \
     openssh-client \
     openssh-server \
-    git \
+    git\
     vim \
-    build-essential \
+    build-base \
     net-tools \
     iputils-ping \
     iperf3 \
     openssl \
     ca-certificates \
-    htop && \
-    rm -rf /var/lib/apt/lists/*
+    htop
 
 WORKDIR /var/nextmini
 COPY --from=build /var/nextmini/server/target/release/controller /var/nextmini/controller
