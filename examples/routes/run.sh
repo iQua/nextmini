@@ -12,6 +12,7 @@ PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$ROOT_DIR")}"
 NETWORK_NAME="${PROJECT_NAME}_network"
 LOCK_DIR="$ROOT_DIR/.run_routes_tmux.${SESSION_NAME}.lock"
 LOCK_HELD="false"
+COMPOSE_LOGS_SUPPORTS_SINCE="unknown"
 SRC_NODE="1"
 DST_NODE="3"
 DST_SET="false"
@@ -28,6 +29,7 @@ CONTROLLER_LOGS="true"
 INTERNAL_RUN="false"
 KEEP_TMUX="true"
 KEEP_CONFIG="false"
+RESET="false"
 CONFIG_BACKUP=""
 CASE_LIST=()
 COMPOSE_PANE=""
@@ -60,6 +62,7 @@ Notes:
     linear chain starting at src: src-(src+1)-...-(src+hops).
   - Use --detach if you do not want to attach to the tmux session.
   - Use --no-wait to return immediately while tmux keeps running.
+  - Use --reset to kill any stuck previous run and cleanup before starting.
   - By default the tmux session is kept; use --kill-tmux to remove it after the run.
   - Controller logs are shown by default; use --no-controller-logs to show `docker compose ps` instead.
   - Use --no-preclean to skip docker compose down before each run.
@@ -184,7 +187,7 @@ wait_for_topology_ready() {
   local since_ts="${1:-}"
   local ready_pat="Broadcasting topology-ready signal"
   local since_args=()
-  if [[ -n "$since_ts" ]]; then
+  if [[ -n "$since_ts" && "$COMPOSE_LOGS_SUPPORTS_SINCE" == "true" ]]; then
     since_args=(--since "$since_ts")
   fi
   while true; do
@@ -205,7 +208,7 @@ build_ready_cmd() {
   local since_ts="$1"
   local ready_pat="Broadcasting topology-ready signal"
   local since_args=""
-  if [[ -n "$since_ts" ]]; then
+  if [[ -n "$since_ts" && "$COMPOSE_LOGS_SUPPORTS_SINCE" == "true" ]]; then
     since_args="--since \"$since_ts\""
   fi
   if command -v rg >/dev/null 2>&1; then
@@ -242,6 +245,51 @@ cleanup_all() {
   fi
 }
 
+kill_pid_tree() {
+  local pid="$1"
+  if [[ -z "$pid" || ! "$pid" =~ ^[0-9]+$ ]]; then
+    return 0
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -P "$pid" >/dev/null 2>&1 || true
+  elif command -v pgrep >/dev/null 2>&1; then
+    while read -r child; do
+      kill "$child" >/dev/null 2>&1 || true
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  sleep 0.5
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" >/dev/null 2>&1 || true
+  fi
+}
+
+reset_environment() {
+  local existing_pid=""
+  echo "Resetting previous run (session ${SESSION_NAME})..."
+  if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    tmux kill-session -t "$SESSION_NAME" >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$LOCK_DIR/pid" ]]; then
+    existing_pid="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+  fi
+  if [[ -n "$existing_pid" ]]; then
+    kill_pid_tree "$existing_pid"
+  fi
+  rm -rf "$LOCK_DIR" >/dev/null 2>&1 || true
+
+  docker compose down --remove-orphans >/dev/null 2>&1 || true
+  for name in controller postgres $(docker ps -a --format "{{.Names}}" | grep -E "^node[0-9]+$" || true); do
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+  docker network rm "$NETWORK_NAME" >/dev/null 2>&1 || true
+}
+
 acquire_lock() {
   local existing_pid=""
   if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -265,6 +313,7 @@ acquire_lock() {
 
   echo "Another run is already in progress (lock: $LOCK_DIR pid: ${existing_pid:-unknown})." >&2
   echo "Attach with: tmux attach -t ${SESSION_NAME}" >&2
+  echo "If it looks stuck, run: ./run.sh --reset" >&2
   exit 1
 }
 
@@ -460,7 +509,10 @@ ensure_tmux_session() {
   local session="$1"
 
   if ! tmux has-session -t "$session" 2>/dev/null; then
-    tmux new-session -d -s "$session" -n routes -c "$ROOT_DIR"
+    if ! tmux new-session -d -s "$session" -n routes -c "$ROOT_DIR" 2>/dev/null; then
+      tmux new-session -d -s "$session" -n routes
+      tmux send-keys -t "$session:0.0" "cd \"$ROOT_DIR\"" C-m
+    fi
     tmux split-window -h -t "$session:0.0"
     tmux split-window -v -t "$session:0.0"
     tmux split-window -v -t "$session:0.1"
@@ -472,10 +524,10 @@ ensure_tmux_session() {
   DST_PANE="${session}:0.2"
   SRC_PANE="${session}:0.3"
 
-  tmux select-pane -t "$COMPOSE_PANE" -T "compose"
-  tmux select-pane -t "$CONTROLLER_PANE" -T "controller"
-  tmux select-pane -t "$DST_PANE" -T "dst"
-  tmux select-pane -t "$SRC_PANE" -T "src"
+  tmux select-pane -t "$COMPOSE_PANE" -T "compose" 2>/dev/null || true
+  tmux select-pane -t "$CONTROLLER_PANE" -T "controller" 2>/dev/null || true
+  tmux select-pane -t "$DST_PANE" -T "dst" 2>/dev/null || true
+  tmux select-pane -t "$SRC_PANE" -T "src" 2>/dev/null || true
   tmux select-layout -t "${session}:0" tiled
 }
 
@@ -671,6 +723,10 @@ while [[ $# -gt 0 ]]; do
       NO_WAIT="true"
       shift
       ;;
+    --reset)
+      RESET="true"
+      shift
+      ;;
     --controller-logs)
       CONTROLLER_LOGS="true"
       shift
@@ -717,6 +773,16 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+if docker compose logs --help 2>/dev/null | grep -q -- "--since"; then
+  COMPOSE_LOGS_SUPPORTS_SINCE="true"
+else
+  COMPOSE_LOGS_SUPPORTS_SINCE="false"
+fi
+
+if [[ "$RESET" == "true" && "$INTERNAL_RUN" != "true" ]]; then
+  reset_environment
+fi
+
 if [[ "$NO_WAIT" == "true" ]]; then
   ATTACH_TMUX="false"
 fi
@@ -725,7 +791,7 @@ if [[ "$INTERNAL_RUN" != "true" ]]; then
   filtered_args=()
   for arg in "${ORIG_ARGS[@]}"; do
     case "$arg" in
-      --no-wait|--detach|--internal-run)
+      --no-wait|--detach|--internal-run|--reset)
         ;;
       *)
         filtered_args+=("$arg")
@@ -739,6 +805,13 @@ if [[ "$INTERNAL_RUN" != "true" ]]; then
   : >"$log_file"
   "$0" "${filtered_args[@]}" >"$log_file" 2>&1 &
   pid="$!"
+
+  sleep 0.2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    echo "Run failed to start (see log file: ${log_file})." >&2
+    cat "$log_file" >&2
+    exit 1
+  fi
 
   if [[ "$NO_WAIT" == "true" || "$ATTACH_TMUX" != "true" ]]; then
     echo "Started run in tmux session ${SESSION_NAME} (pid ${pid})."
