@@ -15,7 +15,34 @@ Run the launcher script to apply sysctl tuning and start a tmux session with the
 
 The `--n-nodes` flag updates both the controller config and dataplane automatically.
 
-The script raises ARP neighbor table thresholds and netlink socket buffers to avoid "Exchange full (os error 54)" errors during rapid veth creation. Pass `--sysctl-only` to apply tuning without starting tmux. The tmux session requires `tmux` to be installed on the host.
+The script raises ARP neighbor table thresholds, connection backlog limits, and netlink socket buffers to avoid "Exchange full (os error 54)" errors during rapid veth creation and to reduce controller connect timeouts under bursty joins.
+
+Pass `--sysctl-only` to apply tuning without starting `tmux`.
+
+### Manual run (two terminals)
+
+Apply sysctl tuning:
+
+```bash
+./examples/namespace/run.sh --sysctl-only
+```
+
+Terminal A (controller + DB):
+
+```bash
+cd ~/nextmini/examples/namespace
+docker compose -f docker-compose.yml up --build
+```
+
+Terminal B (dataplane):
+
+```bash
+cd ~/nextmini
+cargo build -p nextmini --release
+sudo -E RUST_LOG=info ./target/release/nextmini --config-path examples/namespace/config.toml --n-nodes 800
+```
+
+Make sure `examples/namespace/controller-config.toml` has the expected node count, and set the dataplane node count either via `examples/namespace/config.toml` or `--n-nodes`.
 
 The sysctl parameters:
 
@@ -24,6 +51,8 @@ The sysctl parameters:
 - `gc_thresh3`: Hard maximum — absolute limit on ARP entries
 
 The script also sets `ulimit -u 20000` and `ulimit -n 200000` for large node counts.
+
+The controller container also needs a high `nofile` limit to accept thousands of WebSocket connections. `examples/namespace/docker-compose.yml` sets this for the controller. If you see `controller exited with code 0` while nodes are still connecting, it is usually because `accept()` failed due to a file descriptor limit.
 
 ### Step 2: Observing the results
 
@@ -38,7 +67,7 @@ controller  | 2026-01-01T00:46:20.187757Z  INFO controller::new_node: All datapl
 controller  | 2026-01-01T00:46:20.187760Z  INFO controller::new_node: Broadcasting topology-ready signal to 800 dataplane nodes.
 ```
 
-Note: the controller log "All ... nodes are now connected" refers to nodes connecting to the controller and completing `StartUp`. If your controller config includes a topology (e.g., `type = "ring"`), dataplane nodes will continue wiring node-to-node connections after this point. For the connection-only scaling baseline, use a controller config with no topology edges (e.g., `examples/namespace/controller-config-10k.toml`).
+Note: the controller log "All ... nodes are now connected" refers to nodes connecting to the controller and completing `StartUp`. If your controller config includes a topology (e.g., `type = "ring"`), dataplane nodes will continue wiring node-to-node connections after this point. For the connection-only scaling baseline, remove `type`/`*_config`/`edges` from `[topology]` and set only `n_nodes = N` in `examples/namespace/controller-config.toml`.
 
 Monitor memory usage in a new terminal:
 

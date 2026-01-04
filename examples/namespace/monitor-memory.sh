@@ -32,6 +32,9 @@ echo "--- Memory BEFORE nodes connect ---"
 free -h
 mem_before=$(free -b | awk '/Mem:/ {print $3}')
 
+# Follow controller logs from the moment we signal the dataplane.
+since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # Signal dataplane to start (if signal file specified)
 if [[ -n "$signal_file" ]]; then
   echo ""
@@ -43,13 +46,31 @@ fi
 echo ""
 echo "Waiting for all nodes to connect..."
 wiring_time=""
-while read -r line; do
-  if echo "$line" | grep -q 'All dataplane nodes have connected'; then
+while true; do
+  # Don't rely on `docker logs -f` here: the stream can terminate early (e.g. container restart),
+  # and process substitution doesn't reliably trip `set -e`, causing the script to fall through
+  # into the "AFTER" and "Summary" sections prematurely.
+  line="$(
+    docker logs --since "$since" controller 2>&1 \
+      | grep -F "All dataplane nodes have connected" \
+      | tail -n 1 || true
+  )"
+
+  if [[ -n "$line" ]]; then
     echo "$line"
-    wiring_time=$(echo "$line" | sed -n 's/.*It takes \([0-9.]*\) seconds.*/\1/p')
+    if [[ "$line" =~ It\ takes\ ([0-9.]+)\ seconds ]]; then
+      wiring_time="${BASH_REMATCH[1]}"
+    fi
     break
   fi
-done < <(docker logs -f controller 2>&1)
+
+  # If the controller container is missing or stopped, keep waiting (and keep the pane open)
+  # so the user can see the failure and intervene (e.g. fix sudo prompt / restart compose).
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'controller'; then
+    echo "Controller container is not running yet; waiting..."
+  fi
+  sleep 1
+done
 
 sleep 1
 
@@ -92,6 +113,9 @@ echo "--- Summary ---"
 } | tee -a "$memory_report"
 
 echo "Report appended to: $memory_report"
-echo ""
-echo "Press Enter to close this pane..."
-read -r
+
+if [[ -n "${TMUX:-}" ]]; then
+  echo ""
+  echo "Press Enter to close this pane..."
+  read -r
+fi

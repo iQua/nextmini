@@ -510,7 +510,9 @@ mod tests {
 
         let message = build_startup_response(params);
         match message {
-            ControllerToDataplane::StartUp { node_id, node_spec, .. } => {
+            ControllerToDataplane::StartUp {
+                node_id, node_spec, ..
+            } => {
                 assert_eq!(node_id, 3);
                 assert_eq!(
                     node_spec,
@@ -782,12 +784,16 @@ mod tests {
         let routes = build_routes_from_topology(&[(1, 2)], &protocol);
 
         assert_eq!(routes.len(), 2);
-        assert!(routes
-            .iter()
-            .any(|(src, dst, edges)| *src == 1 && *dst == 2 && *edges == vec![(1, 2)]));
-        assert!(routes
-            .iter()
-            .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)]));
+        assert!(
+            routes
+                .iter()
+                .any(|(src, dst, edges)| *src == 1 && *dst == 2 && *edges == vec![(1, 2)])
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)])
+        );
     }
 
     #[test]
@@ -795,12 +801,16 @@ mod tests {
         let protocol = Some(config::RoutingProtocol::ShortestPath);
         let routes = build_routes_from_topology(&[(1, 2), (2, 3)], &protocol);
 
-        assert!(routes
-            .iter()
-            .any(|(src, dst, edges)| *src == 1 && *dst == 3 && *edges == vec![(1, 2), (2, 3)]));
-        assert!(routes
-            .iter()
-            .any(|(src, dst, edges)| *src == 3 && *dst == 1 && *edges == vec![(3, 2), (2, 1)]));
+        assert!(
+            routes
+                .iter()
+                .any(|(src, dst, edges)| *src == 1 && *dst == 3 && *edges == vec![(1, 2), (2, 3)])
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|(src, dst, edges)| *src == 3 && *dst == 1 && *edges == vec![(3, 2), (2, 1)])
+        );
     }
 
     #[test]
@@ -842,12 +852,16 @@ mod tests {
 
         let routes = merge_all_routes(&config);
         assert_eq!(routes.len(), 2);
-        assert!(routes
-            .iter()
-            .any(|(src, dst, edges)| *src == 1 && *dst == 2 && *edges == vec![(1, 2)]));
-        assert!(routes
-            .iter()
-            .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)]));
+        assert!(
+            routes
+                .iter()
+                .any(|(src, dst, edges)| *src == 1 && *dst == 2 && *edges == vec![(1, 2)])
+        );
+        assert!(
+            routes
+                .iter()
+                .any(|(src, dst, edges)| *src == 2 && *dst == 1 && *edges == vec![(2, 1)])
+        );
     }
 
     #[test]
@@ -916,12 +930,7 @@ mod tests {
             edges: vec![(1, 2), (2, 3), (2, 4)],
         }];
 
-        let cases = [
-            (1, vec![2]),
-            (2, vec![3, 4]),
-            (3, vec![3]),
-            (4, vec![4]),
-        ];
+        let cases = [(1, vec![2]), (2, vec![3, 4]), (3, vec![3]), (4, vec![4])];
         for (node_id, mut expected_next_hops) in cases {
             let entries = expect_install_routes(build_routes_for_node(routes.clone(), node_id));
             assert_eq!(entries.len(), 1);
