@@ -36,5 +36,8 @@ tensors/**
 # artifacts
 **/artifacts
 
+# iperf results
+iperf-results.md
+
 # Memory report
 memory-report.txt
