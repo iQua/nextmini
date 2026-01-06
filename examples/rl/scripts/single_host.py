@@ -81,6 +81,7 @@ def _gpu_block() -> str:
     return textwrap.indent(
         textwrap.dedent(
             """\
+            gpus: all
             deploy:
               resources:
                 reservations:

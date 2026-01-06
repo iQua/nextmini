@@ -45,7 +45,31 @@ if [[ "${role}" == "trainer" ]]; then
     }
   fi
 fi
-uv pip install torch>=2.4.0 >/dev/null
+
+# Torch: prefer CUDA wheels when GPUs are requested.
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+if [[ "${TORCH_INDEX_URL}" == "pypi" ]]; then
+  uv pip install "torch>=2.4.0" >/dev/null
+else
+  uv pip install --index-url "${TORCH_INDEX_URL}" "torch>=2.4.0" >/dev/null || {
+    echo "Failed to install torch from ${TORCH_INDEX_URL}; falling back to PyPI." >&2
+    uv pip install "torch>=2.4.0" >/dev/null
+  }
+fi
+
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" && "${CUDA_VISIBLE_DEVICES}" != "-1" ]]; then
+  python - <<'PY'
+import sys
+import torch
+if not torch.cuda.is_available():
+    print("ERROR: CUDA_VISIBLE_DEVICES is set but torch.cuda.is_available() is false.", file=sys.stderr)
+    print("  - Ensure the container has GPU access (nvidia-container-toolkit / docker --gpus).", file=sys.stderr)
+    print("  - Ensure you installed a CUDA-enabled torch wheel (set TORCH_INDEX_URL).", file=sys.stderr)
+    sys.exit(1)
+print(f"torch={torch.__version__} cuda={torch.version.cuda} cuda_available={torch.cuda.is_available()}")
+PY
+fi
+
 uv pip install transformers>=4.30.0 >/dev/null
 uv pip install datasets>=2.0.0 >/dev/null
 uv pip install accelerate >/dev/null
