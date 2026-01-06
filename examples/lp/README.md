@@ -1,6 +1,12 @@
 # LP Multicast Tree Selection
 
-Computes optimal multicast DAG (tree) for a given topology and `(src → destinations)` demand using Linear Programming (mFlow).
+Computes multicast DAG edges for a given topology and `(src → destinations)` demand.
+Supports:
+
+- `mflow` (LP-based tree extraction)
+- `cf_tree` (LP-guided hop-limited rounding)
+- `cf_bottleneck` (bottleneck-aware CF-Tree rate search)
+- `basic_tree` (capacity-only hop-limited tree)
 
 ## Features
 
@@ -8,6 +14,7 @@ Computes optimal multicast DAG (tree) for a given topology and `(src → destina
 - Optional link probing to measure actual capacities
 - Solves max-min fair multicast LP
 - Converts LP solution to multicast tree edges
+- Optional relay caps via LP-guided relay scoring (`--max-relays`)
 
 ## Usage
 

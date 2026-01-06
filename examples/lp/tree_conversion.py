@@ -59,6 +59,14 @@ def convert_to_multicast_trees(
             candidate_tree = [path]
 
             for candidate_path, candidate_throughput in current:
+                # Only merge paths that can carry this tree's throughput.
+                #
+                # We build trees in descending-throughput order. To keep each tree feasible
+                # as a single-rate multicast, every included path must have residual
+                # throughput >= the tree rate. With the descending order, this effectively
+                # restricts merging to equal-throughput paths (up to rounding).
+                if candidate_throughput + 1e-9 < throughput:
+                    continue
                 # Check 1: Must NOT share destination (multicast tree delivers to unique dests)
                 if candidate_path[-1] in dst_set:
                     continue

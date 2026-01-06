@@ -45,11 +45,14 @@ class Graph:
         path: t.List[int],
         all_paths: t.List[t.List[int]],
         max_length: int = -1,
+        allowed_intermediate_nodes: set[int] | None = None,
     ):
         """Find all paths from src to dst using DFS.
 
         Args:
             max_length: Maximum number of EDGES (hops) in path, or -1 for unlimited
+            allowed_intermediate_nodes: If provided, only these nodes may appear as
+                intermediate hops (the destination is always allowed).
         """
         if src == dst:
             all_paths.append(path.copy())
@@ -62,8 +65,21 @@ class Graph:
         for neighbor, _ in self.adj[src]:
             if neighbor in path:
                 continue
+            if (
+                allowed_intermediate_nodes is not None
+                and neighbor != dst
+                and neighbor not in allowed_intermediate_nodes
+            ):
+                continue
             path.append(neighbor)
-            self.find_paths(neighbor, dst, path, all_paths, max_length=max_length)
+            self.find_paths(
+                neighbor,
+                dst,
+                path,
+                all_paths,
+                max_length=max_length,
+                allowed_intermediate_nodes=allowed_intermediate_nodes,
+            )
             path.pop()
 
     def get_paths(
@@ -71,13 +87,21 @@ class Graph:
         sources: t.List[int],
         destinations: t.Dict[int, t.List[int]],
         max_length: int = -1,
+        allowed_intermediate_nodes: set[int] | None = None,
     ) -> t.Dict[t.Tuple[int, int], t.List[t.List[int]]]:
         """Get all paths for given source-destination pairs."""
         all_source_paths = {}
         for src in sources:
             for dst in destinations[src]:
                 all_paths = []
-                self.find_paths(src, dst, [src], all_paths, max_length=max_length)
+                self.find_paths(
+                    src,
+                    dst,
+                    [src],
+                    all_paths,
+                    max_length=max_length,
+                    allowed_intermediate_nodes=allowed_intermediate_nodes,
+                )
                 all_source_paths[(src, dst)] = all_paths
         return all_source_paths
 

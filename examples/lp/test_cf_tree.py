@@ -115,7 +115,7 @@ def test_tree_rate():
     tree_edges = [(1, 2), (2, 3)]
     tree_nodes = {1: 0, 2: 1, 3: 2}
 
-    rate = compute_tree_rate(graph, tree_edges, tree_nodes, lp_upper_bound=80.0)
+    rate = compute_tree_rate(graph, tree_edges, tree_nodes)
 
     print(f"Tree Rate Test:")
     print(f"  Computed rate: {rate}")
@@ -126,10 +126,50 @@ def test_tree_rate():
     print("  PASSED\n")
 
 
+def test_lp_node_budget_affects_f_star():
+    """Ensure node egress budgets are enforced in the LP backend."""
+    nodes = [1, 2, 3]
+    edges = [(1, 2), (2, 1), (1, 3), (3, 1)]
+    capacities = {e: 100.0 for e in edges}
+    graph = Graph(nodes, edges, capacities)
+
+    # With two terminals and an upload budget of 50, the LP's common rate is <= 25.
+    result = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3],
+        algorithm="cf_tree",
+        hop_limit=1,
+        node_egress_budgets={1: 50.0},
+    )
+
+    assert result.lp_f_star is not None
+    assert abs(result.lp_f_star - 25.0) <= 1e-3
+    assert result.throughput is not None
+    assert abs(result.throughput - 25.0) <= 1e-3
+
+    print("LP Node Budget Test:")
+    print(f"  LP f_star: {result.lp_f_star}")
+    print(f"  Tree throughput: {result.throughput}")
+    print("  PASSED\n")
+
+
 def test_unified_interface():
     """Test the unified compute_tree_edges interface."""
     nodes = [1, 2, 3, 4]
-    edges = [(1, 2), (2, 1), (2, 3), (3, 2), (2, 4), (4, 2), (1, 3), (3, 1)]
+    # Ensure the source has direct reachability to all terminals when terminals are not allowed to forward.
+    edges = [
+        (1, 2),
+        (2, 1),
+        (2, 3),
+        (3, 2),
+        (2, 4),
+        (4, 2),
+        (1, 3),
+        (3, 1),
+        (1, 4),
+        (4, 1),
+    ]
     capacities = {e: 100.0 for e in edges}
 
     graph = Graph(nodes, edges, capacities)
@@ -144,17 +184,57 @@ def test_unified_interface():
     assert len(result.edges) >= 3
     assert result.algorithm == "basic_tree"
 
+    # Test cf_tree_mwu (solver-free conceptual-flow approximation)
+    result = compute_tree_edges(
+        graph, src=1, destinations=[2, 3, 4], algorithm="cf_tree_mwu", hop_limit=3
+    )
+    print(f"  cf_tree_mwu: {result.edges}, throughput={result.throughput}")
+    assert len(result.edges) >= 3
+    assert result.algorithm == "cf_tree_mwu"
+    assert result.lp_f_star is not None
+
+    # Test cf_bottleneck_mwu
+    result = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3, 4],
+        algorithm="cf_bottleneck_mwu",
+        hop_limit=3,
+    )
+    print(
+        f"  cf_bottleneck_mwu: {result.edges}, throughput={result.throughput}"
+    )
+    assert len(result.edges) >= 3
+    assert result.algorithm == "cf_bottleneck_mwu"
+    assert result.lp_f_star is not None
+
     # Test cf_tree (needs cvxopt)
     try:
         result = compute_tree_edges(
             graph, src=1, destinations=[2, 3, 4], algorithm="cf_tree", hop_limit=3
         )
         print(f"  cf_tree: {result.edges}, throughput={result.throughput}")
-        print(f"    LP upper bound: {result.lp_upper_bound}")
+        print(f"    LP f_star: {result.lp_f_star}")
         assert len(result.edges) >= 3
         assert result.algorithm == "cf_tree"
     except ImportError as e:
         print(f"  cf_tree: SKIPPED (cvxopt not available)")
+
+    # Test cf_bottleneck (needs cvxopt)
+    try:
+        result = compute_tree_edges(
+            graph,
+            src=1,
+            destinations=[2, 3, 4],
+            algorithm="cf_bottleneck",
+            hop_limit=3,
+        )
+        print(f"  cf_bottleneck: {result.edges}, throughput={result.throughput}")
+        print(f"    LP f_star: {result.lp_f_star}")
+        assert len(result.edges) >= 3
+        assert result.algorithm == "cf_bottleneck"
+    except ImportError:
+        print(f"  cf_bottleneck: SKIPPED (cvxopt not available)")
 
     # Test mflow
     try:
@@ -207,7 +287,7 @@ def test_with_controller_config():
                 graph, src=src, destinations=dests, algorithm="cf_tree", hop_limit=3
             )
             print(f"  cf_tree from {src} to {dests}: {result.edges}")
-            print(f"    LP upper bound: {result.lp_upper_bound}")
+            print(f"    LP f_star: {result.lp_f_star}")
         except ImportError:
             print(f"  cf_tree: SKIPPED (cvxopt not available)")
 
@@ -223,6 +303,7 @@ if __name__ == "__main__":
     test_hop_limit()
     test_cf_weights()
     test_tree_rate()
+    test_lp_node_budget_affects_f_star()
     test_unified_interface()
     test_with_controller_config()
 

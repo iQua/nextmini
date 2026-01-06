@@ -7,6 +7,15 @@ This module is designed to be importable and runnable as:
 python -m examples.lp.main --controller-config examples/rl/configs-docker/controller-config.toml --src 1 --dests 2,3
 ```
 
+Choose a planning algorithm:
+
+```bash
+python -m examples.lp.main \
+  --controller-config examples/rl/configs-docker/controller-config.toml \
+  --src 1 --dests 2,3 \
+  --algorithm cf_tree --hop-limit 3 --eta 0.1
+```
+
 Optional: apply the computed edges to a live controller *from the source node* using the Python
 bindings:
 
@@ -30,7 +39,7 @@ from time import sleep
 
 from .solver import (
     build_graph_from_controller_config,
-    compute_mflow_tree_edges,
+    compute_tree_edges,
     load_toml,
 )
 
@@ -241,6 +250,57 @@ def main() -> int:
         help="Comma-separated destination node IDs (e.g. 2,3)",
     )
     parser.add_argument(
+        "--algorithm",
+        type=str,
+        default="mflow",
+        choices=("mflow", "cf_tree", "cf_bottleneck", "basic_tree"),
+        help="Multicast planning algorithm (default: mflow)",
+    )
+    parser.add_argument(
+        "--hop-limit",
+        type=int,
+        default=3,
+        help="Hop limit H (used by cf_tree/basic_tree; also used as LP max_length when --max-length is -1)",
+    )
+    parser.add_argument(
+        "--eta",
+        type=float,
+        default=0.1,
+        help="LP guidance weight eta for cf_tree (default: 0.1)",
+    )
+    parser.add_argument(
+        "--max-relays",
+        type=int,
+        default=None,
+        help="Optional cap on number of relay nodes (LP-guided selection).",
+    )
+    parser.add_argument(
+        "--relay-scoring",
+        type=str,
+        default="coverage",
+        choices=("coverage", "path_flow", "incident"),
+        help="Relay scoring mode for --max-relays (default: coverage)",
+    )
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=-1,
+        help="Maximum path length (hops) for LP candidate paths; -1 uses hop-limit for cf_tree/basic_tree.",
+    )
+    parser.add_argument(
+        "--sort-by",
+        type=str,
+        default="shortest",
+        choices=("shortest", "random"),
+        help="Path selection strategy for LP candidates (default: shortest)",
+    )
+    parser.add_argument(
+        "--num-paths",
+        type=int,
+        default=2,
+        help="Number of candidate paths per (src,dst) for LP (default: 2)",
+    )
+    parser.add_argument(
         "--default-capacity",
         type=int,
         default=None,
@@ -314,16 +374,34 @@ def main() -> int:
         finally:
             conn.close()
 
-    edges, throughput = compute_mflow_tree_edges(
-        graph, src=args.src, destinations=destinations
+    result = compute_tree_edges(
+        graph,
+        src=args.src,
+        destinations=destinations,
+        algorithm=args.algorithm,
+        hop_limit=args.hop_limit,
+        eta=args.eta,
+        max_relays=args.max_relays,
+        relay_scoring=args.relay_scoring,
+        max_length=args.max_length,
+        sort_by=args.sort_by,
+        num_paths=args.num_paths,
     )
+    edges = result.edges
+    throughput = result.throughput
 
     if args.json:
         print(json.dumps([[a, b] for (a, b) in edges]))
     else:
-        print(f"edges={edges}")
-        if throughput is not None:
-            print(f"throughput={throughput}")
+        print(
+            f"algorithm={result.algorithm} edges={edges}"
+            + (f" throughput={throughput}" if throughput is not None else "")
+            + (
+                f" lp_f_star={result.lp_f_star}"
+                if result.lp_f_star is not None
+                else ""
+            )
+        )
 
     if args.apply:
         if args.node_config is None or args.group_id is None:

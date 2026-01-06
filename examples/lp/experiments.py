@@ -2,13 +2,17 @@
 Experiments for CF-Tree Algorithm Evaluation.
 
 This script generates experimental data for comparing:
+0. Star (direct fanout, no relays)
+0. Two-Level (simple src->relay->terminal hierarchy)
 1. Basic-Tree (capacity-based, no LP guidance)
+1. Basic-Bottleneck (bottleneck sweep, no LP)
 2. CF-Tree (LP-guided)
-3. mFlow (original LP-based tree extraction)
+3. CF-Bottleneck (rate-search CF-Tree)
+4. mFlow (original LP-based tree extraction)
 
 Metrics:
 - Tree throughput (f_tree)
-- LP upper bound gap (f* - f_tree)
+- LP f* gap (f* - f_tree)
 - Number of tree edges
 - Computation time
 """
@@ -46,7 +50,7 @@ class ExperimentResult:
     trial: int
     algorithm: str
     throughput: float | None
-    lp_upper_bound: float | None
+    lp_f_star: float | None
     n_edges: int
     computation_time_ms: float
     eta: float | None
@@ -157,6 +161,8 @@ def run_single_trial(
             algorithm=algorithm,
             hop_limit=hop_limit,
             eta=eta,
+            # Keep the LP candidate path set hop-limited for fair comparisons.
+            max_length=hop_limit,
         )
         elapsed = (time.perf_counter() - start) * 1000
         return result, elapsed
@@ -191,6 +197,58 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
 
         print(f"\nTrial {trial + 1}/{config.n_trials}: src={src}, terminals={terminals}")
 
+        # Star (direct fanout) baseline
+        result, time_ms = run_single_trial(graph, src, terminals, "star", config.hop_limit)
+        if result:
+            results.append(
+                ExperimentResult(
+                    config_name=config.name,
+                    trial=trial,
+                    algorithm="star",
+                    throughput=result.throughput,
+                    lp_f_star=result.lp_f_star,
+                    n_edges=len(result.edges),
+                    computation_time_ms=time_ms,
+                    eta=None,
+                    hop_limit=config.hop_limit,
+                    n_terminals=len(terminals),
+                    n_nodes=config.n_nodes,
+                )
+            )
+            throughput_str = (
+                f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+            )
+            print(
+                f"  star: throughput={throughput_str}, edges={len(result.edges)}, time={time_ms:.2f}ms"
+            )
+
+        # Two-level hierarchy baseline
+        result, time_ms = run_single_trial(
+            graph, src, terminals, "two_level", config.hop_limit
+        )
+        if result:
+            results.append(
+                ExperimentResult(
+                    config_name=config.name,
+                    trial=trial,
+                    algorithm="two_level",
+                    throughput=result.throughput,
+                    lp_f_star=result.lp_f_star,
+                    n_edges=len(result.edges),
+                    computation_time_ms=time_ms,
+                    eta=None,
+                    hop_limit=config.hop_limit,
+                    n_terminals=len(terminals),
+                    n_nodes=config.n_nodes,
+                )
+            )
+            throughput_str = (
+                f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+            )
+            print(
+                f"  two_level: throughput={throughput_str}, edges={len(result.edges)}, time={time_ms:.2f}ms"
+            )
+
         # Test Basic-Tree
         result, time_ms = run_single_trial(
             graph, src, terminals, "basic_tree", config.hop_limit
@@ -201,7 +259,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 trial=trial,
                 algorithm="basic_tree",
                 throughput=result.throughput,
-                lp_upper_bound=result.lp_upper_bound,
+                lp_f_star=result.lp_f_star,
                 n_edges=len(result.edges),
                 computation_time_ms=time_ms,
                 eta=None,
@@ -209,7 +267,39 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 n_terminals=len(terminals),
                 n_nodes=config.n_nodes,
             ))
-            print(f"  basic_tree: throughput={result.throughput:.2f}, edges={len(result.edges)}, time={time_ms:.2f}ms")
+            throughput_str = (
+                f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+            )
+            print(
+                f"  basic_tree: throughput={throughput_str}, edges={len(result.edges)}, time={time_ms:.2f}ms"
+            )
+
+        # Basic-Bottleneck: bottleneck sweep without LP
+        result, time_ms = run_single_trial(
+            graph, src, terminals, "basic_bottleneck", config.hop_limit
+        )
+        if result:
+            results.append(
+                ExperimentResult(
+                    config_name=config.name,
+                    trial=trial,
+                    algorithm="basic_bottleneck",
+                    throughput=result.throughput,
+                    lp_f_star=result.lp_f_star,
+                    n_edges=len(result.edges),
+                    computation_time_ms=time_ms,
+                    eta=None,
+                    hop_limit=config.hop_limit,
+                    n_terminals=len(terminals),
+                    n_nodes=config.n_nodes,
+                )
+            )
+            throughput_str = (
+                f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+            )
+            print(
+                f"  basic_bottleneck: throughput={throughput_str}, edges={len(result.edges)}, time={time_ms:.2f}ms"
+            )
 
         # Test CF-Tree with different eta values
         for eta in config.eta_values:
@@ -222,7 +312,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                     trial=trial,
                     algorithm=f"cf_tree",
                     throughput=result.throughput,
-                    lp_upper_bound=result.lp_upper_bound,
+                    lp_f_star=result.lp_f_star,
                     n_edges=len(result.edges),
                     computation_time_ms=time_ms,
                     eta=eta,
@@ -230,8 +320,120 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                     n_terminals=len(terminals),
                     n_nodes=config.n_nodes,
                 ))
-                gap = (result.lp_upper_bound - result.throughput) / result.lp_upper_bound * 100 if result.lp_upper_bound else 0
-                print(f"  cf_tree (eta={eta}): throughput={result.throughput:.2f}, LP_bound={result.lp_upper_bound:.2f}, gap={gap:.1f}%, time={time_ms:.2f}ms")
+                lp_info = ""
+                if (
+                    result.throughput is not None
+                    and result.lp_f_star is not None
+                    and result.lp_f_star > 0
+                ):
+                    gap = (result.lp_f_star - result.throughput) / result.lp_f_star * 100
+                    lp_info = f", LP_f_star={result.lp_f_star:.2f}, gap={gap:.1f}%"
+                throughput_str = (
+                    f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+                )
+                print(
+                    f"  cf_tree (eta={eta}): throughput={throughput_str}{lp_info}, time={time_ms:.2f}ms"
+                )
+
+            result, time_ms = run_single_trial(
+                graph, src, terminals, "cf_tree_mwu", config.hop_limit, eta=eta
+            )
+            if result:
+                results.append(
+                    ExperimentResult(
+                        config_name=config.name,
+                        trial=trial,
+                        algorithm="cf_tree_mwu",
+                        throughput=result.throughput,
+                        lp_f_star=result.lp_f_star,
+                        n_edges=len(result.edges),
+                        computation_time_ms=time_ms,
+                        eta=eta,
+                        hop_limit=config.hop_limit,
+                        n_terminals=len(terminals),
+                        n_nodes=config.n_nodes,
+                    )
+                )
+                lp_info = ""
+                if (
+                    result.throughput is not None
+                    and result.lp_f_star is not None
+                    and result.lp_f_star > 0
+                ):
+                    gap = (result.lp_f_star - result.throughput) / result.lp_f_star * 100
+                    lp_info = f", LP_f_star={result.lp_f_star:.2f}, gap={gap:.1f}%"
+                throughput_str = (
+                    f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+                )
+                print(
+                    f"  cf_tree_mwu (eta={eta}): throughput={throughput_str}{lp_info}, time={time_ms:.2f}ms"
+                )
+
+            result, time_ms = run_single_trial(
+                graph, src, terminals, "cf_bottleneck", config.hop_limit, eta=eta
+            )
+            if result:
+                results.append(ExperimentResult(
+                    config_name=config.name,
+                    trial=trial,
+                    algorithm="cf_bottleneck",
+                    throughput=result.throughput,
+                    lp_f_star=result.lp_f_star,
+                    n_edges=len(result.edges),
+                    computation_time_ms=time_ms,
+                    eta=eta,
+                    hop_limit=config.hop_limit,
+                    n_terminals=len(terminals),
+                    n_nodes=config.n_nodes,
+                ))
+                lp_info = ""
+                if (
+                    result.throughput is not None
+                    and result.lp_f_star is not None
+                    and result.lp_f_star > 0
+                ):
+                    gap = (result.lp_f_star - result.throughput) / result.lp_f_star * 100
+                    lp_info = f", LP_f_star={result.lp_f_star:.2f}, gap={gap:.1f}%"
+                throughput_str = (
+                    f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+                )
+                print(
+                    f"  cf_bottleneck (eta={eta}): throughput={throughput_str}{lp_info}, time={time_ms:.2f}ms"
+                )
+
+            result, time_ms = run_single_trial(
+                graph, src, terminals, "cf_bottleneck_mwu", config.hop_limit, eta=eta
+            )
+            if result:
+                results.append(
+                    ExperimentResult(
+                        config_name=config.name,
+                        trial=trial,
+                        algorithm="cf_bottleneck_mwu",
+                        throughput=result.throughput,
+                        lp_f_star=result.lp_f_star,
+                        n_edges=len(result.edges),
+                        computation_time_ms=time_ms,
+                        eta=eta,
+                        hop_limit=config.hop_limit,
+                        n_terminals=len(terminals),
+                        n_nodes=config.n_nodes,
+                    )
+                )
+                lp_info = ""
+                if (
+                    result.throughput is not None
+                    and result.lp_f_star is not None
+                    and result.lp_f_star > 0
+                ):
+                    gap = (result.lp_f_star - result.throughput) / result.lp_f_star * 100
+                    lp_info = f", LP_f_star={result.lp_f_star:.2f}, gap={gap:.1f}%"
+                throughput_str = (
+                    f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+                )
+                print(
+                    f"  cf_bottleneck_mwu (eta={eta}): throughput={throughput_str}{lp_info}, time={time_ms:.2f}ms"
+                )
 
         # Test mFlow
         result, time_ms = run_single_trial(
@@ -243,7 +445,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 trial=trial,
                 algorithm="mflow",
                 throughput=result.throughput,
-                lp_upper_bound=result.lp_upper_bound,
+                lp_f_star=result.lp_f_star,
                 n_edges=len(result.edges),
                 computation_time_ms=time_ms,
                 eta=None,
@@ -251,7 +453,12 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 n_terminals=len(terminals),
                 n_nodes=config.n_nodes,
             ))
-            print(f"  mflow: throughput={result.throughput:.2f}, edges={len(result.edges)}, time={time_ms:.2f}ms")
+            throughput_str = (
+                f"{result.throughput:.2f}" if result.throughput is not None else "NA"
+            )
+            print(
+                f"  mflow: throughput={throughput_str}, edges={len(result.edges)}, time={time_ms:.2f}ms"
+            )
 
     return results
 
@@ -268,15 +475,15 @@ def summarize_results(results: list[ExperimentResult]) -> dict[str, Any]:
 
     summary = {}
     for algo, algo_results in by_algo.items():
-        throughputs = [r.throughput for r in algo_results if r.throughput]
+        throughputs = [r.throughput for r in algo_results if r.throughput is not None]
         times = [r.computation_time_ms for r in algo_results]
         edges = [r.n_edges for r in algo_results]
 
-        lp_bounds = [r.lp_upper_bound for r in algo_results if r.lp_upper_bound]
-        if throughputs and lp_bounds:
-            gaps = [(b - t) / b * 100 for t, b in zip(throughputs, lp_bounds)]
-        else:
-            gaps = []
+        gaps = []
+        for r in algo_results:
+            if r.throughput is None or r.lp_f_star is None or r.lp_f_star <= 0:
+                continue
+            gaps.append((r.lp_f_star - r.throughput) / r.lp_f_star * 100)
 
         summary[algo] = {
             "n_trials": len(algo_results),
@@ -301,7 +508,7 @@ def run_standard_experiments() -> list[ExperimentResult]:
             hop_limit=3,
             capacity_range=(10.0, 100.0),
             eta_values=[0.0, 0.05, 0.1, 0.2],
-            n_trials=5,
+            n_trials=25,
         ),
         # Medium networks
         ExperimentConfig(
@@ -312,7 +519,7 @@ def run_standard_experiments() -> list[ExperimentResult]:
             hop_limit=3,
             capacity_range=(10.0, 100.0),
             eta_values=[0.0, 0.1, 0.2],
-            n_trials=3,
+            n_trials=20,
         ),
         # Random topologies
         ExperimentConfig(
@@ -323,7 +530,7 @@ def run_standard_experiments() -> list[ExperimentResult]:
             hop_limit=4,
             capacity_range=(10.0, 100.0),
             eta_values=[0.0, 0.1],
-            n_trials=5,
+            n_trials=25,
         ),
         # Hop limit sensitivity
         ExperimentConfig(
@@ -334,7 +541,7 @@ def run_standard_experiments() -> list[ExperimentResult]:
             hop_limit=2,
             capacity_range=(10.0, 100.0),
             eta_values=[0.1],
-            n_trials=5,
+            n_trials=15,
         ),
         ExperimentConfig(
             name="hop_limit_4",
@@ -344,7 +551,7 @@ def run_standard_experiments() -> list[ExperimentResult]:
             hop_limit=4,
             capacity_range=(10.0, 100.0),
             eta_values=[0.1],
-            n_trials=5,
+            n_trials=15,
         ),
     ]
 
