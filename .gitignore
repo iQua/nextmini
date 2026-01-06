@@ -36,6 +36,9 @@ tensors/**
 # artifacts
 **/artifacts
 
+# Experiment outputs
+examples/lp/experiment_results/
+
 # iperf results
 iperf-results.md
 
