@@ -63,6 +63,9 @@ The trainer computes multicast group routes before broadcasting weights. You can
 - `MULTICAST_MAX_RELAYS`: optional cap on relay nodes selected by LP-importance (unset = no cap)
 - `MULTICAST_RELAY_SCORING`: `coverage` (default), `path_flow`, or `incident`
 - `MULTICAST_NUM_PATHS`: candidate paths per destination for the LP (default `2`)
+- `MULTICAST_PROBE_LINKS`: if `true`, insert DB probe flows and overwrite link capacities before planning (default `false`)
+- `MULTICAST_PROBE_BYTES`: bytes per probe flow (default `67108864`)
+- `MULTICAST_PROBE_TIMEOUT_SECS`: probe completion timeout (default `60`)
 
 For more than two workers, set `WORKER_NODE_IDS` to a comma-separated list (rank order), e.g.:
 
@@ -122,4 +125,46 @@ In `examples/rl` Docker environments, you can use:
 ```bash
 bash examples/rl/scripts/run_broadcast_bench.sh trainer configs/trainer-config.toml --rounds 20
 bash examples/rl/scripts/run_broadcast_bench.sh worker configs/worker0-config.toml --rank 0 --rounds 20
+```
+
+### Single-host (generated compose)
+
+For a one-command single-host setup with any number of workers/relays (and optional probing), use:
+
+```bash
+cd nextmini
+python -m examples.rl.scripts.single_host run \
+  --mode broadcast \
+  --workers 6 \
+  --relays 4 \
+  --bytes $((10 * 1024 * 1024 * 1024)) \
+  --algorithm cf_bottleneck
+```
+
+You can spin up a larger pool of relay containers and let the planner select a subset via a relay budget:
+
+```bash
+cd nextmini
+python -m examples.rl.scripts.single_host run \
+  --mode broadcast \
+  --workers 2 \
+  --relays 5 \
+  --max-relays 2 \
+  --relay-scoring coverage \
+  --trainer-gpu 0 \
+  --worker-gpus 1,2
+```
+
+To run the end-to-end RL loop (training + weight multicast), switch to `--mode rl`:
+
+```bash
+cd nextmini
+python -m examples.rl.scripts.single_host run \
+  --mode rl \
+  --workers 2 \
+  --relays 5 \
+  --max-relays 2 \
+  --relay-scoring coverage \
+  --trainer-gpu 0 \
+  --worker-gpus 1,2
 ```

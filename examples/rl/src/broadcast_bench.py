@@ -74,15 +74,51 @@ def compute_routes(
     max_relays: int | None,
     relay_scoring: str,
     num_paths: int,
+    probe_links: bool,
+    probe_bytes: int,
+    probe_timeout_secs: float,
 ) -> tuple[list[tuple[int, int]], float | None, str]:
     try:
-        from examples.lp.solver import build_graph_from_controller_config, compute_tree_edges
+        from examples.lp.solver import build_graph_from_controller_config, compute_tree_edges, load_toml
     except ImportError as exc:
         raise RuntimeError(
             "LP solver unavailable. Ensure examples/lp dependencies are installed."
         ) from exc
 
     graph = build_graph_from_controller_config(str(controller_config_path))
+    if probe_links:
+        try:
+            from examples.lp.main import (
+                _apply_link_rates,
+                _connect_db,
+                _db_settings,
+                _fetch_link_rates_from_probes,
+                _request_link_probes,
+                _wait_for_probe_finish,
+            )
+        except ImportError as exc:
+            raise RuntimeError("--probe-links requires examples.lp.main DB helpers.") from exc
+
+        controller_cfg = load_toml(str(controller_config_path))
+        settings = _db_settings(controller_cfg)
+        conn = _connect_db(settings)
+        try:
+            probe_ids = _request_link_probes(conn, graph.edges, bytes_per_flow=probe_bytes)
+            if probe_ids:
+                ok = _wait_for_probe_finish(conn, probe_ids, timeout_secs=probe_timeout_secs)
+                if not ok:
+                    print(
+                        f"warning: probe timed out after {probe_timeout_secs}s; using completed probes only",
+                        flush=True,
+                    )
+                rates = _fetch_link_rates_from_probes(conn, probe_ids)
+                _apply_link_rates(graph, rates)
+                print(
+                    f"probed {len(probe_ids)} links, updated {len(rates)} capacities",
+                    flush=True,
+                )
+        finally:
+            conn.close()
     result = compute_tree_edges(
         graph,
         src=src_node_id,
@@ -154,6 +190,9 @@ def run_trainer(args: argparse.Namespace) -> int:
         max_relays=args.max_relays,
         relay_scoring=args.relay_scoring,
         num_paths=args.num_paths,
+        probe_links=args.probe_links,
+        probe_bytes=args.probe_bytes,
+        probe_timeout_secs=args.probe_timeout_secs,
     )
 
     dp.set_group_routes(group_id, edges)
@@ -409,6 +448,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-paths", type=int, default=config.MULTICAST_NUM_PATHS)
     parser.add_argument("--relay-scoring", default=config.MULTICAST_RELAY_SCORING)
     parser.add_argument("--max-relays", type=int, default=-1)
+    parser.add_argument(
+        "--probe-links",
+        action="store_true",
+        help="Insert DB probe flows and overwrite link capacities before planning.",
+    )
+    parser.add_argument(
+        "--probe-bytes",
+        type=int,
+        default=config.MULTICAST_PROBE_BYTES,
+        help="Bytes to send per probe flow (larger keeps the link busy longer).",
+    )
+    parser.add_argument(
+        "--probe-timeout-secs",
+        type=float,
+        default=config.MULTICAST_PROBE_TIMEOUT_SECS,
+        help="Timeout in seconds for probe flows to finish.",
+    )
 
     # Worker args
     parser.add_argument("--trainer-node-id", default=os.environ.get("TRAINER_NODE_ID", str(config.TRAINER_NODE_ID)))

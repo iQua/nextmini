@@ -428,6 +428,9 @@ def run_trainer(
     num_paths: int,
     relay_scoring: str,
     max_relays: int,
+    probe_links: bool,
+    probe_bytes: int,
+    probe_timeout_secs: float,
     batch: bool,
 ) -> str:
     docker_rm(node.ssh, node.container_name(), batch=batch)
@@ -447,6 +450,10 @@ def run_trainer(
         f"--output-json {out_json} --algorithm {algorithm} --hop-limit {hop_limit} --eta {eta} "
         f"--num-paths {num_paths} --relay-scoring {relay_scoring} --max-relays {max_relays}"
     )
+    if probe_links:
+        inner += (
+            f" --probe-links --probe-bytes {probe_bytes} --probe-timeout-secs {probe_timeout_secs}"
+        )
 
     cmd = textwrap.dedent(
         f"""
@@ -487,6 +494,13 @@ def main() -> int:
     p_run.add_argument("--num-paths", type=int, default=2)
     p_run.add_argument("--relay-scoring", default="coverage")
     p_run.add_argument("--max-relays", type=int, default=-1)
+    p_run.add_argument(
+        "--probe-links",
+        action="store_true",
+        help="Insert DB probe flows and overwrite link capacities before planning.",
+    )
+    p_run.add_argument("--probe-bytes", type=int, default=64 * 1024 * 1024)
+    p_run.add_argument("--probe-timeout-secs", type=float, default=60.0)
     p_run.add_argument(
         "--no-sync",
         action="store_true",
@@ -611,6 +625,9 @@ def main() -> int:
             num_paths=int(args.num_paths),
             relay_scoring=str(args.relay_scoring),
             max_relays=int(args.max_relays),
+            probe_links=bool(args.probe_links),
+            probe_bytes=int(args.probe_bytes),
+            probe_timeout_secs=float(args.probe_timeout_secs),
             batch=batch,
         )
         print(trainer_output, end="")

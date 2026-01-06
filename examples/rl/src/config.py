@@ -52,6 +52,11 @@ MULTICAST_MAX_RELAYS_INT = (
 )
 MULTICAST_NUM_PATHS = int(os.environ.get("MULTICAST_NUM_PATHS", "2"))
 
+# Optional: probe link goodputs via controller DB before planning.
+MULTICAST_PROBE_LINKS = os.environ.get("MULTICAST_PROBE_LINKS", "false").lower() == "true"
+MULTICAST_PROBE_BYTES = int(os.environ.get("MULTICAST_PROBE_BYTES", str(64 * 1024 * 1024)))
+MULTICAST_PROBE_TIMEOUT_SECS = float(os.environ.get("MULTICAST_PROBE_TIMEOUT_SECS", "60"))
+
 
 def rollout_group_id(node_id: int) -> int:
     return ROLLOUT_GROUP_ID_BASE + int(node_id)

@@ -28,6 +28,7 @@ fi
 source "${CONTAINER_VENV}/bin/activate"
 
 uv pip install numpy >/dev/null
+uv pip install "psycopg[binary]" >/dev/null || true
 
 if [[ "${role}" == "trainer" ]]; then
   # Only needed for LP-backed planners; safe to install unconditionally.

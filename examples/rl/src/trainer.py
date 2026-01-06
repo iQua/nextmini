@@ -115,6 +115,7 @@ class Trainer:
             from examples.lp.solver import (
                 build_graph_from_controller_config,
                 compute_tree_edges,
+                load_toml,
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -122,6 +123,49 @@ class Trainer:
             ) from exc
 
         graph = build_graph_from_controller_config(str(controller_path))
+
+        if config.MULTICAST_PROBE_LINKS:
+            try:
+                from examples.lp.main import (
+                    _apply_link_rates,
+                    _connect_db,
+                    _db_settings,
+                    _fetch_link_rates_from_probes,
+                    _request_link_probes,
+                    _wait_for_probe_finish,
+                )
+            except ImportError as exc:
+                raise RuntimeError(
+                    "MULTICAST_PROBE_LINKS is enabled but DB probe helpers are unavailable."
+                ) from exc
+
+            controller_cfg = load_toml(str(controller_path))
+            settings = _db_settings(controller_cfg)
+            conn = _connect_db(settings)
+            try:
+                probe_ids = _request_link_probes(
+                    conn, graph.edges, bytes_per_flow=config.MULTICAST_PROBE_BYTES
+                )
+                if probe_ids:
+                    ok = _wait_for_probe_finish(
+                        conn,
+                        probe_ids,
+                        timeout_secs=config.MULTICAST_PROBE_TIMEOUT_SECS,
+                    )
+                    if not ok:
+                        print(
+                            f"warning: probe timed out after {config.MULTICAST_PROBE_TIMEOUT_SECS}s; "
+                            "using completed probes only",
+                            flush=True,
+                        )
+                    rates = _fetch_link_rates_from_probes(conn, probe_ids)
+                    _apply_link_rates(graph, rates)
+                    print(
+                        f"Probed {len(probe_ids)} links, updated {len(rates)} capacities.",
+                        flush=True,
+                    )
+            finally:
+                conn.close()
         result = compute_tree_edges(
             graph,
             src=self.node_id,
