@@ -34,7 +34,16 @@ echo "Installing Python dependencies..."
 uv pip install "psycopg[binary]" >/dev/null
 uv pip install numpy >/dev/null
 if [[ "${role}" == "trainer" ]]; then
-  uv pip install cvxopt >/dev/null
+  algo="${MULTICAST_TREE_ALGO:-cf_tree}"
+  if [[ "${algo}" == *"_mwu" ]]; then
+    echo "Skipping cvxopt install (MULTICAST_TREE_ALGO=${algo})."
+  else
+    uv pip install cvxopt >/dev/null || {
+      echo "Failed to install cvxopt (required for LP-backed planners)." >&2
+      echo "Tip: set MULTICAST_TREE_ALGO=cf_bottleneck_mwu to run without an LP solver." >&2
+      exit 1
+    }
+  fi
 fi
 uv pip install torch>=2.4.0 >/dev/null
 uv pip install transformers>=4.30.0 >/dev/null
