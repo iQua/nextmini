@@ -428,6 +428,8 @@ def main() -> int:
 
     if args.mode == "broadcast":
         up_cmd += ["--abort-on-container-exit", "--exit-code-from", "trainer"]
+    elif args.mode == "rl":
+        up_cmd += ["--abort-on-container-exit", "--exit-code-from", "trainer"]
     try:
         _run(up_cmd)
     finally:
