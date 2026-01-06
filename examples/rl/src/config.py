@@ -23,6 +23,13 @@ WORKER_NODE_IDS = [
     int(os.environ.get("WORKER0_NODE_ID", "2")),
     int(os.environ.get("WORKER1_NODE_ID", "3")),
 ]
+_worker_node_ids_env = os.environ.get("WORKER_NODE_IDS")
+if _worker_node_ids_env:
+    WORKER_NODE_IDS = [
+        int(part.strip())
+        for part in _worker_node_ids_env.split(",")
+        if part.strip()
+    ]
 
 # Communication ports
 TRAINER_PORT = 5000
@@ -34,6 +41,17 @@ MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
 CHUNK_SIZE = 8500 # Standard chunk size
 ROLLOUT_GROUP_ID_BASE = int(os.environ.get("ROLLOUT_GROUP_ID_BASE", "1000"))
 
+# Multicast planning (LP / CF-Tree)
+MULTICAST_TREE_ALGO = os.environ.get("MULTICAST_TREE_ALGO", "cf_tree")
+MULTICAST_HOP_LIMIT = int(os.environ.get("MULTICAST_HOP_LIMIT", "3"))
+MULTICAST_ETA = float(os.environ.get("MULTICAST_ETA", "0.1"))
+MULTICAST_RELAY_SCORING = os.environ.get("MULTICAST_RELAY_SCORING", "coverage")
+MULTICAST_MAX_RELAYS = os.environ.get("MULTICAST_MAX_RELAYS")
+MULTICAST_MAX_RELAYS_INT = (
+    int(MULTICAST_MAX_RELAYS) if MULTICAST_MAX_RELAYS not in (None, "") else None
+)
+MULTICAST_NUM_PATHS = int(os.environ.get("MULTICAST_NUM_PATHS", "2"))
+
 
 def rollout_group_id(node_id: int) -> int:
     return ROLLOUT_GROUP_ID_BASE + int(node_id)
@@ -43,7 +61,7 @@ USE_SHARDED_WEIGHTS = os.environ.get("USE_SHARDED_WEIGHTS", "false").lower() == 
 SHARD_SIZE = os.environ.get("SHARD_SIZE", "8GB")  # Default shard size for large models
 
 # Model
-MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
 MAX_SEQ_LEN = 1024
 GENERATION_LEN = 256
 

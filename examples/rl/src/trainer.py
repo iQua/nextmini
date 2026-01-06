@@ -93,11 +93,14 @@ class Trainer:
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
 
         receiver_ids = [conn["node_id"] for conn in self.worker_connections]
-        edges, throughput = self._compute_multicast_routes(receiver_ids)
+        edges, throughput, plan = self._compute_multicast_routes(receiver_ids)
         self.dataplane.set_group_routes(self.group_id, edges)
+        details = f"algo={plan.algorithm} edges={len(edges)}"
         if throughput is not None:
-            print(f"Applied LP multicast routes (throughput={throughput:.3f})")
-        print(f"Installed multicast routes for group {self.group_id} ({len(edges)} edges)")
+            details += f" throughput={throughput:.3f}"
+        if plan.lp_f_star is not None:
+            details += f" lp_f_star={plan.lp_f_star:.3f}"
+        print(f"Installed multicast routes for group {self.group_id}: {details}")
         
         print(f"Trainer ready with {len(self.worker_connections)} workers")
 
@@ -111,7 +114,7 @@ class Trainer:
         try:
             from examples.lp.solver import (
                 build_graph_from_controller_config,
-                compute_mflow_tree_edges,
+                compute_tree_edges,
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -119,17 +122,25 @@ class Trainer:
             ) from exc
 
         graph = build_graph_from_controller_config(str(controller_path))
-        edges, throughput = compute_mflow_tree_edges(
+        result = compute_tree_edges(
             graph,
             src=self.node_id,
             destinations=receiver_ids,
+            algorithm=config.MULTICAST_TREE_ALGO,
+            hop_limit=config.MULTICAST_HOP_LIMIT,
+            eta=config.MULTICAST_ETA,
+            max_relays=config.MULTICAST_MAX_RELAYS_INT,
+            relay_scoring=config.MULTICAST_RELAY_SCORING,
+            max_length=config.MULTICAST_HOP_LIMIT,
+            num_paths=config.MULTICAST_NUM_PATHS,
         )
-        if not edges:
+        if not result.edges:
+            details = result.error or "unknown planner failure"
             raise RuntimeError(
-                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}"
+                f"Tree planner returned no edges for src={self.node_id} dests={receiver_ids}: {details}"
             )
 
-        return edges, throughput
+        return result.edges, result.throughput, result
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
@@ -253,7 +264,7 @@ class Trainer:
                     "group_id": self.group_id,
                     "group_ip": self.group_ip,
                     "size": size,
-                    "src_node_id": config.TRAINER_NODE_ID
+                    "src_node_id": self.node_id,
                 })
                 print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
                 
@@ -395,11 +406,14 @@ class Trainer:
                         "shard_sizes": shard_sizes,
                         "has_index": index_data is not None,
                         "total_size": total_size,
-                        "src_node_id": config.TRAINER_NODE_ID
+                        "src_node_id": self.node_id,
                     })
                     try:
-                        msg = self.recv_from_worker(i, timeout_ms=120000, 
-                                                    expected_type="READY_FOR_SHARDED_MULTICAST")
+                        msg = self.recv_from_worker(
+                            i,
+                            timeout_ms=120000,
+                            expected_type="READY_FOR_SHARDED_MULTICAST",
+                        )
                         if not msg:
                             raise RuntimeError(f"Worker {i} failed to reply READY")
                         print(f"Worker {i} ready for sharded transfer", flush=True)
@@ -431,9 +445,11 @@ class Trainer:
             
             # 6. Send each shard
             for shard_path in shard_files:
-                shard_data = shard_path.read_bytes()
-                print(f"Sending shard {shard_path.name} ({len(shard_data)/1024/1024:.1f} MB)...")
-                self._send_shard_data(shard_path.name, shard_data, receiver_ids)
+                shard_bytes = shard_path.stat().st_size
+                print(
+                    f"Sending shard {shard_path.name} ({shard_bytes/1024/1024:.1f} MB)..."
+                )
+                self._send_shard_file(shard_path.name, shard_path, receiver_ids)
             
             transfer_end = time.time()
         
@@ -479,6 +495,22 @@ class Trainer:
         ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
         if not ok:
             raise RuntimeError(f"Failed to send shard {name}")
+
+    def _send_shard_file(self, name: str, path: Path, receiver_ids: list):
+        """Send a single shard file via multicast without reading it into memory."""
+        sid = self.dataplane.send_file(
+            self.group_id,
+            self.group_ip,
+            receiver_ids,
+            str(path),
+            chunk_size=config.CHUNK_SIZE,
+            src_port=config.TRAINER_PORT,
+            dst_port=config.WORKER_BASE_PORT,
+        )
+
+        ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        if not ok:
+            raise RuntimeError(f"Failed to send shard file {name}")
 
     def train_step(self, batch):
         """Execute one training step"""
