@@ -8,7 +8,6 @@ import pathlib
 import shlex
 import subprocess
 import textwrap
-import typing as t
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 BASE_DIR = REPO_ROOT / "examples" / "rl" / "single_host"
@@ -120,7 +119,7 @@ def generate_compose(
     eta: float,
     num_paths: int,
     relay_scoring: str,
-    max_relays: int,
+    max_relays: int | None,
     probe_links: bool,
     probe_bytes: int,
     probe_timeout_secs: float,
@@ -274,8 +273,10 @@ def generate_compose(
             f"--controller-config {controller_cfg_rel} --rounds {rounds} --timeout-ms {timeout_ms} "
             f"--worker-node-ids {worker_ids_csv} --file {artifact_rel} --generate-bytes {artifact_bytes} "
             f"--output-json {out_json_rel} --algorithm {algorithm} --hop-limit {hop_limit} --eta {eta} "
-            f"--num-paths {num_paths} --relay-scoring {relay_scoring} --max-relays {max_relays}"
+            f"--num-paths {num_paths} --relay-scoring {relay_scoring}"
         )
+        if max_relays is not None:
+            trainer_cmd += f" --max-relays {max_relays}"
         if probe_links:
             trainer_cmd += f" --probe-links --probe-bytes {probe_bytes} --probe-timeout-secs {probe_timeout_secs}"
     else:
@@ -383,7 +384,7 @@ def main() -> int:
     p_run.add_argument("--probe-bytes", type=int, default=64 * 1024 * 1024)
     p_run.add_argument("--probe-timeout-secs", type=float, default=60.0)
 
-    p_down = sub.add_parser("down", help="Stop single-host compose services.")
+    sub.add_parser("down", help="Stop single-host compose services.")
 
     args = parser.parse_args()
 

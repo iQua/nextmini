@@ -427,7 +427,7 @@ def run_trainer(
     eta: float,
     num_paths: int,
     relay_scoring: str,
-    max_relays: int,
+    max_relays: int | None,
     probe_links: bool,
     probe_bytes: int,
     probe_timeout_secs: float,
@@ -448,8 +448,10 @@ def run_trainer(
         f"--controller-config {controller_cfg} --rounds {rounds} --timeout-ms {timeout_ms} "
         f"--worker-node-ids {workers_csv} --file {artifact} --generate-bytes {bytes_to_generate} "
         f"--output-json {out_json} --algorithm {algorithm} --hop-limit {hop_limit} --eta {eta} "
-        f"--num-paths {num_paths} --relay-scoring {relay_scoring} --max-relays {max_relays}"
+        f"--num-paths {num_paths} --relay-scoring {relay_scoring}"
     )
+    if max_relays is not None:
+        inner += f" --max-relays {max_relays}"
     if probe_links:
         inner += (
             f" --probe-links --probe-bytes {probe_bytes} --probe-timeout-secs {probe_timeout_secs}"
@@ -624,7 +626,7 @@ def main() -> int:
             eta=float(args.eta),
             num_paths=int(args.num_paths),
             relay_scoring=str(args.relay_scoring),
-            max_relays=int(args.max_relays),
+            max_relays=None if int(args.max_relays) < 0 else int(args.max_relays),
             probe_links=bool(args.probe_links),
             probe_bytes=int(args.probe_bytes),
             probe_timeout_secs=float(args.probe_timeout_secs),
