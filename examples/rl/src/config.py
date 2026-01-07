@@ -56,6 +56,7 @@ MULTICAST_NUM_PATHS = int(os.environ.get("MULTICAST_NUM_PATHS", "2"))
 MULTICAST_PROBE_LINKS = os.environ.get("MULTICAST_PROBE_LINKS", "false").lower() == "true"
 MULTICAST_PROBE_BYTES = int(os.environ.get("MULTICAST_PROBE_BYTES", str(64 * 1024 * 1024)))
 MULTICAST_PROBE_TIMEOUT_SECS = float(os.environ.get("MULTICAST_PROBE_TIMEOUT_SECS", "60"))
+MULTICAST_PROBE_BATCH_SIZE = int(os.environ.get("MULTICAST_PROBE_BATCH_SIZE", "0"))
 
 
 def rollout_group_id(node_id: int) -> int:

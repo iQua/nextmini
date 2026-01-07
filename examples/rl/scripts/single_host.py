@@ -119,6 +119,7 @@ def generate_compose(
     probe_links: bool,
     probe_bytes: int,
     probe_timeout_secs: float,
+    probe_batch_size: int,
 ) -> None:
     if n_workers <= 0:
         raise SystemExit("--workers must be >= 1")
@@ -311,6 +312,7 @@ def generate_compose(
             "MULTICAST_PROBE_LINKS": "true" if probe_links else "false",
             "MULTICAST_PROBE_BYTES": str(probe_bytes),
             "MULTICAST_PROBE_TIMEOUT_SECS": str(probe_timeout_secs),
+            "MULTICAST_PROBE_BATCH_SIZE": str(int(probe_batch_size)),
         }
         if mode == "rl"
         else {"WORKER_NODE_IDS": worker_ids_csv, "TRAINER_NODE_ID": str(trainer_id)},
@@ -389,6 +391,12 @@ def main() -> int:
     p_run.add_argument("--probe-links", action=argparse.BooleanOptionalAction, default=True)
     p_run.add_argument("--probe-bytes", type=int, default=64 * 1024 * 1024)
     p_run.add_argument("--probe-timeout-secs", type=float, default=60.0)
+    p_run.add_argument(
+        "--probe-batch-size",
+        type=int,
+        default=0,
+        help="Max edges to probe per batch (0 = probe all edges at once).",
+    )
 
     sub.add_parser("down", help="Stop single-host compose services.")
 
@@ -425,6 +433,7 @@ def main() -> int:
         probe_links=bool(args.probe_links),
         probe_bytes=int(args.probe_bytes),
         probe_timeout_secs=float(args.probe_timeout_secs),
+        probe_batch_size=int(args.probe_batch_size),
     )
 
     up_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "up", "--build"]

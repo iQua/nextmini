@@ -184,18 +184,43 @@ class Worker:
                 print(f"Worker {self.rank} joined group command sent.", flush=True)
 
                 # 2. Register receiver BEFORE signaling ready
-                # Await the async call to ensure registration completes before sending READY
-                print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
+                # Use file-backed receive for large payloads to avoid OOM.
+                sink_path: Path | None = None
+                use_file_sink = int(size) > 512 * 1024 * 1024
+                if use_file_sink:
+                    sink_path = Path(tempfile.gettempdir()) / f"nextmini-rl-weights-rank{self.rank}.pt"
+                    try:
+                        sink_path.unlink()
+                    except FileNotFoundError:
+                        pass
+
+                print(
+                    f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...",
+                    flush=True,
+                )
                 try:
-                    sid = await self.dataplane.receive_data_async(
-                        group_id,
-                        group_ip,
-                        src_node_id,
-                        expected_bytes=size,
-                        chunk_size=config.CHUNK_SIZE,
-                        src_port=config.TRAINER_PORT,
-                        dst_port=config.WORKER_BASE_PORT
-                    )
+                    if use_file_sink:
+                        assert sink_path is not None
+                        sid = await self.dataplane.receive_to_file_async(
+                            group_id,
+                            group_ip,
+                            src_node_id,
+                            expected_bytes=size,
+                            sink_path=str(sink_path),
+                            chunk_size=config.CHUNK_SIZE,
+                            src_port=config.TRAINER_PORT,
+                            dst_port=config.WORKER_BASE_PORT,
+                        )
+                    else:
+                        sid = await self.dataplane.receive_data_async(
+                            group_id,
+                            group_ip,
+                            src_node_id,
+                            expected_bytes=size,
+                            chunk_size=config.CHUNK_SIZE,
+                            src_port=config.TRAINER_PORT,
+                            dst_port=config.WORKER_BASE_PORT,
+                        )
                     print(f"Worker {self.rank} receiver registered. SID={sid}", flush=True)
                 except Exception as e:
                     print(f"Worker {self.rank} failed to register receiver: {e}", flush=True)
@@ -212,9 +237,17 @@ class Worker:
                 print(f"Receive completion: {ok}")
                 
                 if ok:
-                    frozen = self.dataplane.get_data_buffer(sid)
-                    buffer = io.BytesIO(bytes(frozen.read()))
-                    state_dict = torch.load(buffer, map_location=self.device)
+                    if use_file_sink:
+                        assert sink_path is not None
+                        state_dict = torch.load(str(sink_path), map_location=self.device)
+                        try:
+                            sink_path.unlink()
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        frozen = self.dataplane.get_data_buffer(sid)
+                        buffer = io.BytesIO(bytes(frozen.read()))
+                        state_dict = torch.load(buffer, map_location=self.device)
                     self.model.load_state_dict(state_dict)
                     print("Weights loaded into model.")
             
