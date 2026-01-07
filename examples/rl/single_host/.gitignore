@@ -1,0 +1,4 @@
+generated/
+artifacts/
+results/
+docker-compose.generated.yml

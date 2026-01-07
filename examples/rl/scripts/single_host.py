@@ -7,6 +7,7 @@ import os
 import pathlib
 import shlex
 import subprocess
+import sys
 import textwrap
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -90,17 +91,12 @@ def _gpu_block() -> str:
                       capabilities: [gpu]
             """
         ),
-        "    ",
+        "  ",
     )
 
 
-def _service_env(env: dict[str, str]) -> str:
-    if not env:
-        return ""
-    lines = ["    environment:"]
-    for key, value in env.items():
-        lines.append(f"      {key}: {shlex.quote(value)}")
-    return "\n".join(lines) + "\n"
+def _service_block(block: str) -> str:
+    return textwrap.indent(textwrap.dedent(block).lstrip("\n"), "  ")
 
 
 def generate_compose(
@@ -163,62 +159,63 @@ def generate_compose(
 
     services: list[str] = []
 
-    postgres = textwrap.dedent(
-        f"""\
-        services:
-          postgres:
-            image: postgres:16-alpine
-            container_name: skyrocket-sh-postgres
-            hostname: postgres
-            restart: unless-stopped
-            environment:
-              POSTGRES_USER: pgusr
-              POSTGRES_PASSWORD: pgpwrd
-              POSTGRES_DB: nextmini
-            ports:
-              - "5432:5432"
-            healthcheck:
-              test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
-              interval: 5s
-              timeout: 5s
-              retries: 30
-              start_period: 10s
-            volumes:
-              - {REPO_ROOT / 'controller' / 'init.sql'}:/docker-entrypoint-initdb.d/init.sql:ro
-            networks:
-              sh_net:
-                ipv4_address: 172.31.10.2
-        """
+    services.append(
+        _service_block(
+            f"""\
+            postgres:
+              image: postgres:16-alpine
+              container_name: skyrocket-sh-postgres
+              hostname: postgres
+              restart: unless-stopped
+              environment:
+                POSTGRES_USER: pgusr
+                POSTGRES_PASSWORD: pgpwrd
+                POSTGRES_DB: nextmini
+              ports:
+                - "5432:5432"
+              healthcheck:
+                test: ["CMD", "pg_isready", "-U", "pgusr", "-d", "nextmini"]
+                interval: 5s
+                timeout: 5s
+                retries: 30
+                start_period: 10s
+              volumes:
+                - {REPO_ROOT / 'controller' / 'init.sql'}:/docker-entrypoint-initdb.d/init.sql:ro
+              networks:
+                sh_net:
+                  ipv4_address: 172.31.10.2
+            """
+        )
     )
-    services.append(postgres)
 
-    controller = textwrap.dedent(
-        f"""\
-          controller:
-            build:
-              context: {REPO_ROOT}
-              dockerfile: controller/Dockerfile
-            image: nextmini_controller
-            container_name: skyrocket-sh-controller
-            hostname: controller
-            depends_on:
-              postgres:
-                condition: service_healthy
-            environment:
-              RUST_LOG: {shlex.quote(os.environ.get("RUST_LOG", "info"))}
-            volumes:
-              - {REPO_ROOT}:/workspace:cached
-              - {controller_cfg_path}:/var/nextmini/config.toml:ro
-            working_dir: /var/nextmini
-            command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
-            ports:
-              - "3000:3000"
-            networks:
-              sh_net:
-                ipv4_address: 172.31.10.3
-        """
+    services.append(
+        _service_block(
+            f"""\
+            controller:
+              build:
+                context: {REPO_ROOT}
+                dockerfile: controller/Dockerfile
+              image: nextmini_controller
+              container_name: skyrocket-sh-controller
+              hostname: controller
+              depends_on:
+                postgres:
+                  condition: service_healthy
+              environment:
+                RUST_LOG: {shlex.quote(os.environ.get("RUST_LOG", "info"))}
+              volumes:
+                - {REPO_ROOT}:/workspace:cached
+                - {controller_cfg_path}:/var/nextmini/config.toml:ro
+              working_dir: /var/nextmini
+              command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+              ports:
+                - "3000:3000"
+              networks:
+                sh_net:
+                  ipv4_address: 172.31.10.3
+            """
+        )
     )
-    services.append(controller)
 
     def add_node_service(*, name: str, node_id: int, role: str, cmd: str, gpu_id: str | None, extra_env: dict[str, str] | None = None) -> None:
         env: dict[str, str] = {
@@ -231,30 +228,37 @@ def generate_compose(
             env["CUDA_VISIBLE_DEVICES"] = gpu_id
         body = textwrap.dedent(
             f"""\
-              {name}:
-                build:
-                  context: {REPO_ROOT}
-                  dockerfile: examples/rl/Dockerfile
-                image: nextmini_rl_python
-                container_name: skyrocket-sh-{name}
-                hostname: {name}
-        """
+            {name}:
+              build:
+                context: {REPO_ROOT}
+                dockerfile: examples/rl/Dockerfile
+              image: nextmini_rl_python
+              container_name: skyrocket-sh-{name}
+              hostname: {name}
+            """
         )
         if gpu and role in ("trainer", "worker"):
             body += _gpu_block()
-        body += textwrap.dedent(
-            f"""\
+        body += textwrap.indent(
+            textwrap.dedent(
+                f"""\
                 depends_on:
                   controller:
                     condition: service_started
                 volumes:
                   - {REPO_ROOT}:/workspace:cached
                 working_dir: /workspace
-        """
+                """
+            ),
+            "  ",
         )
-        body += _service_env(env)
-        body += textwrap.dedent(
-            f"""\
+        if env:
+            body += "  environment:\n"
+            for key, value in env.items():
+                body += f"    {key}: {shlex.quote(value)}\n"
+        body += textwrap.indent(
+            textwrap.dedent(
+                f"""\
                 command:
                   - bash
                   - -lc
@@ -263,9 +267,11 @@ def generate_compose(
                 networks:
                   sh_net:
                     ipv4_address: 172.31.10.{10 + node_id}
-            """
+                """
+            ),
+            "  ",
         )
-        services.append(body)
+        services.append(_service_block(body))
 
     if mode == "broadcast":
         trainer_cmd = (
@@ -353,7 +359,7 @@ def generate_compose(
     )
 
     COMPOSE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    COMPOSE_PATH.write_text("".join(services) + networks, encoding="utf-8")
+    COMPOSE_PATH.write_text("services:\n" + "".join(services) + networks, encoding="utf-8")
 
 
 def main() -> int:
@@ -435,7 +441,10 @@ def main() -> int:
         _run(up_cmd)
     finally:
         if args.cleanup and not args.detach:
-            _run(["docker", "compose", "-f", str(COMPOSE_PATH), "down", "-v"])
+            try:
+                _run(["docker", "compose", "-f", str(COMPOSE_PATH), "down", "-v"])
+            except subprocess.CalledProcessError as exc:
+                print(f"warning: docker compose down failed: {exc}", file=sys.stderr)
 
     return 0
 
