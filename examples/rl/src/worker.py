@@ -186,13 +186,14 @@ class Worker:
                 # 2. Register receiver BEFORE signaling ready
                 # Use file-backed receive for large payloads to avoid OOM.
                 sink_path: Path | None = None
-                use_file_sink = int(size) > 512 * 1024 * 1024
+                use_file_sink = int(size) > config.MAX_IN_MEMORY_RECEIVE_BYTES
                 if use_file_sink:
                     sink_path = Path(tempfile.gettempdir()) / f"nextmini-rl-weights-rank{self.rank}.pt"
                     try:
                         sink_path.unlink()
                     except FileNotFoundError:
                         pass
+
 
                 print(
                     f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...",
@@ -224,6 +225,11 @@ class Worker:
                     print(f"Worker {self.rank} receiver registered. SID={sid}", flush=True)
                 except Exception as e:
                     print(f"Worker {self.rank} failed to register receiver: {e}", flush=True)
+                    if sink_path is not None:
+                        try:
+                            sink_path.unlink()
+                        except FileNotFoundError:
+                            pass
                     continue
 
                 # 3. Now signal trainer that we're ready to receive
@@ -235,19 +241,23 @@ class Worker:
                 print(f"Waiting for lossless multicast transfer...")
                 ok = await self.dataplane.lossless_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 print(f"Receive completion: {ok}")
-                
-                if ok:
-                    if use_file_sink:
-                        assert sink_path is not None
-                        state_dict = torch.load(str(sink_path), map_location=self.device)
+
+                if use_file_sink:
+                    assert sink_path is not None
+                    try:
+                        if ok:
+                            state_dict = torch.load(str(sink_path), map_location=self.device)
+                            self.model.load_state_dict(state_dict)
+                            print("Weights loaded into model.")
+                    finally:
                         try:
                             sink_path.unlink()
                         except FileNotFoundError:
                             pass
-                    else:
-                        frozen = self.dataplane.get_data_buffer(sid)
-                        buffer = io.BytesIO(bytes(frozen.read()))
-                        state_dict = torch.load(buffer, map_location=self.device)
+                elif ok:
+                    frozen = self.dataplane.get_data_buffer(sid)
+                    buffer = io.BytesIO(bytes(frozen.read()))
+                    state_dict = torch.load(buffer, map_location=self.device)
                     self.model.load_state_dict(state_dict)
                     print("Weights loaded into model.")
             

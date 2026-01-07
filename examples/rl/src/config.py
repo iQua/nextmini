@@ -39,6 +39,9 @@ WORKER_BASE_PORT = 5001  # Workers use BASE_PORT + rank
 MULTICAST_GROUP_NAME = "rl_weights_sync"
 MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
 CHUNK_SIZE = 8500 # Standard chunk size
+MAX_IN_MEMORY_RECEIVE_BYTES = int(
+    os.environ.get("MAX_IN_MEMORY_RECEIVE_BYTES", str(512 * 1024 * 1024))
+)
 ROLLOUT_GROUP_ID_BASE = int(os.environ.get("ROLLOUT_GROUP_ID_BASE", "1000"))
 
 # Multicast planning (LP / CF-Tree)
