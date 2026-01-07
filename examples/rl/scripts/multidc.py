@@ -247,6 +247,7 @@ def write_controller_config(*, n_nodes: int) -> None:
     cfg = textwrap.dedent(
         f"""\
         protocol = "tcp"
+        flow_transport = "lossless_unicast"
 
         [topology]
         type = "full_mesh"

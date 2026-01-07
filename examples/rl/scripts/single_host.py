@@ -30,11 +30,16 @@ def _comma_ids(ids: list[int]) -> str:
     return ",".join(str(v) for v in ids)
 
 
-def write_controller_config(*, n_nodes: int) -> pathlib.Path:
+def write_controller_config(
+    *,
+    n_nodes: int,
+    flow_transport: str = "lossless_unicast",
+) -> pathlib.Path:
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
     cfg = textwrap.dedent(
         f"""\
         protocol = "tcp"
+        flow_transport = {shlex.quote(flow_transport)}
 
         [topology]
         type = "full_mesh"
