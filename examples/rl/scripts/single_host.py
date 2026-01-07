@@ -18,8 +18,11 @@ RESULTS_DIR = BASE_DIR / "results"
 COMPOSE_PATH = BASE_DIR / "docker-compose.generated.yml"
 
 
-def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
+def _run(cmd: list[str], env: dict[str, str] | None = None) -> None:
+    final_env = os.environ.copy()
+    if env:
+        final_env.update(env)
+    subprocess.run(cmd, check=True, env=final_env)
 
 
 def _as_bool(value: str) -> bool:
@@ -39,7 +42,7 @@ def write_controller_config(
     cfg = textwrap.dedent(
         f"""\
         protocol = "tcp"
-        flow_transport = {shlex.quote(flow_transport)}
+        flow_transport = "{flow_transport}"
 
         [topology]
         type = "full_mesh"
@@ -112,6 +115,8 @@ def generate_compose(
     gpu: bool,
     trainer_gpu: str | None,
     worker_gpus: list[str] | None,
+    prebuild_wheel: bool,
+    cargo_build_jobs: int,
     rounds: int,
     timeout_ms: int,
     artifact_bytes: int,
@@ -226,7 +231,8 @@ def generate_compose(
     def add_node_service(*, name: str, node_id: int, role: str, cmd: str, gpu_id: str | None, extra_env: dict[str, str] | None = None) -> None:
         env: dict[str, str] = {
             "RUST_LOG": os.environ.get("RUST_LOG", "info"),
-            "SKIP_BUILD": os.environ.get("SKIP_BUILD", "0"),
+            "SKIP_BUILD": "1" if prebuild_wheel else os.environ.get("SKIP_BUILD", "0"),
+            "CARGO_BUILD_JOBS": str(cargo_build_jobs),
         }
         if extra_env:
             env.update(extra_env)
@@ -382,6 +388,13 @@ def main() -> int:
     p_run.add_argument("--worker-gpus", default=os.environ.get("WORKER_GPUS", ""))
     p_run.add_argument("--detach", action="store_true")
     p_run.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=True)
+    p_run.add_argument("--cargo-build-jobs", type=int, default=2, help="Number of parallel Rust compilation jobs (default: 2, lower = less memory)")
+    p_run.add_argument(
+        "--prebuild-wheel",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="(Reserved) Prebuild nextmini_py wheel before running containers.",
+    )
 
     # broadcast mode knobs
     p_run.add_argument("--bytes", type=int, default=0, help="Artifact size in bytes (0 = skip generation).")
@@ -426,6 +439,8 @@ def main() -> int:
         gpu=bool(args.gpu),
         trainer_gpu=str(args.trainer_gpu) if args.gpu else None,
         worker_gpus=worker_gpus,
+        prebuild_wheel=bool(args.prebuild_wheel),
+        cargo_build_jobs=int(args.cargo_build_jobs),
         rounds=int(args.rounds),
         timeout_ms=int(args.timeout_ms),
         artifact_bytes=int(args.bytes or 0),
@@ -441,7 +456,49 @@ def main() -> int:
         probe_batch_size=int(args.probe_batch_size),
     )
 
-    up_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "up", "--build"]
+    # Build images sequentially with limited Rust parallelism to reduce memory pressure
+    cargo_env = {"CARGO_BUILD_JOBS": str(args.cargo_build_jobs)}
+    build_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "build"]
+
+    # Build each service type sequentially
+    print(f"Building images sequentially with CARGO_BUILD_JOBS={args.cargo_build_jobs}...")
+    print("  1/3 Building postgres and controller...")
+    _run(build_cmd + ["postgres"], env=cargo_env)
+    _run(build_cmd + ["controller"], env=cargo_env)
+
+    print("  2/3 Building trainer (may take time due to Python packages)...")
+    _run(build_cmd + ["trainer"], env=cargo_env)
+
+    # Build workers and relays
+    print("  3/3 Building workers and relays...")
+    for i in range(args.workers):
+        _run(build_cmd + [f"worker-{i}"], env=cargo_env)
+    for i in range(args.relays):
+        _run(build_cmd + [f"relay-{i}"], env=cargo_env)
+
+    # Pre-build wheel and Python dependencies to avoid OOM during container startup
+    if args.prebuild_wheel or args.mode == "rl":
+        print("\nPre-building nextmini_py wheel and Python dependencies...")
+        print("This avoids memory spikes from simultaneous downloads/builds at container startup.")
+        wheel_build_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{REPO_ROOT}:/workspace",
+            "-w", "/workspace",
+            "-e", f"CARGO_BUILD_JOBS={args.cargo_build_jobs}",
+            "nextmini_rl_python",
+            "bash", "-c",
+            "uv venv /tmp/.venv && source /tmp/.venv/bin/activate && "
+            "uv pip install maturin && "
+            "maturin build --release -m python-api/Cargo.toml -F python-extension -o /workspace/target/wheels/"
+        ]
+        _run(wheel_build_cmd, env=cargo_env)
+        print("Wheel built successfully. Containers will use SKIP_BUILD=1 to avoid rebuilding.")
+
+        # Update docker-compose environment to skip build and use pre-built wheel
+        # This is done by setting SKIP_BUILD=1 in the environment (already in compose)
+
+    # Now run the containers
+    up_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "up"]
     if args.detach:
         up_cmd.append("-d")
         _run(up_cmd)
