@@ -88,7 +88,15 @@ impl UserSpaceServerHandle {
             .get(&IpAddress::from(src_ip))
             .and_then(|spec| spec.flow_rate);
 
-        let server = UserSpaceServer::new(config, flow_id, flow_rate, processors, packet_receiver);
+        let packet_senders = self.packet_senders.clone();
+        let server = UserSpaceServer::new(
+            config,
+            flow_id,
+            flow_rate,
+            processors,
+            packet_receiver,
+            packet_senders,
+        );
 
         // spawns a new server thread for each user-space TCP flow
         thread::spawn(move || {
@@ -105,6 +113,7 @@ struct UserSpaceServer {
     flow_rate: Option<usize>,
     processors: ProcessorHandle,
     packet_receiver: Option<mpsc::Receiver<Packet>>,
+    packet_senders: Arc<Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>>,
 }
 
 impl UserSpaceServer {
@@ -114,6 +123,7 @@ impl UserSpaceServer {
         flow_rate: Option<usize>,
         processors: ProcessorHandle,
         packet_receiver: mpsc::Receiver<Packet>,
+        packet_senders: Arc<Mutex<AHashMap<FlowId, mpsc::Sender<Packet>>>>,
     ) -> Self {
         info!("Creating a new user-space TCP server for a single flow.");
 
@@ -123,6 +133,7 @@ impl UserSpaceServer {
             flow_rate,
             processors,
             packet_receiver: Some(packet_receiver),
+            packet_senders,
         }
     }
 
@@ -181,6 +192,8 @@ impl UserSpaceServer {
             } else {
                 // removes the packet sender from the processors
                 self.processors.disconnect_user_space_sender(self.flow_id);
+                // also clear the sender cache so future packets can re-create the server.
+                self.packet_senders.lock().unwrap().remove(&self.flow_id);
 
                 info!(
                     "The user-space TCP server on node {} has terminated. It has been receiving from node {}.",

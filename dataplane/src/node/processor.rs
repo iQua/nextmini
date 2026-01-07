@@ -11,6 +11,7 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tracing::{error, warn};
 
 use nextmini_messages::{
@@ -961,11 +962,36 @@ impl Processor {
 
                 let flow_id = packet.flow_id;
 
-                let dest = self.user_space_sender(flow_id);
-                if let Some(sender) = dest
-                    && sender.try_send(packet).is_err()
-                {
-                    error!("Failed to send a packet in user-space flows to its local destination.");
+                let Some(sender) = self.user_space_sender(flow_id) else {
+                    return;
+                };
+
+                if self.config.channel_backpressure {
+                    if let Err(e) = sender.send(packet).await {
+                        warn!(
+                            "User-space sender channel closed for flow {:032x}; dropping packet: {e}",
+                            flow_id
+                        );
+                        self.user_space_senders.remove(&flow_id);
+                    }
+                    return;
+                }
+
+                match sender.try_send(packet) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_packet)) => {
+                        warn!(
+                            "User-space sender channel full for flow {:032x}; dropping packet",
+                            flow_id
+                        );
+                    }
+                    Err(TrySendError::Closed(_packet)) => {
+                        warn!(
+                            "User-space sender channel closed for flow {:032x}; dropping packet",
+                            flow_id
+                        );
+                        self.user_space_senders.remove(&flow_id);
+                    }
                 }
             }
         } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
