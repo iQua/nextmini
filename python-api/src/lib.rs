@@ -401,16 +401,16 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
-        const MAX_IN_MEMORY_RECEIVE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
         const MAX_PREALLOC_BYTES: u64 = 16 * 1024 * 1024; // 16 MiB
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
-        if expected_bytes > MAX_IN_MEMORY_RECEIVE_BYTES {
+        let max_in_memory = max_in_memory_receive_bytes();
+        if expected_bytes > max_in_memory {
             return Err(PyRuntimeError::new_err(format!(
-                "expected_bytes={expected_bytes} too large for in-memory receive; use receive_to_file instead"
+                "expected_bytes={expected_bytes} too large for in-memory receive (limit={max_in_memory}); set MAX_IN_MEMORY_RECEIVE_BYTES or use receive_to_file instead"
             )));
         }
 
@@ -526,14 +526,14 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        const MAX_IN_MEMORY_RECEIVE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
         const MAX_PREALLOC_BYTES: u64 = 16 * 1024 * 1024; // 16 MiB
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
-        if expected_bytes > MAX_IN_MEMORY_RECEIVE_BYTES {
+        let max_in_memory = max_in_memory_receive_bytes();
+        if expected_bytes > max_in_memory {
             return Err(PyRuntimeError::new_err(format!(
-                "expected_bytes={expected_bytes} too large for in-memory receive; use receive_to_file_async instead"
+                "expected_bytes={expected_bytes} too large for in-memory receive (limit={max_in_memory}); set MAX_IN_MEMORY_RECEIVE_BYTES or use receive_to_file_async instead"
             )));
         }
         if chunk_size == 0 {
@@ -1135,6 +1135,22 @@ fn multicast_session_id(group_id: u64, source_node_id: usize) -> u64 {
     source_node_id.hash(&mut hasher);
     let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
     raw | 0x8000_0000_0000_0000
+}
+
+fn max_in_memory_receive_bytes() -> u64 {
+    const DEFAULT: u64 = 512 * 1024 * 1024; // 512 MiB
+    for key in ["NEXTMINI_MAX_IN_MEMORY_RECEIVE_BYTES", "MAX_IN_MEMORY_RECEIVE_BYTES"] {
+        let Ok(value) = std::env::var(key) else {
+            continue;
+        };
+        let Ok(parsed) = value.trim().parse::<u64>() else {
+            continue;
+        };
+        if parsed > 0 {
+            return parsed;
+        }
+    }
+    DEFAULT
 }
 
 #[pymodule]

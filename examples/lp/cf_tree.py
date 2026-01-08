@@ -238,27 +238,30 @@ class LayeredGraph:
         Returns:
             (path, cost) if reachable within hop limit, None otherwise
         """
-        # Priority queue: (cost, layer, node, path)
-        # path is list of (node, layer) tuples
-        pq: list[tuple[float, int, NodeId, list[tuple[NodeId, int]]]] = []
+        # Priority queue: (cost, layer, node, path, visited)
+        #
+        # We include `visited` in the search state so the "simple path" constraint
+        # (no physical-node revisits) is correct: two paths that end at the same
+        # (node, layer) can have different visited sets, enabling different
+        # onward expansions.
+        pq: list[
+            tuple[float, int, NodeId, tuple[NodeId, ...], frozenset[NodeId]]
+        ] = []
 
-        # Initialize from all tree nodes at their fixed depths
         for node, depth in tree_nodes.items():
-            heapq.heappush(pq, (0.0, depth, node, [(node, depth)]))
+            heapq.heappush(pq, (0.0, depth, node, (node,), frozenset((node,))))
 
-        # Best cost to reach (node, layer)
-        best: dict[tuple[NodeId, int], float] = {}
+        best: dict[tuple[NodeId, int, frozenset[NodeId]], float] = {}
 
         while pq:
-            cost, layer, node, path = heapq.heappop(pq)
+            cost, layer, node, path, visited = heapq.heappop(pq)
 
             # Check if we reached terminal
             if node == terminal:
-                # Extract physical path
-                return [p[0] for p in path], cost
+                return list(path), cost
 
             # Skip if we've found a better path to this (node, layer)
-            key = (node, layer)
+            key = (node, layer, visited)
             if key in best and best[key] <= cost:
                 continue
             best[key] = cost
@@ -295,9 +298,8 @@ class LayeredGraph:
                 if neighbor in tree_nodes:
                     continue
 
-                # Also skip if neighbor already in this path (avoid cycles)
-                path_nodes = {p[0] for p in path}
-                if neighbor in path_nodes:
+                # Avoid cycles under projection: enforce simple physical-node paths.
+                if neighbor in visited:
                     continue
 
                 edge = (node, neighbor)
@@ -308,11 +310,12 @@ class LayeredGraph:
                 edge_weight = self.weights.get(edge, float("inf"))
 
                 new_cost = cost + edge_weight
-                new_key = (neighbor, next_layer)
+                new_visited = visited.union((neighbor,))
+                new_path = path + (neighbor,)
+                new_key = (neighbor, next_layer, new_visited)
 
                 if new_key not in best or best[new_key] > new_cost:
-                    new_path = path + [(neighbor, next_layer)]
-                    heapq.heappush(pq, (new_cost, next_layer, neighbor, new_path))
+                    heapq.heappush(pq, (new_cost, next_layer, neighbor, new_path, new_visited))
 
         return None  # Terminal unreachable
 
@@ -342,19 +345,21 @@ class LayeredGraph:
         if not terminals:
             return None
 
-        pq: list[tuple[float, int, NodeId, list[tuple[NodeId, int]]]] = []
+        pq: list[
+            tuple[float, int, NodeId, tuple[NodeId, ...], frozenset[NodeId]]
+        ] = []
         for node, depth in tree_nodes.items():
-            heapq.heappush(pq, (0.0, depth, node, [(node, depth)]))
+            heapq.heappush(pq, (0.0, depth, node, (node,), frozenset((node,))))
 
-        best: dict[tuple[NodeId, int], float] = {}
+        best: dict[tuple[NodeId, int, frozenset[NodeId]], float] = {}
 
         while pq:
-            cost, layer, node, path = heapq.heappop(pq)
+            cost, layer, node, path, visited = heapq.heappop(pq)
 
             if node in terminals:
-                return node, [p[0] for p in path], cost
+                return node, list(path), cost
 
-            key = (node, layer)
+            key = (node, layer, visited)
             if key in best and best[key] <= cost:
                 continue
             best[key] = cost
@@ -387,8 +392,7 @@ class LayeredGraph:
                 if neighbor in tree_nodes:
                     continue
 
-                path_nodes = {p[0] for p in path}
-                if neighbor in path_nodes:
+                if neighbor in visited:
                     continue
 
                 edge = (node, neighbor)
@@ -399,11 +403,12 @@ class LayeredGraph:
                 edge_weight = self.weights.get(edge, float("inf"))
 
                 new_cost = cost + edge_weight
-                new_key = (neighbor, next_layer)
+                new_visited = visited.union((neighbor,))
+                new_path = path + (neighbor,)
+                new_key = (neighbor, next_layer, new_visited)
 
                 if new_key not in best or best[new_key] > new_cost:
-                    new_path = path + [(neighbor, next_layer)]
-                    heapq.heappush(pq, (new_cost, next_layer, neighbor, new_path))
+                    heapq.heappush(pq, (new_cost, next_layer, neighbor, new_path, new_visited))
 
         return None
 

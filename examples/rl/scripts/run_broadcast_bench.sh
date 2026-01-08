@@ -31,8 +31,31 @@ uv pip install numpy >/dev/null
 uv pip install "psycopg[binary]" >/dev/null || true
 
 if [[ "${role}" == "trainer" ]]; then
-  # Only needed for LP-backed planners; safe to install unconditionally.
-  uv pip install cvxopt >/dev/null || true
+  algo="${BROADCAST_ALGO:-${MULTICAST_TREE_ALGO:-cf_tree}}"
+  prev=""
+  for arg in "$@"; do
+    if [[ "${prev}" == "--algorithm" ]]; then
+      algo="${arg}"
+      break
+    fi
+    case "${arg}" in
+      --algorithm=*)
+        algo="${arg#--algorithm=}"
+        break
+        ;;
+    esac
+    prev="${arg}"
+  done
+
+  if [[ "${algo}" == *"_mwu" ]]; then
+    echo "Skipping cvxopt install (algorithm=${algo})."
+  else
+    uv pip install cvxopt >/dev/null || {
+      echo "Failed to install cvxopt (required for LP-backed planners)." >&2
+      echo "Tip: use --algorithm cf_bottleneck_mwu to run without an LP solver." >&2
+      exit 1
+    }
+  fi
 fi
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then

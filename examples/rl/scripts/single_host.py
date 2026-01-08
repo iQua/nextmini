@@ -234,6 +234,10 @@ def generate_compose(
             "SKIP_BUILD": "1" if prebuild_wheel else os.environ.get("SKIP_BUILD", "0"),
             "CARGO_BUILD_JOBS": str(cargo_build_jobs),
         }
+        for key in ("MAX_IN_MEMORY_RECEIVE_BYTES", "NEXTMINI_MAX_IN_MEMORY_RECEIVE_BYTES"):
+            value = os.environ.get(key)
+            if value:
+                env[key] = value
         if extra_env:
             env.update(extra_env)
         if gpu_id is not None:
