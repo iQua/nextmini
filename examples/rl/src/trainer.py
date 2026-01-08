@@ -95,6 +95,8 @@ class Trainer:
         receiver_ids = [conn["node_id"] for conn in self.worker_connections]
         edges, throughput = self._compute_multicast_routes(receiver_ids)
         self.dataplane.set_group_routes(self.group_id, edges)
+        if not self.dataplane.wait_for_group_routes(self.group_id, self.node_id, timeout_ms=30000):
+            raise TimeoutError("Timed out waiting for multicast routes to install.")
         if throughput is not None:
             print(f"Applied LP multicast routes (throughput={throughput:.3f})")
         print(f"Installed multicast routes for group {self.group_id} ({len(edges)} edges)")
@@ -178,6 +180,7 @@ class Trainer:
             eta=config.MULTICAST_ETA,
             max_relays=config.MULTICAST_MAX_RELAYS_INT,
             relay_scoring=config.MULTICAST_RELAY_SCORING,
+            allow_destinations_as_relays=config.MULTICAST_ALLOW_WORKER_RELAYS,
             max_length=config.MULTICAST_HOP_LIMIT,
             num_paths=config.MULTICAST_NUM_PATHS,
         )
@@ -316,7 +319,7 @@ class Trainer:
                     "group_id": self.group_id,
                     "group_ip": self.group_ip,
                     "size": size,
-                    "src_node_id": config.TRAINER_NODE_ID
+                    "src_node_id": self.node_id,
                 })
                 print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
                 
@@ -458,7 +461,7 @@ class Trainer:
                         "shard_sizes": shard_sizes,
                         "has_index": index_data is not None,
                         "total_size": total_size,
-                        "src_node_id": config.TRAINER_NODE_ID
+                        "src_node_id": self.node_id,
                     })
                     try:
                         msg = self.recv_from_worker(i, timeout_ms=120000, 

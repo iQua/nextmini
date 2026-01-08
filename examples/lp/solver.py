@@ -30,6 +30,49 @@ class TreeResult:
     error: str | None = None
 
 
+def _split_relay_candidates(
+    graph: Graph,
+    *,
+    src: int,
+    destinations: t.Sequence[int],
+    relay_nodes: t.Sequence[int] | None,
+    allow_destinations_as_relays: bool,
+) -> tuple[set[int], list[int]]:
+    """Return (terminal_forwarders, nonterminal_relay_candidates).
+
+    - terminal_forwarders: destination nodes that are allowed to forward (not budgeted).
+    - nonterminal_relay_candidates: relay pool subject to --max-relays style caps.
+
+    Note: If callers pass destination IDs in `relay_nodes`, we treat them as explicitly
+    allowed destination-forwarders to preserve backward compatibility.
+    """
+    terminals = {int(n) for n in destinations}
+    terminals.discard(int(src))
+
+    explicit_relays: set[int] = set()
+    if relay_nodes is not None:
+        explicit_relays = {int(n) for n in relay_nodes}
+
+    terminal_forwarders: set[int] = set()
+    if allow_destinations_as_relays:
+        terminal_forwarders |= terminals
+    terminal_forwarders |= (terminals & explicit_relays)
+
+    if relay_nodes is None:
+        relay_candidates = [
+            int(n) for n in graph.nodes if int(n) != int(src) and int(n) not in terminals
+        ]
+    else:
+        relay_candidates = [
+            int(n)
+            for n in relay_nodes
+            if int(n) != int(src) and int(n) not in terminals
+        ]
+
+    relay_candidates = sorted(set(relay_candidates))
+    return terminal_forwarders, relay_candidates
+
+
 def _select_relays_lp_guided(
     graph: Graph,
     *,
@@ -216,6 +259,7 @@ def compute_mflow_tree_edges(
     src: int,
     destinations: t.Sequence[int],
     relay_nodes: t.Sequence[int] | None = None,
+    allow_destinations_as_relays: bool = False,
     max_length: int = -1,
     sort_by: str = "shortest",
     num_paths: int = 2,
@@ -228,13 +272,16 @@ def compute_mflow_tree_edges(
     # Import lazily so users that only need topology parsing don't pay solver import cost.
     from . import mFlow
 
-    terminals = set(destinations)
-    terminals.discard(src)
+    terminal_forwarders, relay_candidates = _split_relay_candidates(
+        graph,
+        src=src,
+        destinations=destinations,
+        relay_nodes=relay_nodes,
+        allow_destinations_as_relays=allow_destinations_as_relays,
+    )
+    relay_nodes_effective = sorted(set(relay_candidates) | terminal_forwarders)
 
-    if relay_nodes is None:
-        relay_nodes = [n for n in graph.nodes if n != src and n not in terminals]
-
-    allowed_intermediate_nodes = set(relay_nodes)
+    allowed_intermediate_nodes = set(relay_nodes_effective)
     allowed_intermediate_nodes.add(src)
 
     try:
@@ -292,6 +339,7 @@ def compute_cf_tree_edges(
     relay_nodes: t.Sequence[int] | None = None,
     max_relays: int | None = None,
     relay_scoring: str = "coverage",
+    allow_destinations_as_relays: bool = False,
     node_egress_budgets: dict[int, float | None] | None = None,
     fanout_caps: dict[int, int | None] | None = None,
     max_length: int = -1,
@@ -339,19 +387,22 @@ def compute_cf_tree_edges(
 
     terminals = set(destinations)
     terminals.discard(src)
-
-    if relay_nodes is None:
-        relay_candidates = [n for n in graph.nodes if n != src and n not in terminals]
-    else:
-        relay_candidates = list(relay_nodes)
+    terminal_forwarders, relay_candidates = _split_relay_candidates(
+        graph,
+        src=src,
+        destinations=destinations,
+        relay_nodes=relay_nodes,
+        allow_destinations_as_relays=allow_destinations_as_relays,
+    )
 
     if max_relays is not None and max_relays >= 0:
         if max_relays == 0:
-            relay_nodes = []
+            selected_relays: list[int] = []
         elif max_relays < len(relay_candidates):
             if use_lp_guidance:
                 # LP-guided relay selection: score relays by conceptual-flow coverage.
                 allowed_intermediate_nodes = set(relay_candidates)
+                allowed_intermediate_nodes.update(terminal_forwarders)
                 allowed_intermediate_nodes.add(src)
 
                 if lp_backend == "mwu":
@@ -388,7 +439,7 @@ def compute_cf_tree_edges(
                 else:
                     raise ValueError(f"Unknown lp_backend: {lp_backend}")
                 lp_sol = extract_lp_solution(graph, variables, sol, src)
-                relay_nodes = _select_relays_lp_guided(
+                selected_relays = _select_relays_lp_guided(
                     graph,
                     relay_candidates=relay_candidates,
                     terminals=terminals,
@@ -406,21 +457,21 @@ def compute_cf_tree_edges(
 
             if use_lp_guidance:
                 # Selected above using LP signals.
-                relay_nodes = list(relay_nodes or [])
+                selected_relays = list(selected_relays or [])
             else:
                 selected = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[
                     :max_relays
                 ]
-                relay_nodes = [node for node, _ in selected]
+                selected_relays = [node for node, _ in selected]
         else:
-            relay_nodes = relay_candidates
-
-    if relay_nodes is None:
-        relay_nodes = relay_candidates
+            selected_relays = relay_candidates
+    else:
+        selected_relays = relay_candidates
 
     if not use_lp_guidance:
         # Basic-Tree: no LP, pure capacity-based
-        forwarding_nodes = set(relay_nodes)
+        forwarding_nodes = set(selected_relays)
+        forwarding_nodes.update(terminal_forwarders)
         forwarding_nodes.add(src)
         try:
             result = cf_tree_direct(
@@ -459,7 +510,8 @@ def compute_cf_tree_edges(
         )
 
     # Solve conceptual-flow first (LP or MWU approximation)
-    allowed_intermediate_nodes = set(relay_nodes)
+    allowed_intermediate_nodes = set(selected_relays)
+    allowed_intermediate_nodes.update(terminal_forwarders)
     allowed_intermediate_nodes.add(src)
     if lp_backend == "mwu":
         variables, sol = mFlow.solve_mwu(
@@ -496,7 +548,8 @@ def compute_cf_tree_edges(
         raise ValueError(f"Unknown lp_backend: {lp_backend}")
 
     # Build CF-Tree using LP guidance
-    forwarding_nodes = set(relay_nodes)
+    forwarding_nodes = set(selected_relays)
+    forwarding_nodes.update(terminal_forwarders)
     forwarding_nodes.add(src)
     algo_name = "cf_tree_mwu" if lp_backend == "mwu" else "cf_tree"
     lp_f_star = None
@@ -563,6 +616,7 @@ def compute_cf_bottleneck_tree_edges(
     relay_nodes: t.Sequence[int] | None = None,
     max_relays: int | None = None,
     relay_scoring: str = "coverage",
+    allow_destinations_as_relays: bool = False,
     node_egress_budgets: dict[int, float | None] | None = None,
     fanout_caps: dict[int, int | None] | None = None,
     max_length: int = -1,
@@ -589,17 +643,20 @@ def compute_cf_bottleneck_tree_edges(
 
     terminals = set(destinations)
     terminals.discard(src)
-
-    if relay_nodes is None:
-        relay_candidates = [n for n in graph.nodes if n != src and n not in terminals]
-    else:
-        relay_candidates = list(relay_nodes)
+    terminal_forwarders, relay_candidates = _split_relay_candidates(
+        graph,
+        src=src,
+        destinations=destinations,
+        relay_nodes=relay_nodes,
+        allow_destinations_as_relays=allow_destinations_as_relays,
+    )
 
     if max_relays is not None and max_relays >= 0:
         if max_relays == 0:
-            relay_nodes = []
+            selected_relays: list[int] = []
         elif max_relays < len(relay_candidates):
             allowed_intermediate_nodes = set(relay_candidates)
+            allowed_intermediate_nodes.update(terminal_forwarders)
             allowed_intermediate_nodes.add(src)
 
             if lp_backend == "mwu":
@@ -633,10 +690,10 @@ def compute_cf_bottleneck_tree_edges(
                         lp_f_star=None,
                         error=str(e),
                     )
-            else:
-                raise ValueError(f"Unknown lp_backend: {lp_backend}")
+                else:
+                    raise ValueError(f"Unknown lp_backend: {lp_backend}")
             lp_sol = extract_lp_solution(graph, variables, sol, src)
-            relay_nodes = _select_relays_lp_guided(
+            selected_relays = _select_relays_lp_guided(
                 graph,
                 relay_candidates=relay_candidates,
                 terminals=terminals,
@@ -645,12 +702,12 @@ def compute_cf_bottleneck_tree_edges(
                 lp_sol=lp_sol,
             )
         else:
-            relay_nodes = relay_candidates
+            selected_relays = relay_candidates
+    else:
+        selected_relays = relay_candidates
 
-    if relay_nodes is None:
-        relay_nodes = relay_candidates
-
-    allowed_intermediate_nodes = set(relay_nodes)
+    allowed_intermediate_nodes = set(selected_relays)
+    allowed_intermediate_nodes.update(terminal_forwarders)
     allowed_intermediate_nodes.add(src)
     if lp_backend == "mwu":
         variables, sol = mFlow.solve_mwu(
@@ -686,7 +743,8 @@ def compute_cf_bottleneck_tree_edges(
     else:
         raise ValueError(f"Unknown lp_backend: {lp_backend}")
 
-    forwarding_nodes = set(relay_nodes)
+    forwarding_nodes = set(selected_relays)
+    forwarding_nodes.update(terminal_forwarders)
     forwarding_nodes.add(src)
     algo_name = "cf_bottleneck_mwu" if lp_backend == "mwu" else "cf_bottleneck"
     lp_f_star = None
@@ -749,6 +807,7 @@ def compute_basic_bottleneck_tree_edges(
     hop_limit: int = 3,
     relay_nodes: t.Sequence[int] | None = None,
     max_relays: int | None = None,
+    allow_destinations_as_relays: bool = False,
     node_egress_budgets: dict[int, float | None] | None = None,
     fanout_caps: dict[int, int | None] | None = None,
 ) -> TreeResult:
@@ -761,23 +820,26 @@ def compute_basic_bottleneck_tree_edges(
 
     terminals = set(destinations)
     terminals.discard(src)
-
-    if relay_nodes is None:
-        relay_candidates = [n for n in graph.nodes if n != src and n not in terminals]
-    else:
-        relay_candidates = list(relay_nodes)
+    terminal_forwarders, relay_candidates = _split_relay_candidates(
+        graph,
+        src=src,
+        destinations=destinations,
+        relay_nodes=relay_nodes,
+        allow_destinations_as_relays=allow_destinations_as_relays,
+    )
 
     if max_relays is not None and max_relays >= 0:
         if max_relays == 0:
-            relay_nodes = []
+            selected_relays: list[int] = []
         elif max_relays < len(relay_candidates):
-            relay_nodes = relay_candidates[:max_relays]
+            selected_relays = relay_candidates[:max_relays]
         else:
-            relay_nodes = relay_candidates
+            selected_relays = relay_candidates
     else:
-        relay_nodes = relay_candidates
+        selected_relays = relay_candidates
 
-    forwarding_nodes = set(relay_nodes)
+    forwarding_nodes = set(selected_relays)
+    forwarding_nodes.update(terminal_forwarders)
     forwarding_nodes.add(src)
 
     weights = compute_basic_weights(graph)
@@ -850,6 +912,7 @@ def compute_two_level_tree_edges(
     destinations: t.Sequence[int],
     relay_nodes: t.Sequence[int] | None = None,
     max_relays: int | None = None,
+    allow_destinations_as_relays: bool = False,
 ) -> TreeResult:
     """Compute a simple 2-level hierarchy baseline (src -> relay -> terminals).
 
@@ -862,44 +925,48 @@ def compute_two_level_tree_edges(
     if not terminals:
         return TreeResult(edges=[], throughput=None, algorithm="two_level", lp_f_star=None)
 
-    if relay_nodes is None:
-        relay_candidates = [n for n in graph.nodes if n != src and n not in terminals]
-    else:
-        relay_candidates = list(relay_nodes)
+    terminal_forwarders, relay_candidates = _split_relay_candidates(
+        graph,
+        src=src,
+        destinations=destinations,
+        relay_nodes=relay_nodes,
+        allow_destinations_as_relays=allow_destinations_as_relays,
+    )
 
     k = len(relay_candidates) if max_relays is None else max(0, int(max_relays))
-    if k == 0 or not relay_candidates:
+    chosen_nonterminal_relays: list[int] = []
+    if k > 0 and relay_candidates:
+        # Only relays that are reachable from src and can reach at least one terminal help.
+        scored: list[tuple[int, float]] = []
+        for r_id in relay_candidates:
+            cap_sr = float(graph.capacities.get((src, r_id), 0.0))
+            if cap_sr <= 0.0:
+                continue
+            score = 0.0
+            for t_id in terminals:
+                cap_rt = float(graph.capacities.get((r_id, t_id), 0.0))
+                if cap_rt > 0.0:
+                    score += min(cap_sr, cap_rt)
+            if score > 0.0:
+                scored.append((r_id, score))
+
+        scored.sort(key=lambda kv: kv[1], reverse=True)
+        chosen_nonterminal_relays = [r_id for r_id, _ in scored[: min(k, len(scored))]]
+
+    chosen_relays: list[int] = sorted(set(chosen_nonterminal_relays) | terminal_forwarders)
+    if not chosen_relays:
         return compute_star_tree_edges(graph, src=src, destinations=destinations)
-
-    # Only relays that are reachable from src and can reach at least one terminal help.
-    scored: list[tuple[int, float]] = []
-    for r_id in relay_candidates:
-        cap_sr = float(graph.capacities.get((src, r_id), 0.0))
-        if cap_sr <= 0.0:
-            continue
-        score = 0.0
-        for t_id in terminals:
-            cap_rt = float(graph.capacities.get((r_id, t_id), 0.0))
-            if cap_rt > 0.0:
-                score += min(cap_sr, cap_rt)
-        if score > 0.0:
-            scored.append((r_id, score))
-
-    if not scored:
-        return compute_star_tree_edges(graph, src=src, destinations=destinations)
-
-    scored.sort(key=lambda kv: kv[1], reverse=True)
-    chosen_relays = [r_id for r_id, _ in scored[: min(k, len(scored))]]
 
     parent: dict[int, int] = {}
     used_relays: set[int] = set()
-    edges: list[Edge] = []
 
     for t_id in terminals:
         best_parent = src
         best_bottleneck = float(graph.capacities.get((src, t_id), 0.0))
 
         for r_id in chosen_relays:
+            if r_id == t_id:
+                continue
             cap_sr = float(graph.capacities.get((src, r_id), 0.0))
             cap_rt = float(graph.capacities.get((r_id, t_id), 0.0))
             if cap_sr <= 0.0 or cap_rt <= 0.0:
@@ -913,13 +980,20 @@ def compute_two_level_tree_edges(
             return TreeResult(edges=[], throughput=None, algorithm="two_level", lp_f_star=None)
 
         parent[t_id] = best_parent
-        if best_parent == src:
-            edges.append((src, t_id))
-        else:
+        if best_parent != src:
             used_relays.add(best_parent)
-            edges.append((best_parent, t_id))
+
+    # If a destination is used as a relay, ensure it is a direct child of the
+    # source. Otherwise we'd create two parents once we add src->relay.
+    for r_id in sorted(used_relays):
+        if r_id in terminal_forwarders:
+            parent[r_id] = src
+
+    edges: list[Edge] = [(parent[t_id], t_id) for t_id in terminals]
 
     for r_id in sorted(used_relays):
+        if r_id in terminal_forwarders:
+            continue
         edges.append((src, r_id))
 
     throughput = min(float(graph.capacities.get(e, 0.0)) for e in edges) if edges else 0.0
@@ -937,6 +1011,7 @@ def compute_tree_edges(
     relay_nodes: t.Sequence[int] | None = None,
     max_relays: int | None = None,
     relay_scoring: str = "coverage",
+    allow_destinations_as_relays: bool = False,
     node_egress_budgets: dict[int, float | None] | None = None,
     fanout_caps: dict[int, int | None] | None = None,
     **kwargs,
@@ -962,6 +1037,7 @@ def compute_tree_edges(
             src=src,
             destinations=destinations,
             relay_nodes=relay_nodes,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             **kwargs,
         )
         if not edges or throughput is None:
@@ -993,6 +1069,7 @@ def compute_tree_edges(
             relay_nodes=relay_nodes,
             max_relays=max_relays,
             relay_scoring=relay_scoring,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             node_egress_budgets=node_egress_budgets,
             fanout_caps=fanout_caps,
             **kwargs,
@@ -1009,6 +1086,7 @@ def compute_tree_edges(
             relay_nodes=relay_nodes,
             max_relays=max_relays,
             relay_scoring=relay_scoring,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             node_egress_budgets=node_egress_budgets,
             fanout_caps=fanout_caps,
             **kwargs,
@@ -1023,6 +1101,7 @@ def compute_tree_edges(
             relay_nodes=relay_nodes,
             max_relays=max_relays,
             relay_scoring=relay_scoring,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             node_egress_budgets=node_egress_budgets,
             fanout_caps=fanout_caps,
             **kwargs,
@@ -1038,6 +1117,7 @@ def compute_tree_edges(
             relay_nodes=relay_nodes,
             max_relays=max_relays,
             relay_scoring=relay_scoring,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             node_egress_budgets=node_egress_budgets,
             fanout_caps=fanout_caps,
             **kwargs,
@@ -1052,6 +1132,7 @@ def compute_tree_edges(
             relay_nodes=relay_nodes,
             max_relays=max_relays,
             relay_scoring=relay_scoring,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             node_egress_budgets=node_egress_budgets,
             fanout_caps=fanout_caps,
             **kwargs,
@@ -1064,6 +1145,7 @@ def compute_tree_edges(
             hop_limit=hop_limit,
             relay_nodes=relay_nodes,
             max_relays=max_relays,
+            allow_destinations_as_relays=allow_destinations_as_relays,
             node_egress_budgets=node_egress_budgets,
             fanout_caps=fanout_caps,
         )
@@ -1076,6 +1158,7 @@ def compute_tree_edges(
             destinations=destinations,
             relay_nodes=relay_nodes,
             max_relays=max_relays,
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")

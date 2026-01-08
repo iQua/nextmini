@@ -128,6 +128,7 @@ def compute_routes(
         eta=eta,
         max_relays=max_relays,
         relay_scoring=relay_scoring,
+        allow_destinations_as_relays=config.MULTICAST_ALLOW_WORKER_RELAYS,
         max_length=hop_limit,
         num_paths=num_paths,
     )

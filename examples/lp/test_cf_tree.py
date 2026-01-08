@@ -154,6 +154,141 @@ def test_lp_node_budget_affects_f_star():
     print("  PASSED\n")
 
 
+def test_allow_destinations_as_relays_enables_multi_hop_basic_tree():
+    """Destinations should be usable as forwarders when enabled.
+
+    Topology:
+      1 -> 2 (100)
+      1 -> 3 (1)
+      2 -> 3 (100)
+
+    Without destination-forwarding, node 3 must be served directly (rate=1).
+    With destination-forwarding, the tree can use 2 as a relay (rate=100).
+    """
+    nodes = [1, 2, 3]
+    edges = [(1, 2), (2, 3), (1, 3)]
+    capacities = {(1, 2): 100.0, (2, 3): 100.0, (1, 3): 1.0}
+    graph = Graph(nodes, edges, capacities)
+
+    baseline = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3],
+        algorithm="basic_tree",
+        hop_limit=2,
+        allow_destinations_as_relays=False,
+    )
+    assert baseline.throughput is not None
+    assert abs(baseline.throughput - 1.0) <= 1e-6
+
+    improved = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3],
+        algorithm="basic_tree",
+        hop_limit=2,
+        allow_destinations_as_relays=True,
+    )
+    assert improved.throughput is not None
+    assert abs(improved.throughput - 100.0) <= 1e-6
+    assert (2, 3) in improved.edges
+
+    print("Destination Relay Eligibility Test:")
+    print(f"  baseline edges={baseline.edges} throughput={baseline.throughput}")
+    print(f"  improved edges={improved.edges} throughput={improved.throughput}")
+    print("  PASSED\n")
+
+
+def test_allow_destinations_as_relays_cf_bottleneck():
+    """Test with CF-Bottleneck on a realistic 4-node topology.
+
+    Topology:
+        Trainer (1) ---100---> Worker A (2) ---80---> Worker C (4)
+             |                      |
+             |                     50
+             |                      v
+             +----30----> Worker B (3)
+
+    Without allow_destinations_as_relays:
+        Tree must use direct links: 1->2, 1->3, 1->4
+        Bottleneck is min(100, 30, 40) = 30 Mbps
+
+    With allow_destinations_as_relays:
+        Worker A (2) can relay to Worker B (3) and Worker C (4)
+        Tree: 1->2 (100), 2->3 (50), 2->4 (80) or similar
+        Bottleneck is 50+ Mbps (significant improvement)
+    """
+    nodes = [1, 2, 3, 4]  # 1=trainer, 2,3,4=workers
+
+    edges = [
+        (1, 2), (2, 1),  # Trainer to Worker A: 100 Mbps
+        (1, 3), (3, 1),  # Trainer to Worker B: 30 Mbps (weak direct link)
+        (1, 4), (4, 1),  # Trainer to Worker C: 40 Mbps (weak direct link)
+        (2, 3), (3, 2),  # Worker A to Worker B: 50 Mbps
+        (2, 4), (4, 2),  # Worker A to Worker C: 80 Mbps
+        (3, 4), (4, 3),  # Worker B to Worker C: 60 Mbps
+    ]
+
+    capacities = {
+        (1, 2): 100.0, (2, 1): 100.0,
+        (1, 3): 30.0, (3, 1): 30.0,
+        (1, 4): 40.0, (4, 1): 40.0,
+        (2, 3): 50.0, (3, 2): 50.0,
+        (2, 4): 80.0, (4, 2): 80.0,
+        (3, 4): 60.0, (4, 3): 60.0,
+    }
+
+    graph = Graph(nodes, edges, capacities)
+
+    print("CF-Bottleneck Destination Relay Test:")
+
+    # Test WITHOUT the flag (default behavior)
+    result_without = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3, 4],
+        algorithm="cf_bottleneck",
+        hop_limit=3,
+        allow_destinations_as_relays=False,
+    )
+    print(f"  Without flag:")
+    print(f"    Edges: {result_without.edges}")
+    print(f"    Throughput: {result_without.throughput}")
+
+    # Test WITH the flag
+    result_with = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3, 4],
+        algorithm="cf_bottleneck",
+        hop_limit=3,
+        allow_destinations_as_relays=True,
+    )
+    print(f"  With flag:")
+    print(f"    Edges: {result_with.edges}")
+    print(f"    Throughput: {result_with.throughput}")
+
+    assert result_with.throughput is not None
+    assert result_without.throughput is not None
+    assert result_with.throughput >= result_without.throughput, (
+        f"Expected throughput with flag ({result_with.throughput}) >= "
+        f"without flag ({result_without.throughput})"
+    )
+
+    # Check that with the flag, a destination has outgoing edges to other destinations
+    if result_with.throughput > result_without.throughput:
+        has_destination_relay = any(
+            u in [2, 3, 4] and v in [2, 3, 4] and u != v
+            for u, v in result_with.edges
+        )
+        print(f"    Destination acting as relay: {has_destination_relay}")
+        assert has_destination_relay, "Expected a destination to relay when flag is enabled"
+
+    improvement = result_with.throughput - result_without.throughput
+    print(f"  Throughput improvement: {improvement:.1f} Mbps ({100*improvement/result_without.throughput:.0f}%)")
+    print("  PASSED\n")
+
+
 def test_unified_interface():
     """Test the unified compute_tree_edges interface."""
     nodes = [1, 2, 3, 4]
@@ -304,6 +439,8 @@ if __name__ == "__main__":
     test_cf_weights()
     test_tree_rate()
     test_lp_node_budget_affects_f_star()
+    test_allow_destinations_as_relays_enables_multi_hop_basic_tree()
+    test_allow_destinations_as_relays_cf_bottleneck()
     test_unified_interface()
     test_with_controller_config()
 

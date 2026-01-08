@@ -318,6 +318,11 @@ def main() -> int:
         help="Optional cap on number of relay nodes (LP-guided selection).",
     )
     parser.add_argument(
+        "--allow-destination-relays",
+        action="store_true",
+        help="Allow destination nodes to forward (treat receivers as relay-eligible, not counted against --max-relays).",
+    )
+    parser.add_argument(
         "--relay-scoring",
         type=str,
         default="coverage",
@@ -426,6 +431,7 @@ def main() -> int:
         eta=args.eta,
         max_relays=args.max_relays,
         relay_scoring=args.relay_scoring,
+        allow_destinations_as_relays=args.allow_destination_relays,
         max_length=args.max_length,
         sort_by=args.sort_by,
         num_paths=args.num_paths,

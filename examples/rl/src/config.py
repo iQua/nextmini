@@ -54,6 +54,9 @@ MULTICAST_MAX_RELAYS_INT = (
     int(MULTICAST_MAX_RELAYS) if MULTICAST_MAX_RELAYS not in (None, "") else None
 )
 MULTICAST_NUM_PATHS = int(os.environ.get("MULTICAST_NUM_PATHS", "2"))
+MULTICAST_ALLOW_WORKER_RELAYS = os.environ.get(
+    "MULTICAST_ALLOW_WORKER_RELAYS", "false"
+).lower() == "true"
 
 # Optional: probe link goodputs via controller DB before planning.
 MULTICAST_PROBE_LINKS = os.environ.get("MULTICAST_PROBE_LINKS", "false").lower() == "true"

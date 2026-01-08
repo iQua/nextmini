@@ -15,6 +15,7 @@ Supports:
 - Solves max-min fair multicast LP
 - Converts LP solution to multicast tree edges
 - Optional relay caps via LP-guided relay scoring (`--max-relays`)
+- Optional destination forwarding (allow receivers to act as relays)
 
 ## Usage
 
