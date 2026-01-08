@@ -1,4 +1,5 @@
 protocol = "tcp"
+flow_transport = "lossless_unicast"
 
 [topology]
 type = "full_mesh"

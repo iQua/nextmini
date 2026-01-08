@@ -93,14 +93,11 @@ class Trainer:
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
 
         receiver_ids = [conn["node_id"] for conn in self.worker_connections]
-        edges, throughput, plan = self._compute_multicast_routes(receiver_ids)
+        edges, throughput = self._compute_multicast_routes(receiver_ids)
         self.dataplane.set_group_routes(self.group_id, edges)
-        details = f"algo={plan.algorithm} edges={len(edges)}"
         if throughput is not None:
-            details += f" throughput={throughput:.3f}"
-        if plan.lp_f_star is not None:
-            details += f" lp_f_star={plan.lp_f_star:.3f}"
-        print(f"Installed multicast routes for group {self.group_id}: {details}")
+            print(f"Applied LP multicast routes (throughput={throughput:.3f})")
+        print(f"Installed multicast routes for group {self.group_id} ({len(edges)} edges)")
         
         print(f"Trainer ready with {len(self.worker_connections)} workers")
 
@@ -114,8 +111,7 @@ class Trainer:
         try:
             from examples.lp.solver import (
                 build_graph_from_controller_config,
-                compute_tree_edges,
-                load_toml,
+                compute_mflow_tree_edges,
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -123,93 +119,17 @@ class Trainer:
             ) from exc
 
         graph = build_graph_from_controller_config(str(controller_path))
-
-        if config.MULTICAST_PROBE_LINKS:
-            try:
-                from examples.lp.main import (
-                    _apply_link_rates,
-                    _connect_db,
-                    _db_settings,
-                    _fetch_link_rates_from_probes,
-                    _request_link_probes,
-                    _wait_for_probe_finish,
-                )
-            except ImportError as exc:
-                raise RuntimeError(
-                    "MULTICAST_PROBE_LINKS is enabled but DB probe helpers are unavailable."
-                ) from exc
-
-            controller_cfg = load_toml(str(controller_path))
-            settings = _db_settings(controller_cfg)
-            conn = _connect_db(settings)
-            try:
-                edges_to_probe = list(graph.edges)
-                batch_size = int(getattr(config, "MULTICAST_PROBE_BATCH_SIZE", 0) or 0)
-
-                all_rates: dict[tuple[int, int], float] = {}
-                if batch_size <= 0 or batch_size >= len(edges_to_probe):
-                    probe_ids = _request_link_probes(
-                        conn, edges_to_probe, bytes_per_flow=config.MULTICAST_PROBE_BYTES
-                    )
-                    batches = [(probe_ids, len(edges_to_probe))]
-                else:
-                    batches = []
-                    for i in range(0, len(edges_to_probe), batch_size):
-                        batch_edges = edges_to_probe[i : i + batch_size]
-                        probe_ids = _request_link_probes(
-                            conn, batch_edges, bytes_per_flow=config.MULTICAST_PROBE_BYTES
-                        )
-                        batches.append((probe_ids, len(batch_edges)))
-
-                total_probes = 0
-                for probe_ids, edge_count in batches:
-                    if not probe_ids:
-                        continue
-                    total_probes += len(probe_ids)
-                    ok = _wait_for_probe_finish(
-                        conn,
-                        probe_ids,
-                        timeout_secs=config.MULTICAST_PROBE_TIMEOUT_SECS,
-                    )
-                    if not ok:
-                        print(
-                            f"warning: probe timed out after {config.MULTICAST_PROBE_TIMEOUT_SECS}s; "
-                            "using completed probes only",
-                            flush=True,
-                        )
-                    rates = _fetch_link_rates_from_probes(conn, probe_ids)
-                    all_rates.update(rates)
-                    print(
-                        f"Probed batch of {edge_count} links, updated {len(rates)} capacities.",
-                        flush=True,
-                    )
-
-                _apply_link_rates(graph, all_rates)
-                print(
-                    f"Probed {total_probes} links total, updated {len(all_rates)} capacities.",
-                    flush=True,
-                )
-            finally:
-                conn.close()
-        result = compute_tree_edges(
+        edges, throughput = compute_mflow_tree_edges(
             graph,
             src=self.node_id,
             destinations=receiver_ids,
-            algorithm=config.MULTICAST_TREE_ALGO,
-            hop_limit=config.MULTICAST_HOP_LIMIT,
-            eta=config.MULTICAST_ETA,
-            max_relays=config.MULTICAST_MAX_RELAYS_INT,
-            relay_scoring=config.MULTICAST_RELAY_SCORING,
-            max_length=config.MULTICAST_HOP_LIMIT,
-            num_paths=config.MULTICAST_NUM_PATHS,
         )
-        if not result.edges:
-            details = result.error or "unknown planner failure"
+        if not edges:
             raise RuntimeError(
-                f"Tree planner returned no edges for src={self.node_id} dests={receiver_ids}: {details}"
+                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}"
             )
 
-        return result.edges, result.throughput, result
+        return edges, throughput
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
@@ -310,90 +230,92 @@ class Trainer:
         state_dict = self.policy_model.state_dict()
         # Move to CPU for serialization
         state_dict_cpu = {k: v.cpu() for k, v in state_dict.items()}
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            weights_path = tmpdir / "weights.pt"
-            torch.save(state_dict_cpu, weights_path)
-            size = int(weights_path.stat().st_size)
-
-            print(f"Serialized weights: {size} bytes ({size/1024/1024:.2f} MB)")
         
-            # 1. Send Metadata and Wait for Ready
-            receiver_ids = []
-            for i in range(len(self.worker_connections)):
-                receiver_ids.append(self.worker_connections[i]['node_id'])
-
-            errors = []
-            def handshake_worker(i):
-                with self.worker_locks[i]:
-                    # Send Metadata
-                    print(f"Trainer sending WEIGHT_METADATA to Worker {i} (node {self.worker_connections[i]['node_id']}, port {self.worker_connections[i]['port']})...", flush=True)
-                    self.send_to_worker(i, {
-                        "type": "WEIGHT_METADATA",
-                        "group_id": self.group_id,
-                        "group_ip": self.group_ip,
-                        "size": size,
-                        "src_node_id": self.node_id,
-                    })
-                    print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
-
-                    # Wait for READY
-                    try:
-                        msg = self.recv_from_worker(i, timeout_ms=120000, expected_type="READY_FOR_MULTICAST")
-
-                        if not msg:
-                            raise RuntimeError(f"Worker {i} failed to reply READY_FOR_MULTICAST within timeout")
-                        else:
-                            print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
-                    except Exception as e:
-                        errors.append(e)
-                        raise e
-
-            print(f"Starting {len(self.worker_connections)} handshake threads...", flush=True)
-            threads = []
-            for i in range(len(self.worker_connections)):
-                t = threading.Thread(target=handshake_worker, args=(i,), name=f"HandshakeWorker-{i}")
-                t.start()
-                threads.append(t)
-
-            for t in threads:
-                t.join()
-
-            if errors:
-                raise RuntimeError(f"Handshake failed: {errors}")
-
-            # 2. Send Data Lossless (stream from file to avoid OOM)
-            print(f"Starting lossless multicast of {size} bytes to {receiver_ids}...")
-            sid = self.dataplane.send_file(
-                self.group_id,
-                self.group_ip,
-                receiver_ids,
-                str(weights_path),
-                chunk_size=config.CHUNK_SIZE,
-                src_port=config.TRAINER_PORT,
-                dst_port=config.WORKER_BASE_PORT # All workers listen on BASE_PORT for multicast
-            )
-
-            print(f"Waiting for multicast transfer (SID={sid})...")
-            multicast_transfer_start = time.time()
-            ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
-            multicast_transfer_end = time.time()
-            print(f"Multicast completion: {ok}")
-
-            # ============ TIMING: Weight Broadcast End ============
-            weight_broadcast_end = time.time()
-            total_broadcast_time = weight_broadcast_end - weight_broadcast_start
-            actual_transfer_time = multicast_transfer_end - multicast_transfer_start
-            throughput_gbps = (size * 8 / 1e9) / actual_transfer_time if actual_transfer_time > 0 else 0
-
-            print(f"\n{'='*60}")
-            print(f"WEIGHT BROADCAST TIMING (Trainer → Workers):")
-            print(f"  Total time (incl. handshake): {total_broadcast_time:.3f}s")
-            print(f"  Actual multicast transfer:     {actual_transfer_time:.3f}s")
-            print(f"  Data size:                     {size/1024/1024:.2f} MB")
-            print(f"  Throughput:                    {throughput_gbps:.3f} Gbps")
-            print(f"{'='*60}\n")
+        buffer = io.BytesIO()
+        torch.save(state_dict_cpu, buffer)
+        data_bytes = buffer.getvalue()
+        size = len(data_bytes)
+        
+        print(f"Serialized weights: {size} bytes ({size/1024/1024:.2f} MB)")
+        
+        # 1. Send Metadata and Wait for Ready
+        receiver_ids = []
+        for i in range(len(self.worker_connections)):
+            receiver_ids.append(self.worker_connections[i]['node_id'])
+        
+        errors = []
+        def handshake_worker(i):
+            with self.worker_locks[i]:
+                # Send Metadata
+                print(f"Trainer sending WEIGHT_METADATA to Worker {i} (node {self.worker_connections[i]['node_id']}, port {self.worker_connections[i]['port']})...", flush=True)
+                self.send_to_worker(i, {
+                    "type": "WEIGHT_METADATA",
+                    "group_id": self.group_id,
+                    "group_ip": self.group_ip,
+                    "size": size,
+                    "src_node_id": config.TRAINER_NODE_ID
+                })
+                print(f"Trainer sent WEIGHT_METADATA to Worker {i}, waiting for READY...", flush=True)
+                
+                # Wait for READY
+                try:
+                    msg = self.recv_from_worker(i, timeout_ms=120000, expected_type="READY_FOR_MULTICAST")
+                    
+                    if not msg:
+                        raise RuntimeError(f"Worker {i} failed to reply READY_FOR_MULTICAST within timeout")
+                    else:
+                        print(f"Worker {i} replied READY_FOR_MULTICAST", flush=True)
+                except Exception as e:
+                    errors.append(e)
+                    raise e
+        
+        print(f"Starting {len(self.worker_connections)} handshake threads...", flush=True)
+        threads = []
+        for i in range(len(self.worker_connections)):
+            t = threading.Thread(target=handshake_worker, args=(i,), name=f"HandshakeWorker-{i}")
+            t.start()
+            threads.append(t)
+            
+        for t in threads:
+            t.join()
+            
+        if errors:
+            raise RuntimeError(f"Handshake failed: {errors}")
+            
+        # 2. Send Data Lossless
+        print(f"Starting lossless multicast of {size} bytes to {receiver_ids}...")
+        builder = nm.PacketBuilder(size=size)
+        builder.write(data_bytes)
+        view = builder.freeze()
+        sid = self.dataplane.send_data(
+            self.group_id,
+            self.group_ip,
+            receiver_ids,
+            view,
+            chunk_size=config.CHUNK_SIZE,
+            src_port=config.TRAINER_PORT,
+            dst_port=config.WORKER_BASE_PORT # All workers listen on BASE_PORT for multicast
+        )
+        
+        print(f"Waiting for multicast transfer (SID={sid})...")
+        multicast_transfer_start = time.time()
+        ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+        multicast_transfer_end = time.time()
+        print(f"Multicast completion: {ok}")
+        
+        # ============ TIMING: Weight Broadcast End ============
+        weight_broadcast_end = time.time()
+        total_broadcast_time = weight_broadcast_end - weight_broadcast_start
+        actual_transfer_time = multicast_transfer_end - multicast_transfer_start
+        throughput_gbps = (size * 8 / 1e9) / actual_transfer_time if actual_transfer_time > 0 else 0
+        
+        print(f"\n{'='*60}")
+        print(f"WEIGHT BROADCAST TIMING (Trainer → Workers):")
+        print(f"  Total time (incl. handshake): {total_broadcast_time:.3f}s")
+        print(f"  Actual multicast transfer:     {actual_transfer_time:.3f}s")
+        print(f"  Data size:                     {size/1024/1024:.2f} MB")
+        print(f"  Throughput:                    {throughput_gbps:.3f} Gbps")
+        print(f"{'='*60}\n")
         
         return {
             'total_time': total_broadcast_time,
@@ -473,14 +395,11 @@ class Trainer:
                         "shard_sizes": shard_sizes,
                         "has_index": index_data is not None,
                         "total_size": total_size,
-                        "src_node_id": self.node_id,
+                        "src_node_id": config.TRAINER_NODE_ID
                     })
                     try:
-                        msg = self.recv_from_worker(
-                            i,
-                            timeout_ms=120000,
-                            expected_type="READY_FOR_SHARDED_MULTICAST",
-                        )
+                        msg = self.recv_from_worker(i, timeout_ms=120000, 
+                                                    expected_type="READY_FOR_SHARDED_MULTICAST")
                         if not msg:
                             raise RuntimeError(f"Worker {i} failed to reply READY")
                         print(f"Worker {i} ready for sharded transfer", flush=True)
@@ -512,11 +431,9 @@ class Trainer:
             
             # 6. Send each shard
             for shard_path in shard_files:
-                shard_bytes = shard_path.stat().st_size
-                print(
-                    f"Sending shard {shard_path.name} ({shard_bytes/1024/1024:.1f} MB)..."
-                )
-                self._send_shard_file(shard_path.name, shard_path, receiver_ids)
+                shard_data = shard_path.read_bytes()
+                print(f"Sending shard {shard_path.name} ({len(shard_data)/1024/1024:.1f} MB)...")
+                self._send_shard_data(shard_path.name, shard_data, receiver_ids)
             
             transfer_end = time.time()
         
@@ -562,22 +479,6 @@ class Trainer:
         ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
         if not ok:
             raise RuntimeError(f"Failed to send shard {name}")
-
-    def _send_shard_file(self, name: str, path: Path, receiver_ids: list):
-        """Send a single shard file via multicast without reading it into memory."""
-        sid = self.dataplane.send_file(
-            self.group_id,
-            self.group_ip,
-            receiver_ids,
-            str(path),
-            chunk_size=config.CHUNK_SIZE,
-            src_port=config.TRAINER_PORT,
-            dst_port=config.WORKER_BASE_PORT,
-        )
-
-        ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
-        if not ok:
-            raise RuntimeError(f"Failed to send shard file {name}")
 
     def train_step(self, batch):
         """Execute one training step"""

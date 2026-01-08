@@ -6,7 +6,6 @@ use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -290,94 +289,6 @@ impl Dataplane {
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
-                    source_path: None,
-                    ready_grace_ms: runtime_config.ready_grace_ms,
-                    topology_ready: None,
-                };
-                let started_sid = rt().block_on(handle.start_sender(cfg));
-                return Ok(started_sid);
-            }
-        }
-
-        Ok(sid)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, path, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None))]
-    fn send_file(
-        &self,
-        group_id: u64,
-        dest_ip: &str,
-        receiver_ids: Vec<usize>,
-        path: &str,
-        chunk_size: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-        congestion: Option<String>,
-    ) -> PyResult<u64> {
-        #[allow(unused_variables)]
-        let dest_ip_addr = parse_ipv4(dest_ip)?;
-        if receiver_ids.is_empty() {
-            return Err(PyRuntimeError::new_err(
-                "receiver_ids must contain at least one entry.",
-            ));
-        }
-
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
-        }
-
-        let source_path = PathBuf::from(path);
-        let meta = std::fs::metadata(&source_path).map_err(|err| {
-            PyRuntimeError::new_err(format!("failed to stat {}: {err}", source_path.display()))
-        })?;
-        if !meta.is_file() {
-            return Err(PyRuntimeError::new_err(format!(
-                "path is not a file: {}",
-                source_path.display()
-            )));
-        }
-        let total_bytes = meta.len();
-        if total_bytes == 0 {
-            return Err(PyRuntimeError::new_err(
-                "file is empty; nothing to transmit.",
-            ));
-        }
-
-        // Compute deterministic session_id from group_id and source_node_id
-        #[allow(unused_variables)]
-        let sid = multicast_session_id(group_id, self.cfg.node_id);
-        #[cfg(feature = "python-extension")]
-        {
-            if let Some(handle) = &self.lossless_runtime {
-                let runtime_config = &self.cfg.lossless_runtime_config;
-                if let Some(mode) = congestion.as_deref()
-                    && mode != "static"
-                {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "invalid congestion control: {mode}"
-                    )));
-                }
-                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                let common = session::runtime::CommonConfig {
-                    session_id: sid,
-                    dest_ip: dest_ip_addr,
-                    chunk_size,
-                    src_port: sp,
-                    dst_port: dp,
-                    data_bucket: runtime_config.data_bucket.clone(),
-                    local_node_id: self.cfg.node_id,
-                    user_space_base_addr: self.cfg.user_space_base_addr,
-                    local_netmask: self.cfg.local_netmask,
-                };
-                let cfg = session::runtime::SenderConfig {
-                    common,
-                    receiver_ids,
-                    total_bytes,
-                    // unused when source_path is set
-                    source_buffer: Bytes::new(),
-                    source_path: Some(source_path),
                     ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
                 };
@@ -405,12 +316,6 @@ impl Dataplane {
         let ip = parse_ipv4(dest_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-        let max_in_memory = max_in_memory_receive_bytes();
-        if expected_bytes > max_in_memory {
-            return Err(PyRuntimeError::new_err(format!(
-                "expected_bytes={expected_bytes} too large for in-memory receive (limit={max_in_memory}); set MAX_IN_MEMORY_RECEIVE_BYTES or use receive_to_file instead"
-            )));
         }
 
         if chunk_size == 0 {
@@ -442,69 +347,10 @@ impl Dataplane {
                     source_node_id,
                     expected_bytes,
                     sink_buffer: Some(sink_buf.clone()),
-                    sink_path: None,
                 };
                 // Direct registration - both sender and receiver compute same session_id
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
                 self.remember_buffer_sink(started_sid, sink_buf);
-                return Ok(started_sid);
-            }
-        }
-
-        Ok(sid)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, sink_path, *, chunk_size=8500, src_port=None, dst_port=None))]
-    fn receive_to_file(
-        &self,
-        group_id: u64,
-        dest_ip: &str,
-        source_node_id: usize,
-        expected_bytes: u64,
-        sink_path: &str,
-        chunk_size: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<u64> {
-        #[allow(unused_variables)]
-        let ip = parse_ipv4(dest_ip)?;
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
-        }
-
-        let sink_path = PathBuf::from(sink_path);
-
-        // Compute deterministic session_id from group_id and source_node_id
-        #[allow(unused_variables)]
-        let sid = multicast_session_id(group_id, source_node_id);
-        #[cfg(feature = "python-extension")]
-        {
-            if let Some(handle) = &self.lossless_runtime {
-                let runtime_config = &self.cfg.lossless_runtime_config;
-                let common = session::runtime::CommonConfig {
-                    session_id: sid,
-                    dest_ip: ip,
-                    chunk_size,
-                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
-                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
-                    data_bucket: runtime_config.data_bucket.clone(),
-                    local_node_id: self.cfg.node_id,
-                    user_space_base_addr: self.cfg.user_space_base_addr,
-                    local_netmask: self.cfg.local_netmask,
-                };
-                let cfg = session::runtime::ReceiverConfig {
-                    common,
-                    source_node_id,
-                    expected_bytes,
-                    sink_buffer: None,
-                    sink_path: Some(sink_path),
-                };
-                let started_sid = rt().block_on(handle.start_receiver(cfg));
                 return Ok(started_sid);
             }
         }
@@ -527,12 +373,6 @@ impl Dataplane {
     ) -> PyResult<Bound<'py, PyAny>> {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-        let max_in_memory = max_in_memory_receive_bytes();
-        if expected_bytes > max_in_memory {
-            return Err(PyRuntimeError::new_err(format!(
-                "expected_bytes={expected_bytes} too large for in-memory receive (limit={max_in_memory}); set MAX_IN_MEMORY_RECEIVE_BYTES or use receive_to_file_async instead"
-            )));
         }
         if chunk_size == 0 {
             return Err(PyRuntimeError::new_err("chunk_size must be positive."));
@@ -574,7 +414,6 @@ impl Dataplane {
                         source_node_id,
                         expected_bytes,
                         sink_buffer: Some(sink_buf.clone()),
-                        sink_path: None,
                     };
 
                     // Direct registration - both sender and receiver compute same session_id
@@ -593,75 +432,6 @@ impl Dataplane {
         // Fallback if feature disabled (immediate return)
         future_into_py(py, async move {
             info!("receive_data_async: lossless runtime not available, returning immediate sid");
-            Ok(sid)
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, sink_path, *, chunk_size=8500, src_port=None, dst_port=None))]
-    fn receive_to_file_async<'py>(
-        &self,
-        py: Python<'py>,
-        group_id: u64,
-        dest_ip: String,
-        source_node_id: usize,
-        expected_bytes: u64,
-        sink_path: String,
-        chunk_size: usize,
-        src_port: Option<u16>,
-        dst_port: Option<u16>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
-        }
-
-        // Compute deterministic session_id from group_id and source_node_id
-        let sid = multicast_session_id(group_id, source_node_id);
-
-        #[cfg(feature = "python-extension")]
-        {
-            if let Some(handle) = &self.lossless_runtime {
-                let handle = handle.clone();
-                let runtime_config = self.cfg.lossless_runtime_config.clone();
-                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
-                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                let local_node_id = self.cfg.node_id;
-                let base_addr = self.cfg.user_space_base_addr;
-                let netmask = self.cfg.local_netmask;
-
-                return future_into_py(py, async move {
-                    let ip = parse_ipv4(&dest_ip)?;
-                    let sink_path = PathBuf::from(sink_path);
-                    let common = session::runtime::CommonConfig {
-                        session_id: sid,
-                        dest_ip: ip,
-                        chunk_size,
-                        src_port: sp,
-                        dst_port: dp,
-                        data_bucket: runtime_config.data_bucket.clone(),
-                        local_node_id,
-                        user_space_base_addr: base_addr,
-                        local_netmask: netmask,
-                    };
-                    let cfg = session::runtime::ReceiverConfig {
-                        common,
-                        source_node_id,
-                        expected_bytes,
-                        sink_buffer: None,
-                        sink_path: Some(sink_path),
-                    };
-
-                    let started_sid = handle.start_receiver(cfg).await;
-                    Ok(started_sid)
-                });
-            }
-        }
-
-        future_into_py(py, async move {
-            info!("receive_to_file_async: lossless runtime not available, returning immediate sid");
             Ok(sid)
         })
     }
@@ -1132,25 +902,6 @@ fn multicast_session_id(group_id: u64, source_node_id: usize) -> u64 {
     source_node_id.hash(&mut hasher);
     let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
     raw | 0x8000_0000_0000_0000
-}
-
-fn max_in_memory_receive_bytes() -> u64 {
-    const DEFAULT: u64 = u64::MAX;
-    for key in ["NEXTMINI_MAX_IN_MEMORY_RECEIVE_BYTES", "MAX_IN_MEMORY_RECEIVE_BYTES"] {
-        let Ok(value) = std::env::var(key) else {
-            continue;
-        };
-        if value.trim() == "0" {
-            return u64::MAX;
-        }
-        let Ok(parsed) = value.trim().parse::<u64>() else {
-            continue;
-        };
-        if parsed > 0 {
-            return parsed;
-        }
-    }
-    DEFAULT
 }
 
 #[pymodule]

@@ -111,7 +111,6 @@ impl LosslessUnicastFlowManager {
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
-                source_path: None,
                 ready_grace_ms: runtime_config.ready_grace_ms,
                 topology_ready: None,
             };
@@ -195,7 +194,6 @@ impl LosslessUnicastFlowManager {
                 source_node_id: flow.src_node_id,
                 expected_bytes,
                 sink_buffer: None,
-                sink_path: None,
             };
 
             // Register receiver directly with the pre-computed session_id.

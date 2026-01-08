@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use tokio::sync::{mpsc, watch};
-use tokio::{fs::File, io::AsyncReadExt};
 use tracing::{debug, error, info, trace, warn};
 
 use nextmini_messages::lossless_session::{self, LosslessSessionControl};
@@ -29,7 +27,7 @@ pub async fn run(
     cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
-) -> bool {
+) {
     let sid = cfg.common.session_id;
     let chunk_size = cfg.common.chunk_size as u64;
     let total_bytes = cfg.total_bytes;
@@ -50,27 +48,10 @@ pub async fn run(
     let chunk_bytes = cfg.common.chunk_size;
     let source_buffer = cfg.source_buffer.clone();
     let mut state = SenderState::new(cfg, total_chunks);
-    let mut chunk_source = match ChunkSource::new(
-        source_buffer,
-        state.source_path.clone(),
-        chunk_bytes,
-        total_chunks,
-        total_bytes,
-    ) {
-        Ok(source) => source,
-        Err(err) => {
-            error!(
-                session_id = sid,
-                error = %err,
-                "Lossless sender: failed to initialize chunk source"
-            );
-            return false;
-        }
-    };
+    let mut chunk_source = ChunkSource::new(source_buffer, chunk_bytes, total_chunks, total_bytes);
     let mut data_pacer = DataPacer::new(state.common.data_bucket.clone());
     let transfer_start = Instant::now();
     let transfer_timeout = Duration::from_secs(TRANSFER_TIMEOUT_SECS);
-    let mut ok = false;
 
     loop {
         // checks for transfer timeout
@@ -109,7 +90,7 @@ pub async fn run(
 
         if state.ready_for_data()
             && !chunk_source.finished()
-            && state.inflight_len() < state.window_limit() as u64
+            && state.inflight_len() < state.window_limit()
         {
             debug!(
                 session_id = sid,
@@ -119,8 +100,8 @@ pub async fn run(
                 window = state.window_limit(),
                 "Lossless sender: attempting to send next chunk."
             );
-            match chunk_source.next_chunk().await {
-                Ok(Some(chunk)) => {
+            match chunk_source.next_chunk() {
+                Some(chunk) => {
                     debug!(
                         session_id = sid,
                         chunk_index = chunk.index,
@@ -132,17 +113,9 @@ pub async fn run(
                     state.send_data_chunk(chunk, &processors);
                     progressed = true;
                 }
-                Ok(None) => {
+                None => {
                     state.mark_source_drained();
                     progressed = true;
-                }
-                Err(err) => {
-                    error!(
-                        session_id = sid,
-                        error = %err,
-                        "Lossless sender: failed to read next chunk"
-                    );
-                    break;
                 }
             }
         }
@@ -158,36 +131,23 @@ pub async fn run(
                 chunks_sent = state.primary_chunks,
                 "Lossless sender finished with lossless delivery guarantees"
             );
-            ok = true;
             break;
         }
 
         if !progressed {
             // Don't block forever; let the loop re-check timers (e.g., MANIFEST resend).
-            match tokio::time::timeout(
+            if let Ok(Some(frame)) = tokio::time::timeout(
                 Duration::from_millis(CONTROL_POLL_TIMEOUT_MS),
                 ctrl_rx.recv(),
             )
             .await
             {
-                Ok(Some(frame)) => {
-                    state.handle_control(frame);
-                }
-                Ok(None) => {
-                    warn!(
-                        session_id = sid,
-                        "Lossless sender: control channel closed; cancelling session"
-                    );
-                    break;
-                }
-                Err(_) => {}
+                state.handle_control(frame);
             }
-            // On timeout, just fall through and loop; this allows MANIFEST re-sends
-            // every 250ms while waiting for READY.
+            // On timeout or channel closed, just fall through and loop; this allows
+            // MANIFEST re-sends every 250ms while waiting for READY.
         }
     }
-
-    ok
 }
 
 /// Encapsulates all mutable sender-side state (window, inflight accounting,
@@ -223,7 +183,6 @@ struct SenderState {
     throughput_start: Instant,
     throughput_last_report: Instant,
     bytes_since_last_report: u64,
-    source_path: Option<PathBuf>,
 }
 
 impl SenderState {
@@ -232,7 +191,6 @@ impl SenderState {
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
         let receiver_count = cfg.receiver_ids.len();
-        let source_path = cfg.source_path.take();
 
         let ready_gate_open = receiver_count == 0;
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms.max(1));
@@ -284,7 +242,6 @@ impl SenderState {
             throughput_start: Instant::now(),
             throughput_last_report: Instant::now(),
             bytes_since_last_report: 0,
-            source_path,
         };
         state.update_retired_up_to();
         state
@@ -325,8 +282,8 @@ impl SenderState {
     }
 
     /// Returns the number of outstanding chunks still waiting for ACKs.
-    fn inflight_len(&self) -> u64 {
-        self.outstanding_chunks()
+    fn inflight_len(&self) -> usize {
+        self.outstanding_chunks() as usize
     }
 
     /// Returns the number of chunks currently outside of the retired window.
@@ -471,29 +428,7 @@ impl SenderState {
         };
         match &control {
             LosslessSessionControl::Ready { node_id } => {
-                let ready_node = *node_id as usize;
-                // Only accept READY from expected receivers (and, if present, ensure the
-                // transport peer id matches the claimed node id).
-                if !self.receiver_progress.contains_key(&ready_node) {
-                    warn!(
-                        session_id = self.session_id,
-                        node_id = ready_node,
-                        "Lossless sender: ignoring READY from unexpected node"
-                    );
-                    return;
-                }
-                if let Some(from_node) = peer_id
-                    && from_node != ready_node
-                {
-                    warn!(
-                        session_id = self.session_id,
-                        peer_id = from_node,
-                        claimed = ready_node,
-                        "Lossless sender: ignoring READY with mismatched peer id"
-                    );
-                    return;
-                }
-                self.ready_nodes.insert(ready_node);
+                self.ready_nodes.insert(*node_id as usize);
                 info!(
                     session_id = self.session_id,
                     node_id = *node_id,
@@ -658,8 +593,6 @@ struct ChunkPayload {
 enum ChunkSourceKind {
     // slices data directly from an in-memory buffer, zero-copy
     Borrowed { bytes: Bytes, offset: usize },
-    // reads data from a file incrementally
-    File { file: File, path: PathBuf },
     // reuses a chunk template for synthetic payloads
     Template { template: Bytes },
 }
@@ -688,14 +621,6 @@ impl ChunkSourceKind {
         };
         Self::Template { template }
     }
-
-    fn file(path: PathBuf) -> std::io::Result<Self> {
-        let std_file = std::fs::File::open(&path)?;
-        Ok(Self::File {
-            file: File::from_std(std_file),
-            path,
-        })
-    }
 }
 
 /// Reads chunk payloads from memory or a template and hands them to the sender
@@ -710,43 +635,25 @@ struct ChunkSource {
 
 impl ChunkSource {
     /// Construct a new chunk source that will walk through the shared buffer.
-    fn new(
-        bytes: Bytes,
-        source_path: Option<PathBuf>,
-        chunk_size: usize,
-        total_chunks: u64,
-        total_bytes: u64,
-    ) -> std::io::Result<Self> {
+    fn new(bytes: Bytes, chunk_size: usize, total_chunks: u64, total_bytes: u64) -> Self {
         let matches_len = usize::try_from(total_bytes)
             .map(|len| len == bytes.len())
             .unwrap_or(false);
 
-        let kind = if let Some(path) = source_path {
-            let file_len = std::fs::metadata(&path)?.len();
-            if file_len != total_bytes {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "file size mismatch for {} (expected {total_bytes}, got {file_len})",
-                        path.display()
-                    ),
-                ));
-            }
-            ChunkSourceKind::file(path)?
-        } else if matches_len {
+        let kind = if matches_len {
             ChunkSourceKind::borrowed(bytes)
         } else {
             // Template mode: pre-build the template to avoid per-chunk allocations
             ChunkSourceKind::template(bytes, chunk_size.max(1))
         };
 
-        Ok(Self {
+        Self {
             chunk_size,
             total_chunks,
             total_bytes,
             next_index: 1,
             kind,
-        })
+        }
     }
 
     /// Returns true when every chunk has either been produced or the transfer was zero-length.
@@ -756,14 +663,14 @@ impl ChunkSource {
 
     /// Returns the next chunk, advancing the internal cursor. For borrowed
     /// buffers we slice without copying; template mode reuses the same chunk.
-    async fn next_chunk(&mut self) -> std::io::Result<Option<ChunkPayload>> {
+    fn next_chunk(&mut self) -> Option<ChunkPayload> {
         if self.finished() {
-            return Ok(None);
+            return None;
         }
 
         if self.chunk_size == 0 {
             self.next_index = self.total_chunks + 1;
-            return Ok(None);
+            return None;
         }
 
         let idx = self.next_index;
@@ -781,20 +688,10 @@ impl ChunkSource {
                 let start = *offset;
                 let end = start.saturating_add(chunk_len);
                 if end > bytes.len() {
-                    return Ok(None);
+                    return None;
                 }
                 *offset = end;
                 bytes.slice(start..end)
-            }
-            ChunkSourceKind::File { file, path } => {
-                let mut buf = vec![0u8; chunk_len];
-                file.read_exact(&mut buf).await.map_err(|err| {
-                    std::io::Error::new(
-                        err.kind(),
-                        format!("failed reading {}: {err}", path.display()),
-                    )
-                })?;
-                Bytes::from(buf)
             }
             ChunkSourceKind::Template { template } => {
                 // Template is pre-built to be at least chunk_size, so just slice.
@@ -809,7 +706,7 @@ impl ChunkSource {
             }
         };
 
-        Ok(Some(ChunkPayload { index: idx, data }))
+        Some(ChunkPayload { index: idx, data })
     }
 }
 
@@ -862,24 +759,18 @@ mod tests {
     /// This tests the fix for the infinite loop bug where the sender could get stuck
     /// waiting for source_drained when chunk_source.finished() returned true but
     /// the state wasn't updated.
-    #[tokio::test]
-    async fn chunk_source_finished_detection() {
+    #[test]
+    fn chunk_source_finished_detection() {
         // Zero chunks should be immediately finished
-        let source = ChunkSource::new(Bytes::new(), None, 1024, 0, 0).unwrap();
+        let source = ChunkSource::new(Bytes::new(), 1024, 0, 0);
         assert!(
             source.finished(),
             "ChunkSource with 0 chunks should be finished immediately"
         );
 
         //Source with chunks should not be finished initially
-        let mut source = ChunkSource::new(
-            Bytes::from(vec![0u8; 1024 * 5]),
-            None,
-            1024,
-            5,
-            (1024 * 5) as u64,
-        )
-        .unwrap();
+        let mut source =
+            ChunkSource::new(Bytes::from(vec![0u8; 1024 * 5]), 1024, 5, (1024 * 5) as u64);
         assert!(
             !source.finished(),
             "ChunkSource with 5 chunks should not be finished initially"
@@ -887,7 +778,7 @@ mod tests {
 
         // After consuming all chunks, should be finished
         for _ in 0..5 {
-            let result = source.next_chunk().await.unwrap();
+            let result = source.next_chunk();
             assert!(result.is_some(), "Should successfully get chunk");
         }
         assert!(
@@ -896,25 +787,20 @@ mod tests {
         );
 
         // Requesting more chunks after finished returns None
-        let result = source.next_chunk().await.unwrap();
+        let result = source.next_chunk();
         assert!(result.is_none(), "Should return None when finished");
     }
 
-    #[tokio::test]
-    async fn chunk_source_template_mode_reuses_buffer() {
+    #[test]
+    fn chunk_source_template_mode_reuses_buffer() {
         let chunk_size = 1024;
         let total_bytes = (chunk_size as u64 * 3) + 512;
         let total_chunks = total_bytes.div_ceil(chunk_size as u64);
         let template = Bytes::from(vec![0xBBu8; chunk_size]);
-        let mut source =
-            ChunkSource::new(template, None, chunk_size, total_chunks, total_bytes).unwrap();
+        let mut source = ChunkSource::new(template, chunk_size, total_chunks, total_bytes);
 
         for _ in 0..(total_chunks - 1) {
-            let chunk = source
-                .next_chunk()
-                .await
-                .unwrap()
-                .expect("chunk must be available");
+            let chunk = source.next_chunk().expect("chunk must be available");
             assert_eq!(
                 chunk.data.len(),
                 chunk_size,
@@ -922,20 +808,13 @@ mod tests {
             );
         }
 
-        let last = source
-            .next_chunk()
-            .await
-            .unwrap()
-            .expect("last chunk must exist");
+        let last = source.next_chunk().expect("last chunk must exist");
         assert_eq!(
             last.data.len(),
             512,
             "Last chunk should match the remainder size"
         );
-        assert!(
-            source.next_chunk().await.unwrap().is_none(),
-            "No extra chunks expected"
-        );
+        assert!(source.next_chunk().is_none(), "No extra chunks expected");
     }
 
     /// Validates the timeout constant is used correctly.
@@ -985,7 +864,6 @@ mod tests {
             receiver_ids: vec![],
             total_bytes: 0,
             source_buffer: Bytes::new(),
-            source_path: None,
             ready_grace_ms: 1,
             topology_ready: None,
         }
@@ -1006,66 +884,5 @@ mod tests {
         let cfg = sender_cfg(2_048, Some(bucket));
         // bucket_size / chunk_size = 4, lower than DEFAULT_WINDOW
         assert_eq!(compute_window(&cfg), 4);
-    }
-
-    #[tokio::test]
-    async fn chunk_source_reads_file_in_order() {
-        let path = std::env::temp_dir().join(format!(
-            "nextmini_chunk_source_test_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let payload: Vec<u8> = (0..20_000).map(|i| (i % 251) as u8).collect();
-        std::fs::write(&path, &payload).unwrap();
-
-        let total_bytes = payload.len() as u64;
-        let chunk_size = 1024usize;
-        let total_chunks = total_bytes.div_ceil(chunk_size as u64);
-
-        let mut src = ChunkSource::new(
-            Bytes::new(),
-            Some(path.clone()),
-            chunk_size,
-            total_chunks,
-            total_bytes,
-        )
-        .unwrap();
-
-        let mut out = Vec::new();
-        while let Some(chunk) = src.next_chunk().await.unwrap() {
-            out.extend_from_slice(&chunk.data);
-        }
-
-        assert_eq!(out, payload);
-        std::fs::remove_file(&path).unwrap();
-    }
-
-    #[test]
-    fn chunk_source_rejects_file_size_mismatch() {
-        let path = std::env::temp_dir().join(format!(
-            "nextmini_chunk_source_mismatch_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&path, &[1u8; 16]).unwrap();
-
-        let err = ChunkSource::new(
-            Bytes::new(),
-            Some(path.clone()),
-            8,
-            2,
-            32, // mismatch
-        )
-        .err()
-        .expect("chunk source should reject size mismatch");
-
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-        std::fs::remove_file(&path).unwrap();
     }
 }

@@ -1,11 +1,9 @@
 use std::net::Ipv4Addr;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use ahash::AHashMap;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
-use tokio::task::AbortHandle;
 use tokio::task::JoinHandle;
 use tracing::warn;
 
@@ -36,7 +34,6 @@ pub struct SenderConfig {
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_buffer: Bytes,
-    pub source_path: Option<PathBuf>,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
@@ -48,7 +45,6 @@ pub struct ReceiverConfig {
     pub source_node_id: usize,
     pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
-    pub sink_path: Option<PathBuf>,
 }
 
 /// Handle for communicating with the lossless runtime actor.
@@ -141,8 +137,7 @@ impl LosslessRuntimeHandle {
 /// This is the actor that processes commands and manages session lifecycle.
 struct LosslessRuntime {
     processors: ProcessorHandle,
-    tasks: AHashMap<SessionId, JoinHandle<bool>>,
-    aborts: AHashMap<SessionId, AbortHandle>,
+    tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
     topology_ready_tx: watch::Sender<bool>,
@@ -158,7 +153,6 @@ impl LosslessRuntime {
         Self {
             processors,
             tasks: AHashMap::default(),
-            aborts: AHashMap::default(),
             inputs: AHashMap::default(),
             next_session_id: 1,
             topology_ready_tx,
@@ -229,8 +223,8 @@ impl LosslessRuntime {
 
         tokio::spawn(async move {
             if let Some(handle) = handle {
-                let ok = handle.await.unwrap_or(false);
-                let _ = reply.send(ok);
+                let _ = handle.await; // ignore join errors; treat as completion
+                let _ = reply.send(true);
             } else {
                 let _ = reply.send(false);
             }
@@ -238,7 +232,7 @@ impl LosslessRuntime {
     }
 
     /// Removes and returns the join handle for a session task, if present.
-    fn take_task(&mut self, sid: SessionId) -> Option<JoinHandle<bool>> {
+    fn take_task(&mut self, sid: SessionId) -> Option<JoinHandle<()>> {
         self.tasks.remove(&sid)
     }
 
@@ -247,15 +241,6 @@ impl LosslessRuntime {
     fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
-
-        // Guard against session-id reuse/collisions: abort any existing task/input.
-        if let Some(abort) = self.aborts.remove(&sid) {
-            abort.abort();
-        }
-        if let Some(handle) = self.tasks.remove(&sid) {
-            handle.abort();
-        }
-        self.inputs.remove(&sid);
 
         // subscribes to topology readiness if not already ready
         if self.topology_ready {
@@ -268,7 +253,6 @@ impl LosslessRuntime {
         self.inputs.insert(sid, tx);
 
         let sender_handle = tokio::spawn(sender::run(cfg, rx, processors));
-        self.aborts.insert(sid, sender_handle.abort_handle());
         self.tasks.insert(sid, sender_handle);
 
         sid
@@ -279,20 +263,10 @@ impl LosslessRuntime {
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 
-        // Guard against session-id reuse/collisions: abort any existing task/input.
-        if let Some(abort) = self.aborts.remove(&sid) {
-            abort.abort();
-        }
-        if let Some(handle) = self.tasks.remove(&sid) {
-            handle.abort();
-        }
-        self.inputs.remove(&sid);
-
         let (tx, rx) = mpsc::channel::<InboundFrame>(1024);
         self.inputs.insert(sid, tx);
 
         let receiver_handle = tokio::spawn(receiver::run(cfg, rx, processors));
-        self.aborts.insert(sid, receiver_handle.abort_handle());
         self.tasks.insert(sid, receiver_handle);
 
         sid
@@ -300,9 +274,6 @@ impl LosslessRuntime {
 
     /// Aborts a running session and drops its inbox, if still active.
     async fn stop(&mut self, sid: SessionId) {
-        if let Some(abort) = self.aborts.remove(&sid) {
-            abort.abort();
-        }
         if let Some(handle) = self.tasks.remove(&sid) {
             handle.abort();
         }

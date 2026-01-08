@@ -1,9 +1,6 @@
 use bytes::Bytes;
-use std::path::PathBuf;
-use tokio::fs::{self, File};
-use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use nextmini_messages::lossless_session::{self, LosslessSessionControl};
 
@@ -71,7 +68,7 @@ pub async fn run(
     cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
-) -> bool {
+) {
     let sid = cfg.common.session_id;
     info!(
         session_id = sid,
@@ -91,45 +88,10 @@ pub async fn run(
         .as_ref()
         .map(|bucket| (bucket.bucket_size / per_chunk).max(1))
         .unwrap_or(super::sender::DEFAULT_WINDOW);
-    let ack_every = ACK_EVERY_CHUNKS.min(window_size as u64).max(1);
-
-    let total_chunks = cfg.expected_bytes.div_ceil(per_chunk as u64);
 
     let mut pending = PendingWindow::new(window_size, expected);
     let mut bytes_received: u64 = 0;
     let sink_buffer = cfg.sink_buffer.clone();
-    let sink_final_path = cfg.sink_path.clone();
-    let mut sink_tmp_path: Option<PathBuf> = None;
-    let mut sink_file = match cfg.sink_path.as_ref() {
-        Some(path) => {
-            if let Some(parent) = path.parent()
-                && let Err(err) = fs::create_dir_all(parent).await
-            {
-                error!(
-                    session_id = sid,
-                    error = %err,
-                    path = %parent.display(),
-                    "Lossless receiver: failed to create sink directory"
-                );
-                return false;
-            }
-            let tmp_path = path.with_extension("part");
-            sink_tmp_path = Some(tmp_path.clone());
-            match File::create(&tmp_path).await {
-                Ok(file) => Some(file),
-                Err(err) => {
-                    error!(
-                        session_id = sid,
-                        error = %err,
-                        path = %tmp_path.display(),
-                        "Lossless receiver: failed to open sink file"
-                    );
-                    return false;
-                }
-            }
-        }
-        None => None,
-    };
 
     let src_ip = (cfg.common.local_node_id as NodeId)
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
@@ -154,7 +116,6 @@ pub async fn run(
     });
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
-    let mut ok = false;
 
     while let Some(frame) = rx.recv().await {
         trace!(
@@ -181,34 +142,13 @@ pub async fn run(
                 bytes_received: &mut bytes_received,
             };
             let outcome = handle_data_frame(ctx);
-            if !outcome.ready_chunks.is_empty() {
-                if let Some(file) = sink_file.as_mut() {
-                    for chunk in &outcome.ready_chunks {
-                        if let Err(err) = file.write_all(chunk).await {
-                            error!(
-                                session_id = sid,
-                                error = %err,
-                                "Lossless receiver: failed writing sink file"
-                            );
-                            return false;
-                        }
-                    }
+            if !outcome.ready_chunks.is_empty()
+                && let Some(buf) = &sink_buffer
+            {
+                let mut guard = buf.lock().await;
+                for chunk in &outcome.ready_chunks {
+                    guard.extend_from_slice(chunk);
                 }
-                if let Some(buf) = &sink_buffer {
-                    let mut guard = buf.lock().await;
-                    for chunk in &outcome.ready_chunks {
-                        guard.extend_from_slice(chunk);
-                    }
-                }
-            }
-            if bytes_received > cfg.expected_bytes {
-                error!(
-                    session_id = sid,
-                    bytes_received,
-                    expected_bytes = cfg.expected_bytes,
-                    "Lossless receiver: received more bytes than expected"
-                );
-                return false;
             }
             if outcome.advanced {
                 let base = expected.saturating_sub(1);
@@ -216,7 +156,10 @@ pub async fn run(
                     let advanced_chunks = base - last_ack_up_to;
                     let final_chunk_reached = matches!(eot_index, Some(last) if last == base);
                     let received_all_bytes = bytes_received >= cfg.expected_bytes;
-                    if advanced_chunks >= ack_every || final_chunk_reached || received_all_bytes {
+                    if advanced_chunks >= ACK_EVERY_CHUNKS
+                        || final_chunk_reached
+                        || received_all_bytes
+                    {
                         debug!(
                             session_id = sid,
                             up_to = base,
@@ -228,13 +171,6 @@ pub async fn run(
                     }
                 }
             }
-
-            // Completion without relying on EOT: if we've received all chunks implied by
-            // the expected bytes/chunk size, we can safely finish even if EOT is lost.
-            if bytes_received == cfg.expected_bytes && expected.saturating_sub(1) >= total_chunks {
-                ok = true;
-                break;
-            }
             continue;
         }
 
@@ -242,7 +178,6 @@ pub async fn run(
             if let Some(last) = eot_index
                 && expected.saturating_sub(1) >= last
             {
-                ok = bytes_received == cfg.expected_bytes;
                 break;
             }
             continue;
@@ -260,35 +195,6 @@ pub async fn run(
         last_index = expected.saturating_sub(1),
         "Lossless receiver finished"
     );
-
-    if ok {
-        if let Some(mut file) = sink_file.take() {
-            if let Err(err) = file.flush().await {
-                error!(session_id = sid, error = %err, "Lossless receiver: flush failed");
-                return false;
-            }
-            if let Err(err) = file.sync_all().await {
-                error!(session_id = sid, error = %err, "Lossless receiver: fsync failed");
-                return false;
-            }
-        }
-        if let (Some(tmp), Some(final_path)) = (sink_tmp_path, sink_final_path)
-            && let Err(err) = fs::rename(&tmp, &final_path).await
-        {
-            error!(
-                session_id = sid,
-                error = %err,
-                tmp_path = %tmp.display(),
-                final_path = %final_path.display(),
-                "Lossless receiver: failed to rename sink file"
-            );
-            return false;
-        }
-    } else if let Some(tmp) = sink_tmp_path {
-        let _ = fs::remove_file(&tmp).await;
-    }
-
-    ok
 }
 
 /// Fixed-size buffer that keeps track of out-of-order chunks within the current

@@ -123,32 +123,6 @@ class Worker:
         frozen = self.dataplane.get_data_buffer(sid)
         return bytes(frozen.read())
 
-    async def _receive_shard_to_file(
-        self,
-        group_id: int,
-        group_ip: str,
-        src_node_id: int,
-        expected_bytes: int,
-        sink_path: Path,
-    ) -> None:
-        """Receive a shard via lossless multicast and stream it directly to a file."""
-        sid = await self.dataplane.receive_to_file_async(
-            group_id,
-            group_ip,
-            src_node_id,
-            expected_bytes=expected_bytes,
-            sink_path=str(sink_path),
-            chunk_size=config.CHUNK_SIZE,
-            src_port=config.TRAINER_PORT,
-            dst_port=config.WORKER_BASE_PORT,
-        )
-
-        ok = await self.dataplane.lossless_wait_async(
-            sid, timeout_ms=config.MULTICAST_TIMEOUT_MS
-        )
-        if not ok:
-            raise RuntimeError(f"Failed to receive shard from {src_node_id} to {sink_path}")
-        
     async def run(self):
         """Main worker loop"""
         print(f"Worker {self.rank} sending handshake...", flush=True)
@@ -184,10 +158,8 @@ class Worker:
                 print(f"Worker {self.rank} joined group command sent.", flush=True)
 
                 # 2. Register receiver BEFORE signaling ready
-                print(
-                    f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...",
-                    flush=True,
-                )
+                # Await the async call to ensure registration completes before sending READY
+                print(f"Registering to receive {size} bytes from {src_node_id} (Group {group_id})...", flush=True)
                 try:
                     sid = await self.dataplane.receive_data_async(
                         group_id,
@@ -196,7 +168,7 @@ class Worker:
                         expected_bytes=size,
                         chunk_size=config.CHUNK_SIZE,
                         src_port=config.TRAINER_PORT,
-                        dst_port=config.WORKER_BASE_PORT,
+                        dst_port=config.WORKER_BASE_PORT
                     )
                     print(f"Worker {self.rank} receiver registered. SID={sid}", flush=True)
                 except Exception as e:
@@ -212,7 +184,7 @@ class Worker:
                 print(f"Waiting for lossless multicast transfer...")
                 ok = await self.dataplane.lossless_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
                 print(f"Receive completion: {ok}")
-
+                
                 if ok:
                     frozen = self.dataplane.get_data_buffer(sid)
                     buffer = io.BytesIO(bytes(frozen.read()))
@@ -248,48 +220,23 @@ class Worker:
                     # Receive config.json first (required for from_pretrained)
                     config_size = shard_sizes.get("config.json", 1024 * 1024)  # Default 1MB
                     print(f"Worker {self.rank}: Receiving config.json ({config_size} bytes)...", flush=True)
-                    await self._receive_shard_to_file(
-                        group_id,
-                        group_ip,
-                        src_node_id,
-                        config_size,
-                        tmpdir / "config.json",
-                    )
+                    config_data = await self._receive_shard(group_id, group_ip, src_node_id, config_size)
+                    (tmpdir / "config.json").write_bytes(config_data)
 
                     # Receive index (if exists)
                     if has_index:
                         index_size = shard_sizes.get("index", 1024 * 1024)  # Default 1MB
                         print(f"Worker {self.rank}: Receiving index file ({index_size} bytes)...", flush=True)
-                        await self._receive_shard_to_file(
-                            group_id,
-                            group_ip,
-                            src_node_id,
-                            index_size,
-                            tmpdir / "model.safetensors.index.json",
-                        )
+                        index_data = await self._receive_shard(group_id, group_ip, src_node_id, index_size)
+                        (tmpdir / "model.safetensors.index.json").write_bytes(index_data)
 
                     # Receive each shard with precise size
                     for shard_name in shard_names:
-                        expected_size = shard_sizes.get(shard_name)
-                        if expected_size is None:
-                            raise RuntimeError(
-                                f"Missing expected size for shard {shard_name}; aborting to avoid OOM"
-                            )
-                        print(
-                            f"Worker {self.rank}: Receiving shard {shard_name} ({expected_size/1024/1024:.1f} MB)...",
-                            flush=True,
-                        )
-                        await self._receive_shard_to_file(
-                            group_id,
-                            group_ip,
-                            src_node_id,
-                            expected_size,
-                            tmpdir / shard_name,
-                        )
-                        print(
-                            f"Worker {self.rank}: Saved {shard_name} ({expected_size/1024/1024:.1f} MB)",
-                            flush=True,
-                        )
+                        expected_size = shard_sizes.get(shard_name, 8 * 1024 * 1024 * 1024)  # Default 8GB
+                        print(f"Worker {self.rank}: Receiving shard {shard_name} ({expected_size/1024/1024:.1f} MB)...", flush=True)
+                        shard_data = await self._receive_shard(group_id, group_ip, src_node_id, expected_size)
+                        (tmpdir / shard_name).write_bytes(shard_data)
+                        print(f"Worker {self.rank}: Saved {shard_name} ({len(shard_data)/1024/1024:.1f} MB)", flush=True)
                     
                     # Load model from sharded checkpoint
                     print(f"Worker {self.rank}: Loading model from sharded checkpoint...", flush=True)
