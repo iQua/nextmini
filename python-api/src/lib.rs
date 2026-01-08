@@ -401,7 +401,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
-        const MAX_PREALLOC_BYTES: u64 = 16 * 1024 * 1024; // 16 MiB
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
         if expected_bytes == 0 {
@@ -425,8 +424,8 @@ impl Dataplane {
         {
             if let Some(handle) = &self.lossless_runtime {
                 let runtime_config = &self.cfg.lossless_runtime_config;
-                let prealloc = usize::try_from(expected_bytes.min(MAX_PREALLOC_BYTES)).unwrap_or(0);
-                let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(prealloc)));
+                let cap = usize::try_from(expected_bytes).unwrap_or(0);
+                let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: ip,
@@ -526,7 +525,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        const MAX_PREALLOC_BYTES: u64 = 16 * 1024 * 1024; // 16 MiB
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
@@ -558,9 +556,8 @@ impl Dataplane {
                 return future_into_py(py, async move {
                     let ip = parse_ipv4(&dest_ip)?;
 
-                    let prealloc =
-                        usize::try_from(expected_bytes.min(MAX_PREALLOC_BYTES)).unwrap_or(0);
-                    let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(prealloc)));
+                    let cap = usize::try_from(expected_bytes).unwrap_or(0);
+                    let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
                     let common = session::runtime::CommonConfig {
                         session_id: sid,
                         dest_ip: ip,
@@ -1138,11 +1135,14 @@ fn multicast_session_id(group_id: u64, source_node_id: usize) -> u64 {
 }
 
 fn max_in_memory_receive_bytes() -> u64 {
-    const DEFAULT: u64 = 512 * 1024 * 1024; // 512 MiB
+    const DEFAULT: u64 = u64::MAX;
     for key in ["NEXTMINI_MAX_IN_MEMORY_RECEIVE_BYTES", "MAX_IN_MEMORY_RECEIVE_BYTES"] {
         let Ok(value) = std::env::var(key) else {
             continue;
         };
+        if value.trim() == "0" {
+            return u64::MAX;
+        }
         let Ok(parsed) = value.trim().parse::<u64>() else {
             continue;
         };
