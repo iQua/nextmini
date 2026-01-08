@@ -111,7 +111,8 @@ class Trainer:
         try:
             from examples.lp.solver import (
                 build_graph_from_controller_config,
-                compute_mflow_tree_edges,
+                compute_tree_edges,
+                load_toml,
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -119,17 +120,75 @@ class Trainer:
             ) from exc
 
         graph = build_graph_from_controller_config(str(controller_path))
-        edges, throughput = compute_mflow_tree_edges(
+        print(f"Computing multicast routes: algorithm={config.MULTICAST_TREE_ALGO}, probe_links={config.MULTICAST_PROBE_LINKS}", flush=True)
+
+        # Optional: probe link capacities before computing routes
+        if config.MULTICAST_PROBE_LINKS:
+            try:
+                from examples.lp.main import (
+                    _apply_link_rates,
+                    _connect_db,
+                    _db_settings,
+                    _fetch_link_rates_from_probes,
+                    _request_link_probes,
+                    _wait_for_probe_finish,
+                )
+            except ImportError as exc:
+                raise RuntimeError("MULTICAST_PROBE_LINKS=true requires examples.lp.main DB helpers.") from exc
+
+            controller_cfg = load_toml(str(controller_path))
+            settings = _db_settings(controller_cfg)
+            conn = _connect_db(settings)
+            try:
+                print(f"Probing {len(graph.edges)} links with {config.MULTICAST_PROBE_BYTES} bytes each...", flush=True)
+                probe_ids = _request_link_probes(
+                    conn,
+                    graph.edges,
+                    bytes_per_flow=config.MULTICAST_PROBE_BYTES,
+                )
+                if probe_ids:
+                    ok = _wait_for_probe_finish(conn, probe_ids, timeout_secs=config.MULTICAST_PROBE_TIMEOUT_SECS)
+                    if not ok:
+                        print(
+                            f"warning: probe timed out after {config.MULTICAST_PROBE_TIMEOUT_SECS}s; using completed probes only",
+                            flush=True,
+                        )
+                    rates = _fetch_link_rates_from_probes(conn, probe_ids)
+                    _apply_link_rates(graph, rates)
+                    print(
+                        f"Probed {len(probe_ids)} links, updated {len(rates)} capacities",
+                        flush=True,
+                    )
+                    # Print measured rates
+                    for (src, dst), rate_bps in sorted(rates.items()):
+                        print(f"  Link {src}→{dst}: {rate_bps/1e9:.3f} Gbps", flush=True)
+            finally:
+                conn.close()
+
+        result = compute_tree_edges(
             graph,
             src=self.node_id,
             destinations=receiver_ids,
+            algorithm=config.MULTICAST_TREE_ALGO,
+            hop_limit=config.MULTICAST_HOP_LIMIT,
+            eta=config.MULTICAST_ETA,
+            max_relays=config.MULTICAST_MAX_RELAYS_INT,
+            relay_scoring=config.MULTICAST_RELAY_SCORING,
+            max_length=config.MULTICAST_HOP_LIMIT,
+            num_paths=config.MULTICAST_NUM_PATHS,
         )
-        if not edges:
+        if not result.edges:
+            details = result.error or "unknown planner failure"
             raise RuntimeError(
-                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}"
+                f"LP solver returned no edges for src={self.node_id} dests={receiver_ids}: {details}"
             )
 
-        return edges, throughput
+        # Log the computed tree
+        tput_str = f"{result.throughput:.3f}" if result.throughput else "N/A"
+        print(f"Multicast tree computed: algorithm={result.algorithm}, throughput={tput_str}", flush=True)
+        print(f"Tree edges ({len(result.edges)}): {result.edges}", flush=True)
+
+        return result.edges, result.throughput
 
     def accept_workers(self, num_workers=2):
         """Wait for handshake from all workers"""
