@@ -140,11 +140,15 @@ class Trainer:
             settings = _db_settings(controller_cfg)
             conn = _connect_db(settings)
             try:
-                print(f"Probing {len(graph.edges)} links with {config.MULTICAST_PROBE_BYTES} bytes each...", flush=True)
+                batch_size = config.MULTICAST_PROBE_BATCH_SIZE if config.MULTICAST_PROBE_BATCH_SIZE > 0 else None
+                batch_info = f" (batch_size={batch_size})" if batch_size else " (all concurrent)"
+                print(f"Probing {len(graph.edges)} links with {config.MULTICAST_PROBE_BYTES} bytes each{batch_info}...", flush=True)
                 probe_ids = _request_link_probes(
                     conn,
                     graph.edges,
                     bytes_per_flow=config.MULTICAST_PROBE_BYTES,
+                    batch_size=batch_size,
+                    batch_timeout_secs=config.MULTICAST_PROBE_TIMEOUT_SECS,
                 )
                 if probe_ids:
                     ok = _wait_for_probe_finish(conn, probe_ids, timeout_secs=config.MULTICAST_PROBE_TIMEOUT_SECS)

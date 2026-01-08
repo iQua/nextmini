@@ -108,8 +108,27 @@ def _connect_db(settings: dict):
 
 
 def _request_link_probes(
-    conn, edges: list[tuple[int, int]], bytes_per_flow: int
+    conn,
+    edges: list[tuple[int, int]],
+    bytes_per_flow: int,
+    *,
+    batch_size: int | None = None,
+    batch_timeout_secs: float = 60.0,
 ) -> list[int]:
+    """Request probe flows for link capacity measurement.
+    
+    Args:
+        conn: Database connection
+        edges: List of (src, dst) tuples to probe
+        bytes_per_flow: Bytes to send per probe flow
+        batch_size: If set, probe links in batches of this size to reduce contention.
+                    Each batch waits for completion before starting next batch.
+                    If None, all probes run concurrently.
+        batch_timeout_secs: Timeout per batch (only used if batch_size is set)
+    
+    Returns:
+        List of all probe flow IDs
+    """
     insert_sql = """
         INSERT INTO flows (
             src_node_id,
@@ -129,15 +148,39 @@ def _request_link_probes(
     if not rows:
         return []
 
-    ids: list[int] = []
-    with conn.cursor() as cursor:
-        for src, dst, size in rows:
-            cursor.execute(insert_sql, (src, dst, size))
-            row = cursor.fetchone()
-            if row:
-                ids.append(int(row[0]))
-
-    return ids
+    all_ids: list[int] = []
+    
+    if batch_size is None or batch_size <= 0 or batch_size >= len(rows):
+        # All at once (original behavior)
+        with conn.cursor() as cursor:
+            for src, dst, size in rows:
+                cursor.execute(insert_sql, (src, dst, size))
+                row = cursor.fetchone()
+                if row:
+                    all_ids.append(int(row[0]))
+    else:
+        # Batch probing: probe batch_size links at a time, wait for completion
+        num_batches = (len(rows) + batch_size - 1) // batch_size
+        for batch_idx in range(num_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(rows))
+            batch_rows = rows[start:end]
+            
+            batch_ids: list[int] = []
+            with conn.cursor() as cursor:
+                for src, dst, size in batch_rows:
+                    cursor.execute(insert_sql, (src, dst, size))
+                    row = cursor.fetchone()
+                    if row:
+                        batch_ids.append(int(row[0]))
+            
+            all_ids.extend(batch_ids)
+            
+            # Wait for this batch to complete before starting next
+            if batch_idx < num_batches - 1:  # Don't wait after last batch
+                _wait_for_probe_finish(conn, batch_ids, timeout_secs=batch_timeout_secs)
+    
+    return all_ids
 
 
 def _wait_for_probe_finish(
