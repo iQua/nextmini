@@ -44,3 +44,6 @@ iperf-results.md
 
 # Memory report
 memory-report.txt
+
+# RL logging
+examples/rl/logging/
