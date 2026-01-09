@@ -1,6 +1,10 @@
 """Tests for CF-Tree algorithm."""
 
+import os
+import random
+import statistics
 import sys
+import time
 from pathlib import Path
 
 # Add parent to path for direct script execution
@@ -19,6 +23,41 @@ from examples.lp.cf_tree import (
     LPSolution,
 )
 from examples.lp.solver import compute_tree_edges, build_graph_from_controller_config
+
+
+def _percentile(values: list[float], p: float) -> float:
+    if not values:
+        raise ValueError("values must be non-empty")
+    if p <= 0:
+        return min(values)
+    if p >= 100:
+        return max(values)
+    xs = sorted(values)
+    k = (len(xs) - 1) * (p / 100.0)
+    f = int(k)
+    c = min(f + 1, len(xs) - 1)
+    if f == c:
+        return xs[f]
+    return xs[f] + (xs[c] - xs[f]) * (k - f)
+
+
+def _make_symmetric_full_mesh_graph(
+    *,
+    n_nodes: int,
+    capacity_undirected: dict[tuple[int, int], float],
+) -> Graph:
+    nodes = list(range(1, n_nodes + 1))
+    edges: list[tuple[int, int]] = [(i, j) for i in nodes for j in nodes if i != j]
+
+    capacities: dict[tuple[int, int], float] = {}
+    for i in nodes:
+        for j in nodes:
+            if i == j:
+                continue
+            u, v = (i, j) if i < j else (j, i)
+            capacities[(i, j)] = float(capacity_undirected[(u, v)])
+
+    return Graph(nodes, edges, capacities)
 
 
 def test_basic_tree_simple():
@@ -42,6 +81,155 @@ def test_basic_tree_simple():
     assert 3 in result.nodes_in_tree
     assert 4 in result.nodes_in_tree
     assert len(result.edges) >= 3  # At least 3 edges to reach 3 terminals
+
+    print("  PASSED\n")
+
+
+def test_lp_planner_speed_with_simulated_capacities():
+    """Speed smoke-test for LP-backed planning across capacity profiles.
+
+    This runs the LP-backed planner on a fixed topology under multiple simulated
+    link-capacity profiles and reports median/p95 planning time.
+
+    Note: LP runtime mostly depends on LP *size* (n_nodes, hop_limit, num_paths),
+    not the specific capacity numbers. Capacity profiles here mainly exercise
+    numerical stability + regression detection (e.g., accidentally exploding the
+    candidate path set).
+    """
+    try:
+        import cvxopt  # noqa: F401
+    except ImportError:
+        print("LP Speed Test: SKIPPED (cvxopt not available)\n")
+        return
+
+    n_nodes = int(os.environ.get("LP_SPEED_N_NODES", "16"))
+    hop_limit = int(os.environ.get("LP_SPEED_HOP_LIMIT", "3"))
+    num_paths = int(os.environ.get("LP_SPEED_NUM_PATHS", "2"))
+    eta = float(os.environ.get("LP_SPEED_ETA", "0.1"))
+    n_trials = int(os.environ.get("LP_SPEED_TRIALS", "7"))
+    max_median_ms_env = os.environ.get("LP_SPEED_MAX_MEDIAN_MS", "500")
+    max_median_ms = float(max_median_ms_env) if max_median_ms_env.strip() else None
+
+    # Paper-like defaults: src=1, |T|=floor(n/2).
+    src = 1
+    n_terminals = int(os.environ.get("LP_SPEED_N_TERMINALS", str(n_nodes // 2)))
+    n_terminals = max(1, min(n_terminals, n_nodes - 1))
+    terminals = list(range(2, 2 + n_terminals))
+
+    if n_nodes < 4:
+        raise AssertionError("LP Speed Test requires n_nodes >= 4")
+    if len(terminals) != n_terminals:
+        raise AssertionError("Internal error constructing terminals")
+
+    # Choose a single non-terminal relay candidate for the “hierarchy” profile.
+    relay_id = n_terminals + 2
+    if relay_id > n_nodes:
+        relay_id = n_nodes
+    if relay_id in terminals or relay_id == src:
+        # Fall back to any non-terminal node.
+        for node_id in range(2, n_nodes + 1):
+            if node_id != src and node_id not in terminals:
+                relay_id = node_id
+                break
+        else:
+            relay_id = n_nodes
+
+    rng = random.Random(1)
+
+    def make_uniform_caps(value: float) -> dict[tuple[int, int], float]:
+        caps: dict[tuple[int, int], float] = {}
+        for u in range(1, n_nodes + 1):
+            for v in range(u + 1, n_nodes + 1):
+                caps[(u, v)] = float(value)
+        return caps
+
+    def make_random_caps(min_cap: float, max_cap: float) -> dict[tuple[int, int], float]:
+        caps: dict[tuple[int, int], float] = {}
+        for u in range(1, n_nodes + 1):
+            for v in range(u + 1, n_nodes + 1):
+                caps[(u, v)] = float(rng.uniform(min_cap, max_cap))
+        return caps
+
+    def make_hierarchy_caps(
+        *,
+        default_cap: float = 30.0,
+        src_to_terminal_cap: float = 5.0,
+        src_to_relay_cap: float = 100.0,
+        relay_to_terminal_cap: float = 100.0,
+    ) -> dict[tuple[int, int], float]:
+        caps = make_uniform_caps(default_cap)
+        for t_id in terminals:
+            u, v = (src, t_id) if src < t_id else (t_id, src)
+            caps[(u, v)] = float(src_to_terminal_cap)
+
+            u, v = (relay_id, t_id) if relay_id < t_id else (t_id, relay_id)
+            caps[(u, v)] = float(relay_to_terminal_cap)
+
+        u, v = (src, relay_id) if src < relay_id else (relay_id, src)
+        caps[(u, v)] = float(src_to_relay_cap)
+        return caps
+
+    profiles: list[tuple[str, dict[tuple[int, int], float]]] = [
+        ("uniform_100", make_uniform_caps(100.0)),
+        ("uniform_10", make_uniform_caps(10.0)),
+        ("random_10_100", make_random_caps(10.0, 100.0)),
+        ("hierarchy_via_one_relay", make_hierarchy_caps()),
+    ]
+
+    print("LP Speed Test:")
+    print(
+        f"  n_nodes={n_nodes} n_terminals={n_terminals} src={src} "
+        f"H={hop_limit} K={num_paths} eta={eta} trials={n_trials}"
+    )
+
+    for name, undirected_caps in profiles:
+        graph = _make_symmetric_full_mesh_graph(
+            n_nodes=n_nodes,
+            capacity_undirected=undirected_caps,
+        )
+
+        # Warm-up run (avoid import/caching effects skewing the stats).
+        warm = compute_tree_edges(
+            graph,
+            src=src,
+            destinations=terminals,
+            algorithm="cf_bottleneck",
+            hop_limit=hop_limit,
+            eta=eta,
+            max_length=hop_limit,
+            num_paths=num_paths,
+        )
+        assert warm.edges, f"{name}: planner returned no edges (error={warm.error})"
+
+        times_ms: list[float] = []
+        for _ in range(n_trials):
+            start = time.perf_counter()
+            result = compute_tree_edges(
+                graph,
+                src=src,
+                destinations=terminals,
+                algorithm="cf_bottleneck",
+                hop_limit=hop_limit,
+                eta=eta,
+                max_length=hop_limit,
+                num_paths=num_paths,
+            )
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
+            times_ms.append(elapsed_ms)
+            assert result.edges, f"{name}: planner returned no edges (error={result.error})"
+
+        median_ms = statistics.median(times_ms)
+        p95_ms = _percentile(times_ms, 95)
+        print(
+            f"  {name}: median={median_ms:.2f}ms p95={p95_ms:.2f}ms "
+            f"(min={min(times_ms):.2f} max={max(times_ms):.2f})"
+        )
+
+        if max_median_ms is not None and median_ms > max_median_ms:
+            raise AssertionError(
+                f"{name}: median planner time too high: {median_ms:.2f}ms > {max_median_ms:.2f}ms "
+                f"(set LP_SPEED_MAX_MEDIAN_MS to adjust)"
+            )
 
     print("  PASSED\n")
 
@@ -538,6 +726,7 @@ if __name__ == "__main__":
     print("=" * 60 + "\n")
 
     test_basic_tree_simple()
+    test_lp_planner_speed_with_simulated_capacities()
     test_hop_limit()
     test_cf_weights()
     test_tree_rate()

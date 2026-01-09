@@ -38,6 +38,7 @@ tensors/**
 
 # Experiment outputs
 examples/lp/experiment_results/
+examples/lp/benchmark_results/
 
 # iperf results
 iperf-results.md
