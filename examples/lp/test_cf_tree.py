@@ -289,6 +289,109 @@ def test_allow_destinations_as_relays_cf_bottleneck():
     print("  PASSED\n")
 
 
+def test_allow_destinations_as_relays_two_level():
+    """The two_level baseline should also benefit from destination-forwarding when enabled.
+
+    Topology:
+      1 -> 2 (100)
+      1 -> 3 (1)
+      2 -> 3 (100)
+
+    Without destination-forwarding, node 3 must be served directly (rate=1).
+    With destination-forwarding, the tree can use 2 as a relay (rate=100).
+    """
+    nodes = [1, 2, 3]
+    edges = [(1, 2), (2, 1), (1, 3), (3, 1), (2, 3), (3, 2)]
+    capacities = {
+        (1, 2): 100.0,
+        (2, 1): 100.0,
+        (1, 3): 1.0,
+        (3, 1): 1.0,
+        (2, 3): 100.0,
+        (3, 2): 100.0,
+    }
+    graph = Graph(nodes, edges, capacities)
+
+    baseline = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3],
+        algorithm="two_level",
+        allow_destinations_as_relays=False,
+    )
+    assert baseline.throughput is not None
+    assert abs(baseline.throughput - 1.0) <= 1e-6
+
+    improved = compute_tree_edges(
+        graph,
+        src=1,
+        destinations=[2, 3],
+        algorithm="two_level",
+        allow_destinations_as_relays=True,
+    )
+    assert improved.throughput is not None
+    assert abs(improved.throughput - 100.0) <= 1e-6
+    assert (2, 3) in improved.edges
+    assert (1, 2) in improved.edges
+
+    print("Two-Level Destination Relay Test:")
+    print(f"  baseline edges={baseline.edges} throughput={baseline.throughput}")
+    print(f"  improved edges={improved.edges} throughput={improved.throughput}")
+    print("  PASSED\n")
+
+
+def test_cf_bottleneck_relay_selection_max_relays_lp_backend():
+    """Regression: cf_bottleneck relay selection should not raise for lp backend.
+
+    This hits the code path where `max_relays < len(relay_candidates)` and the solver
+    uses the full LP backend to score/select relays.
+    """
+    nodes = [1, 2, 3, 4, 5]  # 1=trainer, 2-3=workers, 4-5=relay candidates
+    edges = [
+        (1, 2), (2, 1),
+        (1, 3), (3, 1),
+        (1, 4), (4, 1),
+        (1, 5), (5, 1),
+        (4, 2), (2, 4),
+        (4, 3), (3, 4),
+        (5, 2), (2, 5),
+        (5, 3), (3, 5),
+    ]
+    capacities = {e: 100.0 for e in edges}
+    # Make direct links weak so the best bottleneck tree must use a relay.
+    capacities[(1, 2)] = 10.0
+    capacities[(1, 3)] = 10.0
+
+    graph = Graph(nodes, edges, capacities)
+
+    print("CF-Bottleneck Relay Selection (max_relays) Test:")
+    try:
+        result = compute_tree_edges(
+            graph,
+            src=1,
+            destinations=[2, 3],
+            algorithm="cf_bottleneck",
+            hop_limit=2,
+            max_relays=1,
+        )
+    except ImportError:
+        print("  SKIPPED (cvxopt not available)\n")
+        return
+
+    assert result.throughput is not None
+    assert abs(result.throughput - 100.0) <= 1e-6
+
+    # Expect a single relay to serve both terminals at the 100 Mbps bottleneck rate.
+    relay = next((v for (u, v) in result.edges if u == 1 and v in (4, 5)), None)
+    assert relay in (4, 5)
+    assert (relay, 2) in result.edges
+    assert (relay, 3) in result.edges
+
+    print(f"  Edges: {result.edges}")
+    print(f"  Throughput: {result.throughput}")
+    print("  PASSED\n")
+
+
 def test_unified_interface():
     """Test the unified compute_tree_edges interface."""
     nodes = [1, 2, 3, 4]
@@ -441,6 +544,8 @@ if __name__ == "__main__":
     test_lp_node_budget_affects_f_star()
     test_allow_destinations_as_relays_enables_multi_hop_basic_tree()
     test_allow_destinations_as_relays_cf_bottleneck()
+    test_allow_destinations_as_relays_two_level()
+    test_cf_bottleneck_relay_selection_max_relays_lp_backend()
     test_unified_interface()
     test_with_controller_config()
 

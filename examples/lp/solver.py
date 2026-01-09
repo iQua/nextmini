@@ -690,8 +690,9 @@ def compute_cf_bottleneck_tree_edges(
                         lp_f_star=None,
                         error=str(e),
                     )
-                else:
-                    raise ValueError(f"Unknown lp_backend: {lp_backend}")
+            else:
+                raise ValueError(f"Unknown lp_backend: {lp_backend}")
+
             lp_sol = extract_lp_solution(graph, variables, sol, src)
             selected_relays = _select_relays_lp_guided(
                 graph,
