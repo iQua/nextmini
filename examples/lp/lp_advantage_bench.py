@@ -107,7 +107,7 @@ def make_hierarchy_weak_direct(
     rng: random.Random,
 ) -> dict[tuple[int, int], float]:
     """
-    Profile 1: Hierarchy with weak direct links.
+    Hierarchy profile with weak direct links (`hierarchy_weak_direct`).
     
     Design:
     - Direct src→terminal links: WEAK (30-100 Mbps)
@@ -165,7 +165,7 @@ def make_bottleneck_trap(
     rng: random.Random,
 ) -> dict[tuple[int, int], float]:
     """
-    Profile 2: Bottleneck trap for capacity heuristic.
+    Bottleneck trap profile for capacity heuristic (`bottleneck_trap`).
     
     Design:
     - One "decoy" relay has very high src→relay capacity (2500-3000)
@@ -242,7 +242,7 @@ def make_asymmetric_fan(
     rng: random.Random,
 ) -> dict[tuple[int, int], float]:
     """
-    Profile 3: Asymmetric relay fanout capacities.
+    Asymmetric fanout profile (`asymmetric_fan`).
     
     Design:
     - Each relay has high capacity to only SOME terminals, low to others
@@ -312,7 +312,7 @@ def make_multi_tier(
     rng: random.Random,
 ) -> dict[tuple[int, int], float]:
     """
-    Profile 4: Multi-tier relay topology (requires 2-hop relay paths).
+    Multi-tier relay profile (requires 2-hop relay paths) (`multi_tier`).
     
     Design:
     - Relays are split into "tier-1" (close to src) and "tier-2" (close to terminals)
@@ -402,7 +402,7 @@ def make_random_wide(
     rng: random.Random,
 ) -> dict[tuple[int, int], float]:
     """
-    Profile 5: Pure random with 2 orders of magnitude range.
+    Random-wide baseline profile (`random_wide`).
     
     Baseline profile to see how algorithms perform on random topologies.
     """
@@ -429,7 +429,7 @@ def make_lp_trap(
     rng: random.Random,
 ) -> dict[tuple[int, int], float]:
     """
-    Profile 6: LP Trap - designed to defeat capacity heuristic.
+    LP-Trap profile designed to defeat capacity heuristic (`lp_trap`).
     
     Capacity heuristic scores relays by: sum of ALL outgoing edge capacities.
     
@@ -546,7 +546,7 @@ def _select_relays_by_outgoing_capacity(
 ) -> list[int]:
     """Pick top-k relays by sum of outgoing capacities.
 
-    This matches the "capacity heuristic" described in Profile 6 (LP Trap).
+    This matches the "capacity heuristic" baseline used in the relay-selection experiments.
     """
     if k <= 0 or not relay_candidates:
         return []

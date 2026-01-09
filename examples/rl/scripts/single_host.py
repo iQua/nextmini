@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import random
 import shlex
 import subprocess
 import sys
@@ -37,8 +38,91 @@ def write_controller_config(
     *,
     n_nodes: int,
     flow_transport: str = "lossless_unicast",
+    profile_name: str | None = None,
+    profile_seed: int = 0,
+    bucket_secs: float = 3.0,
+    terminals: list[int] | None = None,
+    relays: list[int] | None = None,
 ) -> pathlib.Path:
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
+
+    link_section = ""
+    link_rates_section = ""
+    if profile_name:
+        sys.path.insert(0, str(REPO_ROOT))
+        try:
+            from examples.lp.lp_advantage_bench import PROFILES
+        except Exception as exc:  # pragma: no cover
+            raise SystemExit(f"failed to import LP profiles from examples/lp: {exc}") from exc
+
+        if terminals is None or relays is None:
+            raise SystemExit("--capacity-profile requires terminals+relays node IDs")
+
+        profile_fn = PROFILES.get(profile_name)
+        if profile_fn is None:
+            available = ", ".join(sorted(PROFILES.keys()))
+            raise SystemExit(f"unknown --capacity-profile={profile_name}; available: {available}")
+
+        rng = random.Random(int(profile_seed))
+        capacities_mbps = profile_fn(n_nodes, 1, list(terminals), list(relays), rng)
+
+        # Normalize to symmetric per-pair capacities so the planner input (undirected [[link]])
+        # and the dataplane shaping ([[link_rates]]) match.
+        pair_cap_mbps: dict[tuple[int, int], float] = {}
+        for u in range(1, n_nodes + 1):
+            for v in range(u + 1, n_nodes + 1):
+                uv = capacities_mbps.get((u, v))
+                vu = capacities_mbps.get((v, u))
+                if uv is None and vu is None:
+                    cap = 100.0
+                elif uv is None:
+                    cap = float(vu)
+                elif vu is None:
+                    cap = float(uv)
+                else:
+                    cap = (float(uv) + float(vu)) / 2.0
+                pair_cap_mbps[(u, v)] = cap
+
+        # Planner graph input (examples/lp parses [[link]] and mirrors to both directions).
+        link_lines: list[str] = []
+        for u in range(1, n_nodes + 1):
+            for v in range(u + 1, n_nodes + 1):
+                cap = pair_cap_mbps.get((u, v), 100.0)
+                link_lines.append(
+                    textwrap.dedent(
+                        f"""\
+                        [[link]]
+                        src = {u}
+                        dst = {v}
+                        capacity = {float(cap):.6f}
+                        """
+                    )
+                )
+        link_section = "\n".join(link_lines).rstrip() + "\n"
+
+        # Dataplane shaping (controller parses [[link_rates]] as directed token buckets).
+        link_rates_lines: list[str] = []
+        min_bucket_bytes = 8_500
+        for u in range(1, n_nodes + 1):
+            for v in range(1, n_nodes + 1):
+                if u == v:
+                    continue
+                cap_mbps = pair_cap_mbps.get((min(u, v), max(u, v)), 100.0)
+                rate_bps = max(1, int(float(cap_mbps) * 1_000_000 / 8))
+                bucket_size = max(min_bucket_bytes, int(rate_bps * float(bucket_secs)))
+                link_rates_lines.append(
+                    textwrap.dedent(
+                        f"""\
+                        [[link_rates]]
+                        src_node_id = {u}
+                        dst_node_id = {v}
+                        rate = {rate_bps}
+                        bucket_size = {bucket_size}
+                        """
+                    )
+                )
+        link_rates_section = "\n".join(link_rates_lines).rstrip() + "\n"
+
     cfg = textwrap.dedent(
         f"""\
         protocol = "tcp"
@@ -51,6 +135,7 @@ def write_controller_config(
         [routing]
         protocol = "shortest_path"
 
+        {link_section}{link_rates_section}
         [db]
         host = "postgres"
         port = "5432"
@@ -120,16 +205,22 @@ def generate_compose(
     rounds: int,
     timeout_ms: int,
     artifact_bytes: int,
+    results_json: str,
     algorithm: str,
     hop_limit: int,
     eta: float,
     num_paths: int,
     relay_scoring: str,
     max_relays: int | None,
+    relay_selection: str,
+    selection_seed: int,
     probe_links: bool,
     probe_bytes: int,
     probe_timeout_secs: float,
     probe_batch_size: int,
+    capacity_profile: str | None,
+    capacity_seed: int,
+    bucket_secs: float,
 ) -> None:
     if n_workers <= 0:
         raise SystemExit("--workers must be >= 1")
@@ -144,14 +235,21 @@ def generate_compose(
         raise SystemExit(f"too many nodes ({n_nodes}) for the fixed /24 compose subnet")
 
     controller_cfg_rel = "examples/rl/single_host/generated/controller-config.toml"
-    controller_cfg_path = write_controller_config(n_nodes=n_nodes)
+    controller_cfg_path = write_controller_config(
+        n_nodes=n_nodes,
+        profile_name=capacity_profile,
+        profile_seed=capacity_seed,
+        bucket_secs=bucket_secs,
+        terminals=worker_ids,
+        relays=relay_ids,
+    )
 
     for node_id in [trainer_id] + worker_ids + relay_ids:
         write_node_config(node_id=node_id)
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_json_rel = "examples/rl/single_host/results/results.json"
+    out_json_rel = results_json
     artifact_rel = "examples/rl/single_host/artifacts/broadcast.bin"
 
     # GPU mapping.
@@ -295,11 +393,12 @@ def generate_compose(
             f"--controller-config {controller_cfg_rel} --rounds {rounds} --timeout-ms {timeout_ms} "
             f"--worker-node-ids {worker_ids_csv} --file {artifact_rel} --generate-bytes {artifact_bytes} "
             f"--output-json {out_json_rel} --algorithm {algorithm} --hop-limit {hop_limit} --eta {eta} "
-            f"--num-paths {num_paths} --relay-scoring {relay_scoring}"
+            f"--num-paths {num_paths} --relay-scoring {relay_scoring} --relay-selection {relay_selection} "
+            f"--selection-seed {selection_seed}"
         )
         if max_relays is not None:
             trainer_cmd += f" --max-relays {max_relays}"
-        if probe_links:
+        if probe_links and capacity_profile is None:
             trainer_cmd += f" --probe-links --probe-bytes {probe_bytes} --probe-timeout-secs {probe_timeout_secs}"
     else:
         trainer_cmd = "examples/rl/scripts/run_rl_node.sh trainer examples/rl/single_host/generated/node-1.toml"
@@ -338,7 +437,7 @@ def generate_compose(
             cmd = (
                 f"examples/rl/scripts/run_broadcast_bench.sh worker examples/rl/single_host/generated/node-{worker_id}.toml "
                 f"--rounds {rounds} --timeout-ms {timeout_ms} --trainer-node-id {trainer_id} --rank {rank} "
-                f"--sink-dir examples/rl/single_host/artifacts/received/node-{worker_id}"
+                f"--sink-dir examples/rl/single_host/artifacts/received/node-{worker_id} --hold-after-rounds"
             )
         else:
             cmd = (
@@ -392,6 +491,7 @@ def main() -> int:
     p_run.add_argument("--worker-gpus", default=os.environ.get("WORKER_GPUS", ""))
     p_run.add_argument("--detach", action="store_true")
     p_run.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=True)
+    p_run.add_argument("--build-images", action=argparse.BooleanOptionalAction, default=True)
     p_run.add_argument("--cargo-build-jobs", type=int, default=2, help="Number of parallel Rust compilation jobs (default: 2, lower = less memory)")
     p_run.add_argument(
         "--prebuild-wheel",
@@ -402,6 +502,7 @@ def main() -> int:
 
     # broadcast mode knobs
     p_run.add_argument("--bytes", type=int, default=0, help="Artifact size in bytes (0 = skip generation).")
+    p_run.add_argument("--results-json", default="examples/rl/single_host/results/results.json")
     p_run.add_argument("--rounds", type=int, default=20)
     p_run.add_argument("--timeout-ms", type=int, default=180_000)
     p_run.add_argument("--algorithm", default="cf_bottleneck")
@@ -410,7 +511,12 @@ def main() -> int:
     p_run.add_argument("--num-paths", type=int, default=2)
     p_run.add_argument("--relay-scoring", default="coverage")
     p_run.add_argument("--max-relays", type=int, default=-1)
-    p_run.add_argument("--probe-links", action=argparse.BooleanOptionalAction, default=True)
+    p_run.add_argument("--relay-selection", choices=("lp", "capacity", "random"), default="lp")
+    p_run.add_argument("--selection-seed", type=int, default=0)
+    p_run.add_argument("--capacity-profile", default="")
+    p_run.add_argument("--capacity-seed", type=int, default=0)
+    p_run.add_argument("--bucket-secs", type=float, default=3.0)
+    p_run.add_argument("--probe-links", action=argparse.BooleanOptionalAction, default=False)
     p_run.add_argument("--probe-bytes", type=int, default=64 * 1024 * 1024)
     p_run.add_argument("--probe-timeout-secs", type=float, default=60.0)
     p_run.add_argument(
@@ -448,37 +554,44 @@ def main() -> int:
         rounds=int(args.rounds),
         timeout_ms=int(args.timeout_ms),
         artifact_bytes=int(args.bytes or 0),
+        results_json=str(args.results_json),
         algorithm=str(args.algorithm),
         hop_limit=int(args.hop_limit),
         eta=float(args.eta),
         num_paths=int(args.num_paths),
         relay_scoring=str(args.relay_scoring),
         max_relays=None if int(args.max_relays) < 0 else int(args.max_relays),
+        relay_selection=str(args.relay_selection),
+        selection_seed=int(args.selection_seed),
         probe_links=bool(args.probe_links),
         probe_bytes=int(args.probe_bytes),
         probe_timeout_secs=float(args.probe_timeout_secs),
         probe_batch_size=int(args.probe_batch_size),
+        capacity_profile=str(args.capacity_profile).strip() or None,
+        capacity_seed=int(args.capacity_seed),
+        bucket_secs=float(args.bucket_secs),
     )
 
-    # Build images sequentially with limited Rust parallelism to reduce memory pressure
+    # Build images sequentially with limited Rust parallelism to reduce memory pressure.
     cargo_env = {"CARGO_BUILD_JOBS": str(args.cargo_build_jobs)}
-    build_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "build"]
+    if args.build_images:
+        build_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "build"]
 
-    # Build each service type sequentially
-    print(f"Building images sequentially with CARGO_BUILD_JOBS={args.cargo_build_jobs}...")
-    print("  1/3 Building postgres and controller...")
-    _run(build_cmd + ["postgres"], env=cargo_env)
-    _run(build_cmd + ["controller"], env=cargo_env)
+        # Build each service type sequentially
+        print(f"Building images sequentially with CARGO_BUILD_JOBS={args.cargo_build_jobs}...")
+        print("  1/3 Building postgres and controller...")
+        _run(build_cmd + ["postgres"], env=cargo_env)
+        _run(build_cmd + ["controller"], env=cargo_env)
 
-    print("  2/3 Building trainer (may take time due to Python packages)...")
-    _run(build_cmd + ["trainer"], env=cargo_env)
+        print("  2/3 Building trainer (may take time due to Python packages)...")
+        _run(build_cmd + ["trainer"], env=cargo_env)
 
-    # Build workers and relays
-    print("  3/3 Building workers and relays...")
-    for i in range(args.workers):
-        _run(build_cmd + [f"worker-{i}"], env=cargo_env)
-    for i in range(args.relays):
-        _run(build_cmd + [f"relay-{i}"], env=cargo_env)
+        # Build workers and relays
+        print("  3/3 Building workers and relays...")
+        for i in range(args.workers):
+            _run(build_cmd + [f"worker-{i}"], env=cargo_env)
+        for i in range(args.relays):
+            _run(build_cmd + [f"relay-{i}"], env=cargo_env)
 
     # Pre-build wheel and Python dependencies to avoid OOM during container startup
     if args.prebuild_wheel or args.mode == "rl":
@@ -503,6 +616,8 @@ def main() -> int:
 
     # Now run the containers
     up_cmd = ["docker", "compose", "-f", str(COMPOSE_PATH), "up"]
+    if not args.build_images:
+        up_cmd.append("--no-build")
     if args.detach:
         up_cmd.append("-d")
         _run(up_cmd)

@@ -115,6 +115,7 @@ def run_single_trial(
     n_workers: int,
     n_relays: int,
     budget: int,
+    trial: int,
     seed: int,
     hop_limit: int = 4,
 ) -> TrialResult:
@@ -158,12 +159,13 @@ def run_single_trial(
             graph,
             src=src,
             destinations=terminals,
-            algorithm="basic_bottleneck",
+            algorithm="cf_bottleneck",
             hop_limit=hop_limit,
             eta=0.1,
             max_length=hop_limit,
             num_paths=2,
             relay_nodes=chosen,
+            max_relays=None,
         )
         capacity_throughput = result.throughput or 0.0
     except Exception:
@@ -177,19 +179,20 @@ def run_single_trial(
             graph,
             src=src,
             destinations=terminals,
-            algorithm="basic_bottleneck",
+            algorithm="cf_bottleneck",
             hop_limit=hop_limit,
             eta=0.1,
             max_length=hop_limit,
             num_paths=2,
             relay_nodes=chosen,
+            max_relays=None,
         )
         random_throughput = result.throughput or 0.0
     except Exception:
         random_throughput = 0.0
     
     return TrialResult(
-        trial=seed,
+        trial=trial,
         seed=seed,
         cf_throughput=cf_throughput,
         capacity_throughput=capacity_throughput,
@@ -210,8 +213,7 @@ def run_config(
     trials = []
     for i in range(n_trials):
         seed = base_seed + i
-        trial = run_single_trial(profile_name, n_workers, n_relays, budget, seed)
-        trials.append(trial)
+        trials.append(run_single_trial(profile_name, n_workers, n_relays, budget, i, seed))
     
     # Aggregate statistics
     cf_values = [t.cf_throughput for t in trials]
@@ -408,8 +410,10 @@ def generate_summary_table(results: list[ConfigResult]) -> str:
         "",
         "## Summary by Budget (Paper Table 4 Style)",
         "",
-        "| Budget | CF-RelaySelect | Capacity | Random | LP vs Cap | LP vs Rand |",
-        "|--------|---------------|----------|--------|-----------|------------|",
+        "Values are mean±SD across (workers, relay-pool) configurations of each configuration's mean throughput over trials.",
+        "",
+        "| Budget | CF-RelaySelect | Capacity | Random | LP vs Cap | LP vs Rand | Wins (LP>Cap) |",
+        "|--------|---------------|----------|--------|-----------|------------|--------------|",
     ]
     
     # Group by budget
@@ -421,19 +425,24 @@ def generate_summary_table(results: list[ConfigResult]) -> str:
     
     for budget in sorted(budget_data.keys()):
         configs = budget_data[budget]
-        cf_mean = statistics.mean(r.cf_mean for r in configs)
-        cf_std = statistics.mean(r.cf_std for r in configs)
-        cap_mean = statistics.mean(r.capacity_mean for r in configs)
-        cap_std = statistics.mean(r.capacity_std for r in configs)
-        rand_mean = statistics.mean(r.random_mean for r in configs)
-        rand_std = statistics.mean(r.random_std for r in configs)
+        cf_means = [r.cf_mean for r in configs]
+        cap_means = [r.capacity_mean for r in configs]
+        rand_means = [r.random_mean for r in configs]
+
+        cf_mean = statistics.mean(cf_means)
+        cf_std = statistics.stdev(cf_means) if len(cf_means) > 1 else 0.0
+        cap_mean = statistics.mean(cap_means)
+        cap_std = statistics.stdev(cap_means) if len(cap_means) > 1 else 0.0
+        rand_mean = statistics.mean(rand_means)
+        rand_std = statistics.stdev(rand_means) if len(rand_means) > 1 else 0.0
         
         lp_vs_cap = (cf_mean - cap_mean) / cap_mean * 100 if cap_mean > 0 else 0
         lp_vs_rand = (cf_mean - rand_mean) / rand_mean * 100 if rand_mean > 0 else 0
+        wins_vs_cap = sum(1 for r in configs if r.cf_mean > r.capacity_mean + 1e-9)
         
         lines.append(
             f"| {budget} | {cf_mean:.1f}±{cf_std:.1f} | {cap_mean:.1f}±{cap_std:.1f} | "
-            f"{rand_mean:.1f}±{rand_std:.1f} | {lp_vs_cap:+.1f}% | {lp_vs_rand:+.1f}% |"
+            f"{rand_mean:.1f}±{rand_std:.1f} | {lp_vs_cap:+.1f}% | {lp_vs_rand:+.1f}% | {wins_vs_cap}/{len(configs)} |"
         )
     
     return "\n".join(lines)
