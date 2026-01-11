@@ -33,6 +33,7 @@ host = "206.12.92.2"
 public_ip = "206.12.92.2"
 region = "victoria-canada"
 user = "ubuntu"
+network_interface = "ens3"
 
 [[nodes]]
 role = "worker"
@@ -42,3 +43,59 @@ host = "206.12.95.232"
 public_ip = "206.12.95.232"
 region = "victoria-canada"
 user = "ubuntu"
+network_interface = "ens3"
+
+[[nodes]]
+role = "worker"
+rank = 2
+node_id = 4
+host = "206.12.89.244"
+public_ip = "206.12.89.244"
+region = "victoria-canada"
+user = "ubuntu"
+network_interface = "ens3"
+
+[[nodes]]
+role = "worker"
+rank = 3
+node_id = 5
+host = "142.150.238.6"
+public_ip = "142.150.238.6"
+region = "toronto-canada"
+user = "xindan"
+network_interface = "eno2"
+
+[[nodes]]
+role = "worker"
+rank = 4
+node_id = 6
+host = "167.71.44.237"
+public_ip = "167.71.44.237"
+region = "frankfurt-germany"
+user = "root"
+
+[[nodes]]
+role = "worker"
+rank = 5
+node_id = 7
+host = "167.99.73.109"
+public_ip = "167.99.73.109"
+region = "singapore"
+user = "root"
+
+[[nodes]]
+role = "worker"
+rank = 6
+node_id = 8
+host = "164.92.84.131"
+public_ip = "164.92.84.131"
+region = "santa-clara-usa"
+user = "root"
+
+[[nodes]]
+role = "relay"
+node_id = 9
+host = "178.128.250.225"
+public_ip = "178.128.250.225"
+region = "amsterdam-netherlands"
+user = "root"
