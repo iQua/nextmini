@@ -146,10 +146,10 @@ def _select_relays_lp_guided(
             for t_id, frac in list(per_term.items()):
                 per_term[t_id] = min(1.0, frac)
 
-        covered: dict[int, float] = {t_id: 0.0 for t_id in requested_set}
         fallback_score = {
             relay: sum(per_term.values()) for relay, per_term in cover_by_relay.items()
         }
+        covered: dict[int, float] = {t_id: 0.0 for t_id in requested_set}
         selected: list[int] = []
         remaining = set(relay_list)
         eps = 1e-12

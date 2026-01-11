@@ -62,7 +62,7 @@ The trainer computes multicast group routes before broadcasting weights. You can
 - `MULTICAST_ETA`: LP-guidance weight `eta` for `cf_tree` (default `0.1`)
 - `MULTICAST_MAX_RELAYS`: optional cap on relay nodes selected by LP-importance (unset = no cap)
 - `MULTICAST_RELAY_SCORING`: `coverage` (default), `path_flow`, or `incident`
-- `MULTICAST_ALLOW_WORKER_RELAYS`: if `true`, allow destination workers to forward (workers can appear as internal nodes; not counted against `MULTICAST_MAX_RELAYS`)
+- `MULTICAST_ALLOW_WORKER_RELAYS`: allow destination workers to forward (default `true`; workers can appear as internal nodes; not counted against `MULTICAST_MAX_RELAYS`)
 - `MULTICAST_NUM_PATHS`: candidate paths per destination for the LP (default `2`)
 - `MULTICAST_PROBE_LINKS`: if `true`, insert DB probe flows and overwrite link capacities before planning (default `false`)
 - `MULTICAST_PROBE_BYTES`: bytes per probe flow (default `67108864`)

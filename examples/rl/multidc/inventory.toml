@@ -1,0 +1,44 @@
+# Multi-DC inventory for WAN RL experiments
+# This machine runs both controller (PostgreSQL) and one trainer node
+#
+# Run benchmark:
+#   python examples/rl/scripts/multidc.py run-bench --inventory examples/rl/multidc/inventory.toml \
+#     --bytes $((1 * 1024 * 1024 * 1024)) --rounds 5 --algorithm cf_bottleneck_mwu --batch-ssh
+
+[ssh]
+user = "root"
+port = 22
+identity_file = "~/.ssh/no-key"
+
+[paths]
+remote_repo_dir = "~/nextmini"
+
+[controller]
+# Controller + PostgreSQL runs on this machine
+host = "157.180.84.40"
+public_ip = "157.180.84.40"
+
+[[nodes]]
+role = "trainer"
+node_id = 1
+host = "157.180.84.40"
+public_ip = "157.180.84.40"
+region = "helsinki-finland"
+
+[[nodes]]
+role = "worker"
+rank = 0
+node_id = 2
+host = "206.12.92.2"
+public_ip = "206.12.92.2"
+region = "victoria-canada"
+user = "ubuntu"
+
+[[nodes]]
+role = "worker"
+rank = 1
+node_id = 3
+host = "206.12.95.232"
+public_ip = "206.12.95.232"
+region = "victoria-canada"
+user = "ubuntu"

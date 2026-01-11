@@ -39,6 +39,8 @@ tensors/**
 # Experiment outputs
 examples/lp/experiment_results/
 examples/lp/benchmark_results/
+examples/lp/benchmark_results_workers_relay/
+examples/lp/ablation_results/
 
 # iperf results
 iperf-results.md

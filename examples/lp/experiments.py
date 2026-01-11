@@ -145,6 +145,7 @@ def run_single_trial(
     algorithm: str,
     hop_limit: int,
     eta: float = 0.1,
+    allow_destinations_as_relays: bool = False,
 ) -> tuple[TreeResult | None, float]:
     """Run a single trial.
 
@@ -163,6 +164,7 @@ def run_single_trial(
             eta=eta,
             # Keep the LP candidate path set hop-limited for fair comparisons.
             max_length=hop_limit,
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
         elapsed = (time.perf_counter() - start) * 1000
         return result, elapsed
@@ -172,7 +174,7 @@ def run_single_trial(
         return None, elapsed
 
 
-def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
+def run_experiment(config: ExperimentConfig, allow_destinations_as_relays: bool = False) -> list[ExperimentResult]:
     """Run all trials for an experiment configuration."""
     results = []
 
@@ -198,7 +200,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
         print(f"\nTrial {trial + 1}/{config.n_trials}: src={src}, terminals={terminals}")
 
         # Star (direct fanout) baseline
-        result, time_ms = run_single_trial(graph, src, terminals, "star", config.hop_limit)
+        result, time_ms = run_single_trial(graph, src, terminals, "star", config.hop_limit, allow_destinations_as_relays=allow_destinations_as_relays)
         if result:
             results.append(
                 ExperimentResult(
@@ -224,7 +226,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
 
         # Two-level hierarchy baseline
         result, time_ms = run_single_trial(
-            graph, src, terminals, "two_level", config.hop_limit
+            graph, src, terminals, "two_level", config.hop_limit, allow_destinations_as_relays=allow_destinations_as_relays
         )
         if result:
             results.append(
@@ -251,7 +253,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
 
         # Test Basic-Tree
         result, time_ms = run_single_trial(
-            graph, src, terminals, "basic_tree", config.hop_limit
+            graph, src, terminals, "basic_tree", config.hop_limit, allow_destinations_as_relays=allow_destinations_as_relays
         )
         if result:
             results.append(ExperimentResult(
@@ -276,7 +278,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
 
         # Basic-Bottleneck: bottleneck sweep without LP
         result, time_ms = run_single_trial(
-            graph, src, terminals, "basic_bottleneck", config.hop_limit
+            graph, src, terminals, "basic_bottleneck", config.hop_limit, allow_destinations_as_relays=allow_destinations_as_relays
         )
         if result:
             results.append(
@@ -304,7 +306,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
         # Test CF-Tree with different eta values
         for eta in config.eta_values:
             result, time_ms = run_single_trial(
-                graph, src, terminals, "cf_tree", config.hop_limit, eta=eta
+                graph, src, terminals, "cf_tree", config.hop_limit, eta=eta, allow_destinations_as_relays=allow_destinations_as_relays
             )
             if result:
                 results.append(ExperimentResult(
@@ -336,7 +338,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 )
 
             result, time_ms = run_single_trial(
-                graph, src, terminals, "cf_tree_mwu", config.hop_limit, eta=eta
+                graph, src, terminals, "cf_tree_mwu", config.hop_limit, eta=eta, allow_destinations_as_relays=allow_destinations_as_relays
             )
             if result:
                 results.append(
@@ -370,7 +372,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 )
 
             result, time_ms = run_single_trial(
-                graph, src, terminals, "cf_bottleneck", config.hop_limit, eta=eta
+                graph, src, terminals, "cf_bottleneck", config.hop_limit, eta=eta, allow_destinations_as_relays=allow_destinations_as_relays
             )
             if result:
                 results.append(ExperimentResult(
@@ -402,7 +404,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
                 )
 
             result, time_ms = run_single_trial(
-                graph, src, terminals, "cf_bottleneck_mwu", config.hop_limit, eta=eta
+                graph, src, terminals, "cf_bottleneck_mwu", config.hop_limit, eta=eta, allow_destinations_as_relays=allow_destinations_as_relays
             )
             if result:
                 results.append(
@@ -437,7 +439,7 @@ def run_experiment(config: ExperimentConfig) -> list[ExperimentResult]:
 
         # Test mFlow
         result, time_ms = run_single_trial(
-            graph, src, terminals, "mflow", config.hop_limit
+            graph, src, terminals, "mflow", config.hop_limit, allow_destinations_as_relays=allow_destinations_as_relays
         )
         if result:
             results.append(ExperimentResult(
@@ -496,7 +498,7 @@ def summarize_results(results: list[ExperimentResult]) -> dict[str, Any]:
     return summary
 
 
-def run_standard_experiments() -> list[ExperimentResult]:
+def run_standard_experiments(allow_destinations_as_relays: bool = False) -> list[ExperimentResult]:
     """Run standard experiment suite."""
     configs = [
         # Small networks
@@ -557,7 +559,7 @@ def run_standard_experiments() -> list[ExperimentResult]:
 
     all_results = []
     for config in configs:
-        results = run_experiment(config)
+        results = run_experiment(config, allow_destinations_as_relays=allow_destinations_as_relays)
         all_results.extend(results)
 
     return all_results
@@ -565,11 +567,28 @@ def run_standard_experiments() -> list[ExperimentResult]:
 
 def main():
     """Main entry point for experiments."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="CF-Tree Algorithm Experiments")
+    parser.add_argument(
+        "--allow-destination-relays",
+        action="store_true",
+        help="Allow destination nodes to forward (workers-as-relays)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for results (default: examples/lp/experiment_results)",
+    )
+    args = parser.parse_args()
+
     print("=" * 60)
     print("CF-Tree Algorithm Experiments")
+    print(f"Allow destination relays: {args.allow_destination_relays}")
     print("=" * 60)
 
-    all_results = run_standard_experiments()
+    all_results = run_standard_experiments(allow_destinations_as_relays=args.allow_destination_relays)
 
     # Summarize
     print("\n" + "=" * 60)
@@ -587,8 +606,11 @@ def main():
             print(f"  Avg Gap from LP bound: {stats['avg_gap_percent']:.1f}%")
 
     # Save results to JSON
-    output_dir = Path(__file__).parent / "experiment_results"
-    output_dir.mkdir(exist_ok=True)
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(__file__).parent / "experiment_results"
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"results_{timestamp}.json"

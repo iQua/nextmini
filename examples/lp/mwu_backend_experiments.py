@@ -52,6 +52,7 @@ def _run_trial(
     eta: float,
     num_paths: int,
     algorithm: str,
+    allow_destinations_as_relays: bool = False,
 ) -> BackendTrial:
     graph = generate_topology(
         n_nodes,
@@ -76,6 +77,7 @@ def _run_trial(
             eta=eta,
             max_length=hop_limit,
             num_paths=num_paths,
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
     except Exception as exc:
         result = None
@@ -133,6 +135,17 @@ def main() -> None:
     parser.add_argument("--num-paths", type=int, default=2)
     parser.add_argument("--min-capacity", type=float, default=10.0)
     parser.add_argument("--max-capacity", type=float, default=100.0)
+    parser.add_argument(
+        "--allow-destination-relays",
+        action="store_true",
+        help="Allow destination nodes to forward (workers-as-relays)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for results",
+    )
     args = parser.parse_args()
 
     capacity_range = (args.min_capacity, args.max_capacity)
@@ -150,6 +163,7 @@ def main() -> None:
                     eta=args.eta,
                     num_paths=args.num_paths,
                     algorithm=algorithm,
+                    allow_destinations_as_relays=args.allow_destination_relays,
                 )
             )
 
@@ -173,8 +187,11 @@ def main() -> None:
         "summary": summary,
     }
 
-    output_dir = Path(__file__).parent / "experiment_results"
-    output_dir.mkdir(exist_ok=True)
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(__file__).parent / "experiment_results"
+    output_dir.mkdir(exist_ok=True, parents=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = output_dir / f"mwu_backend_{timestamp}.json"
     out_path.write_text(json.dumps(payload, indent=2))

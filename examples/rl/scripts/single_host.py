@@ -218,6 +218,7 @@ def generate_compose(
     probe_bytes: int,
     probe_timeout_secs: float,
     probe_batch_size: int,
+    allow_worker_relays: bool,
     capacity_profile: str | None,
     capacity_seed: int,
     bucket_secs: float,
@@ -409,27 +410,34 @@ def generate_compose(
         role="trainer",
         cmd=trainer_cmd,
         gpu_id=trainer_gpu,
-        extra_env={
-            "WORKER_NODE_IDS": worker_ids_csv,
-            "TRAINER_NODE_ID": str(trainer_id),
-            "CONTROLLER_CONFIG": controller_cfg_rel,
-            "MULTICAST_TREE_ALGO": algorithm,
-            "MULTICAST_HOP_LIMIT": str(hop_limit),
-            "MULTICAST_ETA": str(eta),
-            "MULTICAST_NUM_PATHS": str(num_paths),
-            "MULTICAST_RELAY_SCORING": relay_scoring,
-            **(
-                {"MULTICAST_MAX_RELAYS": str(max_relays)}
-                if max_relays is not None
-                else {}
-            ),
-            "MULTICAST_PROBE_LINKS": "true" if probe_links else "false",
-            "MULTICAST_PROBE_BYTES": str(probe_bytes),
-            "MULTICAST_PROBE_TIMEOUT_SECS": str(probe_timeout_secs),
-            "MULTICAST_PROBE_BATCH_SIZE": str(int(probe_batch_size)),
-        }
-        if mode == "rl"
-        else {"WORKER_NODE_IDS": worker_ids_csv, "TRAINER_NODE_ID": str(trainer_id)},
+        extra_env=(
+            {
+                "WORKER_NODE_IDS": worker_ids_csv,
+                "TRAINER_NODE_ID": str(trainer_id),
+                "MULTICAST_ALLOW_WORKER_RELAYS": "true" if allow_worker_relays else "false",
+                "CONTROLLER_CONFIG": controller_cfg_rel,
+                "MULTICAST_TREE_ALGO": algorithm,
+                "MULTICAST_HOP_LIMIT": str(hop_limit),
+                "MULTICAST_ETA": str(eta),
+                "MULTICAST_NUM_PATHS": str(num_paths),
+                "MULTICAST_RELAY_SCORING": relay_scoring,
+                **(
+                    {"MULTICAST_MAX_RELAYS": str(max_relays)}
+                    if max_relays is not None
+                    else {}
+                ),
+                "MULTICAST_PROBE_LINKS": "true" if probe_links else "false",
+                "MULTICAST_PROBE_BYTES": str(probe_bytes),
+                "MULTICAST_PROBE_TIMEOUT_SECS": str(probe_timeout_secs),
+                "MULTICAST_PROBE_BATCH_SIZE": str(int(probe_batch_size)),
+            }
+            if mode == "rl"
+            else {
+                "WORKER_NODE_IDS": worker_ids_csv,
+                "TRAINER_NODE_ID": str(trainer_id),
+                "MULTICAST_ALLOW_WORKER_RELAYS": "true" if allow_worker_relays else "false",
+            }
+        ),
     )
 
     for rank, worker_id in enumerate(worker_ids):
@@ -516,6 +524,12 @@ def main() -> int:
     p_run.add_argument("--capacity-profile", default="")
     p_run.add_argument("--capacity-seed", type=int, default=0)
     p_run.add_argument("--bucket-secs", type=float, default=3.0)
+    p_run.add_argument(
+        "--allow-worker-relays",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow destination workers to forward/relay (default: true).",
+    )
     p_run.add_argument("--probe-links", action=argparse.BooleanOptionalAction, default=False)
     p_run.add_argument("--probe-bytes", type=int, default=64 * 1024 * 1024)
     p_run.add_argument("--probe-timeout-secs", type=float, default=60.0)
@@ -567,6 +581,7 @@ def main() -> int:
         probe_bytes=int(args.probe_bytes),
         probe_timeout_secs=float(args.probe_timeout_secs),
         probe_batch_size=int(args.probe_batch_size),
+        allow_worker_relays=bool(args.allow_worker_relays),
         capacity_profile=str(args.capacity_profile).strip() or None,
         capacity_seed=int(args.capacity_seed),
         bucket_secs=float(args.bucket_secs),

@@ -102,6 +102,7 @@ def run_one(
     method: str,
     selection_seed: int,
     bucket_secs: float,
+    allow_worker_relays: bool,
 ) -> None:
     _mkdir(out_json.parent)
     try:
@@ -151,6 +152,7 @@ def run_one(
         str(capacity_seed),
         "--bucket-secs",
         str(bucket_secs),
+        "--allow-worker-relays" if allow_worker_relays else "--no-allow-worker-relays",
         "--no-probe-links",
         "--results-json",
         out_json_rel,
@@ -176,6 +178,12 @@ def main() -> int:
     parser.add_argument("--timeout-ms", type=int, default=300_000)
     parser.add_argument("--bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--bucket-secs", type=float, default=3.0)
+    parser.add_argument(
+        "--allow-worker-relays",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow destination workers to forward/relay (default: true).",
+    )
     parser.add_argument("--out-dir", default="")
     args = parser.parse_args()
 
@@ -229,6 +237,7 @@ def main() -> int:
                         method=str(method),
                         selection_seed=int(sel_seed),
                         bucket_secs=float(args.bucket_secs),
+                        allow_worker_relays=bool(args.allow_worker_relays),
                     )
                     summaries.append(summarize_results(out_json, key))
 

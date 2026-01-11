@@ -69,12 +69,14 @@ def solve(
     if not CVXOPT_AVAILABLE:
         raise ImportError("cvxopt is required for LP solving")
 
-    # Get all paths
+    # Get candidate paths (bounded by `num_paths` to avoid enumerating all simple paths).
     paths = graph.get_paths(
         sources,
         destinations,
         max_length=max_length,
         allowed_intermediate_nodes=allowed_intermediate_nodes,
+        num_paths=num_paths,
+        sort_by=sort_by,
     )
 
     # Fail fast if any (src,dst) lacks a feasible candidate path under the current
@@ -393,12 +395,14 @@ def solve_mwu(
     if node_egress_budgets and any(budget is not None for budget in node_egress_budgets.values()):
         raise ValueError("solve_mwu does not support node egress budgets (U_u)")
 
-    # Candidate paths per (src,dst).
+    # Candidate paths per (src,dst) (bounded by `num_paths` to avoid enumerating all paths).
     paths = graph.get_paths(
         sources,
         destinations,
         max_length=max_length,
         allowed_intermediate_nodes=allowed_intermediate_nodes,
+        num_paths=num_paths,
+        sort_by=sort_by,
     )
 
     if sort_by == "shortest":

@@ -118,21 +118,22 @@ def run_single_trial(
     trial: int,
     seed: int,
     hop_limit: int = 4,
+    allow_destinations_as_relays: bool = False,
 ) -> TrialResult:
     """Run a single trial comparing all three relay selection methods."""
-    
+
     rng = random.Random(seed)
-    
+
     n_nodes = 1 + n_workers + n_relays
     src = 1
     terminals = list(range(2, 2 + n_workers))
     relays = list(range(2 + n_workers, 2 + n_workers + n_relays))
-    
+
     # Generate capacity profile
     profile_fn = PROFILES[profile_name]
     capacities = profile_fn(n_nodes, src, terminals, relays, rng)
     graph, src, terminals, relays = build_graph(n_workers, n_relays, capacities)
-    
+
     # Method 1: CF-RelaySelect (LP-guided)
     try:
         result = compute_tree_edges(
@@ -147,11 +148,12 @@ def run_single_trial(
             relay_nodes=relays,
             max_relays=budget,
             relay_scoring="coverage",
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
         cf_throughput = result.throughput or 0.0
     except Exception:
         cf_throughput = 0.0
-    
+
     # Method 2: Capacity heuristic
     try:
         chosen = select_by_capacity(graph, relays, budget)
@@ -166,11 +168,12 @@ def run_single_trial(
             num_paths=2,
             relay_nodes=chosen,
             max_relays=None,
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
         capacity_throughput = result.throughput or 0.0
     except Exception:
         capacity_throughput = 0.0
-    
+
     # Method 3: Random selection
     try:
         rng_random = random.Random(seed + 10000)  # Different seed for random selection
@@ -186,6 +189,7 @@ def run_single_trial(
             num_paths=2,
             relay_nodes=chosen,
             max_relays=None,
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
         random_throughput = result.throughput or 0.0
     except Exception:
@@ -207,14 +211,15 @@ def run_config(
     budget: int,
     n_trials: int,
     base_seed: int = 0,
+    allow_destinations_as_relays: bool = False,
 ) -> ConfigResult:
     """Run multiple trials for a single configuration."""
-    
+
     trials = []
     for i in range(n_trials):
         seed = base_seed + i
-        trials.append(run_single_trial(profile_name, n_workers, n_relays, budget, i, seed))
-    
+        trials.append(run_single_trial(profile_name, n_workers, n_relays, budget, i, seed, allow_destinations_as_relays=allow_destinations_as_relays))
+
     # Aggregate statistics
     cf_values = [t.cf_throughput for t in trials]
     cap_values = [t.capacity_throughput for t in trials]
@@ -255,26 +260,27 @@ def run_full_benchmark(
     relays: list[int],
     budgets: list[int],
     n_trials: int,
+    allow_destinations_as_relays: bool = False,
 ) -> list[ConfigResult]:
     """Run the complete benchmark matrix."""
-    
+
     results = []
     total_configs = sum(1 for r in relays for b in budgets if b <= r) * len(workers)
     current = 0
-    
+
     print(f"Running {total_configs} configurations × {n_trials} trials = {total_configs * n_trials} tests")
     print("=" * 70)
-    
+
     for n_workers in workers:
         for n_relays in relays:
             for budget in budgets:
                 if budget > n_relays:
                     continue
-                
+
                 current += 1
                 print(f"[{current}/{total_configs}] Workers={n_workers}, Relays={n_relays}, Budget={budget}...", end=" ")
-                
-                result = run_config(profile_name, n_workers, n_relays, budget, n_trials)
+
+                result = run_config(profile_name, n_workers, n_relays, budget, n_trials, allow_destinations_as_relays=allow_destinations_as_relays)
                 results.append(result)
                 
                 print(f"CF={result.cf_mean:.1f}±{result.cf_std:.1f}, "
@@ -470,18 +476,23 @@ def main() -> int:
                         help="Skip plot generation")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Output directory")
+    parser.add_argument(
+        "--allow-destination-relays",
+        action="store_true",
+        help="Allow destination nodes to forward (workers-as-relays)",
+    )
     args = parser.parse_args()
-    
+
     # Parse arguments
     workers = [int(x.strip()) for x in args.workers.split(",")]
     relays = [int(x.strip()) for x in args.relays.split(",")]
     budgets = [int(x.strip()) for x in args.budgets.split(",")]
     n_trials = 3 if args.quick else args.trials
-    
+
     # Output directory: default to `experiment_results/` (gitignored).
     output_dir = Path(args.output_dir) if args.output_dir else Path(__file__).parent / "experiment_results"
-    output_dir.mkdir(exist_ok=True)
-    
+    output_dir.mkdir(exist_ok=True, parents=True)
+
     print("=" * 70)
     print("LP Relay Selection Benchmark")
     print(f"Profile: {args.profile}")
@@ -489,11 +500,12 @@ def main() -> int:
     print(f"Relays: {relays}")
     print(f"Budgets: {budgets}")
     print(f"Trials: {n_trials}")
+    print(f"Allow destination relays: {args.allow_destination_relays}")
     print("=" * 70)
-    
+
     # Run benchmark
     start_time = time.time()
-    results = run_full_benchmark(args.profile, workers, relays, budgets, n_trials)
+    results = run_full_benchmark(args.profile, workers, relays, budgets, n_trials, allow_destinations_as_relays=args.allow_destination_relays)
     elapsed = time.time() - start_time
     
     print("=" * 70)

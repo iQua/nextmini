@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import dataclasses
+import json
 import os
 import pathlib
 import shlex
@@ -432,6 +433,7 @@ def run_trainer(
     probe_links: bool,
     probe_bytes: int,
     probe_timeout_secs: float,
+    allow_worker_relays: bool,
     batch: bool,
 ) -> str:
     docker_rm(node.ssh, node.container_name(), batch=batch)
@@ -458,12 +460,14 @@ def run_trainer(
             f" --probe-links --probe-bytes {probe_bytes} --probe-timeout-secs {probe_timeout_secs}"
         )
 
+    worker_relays_env = "true" if allow_worker_relays else "false"
     cmd = textwrap.dedent(
         f"""
         docker run --name {shlex.quote(node.container_name())} --network host \\
           -v {_bash_dquote(f"{repo_expr}:/workspace")} \\
           -w /workspace \\
           -e RUST_LOG=${{RUST_LOG:-info}} \\
+          -e MULTICAST_ALLOW_WORKER_RELAYS={worker_relays_env} \\
           nextmini_rl_python \\
           /bin/bash -lc {shlex.quote(inner)}
         """
@@ -497,6 +501,12 @@ def main() -> int:
     p_run.add_argument("--num-paths", type=int, default=2)
     p_run.add_argument("--relay-scoring", default="coverage")
     p_run.add_argument("--max-relays", type=int, default=-1)
+    p_run.add_argument(
+        "--allow-worker-relays",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Allow destination workers to forward/relay (default: true).",
+    )
     p_run.add_argument(
         "--probe-links",
         action="store_true",
@@ -631,6 +641,7 @@ def main() -> int:
             probe_links=bool(args.probe_links),
             probe_bytes=int(args.probe_bytes),
             probe_timeout_secs=float(args.probe_timeout_secs),
+            allow_worker_relays=bool(args.allow_worker_relays),
             batch=batch,
         )
         print(trainer_output, end="")
@@ -647,6 +658,31 @@ def main() -> int:
         _run(scp)
 
         print(f"Wrote {local_out}")
+
+        manifest = {
+            "inventory_path": str(args.inventory),
+            "timestamp_unix_s": time.time(),
+            "bytes": int(args.bytes),
+            "rounds": int(args.rounds),
+            "timeout_ms": int(args.timeout_ms),
+            "algorithm": str(args.algorithm),
+            "hop_limit": int(args.hop_limit),
+            "eta": float(args.eta),
+            "num_paths": int(args.num_paths),
+            "relay_scoring": str(args.relay_scoring),
+            "max_relays": None if int(args.max_relays) < 0 else int(args.max_relays),
+            "allow_worker_relays": bool(args.allow_worker_relays),
+            "probe_links": bool(args.probe_links),
+            "probe_bytes": int(args.probe_bytes),
+            "probe_timeout_secs": float(args.probe_timeout_secs),
+            "nodes": {
+                "trainer_node_id": trainer_node_id,
+                "worker_node_ids": worker_ids,
+                "relay_node_ids": [n.node_id for n in relays],
+            },
+        }
+        (RESULTS_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(f"Wrote {RESULTS_DIR / 'manifest.json'}")
         return 0
     finally:
         if not getattr(args, "no_cleanup", False):

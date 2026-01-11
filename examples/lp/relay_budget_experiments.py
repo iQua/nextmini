@@ -57,6 +57,7 @@ def _run_plan(
     max_relays: int | None,
     relay_scoring: str,
     num_paths: int,
+    allow_destinations_as_relays: bool = False,
 ) -> TreeResult | None:
     try:
         result = compute_tree_edges(
@@ -71,6 +72,7 @@ def _run_plan(
             relay_scoring=relay_scoring,
             max_length=hop_limit,
             num_paths=num_paths,
+            allow_destinations_as_relays=allow_destinations_as_relays,
         )
     except Exception:
         return None
@@ -91,6 +93,7 @@ def run_relay_budget_suite(
     n_trials: int,
     n_random_samples: int,
     seed: int,
+    allow_destinations_as_relays: bool = False,
 ) -> list[RelayBudgetPoint]:
     rng = random.Random(seed)
     points: list[RelayBudgetPoint] = []
@@ -125,6 +128,7 @@ def run_relay_budget_suite(
                 max_relays=k,
                 relay_scoring="path_flow",
                 num_paths=num_paths,
+                allow_destinations_as_relays=allow_destinations_as_relays,
             )
             points.append(
                 RelayBudgetPoint(
@@ -150,6 +154,7 @@ def run_relay_budget_suite(
                 max_relays=k,
                 relay_scoring="coverage",
                 num_paths=num_paths,
+                allow_destinations_as_relays=allow_destinations_as_relays,
             )
             points.append(
                 RelayBudgetPoint(
@@ -175,6 +180,7 @@ def run_relay_budget_suite(
                 max_relays=k,
                 relay_scoring="incident",
                 num_paths=num_paths,
+                allow_destinations_as_relays=allow_destinations_as_relays,
             )
             points.append(
                 RelayBudgetPoint(
@@ -201,6 +207,7 @@ def run_relay_budget_suite(
                 max_relays=None,
                 relay_scoring="path_flow",
                 num_paths=num_paths,
+                allow_destinations_as_relays=allow_destinations_as_relays,
             )
             points.append(
                 RelayBudgetPoint(
@@ -229,6 +236,7 @@ def run_relay_budget_suite(
                     max_relays=None,
                     relay_scoring="path_flow",
                     num_paths=num_paths,
+                    allow_destinations_as_relays=allow_destinations_as_relays,
                 )
                 if res and res.throughput is not None:
                     random_tputs.append(res.throughput)
@@ -290,6 +298,17 @@ def parse_args() -> argparse.Namespace:
         default="0,2,4,6",
         help="Comma-separated relay budgets (max relays).",
     )
+    parser.add_argument(
+        "--allow-destination-relays",
+        action="store_true",
+        help="Allow destination nodes to forward (workers-as-relays)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Output directory for results",
+    )
     return parser.parse_args()
 
 
@@ -313,11 +332,15 @@ def main() -> int:
         n_trials=args.n_trials,
         n_random_samples=args.n_random_samples,
         seed=args.seed,
+        allow_destinations_as_relays=args.allow_destination_relays,
     )
     summary = summarize(points)
 
-    output_dir = Path(__file__).parent / "experiment_results"
-    output_dir.mkdir(exist_ok=True)
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    else:
+        output_dir = Path(__file__).parent / "experiment_results"
+    output_dir.mkdir(exist_ok=True, parents=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     out_path = output_dir / f"relay_budget_{timestamp}.json"
     out_path.write_text(

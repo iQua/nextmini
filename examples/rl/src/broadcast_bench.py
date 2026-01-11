@@ -414,6 +414,8 @@ def run_trainer(args: argparse.Namespace) -> int:
             "relay_selection": args.relay_selection,
             "selection_seed": args.selection_seed,
             "selected_relays": selected_relays,
+            "allow_worker_relays": config.MULTICAST_ALLOW_WORKER_RELAYS,
+            "allow_worker_relays_env": os.environ.get("MULTICAST_ALLOW_WORKER_RELAYS", ""),
             "hop_limit": args.hop_limit,
             "eta": args.eta,
             "chunk_size": args.chunk_size,
