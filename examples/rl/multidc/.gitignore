@@ -1,4 +1,6 @@
 generated/
 artifacts/
 results/
+inventory.toml
+
 
