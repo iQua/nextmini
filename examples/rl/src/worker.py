@@ -25,10 +25,11 @@ class Worker:
         print(f"Worker {rank} initializing on {self.device}...")
         
         self.tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
+        model_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME, 
-            dtype=torch.float16,
-            trust_remote_code=True
+            config.MODEL_NAME,
+            torch_dtype=model_dtype,
+            trust_remote_code=True,
         ).to(self.device)
         self.model.eval()
         
@@ -66,9 +67,13 @@ class Worker:
         self.trainer_user_ip = None
         
         # Wait for topology to be ready (all nodes connected and routes installed)
-        print(f"Waiting for topology to be ready...", flush=True)
-        if not self.dataplane.wait_for_topology_ready(timeout_ms=30_000):
-            raise TimeoutError("Topology not ready after 30 seconds")
+        timeout_ms = int(getattr(config, "TOPOLOGY_READY_TIMEOUT_MS", 600000))
+        print(
+            f"Waiting for topology to be ready (timeout={timeout_ms}ms)...",
+            flush=True,
+        )
+        if not self.dataplane.wait_for_topology_ready(timeout_ms=timeout_ms):
+            raise TimeoutError(f"Topology not ready after {timeout_ms}ms")
         print(f"Topology is ready!", flush=True)
         
         print(f"Worker {rank} ready.", flush=True)
@@ -94,34 +99,33 @@ class Worker:
         
         return pickle.loads(delivery.payload)
 
-    async def _receive_shard(self, group_id: int, group_ip: str, src_node_id: int, expected_bytes: int) -> bytes:
-        """Receive a single shard via lossless multicast.
-
-        Args:
-            group_id: Multicast group ID
-            group_ip: Multicast group IP
-            src_node_id: Source node ID (trainer)
-            expected_bytes: Expected size of this shard in bytes
-
-        Returns:
-            Raw bytes of the received shard
-        """
-        sid = await self.dataplane.receive_data_async(
+    async def _receive_shard_to_file(
+        self,
+        group_id: int,
+        group_ip: str,
+        src_node_id: int,
+        expected_bytes: int,
+        dst_path: "Path",
+    ) -> None:
+        """Receive a single shard via lossless multicast directly into a file."""
+        sid = self.dataplane.receive_to_file(
             group_id,
             group_ip,
             src_node_id,
-            expected_bytes=expected_bytes,
+            expected_bytes,
+            str(dst_path),
             chunk_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
-            dst_port=config.WORKER_BASE_PORT
+            dst_port=config.WORKER_BASE_PORT,
         )
-        
-        ok = await self.dataplane.lossless_wait_async(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
+
+        ok = await self.dataplane.lossless_wait_async(
+            sid, timeout_ms=config.MULTICAST_TIMEOUT_MS
+        )
         if not ok:
-            raise RuntimeError(f"Failed to receive shard from {src_node_id}")
-        
-        frozen = self.dataplane.get_data_buffer(sid)
-        return bytes(frozen.read())
+            raise RuntimeError(
+                f"Failed to receive shard from {src_node_id} into {dst_path}"
+            )
 
     async def run(self):
         """Main worker loop"""
@@ -220,30 +224,48 @@ class Worker:
                     # Receive config.json first (required for from_pretrained)
                     config_size = shard_sizes.get("config.json", 1024 * 1024)  # Default 1MB
                     print(f"Worker {self.rank}: Receiving config.json ({config_size} bytes)...", flush=True)
-                    config_data = await self._receive_shard(group_id, group_ip, src_node_id, config_size)
-                    (tmpdir / "config.json").write_bytes(config_data)
+                    await self._receive_shard_to_file(
+                        group_id,
+                        group_ip,
+                        src_node_id,
+                        config_size,
+                        tmpdir / "config.json",
+                    )
 
                     # Receive index (if exists)
                     if has_index:
                         index_size = shard_sizes.get("index", 1024 * 1024)  # Default 1MB
                         print(f"Worker {self.rank}: Receiving index file ({index_size} bytes)...", flush=True)
-                        index_data = await self._receive_shard(group_id, group_ip, src_node_id, index_size)
-                        (tmpdir / "model.safetensors.index.json").write_bytes(index_data)
+                        await self._receive_shard_to_file(
+                            group_id,
+                            group_ip,
+                            src_node_id,
+                            index_size,
+                            tmpdir / "model.safetensors.index.json",
+                        )
 
                     # Receive each shard with precise size
                     for shard_name in shard_names:
                         expected_size = shard_sizes.get(shard_name, 8 * 1024 * 1024 * 1024)  # Default 8GB
                         print(f"Worker {self.rank}: Receiving shard {shard_name} ({expected_size/1024/1024:.1f} MB)...", flush=True)
-                        shard_data = await self._receive_shard(group_id, group_ip, src_node_id, expected_size)
-                        (tmpdir / shard_name).write_bytes(shard_data)
-                        print(f"Worker {self.rank}: Saved {shard_name} ({len(shard_data)/1024/1024:.1f} MB)", flush=True)
+                        dst_path = tmpdir / shard_name
+                        await self._receive_shard_to_file(
+                            group_id,
+                            group_ip,
+                            src_node_id,
+                            expected_size,
+                            dst_path,
+                        )
+                        actual_size = dst_path.stat().st_size if dst_path.exists() else 0
+                        print(f"Worker {self.rank}: Saved {shard_name} ({actual_size/1024/1024:.1f} MB)", flush=True)
                     
                     # Load model from sharded checkpoint
                     print(f"Worker {self.rank}: Loading model from sharded checkpoint...", flush=True)
+                    model_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
                     self.model = AutoModelForCausalLM.from_pretrained(
                         str(tmpdir),
-                        torch_dtype=torch.float16,
-                        trust_remote_code=True
+                        torch_dtype=model_dtype,
+                        trust_remote_code=True,
                     ).to(self.device)
                     self.model.eval()
                     

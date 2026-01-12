@@ -6,6 +6,16 @@ def _env_bool(name: str, default: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _env_int(name: str, default: str) -> int:
+    value = os.environ.get(name, default)
+    return int(value.strip())
+
+
+def _env_float(name: str, default: str) -> float:
+    value = os.environ.get(name, default)
+    return float(value.strip())
+
+
 # Nextmini Node Configuration
 # Paths to node config files (TOML)
 TRAINER_CONFIG = os.environ.get(
@@ -43,12 +53,13 @@ WORKER_BASE_PORT = 5001  # Workers use BASE_PORT + rank
 
 # Multicast
 MULTICAST_GROUP_NAME = "rl_weights_sync"
-MULTICAST_TIMEOUT_MS = 60000 # 60s timeout for large weights
-CHUNK_SIZE = 8500 # Standard chunk size
+MULTICAST_TIMEOUT_MS = _env_int("MULTICAST_TIMEOUT_MS", "60000")  # 60s default
+CHUNK_SIZE = _env_int("CHUNK_SIZE", "8500")
 MAX_IN_MEMORY_RECEIVE_BYTES = int(
     os.environ.get("MAX_IN_MEMORY_RECEIVE_BYTES", str(512 * 1024 * 1024))
 )
 ROLLOUT_GROUP_ID_BASE = int(os.environ.get("ROLLOUT_GROUP_ID_BASE", "1000"))
+TOPOLOGY_READY_TIMEOUT_MS = _env_int("TOPOLOGY_READY_TIMEOUT_MS", "600000")
 
 # Multicast planning (LP / CF-Tree)
 MULTICAST_TREE_ALGO = os.environ.get("MULTICAST_TREE_ALGO", "cf_tree")
@@ -67,6 +78,7 @@ MULTICAST_PROBE_LINKS = os.environ.get("MULTICAST_PROBE_LINKS", "false").lower()
 MULTICAST_PROBE_BYTES = int(os.environ.get("MULTICAST_PROBE_BYTES", str(64 * 1024 * 1024)))
 MULTICAST_PROBE_TIMEOUT_SECS = float(os.environ.get("MULTICAST_PROBE_TIMEOUT_SECS", "60"))
 MULTICAST_PROBE_BATCH_SIZE = int(os.environ.get("MULTICAST_PROBE_BATCH_SIZE", "0"))
+MULTICAST_CAPACITY_SNAPSHOT = os.environ.get("MULTICAST_CAPACITY_SNAPSHOT", "").strip()
 
 
 def rollout_group_id(node_id: int) -> int:
@@ -78,16 +90,16 @@ SHARD_SIZE = os.environ.get("SHARD_SIZE", "8GB")  # Default shard size for large
 
 # Model
 MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-0.5B-Instruct")
-MAX_SEQ_LEN = 1024
-GENERATION_LEN = 256
+MAX_SEQ_LEN = _env_int("MAX_SEQ_LEN", "1024")
+GENERATION_LEN = _env_int("GENERATION_LEN", "256")
 
 # Training
-GRPO_GROUP_SIZE = 4  # G in GRPO paper (number of samples per prompt)
-BATCH_SIZE = 2  # Number of prompts per training step
-LEARNING_RATE = 1e-6
+GRPO_GROUP_SIZE = _env_int("GRPO_GROUP_SIZE", "4")  # G in GRPO paper (samples per prompt)
+BATCH_SIZE = _env_int("BATCH_SIZE", "2")  # Prompts per training step
+LEARNING_RATE = _env_float("LEARNING_RATE", "1e-6")
 KL_COEFF = 0.01
 CLIP_EPS = 0.2
-TRAIN_STEPS = 1000
+TRAIN_STEPS = _env_int("TRAIN_STEPS", "1000")
 
 # Roles
 ROLE_TRAINER = "trainer"

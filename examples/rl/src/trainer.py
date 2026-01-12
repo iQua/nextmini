@@ -32,14 +32,14 @@ class Trainer:
         # Load Models
         self.policy_model = AutoModelForCausalLM.from_pretrained(
             config.MODEL_NAME, 
-            dtype=torch.float32,
+            torch_dtype=torch.float32,
             trust_remote_code=True
         ).to(self.device)
         
         # Reference model (frozen)
         self.ref_model = AutoModelForCausalLM.from_pretrained(
             config.MODEL_NAME, 
-            dtype=torch.float32,
+            torch_dtype=torch.float32,
             trust_remote_code=True
         ).to(self.device)
         self.ref_model.eval()
@@ -89,13 +89,14 @@ class Trainer:
         # Create Multicast Group
         print(f"Creating multicast group '{config.MULTICAST_GROUP_NAME}'...")
         self.dataplane.create_group(config.MULTICAST_GROUP_NAME)
-        self.group_id, self.group_ip, _ = self.dataplane.group_is_ready(timeout_ms=30000)
+        topo_timeout_ms = int(getattr(config, "TOPOLOGY_READY_TIMEOUT_MS", 600000))
+        self.group_id, self.group_ip, _ = self.dataplane.group_is_ready(timeout_ms=topo_timeout_ms)
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
 
         receiver_ids = [conn["node_id"] for conn in self.worker_connections]
         edges, throughput = self._compute_multicast_routes(receiver_ids)
         self.dataplane.set_group_routes(self.group_id, edges)
-        if not self.dataplane.wait_for_group_routes(self.group_id, self.node_id, timeout_ms=30000):
+        if not self.dataplane.wait_for_group_routes(self.group_id, self.node_id, timeout_ms=topo_timeout_ms):
             raise TimeoutError("Timed out waiting for multicast routes to install.")
         if throughput is not None:
             print(f"Applied LP multicast routes (throughput={throughput:.3f})")
@@ -123,6 +124,54 @@ class Trainer:
 
         graph = build_graph_from_controller_config(str(controller_path))
         print(f"Computing multicast routes: algorithm={config.MULTICAST_TREE_ALGO}, probe_links={config.MULTICAST_PROBE_LINKS}", flush=True)
+
+        snapshot_path = config.MULTICAST_CAPACITY_SNAPSHOT
+        if snapshot_path:
+            if config.MULTICAST_PROBE_LINKS:
+                raise RuntimeError(
+                    "MULTICAST_CAPACITY_SNAPSHOT and MULTICAST_PROBE_LINKS are mutually exclusive"
+                )
+
+            snapshot_file = Path(snapshot_path)
+            if not snapshot_file.is_absolute():
+                snapshot_file = (
+                    Path(__file__).resolve().parents[3] / snapshot_file
+                ).resolve()
+            if not snapshot_file.is_file():
+                raise RuntimeError(f"Capacity snapshot not found: {snapshot_file}")
+
+            raw = json.loads(snapshot_file.read_text(encoding="utf-8"))
+            if not isinstance(raw, list):
+                raise RuntimeError(
+                    "Capacity snapshot must be a JSON list of {src,dst,capacity_mbps}"
+                )
+
+            updated = 0
+            skipped = 0
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    skipped += 1
+                    continue
+                try:
+                    src = int(entry["src"])
+                    dst = int(entry["dst"])
+                    cap = float(entry["capacity_mbps"])
+                except Exception:
+                    skipped += 1
+                    continue
+
+                key = (src, dst)
+                if key not in graph.capacities:
+                    skipped += 1
+                    continue
+                graph.capacities[key] = cap
+                updated += 1
+
+            graph.adj = graph._build_adjacency()
+            print(
+                f"Applied capacity snapshot: {snapshot_file} (updated={updated}, skipped={skipped})",
+                flush=True,
+            )
 
         # Optional: probe link capacities before computing routes
         if config.MULTICAST_PROBE_LINKS:
@@ -197,8 +246,10 @@ class Trainer:
 
         return result.edges, result.throughput
 
-    def accept_workers(self, num_workers=2):
-        """Wait for handshake from all workers"""
+    def accept_workers(self, num_workers: int | None = None):
+        """Wait for handshake from all workers."""
+        if num_workers is None:
+            num_workers = len(self.worker_connections)
         print(f"Waiting for {num_workers} workers to send handshake...", flush=True)
         
         # We need to accept handshakes from ANY worker, not just in order 0, 1, 2...
@@ -419,25 +470,22 @@ class Trainer:
             # 2. Find shard files and index
             shard_files = sorted(tmpdir.glob("*.safetensors"))
             index_file = tmpdir / "model.safetensors.index.json"
+            has_index = index_file.exists()
             
             # Check if model is actually sharded (small models won't be)
-            if not index_file.exists():
+            if not has_index:
                 # Single file mode - model is too small for sharding
                 print("Model is not sharded (too small). Using single file mode.")
                 shard_files = sorted(tmpdir.glob("*.safetensors"))
                 num_shards = len(shard_files)
-                index_data = None
             else:
-                with open(index_file, 'r') as f:
-                    index_data = f.read()
                 num_shards = len(shard_files)
                 print(f"Model sharded into {num_shards} files")
             
             # Read config.json (required for from_pretrained)
             config_file = tmpdir / "config.json"
             if config_file.exists():
-                with open(config_file, 'r') as f:
-                    config_json_data = f.read()
+                config_size = config_file.stat().st_size
             else:
                 raise RuntimeError("config.json not found in saved checkpoint")
             
@@ -445,9 +493,9 @@ class Trainer:
             total_size = sum(f.stat().st_size for f in shard_files)
             shard_names = [f.name for f in shard_files]
             shard_sizes = {f.name: f.stat().st_size for f in shard_files}
-            shard_sizes["config.json"] = len(config_json_data.encode('utf-8'))
-            if index_data is not None:
-                shard_sizes["index"] = len(index_data.encode('utf-8'))
+            shard_sizes["config.json"] = int(config_size)
+            if has_index:
+                shard_sizes["index"] = int(index_file.stat().st_size)
             
             errors = []
             def handshake_worker(i):
@@ -459,7 +507,7 @@ class Trainer:
                         "num_shards": num_shards,
                         "shard_names": shard_names,
                         "shard_sizes": shard_sizes,
-                        "has_index": index_data is not None,
+                        "has_index": has_index,
                         "total_size": total_size,
                         "src_node_id": self.node_id,
                     })
@@ -486,20 +534,18 @@ class Trainer:
             # 4. Send config.json first (required for from_pretrained)
             transfer_start = time.time()
             print("Sending config.json...")
-            config_bytes = config_json_data.encode('utf-8')
-            self._send_shard_data("config.json", config_bytes, receiver_ids)
+            self._send_shard_file("config.json", config_file, receiver_ids)
             
             # 5. Send index (if exists)
-            if index_data is not None:
+            if has_index:
                 print("Sending index file...")
-                index_bytes = index_data.encode('utf-8')
-                self._send_shard_data("index", index_bytes, receiver_ids)
+                self._send_shard_file("index", index_file, receiver_ids)
             
             # 6. Send each shard
             for shard_path in shard_files:
-                shard_data = shard_path.read_bytes()
-                print(f"Sending shard {shard_path.name} ({len(shard_data)/1024/1024:.1f} MB)...")
-                self._send_shard_data(shard_path.name, shard_data, receiver_ids)
+                shard_size = shard_path.stat().st_size
+                print(f"Sending shard {shard_path.name} ({shard_size/1024/1024:.1f} MB)...")
+                self._send_shard_file(shard_path.name, shard_path, receiver_ids)
             
             transfer_end = time.time()
         
@@ -526,28 +572,26 @@ class Trainer:
             'num_shards': num_shards
         }
 
-    def _send_shard_data(self, name: str, data: bytes, receiver_ids: list):
-        """Send a single shard via multicast."""
-        builder = nm.PacketBuilder(size=len(data))
-        builder.write(data)
-        view = builder.freeze()
-        
-        sid = self.dataplane.send_data(
+    def _send_shard_file(self, name: str, path: Path, receiver_ids: list[int]):
+        """Send a single shard via multicast without loading it into memory."""
+        sid = self.dataplane.send_file(
             self.group_id,
             self.group_ip,
             receiver_ids,
-            view,
+            str(path),
             chunk_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
-            dst_port=config.WORKER_BASE_PORT
+            dst_port=config.WORKER_BASE_PORT,
         )
-        
+
         ok = self.dataplane.lossless_wait(sid, timeout_ms=config.MULTICAST_TIMEOUT_MS)
         if not ok:
-            raise RuntimeError(f"Failed to send shard {name}")
+            raise RuntimeError(f"Failed to send shard {name} from {path}")
 
-    def train_step(self, batch):
+    def train_step(self, batch, *, step_index: int | None = None):
         """Execute one training step"""
+        step_start_time = time.time()
+
         # 1. Broadcast current weights (choose mode based on config)
         if config.USE_SHARDED_WEIGHTS:
             weight_metrics = self.broadcast_weights_sharded()
@@ -690,15 +734,23 @@ class Trainer:
                 })
 
         # 4. Optimization Step
+        update_start = time.time()
         self.update_model(all_samples)
+        update_time = time.time() - update_start
         
         # Log Step Metrics
         if not all_samples:
             print("Warning: No samples collected this step.")
-            return
 
-        step_avg_reward = sum([1.0 if is_correct(c, gt_map.get(s["prompt"])) else 0.0 
-                              for s in all_samples for c in s["completions"]]) / (len(all_samples) * config.GRPO_GROUP_SIZE)
+        step_avg_reward = None
+        if all_samples:
+            step_avg_reward = sum(
+                [
+                    1.0 if is_correct(c, gt_map.get(s["prompt"])) else 0.0
+                    for s in all_samples
+                    for c in s["completions"]
+                ]
+            ) / (len(all_samples) * config.GRPO_GROUP_SIZE)
         
         # Calculate rollout data size and network metrics
         total_rollout_bytes = sum(rollout_sizes)
@@ -726,11 +778,30 @@ class Trainer:
         print(f"  Network throughput:            {network_throughput_gbps:.3f} Gbps")
         print(f"{'='*60}\n")
         
-        print(f"Step Metrics | Avg Reward: {step_avg_reward:.4f}")
+        if step_avg_reward is None:
+            print("Step Metrics | Avg Reward: N/A", flush=True)
+        else:
+            print(f"Step Metrics | Avg Reward: {step_avg_reward:.4f}", flush=True)
+
+        step_total_time = time.time() - step_start_time
+        metrics = {
+            "type": "rl_step_metrics",
+            "step_index": step_index,
+            "step_time_s": step_total_time,
+            "update_time_s": update_time,
+            "weight_broadcast": weight_metrics,
+            "rollout_time_s": total_rollout_time,
+            "rollout_size_bytes": total_rollout_bytes,
+            "rollout_network_throughput_gbps": network_throughput_gbps,
+            "avg_reward": step_avg_reward,
+        }
+        print(f"RL_STEP_METRICS\t{json.dumps(metrics)}", flush=True)
         
         return {
             'weight_broadcast': weight_metrics,
             'rollout_time': total_rollout_time,
+            'update_time': update_time,
+            'step_time': step_total_time,
             'rollout_size_bytes': total_rollout_bytes,
             'avg_reward': step_avg_reward
         }
@@ -850,7 +921,7 @@ class Trainer:
         for step in range(config.TRAIN_STEPS):
             print(f"Step {step+1}/{config.TRAIN_STEPS}")
             batch = self.dataset.get_batch(config.BATCH_SIZE)
-            self.train_step(batch)
+            self.train_step(batch, step_index=step + 1)
 
         print("Training complete. Shutting down workers...")
         for i in range(len(self.worker_connections)):
@@ -859,6 +930,10 @@ class Trainer:
             except:
                 pass
         time.sleep(1)
+
+        if os.environ.get("SKIP_SAVE_MODEL", "").strip().lower() in ("1", "true", "yes", "y", "on"):
+            print("Skipping model save (SKIP_SAVE_MODEL=1).")
+            return
 
         print("Saving model...")
         self.policy_model.save_pretrained("output/qwen-gsm8k-rl")

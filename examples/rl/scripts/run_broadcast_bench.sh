@@ -15,7 +15,15 @@ sleep 2
 export PYTHONUNBUFFERED=1
 export UV_NO_PROGRESS=1
 
-CONTAINER_VENV="/tmp/.venv-nextmini-bench"
+# Persist per-host Python venv (bind-mounted /workspace lives on the VM).
+# Rust toolchains are already baked into the Docker image under /root/.rustup, so
+# DO NOT override RUSTUP_HOME by default (doing so breaks rustup's toolchain selection).
+CONTAINER_VENV="${CONTAINER_VENV:-/workspace/.multidc_cache/venv}"
+
+# Optionally persist Cargo registry/git caches across runs.
+export CARGO_HOME="${CARGO_HOME:-/workspace/.multidc_cache/cargo}"
+
+mkdir -p "$(dirname "${CONTAINER_VENV}")" "${CARGO_HOME}"
 
 if [[ ! -d "${CONTAINER_VENV}" ]]; then
   python -m pip install --upgrade pip >/dev/null
@@ -47,30 +55,51 @@ if [[ "${role}" == "trainer" ]]; then
     prev="${arg}"
   done
 
-  if [[ "${algo}" == *"_mwu" ]]; then
-    echo "Skipping cvxopt install (algorithm=${algo})."
-  else
+  needs_cvxopt="0"
+  case "${algo}" in
+    *_mwu)
+      needs_cvxopt="0"
+      ;;
+    cf_tree|cf_bottleneck|mflow)
+      needs_cvxopt="1"
+      ;;
+    *)
+      needs_cvxopt="0"
+      ;;
+  esac
+
+  if [[ "${needs_cvxopt}" == "1" ]]; then
     uv pip install cvxopt >/dev/null || {
-      echo "Failed to install cvxopt (required for LP-backed planners)." >&2
-      echo "Tip: use --algorithm cf_bottleneck_mwu to run without an LP solver." >&2
+      echo "Failed to install cvxopt (required for LP-backed planners: ${algo})." >&2
+      echo "Tip: use --algorithm cf_bottleneck_mwu (or cf_tree_mwu) to run without an LP solver." >&2
       exit 1
     }
+  else
+    echo "Skipping cvxopt install (algorithm=${algo})."
   fi
 fi
 
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  uv pip install maturin >/dev/null
-  maturin develop --release -m python-api/Cargo.toml -F python-extension >/dev/null
-else
-  wheel_path="${NEXTMINI_PY_WHEEL:-}"
-  if [[ -z "${wheel_path}" ]]; then
-    wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+# Build nextmini_py only if it's not already importable in the (persistent) venv.
+force_rebuild="${NEXTMINI_PY_FORCE_REBUILD:-0}"
+if [[ "${force_rebuild}" == "1" ]]; then
+  python -m pip uninstall -y nextmini_py >/dev/null 2>&1 || true
+fi
+
+if [[ "${force_rebuild}" == "1" ]] || ! python -c 'import nextmini_py' >/dev/null 2>&1; then
+  if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+    uv pip install maturin >/dev/null
+    maturin develop --release -m python-api/Cargo.toml -F python-extension >/dev/null
+  else
+    wheel_path="${NEXTMINI_PY_WHEEL:-}"
+    if [[ -z "${wheel_path}" ]]; then
+      wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+    fi
+    if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
+      echo "SKIP_BUILD=1 but nextmini_py wheel not found. Set NEXTMINI_PY_WHEEL to a valid path." >&2
+      exit 1
+    fi
+    uv pip install "${wheel_path}" >/dev/null
   fi
-  if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
-    echo "SKIP_BUILD=1 but nextmini_py wheel not found. Set NEXTMINI_PY_WHEEL to a valid path." >&2
-    exit 1
-  fi
-  uv pip install "${wheel_path}" >/dev/null
 fi
 
 export PYTHONPATH=/workspace:${PYTHONPATH:-}

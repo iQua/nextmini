@@ -58,10 +58,16 @@ def _db_settings(controller_cfg: dict) -> dict:
     db = dict(controller_cfg.get("db") or {})
 
     def pick(key: str, env: str, default: str) -> str:
+        # Allow environment variables to override config values so deployed
+        # callers (e.g., host-network benchmark containers) can point at a
+        # reachable DB endpoint without rewriting the controller config.
+        env_value = os.environ.get(env)
+        if env_value:
+            return str(env_value)
         value = db.get(key)
         if value:
             return str(value)
-        return os.environ.get(env, default)
+        return default
 
     return {
         "user": pick("user", "NEXTMINI_DB_USER", "pgusr"),
@@ -112,20 +118,23 @@ def _request_link_probes(
     edges: list[tuple[int, int]],
     bytes_per_flow: int,
     *,
+    repeats: int = 1,
     batch_size: int | None = None,
     batch_timeout_secs: float = 60.0,
+    warmup_bytes_per_flow: int | None = None,
 ) -> list[int]:
     """Request probe flows for link capacity measurement.
-    
+
     Args:
         conn: Database connection
         edges: List of (src, dst) tuples to probe
         bytes_per_flow: Bytes to send per probe flow
+        repeats: Number of probe flows to run per directed edge (default: 1).
         batch_size: If set, probe links in batches of this size to reduce contention.
-                    Each batch waits for completion before starting next batch.
-                    If None, all probes run concurrently.
+            Each batch waits for completion before starting next batch.
+            If None, all probes run concurrently.
         batch_timeout_secs: Timeout per batch (only used if batch_size is set)
-    
+
     Returns:
         List of all probe flow IDs
     """
@@ -144,13 +153,27 @@ def _request_link_probes(
         VALUES (%s, %s, 'bytes', %s, NULL, NULL, NULL, FALSE, TRUE)
         RETURNING id
     """
-    rows = [(src, dst, bytes_per_flow) for src, dst in edges if src != dst]
-    if not rows:
+
+    r = int(repeats)
+    if r <= 0:
+        raise ValueError("repeats must be >= 1")
+
+    base_rows = [(src, dst, bytes_per_flow) for src, dst in edges if src != dst]
+    if not base_rows:
         return []
 
+    rows = base_rows * r
     all_ids: list[int] = []
-    
+
+    warmup = int(warmup_bytes_per_flow or 0)
+    if warmup < 0:
+        raise ValueError("warmup_bytes_per_flow must be >= 0")
+
     if batch_size is None or batch_size <= 0 or batch_size >= len(rows):
+        if warmup > 0:
+            raise ValueError(
+                "warmup_bytes_per_flow requires batch probing (set batch_size > 0)."
+            )
         # All at once (original behavior)
         with conn.cursor() as cursor:
             for src, dst, size in rows:
@@ -159,13 +182,65 @@ def _request_link_probes(
                 if row:
                     all_ids.append(int(row[0]))
     else:
-        # Batch probing: probe batch_size links at a time, wait for completion
-        num_batches = (len(rows) + batch_size - 1) // batch_size
-        for batch_idx in range(num_batches):
-            start = batch_idx * batch_size
-            end = min(start + batch_size, len(rows))
-            batch_rows = rows[start:end]
-            
+        # Batch probing: probe up to batch_size flows at a time, wait for completion.
+        #
+        # Important: within a batch, we enforce a "node-disjoint" constraint:
+        # no node can appear in more than one (src, dst) probe concurrently.
+        #
+        # Why? Concurrent probes that share endpoints (e.g., many flows originating
+        # from the same src node) contend for the NIC/CPU and can bias the
+        # measured link rates downward. Node-disjoint batching is slower but
+        # produces cleaner per-link throughput estimates (especially on WAN).
+        # Auto-cap by the maximum possible node-disjoint matching size.
+        # With N distinct nodes in the edge set, at most floor(N/2) probes can
+        # run concurrently without sharing endpoints.
+        nodes: set[int] = set()
+        for src, dst, _ in rows:
+            nodes.add(int(src))
+            nodes.add(int(dst))
+        disjoint_cap = max(1, len(nodes) // 2)
+        effective_limit = min(int(batch_size), disjoint_cap)
+
+        remaining = list(rows)
+
+        def pop_disjoint_batch(
+            remaining_rows: list[tuple[int, int, int]],
+            *,
+            limit: int,
+        ) -> tuple[list[tuple[int, int, int]], list[tuple[int, int, int]]]:
+            used: set[int] = set()
+            batch: list[tuple[int, int, int]] = []
+            rest: list[tuple[int, int, int]] = []
+
+            for src, dst, size in remaining_rows:
+                if len(batch) < limit and src not in used and dst not in used:
+                    batch.append((src, dst, size))
+                    used.add(src)
+                    used.add(dst)
+                else:
+                    rest.append((src, dst, size))
+            return batch, rest
+
+        while remaining:
+            batch_rows, remaining = pop_disjoint_batch(remaining, limit=effective_limit)
+            if not batch_rows:
+                # Should be impossible (the first row is always disjoint), but
+                # guard against accidental infinite loops.
+                raise RuntimeError("probe batching produced an empty batch")
+
+            # Optional warmup: run a smaller probe first for the same batch edges,
+            # wait for completion, then immediately run the measurement probes.
+            # This reduces the impact of startup/slow-start on the measured rate.
+            if warmup > 0:
+                warmup_ids: list[int] = []
+                with conn.cursor() as cursor:
+                    for src, dst, _ in batch_rows:
+                        cursor.execute(insert_sql, (src, dst, warmup))
+                        row = cursor.fetchone()
+                        if row:
+                            warmup_ids.append(int(row[0]))
+                _wait_for_probe_finish(conn, warmup_ids, timeout_secs=batch_timeout_secs)
+
             batch_ids: list[int] = []
             with conn.cursor() as cursor:
                 for src, dst, size in batch_rows:
@@ -173,13 +248,13 @@ def _request_link_probes(
                     row = cursor.fetchone()
                     if row:
                         batch_ids.append(int(row[0]))
-            
+
             all_ids.extend(batch_ids)
-            
-            # Wait for this batch to complete before starting next
-            if batch_idx < num_batches - 1:  # Don't wait after last batch
+
+            # Wait for this batch to complete before starting next.
+            if remaining:
                 _wait_for_probe_finish(conn, batch_ids, timeout_secs=batch_timeout_secs)
-    
+
     return all_ids
 
 
@@ -271,6 +346,9 @@ def _apply_link_rates(graph, rates_bps: dict[tuple[int, int], float]) -> None:
     for key, rate_bps in rates_bps.items():
         if key in graph.capacities:
             graph.capacities[key] = rate_bps / 1_000_000.0
+    # Keep adjacency capacities consistent with the probed snapshot.
+    # (Graph.adj stores capacities inline; planner helpers sometimes read it.)
+    graph.adj = graph._build_adjacency()
 
 
 def main() -> int:

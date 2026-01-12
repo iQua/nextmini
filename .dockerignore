@@ -1,0 +1,28 @@
+.git
+.git/**
+.DS_Store
+
+# Per-host caches (can have root-owned/unreadable files)
+.multidc_cache
+.multidc_cache/**
+**/.multidc_cache/**
+
+# Rust/Python build artifacts not needed for container builds
+target
+target/**
+**/target/**
+__pycache__
+**/__pycache__/**
+*.pyc
+*.pyo
+
+# WAN experiment outputs (large, local-only)
+examples/rl/multidc/results
+examples/rl/multidc/results/**
+examples/rl/multidc/archives
+examples/rl/multidc/archives/**
+examples/rl/multidc/artifacts/received
+examples/rl/multidc/artifacts/received/**
+tensors
+tensors/**
+**/tensors/**

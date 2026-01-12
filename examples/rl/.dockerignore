@@ -14,3 +14,5 @@ build
 .gitignore
 output
 .DS_Store
+.multidc_cache
+.multidc_cache/**

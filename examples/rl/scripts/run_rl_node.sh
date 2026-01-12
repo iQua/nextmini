@@ -16,8 +16,15 @@ sleep 2
 export PYTHONUNBUFFERED=1
 export UV_NO_PROGRESS=1
 
-# Use a container-specific venv path to avoid conflicts with host's .venv
-CONTAINER_VENV="/tmp/.venv-nextmini"
+# Persist per-host Python venv (bind-mounted /workspace lives on the VM).
+# Rust toolchains are already baked into the Docker image under /root/.rustup, so
+# DO NOT override RUSTUP_HOME by default (doing so breaks rustup's toolchain selection).
+CONTAINER_VENV="${CONTAINER_VENV:-/workspace/.multidc_cache/venv_rl}"
+
+# Optionally persist Cargo registry/git caches across runs.
+export CARGO_HOME="${CARGO_HOME:-/workspace/.multidc_cache/cargo}"
+
+mkdir -p "$(dirname "${CONTAINER_VENV}")" "${CARGO_HOME}"
 
 if [[ ! -d "${CONTAINER_VENV}" ]]; then
   python -m pip install --upgrade pip >/dev/null
@@ -46,8 +53,8 @@ if [[ "${role}" == "trainer" ]]; then
   fi
 fi
 
-# Torch: prefer CUDA wheels when GPUs are requested.
-TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+# Torch: default to CPU wheels (WAN testbeds are often CPU-only).
+TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
 if [[ "${TORCH_INDEX_URL}" == "pypi" ]]; then
   uv pip install "torch>=2.4.0" >/dev/null
 else
@@ -71,26 +78,35 @@ PY
 fi
 
 uv pip install transformers>=4.30.0 >/dev/null
-uv pip install datasets>=2.0.0 >/dev/null
 uv pip install accelerate >/dev/null
 uv pip install tqdm>=4.65.0 >/dev/null
+if [[ "${role}" == "trainer" ]]; then
+  uv pip install datasets>=2.0.0 >/dev/null
+fi
 
-# Build or install nextmini_py wheel
-if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-  echo "Building nextmini_py..."
-  uv pip install maturin >/dev/null
-  maturin develop --release -m python-api/Cargo.toml -F python-extension >/dev/null
-else
-  wheel_path="${NEXTMINI_PY_WHEEL:-}"
-  if [[ -z "${wheel_path}" ]]; then
-    wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+# Build nextmini_py only if it's not already importable in the (persistent) venv.
+force_rebuild="${NEXTMINI_PY_FORCE_REBUILD:-0}"
+if [[ "${force_rebuild}" == "1" ]]; then
+  python -m pip uninstall -y nextmini_py >/dev/null 2>&1 || true
+fi
+
+if [[ "${force_rebuild}" == "1" ]] || ! python -c 'import nextmini_py' >/dev/null 2>&1; then
+  if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+    echo "Building nextmini_py..."
+    uv pip install maturin >/dev/null
+    maturin develop --release -m python-api/Cargo.toml -F python-extension >/dev/null
+  else
+    wheel_path="${NEXTMINI_PY_WHEEL:-}"
+    if [[ -z "${wheel_path}" ]]; then
+      wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+    fi
+    if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
+      echo "SKIP_BUILD=1 but nextmini_py wheel not found. Set NEXTMINI_PY_WHEEL to a valid path." >&2
+      exit 1
+    fi
+    echo "Installing pre-built wheel: ${wheel_path}"
+    uv pip install "${wheel_path}" >/dev/null
   fi
-  if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
-    echo "SKIP_BUILD=1 but nextmini_py wheel not found. Set NEXTMINI_PY_WHEEL to a valid path." >&2
-    exit 1
-  fi
-  echo "Installing pre-built wheel: ${wheel_path}"
-  uv pip install "${wheel_path}" >/dev/null
 fi
 
 # Set PYTHONPATH so relative imports work

@@ -36,6 +36,16 @@ In practice, a good split is:
 - Local machine needs: `python3` (3.11+), `ssh`, `rsync`.
   - Optional: `pssh`/`pscp` if you prefer those tools; the provided runner already parallelizes SSH work internally.
 
+### Quick bootstrap (fresh Ubuntu VMs)
+
+On each VM (or via SSH), run:
+
+```bash
+sudo bash examples/rl/scripts/bootstrap_ubuntu.sh
+```
+
+This installs `docker`, `rsync`, and `iperf3`, and prints a reminder about required ports.
+
 ## Inventory
 
 Copy and edit:
@@ -57,6 +67,25 @@ python examples/rl/scripts/multidc.py run-bench \
   --rounds 20 \
   --algorithm cf_bottleneck
 ```
+
+### Probing sanity checks (recommended on WAN)
+
+When using `--probe-links`, you can also collect an ICMP ping matrix (RTT/loss) between nodes and
+enable an automatic **outlier re-probe** pass (low-capacity probe results are re-measured sequentially).
+
+```bash
+python examples/rl/scripts/multidc.py run-bench \
+  --inventory examples/rl/multidc/inventory.toml \
+  --bytes $((1 * 1024 * 1024 * 1024)) \
+  --rounds 5 \
+  --algorithm cf_bottleneck \
+  --probe-links \
+  --collect-ping-matrix
+```
+
+Notes:
+- Outlier re-probing is enabled by default; disable with `--no-probe-retest-outliers`.
+- The ping matrix + re-probe details are written into `examples/rl/multidc/results/results.meta.json`.
 
 Outputs:
 - Syncs the repo to each VM (`remote_repo_dir`).
