@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use memmap2::Mmap;
 use once_cell::sync::OnceCell;
 use pyo3::conversion::IntoPyObject;
 use pyo3::exceptions::{PyKeyError, PyRuntimeError};
@@ -301,6 +302,111 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, file_path, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None))]
+    fn send_file(
+        &self,
+        group_id: u64,
+        dest_ip: &str,
+        receiver_ids: Vec<usize>,
+        file_path: String,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        congestion: Option<String>,
+    ) -> PyResult<u64> {
+        #[allow(unused_variables)]
+        let dest_ip_addr = parse_ipv4(dest_ip)?;
+        if receiver_ids.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "receiver_ids must contain at least one entry.",
+            ));
+        }
+
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+
+        let file = std::fs::File::open(&file_path).map_err(|e| {
+            PyRuntimeError::new_err(format!("failed to open file '{file_path}': {e}"))
+        })?;
+        let total_bytes = file
+            .metadata()
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!(
+                    "failed to stat file '{file_path}' for transfer size: {e}"
+                ))
+            })?
+            .len();
+        if total_bytes == 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "file '{file_path}' is empty; nothing to transmit."
+            )));
+        }
+
+        let mmap = unsafe { Mmap::map(&file) }.map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "failed to memory-map file '{file_path}' for transfer: {e}"
+            ))
+        })?;
+
+        if usize::try_from(total_bytes).is_err() {
+            return Err(PyRuntimeError::new_err(format!(
+                "file '{file_path}' is too large to map into memory on this platform."
+            )));
+        }
+
+        let source_buffer = Bytes::from_owner(mmap);
+        if source_buffer.len() as u64 != total_bytes {
+            return Err(PyRuntimeError::new_err(format!(
+                "mapped file '{file_path}' has unexpected size (expected {total_bytes} bytes, got {}).",
+                source_buffer.len()
+            )));
+        }
+
+        // Compute deterministic session_id from group_id and source_node_id
+        #[allow(unused_variables)]
+        let sid = multicast_session_id(group_id, self.cfg.node_id);
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.lossless_runtime {
+                let runtime_config = &self.cfg.lossless_runtime_config;
+                if let Some(mode) = congestion.as_deref()
+                    && mode != "static"
+                {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "invalid congestion control: {mode}"
+                    )));
+                }
+                let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+                let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+                let common = session::runtime::CommonConfig {
+                    session_id: sid,
+                    dest_ip: dest_ip_addr,
+                    chunk_size,
+                    src_port: sp,
+                    dst_port: dp,
+                    data_bucket: runtime_config.data_bucket.clone(),
+                    local_node_id: self.cfg.node_id,
+                    user_space_base_addr: self.cfg.user_space_base_addr,
+                    local_netmask: self.cfg.local_netmask,
+                };
+                let cfg = session::runtime::SenderConfig {
+                    common,
+                    receiver_ids,
+                    total_bytes,
+                    source_buffer,
+                    ready_grace_ms: runtime_config.ready_grace_ms,
+                    topology_ready: None,
+                };
+                let started_sid = rt().block_on(handle.start_sender(cfg));
+                return Ok(started_sid);
+            }
+        }
+
+        Ok(sid)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
     fn receive_data(
         &self,
@@ -351,6 +457,61 @@ impl Dataplane {
                 // Direct registration - both sender and receiver compute same session_id
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
                 self.remember_buffer_sink(started_sid, sink_buf);
+                return Ok(started_sid);
+            }
+        }
+
+        Ok(sid)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
+    fn receive_discard(
+        &self,
+        group_id: u64,
+        dest_ip: &str,
+        source_node_id: usize,
+        expected_bytes: u64,
+        chunk_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<u64> {
+        #[allow(unused_variables)]
+        let ip = parse_ipv4(dest_ip)?;
+        if expected_bytes == 0 {
+            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
+        }
+
+        if chunk_size == 0 {
+            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        }
+
+        // Compute deterministic session_id from group_id and source_node_id
+        #[allow(unused_variables)]
+        let sid = multicast_session_id(group_id, source_node_id);
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.lossless_runtime {
+                let runtime_config = &self.cfg.lossless_runtime_config;
+                let common = session::runtime::CommonConfig {
+                    session_id: sid,
+                    dest_ip: ip,
+                    chunk_size,
+                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
+                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    data_bucket: runtime_config.data_bucket.clone(),
+                    local_node_id: self.cfg.node_id,
+                    user_space_base_addr: self.cfg.user_space_base_addr,
+                    local_netmask: self.cfg.local_netmask,
+                };
+                let cfg = session::runtime::ReceiverConfig {
+                    common,
+                    source_node_id,
+                    expected_bytes,
+                    sink_buffer: None,
+                };
+                // Direct registration - both sender and receiver compute same session_id
+                let started_sid = rt().block_on(handle.start_receiver(cfg));
                 return Ok(started_sid);
             }
         }

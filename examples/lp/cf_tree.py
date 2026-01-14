@@ -452,26 +452,124 @@ def build_cf_tree(
     sanitized_budgets = _sanitize_node_egress_budgets(node_egress_budgets)
     sanitized_fanout = _sanitize_fanout_caps(fanout_caps)
 
+    def _apply_path(
+        tree_nodes: dict[NodeId, int],
+        out_degree: dict[NodeId, int],
+        path: list[NodeId],
+    ) -> tuple[dict[NodeId, int], dict[NodeId, int]]:
+        """Return updated (tree_nodes, out_degree) after installing `path`."""
+        new_tree_nodes = dict(tree_nodes)
+        new_out_degree = dict(out_degree)
+        for i in range(len(path) - 1):
+            u, v = path[i], path[i + 1]
+            if v not in new_tree_nodes:
+                new_tree_nodes[v] = new_tree_nodes[u] + 1
+                new_out_degree[u] = new_out_degree.get(u, 0) + 1
+                new_out_degree.setdefault(v, 0)
+        return new_tree_nodes, new_out_degree
+
+    def _pick_next_augmentation(
+        remaining: set[NodeId],
+        *,
+        tree_nodes: dict[NodeId, int],
+        out_degree: dict[NodeId, int],
+    ) -> tuple[NodeId, list[NodeId]] | None:
+        """Pick the next terminal + path to attach.
+
+        For bottleneck sweeps (required_rate != None), the naive greedy choice can
+        consume hop slack on critical relays and dead-end even when a feasible
+        hop-limited tree exists. To avoid this, prefer augmentations that preserve
+        reachability of the remaining terminals under the current constraints,
+        breaking ties by CF/Dijkstra cost.
+        """
+        if not remaining:
+            return None
+
+        candidates: list[tuple[float, NodeId, list[NodeId]]] = []
+        for terminal in sorted(remaining):
+            result = layered.dijkstra_to_terminal(
+                tree_nodes,
+                terminal,
+                required_rate=required_rate,
+                out_degree=out_degree,
+                node_egress_budgets=sanitized_budgets,
+                fanout_caps=sanitized_fanout,
+            )
+            if result is None:
+                continue
+            path, cost = result
+            candidates.append((cost, terminal, path))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: (x[0], x[1]))
+
+        # Match the original BuildTree behavior when we are not running a
+        # bottleneck sweep.
+        if required_rate is None or required_rate <= 0.0:
+            _, terminal, path = candidates[0]
+            return terminal, path
+
+        best_terminal: NodeId | None = None
+        best_path: list[NodeId] | None = None
+        best_reachable = -1
+        best_cost = float("inf")
+
+        for cost, terminal, path in candidates:
+            next_tree_nodes, next_out_degree = _apply_path(tree_nodes, out_degree, path)
+            remaining_after = set(remaining)
+            remaining_after.discard(terminal)
+
+            reachable = 0
+            for t_id in remaining_after:
+                if (
+                    layered.dijkstra_to_terminal(
+                        next_tree_nodes,
+                        t_id,
+                        required_rate=required_rate,
+                        out_degree=next_out_degree,
+                        node_egress_budgets=sanitized_budgets,
+                        fanout_caps=sanitized_fanout,
+                    )
+                    is not None
+                ):
+                    reachable += 1
+
+            if reachable == len(remaining_after):
+                return terminal, path
+
+            if (
+                reachable > best_reachable
+                or (reachable == best_reachable and cost < best_cost)
+                or (
+                    reachable == best_reachable
+                    and cost == best_cost
+                    and (best_terminal is None or terminal < best_terminal)
+                )
+            ):
+                best_terminal = terminal
+                best_path = path
+                best_reachable = reachable
+                best_cost = cost
+
+        assert best_terminal is not None
+        assert best_path is not None
+        return best_terminal, best_path
+
     remaining = set(terminals)
     remaining.discard(src)
 
     while remaining:
-        result = layered.dijkstra_to_any_terminal(
-            tree_nodes,
-            remaining,
-            required_rate=required_rate,
-            out_degree=out_degree,
-            node_egress_budgets=sanitized_budgets,
-            fanout_caps=sanitized_fanout,
-        )
-        if result is None:
+        choice = _pick_next_augmentation(remaining, tree_nodes=tree_nodes, out_degree=out_degree)
+        if choice is None:
             missing = sorted(remaining)
             raise ValueError(
                 f"Terminals {missing} unreachable from source {src} "
                 f"within {hop_limit} hops"
             )
 
-        terminal, path, _ = result
+        terminal, path = choice
 
         for i in range(len(path) - 1):
             u, v = path[i], path[i + 1]
