@@ -3,6 +3,7 @@ services:
     image: postgres:16-alpine
     container_name: rl-postgres
     hostname: postgres
+    init: true
     restart: unless-stopped
     environment:
       POSTGRES_USER: pgusr
@@ -29,6 +30,7 @@ services:
     image: nextmini_controller
     container_name: rl-controller
     hostname: controller
+    init: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,7 +40,7 @@ services:
       - ../../:/workspace:cached
       - ./configs-docker/controller-config.toml:/var/nextmini/config.toml
     working_dir: /var/nextmini
-    command: /bin/bash -c "sleep 5 && /var/nextmini/controller"
+    command: /bin/bash -lc "sleep 5; exec /var/nextmini/controller"
     ports:
       - "3000:3000"
     networks:
@@ -52,6 +54,7 @@ services:
     image: nextmini_rl_python
     container_name: rl-trainer
     hostname: trainer
+    init: true
     deploy:
       resources:
         reservations:
@@ -75,7 +78,7 @@ services:
       - bash
       - -lc
       - >
-        examples/rl/scripts/run_rl_node.sh trainer
+        exec examples/rl/scripts/run_rl_node.sh trainer
         examples/rl/configs-docker/trainer-config.toml
     networks:
       rl_net:
@@ -88,6 +91,7 @@ services:
     image: nextmini_rl_python
     container_name: rl-worker-0
     hostname: worker-0
+    init: true
     deploy:
       resources:
         reservations:
@@ -110,7 +114,7 @@ services:
       - bash
       - -lc
       - >
-        examples/rl/scripts/run_rl_node.sh worker
+        exec examples/rl/scripts/run_rl_node.sh worker
         examples/rl/configs-docker/worker0-config.toml
         --rank 0
         --gpu 0
@@ -125,6 +129,7 @@ services:
     image: nextmini_rl_python
     container_name: rl-worker-1
     hostname: worker-1
+    init: true
     deploy:
       resources:
         reservations:
@@ -147,7 +152,7 @@ services:
       - bash
       - -lc
       - >
-        examples/rl/scripts/run_rl_node.sh worker
+        exec examples/rl/scripts/run_rl_node.sh worker
         examples/rl/configs-docker/worker1-config.toml
         --rank 1
         --gpu 0
