@@ -16,15 +16,21 @@ sleep 2
 export PYTHONUNBUFFERED=1
 export UV_NO_PROGRESS=1
 
-# Persist per-host Python venv (bind-mounted /workspace lives on the VM).
-# Rust toolchains are already baked into the Docker image under /root/.rustup, so
-# DO NOT override RUSTUP_HOME by default (doing so breaks rustup's toolchain selection).
-CONTAINER_VENV="${CONTAINER_VENV:-/workspace/.multidc_cache/venv_rl}"
+# Default to a per-container venv to avoid cross-container races under `docker compose up`.
+# For persistent caching across runs, set NEXTMINI_CACHE_DIR (e.g., /workspace/.multidc_cache).
+NEXTMINI_CACHE_DIR="${NEXTMINI_CACHE_DIR:-}"
+if [[ -n "${NEXTMINI_CACHE_DIR}" ]]; then
+  mkdir -p "${NEXTMINI_CACHE_DIR}"
+  CONTAINER_VENV="${CONTAINER_VENV:-${NEXTMINI_CACHE_DIR}/venv_rl_${HOSTNAME}}"
+  export UV_CACHE_DIR="${UV_CACHE_DIR:-${NEXTMINI_CACHE_DIR}/uv}"
+  export CARGO_HOME="${CARGO_HOME:-${NEXTMINI_CACHE_DIR}/cargo}"
+else
+  CONTAINER_VENV="${CONTAINER_VENV:-/tmp/.venv-nextmini-${HOSTNAME}}"
+  export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache-${HOSTNAME}}"
+  export CARGO_HOME="${CARGO_HOME:-/tmp/cargo-${HOSTNAME}}"
+fi
 
-# Optionally persist Cargo registry/git caches across runs.
-export CARGO_HOME="${CARGO_HOME:-/workspace/.multidc_cache/cargo}"
-
-mkdir -p "$(dirname "${CONTAINER_VENV}")" "${CARGO_HOME}"
+mkdir -p "$(dirname "${CONTAINER_VENV}")" "${UV_CACHE_DIR}" "${CARGO_HOME}"
 
 if [[ ! -d "${CONTAINER_VENV}" ]]; then
   python -m pip install --upgrade pip >/dev/null
@@ -84,6 +90,42 @@ if [[ "${role}" == "trainer" ]]; then
   uv pip install datasets>=2.0.0 >/dev/null
 fi
 
+# A lock to avoid concurrent Rust builds across containers sharing the same `/workspace`.
+NEXTMINI_WHEELS_DIR="${NEXTMINI_WHEELS_DIR:-}"
+if [[ -z "${NEXTMINI_WHEELS_DIR}" ]]; then
+  if [[ -d "/workspace/target" ]]; then
+    NEXTMINI_WHEELS_DIR="/workspace/target/wheels"
+  else
+    NEXTMINI_WHEELS_DIR="$(pwd)/target/wheels"
+  fi
+fi
+
+NEXTMINI_BUILD_LOCK="${NEXTMINI_BUILD_LOCK:-}"
+if [[ -z "${NEXTMINI_BUILD_LOCK}" ]]; then
+  if [[ -d "/workspace/target" ]]; then
+    NEXTMINI_BUILD_LOCK="/workspace/target/.nextmini_py_build.lock"
+  else
+    NEXTMINI_BUILD_LOCK="/tmp/.nextmini_py_build.lock"
+  fi
+fi
+
+with_build_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"${NEXTMINI_BUILD_LOCK}"
+    flock -x 9
+    "$@"
+    flock -u 9 || true
+    exec 9>&- || true
+  else
+    local lock_dir="${NEXTMINI_BUILD_LOCK}.d"
+    while ! mkdir "${lock_dir}" 2>/dev/null; do
+      sleep 0.1
+    done
+    "$@"
+    rmdir "${lock_dir}" || true
+  fi
+}
+
 # Build nextmini_py only if it's not already importable in the (persistent) venv.
 force_rebuild="${NEXTMINI_PY_FORCE_REBUILD:-0}"
 if [[ "${force_rebuild}" == "1" ]]; then
@@ -92,13 +134,30 @@ fi
 
 if [[ "${force_rebuild}" == "1" ]] || ! python -c 'import nextmini_py' >/dev/null 2>&1; then
   if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-    echo "Building nextmini_py..."
+    echo "Building nextmini_py wheel..."
     uv pip install maturin >/dev/null
-    maturin develop --release -m python-api/Cargo.toml -F python-extension >/dev/null
+    with_build_lock bash -c '
+      set -euo pipefail
+      mkdir -p "'"${NEXTMINI_WHEELS_DIR}"'" || true
+      if [[ "'"${force_rebuild}"'" == "1" ]]; then
+        rm -f "'"${NEXTMINI_WHEELS_DIR}"'"/nextmini_py-*.whl 2>/dev/null || true
+      fi
+      wheel_path=$(ls -1t "'"${NEXTMINI_WHEELS_DIR}"'"/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+      if [[ -z "${wheel_path}" ]]; then
+        maturin build --release -m python-api/Cargo.toml -F python-extension >/dev/null
+      fi
+    '
+    wheel_path=$(ls -1t "${NEXTMINI_WHEELS_DIR}"/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+    if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
+      echo "Failed to build nextmini_py wheel under ${NEXTMINI_WHEELS_DIR}." >&2
+      exit 1
+    fi
+    echo "Installing wheel: ${wheel_path}"
+    uv pip install "${wheel_path}" >/dev/null
   else
     wheel_path="${NEXTMINI_PY_WHEEL:-}"
     if [[ -z "${wheel_path}" ]]; then
-      wheel_path=$(ls -1t /workspace/target/wheels/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
+      wheel_path=$(ls -1t "${NEXTMINI_WHEELS_DIR}"/nextmini_py-*.whl 2>/dev/null | head -n1 || true)
     fi
     if [[ -z "${wheel_path}" || ! -f "${wheel_path}" ]]; then
       echo "SKIP_BUILD=1 but nextmini_py wheel not found. Set NEXTMINI_PY_WHEEL to a valid path." >&2
