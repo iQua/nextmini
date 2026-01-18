@@ -4,10 +4,10 @@ use std::pin::Pin;
 use std::{mem, slice};
 
 use bytes::{Bytes, BytesMut};
+use pyo3::PyErr;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes};
-use pyo3::PyErr;
 
 /// Mutable builder for constructing packets incrementally.
 #[pyclass]
@@ -93,10 +93,7 @@ impl OwnedPyBuffer {
         let raw_readonly = raw.readonly;
 
         let len = usize::try_from(raw_len).map_err(|_| {
-            PyValueError::new_err(format!(
-                "buffer length {} does not fit into usize",
-                raw_len
-            ))
+            PyValueError::new_err(format!("buffer length {} does not fit into usize", raw_len))
         })?;
         if raw_buf.is_null() && len != 0 {
             return Err(PyValueError::new_err("buffer pointer is null"));

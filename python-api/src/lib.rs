@@ -116,12 +116,11 @@ impl PacketReceiver {
             rt().block_on(async move {
                 let mut guard = inner.lock().await;
                 let first = match timeout_ms {
-                    Some(ms) => tokio::time::timeout(
-                        std::time::Duration::from_millis(ms),
-                        guard.recv(),
-                    )
-                    .await
-                    .unwrap_or_default(),
+                    Some(ms) => {
+                        tokio::time::timeout(std::time::Duration::from_millis(ms), guard.recv())
+                            .await
+                            .unwrap_or_default()
+                    }
                     None => guard.recv().await,
                 };
 
