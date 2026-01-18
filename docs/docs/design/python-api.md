@@ -30,10 +30,10 @@ govern fragmentation, telemetry, and group coordination.
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
-| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
-| `nextmini_py.PacketView` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
-| `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns a `PayloadDelivery` object containing the payload and metadata. |
-| `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Metadata-rich wrapper returned by receivers. Fragmentation metadata fields are optional and may be `None`. |
+| `nextmini_py.Dataplane` | `send_to_node`, `send_many_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
+| `nextmini_py.PacketView` | `__len__`, `from_buffer(data, copy=True)`, `read()`, `slice(start, length=None)` | Read-only wrapper around packet data that implements the Python buffer protocol. Use `from_buffer(..., copy=False)` to borrow from NumPy/memoryview without copying. |
+| `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_many(max_items, timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns `PayloadDelivery` objects containing payload + metadata. |
+| `nextmini_py.PayloadDelivery` | `.payload`, `.frozen_payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Metadata-rich wrapper returned by receivers. `.payload` copies into a Python `bytes`; prefer `.frozen_payload` for zero-copy reads. |
 
 ## Dataplane lifecycle
 
@@ -59,7 +59,10 @@ import nextmini_py as nm
 
 def packet_view_from_tensor(tensor) -> nm.PacketView:
     host_tensor = tensor.detach().contiguous().cpu()
-    return nm.PacketView(host_tensor.numpy().tobytes())
+    # Zero-copy: borrow a read-only NumPy buffer directly (requires a contiguous CPU tensor).
+    arr = host_tensor.numpy()
+    arr.setflags(write=False)
+    return nm.PacketView.from_buffer(arr, copy=False)
 
 dp = nm.Dataplane("/abs/path/to/node-config.toml")
 payload = packet_view_from_tensor(loss_tensor)
@@ -67,12 +70,14 @@ dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
 `send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the lossless session APIs to transmit payloads.
+Even when `PacketView.from_buffer(..., copy=False)` is used, `send_to_node` still copies the payload into a new Rust-owned packet buffer to prepend the IPv4/TCP headers.
 
 ### PacketView in detail
 
 `PacketView` keeps a reference-counted `Bytes` backing store so clones are cheap. The object:
 
-- Accepts any `bytes` value in its constructor.
+- Accepts any `bytes` value in its constructor (copying into Rust-owned memory).
+- Accepts any read-only buffer-protocol exporter via `PacketView.from_buffer(..., copy=False)` (zero-copy).
 - Implements `memoryview(packet_view)`/`np.frombuffer(...)` via the Python buffer protocol.
 - Provides `slice(start, length=None)` for zero-copy views into subranges.
 - Supplies `read()` if you need an owned `bytes` copy on the Python side.
@@ -92,7 +97,9 @@ rx = dp.register_receiver_from_node(src_node_id=1)
 
 delivery = rx.recv(timeout_ms=5_000)
 if delivery:
-    arr = np.frombuffer(delivery.payload, dtype=np.float32)
+    # `.payload` materializes a fresh `bytes` object (copy).
+    # Prefer `.frozen_payload` for zero-copy reads via the buffer protocol.
+    arr = np.frombuffer(delivery.frozen_payload, dtype=np.float32)
     print("flow:", delivery.flow_id, "message:", delivery.message_id)
 ```
 
