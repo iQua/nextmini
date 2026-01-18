@@ -14,6 +14,7 @@ sleep 2
 
 export PYTHONUNBUFFERED=1
 export UV_NO_PROGRESS=1
+export UV_CACHE_DIR="${UV_CACHE_DIR:-/workspace/.multidc_cache/uv}"
 
 # Persist per-host Python venv (bind-mounted /workspace lives on the VM).
 # Rust toolchains are already baked into the Docker image under /root/.rustup, so
@@ -23,7 +24,35 @@ CONTAINER_VENV="${CONTAINER_VENV:-/workspace/.multidc_cache/venv}"
 # Optionally persist Cargo registry/git caches across runs.
 export CARGO_HOME="${CARGO_HOME:-/workspace/.multidc_cache/cargo}"
 
-mkdir -p "$(dirname "${CONTAINER_VENV}")" "${CARGO_HOME}"
+VENV_LOCK="${VENV_LOCK:-/workspace/.multidc_cache/venv.lock}"
+
+mkdir -p "$(dirname "${CONTAINER_VENV}")" "${CARGO_HOME}" "${UV_CACHE_DIR}" "$(dirname "${VENV_LOCK}")"
+
+lock_fd=""
+lock_dir=""
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"${VENV_LOCK}"
+  flock -x 9
+  lock_fd="9"
+else
+  lock_dir="${VENV_LOCK}.d"
+  while ! mkdir "${lock_dir}" 2>/dev/null; do
+    sleep 0.1
+  done
+fi
+
+release_lock() {
+  if [[ -n "${lock_fd}" ]]; then
+    flock -u "${lock_fd}" || true
+    exec 9>&- || true
+    lock_fd=""
+  fi
+  if [[ -n "${lock_dir}" ]]; then
+    rmdir "${lock_dir}" || true
+    lock_dir=""
+  fi
+}
+trap 'release_lock' EXIT
 
 if [[ ! -d "${CONTAINER_VENV}" ]]; then
   python -m pip install --upgrade pip >/dev/null
@@ -35,8 +64,8 @@ fi
 
 source "${CONTAINER_VENV}/bin/activate"
 
-uv pip install numpy >/dev/null
-uv pip install "psycopg[binary]" >/dev/null || true
+python -c 'import numpy' >/dev/null 2>&1 || uv pip install numpy >/dev/null
+python -c 'import psycopg' >/dev/null 2>&1 || uv pip install "psycopg[binary]" >/dev/null || true
 
 if [[ "${role}" == "trainer" ]]; then
   algo="${BROADCAST_ALGO:-${MULTICAST_TREE_ALGO:-cf_tree}}"
@@ -69,7 +98,7 @@ if [[ "${role}" == "trainer" ]]; then
   esac
 
   if [[ "${needs_cvxopt}" == "1" ]]; then
-    uv pip install cvxopt >/dev/null || {
+    python -c 'import cvxopt' >/dev/null 2>&1 || uv pip install cvxopt >/dev/null || {
       echo "Failed to install cvxopt (required for LP-backed planners: ${algo})." >&2
       echo "Tip: use --algorithm cf_bottleneck_mwu (or cf_tree_mwu) to run without an LP solver." >&2
       exit 1
@@ -87,7 +116,7 @@ fi
 
 if [[ "${force_rebuild}" == "1" ]] || ! python -c 'import nextmini_py' >/dev/null 2>&1; then
   if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
-    uv pip install maturin >/dev/null
+    python -c 'import maturin' >/dev/null 2>&1 || uv pip install maturin >/dev/null
     maturin develop --release -m python-api/Cargo.toml -F python-extension >/dev/null
   else
     wheel_path="${NEXTMINI_PY_WHEEL:-}"
@@ -103,6 +132,8 @@ if [[ "${force_rebuild}" == "1" ]] || ! python -c 'import nextmini_py' >/dev/nul
 fi
 
 export PYTHONPATH=/workspace:${PYTHONPATH:-}
+
+release_lock
 
 exec python -m examples.rl.src.broadcast_bench \
   --role "${role}" \

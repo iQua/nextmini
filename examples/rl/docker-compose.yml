@@ -60,7 +60,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["0"]
               capabilities: [gpu]
     depends_on:
       controller:
@@ -72,7 +72,8 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
-      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+      NEXTMINI_PY_WHEEL: "${NEXTMINI_PY_WHEEL:-}"
       CUDA_VISIBLE_DEVICES: "0"
     command:
       - bash
@@ -97,7 +98,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["1"]
               capabilities: [gpu]
     depends_on:
       controller:
@@ -108,7 +109,8 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
-      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+      NEXTMINI_PY_WHEEL: "${NEXTMINI_PY_WHEEL:-}"
       CUDA_VISIBLE_DEVICES: "1"
     command:
       - bash
@@ -135,7 +137,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ["2"]
               capabilities: [gpu]
     depends_on:
       controller:
@@ -146,7 +148,8 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
-      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+      TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
+      NEXTMINI_PY_WHEEL: "${NEXTMINI_PY_WHEEL:-}"
       CUDA_VISIBLE_DEVICES: "2"
     command:
       - bash
