@@ -27,33 +27,14 @@ except ImportError as exc:
 class Trainer:
     def __init__(self, config_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Trainer initializing on {self.device}...")
-        
-        # Load Models
-        self.policy_model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME, 
-            torch_dtype=torch.float32,
-            trust_remote_code=True
-        ).to(self.device)
-        
-        # Reference model (frozen)
-        self.ref_model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME, 
-            torch_dtype=torch.float32,
-            trust_remote_code=True
-        ).to(self.device)
-        self.ref_model.eval()
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        
-        self.optimizer = AdamW(self.policy_model.parameters(), lr=config.LEARNING_RATE)
-        
-        self.dataset = GSM8KLoader("train")
-        
+        print(f"Trainer initializing on {self.device}...", flush=True)
+
         # Initialize nextmini dataplane
         self.config_path = config_path if config_path else config.TRAINER_CONFIG
-        print(f"Initializing nextmini dataplane with config: {self.config_path}")
+        print(
+            f"Initializing nextmini dataplane with config: {self.config_path}",
+            flush=True,
+        )
         self.dataplane = nm.Dataplane(self.config_path)
         info = self.dataplane.get_network_info()
         self.user_space_address = info["user_space_address"]
@@ -82,14 +63,34 @@ class Trainer:
             self.worker_locks.append(threading.Lock())
 
         # Wait for topology to be ready (all nodes connected and routes installed)
-        print("Waiting for topology to be ready...")
-        self.dataplane.wait_for_topology_ready()
-        print("Topology is ready!")
-        
-        # Create Multicast Group
-        print(f"Creating multicast group '{config.MULTICAST_GROUP_NAME}'...")
-        self.dataplane.create_group(config.MULTICAST_GROUP_NAME)
         topo_timeout_ms = int(getattr(config, "TOPOLOGY_READY_TIMEOUT_MS", 600000))
+        print(
+            f"Waiting for topology to be ready (timeout={topo_timeout_ms}ms)...",
+            flush=True,
+        )
+        t0 = time.time()
+        while True:
+            remaining_ms = topo_timeout_ms - int((time.time() - t0) * 1000)
+            if remaining_ms <= 0:
+                raise TimeoutError(
+                    "Topology not ready before timeout. Common causes: a node is still "
+                    "building nextmini_py, downloading/loading HF models, or stuck on a build lock."
+                )
+            if self.dataplane.wait_for_topology_ready(timeout_ms=min(5000, remaining_ms)):
+                break
+            elapsed = time.time() - t0
+            print(
+                f"Still waiting for TopologyReady... elapsed={elapsed:.1f}s",
+                flush=True,
+            )
+        print("Topology is ready!", flush=True)
+
+        # Create Multicast Group
+        print(
+            f"Creating multicast group '{config.MULTICAST_GROUP_NAME}'...",
+            flush=True,
+        )
+        self.dataplane.create_group(config.MULTICAST_GROUP_NAME)
         self.group_id, self.group_ip, _ = self.dataplane.group_is_ready(timeout_ms=topo_timeout_ms)
         print(f"Multicast group ready: ID={self.group_id}, IP={self.group_ip}")
 
@@ -101,8 +102,34 @@ class Trainer:
         if throughput is not None:
             print(f"Applied LP multicast routes (throughput={throughput:.3f})")
         print(f"Installed multicast routes for group {self.group_id} ({len(edges)} edges)")
-        
-        print(f"Trainer ready with {len(self.worker_connections)} workers")
+
+        # Load models after the control-plane is established so the controller can reach
+        # TopologyReady quickly even if model initialization is slow.
+        print("Loading models...", flush=True)
+        self.policy_model = AutoModelForCausalLM.from_pretrained(
+            config.MODEL_NAME,
+            torch_dtype=torch.float32,
+            trust_remote_code=True,
+        ).to(self.device)
+
+        # Reference model (frozen)
+        self.ref_model = AutoModelForCausalLM.from_pretrained(
+            config.MODEL_NAME,
+            torch_dtype=torch.float32,
+            trust_remote_code=True,
+        ).to(self.device)
+        self.ref_model.eval()
+
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            config.MODEL_NAME,
+            trust_remote_code=True,
+        )
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.optimizer = AdamW(self.policy_model.parameters(), lr=config.LEARNING_RATE)
+        self.dataset = GSM8KLoader("train")
+
+        print(f"Trainer ready with {len(self.worker_connections)} workers", flush=True)
 
     def _compute_multicast_routes(self, receiver_ids):
         controller_path = Path(config.CONTROLLER_CONFIG)
@@ -255,9 +282,19 @@ class Trainer:
         # We need to accept handshakes from ANY worker, not just in order 0, 1, 2...
         # Because network arrival time is non-deterministic.
         
+        timeout_s = float(getattr(config, "WORKER_HANDSHAKE_TIMEOUT_S", 600))
+        deadline = time.time() + timeout_s
+
         connected_workers = set()
         
         while len(connected_workers) < num_workers:
+            if time.time() > deadline:
+                missing = sorted(set(range(num_workers)) - connected_workers)
+                raise TimeoutError(
+                    f"Timed out waiting for worker handshakes after {timeout_s:.0f}s. "
+                    f"Missing ranks={missing}"
+                )
+
             # Poll all workers
             found_new = False
             for i in range(num_workers):
@@ -267,7 +304,7 @@ class Trainer:
                 # Try to receive with a short timeout to poll
                 try:
                     # We use a short timeout to cycle through workers
-                    msg = self.recv_from_worker(i, timeout_ms=100) 
+                    msg = self.recv_from_worker(i, timeout_ms=100)
                     if msg:
                         if msg.get("type") == "HANDSHAKE":
                             rank = msg['rank']

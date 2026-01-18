@@ -21,17 +21,7 @@ class Worker:
     def __init__(self, rank: int, device_id: int = 0, config_path: str = None):
         self.rank = rank
         self.device = f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
-        
-        print(f"Worker {rank} initializing on {self.device}...")
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
-        model_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        self.model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME,
-            torch_dtype=model_dtype,
-            trust_remote_code=True,
-        ).to(self.device)
-        self.model.eval()
+        print(f"Worker {rank} initializing on {self.device}...", flush=True)
         
         # Get worker configuration
         if config_path:
@@ -75,6 +65,19 @@ class Worker:
         if not self.dataplane.wait_for_topology_ready(timeout_ms=timeout_ms):
             raise TimeoutError(f"Topology not ready after {timeout_ms}ms")
         print(f"Topology is ready!", flush=True)
+
+        print("Loading model...", flush=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            config.MODEL_NAME,
+            trust_remote_code=True,
+        )
+        model_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        self.model = AutoModelForCausalLM.from_pretrained(
+            config.MODEL_NAME,
+            torch_dtype=model_dtype,
+            trust_remote_code=True,
+        ).to(self.device)
+        self.model.eval()
         
         print(f"Worker {rank} ready.", flush=True)
 
