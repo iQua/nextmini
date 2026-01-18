@@ -1,9 +1,13 @@
 use std::ffi::{c_char, c_int, c_void};
+use std::marker::PhantomPinned;
+use std::pin::Pin;
+use std::{mem, slice};
 
 use bytes::{Bytes, BytesMut};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyAny, PyBytes};
+use pyo3::PyErr;
 
 /// Mutable builder for constructing packets incrementally.
 #[pyclass]
@@ -46,6 +50,94 @@ pub struct PacketView {
     pub(crate) inner: Bytes,
 }
 
+#[repr(transparent)]
+struct RawPyBuffer(pyo3::ffi::Py_buffer, PhantomPinned);
+
+/// Owning view over a Python buffer-protocol exporter.
+///
+/// `Py_buffer` exporters may create self-referential views; we pin the view in
+/// memory to keep any internal pointers valid for the lifetime of this struct.
+struct OwnedPyBuffer {
+    view: Pin<Box<RawPyBuffer>>,
+    len: usize,
+    readonly: bool,
+}
+
+unsafe impl Send for OwnedPyBuffer {}
+unsafe impl Sync for OwnedPyBuffer {}
+
+impl OwnedPyBuffer {
+    fn get(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let py = obj.py();
+        let mut view = Box::new(mem::MaybeUninit::<RawPyBuffer>::uninit());
+        let rc = unsafe {
+            pyo3::ffi::PyObject_GetBuffer(
+                obj.as_ptr(),
+                view.as_mut_ptr().cast::<pyo3::ffi::Py_buffer>(),
+                pyo3::ffi::PyBUF_SIMPLE,
+            )
+        };
+
+        if rc != 0 {
+            return Err(PyErr::fetch(py));
+        }
+
+        // Safety: `PyObject_GetBuffer` initialized the `Py_buffer` portion of
+        // `RawPyBuffer`. `PhantomPinned` is a ZST.
+        // TODO: replace with Box::assume_init once MSRV allows it.
+        let view: Box<RawPyBuffer> = unsafe { mem::transmute(view) };
+        let view = Pin::from(view);
+        let raw = &view.as_ref().get_ref().0;
+        let raw_len = raw.len;
+        let raw_buf = raw.buf;
+        let raw_readonly = raw.readonly;
+
+        let len = usize::try_from(raw_len).map_err(|_| {
+            PyValueError::new_err(format!(
+                "buffer length {} does not fit into usize",
+                raw_len
+            ))
+        })?;
+        if raw_buf.is_null() && len != 0 {
+            return Err(PyValueError::new_err("buffer pointer is null"));
+        }
+
+        Ok(Self {
+            view,
+            len,
+            readonly: raw_readonly != 0,
+        })
+    }
+
+    fn ptr(&self) -> *const u8 {
+        self.view.as_ref().get_ref().0.buf as *const u8
+    }
+
+    unsafe fn release(view: &mut Pin<Box<RawPyBuffer>>) {
+        // Safety: called at most once from Drop; PyO3 ensures we are attached
+        // to the interpreter in `Python::try_attach`.
+        unsafe {
+            pyo3::ffi::PyBuffer_Release(&mut Pin::get_unchecked_mut(view.as_mut()).0);
+        }
+    }
+}
+
+impl AsRef<[u8]> for OwnedPyBuffer {
+    fn as_ref(&self) -> &[u8] {
+        if self.len == 0 {
+            return &[];
+        }
+        unsafe { slice::from_raw_parts(self.ptr(), self.len) }
+    }
+}
+
+impl Drop for OwnedPyBuffer {
+    fn drop(&mut self) {
+        let view = &mut self.view;
+        let _ = Python::try_attach(|_| unsafe { Self::release(view) });
+    }
+}
+
 #[pymethods]
 impl PacketView {
     #[new]
@@ -56,10 +148,30 @@ impl PacketView {
     }
 
     #[staticmethod]
-    fn from_buffer(data: &Bound<'_, PyBytes>) -> Self {
-        Self {
-            inner: Bytes::copy_from_slice(data.as_bytes()),
+    #[pyo3(signature = (data, *, copy=true))]
+    fn from_buffer(data: &Bound<'_, PyAny>, copy: bool) -> PyResult<Self> {
+        if copy {
+            if let Ok(bytes) = data.cast::<PyBytes>() {
+                return Ok(Self {
+                    inner: Bytes::copy_from_slice(bytes.as_bytes()),
+                });
+            }
+
+            let buf = OwnedPyBuffer::get(data)?;
+            return Ok(Self {
+                inner: Bytes::copy_from_slice(buf.as_ref()),
+            });
         }
+
+        let buf = OwnedPyBuffer::get(data)?;
+        if !buf.readonly {
+            return Err(PyValueError::new_err(
+                "buffer is writable; use copy=True or pass a read-only buffer (e.g. memoryview(x).toreadonly() or a NumPy array with writeable=False)",
+            ));
+        }
+        Ok(Self {
+            inner: Bytes::from_owner(buf),
+        })
     }
 
     fn __len__(&self) -> usize {
@@ -157,6 +269,7 @@ impl PacketView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pyo3::types::{PyByteArray, PyByteArrayMethods, PyModule};
 
     #[test]
     fn packet_view_empty() {
@@ -287,6 +400,36 @@ mod tests {
                 buffer2.inner.as_ptr(),
                 "Clones should share the same underlying memory"
             );
+        });
+    }
+
+    #[test]
+    fn packet_view_from_buffer_zero_copy_bytearray() {
+        Python::attach(|py| {
+            let src = PyByteArray::new(py, b"hello world");
+            let src_ptr = src.data() as *const u8;
+
+            let builtins = PyModule::import(py, "builtins").expect("builtins");
+            let mv = builtins
+                .getattr("memoryview")
+                .expect("memoryview")
+                .call1((src,))
+                .expect("memoryview(src)")
+                .call_method0("toreadonly")
+                .expect("toreadonly");
+
+            let view = PacketView::from_buffer(mv.as_any(), false).expect("from_buffer");
+            assert_eq!(view.__len__(), 11);
+            assert_eq!(view.inner.as_ptr(), src_ptr);
+        });
+    }
+
+    #[test]
+    fn packet_view_from_buffer_rejects_writable() {
+        Python::attach(|py| {
+            let src = PyByteArray::new(py, b"hello world");
+            let err = PacketView::from_buffer(src.as_any(), false).unwrap_err();
+            assert!(err.to_string().contains("writable"));
         });
     }
 

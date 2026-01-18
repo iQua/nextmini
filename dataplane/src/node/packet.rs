@@ -3,13 +3,45 @@ use std::ops::Deref;
 use std::sync::Mutex;
 
 use byteorder::{BigEndian, ByteOrder};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use once_cell::sync::Lazy;
 
 use crate::node::flow;
 use crate::node::{FlowId, RECEIVE_BUF_SIZE};
 
 static PACKET_BUFFER_POOL: Lazy<Mutex<Vec<BytesMut>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Owner wrapper used to return packet buffers back into the global pool once
+/// all consumers drop the shared [`Bytes`] view.
+#[cfg(feature = "python-extension")]
+#[derive(Debug)]
+struct PacketBufOwner {
+    buf: BytesMut,
+    pooled: bool,
+}
+
+#[cfg(feature = "python-extension")]
+impl AsRef<[u8]> for PacketBufOwner {
+    fn as_ref(&self) -> &[u8] {
+        self.buf.as_ref()
+    }
+}
+
+#[cfg(feature = "python-extension")]
+impl Drop for PacketBufOwner {
+    fn drop(&mut self) {
+        if !self.pooled {
+            return;
+        }
+
+        let mut buf = std::mem::take(&mut self.buf);
+        buf.truncate(0);
+        if buf.capacity() > RECEIVE_BUF_SIZE * 4 {
+            buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
+        }
+        PACKET_BUFFER_POOL.lock().unwrap().push(buf);
+    }
+}
 
 /// A reusable packet buffer backed by a global pool.
 #[derive(Debug)]
@@ -40,10 +72,9 @@ impl PacketBuf {
 
     /// Wraps an existing vector without copying the contents.
     pub fn from_vec(vec: Vec<u8>) -> Self {
-        let mut bytes = BytesMut::with_capacity(vec.len());
-        bytes.extend_from_slice(&vec);
+        let bytes = Bytes::from(vec);
         PacketBuf {
-            buf: Some(bytes),
+            buf: Some(BytesMut::from(bytes)),
             pooled: false,
         }
     }
@@ -104,6 +135,19 @@ impl PacketBuf {
             .expect("packet buffer already released")
             .as_mut()
     }
+
+    #[cfg(feature = "python-extension")]
+    fn into_bytes(mut self) -> Bytes {
+        let Some(buf) = self.buf.take() else {
+            return Bytes::new();
+        };
+
+        let pooled = self.pooled;
+        // `Bytes::from_owner` keeps `PacketBufOwner` alive until the final clone
+        // of the `Bytes` is dropped, at which point the buffer is returned to
+        // the global pool (if `pooled`).
+        Bytes::from_owner(PacketBufOwner { buf, pooled })
+    }
 }
 
 impl Deref for PacketBuf {
@@ -162,6 +206,11 @@ impl Packet {
     /// Returns a read-only view over the packet payload.
     pub fn bytes(&self) -> &[u8] {
         &self.buffer[..self.packet_size]
+    }
+
+    #[cfg(feature = "python-extension")]
+    pub fn tcp_payload_range(&self) -> Option<std::ops::Range<usize>> {
+        self.tcp_payload_bounds().map(|(start, end)| start..end)
     }
 
     pub fn seq_num(&self) -> u32 {
@@ -234,6 +283,17 @@ impl Packet {
     pub fn tcp_payload(&self) -> Option<&[u8]> {
         let (start, end) = self.tcp_payload_bounds()?;
         Some(&self.bytes()[start..end])
+    }
+
+    #[cfg(feature = "python-extension")]
+    pub fn into_bytes(self) -> Bytes {
+        let packet_size = self.packet_size;
+        let bytes = self.buffer.into_bytes();
+        if bytes.len() > packet_size {
+            bytes.slice(..packet_size)
+        } else {
+            bytes
+        }
     }
 
     fn tcp_payload_bounds(&self) -> Option<(usize, usize)> {

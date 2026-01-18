@@ -49,6 +49,7 @@ pub type PythonDelivery = PayloadDelivery;
 
 #[derive(Clone, Debug)]
 /// Payload-only delivery metadata consumed by Python receivers.
+#[allow(dead_code)]
 pub struct PayloadDelivery {
     pub flow_id: FlowId,
     pub bytes: Bytes,
@@ -59,24 +60,6 @@ pub struct PayloadDelivery {
     pub message_id: Option<u64>,
     pub total_len: Option<u32>,
     pub fragment_count: Option<u16>,
-}
-
-impl PayloadDelivery {
-    fn log_queue_drop(&self) {
-        warn!(
-            flow = %self.flow_id,
-            src = %self.src_ip,
-            dst = %self.dst_ip,
-            src_port = self.src_port,
-            dst_port = self.dst_port,
-            payload_len = self.bytes.len(),
-            total_len = ?self.total_len,
-            fragment_count = ?self.fragment_count,
-            message_id = ?self.message_id,
-            "PythonInterface: queue unavailable for flow {}; dropping payload delivery.",
-            self.flow_id
-        );
-    }
 }
 
 impl PythonInterfaceHandle {
@@ -131,46 +114,47 @@ impl PythonInterfaceHandle {
     }
 
     async fn deliver_payload(&self, entry: ReceiverEntry, packet: Packet) -> Result<(), Packet> {
-        let slice = packet.tcp_payload().unwrap_or(packet.bytes());
+        let permit = if self.inner.backpressure {
+            match entry.sender.reserve().await {
+                Ok(permit) => permit,
+                Err(_) => return Err(packet),
+            }
+        } else {
+            match entry.sender.try_reserve() {
+                Ok(permit) => permit,
+                Err(TrySendError::Full(_)) => {
+                    warn!(
+                        flow = %packet.flow_id,
+                        payload_len = packet.tcp_payload_len(),
+                        "PythonInterface: queue full for flow {}; skipping Python delivery.",
+                        packet.flow_id
+                    );
+                    return Err(packet);
+                }
+                Err(TrySendError::Closed(_)) => return Err(packet),
+            }
+        };
+
+        let payload_range = packet.tcp_payload_range();
+        let flow_id = packet.flow_id;
+        let bytes = packet.into_bytes();
+        let bytes = match payload_range {
+            Some(range) => bytes.slice(range),
+            None => bytes,
+        };
         let delivery = PayloadDelivery {
-            flow_id: packet.flow_id,
-            bytes: Bytes::copy_from_slice(slice),
-            src_ip: packet.flow_id.src_ip(),
-            dst_ip: packet.flow_id.dst_ip(),
-            src_port: packet.flow_id.src_port(),
-            dst_port: packet.flow_id.dst_port(),
+            flow_id,
+            bytes,
+            src_ip: flow_id.src_ip(),
+            dst_ip: flow_id.dst_ip(),
+            src_port: flow_id.src_port(),
+            dst_port: flow_id.dst_port(),
             message_id: None,
             total_len: None,
             fragment_count: None,
         };
-
-        if Self::send_payload(entry, delivery, self.inner.backpressure)
-            .await
-            .is_err()
-        {
-            return Err(packet);
-        }
+        permit.send(delivery);
         Ok(())
-    }
-
-    async fn send_payload(
-        entry: ReceiverEntry,
-        payload: PayloadDelivery,
-        backpressure: bool,
-    ) -> Result<(), ()> {
-        if backpressure {
-            // With backpressure enabled, wait for capacity
-            entry.sender.send(payload).await.map_err(|_| ())
-        } else {
-            // Without backpressure, drop on full queue
-            match entry.sender.try_send(payload) {
-                Ok(()) => Ok(()),
-                Err(TrySendError::Full(dropped)) | Err(TrySendError::Closed(dropped)) => {
-                    dropped.log_queue_drop();
-                    Err(())
-                }
-            }
-        }
     }
 
     pub async fn publish_event(&self, event: PythonEvent) {

@@ -100,6 +100,55 @@ impl PacketReceiver {
             .transpose()
     }
 
+    #[pyo3(signature = (max_items, timeout_ms=None))]
+    fn recv_many(
+        &self,
+        max_items: usize,
+        timeout_ms: Option<u64>,
+        py: Python<'_>,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        if max_items == 0 {
+            return Ok(Vec::new());
+        }
+
+        let inner = self.inner.clone();
+        let deliveries = Python::detach(py, move || {
+            rt().block_on(async move {
+                let mut guard = inner.lock().await;
+                let first = match timeout_ms {
+                    Some(ms) => tokio::time::timeout(
+                        std::time::Duration::from_millis(ms),
+                        guard.recv(),
+                    )
+                    .await
+                    .unwrap_or_default(),
+                    None => guard.recv().await,
+                };
+
+                let Some(first) = first else {
+                    return Vec::new();
+                };
+
+                let mut out = Vec::with_capacity(max_items.min(16));
+                out.push(first);
+
+                while out.len() < max_items {
+                    match guard.try_recv() {
+                        Ok(delivery) => out.push(delivery),
+                        Err(_) => break,
+                    }
+                }
+
+                out
+            })
+        });
+
+        deliveries
+            .into_iter()
+            .map(|delivery| delivery_to_pyobject(py, delivery))
+            .collect()
+    }
+
     fn recv_async<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let inner = self.inner.clone();
         future_into_py(py, async move {
@@ -803,6 +852,36 @@ impl Dataplane {
         let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
         let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
         self.transmit_python_payload(src_ip, dst_ip, sp, dp, body)
+    }
+
+    #[pyo3(signature = (dst_node_id, frozens, src_port=None, dst_port=None))]
+    fn send_many_to_node(
+        &self,
+        py: Python<'_>,
+        dst_node_id: usize,
+        frozens: Vec<PacketView>,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<Vec<u64>> {
+        let src_ip = self.cfg.user_space_address;
+        let dst_ip =
+            (dst_node_id as NodeId).ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask);
+        let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
+        let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
+
+        py.detach(|| {
+            let mut ids = Vec::with_capacity(frozens.len());
+            for frozen in frozens {
+                ids.push(self.transmit_python_payload(
+                    src_ip,
+                    dst_ip,
+                    sp,
+                    dp,
+                    frozen.inner.clone(),
+                )?);
+            }
+            Ok(ids)
+        })
     }
 
     #[pyo3(signature = (label))]
