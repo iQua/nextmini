@@ -73,7 +73,6 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
-      NEXTMINI_PY_FORCE_REBUILD: "${NEXTMINI_PY_FORCE_REBUILD:-1}"
       TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
       NEXTMINI_PY_WHEEL: "${NEXTMINI_PY_WHEEL:-}"
       CUDA_VISIBLE_DEVICES: "0"
@@ -112,7 +111,6 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
-      NEXTMINI_PY_FORCE_REBUILD: "${NEXTMINI_PY_FORCE_REBUILD:-1}"
       TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
       NEXTMINI_PY_WHEEL: "${NEXTMINI_PY_WHEEL:-}"
       CUDA_VISIBLE_DEVICES: "1"
@@ -153,7 +151,6 @@ services:
     environment:
       RUST_LOG: "${RUST_LOG:-info}"
       SKIP_BUILD: "${SKIP_BUILD:-0}"
-      NEXTMINI_PY_FORCE_REBUILD: "${NEXTMINI_PY_FORCE_REBUILD:-1}"
       TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}"
       NEXTMINI_PY_WHEEL: "${NEXTMINI_PY_WHEEL:-}"
       CUDA_VISIBLE_DEVICES: "2"
