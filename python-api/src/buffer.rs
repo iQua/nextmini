@@ -53,6 +53,37 @@ pub struct PacketView {
 #[repr(transparent)]
 struct RawPyBuffer(pyo3::ffi::Py_buffer, PhantomPinned);
 
+/// Owns a Python `bytes` object while borrowing its immutable backing store.
+struct OwnedPyBytes {
+    bytes: Py<PyBytes>,
+}
+
+impl OwnedPyBytes {
+    fn new(bytes: &Bound<'_, PyBytes>) -> Self {
+        Self {
+            bytes: bytes.clone().unbind(),
+        }
+    }
+}
+
+impl AsRef<[u8]> for OwnedPyBytes {
+    fn as_ref(&self) -> &[u8] {
+        let (ptr, len) = Python::attach(|py| {
+            let bytes = self.bytes.bind(py);
+            let slice = bytes.as_bytes();
+            (slice.as_ptr(), slice.len())
+        });
+
+        if len == 0 {
+            return &[];
+        }
+
+        // Safety: `self.bytes` keeps the underlying `bytes` alive, and its
+        // contents are immutable.
+        unsafe { slice::from_raw_parts(ptr, len) }
+    }
+}
+
 /// Owning view over a Python buffer-protocol exporter.
 ///
 /// `Py_buffer` exporters may create self-referential views; we pin the view in
@@ -60,11 +91,7 @@ struct RawPyBuffer(pyo3::ffi::Py_buffer, PhantomPinned);
 struct OwnedPyBuffer {
     view: Pin<Box<RawPyBuffer>>,
     len: usize,
-    readonly: bool,
 }
-
-unsafe impl Send for OwnedPyBuffer {}
-unsafe impl Sync for OwnedPyBuffer {}
 
 impl OwnedPyBuffer {
     fn get(obj: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -86,11 +113,43 @@ impl OwnedPyBuffer {
         // `RawPyBuffer`. `PhantomPinned` is a ZST.
         // TODO: replace with Box::assume_init once MSRV allows it.
         let view: Box<RawPyBuffer> = unsafe { mem::transmute(view) };
-        let view = Pin::from(view);
-        let raw = &view.as_ref().get_ref().0;
+        let mut view = Pin::from(view);
+
+        struct BufferReleaseGuard {
+            view: *mut pyo3::ffi::Py_buffer,
+            active: bool,
+        }
+
+        impl BufferReleaseGuard {
+            unsafe fn new(view: &mut Pin<Box<RawPyBuffer>>) -> Self {
+                Self {
+                    view: &mut unsafe { Pin::get_unchecked_mut(view.as_mut()) }.0,
+                    active: true,
+                }
+            }
+
+            fn disarm(&mut self) {
+                self.active = false;
+            }
+        }
+
+        impl Drop for BufferReleaseGuard {
+            fn drop(&mut self) {
+                if !self.active {
+                    return;
+                }
+
+                // Safety: the view was initialized by `PyObject_GetBuffer`.
+                unsafe {
+                    pyo3::ffi::PyBuffer_Release(self.view);
+                }
+            }
+        }
+
+        let mut guard = unsafe { BufferReleaseGuard::new(&mut view) };
+        let raw = unsafe { &*guard.view };
         let raw_len = raw.len;
         let raw_buf = raw.buf;
-        let raw_readonly = raw.readonly;
 
         let len = usize::try_from(raw_len).map_err(|_| {
             PyValueError::new_err(format!("buffer length {} does not fit into usize", raw_len))
@@ -99,11 +158,8 @@ impl OwnedPyBuffer {
             return Err(PyValueError::new_err("buffer pointer is null"));
         }
 
-        Ok(Self {
-            view,
-            len,
-            readonly: raw_readonly != 0,
-        })
+        guard.disarm();
+        Ok(Self { view, len })
     }
 
     fn ptr(&self) -> *const u8 {
@@ -160,15 +216,18 @@ impl PacketView {
             });
         }
 
-        let buf = OwnedPyBuffer::get(data)?;
-        if !buf.readonly {
-            return Err(PyValueError::new_err(
-                "buffer is writable; use copy=True or pass a read-only buffer (e.g. memoryview(x).toreadonly() or a NumPy array with writeable=False)",
-            ));
+        if let Ok(existing) = data.extract::<PyRef<'_, PacketView>>() {
+            return Ok(existing.clone());
         }
-        Ok(Self {
-            inner: Bytes::from_owner(buf),
-        })
+        if let Ok(bytes) = data.cast::<PyBytes>() {
+            return Ok(Self {
+                inner: Bytes::from_owner(OwnedPyBytes::new(&bytes)),
+            });
+        }
+
+        return Err(PyValueError::new_err(
+            "zero-copy from_buffer requires an immutable bytes object or PacketView; use copy=True to copy from other buffers",
+        ));
     }
 
     fn __len__(&self) -> usize {
@@ -266,7 +325,7 @@ impl PacketView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pyo3::types::{PyByteArray, PyByteArrayMethods, PyModule};
+    use pyo3::types::{PyByteArray, PyModule};
 
     #[test]
     fn packet_view_empty() {
@@ -401,10 +460,21 @@ mod tests {
     }
 
     #[test]
-    fn packet_view_from_buffer_zero_copy_bytearray() {
+    fn packet_view_from_buffer_zero_copy_bytes() {
+        Python::attach(|py| {
+            let src = PyBytes::new(py, b"hello world");
+            let src_ptr = src.as_bytes().as_ptr();
+
+            let view = PacketView::from_buffer(src.as_any(), false).expect("from_buffer");
+            assert_eq!(view.__len__(), 11);
+            assert_eq!(view.inner.as_ptr(), src_ptr);
+        });
+    }
+
+    #[test]
+    fn packet_view_from_buffer_zero_copy_rejects_readonly_view_of_mutable() {
         Python::attach(|py| {
             let src = PyByteArray::new(py, b"hello world");
-            let src_ptr = src.data() as *const u8;
 
             let builtins = PyModule::import(py, "builtins").expect("builtins");
             let mv = builtins
@@ -415,18 +485,23 @@ mod tests {
                 .call_method0("toreadonly")
                 .expect("toreadonly");
 
-            let view = PacketView::from_buffer(mv.as_any(), false).expect("from_buffer");
-            assert_eq!(view.__len__(), 11);
-            assert_eq!(view.inner.as_ptr(), src_ptr);
+            let err = PacketView::from_buffer(mv.as_any(), false).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("zero-copy from_buffer requires an immutable bytes object")
+            );
         });
     }
 
     #[test]
-    fn packet_view_from_buffer_rejects_writable() {
+    fn packet_view_from_buffer_zero_copy_rejects_bytearray() {
         Python::attach(|py| {
             let src = PyByteArray::new(py, b"hello world");
             let err = PacketView::from_buffer(src.as_any(), false).unwrap_err();
-            assert!(err.to_string().contains("writable"));
+            assert!(
+                err.to_string()
+                    .contains("zero-copy from_buffer requires an immutable bytes object")
+            );
         });
     }
 

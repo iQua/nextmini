@@ -21,17 +21,17 @@ govern fragmentation, telemetry, and group coordination.
 3. When running the Rust unit tests for this crate, disable the default extension module feature so the binary links
    against `libpython`:
 
-   ```bash
-   PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
-   cargo nextest run -p nextmini_py --no-default-features --features dev-tests
-   ```
+	   ```bash
+	   PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
+	   cargo nextest run -p nextmini_py --no-default-features --features python-extension --features dev-tests
+	   ```
 
 ## Public surface at a glance
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
 | `nextmini_py.Dataplane` | `send_to_node`, `send_many_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
-| `nextmini_py.PacketView` | `__len__`, `from_buffer(data, copy=True)`, `read()`, `slice(start, length=None)` | Read-only wrapper around packet data that implements the Python buffer protocol. Use `from_buffer(..., copy=False)` to borrow from NumPy/memoryview without copying. |
+| `nextmini_py.PacketView` | `__len__`, `from_buffer(data, copy=True)`, `read()`, `slice(start, length=None)` | Read-only wrapper around packet data that implements the Python buffer protocol. Use `from_buffer(..., copy=False)` for zero-copy when the source is immutable (`bytes` / another `PacketView`). |
 | `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_many(max_items, timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns `PayloadDelivery` objects containing payload + metadata. |
 | `nextmini_py.PayloadDelivery` | `.payload`, `.frozen_payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Metadata-rich wrapper returned by receivers. `.payload` copies into a Python `bytes`; prefer `.frozen_payload` for zero-copy reads. |
 
@@ -59,10 +59,9 @@ import nextmini_py as nm
 
 def packet_view_from_tensor(tensor) -> nm.PacketView:
     host_tensor = tensor.detach().contiguous().cpu()
-    # Zero-copy: borrow a read-only NumPy buffer directly (requires a contiguous CPU tensor).
     arr = host_tensor.numpy()
-    arr.setflags(write=False)
-    return nm.PacketView.from_buffer(arr, copy=False)
+    # Copies into Rust-owned memory from the buffer-protocol exporter.
+    return nm.PacketView.from_buffer(arr)
 
 dp = nm.Dataplane("/abs/path/to/node-config.toml")
 payload = packet_view_from_tensor(loss_tensor)
@@ -77,7 +76,8 @@ Even when `PacketView.from_buffer(..., copy=False)` is used, `send_to_node` stil
 `PacketView` keeps a reference-counted `Bytes` backing store so clones are cheap. The object:
 
 - Accepts any `bytes` value in its constructor (copying into Rust-owned memory).
-- Accepts any read-only buffer-protocol exporter via `PacketView.from_buffer(..., copy=False)` (zero-copy).
+- Accepts any buffer-protocol exporter via `PacketView.from_buffer(..., copy=True)` (copy).
+- Accepts immutable sources via `PacketView.from_buffer(..., copy=False)` (zero-copy).
 - Implements `memoryview(packet_view)`/`np.frombuffer(...)` via the Python buffer protocol.
 - Provides `slice(start, length=None)` for zero-copy views into subranges.
 - Supplies `read()` if you need an owned `bytes` copy on the Python side.
