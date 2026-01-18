@@ -21,10 +21,10 @@ govern fragmentation, telemetry, and group coordination.
 3. When running the Rust unit tests for this crate, disable the default extension module feature so the binary links
    against `libpython`:
 
-	   ```bash
-	   PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
-	   cargo nextest run -p nextmini_py --no-default-features --features python-extension --features dev-tests
-	   ```
+   ```bash
+   PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
+   cargo nextest run -p nextmini_py --no-default-features --features python-extension --features dev-tests
+   ```
 
 ## Public surface at a glance
 
