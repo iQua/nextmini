@@ -1,4 +1,6 @@
 use bytes::Bytes;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
@@ -92,6 +94,33 @@ pub async fn run(
     let mut pending = PendingWindow::new(window_size, expected);
     let mut bytes_received: u64 = 0;
     let sink_buffer = cfg.sink_buffer.clone();
+    let sink_path = cfg.sink_path.clone();
+
+    let mut sink_file = if let Some(path) = &sink_path {
+        match OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+            .await
+        {
+            Ok(file) => Some(BufWriter::with_capacity(per_chunk.max(8192), file)),
+            Err(err) => {
+                warn!(
+                    session_id = sid,
+                    path = %path.display(),
+                    error = %err,
+                    "Lossless receiver: failed to open sink file"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if sink_path.is_some() && sink_file.is_none() {
+        return;
+    }
 
     let src_ip = (cfg.common.local_node_id as NodeId)
         .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
@@ -150,6 +179,20 @@ pub async fn run(
                     guard.extend_from_slice(chunk);
                 }
             }
+            if !outcome.ready_chunks.is_empty()
+                && let Some(file) = sink_file.as_mut()
+            {
+                for chunk in &outcome.ready_chunks {
+                    if let Err(err) = file.write_all(chunk).await {
+                        warn!(
+                            session_id = sid,
+                            error = %err,
+                            "Lossless receiver: failed to write to sink file"
+                        );
+                        return;
+                    }
+                }
+            }
             if outcome.advanced {
                 let base = expected.saturating_sub(1);
                 if base > last_ack_up_to {
@@ -195,6 +238,16 @@ pub async fn run(
         last_index = expected.saturating_sub(1),
         "Lossless receiver finished"
     );
+
+    if let Some(mut file) = sink_file
+        && let Err(err) = file.flush().await
+    {
+        warn!(
+            session_id = sid,
+            error = %err,
+            "Lossless receiver: failed to flush sink file"
+        );
+    }
 }
 
 /// Fixed-size buffer that keeps track of out-of-order chunks within the current

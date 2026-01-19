@@ -129,6 +129,11 @@ class Worker:
             raise RuntimeError(
                 f"Failed to receive shard from {src_node_id} into {dst_path}"
             )
+        actual_size = dst_path.stat().st_size if dst_path.exists() else 0
+        if actual_size != expected_bytes:
+            raise RuntimeError(
+                f"Shard size mismatch for {dst_path} (expected {expected_bytes} bytes, got {actual_size})."
+            )
 
     async def run(self):
         """Main worker loop"""

@@ -221,13 +221,13 @@ impl PacketView {
         }
         if let Ok(bytes) = data.cast::<PyBytes>() {
             return Ok(Self {
-                inner: Bytes::from_owner(OwnedPyBytes::new(&bytes)),
+                inner: Bytes::from_owner(OwnedPyBytes::new(bytes)),
             });
         }
 
-        return Err(PyValueError::new_err(
+        Err(PyValueError::new_err(
             "zero-copy from_buffer requires an immutable bytes object or PacketView; use copy=True to copy from other buffers",
-        ));
+        ))
     }
 
     fn __len__(&self) -> usize {

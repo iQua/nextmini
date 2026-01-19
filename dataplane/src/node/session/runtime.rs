@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ahash::AHashMap;
@@ -45,6 +46,7 @@ pub struct ReceiverConfig {
     pub source_node_id: usize,
     pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    pub sink_path: Option<PathBuf>,
 }
 
 /// Handle for communicating with the lossless runtime actor.

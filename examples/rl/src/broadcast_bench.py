@@ -1048,6 +1048,7 @@ def run_worker(args: argparse.Namespace) -> int:
         received_bytes = expected_bytes if ok else 0
         if sink_path is not None:
             received_bytes = sink_path.stat().st_size if sink_path.exists() else 0
+            ok = bool(ok and received_bytes == expected_bytes)
         send_unicast(
             dp,
             dst_node_id=trainer_node_id,

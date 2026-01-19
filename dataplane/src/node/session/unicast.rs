@@ -194,6 +194,7 @@ impl LosslessUnicastFlowManager {
                 source_node_id: flow.src_node_id,
                 expected_bytes,
                 sink_buffer: None,
+                sink_path: None,
             };
 
             // Register receiver directly with the pre-computed session_id.
