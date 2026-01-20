@@ -112,6 +112,7 @@ class Trainer:
             from examples.lp.solver import (
                 build_graph_from_controller_config,
                 compute_mflow_tree_edges,
+                load_toml,
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -119,6 +120,44 @@ class Trainer:
             ) from exc
 
         graph = build_graph_from_controller_config(str(controller_path))
+
+        if getattr(config, "MULTICAST_PROBE_LINKS", False):
+            try:
+                from examples.lp.main import (
+                    _apply_link_rates,
+                    _connect_db,
+                    _db_settings,
+                    _fetch_link_rates_from_probes,
+                    _request_link_probes,
+                    _wait_for_probe_finish,
+                )
+            except ImportError as exc:
+                raise RuntimeError(
+                    "MULTICAST_PROBE_LINKS=true requires examples/lp/main.py DB helpers."
+                ) from exc
+
+            controller_cfg = load_toml(str(controller_path))
+            settings = _db_settings(controller_cfg)
+            conn = _connect_db(settings)
+            try:
+                print(
+                    f"Probing {len(graph.edges)} links ({config.MULTICAST_PROBE_BYTES} bytes each)...",
+                    flush=True,
+                )
+                probe_ids = _request_link_probes(conn, graph.edges, bytes_per_flow=config.MULTICAST_PROBE_BYTES)
+                ok = _wait_for_probe_finish(conn, probe_ids, timeout_secs=config.MULTICAST_PROBE_TIMEOUT_SECS)
+                if not ok:
+                    print(
+                        f"warning: probe timed out after {config.MULTICAST_PROBE_TIMEOUT_SECS}s; using completed probes only",
+                        flush=True,
+                    )
+                rates = _fetch_link_rates_from_probes(conn, probe_ids)
+                _apply_link_rates(graph, rates)
+                graph.adj = graph._build_adjacency()
+                print(f"Applied {len(rates)} probed link capacities.", flush=True)
+            finally:
+                conn.close()
+
         edges, throughput = compute_mflow_tree_edges(
             graph,
             src=self.node_id,

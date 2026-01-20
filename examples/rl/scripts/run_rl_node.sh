@@ -65,6 +65,7 @@ export PYTHONPATH=/workspace:${PYTHONPATH:-}
 
 # Run the appropriate role using -m to support relative imports
 if [[ "${role}" == "trainer" ]]; then
+  export MULTICAST_PROBE_LINKS="${MULTICAST_PROBE_LINKS:-true}"
   echo "Starting Trainer..."
   exec python -m examples.rl.src.trainer --config "${config_path}"
 elif [[ "${role}" == "worker" ]]; then

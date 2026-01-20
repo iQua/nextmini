@@ -1,5 +1,10 @@
 import os
 
+# Optional: probe link goodputs via controller DB before planning.
+MULTICAST_PROBE_LINKS = os.environ.get("MULTICAST_PROBE_LINKS", "false").lower() == "true"
+MULTICAST_PROBE_BYTES = int(os.environ.get("MULTICAST_PROBE_BYTES", str(64 * 1024 * 1024)))
+MULTICAST_PROBE_TIMEOUT_SECS = float(os.environ.get("MULTICAST_PROBE_TIMEOUT_SECS", "60"))
+
 # Nextmini Node Configuration
 # Paths to node config files (TOML)
 TRAINER_CONFIG = os.environ.get(
