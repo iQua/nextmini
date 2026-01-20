@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::sync::Mutex;
 
 use byteorder::{BigEndian, ByteOrder};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use once_cell::sync::Lazy;
 
 use crate::node::flow;
@@ -40,10 +40,9 @@ impl PacketBuf {
 
     /// Wraps an existing vector without copying the contents.
     pub fn from_vec(vec: Vec<u8>) -> Self {
-        let mut bytes = BytesMut::with_capacity(vec.len());
-        bytes.extend_from_slice(&vec);
+        let bytes = Bytes::from(vec);
         PacketBuf {
-            buf: Some(bytes),
+            buf: Some(BytesMut::from(bytes)),
             pooled: false,
         }
     }
@@ -114,6 +113,13 @@ impl Deref for PacketBuf {
     }
 }
 
+#[cfg(feature = "python-extension")]
+impl AsRef<[u8]> for PacketBuf {
+    fn as_ref(&self) -> &[u8] {
+        self.deref()
+    }
+}
+
 impl Drop for PacketBuf {
     fn drop(&mut self) {
         if self.pooled
@@ -162,6 +168,11 @@ impl Packet {
     /// Returns a read-only view over the packet payload.
     pub fn bytes(&self) -> &[u8] {
         &self.buffer[..self.packet_size]
+    }
+
+    #[cfg(feature = "python-extension")]
+    pub fn tcp_payload_range(&self) -> Option<std::ops::Range<usize>> {
+        self.tcp_payload_bounds().map(|(start, end)| start..end)
     }
 
     pub fn seq_num(&self) -> u32 {
@@ -234,6 +245,17 @@ impl Packet {
     pub fn tcp_payload(&self) -> Option<&[u8]> {
         let (start, end) = self.tcp_payload_bounds()?;
         Some(&self.bytes()[start..end])
+    }
+
+    #[cfg(feature = "python-extension")]
+    pub fn into_bytes(self) -> Bytes {
+        let packet_size = self.packet_size;
+        let bytes = Bytes::from_owner(self.buffer);
+        if bytes.len() > packet_size {
+            bytes.slice(..packet_size)
+        } else {
+            bytes
+        }
     }
 
     fn tcp_payload_bounds(&self) -> Option<(usize, usize)> {
