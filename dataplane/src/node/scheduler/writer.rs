@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, Semaphore, mpsc};
 use tracing::error;
 
 use crate::node::network::interface::NetworkInterfaceHandle;
@@ -16,6 +16,7 @@ pub struct SchedulerWriter {
     net_interface: NetworkInterfaceHandle,
     receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
     token_bucket: Option<TokenBucket>,
+    capacity_semaphore: Option<Arc<Semaphore>>,
 }
 
 impl SchedulerWriter {
@@ -23,6 +24,7 @@ impl SchedulerWriter {
         queue: Arc<dyn SchedulerQueue + Send + Sync>,
         net_interface: NetworkInterfaceHandle,
         queues_not_empty: Arc<Notify>,
+        capacity_semaphore: Option<Arc<Semaphore>>,
         receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
     ) -> Self {
         Self {
@@ -31,6 +33,7 @@ impl SchedulerWriter {
             net_interface,
             receiver,
             token_bucket: None,
+            capacity_semaphore,
         }
     }
 
@@ -55,7 +58,14 @@ impl SchedulerWriter {
             // Collect and send packets from scheduler queues
             let mut batch = Vec::new();
             self.queue.collect_packets(&mut batch);
+            let drained = batch.len();
             self.send_packets(&mut batch).await;
+
+            if drained > 0
+                && let Some(semaphore) = &self.capacity_semaphore
+            {
+                semaphore.add_permits(drained);
+            }
 
             // After each round of queue processing, yield to the producer task
             tokio::task::yield_now().await;
