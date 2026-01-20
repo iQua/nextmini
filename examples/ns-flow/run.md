@@ -6,6 +6,8 @@ Quick start:
 ./examples/ns-flow/run.sh
 ```
 
+`run.sh` waits for the controller to seed routes + flows in Postgres before starting the dataplane.
+
 Regenerate configs (optional; `run.sh` does this by default):
 
 ```bash

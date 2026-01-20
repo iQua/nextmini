@@ -10,10 +10,10 @@ session_name="nextmini-ns-flow"
 log_level="${RUST_LOG:-info}"
 binary_path="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 no_build="false"
-wait_controller="true"
 sysctl_only="false"
 apply_sysctl_tuning="true"
 skip_generate="false"
+startup_timeout_seconds="900"
 
 n_nodes=""
 n_flows=""
@@ -38,7 +38,6 @@ Options:
   --log-level LVL   RUST_LOG for dataplane (default: info).
   --bin PATH        Path to nextmini binary (default: <repo>/target/release/nextmini).
   --no-build        Skip cargo build and run the existing binary.
-  --no-wait         Do not wait for controller port before starting dataplane.
   --session NAME    tmux session name (default: nextmini-ns-flow).
   --no-generate     Do not rewrite config files (skip generate.py).
   --sysctl-only     Apply sysctl tuning and exit.
@@ -91,7 +90,6 @@ while [[ $# -gt 0 ]]; do
     --log-level) log_level="${2:-}"; shift 2 ;;
     --bin) binary_path="${2:-}"; shift 2 ;;
     --no-build) no_build="true"; shift ;;
-    --no-wait) wait_controller="false"; shift ;;
     --session) session_name="${2:-}"; shift 2 ;;
     --no-generate) skip_generate="true"; shift ;;
     --sysctl-only) sysctl_only="true"; shift ;;
@@ -179,6 +177,14 @@ if [[ -n "$controller_addr" ]]; then
   fi
 fi
 
+expected_flows=""
+expected_routes=""
+controller_config_path="${script_dir}/controller-config.toml"
+if [[ -f "$controller_config_path" ]]; then
+  expected_flows="$(grep -c '^\[\[flows\]\]' "$controller_config_path" 2>/dev/null || true)"
+  expected_routes="$(grep -c '^\[\[routes\]\]' "$controller_config_path" 2>/dev/null || true)"
+fi
+
 compose_bin="docker compose"
 if ! docker compose version >/dev/null 2>&1; then
   if command -v docker-compose >/dev/null 2>&1; then
@@ -196,16 +202,31 @@ if [[ "$no_build" != "true" ]]; then
     dataplane_cmd+=" && cargo build -p nextmini --release"
   fi
 fi
-if [[ "$wait_controller" == "true" ]]; then
-  dataplane_cmd+=" && echo \"Waiting for controller at ${controller_host}:${controller_port}...\""
-  dataplane_cmd+=" && for i in $(seq 1 120); do (echo >/dev/tcp/${controller_host}/${controller_port}) >/dev/null 2>&1 && break; sleep 1; done"
-  dataplane_cmd+=" && (echo >/dev/tcp/${controller_host}/${controller_port}) >/dev/null 2>&1"
+
+dataplane_cmd+=" && echo 'Waiting for Postgres to accept connections...'"
+dataplane_cmd+=" && for ((i=1; i<=${startup_timeout_seconds}; i++)); do docker exec postgres pg_isready -U pgusr -d nextmini >/dev/null 2>&1 && break; sleep 1; done"
+dataplane_cmd+=" && docker exec postgres pg_isready -U pgusr -d nextmini >/dev/null 2>&1 || (echo 'Timed out waiting for postgres container (pg_isready).' >&2; exit 1)"
+
+if [[ -n "$expected_routes" && "$expected_routes" =~ ^[0-9]+$ && "$expected_routes" -gt 0 ]]; then
+  dataplane_cmd+=" && echo 'Waiting for controller to seed ${expected_routes} routes in Postgres...'"
+  dataplane_cmd+=" && for ((i=1; i<=${startup_timeout_seconds}; i++)); do docker exec postgres psql -U pgusr -d nextmini -tAc 'SELECT COUNT(*) FROM routes;' 2>/dev/null | tr -d '[:space:]' | grep -qx '${expected_routes}' && break; sleep 1; done"
+  dataplane_cmd+=" && docker exec postgres psql -U pgusr -d nextmini -tAc 'SELECT COUNT(*) FROM routes;' 2>/dev/null | tr -d '[:space:]' | grep -qx '${expected_routes}' || (echo 'Timed out waiting for controller to seed routes.' >&2; exit 1)"
 fi
+
+if [[ -n "$expected_flows" && "$expected_flows" =~ ^[0-9]+$ && "$expected_flows" -gt 0 ]]; then
+  dataplane_cmd+=" && echo 'Waiting for controller to seed ${expected_flows} flows in Postgres...'"
+  dataplane_cmd+=" && for ((i=1; i<=${startup_timeout_seconds}; i++)); do docker exec postgres psql -U pgusr -d nextmini -tAc 'SELECT COUNT(*) FROM flows;' 2>/dev/null | tr -d '[:space:]' | grep -qx '${expected_flows}' && break; sleep 1; done"
+  dataplane_cmd+=" && docker exec postgres psql -U pgusr -d nextmini -tAc 'SELECT COUNT(*) FROM flows;' 2>/dev/null | tr -d '[:space:]' | grep -qx '${expected_flows}' || (echo 'Timed out waiting for controller to seed flows.' >&2; exit 1)"
+fi
+
+dataplane_cmd+=" && echo \"Waiting for controller at ${controller_host}:${controller_port}...\""
+dataplane_cmd+=" && for ((i=1; i<=${startup_timeout_seconds}; i++)); do (echo >/dev/tcp/${controller_host}/${controller_port}) >/dev/null 2>&1 && break; sleep 1; done"
+dataplane_cmd+=" && (echo >/dev/tcp/${controller_host}/${controller_port}) >/dev/null 2>&1 || (echo 'Timed out waiting for controller port (check: docker logs controller).' >&2; exit 1)"
 dataplane_cmd+=" && sudo -E env RUST_LOG=\"$log_level\" \"$binary_path\" --config-path \"$config_path\""
 
-tmux new-session -d -s "$session_name" -n nsflow
+tmux new-session -d -s "$session_name" -n nsflow bash
 tmux send-keys -t "${session_name}:0.0" "$compose_cmd" C-m
-tmux split-window -h -t "${session_name}:0.0"
+tmux split-window -h -t "${session_name}:0.0" bash
 tmux send-keys -t "${session_name}:0.1" "$dataplane_cmd" C-m
 tmux select-layout -t "${session_name}:0" tiled
 tmux attach -t "$session_name"

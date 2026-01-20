@@ -29,6 +29,8 @@ Recommended (tmux + sysctl tuning):
 ./examples/ns-flow/run.sh
 ```
 
+`run.sh` waits for the controller to seed routes + flows in Postgres before starting the dataplane.
+
 Manual (two terminals):
 
 1) Apply sysctl tuning:
