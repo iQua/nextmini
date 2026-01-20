@@ -13,6 +13,7 @@ Replace `<folder-name>` with one of the following:
 - simple
 - simple-flow
 - simple-max
+- ns-flow
 - routes
 - simple-scheduler
 - smoltcp-test
