@@ -3,7 +3,7 @@
 Quick start:
 
 ```bash
-./examples/ns-flow/run.sh
+sudo ./examples/ns-flow/run.sh
 ```
 
 `run.sh` waits for the controller to seed routes + flows in Postgres before starting the dataplane.
@@ -23,5 +23,5 @@ docker exec postgres psql -U pgusr -d nextmini -c "SELECT COUNT(*) AS total, COU
 Cleanup:
 
 ```bash
-./examples/ns-flow/cleanup.sh
+sudo ./examples/ns-flow/cleanup.sh
 ```
