@@ -23,10 +23,9 @@ Run unmodified applications (ping/iperf3/PyTorch) over a virtual network interfa
 
 ### 2) User-space flow examples
 
-Exercise controller-managed flows that are generated and consumed inside the dataplane process (SmolTCP and lossless sessions).
+Exercise controller-managed flows that are generated and consumed inside the dataplane process (SmolTCP TCP or lossless sessions).
 
-- [SmolTCP flows (WRR)](smoltcp-test.md)
-- [Lossless flows (controller-managed)](simple-flow.md)
+- [Controller-managed flows (lossless or SmolTCP)](simple-flow.md)
 - [ns-flow (flow scaling)](ns-flow.md)
 
 ### 3) Proxy flows (MAX mode)

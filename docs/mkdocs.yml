@@ -66,8 +66,7 @@ nav:
               - PyTorch (DDP): examples/pytorch.md
               - Namespace (node scaling): examples/namespace.md
           - User-space flows:
-              - SmolTCP flows (WRR): examples/smoltcp-test.md
-              - Lossless flows (controller-managed): examples/simple-flow.md
+              - Controller-managed flows (lossless or SmolTCP): examples/simple-flow.md
               - ns-flow (flow scaling): examples/ns-flow.md
           - Proxy flows (MAX mode):
               - MAX mode (internal): examples/simple-max.md
