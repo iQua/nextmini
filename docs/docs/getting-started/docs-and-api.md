@@ -1,9 +1,9 @@
-# Docs & API
+# Docs
 
-Nextmini has two kinds of documentation:
+Nextmini documentation lives in two places:
 
-- **Guides / concepts**: this MkDocs site (`docs/docs/`)
-- **Code-level API**: Rustdoc (`cargo doc`)
+- This MkDocs site (`docs/docs/`)
+- Code-level docs via rustdoc (`cargo doc`)
 
 ## Preview this site locally
 
@@ -30,8 +30,4 @@ bash docs/generate-rustdoc.sh
 ```
 
 See: [Rust API reference (rustdoc)](../design/rust-api.md).
-
-## Build the Python extension
-
-See: [Python dataplane API](../design/python-api.md).
 

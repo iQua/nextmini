@@ -4,8 +4,9 @@ This is the fastest way to run Nextmini and validate that TUN + routing work end
 
 ## Prerequisites
 
-- A Docker runtime
-- A Linux host is the easiest option. On macOS/Windows, run in a Linux VM.
+- A Docker runtime (Docker Engine on Linux, or Docker Desktop on macOS/Windows)
+
+Note: some examples (e.g. namespace scaling or `network_mode: host` deployments) require a Linux host.
 
 ## Run
 

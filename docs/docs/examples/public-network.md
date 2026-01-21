@@ -1,6 +1,6 @@
-# Multi-node deployment (manual, no swarm)
+# Manual deployment
 
-This example (`examples/public-network`) runs the controller + Postgres on one VM and a small number of dataplane nodes on other VMs, using public IP addresses (no Docker Swarm).
+This example (`examples/public-network`) runs the controller + Postgres on one VM and a small number of dataplane nodes on other VMs, using public IP addresses.
 
 ## What it’s for
 
@@ -9,8 +9,7 @@ This example (`examples/public-network`) runs the controller + Postgres on one V
 
 ## Prerequisites
 
-- Linux VMs with Docker installed
-- `network_mode: host` for dataplane containers (so they can see the host’s real NICs)
+- Linux hosts/VMs with Docker Engine installed (this scenario uses `network_mode: host`)
 
 ## Files
 

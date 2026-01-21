@@ -6,6 +6,8 @@
 - Memory footprint per node
 - veth/namespace setup overhead
 
+This is a **namespace-mode scaling harness**, not a TUN overlay demo. The default dataplane config sets `enable_local_interface = false`, so nodes do not create per-namespace TUN interfaces.
+
 ## Contents
 
 - Quick start (tmux)

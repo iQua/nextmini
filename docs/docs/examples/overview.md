@@ -21,36 +21,37 @@ Run unmodified applications (ping/iperf3/PyTorch) over a virtual network interfa
 - [Topology & Routes](routes.md)
 - [PyTorch (DDP)](pytorch.md)
 
-### 2) User-space flow examples
+### 2) Namespace (Linux)
 
-Exercise controller-managed flows that are generated and consumed inside the dataplane process (SmolTCP TCP or lossless sessions).
+Run many dataplane nodes as Linux network namespaces on a single host.
 
-- [Controller-managed flows (lossless or SmolTCP)](simple-flow.md)
-- [ns-flow (flow scaling)](ns-flow.md)
+- [Namespace scaling](namespace.md)
+- [ns-flow](ns-flow.md)
 
-### 3) Proxy flows (MAX mode)
+### 3) User-space flows
 
-Forward TCP streams through the topology using connection-on-demand and (optionally) SOCKS5 ingress.
+Exercise controller-managed flows that are generated and consumed inside the dataplane process.
 
-- [MAX mode (internal)](simple-max.md)
-- [SOCKS5 Proxy (splice-test / curl)](proxy.md)
+- [Lossless flows](simple-flow.md)
+- [SmolTCP flows](smoltcp-flows.md)
 
-### 4) Python API + multicast examples
+### 4) Proxy flows
 
-Embed the dataplane in Python and drive multicast and lossless transfers directly in-process.
+Forward TCP streams through the topology using SOCKS5 ingress and the MAX transport.
 
-- [Python API quickstart](pytorch_python_api.md)
-- [Multicast flow lifecycle](multicast-flow.md)
-- [Multicast Docker](multicast-docker.md)
-- [LP toy demo](lp-toy.md) (includes probing + route installation)
-- [LP multicast tree selection](lp.md)
+- [splice-test](splice-test.md)
+- [curl](curl.md)
+
+### 5) Python API examples
+
 - [RL Training (GSM8K)](rl.md)
+- [LP toy demo](lp-toy.md)
 
-### 5) Deployment
+### 6) Deployment
 
 - [Single host (Docker Compose)](single-host.md)
 - [Bare metal](bare-metal.md)
-- [Multi-node (manual, no swarm)](public-network.md)
+- [Manual deployment](public-network.md)
 - [Multi-node (Docker Swarm)](simple-swarm.md)
 - [Batch sync (SSH + rsync)](batch-sync.md)
 - [Local Controller + Fly.io (experimental)](localserver-flyio.md)

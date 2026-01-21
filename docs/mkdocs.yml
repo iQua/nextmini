@@ -50,59 +50,55 @@ extra_css:
   - https://unpkg.com/katex@0/dist/katex.min.css
   - stylesheets/extra.css
 
+validation:
+  nav:
+    omitted_files: ignore
+
 nav:
   - Home: index.md
   - Getting Started:
       - What is Nextmini?: design/introduction.md
-      - Quickstart (Docker): getting-started/quickstart.md
-      - Build & Run (native): getting-started/build-and-run.md
-      - Docs & API: getting-started/docs-and-api.md
-  - Guides:
-      - Examples:
-          - Overview: examples/overview.md
-          - TUN (overlay):
-              - Simple (iperf3): examples/simple.md
-              - Topology & Routes: examples/routes.md
-              - PyTorch (DDP): examples/pytorch.md
-              - Namespace (node scaling): examples/namespace.md
-          - User-space flows:
-              - Controller-managed flows (lossless or SmolTCP): examples/simple-flow.md
-              - ns-flow (flow scaling): examples/ns-flow.md
-          - Proxy flows (MAX mode):
-              - MAX mode (internal): examples/simple-max.md
-              - SOCKS5 Proxy (splice-test / curl): examples/proxy.md
-          - Python API + multicast:
-              - Python API quickstart: examples/pytorch_python_api.md
-              - Multicast Flow Lifecycle: examples/multicast-flow.md
-              - Multicast Docker: examples/multicast-docker.md
-              - LP Toy Demo: examples/lp-toy.md
-              - LP Multicast Tree Selection: examples/lp.md
-              - RL Training (GSM8K): examples/rl.md
-      - Deployment:
-          - Single host (Docker Compose): examples/single-host.md
-          - Bare Metal: examples/bare-metal.md
-          - Multi-node (manual, no swarm): examples/public-network.md
-          - Multi-node (Docker Swarm): examples/simple-swarm.md
-          - Batch Sync (SSH + rsync): examples/batch-sync.md
-          - Local Controller + Fly.io (experimental): examples/localserver-flyio.md
-      - Tools:
-          - Ring All-Reduce Launcher: examples/ring-emu.md
-      - Testing:
-          - Cargo Test Guide: testing/cargo-test.md
-          - Python API Validation: testing/python-api-validation.md
-  - Concepts:
-      - Architecture: design/architecture.md
-      - Controller: design/controller.md
-      - Dataplane Node: design/dataplane.md
+      - Quick Start: getting-started/quickstart.md
+      - Docs: getting-started/docs-and-api.md
+  - Design:
+      - Architecture:
+          - Overview: design/architecture.md
+          - Controller: design/controller.md
+          - Dataplane: design/dataplane.md
       - Messages & Protocol: design/messages.md
-      - Routing Internals: design/routing.md
-      - User-Space Flows: design/user-space-flows.md
-      - Lossless Sessions: design/lossless_config.md
-      - Proxy Flows (MAX + SOCKS5): design/proxy-flows.md
+      - Routing: design/routing.md
+      - User-space flows:
+          - SmolTCP flows: design/smoltcp-flows.md
+          - Lossless flows: design/lossless-flows.md
+      - MAX mode:
+          - MAX mode: design/max-mode.md
+          - Proxy flows (SOCKS5): design/proxy-flows.md
       - Multicast Groups: design/multicast-groups.md
-      - Transport Configuration: design/configuration.md
-  - Reference:
+      - Python dataplane API: design/python-api.md
       - Configuration Reference: design/config-reference.md
-  - API:
-      - Rust API (rustdoc): design/rust-api.md
-      - Python Dataplane API: design/python-api.md
+  - Examples:
+      - TUN (overlay):
+          - Simple (iperf3): examples/simple.md
+          - Topology & Routes: examples/routes.md
+          - PyTorch (DDP): examples/pytorch.md
+      - Namespace (Linux):
+          - Namespace scaling: examples/namespace.md
+          - ns-flow: examples/ns-flow.md
+      - User-space flows:
+          - Lossless flows: examples/simple-flow.md
+          - SmolTCP flows: examples/smoltcp-flows.md
+      - Proxy flows:
+          - splice-test: examples/splice-test.md
+          - curl: examples/curl.md
+      - Python API examples:
+          - RL Training (GSM8K): examples/rl.md
+          - LP Toy Demo: examples/lp-toy.md
+  - Deployment:
+      - Single host (Docker Compose): examples/single-host.md
+      - Bare Metal: examples/bare-metal.md
+      - Manual deployment: examples/public-network.md
+      - Multi-node (Docker Swarm): examples/simple-swarm.md
+      - Batch Sync (SSH + rsync): examples/batch-sync.md
+      - Local Controller + Fly.io (experimental): examples/localserver-flyio.md
+  - Testing:
+      - Cargo Test Guide: testing/cargo-test.md
