@@ -1,0 +1,26 @@
+# Keep Docker build contexts small.
+# This repo is a Rust workspace and may have large local build artifacts.
+
+# Rust / Cargo
+target/
+
+# Generated artifacts / caches
+.multidc_cache/
+examples/multicast-docker/artifacts/
+tensors/
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# VCS
+.git/

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, Semaphore, mpsc};
 use tracing::{debug, error};
 
 use nextmini_messages::{SchedulingDiscipline, TokenBucketSpec};
@@ -117,11 +117,20 @@ impl Scheduler {
 
         let queues_not_empty = Arc::new(Notify::new());
 
+        // When channel backpressure is enabled, also apply it to the scheduler queue so we block
+        // instead of dropping when the queue reaches capacity.
+        let capacity_semaphore = if config.channel_backpressure && capacity > 0 {
+            Some(Arc::new(Semaphore::new(capacity)))
+        } else {
+            None
+        };
+
         let mut reader = SchedulerReader::new(
             queue_strategy.clone(),
             packet_drop,
             queues_not_empty.clone(),
             capacity,
+            capacity_semaphore.clone(),
             reader_receiver,
             config.scheduler_type,
         );
@@ -130,6 +139,7 @@ impl Scheduler {
             queue_strategy,
             net_interface,
             queues_not_empty,
+            capacity_semaphore,
             writer_receiver,
         );
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant as StdInstant};
 
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, Semaphore, mpsc};
 use tracing::warn;
 
 use nextmini_messages::SchedulingDiscipline;
@@ -18,6 +18,7 @@ pub struct SchedulerReader {
     drop_strategy: Box<dyn PacketDrop + Send + Sync>,
     queues_not_empty: Arc<Notify>,
     capacity: usize,
+    capacity_semaphore: Option<Arc<Semaphore>>,
     receiver: mpsc::Receiver<SchedulerReaderMessage>,
     scheduler_type: SchedulingDiscipline,
     // rate-limited logging
@@ -32,6 +33,7 @@ impl SchedulerReader {
         drop_strategy: Box<dyn PacketDrop + Send + Sync>,
         queues_not_empty: Arc<Notify>,
         capacity: usize,
+        capacity_semaphore: Option<Arc<Semaphore>>,
         receiver: mpsc::Receiver<SchedulerReaderMessage>,
         scheduler_type: SchedulingDiscipline,
     ) -> Self {
@@ -41,6 +43,7 @@ impl SchedulerReader {
             drop_strategy,
             queues_not_empty,
             capacity,
+            capacity_semaphore,
             receiver,
             scheduler_type,
             last_drop_log: StdInstant::now(),
@@ -54,14 +57,14 @@ impl SchedulerReader {
             if let Some(message) = self.receiver.recv().await {
                 match message {
                     SchedulerReaderMessage::InboundPacket(packet) => {
-                        self.enqueue(packet);
+                        self.enqueue(packet).await;
                     }
                 }
 
                 while let Ok(message) = self.receiver.try_recv() {
                     match message {
                         SchedulerReaderMessage::InboundPacket(packet) => {
-                            self.enqueue(packet);
+                            self.enqueue(packet).await;
                         }
                     }
                 }
@@ -69,36 +72,51 @@ impl SchedulerReader {
         }
     }
 
-    fn enqueue(&mut self, packet: Packet) {
+    async fn enqueue(&mut self, packet: Packet) {
         let flow_id = packet.flow_id;
+
+        // If we are running with backpressure enabled, ensure the scheduler queue itself applies
+        // backpressure instead of dropping when full.
+        if let Some(semaphore) = &self.capacity_semaphore {
+            match semaphore.acquire().await {
+                Ok(permit) => permit.forget(),
+                Err(_) => {
+                    self.packets_dropped += 1;
+                    return;
+                }
+            }
+        }
+
         let queue_len = self.queue.queue_len(flow_id);
 
-        // drops the packet based on the drop strategy
-        let should_drop_packet =
-            self.drop_strategy
-                .should_drop(packet.packet_size, queue_len, queue_len);
+        if self.capacity_semaphore.is_none() {
+            // drops the packet based on the drop strategy
+            let should_drop_packet =
+                self.drop_strategy
+                    .should_drop(packet.packet_size, queue_len, queue_len);
 
-        // the case that this packet will be dropped
-        if should_drop_packet {
-            self.packets_dropped += 1;
-            self.drops_since_last_log += 1;
+            // the case that this packet will be dropped
+            if should_drop_packet {
+                self.packets_dropped += 1;
+                self.drops_since_last_log += 1;
 
-            // aggregate + rate-limit logging
-            let now = StdInstant::now();
-            if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
-                warn!(
-                    "{:?}: dropped {} packets in the last {:?} (queue len: {}/{}, total dropped: {})",
-                    self.scheduler_type,
-                    self.drops_since_last_log,
-                    self.drop_log_interval,
-                    queue_len,
-                    self.capacity,
-                    self.packets_dropped
-                );
-                self.drops_since_last_log = 0;
-                self.last_drop_log = now;
+                // aggregate + rate-limit logging
+                let now = StdInstant::now();
+                if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
+                    warn!(
+                        "{:?}: dropped {} packets in the last {:?} (queue len: {}/{}, total dropped: {})",
+                        self.scheduler_type,
+                        self.drops_since_last_log,
+                        self.drop_log_interval,
+                        queue_len,
+                        self.capacity,
+                        self.packets_dropped
+                    );
+                    self.drops_since_last_log = 0;
+                    self.last_drop_log = now;
+                }
+                return;
             }
-            return;
         }
 
         let is_tcp_data = packet.is_tcp_data();
@@ -106,6 +124,10 @@ impl SchedulerReader {
         if self.queue.enqueue(packet).is_err() {
             self.packets_dropped += 1;
             self.drops_since_last_log += 1;
+
+            if let Some(semaphore) = &self.capacity_semaphore {
+                semaphore.add_permits(1);
+            }
 
             let now = StdInstant::now();
             if now.duration_since(self.last_drop_log) >= self.drop_log_interval {
@@ -284,6 +306,7 @@ mod tests {
             dropper,
             notify,
             16,
+            None,
             rx,
             SchedulingDiscipline::Fifo,
         )
@@ -298,7 +321,7 @@ mod tests {
         let (dropper, calls) = RecordingDrop::new(true);
         let mut reader = build_reader(queue.clone(), Box::new(dropper), notify.clone());
 
-        reader.enqueue(make_tcp_packet(1, 0x00));
+        reader.enqueue(make_tcp_packet(1, 0x00)).await;
 
         assert_eq!(reader.packets_dropped, 1);
         assert!(queue.enqueued_flows().is_empty());
@@ -325,7 +348,7 @@ mod tests {
         let (dropper, _) = RecordingDrop::new(false);
         let mut reader = build_reader(queue.clone(), Box::new(dropper), notify.clone());
 
-        reader.enqueue(make_tcp_packet(2, 0x00));
+        reader.enqueue(make_tcp_packet(2, 0x00)).await;
 
         assert_eq!(reader.packets_dropped, 1);
         assert!(queue.enqueued_flows().is_empty());
@@ -346,7 +369,7 @@ mod tests {
         let (dropper, _) = RecordingDrop::new(false);
         let mut reader = build_reader(queue.clone(), Box::new(dropper), notify.clone());
 
-        reader.enqueue(make_non_tcp_packet(3));
+        reader.enqueue(make_non_tcp_packet(3)).await;
 
         assert_eq!(queue.enqueued_flows(), vec![3]);
         notify.notified().await;
@@ -364,7 +387,7 @@ mod tests {
         let (dropper, _) = RecordingDrop::new(false);
         let mut reader = build_reader(queue.clone(), Box::new(dropper), notify.clone());
 
-        reader.enqueue(make_tcp_packet(4, 0x00));
+        reader.enqueue(make_tcp_packet(4, 0x00)).await;
 
         assert_eq!(queue.enqueued_flows(), vec![4]);
         assert!(
@@ -384,7 +407,7 @@ mod tests {
         let (dropper, _) = RecordingDrop::new(false);
         let mut reader = build_reader(queue.clone(), Box::new(dropper), notify.clone());
 
-        reader.enqueue(make_tcp_packet(5, 0x00));
+        reader.enqueue(make_tcp_packet(5, 0x00)).await;
 
         assert_eq!(queue.enqueued_flows(), vec![5]);
         notify.notified().await;
