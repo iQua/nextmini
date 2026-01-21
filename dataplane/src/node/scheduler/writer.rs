@@ -59,13 +59,14 @@ impl SchedulerWriter {
             let mut batch = Vec::new();
             self.queue.collect_packets(&mut batch);
             let drained = batch.len();
-            self.send_packets(&mut batch).await;
-
             if drained > 0
                 && let Some(semaphore) = &self.capacity_semaphore
             {
+                // Backpressure tracks queue occupancy, not network I/O completion.
+                // Once packets are dequeued, free their slots immediately.
                 semaphore.add_permits(drained);
             }
+            self.send_packets(&mut batch).await;
 
             // After each round of queue processing, yield to the producer task
             tokio::task::yield_now().await;
