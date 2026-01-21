@@ -2,7 +2,7 @@
 
 `ring-emu` is a small Python SSH launcher for running a ring all-reduce binary across multiple nodes.
 
-It is used by several SBA/Fly.io examples (for example, `examples/*/ring-emu/`).
+It is used by multi-node examples that include a `ring-emu/` helper directory (for example, `examples/localserver-flyio/ring-emu/`).
 
 ## Run
 
@@ -28,4 +28,3 @@ For the full set of flags, run:
 ```bash
 uv run launch_ring.py --help
 ```
-

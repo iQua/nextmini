@@ -1,6 +1,6 @@
-# Public network deployment (no swarm)
+# Multi-node deployment (manual, no swarm)
 
-This example (`examples/public-network`) runs the controller + Postgres on one VM and a small number of dataplane nodes on other VMs, using public IP addresses (no Docker Swarm). A similar compose layout exists in `examples/sba-compose`.
+This example (`examples/public-network`) runs the controller + Postgres on one VM and a small number of dataplane nodes on other VMs, using public IP addresses (no Docker Swarm).
 
 ## What it’s for
 

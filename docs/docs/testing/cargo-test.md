@@ -11,7 +11,7 @@ This page documents the common Rust test workflows for the Nextmini workspace.
 Start a local Postgres for controller tests:
 
 ```bash
-./utils/start-database.sh
+./start-database.sh
 ```
 
 ## Fast edit loop

@@ -1,30 +1,18 @@
-# Nextmini: a High-Performance Network Emulation and Experimentation Testbed
+# Nextmini
 
-*Nextmini* is a high-performance network emulation testbed, written in the Rust programming language. It is first and foremost designed to run as a network emulation testbed within Docker containers in the same compute cluster, but it can also run natively and across geographically distributed datacenters. Similar to conventional Virtual Private Networks (VPNs), Nextmini leverages the cross-platform [TUN interface](https://en.wikipedia.org/wiki/TUN/TAP) and behaves as a virtual network device to distributed workloads. This allows distributed workloads, such as distributed machine learning workloads, to leverage the full power of the emulation testbed obliviously. As its name suggested, it is designed to supercede many of the core use cases of [Mininet](https://mininet.org), and extend it with the ability to scale up even further across multiple physical machines, and to run any distributed workload on the testbed.
-
-Thanks to the Rust programming language, Nextmini provides three core features to be highly performant, capable of satisfying modern network emulation needs:
-
-- **High performance, fully asynchronous architecture.** Based on the highly efficient [`tokio`](https://tokio.rs) library, Nextmini runs in userspace, and firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of compute cores in modern compute clusters.
-
-- **Multi-path routing.** Nextmini supports multi-path routing obliviously, with each TCP flow traversing a different route in an emulated or real-world network.
-
-- **Built-in performance monitoring and hot reconfiguration**. Nextmini is designed to operate in both emulated and real-world network environments. It provides the capability of both emulating and monitoring network performance at per-flow granularity, and of reconfiguring routes on-the-fly to adapt to changing network conditions.
-
-Though Nextmini runs natively on Linux, the easiest way to get started with Nextmini is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run Nextmini.
-
-## Flow transports
-
-Controller-managed flows can target multiple transports. The SmolTCP-based TCP engine remains the default, but you can opt into lossless unicast delivery driven entirely in Rust via the `flow_transport` field in the controller configuration file (`controller-config.toml`). Setting `flow_transport = "lossless_unicast"` instructs the controller to install lossless sessions for each job. Individual flows defined in configuration or inserted through the database may also override this behavior using `flow_spec.transport`.
-
-Lossless unicast flows reuse the existing lossless session sender/receiver stack embedded in the dataplane—no Python bindings or user payload plumbing is required. Each flow still accepts `flow_rate` and `flow_len` (bytes or duration) so you can emulate specific pacing schedules; the dataplane converts those hints into token buckets that throttle the lossless sender accordingly.
+Nextmini is a high-performance network emulation testbed written in Rust. It is designed to run inside Docker on a single machine, but it also supports native and multi-host deployments.
 
 ## Start here
 
-- Running real applications over TUN: [Simple `iperf3` example](examples/simple.md)
-- All configuration knobs: [Configuration Reference](design/config-reference.md)
-- Control plane details: [Controller](design/controller.md)
-- Data plane details: [Dataplane node](design/dataplane.md)
-- Wire format: [Messages & Protocol](design/messages.md)
-- SmolTCP + lossless engines: [User-space flows](design/user-space-flows.md)
-- SOCKS5 proxy ingress and MAX transport: [Proxy flows](design/proxy-flows.md)
-- Embedding the dataplane in Python: [Python dataplane API](design/python-api.md)
+- Fastest path: [Quickstart (Docker)](getting-started/quickstart.md)
+- How to pick an example: [Examples overview](examples/overview.md)
+- All config knobs: [Configuration Reference](design/config-reference.md)
+- Native binaries and Postgres setup: [Build & run (native)](getting-started/build-and-run.md)
+- Code-level API docs: [Docs & API](getting-started/docs-and-api.md)
+
+## How the docs are organized
+
+- **Guides**: runnable examples, deployment scripts, and testing
+- **Concepts**: how the controller/dataplane/messages/routing work
+- **Reference**: configuration fields
+- **API**: rustdoc + Python bindings

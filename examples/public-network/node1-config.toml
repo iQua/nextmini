@@ -7,7 +7,8 @@ node_id = 1
 public_network_interface = "eth0"
 
 # The public IP address of this node.
-public_network_addr = "209.38.72.97"
+# Use a real public IP when deploying. The default value is a documentation placeholder (RFC 5737).
+public_network_addr = "203.0.113.10"
 
 
 # --- Private Network ---
@@ -19,18 +20,3 @@ num_packet_processors = 1
 channel_capacity = 4000
 queue_capacity = 3000
 feature = "concurrent"
-
-
-# The config which could be used directly in Arbutus.
-# In arbutus, "ens3" is the network_interface for private network `192.168.x.x`.
-
-# node_id = 1
-# public_network_interface = "ens3"
-# private_network_name = "vm1-private"
-# private_network_interface = "ens3"
-
-# num_tun_queues = 1
-# num_packet_processors = 1
-# channel_capacity = 4000
-# queue_capacity = 3000
-# feature = "concurrent"

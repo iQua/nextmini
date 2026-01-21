@@ -1,9 +1,0 @@
-[project]
-name = "nextmini-monitor"
-version = "0.1.0"
-description = "A simple dashboard for monitoring nextmini database."
-requires-python = ">=3.8"
-dependencies = [
-    "psycopg[binary]>=3.1",
-    "rich>=13.7"
-]

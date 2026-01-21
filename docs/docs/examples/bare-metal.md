@@ -2,7 +2,13 @@
 
 Deploy Nextmini Controller and Dataplane Nodes as native binaries across multiple physical machines.
 
-This guide demonstrates **native binary deployment** on bare metal servers or virtual machines using automated Python deployment scripts. Unlike Docker-based examples where components run in containers, **both the Controller and Dataplane nodes run directly on the host operating system** as native processes, leveraging TUN interfaces for networking. This deployment model requires **sudo privileges** for network configuration. PostgreSQL runs in a Docker container to simplify database management.
+This guide demonstrates **native binary deployment** on bare metal servers or virtual machines. Unlike Docker-based examples where components run in containers, **both the controller and dataplane nodes run directly on the host OS** as native processes. PostgreSQL runs in a local Docker container to simplify database management.
+
+It uses the included deployment scripts:
+
+- `examples/bare-metal/controller/deploy.sh` starts the controller (and the local Postgres container if needed).
+- `examples/bare-metal/dataplane/deploy.sh` bundles the `nextmini` binary + certs + `node.toml`, uploads the bundle to all hosts **in parallel** (background `scp`), and starts each node over SSH.
+- If you need to sync a full checkout to many machines (iterative development), see [Batch sync & run (rsync + SSH)](batch-sync.md).
 
 ## Quick Start
 
@@ -29,7 +35,7 @@ cargo build --release -p nextmini
 ### Optional Step: Start Database (One-time)
 
 ```bash
-./utils/start-database.sh
+./start-database.sh
 ```
 
 ### Step 2: Deploy Controller
@@ -73,7 +79,7 @@ type = "full_mesh"
 full_mesh_config = { n_nodes = 2 }
 ```
 
-Edit `dataplane/hosts.txt`:
+Edit `examples/bare-metal/dataplane/hosts.txt`:
 
 Each line contains three pipe-separated fields: `node_id|username@host|public_ip_address`
 
@@ -82,16 +88,16 @@ Each line contains three pipe-separated fields: `node_id|username@host|public_ip
 - Column 3: Public IP address for network configuration
 
 ```text
-1|root@157.180.84.40|157.180.84.40
-2|ubuntu@206.12.91.229|206.12.91.229
+1|<ssh_user>@<node1_public_ip_address>|<node1_public_ip_address>
+2|<ssh_user>@<node2_public_ip_address>|<node2_public_ip_address>
 ```
 
-Edit `dataplane/node.toml`:
+Edit `examples/bare-metal/dataplane/node.toml`:
 
 Specify the Controller's WebSocket address (IP address with port 3000).
 
 ```toml
-controller_addr = "ws://206.12.89.244:3000"
+controller_addr = "ws://<controller_public_ip_address>:3000"
 ```
 
 ### Step 5: Deploy Nodes
@@ -101,6 +107,13 @@ cd examples/bare-metal/dataplane
 chmod +x ./deploy.sh
 ./deploy.sh
 ```
+
+Notes:
+
+- `deploy.sh` runs non-interactively by default. Ensure:
+  - SSH access to every host in `hosts.txt` is passwordless (agent key loaded), and
+  - `sudo` on the remote hosts does not block on a password prompt.
+- If you need a password prompt, run `./deploy.sh -i` to deploy serially with an interactive SSH TTY.
 
 ### Step 6: Manage Services
 

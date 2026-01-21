@@ -72,12 +72,11 @@ The controller container also needs a high `nofile` limit to accept thousands of
 You should see output similar to the following in the controller terminal:
 
 ```bash
-controller  | 2026-01-01T00:46:19.983746Z  INFO controller::new_node: All 800 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
-controller  | 2026-01-01T00:46:19.983773Z  INFO controller::new_node: Skipping AddNodeAddress broadcast (no Max-mode nodes configured).
-controller  | 2026-01-01T00:46:20.187730Z  INFO controller::new_node: All dataplane nodes have connected. It takes 55.40 seconds since the first node arrived.
-controller  | 2026-01-01T00:46:20.187754Z  INFO controller::new_node: Dataplane node 786 reports its local topology is ready.
-controller  | 2026-01-01T00:46:20.187757Z  INFO controller::new_node: All dataplane nodes have finished wiring their topologies. Broadcasting topology-ready signal.
-controller  | 2026-01-01T00:46:20.187760Z  INFO controller::new_node: Broadcasting topology-ready signal to 800 dataplane nodes.
+controller  |  INFO controller::new_node: All 800 nodes are now connected. Sending node addresses, link rates and flows to all nodes.
+controller  |  INFO controller::new_node: Skipping AddNodeAddress broadcast (no Max-mode nodes configured).
+controller  |  INFO controller::new_node: All dataplane nodes have connected.
+controller  |  INFO controller::new_node: All dataplane nodes have finished wiring their topologies. Broadcasting topology-ready signal.
+controller  |  INFO controller::new_node: Broadcasting topology-ready signal to 800 dataplane nodes.
 ```
 
 Note: the controller log "All ... nodes are now connected" refers to nodes connecting to the controller and completing `StartUp`. If your controller config includes a topology (e.g., `type = "ring"`), dataplane nodes will continue wiring node-to-node connections after this point. For the connection-only scaling baseline, remove `type`/`*_config`/`edges` from `[topology]` and set only `n_nodes = N` in `examples/namespace/controller-config.toml`.

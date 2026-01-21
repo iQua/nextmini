@@ -1,6 +1,6 @@
 # Examples overview
 
-All runnable scenarios live under `examples/`. This documentation site is the canonical place for their instructions (we avoid Markdown READMEs inside `examples/`).
+All runnable scenarios live under `examples/`. This site is the canonical place for their instructions (we avoid Markdown READMEs inside `examples/`).
 
 ## Quick start
 
@@ -11,34 +11,47 @@ cd examples/<name>
 docker compose up --build
 ```
 
-Then inspect logs with:
+## Example layers
 
-```bash
-docker compose logs -f
-```
+### 1) TUN (overlay) examples
 
-## Getting started
+Run unmodified applications (ping/iperf3/PyTorch) over a virtual network interface.
 
-- **Simple `iperf3`**: [Running Nextmini in Docker Containers](simple.md)
-- **Topology + routes**: [Defining the Network Topology and Routes](routes.md)
-- **Namespace mode** (many nodes on one host): [Namespace](namespace.md)
+- [Simple (iperf3)](simple.md)
+- [Topology & Routes](routes.md)
+- [PyTorch (DDP)](pytorch.md)
 
-## Python API and multicast
+### 2) User-space flow examples
 
-- **Python API quickstart**: [Python API quickstart (PyTorch-friendly)](pytorch_python_api.md)
-- **Multicast lifecycle**: [Example: Multicast Flow Lifecycle](multicast-flow.md)
-- **End-to-end multicast harness**: [Multicast Docker Example](multicast-docker.md)
-- **LP multicast tree selection**: [LP Multicast Tree Selection](lp.md) and [Toy Demo](lp-toy.md)
-- **RL example (trainer/worker over `nextmini_py`)**: [RL Training on GSM8K](rl.md)
+Exercise controller-managed flows that are generated and consumed inside the dataplane process (SmolTCP and lossless sessions).
 
-## Proxy / MAX transport
+- [SmolTCP flows (WRR)](smoltcp-test.md)
+- [Lossless flows (controller-managed)](simple-flow.md)
+- [ns-flow (flow scaling)](ns-flow.md)
 
-These examples exercise SOCKS5 + MAX forwarding (see [Proxy flows](../design/proxy-flows.md)):
+### 3) Proxy flows (MAX mode)
 
-- [SOCKS5 proxy examples (splice-test / curl)](proxy.md)
+Forward TCP streams through the topology using connection-on-demand and (optionally) SOCKS5 ingress.
 
-## Deployments
+- [MAX mode (internal)](simple-max.md)
+- [SOCKS5 Proxy (splice-test / curl)](proxy.md)
 
-- **Bare metal**: [Bare Metal Deployment](bare-metal.md)
-- **Local controller + Fly.io nodes (experimental)**: [Local Server + Fly.io](localserver-flyio.md)
-- **Public network without swarm (experimental)**: [Public network deployment](public-network.md)
+### 4) Python API + multicast examples
+
+Embed the dataplane in Python and drive multicast and lossless transfers directly in-process.
+
+- [Python API quickstart](pytorch_python_api.md)
+- [Multicast flow lifecycle](multicast-flow.md)
+- [Multicast Docker](multicast-docker.md)
+- [LP toy demo](lp-toy.md) (includes probing + route installation)
+- [LP multicast tree selection](lp.md)
+- [RL Training (GSM8K)](rl.md)
+
+### 5) Deployment
+
+- [Single host (Docker Compose)](single-host.md)
+- [Bare metal](bare-metal.md)
+- [Multi-node (manual, no swarm)](public-network.md)
+- [Multi-node (Docker Swarm)](simple-swarm.md)
+- [Batch sync (SSH + rsync)](batch-sync.md)
+- [Local Controller + Fly.io (experimental)](localserver-flyio.md)

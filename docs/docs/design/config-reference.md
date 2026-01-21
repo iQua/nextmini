@@ -203,7 +203,37 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 | `num_packet_processors` | `usize` | `0` | `--num-packet-processors` | Number of packet processors (0 = use CPU count). |
 | `channel_capacity` | `usize` | `1000` | `--channel-capacity` | Capacity for channels between actors. |
 | `queue_capacity` | `usize` | `1000` | `--queue-capacity` | Capacity of scheduler queues. |
-| `channel_backpressure` | `bool` | `false` | `--channel-backpressure` | Apply backpressure instead of dropping when channels are full. |
+| `channel_backpressure` | `bool` | `false` | `--channel-backpressure` | If `true`, internal bounded channels block instead of dropping when full. |
+
+#### Backpressure and overload behavior
+
+The dataplane pipeline is built from multiple asynchronous tasks (network readers, processors, schedulers, connector, user‑space engines). These tasks communicate via **bounded queues**:
+
+- `channel_capacity` bounds internal channels (ingress → processor, processor → connector/scheduler, etc.).
+- `queue_capacity` bounds each scheduler’s packet queue (per next hop) in units of **packets**.
+
+When the system is overloaded (producers generate packets faster than downstream tasks can forward them), Nextmini has two strategies:
+
+1. **Drop on overload** (default): `channel_backpressure = false`
+   - Internal channels use non-blocking sends (`try_send`). When full, packets are dropped and you will see logs like “channel full; dropping packet”.
+   - Scheduler queues use `scheduler_drop_strategy`:
+     - `taildrop`: drop newest packets when full
+     - `red`: probabilistically drop before full to avoid standing queues
+
+2. **Backpressure on overload**: `channel_backpressure = true`
+   - Internal channels use blocking/asynchronous sends (`send` / `blocking_send`) so pressure propagates back to the producer.
+   - Scheduler queues also apply backpressure at `queue_capacity` (the scheduler blocks instead of dropping).
+   - In this mode, `scheduler_drop_strategy` is effectively bypassed because the queue blocks before the drop policy is consulted.
+
+**Trade-offs**
+
+- Dropping (`channel_backpressure = false`) keeps latency and task scheduling stable under bursty load, but it can reduce throughput (TCP retransmits) and can surprise Python/user‑space consumers if you expected “no internal drops”.
+- Backpressure (`channel_backpressure = true`) avoids most internal drops, but it can increase tail latency and can stall producers if the consumer is slow (for example, if a Python receiver is not draining).
+
+**Practical guidance**
+
+- If you see frequent “channel full; dropping packet” logs and want correctness‑style behavior, enable backpressure and increase capacities.
+- If you want best-effort throughput under load (and you can tolerate loss/retransmits), keep backpressure off and tune `channel_capacity`, `queue_capacity`, and `scheduler_drop_strategy`.
 
 ### Protocol Configuration
 
