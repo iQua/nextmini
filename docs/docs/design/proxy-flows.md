@@ -58,9 +58,8 @@ Proxy flows always use the MAX server + connector path because they start as inb
 
 The following examples exercise proxy flows:
 
-- `examples/curl`: curl through SOCKS5 to an HTTP server
-- `examples/wget`: wget + proxychains through SOCKS5 to download a file
 - `examples/splice-test`: high-throughput stream splicing through multiple hops
+- `examples/curl`: curl through SOCKS5 to an HTTP server
 
 ## Troubleshooting
 
@@ -69,4 +68,3 @@ The following examples exercise proxy flows:
   - `connector: Spliced connection for flow ...`
 - If you see redirects to the external server too early, confirm your controller routes include the intended internal hops.
 - If external node IDs look wrong, confirm your external endpoint IPs share the same prefix as `external_base_addr` in the controller config.
-

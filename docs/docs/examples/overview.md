@@ -35,12 +35,10 @@ docker compose logs -f
 
 These examples exercise SOCKS5 + MAX forwarding (see [Proxy flows](../design/proxy-flows.md)):
 
-- [SOCKS5 proxy examples (curl / wget / splice-test)](proxy.md)
+- [SOCKS5 proxy examples (splice-test / curl)](proxy.md)
 
 ## Deployments
 
 - **Bare metal**: [Bare Metal Deployment](bare-metal.md)
 - **Local controller + Fly.io nodes (experimental)**: [Local Server + Fly.io](localserver-flyio.md)
-- **Fly.io (legacy/experimental)**: [Fly.io deployment](flyio.md)
 - **Public network without swarm (experimental)**: [Public network deployment](public-network.md)
-

@@ -8,8 +8,6 @@ Run distributed PyTorch training on a multi-node Docker Swarm using the `example
 - 1 Swarm manager + 1 or more Swarm workers (runs dataplane nodes via `examples/sba-swarm/dataplane-swarm.yml`)
 - Docker Engine installed everywhere
 
-For legacy Arbutus-specific notes, see [Arbutus setup notes](arbutus.md).
-
 ## 1) Start controller + Postgres (controller VM)
 
 ```bash

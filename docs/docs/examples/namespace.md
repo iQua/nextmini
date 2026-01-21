@@ -100,13 +100,9 @@ This script stops the tmux session (if present), brings down the controller cont
 
 ## Development and Testing Notes
 
-### Launching a virtual machine
+### Host sizing
 
-This example can be tested with the `c16-180-576` configuration in the Arbutus cloud (a part of the Digital Research Alliance of Canada). As shown in this figure, `c16-180-576` is the name of `Flavor` in the Arbutus cloud, which manage the sizes for the compute, memory and storage capacity of the instance.
-
-![Arbutus c16-180-576 Flavor Configuration](./images/arbutus-flavor.png)
-
-For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
+For large `n_nodes`, run on a Linux host (or VM) with enough RAM and a high file descriptor limit. If you see failures while creating veth pairs or accepting controller connections, re-run the launcher with `--sysctl-only` and confirm your `ulimit`/sysctl settings were applied.
 
 ### Testing the startup time and memory consumption
 

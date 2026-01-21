@@ -94,7 +94,7 @@ And remove all the Nextmini related networks, for example, `nextmini_network`.
 docker network rm nextmini_network
 ```
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. For legacy Arbutus-specific notes, see [Arbutus setup notes](arbutus.md).
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition.
 
 ### Step 1
 
