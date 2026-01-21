@@ -76,7 +76,7 @@ pub async fn run(
         let mut progressed = false;
 
         if state.should_emit_manifest() {
-            state.send_manifest(&processors);
+            state.send_manifest(&processors).await;
             progressed = true;
         }
 
@@ -110,7 +110,7 @@ pub async fn run(
                     );
                     data_pacer.wait_for(state.common.chunk_size).await;
                     // sends the data chunk to the processors
-                    state.send_data_chunk(chunk, &processors);
+                    state.send_data_chunk(chunk, &processors).await;
                     progressed = true;
                 }
                 None => {
@@ -120,7 +120,7 @@ pub async fn run(
             }
         }
 
-        if !progressed && state.try_emit_eot(&processors) {
+        if !progressed && state.try_emit_eot(&processors).await {
             progressed = true;
         }
 
@@ -248,12 +248,12 @@ impl SenderState {
     }
 
     /// Emit a MANIFEST describing the file transfer so receivers can prime their state.
-    fn send_manifest(&mut self, processors: &ProcessorHandle) {
+    async fn send_manifest(&mut self, processors: &ProcessorHandle) {
         let manifest = LosslessSessionControl::Manifest {
             chunk_size: self.common.chunk_size as u32,
             total_bytes: self.total_bytes,
         };
-        self.send_control(&manifest, processors);
+        self.send_control(&manifest, processors).await;
         self.manifest_last_sent = Instant::now();
         if !self.manifest_sent && self.receiver_count > 0 && self.ready_deadline.is_none() {
             self.ready_deadline = Some(Instant::now() + self.ready_grace);
@@ -343,7 +343,7 @@ impl SenderState {
     }
 
     /// Encode and hand off a chunk to the processor, updating accounting.
-    fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
+    async fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = Bytes::from(lossless_session::encode_data(
             self.session_id,
             chunk.index,
@@ -364,7 +364,7 @@ impl SenderState {
             dst_ip = %self.dst_ip,
             "Lossless sender: encoded DATA chunk, sending frame to processor"
         );
-        self.send_frame(&frame, processors);
+        self.send_frame(&frame, processors).await;
     }
 
     /// Advance the retired watermark based on the slowest receiver.
@@ -386,7 +386,7 @@ impl SenderState {
     }
 
     /// Emit an End-of-Transfer once all chunks have been acknowledged.
-    fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
+    async fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
         if self.eot_sent || !self.source_drained || self.outstanding_chunks() > 0 {
             if !self.eot_sent && self.source_drained && self.outstanding_chunks() > 0 {
                 trace!(
@@ -400,7 +400,7 @@ impl SenderState {
         let eot = LosslessSessionControl::Eot {
             last_index: self.total_chunks,
         };
-        self.send_control(&eot, processors);
+        self.send_control(&eot, processors).await;
         self.eot_sent = true;
 
         info!(
@@ -482,7 +482,7 @@ impl SenderState {
     }
 
     /// Serialize the already-encoded payload into a packet and enqueue it.
-    fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
+    async fn send_frame(&self, frame: &Bytes, processors: &ProcessorHandle) {
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
             self.src_port,
@@ -491,11 +491,11 @@ impl SenderState {
             frame,
         );
 
-        processors.process_packet_blocking(packet);
+        processors.process_packet(packet).await;
     }
 
     /// Convenience helper for building and sending control packets.
-    fn send_control(&self, control: &LosslessSessionControl, processors: &ProcessorHandle) {
+    async fn send_control(&self, control: &LosslessSessionControl, processors: &ProcessorHandle) {
         // Use stack-allocated buffer to avoid heap allocation for small control frames
         let mut buf = [0u8; lossless_session::MAX_CONTROL_FRAME_SIZE];
         let frame = lossless_session::encode_control_into(&mut buf, self.session_id, control);
@@ -508,7 +508,7 @@ impl SenderState {
             frame,
         );
 
-        processors.process_packet_blocking(packet);
+        processors.process_packet(packet).await;
     }
 
     /// Opens the topology gate once the watch channel signals readiness.

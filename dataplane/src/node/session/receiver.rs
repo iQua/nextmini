@@ -45,7 +45,7 @@ impl ControlEmitter {
     }
 
     /// Encode and inject a single control frame.
-    fn send(&self, control: &LosslessSessionControl) {
+    async fn send(&self, control: &LosslessSessionControl) {
         // Use stack-allocated buffer to avoid heap allocation for small control frames
         let mut buf = [0u8; lossless_session::MAX_CONTROL_FRAME_SIZE];
         let frame = lossless_session::encode_control_into(&mut buf, self.session_id, control);
@@ -58,7 +58,7 @@ impl ControlEmitter {
             frame,
         );
 
-        self.processors.process_packet_blocking(packet);
+        self.processors.process_packet(packet).await;
     }
 }
 
@@ -111,9 +111,11 @@ pub async fn run(
         processors.clone(),
     );
 
-    control_io.send(&LosslessSessionControl::Ready {
-        node_id: cfg.common.local_node_id as u64,
-    });
+    control_io
+        .send(&LosslessSessionControl::Ready {
+            node_id: cfg.common.local_node_id as u64,
+        })
+        .await;
     let mut last_ack_up_to: u64 = 0;
     let mut eot_index: Option<u64> = None;
 
@@ -166,7 +168,9 @@ pub async fn run(
                             expected = expected,
                             "Lossless receiver: sending batched ACK"
                         );
-                        control_io.send(&LosslessSessionControl::Ack { up_to: base });
+                        control_io
+                            .send(&LosslessSessionControl::Ack { up_to: base })
+                            .await;
                         last_ack_up_to = base;
                     }
                 }
@@ -174,7 +178,7 @@ pub async fn run(
             continue;
         }
 
-        if handle_control_frame(&frame, &cfg, &control_io, &mut eot_index) {
+        if handle_control_frame(&frame, &cfg, &control_io, &mut eot_index).await {
             if let Some(last) = eot_index
                 && expected.saturating_sub(1) >= last
             {
@@ -355,7 +359,7 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
 }
 
 /// Handles receiver-side control frames (Manifest/EOT/etc.).
-fn handle_control_frame(
+async fn handle_control_frame(
     frame: &InboundFrame,
     cfg: &ReceiverConfig,
     ctrl_io: &ControlEmitter,
@@ -366,9 +370,11 @@ fn handle_control_frame(
     };
     match control {
         LosslessSessionControl::Manifest { .. } => {
-            ctrl_io.send(&LosslessSessionControl::Ready {
-                node_id: cfg.common.local_node_id as u64,
-            });
+            ctrl_io
+                .send(&LosslessSessionControl::Ready {
+                    node_id: cfg.common.local_node_id as u64,
+                })
+                .await;
             true
         }
         LosslessSessionControl::Eot { last_index } => {
