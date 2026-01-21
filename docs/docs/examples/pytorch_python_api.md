@@ -1,93 +1,116 @@
-# PyTorch + Nextmini Python API quickstart
+# Python API quickstart (PyTorch-friendly)
 
-This walk-through shows how to ship PyTorch tensors directly through the Nextmini dataplane using the `nextmini_py` extension described in [`docs/docs/design/python-api.md`](../design/python-api.md). It complements the hooks already present in `examples/pytorch/gpt2.py`, `examples/ml-tensor-multicast`, and the SBA demos.
+This guide shows how to embed the Nextmini dataplane inside a Python process using the `nextmini_py` extension (described in [Python dataplane API](../design/python-api.md)), then send and receive payloads without going through TUN.
 
-## 1. Build and install the extension
+## Contents
+
+- Install the extension (`maturin`)
+- Start a dataplane node from Python
+- Send/receive small payloads (`send_to_node`)
+- Send/receive large payloads losslessly (`send_data` / `receive_data`)
+
+## 1) Build and install `nextmini_py`
+
+The wheel targets CPython 3.13 (`abi3-py313`).
 
 ```bash
 pip install maturin
-maturin develop --release -m python-api/Cargo.toml
+maturin develop --release -m python-api/Cargo.toml    # editable install
 # or:
 maturin build --release -m python-api/Cargo.toml
 pip install target/wheels/nextmini_py-*.whl
 ```
 
-The build must target CPython 3.13 because the crate ships as `abi3-py313`. Installing the wheel makes the `nextmini_py` module available to your virtualenv.
-
-## 2. Bring up the dataplane from Python
+## 2) Start the dataplane from Python
 
 ```python
 import nextmini_py as nm
 
-dp = nm.Dataplane("/abs/path/node-config.toml")
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
 ```
 
-The constructor embeds a Tokio runtime, spawns the Rust dataplane, and connects the Python delivery interface to the controller. Keep the `Dataplane` object alive for as long as you need to send/receive traffic.
+The constructor spawns the Rust dataplane on an embedded Tokio runtime and wires the Python delivery interface. Keep the `Dataplane` object alive as long as you need to send/receive.
 
-## 3. Send tensors with `FrozenBuffer`
+## 3) Send small payloads (one payload per call)
 
-Wrap payloads in a `FrozenBuffer` before calling `send_to_node`. The helper accepts any `bytes` object, implements the buffer protocol, and exposes `slice()`/`read()` for convenience.
+`send_to_node` sends the provided bytes as a single user-space TCP payload.
 
 ```python
+import torch
 import nextmini_py as nm
 
-def frozen_from_tensor(tensor):
-    arr = tensor.detach().contiguous().cpu().numpy()
-    return nm.FrozenBuffer(arr.tobytes())
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
 
-dp = nm.Dataplane("/abs/path/node-config.toml")
-payload = frozen_from_tensor(loss_tensor)
+tensor = torch.randn(1024, dtype=torch.float32)
+payload = nm.PacketView(tensor.detach().cpu().numpy().tobytes())
 dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
-## 4. Receive payloads with metadata
+If you need custom ports (for multiplexing multiple logical streams), pass `src_port=` and `dst_port=` to both the sender and receiver registration calls.
 
-Register receivers per flow or per multicast IP. Pass `payload_only=True` (recommended) to receive the
-`PayloadDelivery` metadata that records the flow tuple, optional fragment info, and reconstructed bytes.
+## 4) Receive payloads with metadata
+
+Register a per-flow receiver and poll for deliveries:
 
 ```python
-import numpy as np
+import pickle
 import nextmini_py as nm
 
-dp = nm.Dataplane("/abs/path/node-config.toml")
-rx = dp.register_receiver_from_node(
-    src_node_id=1,
-    payload_only=True,
-)
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
+rx = dp.register_receiver_from_node(src_node_id=1)
 
 delivery = rx.recv(timeout_ms=2_000)
 if delivery:
-    arr = np.frombuffer(delivery.payload, dtype=np.float32)
-    print(
-        f"flow={delivery.flow_id} message_id={delivery.message_id} len={delivery.total_len}"
-    )
-else:
-    print("receiver timed out")
+    msg = pickle.loads(delivery.payload)
+    print("flow_id:", delivery.flow_id, "bytes:", len(delivery.payload))
 ```
 
-Use `register_receiver_for_group(src_node_id=…, group_ip="239.1.1.10", payload_only=True)` when subscribing to multicast flows. `PacketReceiver.recv_async()` integrates with `asyncio` if you prefer an async consumer.
+`PayloadDelivery` includes the 5‑tuple (`src_ip`, `dst_ip`, `src_port`, `dst_port`) plus `flow_id`. Fragmentation metadata fields exist for backward compatibility but are currently always `None`.
 
-## 5. Wire PyTorch training scripts behind env vars
+## 5) Lossless transfer for large buffers (multicast helper)
 
-`examples/pytorch/gpt2.py` already gates the Python bridge behind two environment variables so you can opt in per run:
+For large payloads (for example model weights), use the lossless session helpers:
 
-```bash
-export NEXTMINI_CONFIG=/absolute/path/node-config.toml
-export NEXTMINI_DST_NODE=2         # numeric node id to target
-python examples/pytorch/gpt2.py --num-epochs 1
+- Sender: `send_data(...)` → returns `session_id`, then `lossless_wait(session_id)`
+- Receiver: `receive_data(...)` → returns `session_id`, then `lossless_wait(session_id)` and finally `get_data_buffer(session_id)`
+
+Sender example (multicast):
+
+```python
+import nextmini_py as nm
+
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
+dp.create_group("job-42")
+group = dp.group_is_ready(timeout_ms=5_000)
+assert group
+group_id, group_ip, src_node_id = group
+
+receiver_ids = [2, 3]  # member node IDs
+edges = [(src_node_id, rid) for rid in receiver_ids]
+dp.set_group_routes(group_id, edges)
+dp.wait_for_group_routes(group_id, src_node_id, timeout_ms=5_000)
+
+buf = b"..."  # large payload
+builder = nm.PacketBuilder(size=len(buf))
+builder.write(buf)
+view = builder.freeze()
+
+sid = dp.send_data(group_id=group_id, dest_ip=group_ip, receiver_ids=receiver_ids, buffer=view)
+ok = dp.lossless_wait(sid, timeout_ms=60_000)
+assert ok
 ```
 
-When both variables are set the script:
+Receiver example (run on each receiver node):
 
-1. Imports `nextmini_py`.
-2. Instantiates `Dataplane(NEXTMINI_CONFIG)`.
-3. Wraps each loss tensor in a `FrozenBuffer`.
-4. Calls `send_to_node(dst_node_id=NEXTMINI_DST_NODE, frozen=payload)` on every step.
+```python
+import nextmini_py as nm
 
-On the destination node, start a second Python process with the same config and call `register_receiver_from_node(src_node_id=<source>, payload_only=True)` to collect the metrics. The helper functions reuse the same routing tables as the Rust dataplane, so unicast, multicast, and QoS policies apply automatically.
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
+dp.join_group(group_id)  # group_id/group_ip/src_node_id come from the sender (out of band)
+dp.wait_for_local_membership(group_id, timeout_ms=5_000)
+sid = dp.receive_data(group_id=group_id, dest_ip=group_ip, source_node_id=src_node_id, expected_bytes=123456)
+ok = dp.lossless_wait(sid, timeout_ms=60_000)
+payload = dp.get_data_buffer(sid)  # PacketView
+```
 
-## 6. Payload delivery semantics
-
-Payloads now traverse the dataplane as single frames—the OS networking stack handles any link-layer segmentation, so no `python_fragmentation_*` toggles remain. This keeps the API simple: whatever byte buffer you hand to `send_to_node` arrives at the receiver unchanged.
-
-For payload-only receivers, the `PayloadDelivery` metadata still exposes `message_id`, `total_len`, and `fragment_count` for backward compatibility, but those fields are always `None`. Use the `.payload`/`.frozen_payload` accessors for the tensor bytes and rely on your application-level framing if you need message identifiers.
+For a concrete end-to-end usage, see `examples/rl/src/trainer.py` (control messages via `send_to_node`, weight broadcast via `send_data`) and the matching `examples/rl/src/worker.py`.

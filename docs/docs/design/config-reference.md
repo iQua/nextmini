@@ -13,7 +13,7 @@ The controller configuration file (typically `controller-config.toml`) defines t
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `port` | `u16` | `3000` | Port for the controller WebSocket server. |
-| `max_server_port` | `u16` | `8081` | Port for connection-on-demand TCP server. |
+| `max_server_port` | `u16` | `8081` | Port for the TCP MAX server (dataplane-to-dataplane MAX connections and optional SOCKS5 proxy ingress). See [Proxy flows](proxy-flows.md). |
 
 ### Network Address Configuration
 
@@ -21,8 +21,8 @@ The controller configuration file (typically `controller-config.toml`) defines t
 |-------|------|---------|-------------|
 | `base_addr` | `Ipv4Addr` | `10.0.0.0` | Base IPv4 address for the TUN network. |
 | `net_mask` | `Ipv4Addr` | `255.255.0.0` | Network mask (accommodates up to 65,535 nodes). |
-| `user_space_base_addr` | `Ipv4Addr` | `192.168.0.0` | Base address for user-space smoltcp network. |
-| `external_base_addr` | `Ipv4Addr` | `172.16.8.3` | Base address for external network traffic. |
+| `user_space_base_addr` | `Ipv4Addr` | `192.168.0.0` | Base address for the user-space network (SmolTCP/Python/lossless). See [User-space flows](user-space-flows.md). |
+| `external_base_addr` | `Ipv4Addr` | `172.16.8.3` | Base address for external endpoints (used by SOCKS5/MAX proxy flows). See [Proxy flows](proxy-flows.md). |
 
 ### Multicast Configuration
 
@@ -343,7 +343,7 @@ Node operating mode.
 | Value | Description |
 |-------|-------------|
 | `normal` | Standard operation (default). |
-| `max` | Maximum throughput mode with connection-on-demand. |
+| `max` | Maximum throughput mode with connection-on-demand. See [Proxy flows](proxy-flows.md). |
 
 ### CongestionControl
 

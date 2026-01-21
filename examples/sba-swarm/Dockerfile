@@ -29,8 +29,8 @@ RUN /bin/bash -c "cargo run -p cert-gen"
 # build the dataplane from source
 RUN /bin/bash -c "cargo build -p nextmini --release"
 
-# build the ring emulator
-RUN /bin/bash -c "cargo build -p ringallreduce --release"
+# build the ringallreduce binary (not part of the main workspace)
+RUN /bin/bash -c "CARGO_TARGET_DIR=/var/nextmini/target cargo build --release --manifest-path examples/sba-swarm/ring-emu/Cargo.toml"
 
 FROM bitnami/minideb:latest
 

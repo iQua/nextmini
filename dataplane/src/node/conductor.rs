@@ -1,7 +1,15 @@
-/// The conductor actor is a 'mastermind' who is reponsible for overseeing the entire operation of
-/// the dataplane node, including the controller interface actor, the processors actor, and the local
-/// interface actor. Optionally, from the Python interface, it also manages the controller interface actor
-/// and the lossless session manager actor.
+//! Dataplane conductor (top-level runtime supervisor).
+//!
+//! The [`Conductor`] wires together the major dataplane subsystems and starts:
+//!
+//! - The controller interface (control channel + route/flow installs)
+//! - The packet processor(s) and connector (Normal vs Max forwarding)
+//! - The local interface (TUN) when enabled
+//! - The network servers (TCP/UDP/QUIC + MAX server)
+//!
+//! In Python-embedded mode (`python-extension` feature), it also exposes handles for lossless
+//! sessions and controller-facing helpers.
+
 use tracing::info;
 
 use nextmini_messages::Protocol;

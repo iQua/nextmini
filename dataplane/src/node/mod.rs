@@ -1,3 +1,18 @@
+//! Dataplane node implementation.
+//!
+//! This module contains the runtime that executes on each dataplane node. It wires together:
+//!
+//! - [`conductor`]: top-level supervisor (starts subsystems and owns shutdown)
+//! - [`controller`]: control-plane interface (WebSocket) plus DB-backed route/flow/multicast updates
+//! - [`network`]: inter-node transports (TCP/UDP/QUIC) and MAX/SOCKS5 proxy ingress
+//! - [`local`]: TUN interface reader/writer (kernel-originated application traffic)
+//! - [`flow`]: user-space flow engines (SmolTCP-based TCP)
+//! - [`session`]: lossless session sender/receiver for large transfers
+//! - [`scheduler`]: queueing disciplines and pacing
+//! - `namespace`: Linux-only helpers for spawning many nodes on one host
+//!
+//! For conceptual documentation, see the MkDocs site under `docs/`.
+
 pub mod conductor;
 pub mod config;
 pub mod connector;

@@ -1,3 +1,10 @@
+//! Dataplane node configuration.
+//!
+//! [`LocalConfig`] is loaded from a TOML file and/or CLI flags (ClapSerde). During handshake, the
+//! controller sends additional runtime parameters (base address ranges, protocol, scheduler type,
+//! operating mode) via [`ControllerToDataplane::StartUp`], and the node updates its effective config
+//! accordingly.
+
 use std::net::Ipv4Addr;
 use std::time::Duration;
 

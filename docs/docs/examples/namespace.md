@@ -1,7 +1,18 @@
+# Namespace scaling (single host)
 
-# Running Nextmini's dataplane nodes in virtualized network namespaces on a single host
+`examples/namespace` spawns many dataplane nodes as Linux network namespaces on a single host. It is useful for measuring:
 
-This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
+- Controller join/startup time at high node counts
+- Memory footprint per node
+- veth/namespace setup overhead
+
+## Contents
+
+- Quick start (tmux)
+- Manual run (two terminals)
+- Observing results
+- Cleanup
+- Notes and benchmarks
 
 ## Running the Single Host Example
 
@@ -33,6 +44,8 @@ Terminal A (controller + DB):
 cd ~/nextmini/examples/namespace
 docker compose -f docker-compose.yml up --build
 ```
+
+Postgres and the controller run inside a dedicated Docker bridge subnet (`170.16.8.0/24`) defined in `examples/namespace/docker-compose.yml`. The controller config uses the Postgres container IP (`170.16.8.2`) accordingly.
 
 Terminal B (dataplane):
 
@@ -181,67 +194,16 @@ Namespace nodes are assigned sequential node IDs and per-namespace IPs:
 - IPs: with the default `bridge_ip = 172.16.8.1`, the first node gets `ns_ip = 172.16.8.2` (network `.0` and gateway `.1` are reserved).
 - For large runs, nodes are sharded across multiple `isobr*` bridges to avoid per-bridge port limits; each shard uses a `/22` subnet.
 
+Note: the namespace bridge subnet (`172.16.8.0/…`) is unrelated to the Docker bridge subnet (`170.16.8.0/24`) used by the controller/Postgres containers.
+
 Example (default settings):
 
 - `idx = 0 → ns_ip = 172.16.8.2 → node_id = 1` (host veth: `veth0a`, namespace veth: `veth0b`)
 
-!!! warning
+## Multi-host namespaces (experimental)
 
-    The following instructions have not been verified to work correctly.
+The repository also contains an experimental multi-host variant in `examples/ns-public`. It is not actively maintained.
 
-
-# Running Nextmini's dataplane nodes in virtualized network namespaces on multiple hosts
-
-## Run Multiple Hosts Example on Arbutus
-
-Before running any commands, the port security on each instance should be disabled to allow traffic between instances.
-
-Choose `Edit port security group` and click `Edit Port` button.
-Then the following window will pop up, uncheck `Port Security` and click `Update` button.
+If you run it on a cloud that enforces port security (for example Arbutus), you may need to disable port security on each VM port first:
 
 ![Disable Port Security on Arbutus Instance](./images/arbutus-port-security.png)
-
-These steps are required to be done on all instances before running the example.
-
-## Running the Example
-
-There is an instruction for running multi-host example in `examples/ns-public`.
-
-### Step 1: Increasing the ARP Table Limits
-
-Run the sysctl tuning script on each VM:
-
-```bash
-./examples/namespace/run.sh --sysctl-only
-```
-
-### Step 2: Configuring the number of nodes in the controller
-
-To change the number of nodes, you need to update the `n_nodes` field in the controller's configuration file, `controller-config.toml`, or specify the network topology to make sure that the number of nodes coincides with the configuration in the data plane.
-
-In this ns-public example, we use 10 nodes for quick test. Each VM instance runs 5 nodes.
-
-### Step 3: Starting the controller and database engine
-
-Start the controller and database engine using the compose file in `examples/ns-public` on the controller VM.
-
-### Step 4: Running the project
-
-On the first VM, run the dataplane using `examples/ns-public/VM1-config.toml`.
-
-Then the logs on Controller terminal would be observed.
-
-Then on another VM, repeat **step 4** with `examples/ns-public/VM2-config.toml`.
-
-Note that `node_id_offset = 5` is set in `VM2-config.toml` to make sure that the node IDs do not overlap with those in the first VM.
-
-### Step 5: Cleaning up
-
-To clean up the environment on all dataplane VM instances:
-
-1. Press `Control+C` in both the controller and namespace terminals
-2. Remove created veth interfaces:
-
-```bash
-./examples/ns-public/cleanup.sh
-```

@@ -65,7 +65,7 @@ Enter passphrase once, it will persist across terminal sessions.
 
 For a complete list of configuration options, see the [Configuration Reference](../design/config-reference.md).
 
-Edit `controller/config.toml`:
+Edit `examples/bare-metal/controller/config.toml`:
 
 ```toml
 [topology]

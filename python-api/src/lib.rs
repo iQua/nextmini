@@ -1,3 +1,16 @@
+//! Python bindings for embedding the Nextmini dataplane in-process.
+//!
+//! This crate builds the `nextmini_py` PyO3 extension module. It lets Python workloads:
+//!
+//! - Instantiate a dataplane node (`Dataplane`) inside the Python process.
+//! - Send payload bytes directly into the dataplane (`send_to_node`).
+//! - Register per-flow receivers to consume delivered payloads (`register_receiver_*`).
+//! - Use multicast helpers (`create_group`, `join_group`, `set_group_routes`, …).
+//! - Transfer large buffers losslessly (`send_data` / `receive_data` + `lossless_wait`).
+//!
+//! For the user-facing guide, see `docs/docs/design/python-api.md` and
+//! `docs/docs/examples/pytorch_python_api.md`.
+
 mod buffer;
 
 #[cfg(feature = "python-extension")]

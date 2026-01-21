@@ -44,13 +44,14 @@ services:
         echo \"Extracted NODE_ID: \$$NODE_ID\" &&
         cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
         echo \"\" >> /var/nextmini/config.toml &&
-        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
-        echo \"Generated config file:\" &&
-        cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
-          echo \"Controller not ready, waiting 2 seconds...\"
-          sleep 2
+	        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+	        echo \"Generated config file:\" &&
+	        cat /var/nextmini/config.toml &&
+	        cp /var/nextmini/ring-emu/ring.txt /var/nextmini/ring.txt &&
+	        echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
+	        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
+	          echo \"Controller not ready, waiting 2 seconds...\"
+	          sleep 2
         done &&
         echo \"Controller is ready, starting dataplane...\" &&
         /var/nextmini/nextmini ws://206.12.89.244:3000 &
@@ -105,13 +106,14 @@ services:
         echo \"Extracted NODE_ID: \$$NODE_ID\" &&
         cp /var/nextmini/config.toml.template /var/nextmini/config.toml &&
         echo \"\" >> /var/nextmini/config.toml &&
-        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
-        echo \"Generated config file:\" &&
-        cat /var/nextmini/config.toml &&
-        echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
-        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
-          echo \"Controller not ready, waiting 2 seconds...\"
-          sleep 2
+	        echo \"node_id = \$$NODE_ID\" >> /var/nextmini/config.toml &&
+	        echo \"Generated config file:\" &&
+	        cat /var/nextmini/config.toml &&
+	        cp /var/nextmini/ring-emu/ring.txt /var/nextmini/ring.txt &&
+	        echo \"Waiting for controller at 206.12.89.244:3000 to be ready...\" &&
+	        while ! timeout 1 bash -c \"</dev/tcp/206.12.89.244/3000\"; do
+	          echo \"Controller not ready, waiting 2 seconds...\"
+	          sleep 2
         done &&
         echo \"Controller is ready, starting dataplane...\" &&
         /var/nextmini/nextmini ws://206.12.89.244:3000 &

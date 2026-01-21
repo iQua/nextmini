@@ -1,3 +1,9 @@
+//! Packet representation and buffer pooling.
+//!
+//! The dataplane reads raw IPv4 packets from the local interface and/or from network transports.
+//! [`Packet`] wraps the owned bytes with metadata (flow ID, packet size) and uses a global
+//! [`PacketBuf`] pool to reduce per-packet allocations.
+
 use std::net::Ipv4Addr;
 use std::ops::Deref;
 use std::sync::Mutex;

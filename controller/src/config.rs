@@ -1,4 +1,5 @@
-/// Defines configuration structs and loading logic.
+//! Controller configuration structs and loading logic.
+
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::Path;

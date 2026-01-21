@@ -14,6 +14,17 @@ Though Nextmini runs natively on Linux, the easiest way to get started with Next
 
 ## Flow transports
 
-Controller-managed flows can target multiple transports. The original smoltcp-based TCP engine remains the default, but you can now opt into lossless unicast delivery driven entirely in Rust via the `flow_transport` field in `controller/config.toml`. Setting `flow_transport = "lossless_unicast"` instructs the controller to install lossless sessions for each job. Individual flows defined in configuration or inserted through the database may also override this behavior using `flow_spec.transport`.
+Controller-managed flows can target multiple transports. The SmolTCP-based TCP engine remains the default, but you can opt into lossless unicast delivery driven entirely in Rust via the `flow_transport` field in the controller configuration file (`controller-config.toml`). Setting `flow_transport = "lossless_unicast"` instructs the controller to install lossless sessions for each job. Individual flows defined in configuration or inserted through the database may also override this behavior using `flow_spec.transport`.
 
 Lossless unicast flows reuse the existing lossless session sender/receiver stack embedded in the dataplane—no Python bindings or user payload plumbing is required. Each flow still accepts `flow_rate` and `flow_len` (bytes or duration) so you can emulate specific pacing schedules; the dataplane converts those hints into token buckets that throttle the lossless sender accordingly.
+
+## Start here
+
+- Running real applications over TUN: [Simple `iperf3` example](examples/simple.md)
+- All configuration knobs: [Configuration Reference](design/config-reference.md)
+- Control plane details: [Controller](design/controller.md)
+- Data plane details: [Dataplane node](design/dataplane.md)
+- Wire format: [Messages & Protocol](design/messages.md)
+- SmolTCP + lossless engines: [User-space flows](design/user-space-flows.md)
+- SOCKS5 proxy ingress and MAX transport: [Proxy flows](design/proxy-flows.md)
+- Embedding the dataplane in Python: [Python dataplane API](design/python-api.md)

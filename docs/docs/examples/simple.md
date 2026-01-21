@@ -51,7 +51,7 @@ utun: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1400
         TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
 ```
 
-We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, Nextmini uses the subnet `10.0.0.0/24` for the Nextmini data plane. For a node with an ID _n_, its corresponding IP address is `10.0.0.n`.
+We can see the local TUN interface, and it is assigned an IP address of `10.0.0.1`. By default, Nextmini uses the subnet `10.0.0.0/16` for the TUN/overlay network. Node IPs are derived from `node_id` (for example, node 1 is `10.0.0.1`, node 2 is `10.0.0.2`).
 
 To confirm that connection is successful, we can ping `node2` and `node3` by their Nextmini IP addresses:
 

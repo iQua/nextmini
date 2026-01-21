@@ -142,7 +142,7 @@ creation or membership changes.
 
 - **Logging** – `RUST_LOG=info` surfaces directory broadcasts, route pushes, and membership changes on both controller and dataplane sides.
 - **Metrics** – Flow statistics code treats multicast flows identically; per-hop byte counters expand naturally as the same flow ID fans out.
-- **Configuration** – The multicast pool defaults to `239.255.0.0/16`. Override `controller.config.multicast_pool_base` / `multicast_pool_mask` to carve a different range.
+- **Configuration** – The multicast pool defaults to `239.255.0.0/16`. Override `multicast_pool_base` / `multicast_pool_mask` in the controller config file to carve a different range.
 - **Resilience** – Controller retries on serialization errors and warns when websocket writers vanish. Dataplane caches clear on every install so stale entries never linger.
 
 ---
@@ -154,7 +154,7 @@ Current coverage (see `controller/src/utils.rs` and `dataplane/src/node/route.rs
 - Unit tests validate DAG construction, membership pruning, and per-node route assembly.
 - Dataplane tests exercise directory installation, route fan-out, and cache flushing.
 
-Planned follow-ups tracked in `docs/testing/python_api_validation.md` and project mail:
+Planned follow-ups tracked in [`docs/docs/testing/python-api-validation.md`](../testing/python-api-validation.md) and project mail:
 
 - Controller integration test that drives `CreateGroup`/`JoinGroup` against a live Postgres instance and verifies websocket pushes.
 - End-to-end soak demonstrating packet fan-out across multiple branches (normal + Max mode).
@@ -165,7 +165,7 @@ Planned follow-ups tracked in `docs/testing/python_api_validation.md` and projec
 ## Related Material
 
 - **Example walkthrough** – `docs/docs/examples/multicast-flow.md` shows the CLI/API flow for creating a group, joining members, and verifying delivery.
-- **Testing harness plan** – `docs/testing/python_api_validation.md` describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
+- **Testing harness plan** – [`docs/docs/testing/python-api-validation.md`](../testing/python-api-validation.md) describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
 - **Controller configuration** – See `controller/src/config.rs` for the multicast pool defaults and other tunables.
 - Dataplane routing-table tests that validate group directory lookups.
 - Integration tests that drive membership changes via Postgres notifications.

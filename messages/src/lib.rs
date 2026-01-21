@@ -1,4 +1,16 @@
-/// Defines message enums for controller-dataplane communication.
+//! Controller ↔ dataplane message definitions.
+//!
+//! The controller and dataplane communicate over a WebSocket control channel using MessagePack
+//! (via `rmp-serde`). The message enums in this crate define that protocol surface.
+//!
+//! Key categories:
+//!
+//! - [`DataplaneToController`]: node startup, metrics, flow completion, and multicast requests.
+//! - [`ControllerToDataplane`]: handshake parameters, neighbor connectivity, routes, flows, and
+//!   multicast directory/routes.
+//!
+//! This crate also defines shared configuration enums such as [`Protocol`], [`OperatingMode`],
+//! and [`FlowTransport`].
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;

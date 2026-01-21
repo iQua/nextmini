@@ -1,3 +1,12 @@
+//! Lossless session framing protocol.
+//!
+//! Lossless sessions provide a chunked, acknowledged transfer mechanism used by:
+//!
+//! - controller-managed lossless unicast flows
+//! - Python API large-buffer transfers (`send_data` / `receive_data`)
+//!
+//! Frames are carried over the normal dataplane forwarding path and demultiplexed by `session_id`.
+
 use serde::{Deserialize, Serialize};
 
 /// Magic constant (legacy "RLM1" ASCII) used by lossless session frames.
@@ -118,7 +127,7 @@ pub enum LosslessSessionControl {
     },
 }
 
-/// Encode a DATA frame (header + LosslessSessionData + payload) into a fresh Vec<u8>.
+/// Encode a DATA frame (header + LosslessSessionData + payload) into a fresh `Vec<u8>`.
 pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
     let body_len = 8 + 4 + payload.len() as u32;
     let mut out = vec![0u8; LosslessSessionHeader::LEN + body_len as usize];
@@ -227,7 +236,7 @@ pub fn encode_control_into<'a>(
     &buf[..LosslessSessionHeader::LEN + body_len]
 }
 
-/// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
+/// Encode a CONTROL frame (header + control body) into a fresh `Vec<u8>`.
 ///
 /// Note: Consider using `encode_control_into` with a stack buffer for better performance.
 pub fn encode_control(session_id: u64, control: &LosslessSessionControl) -> Vec<u8> {

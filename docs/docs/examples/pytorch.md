@@ -1,4 +1,3 @@
-
 # Distributed PyTorch Trainers
 
 ## Running a Distributed PyTorch Trainer with OpenMPI on a Single Machine
@@ -23,7 +22,7 @@ To build and run the docker image in this example, run the following in the `exa
 docker compose build && docker compose up
 ```
 
-This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with
+This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Nextmini controller. To start training, open another terminal and attach to `node1` with
 
 ```bash
 docker exec -it node1 /bin/bash
@@ -53,19 +52,28 @@ This should start a training session for a `LeNet-5` model to be trained with th
 
 ## Optional: Stream training metrics through the Python dataplane API
 
-When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, enable the Python bindings described in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
+When you want to push tensors or scalar metrics directly into the Nextmini dataplane from Python (without going through TUN), use the `nextmini_py` bindings described in [Python API quickstart](pytorch_python_api.md):
 
 1. Build and install the `nextmini_py` wheel (`maturin build --release -m python-api/Cargo.toml; pip install target/wheels/nextmini_py-*.whl`).
-2. Export the environment variables consumed by `examples/pytorch/gpt2.py` (or your custom script):
+2. Add a small hook in your training loop (or gate it behind env vars in your custom script):
 
    ```bash
    export NEXTMINI_CONFIG=/absolute/path/node-config.toml
    export NEXTMINI_DST_NODE=2   # numeric node id that should receive telemetry
    ```
 
-3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). When both variables are present the script loads `nextmini_py.Dataplane`, wraps each per-step loss tensor in a `FrozenBuffer`, and ships it via `send_to_node`.
+3. In Python, create the dataplane once and send bytes with `PacketView`:
 
-On the destination node you can mirror the setup with another Python worker and call `rx.recv(timeout_ms=2000)` to consume the metrics. The bindings reuse the same routing tables as the Rust dataplane, so multicast fan-out and QoS policies apply automatically. Consult the quickstart for queue sizing, fallbacks, and additional helpers.
+   ```python
+   import os
+   import nextmini_py as nm
+
+   dp = nm.Dataplane(os.environ["NEXTMINI_CONFIG"])
+   dst = int(os.environ["NEXTMINI_DST_NODE"])
+   dp.send_to_node(dst_node_id=dst, frozen=nm.PacketView(b"..."))
+   ```
+
+On the destination node you can mirror the setup with another Python process and call `register_receiver_from_node(src_node_id=...)` + `rx.recv(timeout_ms=...)` to consume the metrics. For a complete end-to-end reference (including large lossless transfers), see `examples/rl`.
 
 ## Running a Distributed PyTorch Trainer across Multiple Machines
 
@@ -86,7 +94,7 @@ And remove all the Nextmini related networks, for example, `nextmini_network`.
 docker network rm nextmini_network
 ```
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. For legacy Arbutus-specific notes, see [Arbutus setup notes](arbutus.md).
 
 ### Step 1
 
@@ -204,7 +212,7 @@ sh train_resnet.sh
 sh train_vgg16.sh
 ```
 
-To train different variants of resnet, simply simply change the `--type` command line argument in `train_resnet.sh` on the manager instance.
+To train different variants of resnet, simply change the `--type` command line argument in `train_resnet.sh` on the manager instance.
 
 ### Clean up
 

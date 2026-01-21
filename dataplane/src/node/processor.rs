@@ -1,7 +1,13 @@
-/// A processor actor is designed to forward packets from its upstream actors (LocalInterface
-/// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
-/// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
-/// processing and routing of network packets.
+//! Packet processor and forwarding logic.
+//!
+//! The processor receives packets from upstream ingress sources (local TUN interface, neighbor
+//! network interfaces, and optionally the Python interface), performs route selection, and forwards
+//! packets toward the appropriate next hops via schedulers.
+//!
+//! In `OperatingMode::Normal`, packets are forwarded through the normal scheduling pipeline.
+//! In `OperatingMode::Max`, outbound flows can be forwarded through the MAX connector
+//! (connection-on-demand TCP streams) for higher throughput.
+
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 

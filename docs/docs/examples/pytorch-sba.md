@@ -1,153 +1,91 @@
-# Distributed PyTorch Trainers on Sim, Boston and Arbutus
+# PyTorch on SBA (Docker Swarm)
 
-Before starting, make sure all the containers are stopped and removed.
+Run distributed PyTorch training on a multi-node Docker Swarm using the `examples/sba-swarm` scenario.
 
-```bash
-docker rm -f $(docker ps -aq)
-```
+## Prerequisites
 
-And remove all the Nextmini related networks, for example, `nextmini_network`.
+- 1 controller VM (runs controller + Postgres via `examples/sba-swarm/controller-swarm.yml`)
+- 1 Swarm manager + 1 or more Swarm workers (runs dataplane nodes via `examples/sba-swarm/dataplane-swarm.yml`)
+- Docker Engine installed everywhere
 
-```bash
-docker network rm nextmini_network
-```
+For legacy Arbutus-specific notes, see [Arbutus setup notes](arbutus.md).
 
-Then add `"examples/sba-swarm/ring-emu"` to `/nextmini/Cargo.toml`.
-
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
-
-### Step 1
-
-On the controller instance, build controller and postgres image:
+## 1) Start controller + Postgres (controller VM)
 
 ```bash
 cd nextmini/examples/sba-swarm
-docker build -t nextmini_controller_pytorch -f ../../controller/Dockerfile ../../
-docker pull postgres:alpine
+docker compose -f controller-swarm.yml up --build
 ```
 
-Then, add the following to the `controller-config.toml` to ensure successful connection to controller:
+## 2) Build the dataplane image (manager + workers)
 
-```toml
-[db]
-user = "pgusr"
-password = "pgpwrd"
-host = "postgres"
-database = "nextmini"
-port = "5432"
-```
-
-Controller and postgres services can be started by:
+Build this image on every Swarm node (or build once and push it to a registry):
 
 ```bash
-docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
-# docker compose -f controller-swarm.yml build --no-cache; docker compose -f controller-swarm.yml up
+cd nextmini
+docker build -t nextmini_datapath_pytorch -f examples/sba-swarm/Dockerfile .
 ```
 
-On the manager instance, `<CONTROLLER_IP>` in `dataplane-swarm.yml` should be altered accordingly.
+## 3) Create the Swarm and deploy the dataplane stack
 
-### Step 2
-
-Build the pytorch base image on all manager and work instances :
+On the manager:
 
 ```bash
-cd nextmini/
-docker build -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
-# docker build --no-cache --pull -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
+docker swarm init --advertise-addr <MANAGER_IP>
 ```
 
-### Step 3
-
-On the manager instance, start the docker swarm:
+On each worker:
 
 ```bash
-docker swarm init --advertise-addr <Manager IP>
+docker swarm join --token <SWARM_JOIN_TOKEN> <MANAGER_IP>:2377
 ```
 
-On all worker instances, join into the swarm network with the swarm token logged out:
+Edit `examples/sba-swarm/dataplane-swarm.yml` and replace the hard-coded controller address (`206.12.89.244:3000`) with your controller VM IP, then deploy:
 
 ```bash
-docker swarm join --token SWMTKN-1-xxxx <SWARM_MANAGER_IP>:<port>
-```
-
-On the manager instance, you can check the status of nodes by:
-
-```bash
-docker node ls
-```
-
-### Step 4
-
-After all workers has joined the swarm, deploy services on the manager instance by:
-
-```bash
-cd examples/sba-swarm
+cd nextmini/examples/sba-swarm
 docker stack deploy -c dataplane-swarm.yml nextmini
-```
-
-To check the status of services, use:
-```bash
 docker service ls
 ```
 
-### Step 5
-
-On the manager instance, find the container ID for node1 by:
+## 4) Run training inside `node1`
 
 ```bash
-docker ps -a
+docker ps
+docker exec -it <node1_container_id> /bin/bash
+cd /var/nextmini
 ```
 
-```bash
-docker exec -it <containerID> /bin/bash
-```
-
-Once logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
+Sanity check OpenMPI:
 
 ```bash
 mpirun --allow-run-as-root -np 2 -H 10.0.0.1:1,10.0.0.2:1 -x MASTER_ADDR=node1 -x PATH -bind-to none -map-by :OVERSUBSCRIBE uv run test.py
 ```
 
-We should see two `Hello World!` printed after the Python packages are downloaded and installed.
-
-Finally, we can start distributed training with PyTorch:
+Then run a training script:
 
 ```bash
-# Train Lenet5 with
 sh train_lenet5.sh
-
-# Train GPT2 with
-sh train_gpt2.sh
-
-# Train Resnet with
-sh train_resnet.sh
-
-# Train VGG16 with
-sh train_vgg16.sh
+# sh train_gpt2.sh
+# sh train_resnet.sh
+# sh train_vgg16.sh
 ```
 
-To train different variants of resnet, simply simply change the `--type` command line argument in `train_resnet.sh` on the manager instance.
+## Optional: emit metrics via the Python dataplane API
 
-### Optional: Emit metrics via the Python dataplane API
+If you want to stream intermediate tensors (or scalar metrics) through Nextmini from Python, follow the [Python API quickstart](pytorch_python_api.md).
 
-If you want these SBA scenarios to stream intermediate loss/activation tensors through Nextmini (instead of relying solely on TUN delivery), follow the steps in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
+## Cleanup
 
-1. Install the `nextmini_py` wheel on the swarm nodes.
-2. Set `NEXTMINI_CONFIG=/var/nextmini/node-config.toml` (or the appropriate mounted path) and `NEXTMINI_DST_NODE=<target node id>` before invoking the training scripts.
-3. The provided `gpt2.py` and other helpers already gate the Python bridge behind those variables; once set, they wrap each metric in a `FrozenBuffer`, publish it with `send_to_node`, and log errors without aborting the job.
-
-A companion receiver (launched on another trainer or analytics node) can call `rx.recv()` to ingest the payloads for dashboards or adaptive schedulers.
-
-### Clean up
-
-To clean up the dataplane worker nodes: use the command below:
+On the manager:
 
 ```bash
 docker stack rm nextmini
 ```
 
-To clean up the controller & db VM instance in DigitalOcean, use the command:
+On the controller VM:
 
 ```bash
+cd nextmini/examples/sba-swarm
 docker compose -f controller-swarm.yml down
 ```

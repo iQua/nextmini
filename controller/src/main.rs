@@ -1,3 +1,15 @@
+//! Nextmini controller binary.
+//!
+//! The controller is the control-plane component that:
+//!
+//! - Accepts dataplane node connections over WebSocket.
+//! - Persists topology/routing/flow/group state in Postgres.
+//! - Pushes routes, neighbor connectivity, and multicast updates to dataplane nodes.
+//!
+//! See the MkDocs site for a higher-level overview (`docs/`), especially:
+//! - `docs/docs/design/controller.md`
+//! - `docs/docs/design/messages.md`
+
 mod config;
 mod db;
 mod db_sync;

@@ -7,9 +7,10 @@ This directory contains the Nextmini documentation built with [MkDocs](https://w
 To install Material for MkDocs, run:
 
 ```bash
-uv venv
+cd docs
+uv venv --python 3.13
 source .venv/bin/activate
-uv pip install mkdocs-material
+uv pip install -r requirements.txt
 ```
 
 ## Usage
@@ -34,3 +35,16 @@ mkdocs build
 
 The static website will be available in the `site/` directory.
 
+## Rust API docs (rustdoc)
+
+To publish the Rust API reference alongside the MkDocs site:
+
+```bash
+# From the repo root:
+bash docs/generate-rustdoc.sh
+
+# Or, from inside the docs directory:
+# bash generate-rustdoc.sh
+```
+
+This generates `cargo doc` output and copies it into `docs/docs/api/rustdoc/`, which MkDocs will include as static files.

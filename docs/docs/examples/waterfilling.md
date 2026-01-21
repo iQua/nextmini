@@ -1,88 +1,63 @@
-
-## Water-Filling Routing
+# Water-filling routing (experimental)
 
 !!! warning
-    
-    The following instructions have not been verified to work correctly.
+    These instructions are not routinely tested. Expect to tweak timeouts and ports on your machine.
 
+This example demonstrates runtime route adaptation using live measurements. It starts a 4‑node Nextmini topology and configures **three parallel paths** from `node1` (source) to `node2` (destination): `1→2`, `1→3→2`, and `1→4→2`. Link rates are capped at **10/20/30 Mbps** so the water-filling controller can converge to a stable split.
 
-The water-filling routing example, writtin in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:
-
-```bash
-cd ./examples/routing/waterfilling && docker compose build && docker compose up
-```
-
-Before starting to build the docker image, it is recommended to start from a clean slate:
+## 1) Start the stack
 
 ```bash
-docker system prune -a
+cd examples/routing/waterfilling
+docker compose build && docker compose up
 ```
 
-This will remove all stopped containers, all unused networks and volumes, and all build cache. If you wish to remove all existing volumes at the same time, run:
+Port `5432` is the default for PostgreSQL. On macOS, a locally running Postgres instance can conflict with the container; stop it if needed.
+
+## 2) Generate workload (UDP iperf3)
+
+This example uses UDP because iperf can enforce a target rate.
+
+Recommended: use the helper script (starts 6 UDP flows):
 
 ```bash
-docker system prune -a --volumes -f
+./start_traffic.sh
 ```
 
-To reset the environment and start from a clean state, run:
+Manual option (separate terminals):
 
-```bash
-docker compose down
-docker compose build --no-cache
-```
-
-_Note:_ Port `5432` is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
-
-This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
-
-_Running the workload._ We can now generate arbitrary data with `iperf3` workloads. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
-
-In a new terminal, start the iperf3 servers on node2 by runnig:
+Start iperf3 servers on `node2`:
 
 ```bash
 docker exec -it node2 /bin/bash -c "./iperf3_s.sh"
 ```
 
-In another terminal, start the iperf3 clients on node1 by running:
+Start iperf3 clients on `node1`:
 
 ```bash
 docker exec -it node1 /bin/bash -c "./iperf3_c.sh"
 ```
 
-**Monitoring the throughput.** To monitor the network throughput, first make sure you have `uv` installed first:
+## 3) Monitor throughput
 
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-And make sure that `$HOME/.cargo/bin` is in the `$PATH` by revising `~/.zshrc` accordingly:
-
-```sh
-export PATH=$HOME/.cargo/bin:$PATH
-```
-
-Later on, whenever one needs to update the version of `uv`, the following command can be used:
-
-```sh
-uv self update
-```
-
-They use the following command for live data monitoring, you will see a command-line dashboard for live data monitoring:
+Run the monitoring dashboard:
 
 ```bash
-cd ./tools/monitor && uv run dashboard.py
+cd tools/monitor
+uv run dashboard.py
 ```
 
-Observe the traffic in each path, and note how they are not distributed evenly according to the bandwidth limit we set for each path.
-
-**Running the algorithm.** To run the water-filling algorithm, open one more terminal and run:
+## 4) Run the water-filling controller
 
 ```bash
-cd ./tools/routing && uv run waterfilling.py
+uv sync
+uv run run_waterfilling.py
 ```
 
-By default, the waterfilling algorithm will run in 2-second intervals, and print the output in each round. Once convergence is reached, the algorithm will stop printing.
+## Expected outcome
 
-Once the water-filling algorithm converges, observe the flow in each link from the dashboard again. Now, each path should have around 10 Mbps, 20 Mbps, and 30 Mbps of traffic in them respectively.
+After convergence, you should observe traffic split roughly according to the configured bottlenecks: **10 Mbps**, **20 Mbps**, and **30 Mbps** across the three paths.
 
-_Known caveat._ Perhaps due to the design of the water-filling algorithm, the converged values may be 10 Mbps, 20 Mbps, and 10 Mbps in some of the runs.
+## Caveat
+
+Some runs may converge to a suboptimal split (for example 10/20/10). If that happens, restart the experiment and rerun the controller.

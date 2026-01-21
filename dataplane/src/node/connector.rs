@@ -1,3 +1,12 @@
+//! MAX connector (connection-on-demand TCP forwarding).
+//!
+//! The connector is used primarily in `OperatingMode::Max` and for SOCKS5/MAX proxy flows.
+//! It establishes TCP MAX streams hop-by-hop on demand and splices bytes between inbound and
+//! outbound streams at relay nodes.
+//!
+//! - TCP MAX framing and SOCKS5 ingress: `dataplane/src/node/network/tcp_max.rs`
+//! - Splicing / relay forwarding: this module
+
 use ahash::AHashMap;
 use tokio;
 #[cfg(not(target_os = "linux"))]

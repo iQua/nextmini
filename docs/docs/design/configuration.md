@@ -30,9 +30,11 @@ Use `--protocol quic --quic-congestion-control cubic` on the CLI to switch to QU
 ### Operational Notes
 
 - The server keeps QUIC keep-alives enabled so idle tunnels stay established.
-- MTU handling relies on the `mtu` field in `LocalConfig`; adjust it there if the path requires a smaller packet size.
+- The `mtu` field in the dataplane `LocalConfig` controls the user-space interface (SmolTCP/TUN) MTU and related packet sizing.
 - Endpoints log connection failures and retry automatically (up to 10 attempts) before aborting. Review the dataplane logs for the remote address and failure reason if a node cannot join.
 
 ## Python API payloads
 
-The Python bindings always send a single TCP frame per `send_to_node` call. There are no `python_fragmentation_*` fields anymore; the OS networking stack handles any link-layer segmentation automatically, and the dataplane clamps lossless chunk sizes to respect the configured MTU. That keeps configuration simple—set `mtu` once, and both the Rust dataplane and the Python bindings inherit the same envelope.
+The Python bindings always send a single TCP payload per `send_to_node` call. There are no `python_fragmentation_*` fields anymore; TCP segmentation is handled by the OS.
+
+Lossless transfers (`send_data` / `receive_data`) chunk the buffer using the lossless runtime config (`[lossless_runtime_config].default_chunk_size`). Chunking is an application-level setting and is not automatically derived from `mtu`.

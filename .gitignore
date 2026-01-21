@@ -39,5 +39,8 @@ tensors/**
 # iperf results
 iperf-results.md
 
+# Generated rustdoc output for MkDocs
+docs/docs/api/rustdoc/
+
 # Memory report
 memory-report.txt

@@ -3,7 +3,7 @@
 The `python-api/` crate builds the `nextmini_py` extension, letting Python workloads instantiate the dataplane in the
 same process, inject buffers directly into the Rust routing stack, and subscribe to reconstructed payloads without going
 through TUN. This note documents the shipped API surface, how it maps onto the Rust implementation, and the knobs that
-govern fragmentation, telemetry, and group coordination.
+govern queueing, telemetry, and group coordination.
 
 ## Building and installing `nextmini_py`
 
@@ -30,7 +30,8 @@ govern fragmentation, telemetry, and group coordination.
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
-| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
+| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `send_data`, `receive_data`, `receive_data_async`, `lossless_wait`, `lossless_wait_async`, `get_data_buffer`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `wait_for_local_membership`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready`, `get_network_info` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers plus lossless transfer helpers. |
+| `nextmini_py.PacketBuilder` | `write(bytes)`, `freeze()` | Efficiently constructs a `PacketView` for large payloads without repeatedly reallocating Python `bytes`. |
 | `nextmini_py.PacketView` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
 | `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns a `PayloadDelivery` object containing the payload and metadata. |
 | `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Metadata-rich wrapper returned by receivers. Fragmentation metadata fields are optional and may be `None`. |
@@ -79,6 +80,20 @@ dp.send_to_node(dst_node_id=2, frozen=payload)
 
 The Rust bindings treat a `PacketView` as immutable; if you need to mutate the payload, build a new instance.
 
+### PacketBuilder for large payloads
+
+For large payloads, prefer `PacketBuilder` to avoid building many intermediate `bytes` objects:
+
+```python
+import nextmini_py as nm
+
+builder = nm.PacketBuilder(size=10_000_000)
+builder.write(b"...")
+payload = builder.freeze()
+```
+
+`freeze()` returns a `PacketView` that can be passed to `send_to_node` or the lossless transfer APIs.
+
 ## Receiving payloads
 
 Register receivers per flow using the node ID (or group IP) of the expected sender:
@@ -113,6 +128,7 @@ secondary CLI:
 | `create_group(label)` | Requests a new multicast group through the controller. |
 | `join_group(group_id)` / `leave_group(group_id)` | Adds or removes the local node from a multicast group. |
 | `group_is_ready(timeout_ms=None)` | Waits for a `GroupCreated` event and returns `(group_id, group_ip, src_node_id)` when the controller finishes provisioning. |
+| `wait_for_local_membership(group_id, timeout_ms=None)` | Waits until this node becomes a local delivery point for `group_id` (i.e., group routes include this node). |
 | `set_group_routes(group_id, edges)` | Persists DAG edges for a multicast group so the controller can install routes. |
 | `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)` | Waits until the controller installs multicast routes for a group. |
 | `wait_for_topology_ready(timeout_ms=None)` | Waits until all nodes have installed the base route tables. |
@@ -120,46 +136,50 @@ secondary CLI:
 Each method leverages the `PythonEvent` queue maintained inside the dataplane (`PythonInterfaceHandle`). Events are only
 delivered to Python receivers that have called one of the waiters above; they are not broadcast globally.
 
+## Lossless transfer helpers
+
+For large payloads (model weights, checkpoints, datasets), the bindings expose a lossless session API:
+
+- **Sender**: `send_data(...)` → `lossless_wait(session_id)`
+- **Receiver**: `receive_data(...)` → `lossless_wait(session_id)` → `get_data_buffer(session_id)`
+
+The sender and receiver must agree on:
+
+- `group_id` and `dest_ip` (usually the multicast `group_ip` allocated by the controller)
+- `chunk_size` (optional; defaults to 8500)
+- `src_port` / `dst_port` (optional; defaults come from the node config)
+
+`get_data_buffer(session_id)` returns a `PacketView` containing the received bytes.
+
 ## Payload size behavior
 
-The bindings now ship every payload as a single TCP frame; there is no application-level fragmentation to configure. The operating system handles any link-layer segmentation, and the dataplane enforces the configured MTU when chunking lossless session transfers. This keeps the API predictable: the bytes you send are the bytes delivered.
+- `send_to_node` ships the provided bytes as a single user-space TCP payload. There is no application-level fragmentation knob in the Python API.
+- The lossless transfer helpers (`send_data` / `receive_data`) chunk the payload internally (`chunk_size`) and run a session protocol over the same dataplane routes.
 
 ## Telemetry and troubleshooting
 
-- `PayloadDelivery` metadata mirrors the transport tuple plus optional `message_id`, `total_len`, `fragment_count`, and
-  `payload_format` (`"payload"` vs `"raw_packet"`). Since fragmentation is gone the optional fields are always `None`, but
-  they remain for backward compatibility with older tooling.
-- The bindings log backpressure warnings if a receiver queue fills up. Increase `channel_capacity` in node configs or
-  call `recv()` more aggressively when this appears.
+- `PayloadDelivery` metadata mirrors the transport tuple plus optional `message_id`, `total_len`, and `fragment_count`. Since fragmentation is no longer used for Python deliveries, the optional fields are currently always `None`, but they remain for backward compatibility with older tooling.
+- If a receiver queue fills up, the dataplane can either drop deliveries (`channel_backpressure = false`, default) or apply backpressure (`channel_backpressure = true`). Increase `channel_capacity` and/or call `recv()` more aggressively if you see queue-full warnings in logs.
 
-## Worked example: gating PyTorch metrics on env vars
+## Worked example: RL trainer/worker messaging + lossless broadcast
 
-`examples/pytorch/gpt2.py` and other training scripts already include opt-in hooks. Set the following environment
-variables before launching the job:
+The `examples/rl` workload uses `nextmini_py` for two paths:
 
-```bash
-export NEXTMINI_CONFIG=/absolute/path/node-config.toml
-export NEXTMINI_DST_NODE=2
-```
+- **Control-plane messages** (small): `PacketView` + `send_to_node` and `PacketReceiver.recv()`
+- **Model broadcast** (large): `PacketBuilder` + `send_data` and `lossless_wait`
 
-Inside the script:
+The trainer sends a pickled message to a worker:
 
 ```python
 import nextmini_py as nm
+import pickle
 
-dp = nm.Dataplane(os.environ["NEXTMINI_CONFIG"])
-tx = dp.send_to_node
-rx = dp.register_receiver_from_node(
-    src_node_id=int(os.environ["NEXTMINI_DST_NODE"]),
-)
-
-frozen = nm.PacketView(loss_tensor.detach().contiguous().cpu().numpy().tobytes())
-tx(dst_node_id=int(os.environ["NEXTMINI_DST_NODE"]), frozen=frozen)
-maybe_delivery = rx.recv(timeout_ms=200)
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
+payload = nm.PacketView(pickle.dumps({"type": "PING"}))
+dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
-Receivers can run in a separate process (using the same config) and call `dp.register_receiver_from_node` with the
-sender’s node ID to ingest the stream.
+See `examples/rl/src/trainer.py` and `examples/rl/src/worker.py` for the full flow, including multicast group setup and lossless weight transfer.
 
 ## Packaging checklist
 

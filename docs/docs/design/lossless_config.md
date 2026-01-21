@@ -44,5 +44,5 @@ ready_grace_ms = 1500
 
 ## Notes
 
-- Lossless delivery is guaranteed via TCP with back pressure.
-- The `default_chunk_size` should be set considering MTU constraints; the default of 8500 bytes works well with jumbo frames.
+- Lossless sessions implement an application-level framing and acknowledgement protocol (`messages/src/lossless_session.rs`) on top of the normal dataplane forwarding path.
+- The `default_chunk_size` should be set considering MTU/MSS constraints and memory usage. The sender uses the configured value; it does not automatically clamp chunk sizes to `mtu`.

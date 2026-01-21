@@ -1,3 +1,16 @@
+//! Dataplane routing table.
+//!
+//! The routing table stores controller-installed unicast routes and multicast group routes.
+//! It provides:
+//!
+//! - Flow → route selection using jump consistent hashing.
+//! - Unicast next-hop selection (random choice when multiple next hops exist).
+//! - Multicast fan-out (multiple next hops for a single `(src, group)` key).
+//!
+//! See also:
+//! - `messages/src/lib.rs` for `RoutingTableEntry` / multicast types.
+//! - `docs/docs/design/routing.md` for a conceptual overview.
+
 use ahash::AHashMap;
 use jumphash::JumpHasher;
 use rand::Rng;

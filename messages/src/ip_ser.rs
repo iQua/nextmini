@@ -1,3 +1,8 @@
+//! Serde helpers for compact `Ipv4Addr` encoding.
+//!
+//! `toml` and `rmp-serde` can serialize `Ipv4Addr` in different formats; these helpers ensure we
+//! use a stable 4-byte representation on the wire and in config files when needed.
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::net::Ipv4Addr;
 

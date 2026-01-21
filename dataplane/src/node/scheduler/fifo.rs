@@ -5,7 +5,7 @@ use crate::node::FlowId;
 use crate::node::packet::Packet;
 use crate::node::scheduler::queue::SchedulerQueue;
 
-/// FIFO queue strategy: no inner Arc<> is needed since Arc<QueueStrategy> allows sharing
+/// FIFO queue strategy: no inner `Arc` is needed since `Arc<QueueStrategy>` allows sharing.
 pub struct FifoQueue {
     queue: ArrayQueue<Packet>,
 }
