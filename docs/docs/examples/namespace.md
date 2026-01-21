@@ -12,7 +12,7 @@
 - Manual run (two terminals)
 - Observing results
 - Cleanup
-- Notes and benchmarks
+- Notes
 
 ## Running the Single Host Example
 
@@ -133,51 +133,6 @@ database = "nextmini"
 port = "5432"
 ```
 
-### Benchmark Results
-
-The following benchmarks were recorded:
-
-| Topology | Nodes | Wiring Time | Memory Before | Memory After | Per Node | Notes |
-|----------|-------|-------------|---------------|--------------|----------|-------|
-| Ring | 100 | 5.87s | 1.5GB | 1.8GB | ~3MB | |
-| Ring | 200 | 11.20s | 1.5GB | 2.0GB | ~2.5MB | |
-| Ring | 300 | 47.22s | 1.5GB | 2.2GB | ~2.3MB | |
-| Ring | 400 | 77.63s | 1.5GB | 2.5GB | ~2.5MB | |
-| Ring | 500 | 165.30s | 1.6GB | 2.7GB | ~2.2MB | Before ARP fix |
-| Ring | 500 | 32.64s | 1.5GB | 2.8GB | ~2.6MB | After ARP fix |
-| Ring | 600 | 42.52s | 1.5GB | 2.9GB | ~2.3MB | After ARP fix |
-| Ring | 700 | 48.85s | 1.5GB | 3.1GB | ~2.3MB | After ARP fix |
-| Ring | 800 | 55.40s | 1.6GB | 3.3GB | ~2.1MB | After ARP fix |
-
-Example controller log output:
-
-```
-controller  | 2026-01-01T00:46:20.187730Z  INFO controller::new_node: All dataplane nodes have connected. It takes 55.40 seconds since the first node arrived.
-```
-
-First check the initial memory consumption:
-
-```bash
-free -h
-```
-
-Example output:
-```text
-               total        used        free      shared  buff/cache   available
-Mem:           176Gi       3.3Gi       162Gi       1.2Mi        12Gi       173Gi
-Swap:             0B          0B          0B
-```
-
-After starting the controller and the database (see Step 3), check the memory consumption again:
-
-```text
-               total        used        free      shared  buff/cache   available
-Mem:           176Gi       4.1Gi       161Gi        15Mi        12Gi       172Gi
-Swap:             0B          0B          0B
-```
-
-It can be seen that approximately 0.8 GB (4.1 - 3.3) is used by the controller and PostgreSQL services.
-
 ### Monitoring the database
 
 To see how many nodes have registered with the controller:
@@ -199,11 +154,3 @@ Note: the namespace bridge subnet (`172.16.8.0/…`) is unrelated to the Docker 
 Example (default settings):
 
 - `idx = 0 → ns_ip = 172.16.8.2 → node_id = 1` (host veth: `veth0a`, namespace veth: `veth0b`)
-
-## Multi-host namespaces (experimental)
-
-The repository also contains an experimental multi-host variant in `examples/ns-public`. It is not actively maintained.
-
-If you run it on a cloud that enforces port security (for example Arbutus), you may need to disable port security on each VM port first:
-
-![Disable Port Security on Arbutus Instance](./images/arbutus-port-security.png)
