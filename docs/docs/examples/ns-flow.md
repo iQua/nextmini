@@ -1,4 +1,4 @@
-# Namespace flows scaling
+# Namespace Flows Scaling Example (Single Host)
 
 `examples/ns-flow` runs a high-node-count with multiple flows on a single machine using Linux namespaces.
 

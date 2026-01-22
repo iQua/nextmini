@@ -1,4 +1,4 @@
-# MAX mode
+# MAX Mode
 
 MAX mode is a dataplane forwarding mode that routes **TUN-originated** TCP traffic through connection-on-demand “MAX” TCP streams between dataplane nodes (instead of the normal per-packet forwarding pipeline).
 

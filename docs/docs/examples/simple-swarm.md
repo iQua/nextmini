@@ -1,4 +1,4 @@
-# Docker Swarm deployment (simple-swarm)
+# Docker Swarm Deployment (Simple-Swarm)
 
 `examples/simple-swarm` deploys Nextmini across multiple machines using Docker Swarm.
 

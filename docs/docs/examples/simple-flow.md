@@ -1,4 +1,4 @@
-# Lossless flows (controller-managed)
+# Lossless Flows (Controller-Managed)
 
 `examples/simple-flow` runs **controller-managed user-space flows** using the lossless session engine (`flow_transport = "lossless_unicast"`). Each flow delivers an exact byte count, optionally paced by `flow_rate`.
 

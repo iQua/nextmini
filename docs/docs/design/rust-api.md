@@ -1,4 +1,4 @@
-# Rust API reference (rustdoc)
+# Rust API Reference (rustdoc)
 
 Nextmini uses standard Rust doc comments. You can generate an HTML API reference with `cargo doc` and publish it alongside the MkDocs site as static files.
 

@@ -1,4 +1,4 @@
-# Examples overview
+# Examples Overview
 
 All runnable scenarios live under `examples/`. This site is the canonical place for their instructions (we avoid Markdown READMEs inside `examples/`).
 
@@ -25,8 +25,8 @@ Run unmodified applications (ping/iperf3/PyTorch) over a virtual network interfa
 
 Run many dataplane nodes as Linux network namespaces on a single host.
 
-- [Namespace scaling](namespace.md)
-- [ns-flow](ns-flow.md)
+- [Nodes Scaling](namespace.md)
+- [Flows Running](ns-flow.md)
 
 ### 3) User-space flows
 

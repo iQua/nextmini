@@ -1,4 +1,4 @@
-# Architecture overview
+# Architecture Overview
 
 Nextmini has two core runtime components:
 

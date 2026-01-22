@@ -1,4 +1,4 @@
-# Proxy flows (MAX mode + SOCKS5)
+# Proxy Flows (MAX mode + SOCKS5)
 
 Nextmini can forward traffic between **external endpoints** through an emulated topology by acting as a SOCKS5 proxy. This is built on the “MAX” transport: connection-on-demand TCP streams between dataplane nodes plus stream splicing at relay hops.
 

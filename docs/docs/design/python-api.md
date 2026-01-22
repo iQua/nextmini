@@ -1,4 +1,4 @@
-# Python dataplane API
+# Python Dataplane API
 
 The `python-api/` crate builds the `nextmini_py` extension, letting Python workloads instantiate the dataplane in the
 same process, inject buffers directly into the Rust routing stack, and subscribe to reconstructed payloads without going

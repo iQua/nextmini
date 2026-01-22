@@ -1,4 +1,4 @@
-# Example: Multicast Flow Lifecycle
+# Multicast Flow Lifecycle
 
 This walkthrough shows the controller/dataplane interactions for a simple multicast group where node `1` acts as the source and nodes `3` and `6` subscribe as members.
 

@@ -1,4 +1,4 @@
-# Controller (control plane)
+# Controller (Control Plane)
 
 The Nextmini controller owns **topology**, **routing**, **flow installation**, and **multicast group state**. It persists state in Postgres and pushes updates to dataplane nodes over a WebSocket control channel.
 

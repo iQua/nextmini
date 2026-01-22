@@ -1,4 +1,4 @@
-# Hybrid deployment: local controller + Fly.io nodes (experimental)
+# Hybrid Deployment: Local Controller + Fly.io Nodes (experimental)
 
 This deployment runs the controller + Postgres locally while deploying dataplane nodes on Fly.io.
 

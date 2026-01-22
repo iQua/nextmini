@@ -1,4 +1,4 @@
-# SmolTCP flows
+# SmolTCP Flows
 
 SmolTCP flows are **controller-managed user-space TCP flows** executed inside the dataplane process (no application traffic required).
 

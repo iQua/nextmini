@@ -1,4 +1,4 @@
-# Messages and protocol
+# Messages and Protocol
 
 The controller and dataplane communicate over a WebSocket control channel using **MessagePack** (via `rmp-serde`). Message definitions live in `messages/src/lib.rs`.
 

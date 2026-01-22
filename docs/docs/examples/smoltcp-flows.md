@@ -1,4 +1,4 @@
-# SmolTCP flows (controller-managed)
+# SmolTCP Flows (Controller-Managed)
 
 This page uses the `examples/simple-flow` scenario, but runs it with SmolTCP user-space TCP flows by setting `flow_transport = "tcp"`.
 

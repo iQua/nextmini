@@ -1,4 +1,4 @@
-# Source-selected routing (internals)
+# Source-selected Routing (internals)
 
 This page describes how Nextmini installs routes and how dataplane nodes select a route for each flow at runtime.
 

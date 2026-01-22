@@ -1,4 +1,4 @@
-# splice-test (SOCKS5 + MAX)
+# Proxy Flows Test (SOCKS5 + MAX)
 
 `examples/splice-test` splices a long-lived TCP stream through multiple hops and reports throughput.
 

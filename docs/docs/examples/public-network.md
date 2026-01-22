@@ -1,4 +1,4 @@
-# Manual deployment
+# Manual Deployment in WAN
 
 This example (`examples/public-network`) runs the controller + Postgres on one VM and a small number of dataplane nodes on other VMs, using public IP addresses.
 

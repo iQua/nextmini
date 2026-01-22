@@ -1,4 +1,4 @@
-# Toy Demo (LP multicast pipeline)
+# Toy Demo (LP Multicast Pipeline)
 
 This is a minimal 3-node deployment demonstrating the multicast LP pipeline:
 

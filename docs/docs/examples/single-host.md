@@ -1,4 +1,4 @@
-# Single host deployment (Docker Compose)
+# Single Host Deployment (Docker Compose)
 
 Most Nextmini examples run the same way: a local Docker Compose stack boots **Postgres**, the **controller**, and a set of **dataplane nodes** on one machine.
 

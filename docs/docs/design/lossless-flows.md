@@ -1,4 +1,4 @@
-# Lossless flows
+# Lossless Flows
 
 Lossless flows use the session subsystem to **deliver exactly `flow_len` bytes** (optionally paced) between a source and destination node.
 

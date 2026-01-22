@@ -1,4 +1,4 @@
-# Dataplane node
+# Dataplane Node
 
 A Nextmini dataplane node forwards traffic according to controller-installed routes. It supports multiple ingress paths:
 

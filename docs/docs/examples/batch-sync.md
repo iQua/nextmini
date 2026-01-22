@@ -1,4 +1,4 @@
-# Batch sync & run (rsync + SSH)
+# Batch Sync & Run (SSH + rsync)
 
 When iterating on a multi-machine deployment, it is common to:
 

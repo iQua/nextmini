@@ -1,4 +1,4 @@
-# curl through SOCKS5
+# Curl Through SOCKS5
 
 `examples/curl` runs `curl` through a SOCKS5 proxy to an HTTP server, forwarding the stream hop-by-hop through Nextmini.
 
