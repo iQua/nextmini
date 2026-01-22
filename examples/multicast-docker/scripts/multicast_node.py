@@ -241,6 +241,14 @@ def run_source(args: argparse.Namespace) -> None:
 
     dataplane = nm.Dataplane(str(args.config))
     source_node_id = dataplane.node_id
+    log(
+        f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
+        args.quiet,
+    )
+
+    if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
+        raise TimeoutError("Timed out waiting for topology readiness.")
+
     log(f"Creating multicast group '{args.group_label}'...", args.quiet)
     dataplane.create_group(args.group_label)
     group_id, group_ip, _ = dataplane.group_is_ready(
@@ -253,13 +261,6 @@ def run_source(args: argparse.Namespace) -> None:
         receiver_ids=receiver_ids,
     )
     log(f"Controller assigned group {group_id} ({group_ip}).", args.quiet)
-    log(
-        f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
-        args.quiet,
-    )
-
-    if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
-        raise TimeoutError("Timed out waiting for topology readiness.")
 
     edges = build_star_edges(source_node_id, receiver_ids)
     if not edges:
@@ -325,17 +326,21 @@ def run_receiver(args: argparse.Namespace) -> None:
     if args.node_id is None:
         raise SystemExit("Receiver role requires --node-id.")
 
+    dataplane = nm.Dataplane(str(args.config))
+    local_node_id = dataplane.node_id
+
+    if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
+        raise TimeoutError("Timed out waiting for topology readiness.")
+
+    group_id, group_ip = wait_for_group_info(args, args.group_timeout)
+    log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
+    dataplane.join_group(group_id)
+
     load_tensor_metadata_if_needed(args)
     if args.expected_bytes is None and args.payload_count:
         args.expected_bytes = args.payload_count * args.chunk_size
     if args.expected_bytes is None or args.expected_bytes <= 0:
         raise SystemExit("expected-bytes must be known for lossless reception.")
-
-    group_id, group_ip = wait_for_group_info(args, args.group_timeout)
-    dataplane = nm.Dataplane(str(args.config))
-    local_node_id = dataplane.node_id
-    log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
-    dataplane.join_group(group_id)
 
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:
