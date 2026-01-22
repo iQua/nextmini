@@ -50,6 +50,10 @@ extra_css:
   - https://unpkg.com/katex@0/dist/katex.min.css
   - stylesheets/extra.css
 
+validation:
+  nav:
+    omitted_files: ignore
+
 nav:
   - Home: index.md
   - Getting Started:
@@ -57,6 +61,7 @@ nav:
       - Quick Start: getting-started/quickstart.md
       - Build & Run (binaries): getting-started/build-and-run.md
       - Docs: getting-started/docs-and-api.md
+      - Rust API reference (rustdoc): design/rust-api.md
   - Design:
       - Architecture:
           - Overview: design/architecture.md

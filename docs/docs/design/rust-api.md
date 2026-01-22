@@ -25,7 +25,3 @@ MkDocs will treat those files as static assets and include them in the built sit
   - `cd docs && mkdocs serve`
   - open `http://127.0.0.1:8000/api/rustdoc/nextmini/index.html`
 
-## Notes
-
-- The `docs/docs/api/rustdoc/` directory is generated output and should not be committed.
-- If you add new public APIs, document them with Rust doc comments so they appear in rustdoc automatically.
