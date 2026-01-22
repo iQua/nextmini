@@ -8,10 +8,10 @@ Nextmini documentation lives in two places:
 ## Preview this site locally
 
 ```bash
-python3 -m venv docs/.venv
-source docs/.venv/bin/activate
-pip install -r docs/requirements.txt
 cd docs
+uv venv --python 3.13
+source .venv/bin/activate
+uv pip install -r requirements.txt
 mkdocs serve
 ```
 
@@ -30,4 +30,3 @@ bash docs/generate-rustdoc.sh
 ```
 
 See: [Rust API reference (rustdoc)](../design/rust-api.md).
-

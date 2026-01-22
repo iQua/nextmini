@@ -11,7 +11,7 @@ The dataplane supports multiple transport protocols for inter-node communication
 All tuning happens through the standard dataplane configuration (`config.toml` or CLI flags):
 
 ```toml
-# Transport protocol: tcp (default) | quic
+# Transport protocol: tcp (default) | udp | quic
 protocol = "tcp"
 
 # When using QUIC, configure congestion control (bbr | cubic)
@@ -29,6 +29,9 @@ Use `--protocol quic --quic-congestion-control cubic` on the CLI to switch to QU
 
 ### Operational Notes
 
+- In controller-managed deployments, `protocol` is treated as **controller-owned**: the controller's startup config
+  overwrites the local `protocol` setting after a node connects. Local overrides are most useful for standalone/dev
+  runs before the controller handshake.
 - The server keeps QUIC keep-alives enabled so idle tunnels stay established.
 - The `mtu` field in the dataplane `LocalConfig` controls the user-space interface (SmolTCP/TUN) MTU and related packet sizing.
 - Endpoints log connection failures and retry automatically (up to 10 attempts) before aborting. Review the dataplane logs for the remote address and failure reason if a node cannot join.

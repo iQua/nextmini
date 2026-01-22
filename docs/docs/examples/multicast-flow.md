@@ -150,7 +150,7 @@ rx_dp.leave_group(group_id)
 - `cargo check --workspace`
 - `cargo test -p controller build_group_routes_for_node_includes_local_delivery`
 - `cargo test -p controller build_routes_for_node_multicast_entries`
-- `cargo test -p dataplane returns_multicast_next_hops_from_group_routes`
+- `cargo test -p nextmini returns_multicast_next_hops_from_group_routes`
 - Follow the integration recipe in [`docs/docs/testing/python-api-validation.md`](../testing/python-api-validation.md) to exercise membership churn with the Python API.
 
 ---

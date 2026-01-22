@@ -5,6 +5,7 @@ This page documents the common Rust test workflows for the Nextmini workspace.
 ## Prerequisites
 
 - Rust toolchain (edition 2024)
+- `cargo nextest` (install via `cargo install cargo-nextest`)
 - Python 3.13 (for `nextmini_py` dev tests)
 - Postgres (for controller integration tests that read/write DB state)
 

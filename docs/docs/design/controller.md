@@ -53,7 +53,11 @@ For a user-facing route guide, see: [Defining the Network Topology and Routes](.
 
 ## Database model (high level)
 
-The controller stores state in Postgres (schema initialized by `controller/init.sql`):
+The controller stores state in Postgres:
+
+- In Docker examples, `controller/init.sql` is mounted into the Postgres container to create the `nextmini` database and set ownership/privileges.
+- Table schema is managed by SQLx migrations under `controller/migrations/`.
+- By default, the controller **resets** the database on startup for dev/test. To preserve state, set `CONTROLLER_RESET_DB=0` (or any value other than `1/true/yes`).
 
 - node liveness and addresses
 - routes (unicast) and optional link rate caps
@@ -73,4 +77,3 @@ Multicast is a controller-owned feature:
 5. Membership changes trigger a route rebuild; the controller pushes `InstallGroupRoutes` to affected nodes.
 
 See: [Multicast Groups](multicast-groups.md) and [Example: Multicast Flow Lifecycle](../examples/multicast-flow.md).
-

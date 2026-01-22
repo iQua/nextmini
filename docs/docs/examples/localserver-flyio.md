@@ -4,6 +4,12 @@ This deployment runs the controller + Postgres locally while deploying dataplane
 
 The scripts live in `examples/localserver-flyio/`.
 
+## Prerequisites
+
+- `uv` installed (used to run the Python launchers)
+- `flyctl` installed and authenticated (`flyctl auth login`)
+- A public IP address reachable from Fly.io nodes (the controller advertises `ws://<public-ip>:3000`)
+
 ## 1) Start controller + Postgres locally
 
 ```bash

@@ -13,8 +13,11 @@ Nextmini includes a small helper that does this in parallel using `rsync` and `s
 ## Prerequisites
 
 - Local machine has `rsync` and `ssh`
+- Python 3.13
 - You can SSH to every host **without** password prompts (recommended)
-- A host list file in the bare-metal format: `examples/bare-metal/dataplane/hosts.txt`
+- Host inventory (choose one):
+  - Bare-metal hosts file: `examples/bare-metal/dataplane/hosts.txt`
+  - TOML inventory (recommended for multi-role clusters): `examples/rl/multidc/inventory.toml`
 
 ## Host list format
 
@@ -31,14 +34,32 @@ Example:
 2|<ssh_user>@<node2_public_ip_address>|<node2_public_ip_address>
 ```
 
+## Inventory format (TOML)
+
+For multi-role clusters (e.g., controller + trainer + workers across VMs), it is often easier to keep a single
+`inventory.toml` with SSH defaults and per-node overrides.
+
+Start from: `examples/rl/multidc/inventory.example.toml` and save as `examples/rl/multidc/inventory.toml`.
+
+Supported fields:
+
+- `[ssh]`: `user`, `port`, `identity_file`
+- `[paths]`: `remote_repo_dir` (used by `sync`)
+- `[controller]`: `host` (and optional `user`, `port`, `identity_file`)
+- `[[nodes]]`: `host` (and optional `role`, `node_id`, `user`, `port`, `identity_file`)
+
+Notes:
+
+- `tools/multidc/multidc.py` treats `[controller]` and every `[[nodes]]` entry as an SSH target and ignores other fields.
+- If multiple entries point at the same SSH target, they are de-duplicated.
+
 ## Sync the repo to all hosts
 
 This mirrors your local `nextmini/` checkout into a remote directory on every host:
 
 ```bash
 python3 tools/multidc/multidc.py sync \
-  --hosts-file examples/bare-metal/dataplane/hosts.txt \
-  --remote-repo-dir ~/nextmini \
+  --inventory examples/rl/multidc/inventory.toml \
   --jobs 16 \
   --batch-ssh
 ```
@@ -54,7 +75,20 @@ Run a remote command in parallel:
 
 ```bash
 python3 tools/multidc/multidc.py run \
-  --hosts-file examples/bare-metal/dataplane/hosts.txt \
+  --inventory examples/rl/multidc/inventory.toml \
+  --batch-ssh \
+  --cmd 'cd ~/nextmini && ./target/release/nextmini --help'
+```
+
+Tip: you can still use `--hosts-file examples/bare-metal/dataplane/hosts.txt` if you don't have a TOML inventory.
+
+## One command (sync + run)
+
+If you want a single command that syncs the repo and then runs a command on every host:
+
+```bash
+python3 tools/multidc/multidc.py sync-run \
+  --inventory examples/rl/multidc/inventory.toml \
   --batch-ssh \
   --cmd 'cd ~/nextmini && ./target/release/nextmini --help'
 ```

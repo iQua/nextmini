@@ -186,7 +186,6 @@ See `examples/rl/src/trainer.py` and `examples/rl/src/worker.py` for the full fl
 - Build wheels with `maturin build --release -m python-api/Cargo.toml`. The crate targets `abi3`, so one build works
   across CPython 3.13 patch releases.
 - Document the path to the TOML config in deployment scripts (`NEXTMINI_CONFIG`).
-- Keep `python-api/README.md` instructions handy for developers who need to run `cargo test` on Apple Silicon (where the
-  linker requires `libpython` headers).
+- For Rust-side tests (especially on Apple Silicon where linking against `libpython` can be finicky), use the `PYO3_PYTHON=... cargo nextest ...` recipe above.
 - When distributing examples or tools under `examples/**` and `tools/**`, import `nextmini_py` dynamically so they keep
   working in environments where the extension is optional.

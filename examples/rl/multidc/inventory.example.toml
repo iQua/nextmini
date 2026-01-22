@@ -1,0 +1,45 @@
+# Multi-host inventory for Nextmini helper scripts.
+#
+# This file can be used by:
+# - `tools/multidc/multidc.py` (sync + run across many machines)
+#
+# Usage:
+#   cp examples/rl/multidc/inventory.example.toml examples/rl/multidc/inventory.toml
+#
+# Sync your local checkout to all hosts (uses [paths].remote_repo_dir):
+#   python3 tools/multidc/multidc.py sync --inventory examples/rl/multidc/inventory.toml --batch-ssh
+#
+# Run a command on all hosts:
+#   python3 tools/multidc/multidc.py run --inventory examples/rl/multidc/inventory.toml --batch-ssh \
+#     --cmd 'cd ~/nextmini && git status'
+#
+# Or do both in one go:
+#   python3 tools/multidc/multidc.py sync-run --inventory examples/rl/multidc/inventory.toml --batch-ssh \
+#     --cmd 'cd ~/nextmini && git status'
+
+[ssh]
+user = "ubuntu"
+port = 22
+identity_file = "~/.ssh/id_rsa"
+
+[paths]
+# Remote directory where the nextmini repo will be synced.
+remote_repo_dir = "~/nextmini"
+
+[controller]
+# SSH target for controller (optional; included in sync/run target set when present).
+host = "203.0.113.10"
+# Publicly reachable address for nodes to connect to (ignored by tools/multidc/multidc.py).
+public_ip = "203.0.113.10"
+
+[[nodes]]
+role = "trainer"
+node_id = 1
+host = "203.0.113.11"
+public_ip = "203.0.113.11"
+
+[[nodes]]
+role = "worker"
+node_id = 2
+host = "203.0.113.12"
+public_ip = "203.0.113.12"

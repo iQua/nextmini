@@ -19,13 +19,20 @@ By default, each container builds `nextmini_py` in-place (via `maturin develop`)
 
 ## Faster startup (optional)
 
-If you already have a local wheel build, you can prebuild it once and let Docker reuse it:
+If you already have a Linux wheel build for `nextmini_py` (under `target/wheels/` in the repo), you can skip rebuilding
+the extension module inside each container.
+
+From the repo root (on a Linux host / environment):
 
 ```bash
-cd python-api
-maturin build --release -m python-api/Cargo.toml
-cd ../examples/multicast-docker
-docker compose up --build
+maturin build --release -m python-api/Cargo.toml -F python-extension
+```
+
+Then run the stack with `SKIP_BUILD=1` so containers install the wheel instead of calling `maturin develop`:
+
+```bash
+cd examples/multicast-docker
+SKIP_BUILD=1 docker compose up --build
 ```
 
 ## Inspecting the run
@@ -48,12 +55,14 @@ docker compose up --build
 
 ## Common knobs
 
-Set environment overrides via `docker compose run -e ...` or your shell:
+Environment variables (set via `docker compose run -e ...` or your shell):
 
 - `GROUP_LABEL`: label passed to `create_group`
 - `RECEIVER_IDS`: comma-separated receiver node IDs (default `2,3`)
-- `CHUNK_SIZE`: lossless chunk size (default 8500)
 - `RECEIVE_TIMEOUT_MS`: receiver wait timeout
 
-For full details, read `examples/multicast-docker/scripts/run_multicast_node.sh` and `examples/multicast-docker/scripts/multicast_node.py`.
+CLI flags (passed to `multicast_node.py`):
 
+- `--chunk-size`: lossless chunk size (default 8500)
+
+For full details, read `examples/multicast-docker/scripts/run_multicast_node.sh` and `examples/multicast-docker/scripts/multicast_node.py`.

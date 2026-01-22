@@ -20,7 +20,14 @@ In case you run into the following error:
 failed to create network simple_network: Error response from daemon: invalid pool request: Pool overlaps with other one on this address space
 ```
 
-Run the following command to remove all stopped containers, all networks not used by at least one container, all images without at least one container associated to them, as well as all build cache. This will provide you with a clean slate before you run `docker compose build && docker compose up` again:
+First try removing just the resources created by this example:
+
+```bash
+docker compose down --remove-orphans
+docker network rm simple_network 2>/dev/null || true
+```
+
+If you still see subnet/pool overlap errors, you can reset Docker state. **Warning:** the following command is destructive (it removes stopped containers, unused networks, unused images, and build cache):
 
 ```bash
 docker system prune -a

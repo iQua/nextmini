@@ -173,6 +173,7 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 | Field | Type | Default | CLI Flag | Description |
 |-------|------|---------|----------|-------------|
 | `controller_addr` | `String` | `""` | `--controller-addr` | WebSocket address of the controller (e.g., `ws://192.168.1.1:3000`). |
+| `controller_connect_timeout_ms` | `u64` | `5000` | *(config only)* | Timeout (ms) for establishing the initial WebSocket connection to the controller. |
 
 ### Node Identity
 
@@ -189,8 +190,10 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 | `private_network_name` | `String` | `""` | `--private-network-name` | Shared private network identifier. |
 | `private_network_interface` | `String` | `"eth0"` | `--private-network-interface` | Network interface for private network. |
 | `private_network_port` | `String` | `"8080"` | `--private-network-port` | Port for private network communication. |
+| `private_network_addr` | `String` | `""` | `--private-network-addr` | Optional override for the private interface address to advertise to the controller. |
 | `public_network_interface` | `String` | `"eth0"` | `--public-network-interface` | Network interface for public network. |
 | `public_network_port` | `String` | `"8080"` | `--public-network-port` | Port for public network communication. |
+| `public_network_addr` | `String` | `""` | `--public-network-addr` | Optional override for the public interface address to advertise to the controller. |
 | `tun_interface_name` | `String` | `"utun"` | `--tun-interface-name` | Name of the TUN interface. |
 | `mtu` | `i32` | `1400` | `--mtu` | MTU of the TUN interface (max 6400). |
 | `enable_local_interface` | `bool` | `true` | `--enable-local-interface` | Enable kernel TUN interface. Set to `false` when using Python API. |
@@ -239,14 +242,14 @@ When the system is overloaded (producers generate packets faster than downstream
 
 | Field | Type | Default | CLI Flag | Description |
 |-------|------|---------|----------|-------------|
-| `protocol` | `Protocol` | `tcp` | `--protocol` | Transport protocol: `tcp`, `udp`, or `quic`. |
+| `protocol` | `Protocol` | `tcp` | `--protocol` | Transport protocol: `tcp`, `udp`, or `quic` (controller-managed deployments overwrite this on startup). |
 | `quic_congestion_control` | `CongestionControl` | `bbr` | `--quic-congestion-control` | QUIC congestion control: `bbr` or `cubic`. |
 
 ### Scheduling Configuration
 
 | Field | Type | Default | CLI Flag | Description |
 |-------|------|---------|----------|-------------|
-| `scheduler_type` | `SchedulingDiscipline` | `fifo` | `--scheduler-type` | Scheduler discipline: `fifo` or `wrr`. |
+| `scheduler_type` | `SchedulingDiscipline` | `fifo` | `--scheduler-type` | Scheduler discipline: `fifo` or `wrr` (controller-managed deployments overwrite this on startup). |
 | `scheduler_drop_strategy` | `DropStrategy` | `taildrop` | `--scheduler-drop-strategy` | Drop strategy: `taildrop` or `red` (Random Early Detection). |
 
 ### Processing Mode
@@ -403,7 +406,8 @@ How routes forward traffic.
 | `NEXTMINI_DST_NODE` | Destination node ID for telemetry. |
 | `RUST_LOG` | Logging level (`info`, `debug`, `trace`). |
 | `PYO3_PYTHON` | Path to Python 3.13 interpreter (for running tests). |
-| `DATABASE_URL` | PostgreSQL connection string for controller. |
+| `CONTROLLER_RESET_DB` | If set to `0`/`false`/`no`, disables the controller’s default DB reset on startup (runs migrations only). |
+| `DATABASE_URL` | Used by `utils/start-database.sh` (from `.env`) to start a local Postgres container. Not read by the controller. |
 
 ---
 
