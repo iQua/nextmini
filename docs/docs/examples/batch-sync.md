@@ -15,24 +15,7 @@ Nextmini includes a small helper that does this in parallel using `rsync` and `s
 - Local machine has `rsync` and `ssh`
 - Python 3.13
 - You can SSH to every host **without** password prompts (recommended)
-- Host inventory (choose one):
-  - Bare-metal hosts file: `examples/bare-metal/dataplane/hosts.txt`
-  - TOML inventory (recommended for multi-role clusters): `examples/rl/multidc/inventory.toml`
-
-## Host list format
-
-Each line is:
-
-```text
-node_id|username@host|public_ip
-```
-
-Example:
-
-```text
-1|<ssh_user>@<node1_public_ip_address>|<node1_public_ip_address>
-2|<ssh_user>@<node2_public_ip_address>|<node2_public_ip_address>
-```
+- TOML inventory: `examples/rl/multidc/inventory.toml`
 
 ## Inventory format (TOML)
 
@@ -80,7 +63,7 @@ python3.13 tools/multidc/multidc.py run \
   --cmd 'cd ~/nextmini && ./target/release/nextmini --help'
 ```
 
-Tip: you can still use `--hosts-file examples/bare-metal/dataplane/hosts.txt` if you don't have a TOML inventory.
+Tip: replace `~/nextmini` with your inventory's `[paths].remote_repo_dir`.
 
 ## One command (sync + run)
 

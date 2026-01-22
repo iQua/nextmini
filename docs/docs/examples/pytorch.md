@@ -1,23 +1,36 @@
 # Distributed PyTorch Trainers
 
-This example runs PyTorch DistributedDataParallel across multiple Nextmini dataplane containers using OpenMPI.
+## Running a Distributed PyTorch Trainer with OpenMPI on a Single Machine
+
+`Nextmini` is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or macOS).
 
 Scenario directory: `examples/pytorch/`.
 
-## Single host (Docker Compose)
+This runs a DistributedDataParallel job with OpenMPI across four Nextmini dataplane containers **on a single machine** (Linux or macOS).
+
+!!! warning "Optional: start from a clean Docker slate"
+
+    These commands remove stopped containers, unused networks/images, and (optionally) volumes.
+
+    ```bash
+    docker system prune -a
+    # docker system prune -a --volumes -f
+    ```
+
+To build and run the docker image in this example, run the following in the `examples/pytorch` directory:
 
 ```bash
 cd examples/pytorch
 docker compose up --build
 ```
 
-Attach to `node1`:
+This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with:
 
 ```bash
 docker exec -it node1 /bin/bash
 ```
 
-Sanity check OpenMPI:
+Once we are logged into `node1`, we can run a simple `mpirun` session with OpenMPI:
 
 ```bash
 mpirun --allow-run-as-root -np 4 echo hello world
@@ -42,6 +55,8 @@ sh train_lenet5.sh
 # sh train_vgg16.sh
 ```
 
+This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes for 10 epochs, each running in its own Docker container.
+
 Stop and clean up:
 
 ```bash
@@ -49,7 +64,21 @@ cd examples/pytorch
 docker compose down -v
 ```
 
-## Multi-host (Docker Swarm)
+## Running a Distributed PyTorch Trainer across Multiple Machines
+
+Before starting, make sure all the containers are stopped and removed.
+
+```bash
+docker rm -f $(docker ps -aq)
+```
+
+And remove all the Nextmini related networks, for example, `nextmini_network`.
+
+```bash
+docker network rm nextmini_network
+```
+
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges.
 
 Use the swarm manifests in `examples/pytorch/` when you have a Swarm manager + workers.
 
@@ -117,7 +146,7 @@ docker compose -f controller-swarm.yml down
 
 ## Optional: Stream training metrics through the Python dataplane API
 
-When you want to push tensors or scalar metrics directly into the Nextmini dataplane from Python (without going through TUN), use the `nextmini_py` bindings described in [Python API quickstart](pytorch_python_api.md):
+When you want to push tensors or scalar metrics directly into the Nextmini dataplane from Python (without going through TUN), use the `nextmini_py` bindings described in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
 
 1. Build and install the `nextmini_py` wheel (`maturin build --release -m python-api/Cargo.toml; pip install target/wheels/nextmini_py-*.whl`).
 2. Add a small hook in your training loop (or gate it behind env vars in your custom script):

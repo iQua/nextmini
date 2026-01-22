@@ -14,10 +14,10 @@ Though Nextmini runs natively on Linux, the easiest way to get started with Next
 
 ## Start here
 
-- Fastest path: [Quick Start](getting-started/quickstart.md)
+- Fastest path: [Quick start](getting-started/quickstart.md)
 - How to pick an example: [Examples overview](examples/overview.md)
-- All config knobs: [Configuration Reference](design/config-reference.md)
-- Native binaries and Postgres setup: [Build & run (native)](getting-started/build-and-run.md)
+- All config knobs: [Configuration reference](design/config-reference.md)
+- Native binaries and Postgres setup: [Build & run (binaries)](getting-started/build-and-run.md)
 - Docs tooling: [Docs](getting-started/docs-and-api.md)
 
 ## How the docs are organized

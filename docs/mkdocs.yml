@@ -50,16 +50,12 @@ extra_css:
   - https://unpkg.com/katex@0/dist/katex.min.css
   - stylesheets/extra.css
 
-validation:
-  nav:
-    omitted_files: ignore
-
 nav:
   - Home: index.md
   - Getting Started:
       - What is Nextmini?: design/introduction.md
       - Quick Start: getting-started/quickstart.md
-      - Build & run (binaries): getting-started/build-and-run.md
+      - Build & Run (binaries): getting-started/build-and-run.md
       - Docs: getting-started/docs-and-api.md
   - Design:
       - Architecture:
@@ -69,15 +65,15 @@ nav:
       - Messages & Protocol: design/messages.md
       - Routing: design/routing.md
       - User-space flows:
-          - SmolTCP flows: design/smoltcp-flows.md
-          - Lossless flows: design/lossless-flows.md
-      - MAX mode:
-          - MAX mode: design/max-mode.md
-          - Proxy flows (SOCKS5): design/proxy-flows.md
+          - SmolTCP Flows: design/smoltcp-flows.md
+          - Lossless Flows: design/lossless-flows.md
+      - MAX Mode:
+          - MAX Mode: design/max-mode.md
+          - Proxy Flows (SOCKS5): design/proxy-flows.md
       - Multicast Groups:
           - Overview: design/multicast-groups.md
-          - Multicast Flow lifecycle: design/multicast-flow.md
-      - Python dataplane API: design/python-api.md
+          - Multicast Flow Lifecycle: design/multicast-flow.md
+      - Python Dataplane API: design/python-api.md
       - Configuration Reference: design/config-reference.md
   - Examples:
       - Overview: examples/overview.md
@@ -86,27 +82,27 @@ nav:
           - Topology & Routes: examples/routes.md
           - PyTorch (DDP): examples/pytorch.md
       - Namespace (Linux):
-          - Namespace scaling: examples/namespace.md
-          - ns-flow: examples/ns-flow.md
+          - Nodes Scaling: examples/namespace.md
+          - Flow Running: examples/ns-flow.md
       - User-space flows:
-          - Lossless flows: examples/simple-flow.md
-          - SmolTCP flows: examples/smoltcp-flows.md
-      - Proxy flows:
-          - splice-test: examples/splice-test.md
-          - curl: examples/curl.md
-      - Python API examples:
+          - Lossless Flows: examples/simple-flow.md
+          - SmolTCP Flows: examples/smoltcp-flows.md
+      - Proxy Flows:
+          - Proxy Flow Test: examples/splice-test.md
+          - Curl: examples/curl.md
+      - Python API Examples:
           - Multicast (Docker): examples/multicast-docker.md
           - RL Training (GSM8K): examples/rl.md
-          - LP multicast tree selection:
+          - LP Multicast Tree Selection:
               - Overview: examples/lp.md
-              - Toy demo: examples/lp-toy.md
+              - Toy Demo: examples/lp-toy.md
   - Deployment:
-      - Single host (Docker Compose): examples/single-host.md
+      - Single Host (Docker Compose): examples/single-host.md
       - Bare Metal: examples/bare-metal.md
-      - Manual deployment: examples/public-network.md
+      - Manual Deployment: examples/public-network.md
       - Multi-node (Docker Swarm): examples/simple-swarm.md
       - Batch Sync (SSH + rsync): examples/batch-sync.md
       - Local Controller + Fly.io (experimental): examples/localserver-flyio.md
   - Testing:
       - Cargo Test Guide: testing/cargo-test.md
-      - Python API validation: testing/python-api-validation.md
+      - Python API Validation: testing/python-api-validation.md

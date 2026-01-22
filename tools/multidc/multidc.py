@@ -78,51 +78,6 @@ def _parse_ssh_target(target: str, *, default_user: str, default_port: int) -> t
     return user, host_part, port
 
 
-def load_hosts_file(
-    path: pathlib.Path,
-    *,
-    default_user: str,
-    default_port: int,
-    identity_file: str | None,
-) -> list[Host]:
-    """Load hosts from the bare-metal hosts.txt format: node_id|user@host|public_ip."""
-    raw = path.read_text(encoding="utf-8")
-    hosts: list[Host] = []
-    for lineno, line in enumerate(raw.splitlines(), start=1):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        parts = [p.strip() for p in stripped.split("|")]
-        if len(parts) < 2:
-            raise SystemExit(f"{path}:{lineno}: expected 'node_id|user@host|public_ip', got: {stripped!r}")
-
-        label = parts[0] or f"line-{lineno}"
-        ssh_target = parts[1]
-        try:
-            user, host, port = _parse_ssh_target(
-                ssh_target,
-                default_user=default_user,
-                default_port=default_port,
-            )
-        except ValueError as exc:
-            raise SystemExit(f"{path}:{lineno}: {exc}") from exc
-
-        hosts.append(
-            Host(
-                label=label,
-                host=host,
-                user=user,
-                port=port,
-                identity_file=identity_file,
-            )
-        )
-
-    if not hosts:
-        raise SystemExit(f"{path}: no hosts found")
-    return hosts
-
-
 def load_inventory_file(
     path: pathlib.Path,
     *,
@@ -332,15 +287,6 @@ def _iter_hosts(args: argparse.Namespace) -> tuple[list[Host], str | None]:
             identity_file=args.identity_file,
         )
         hosts.extend(inv_hosts)
-    if args.hosts_file:
-        hosts.extend(
-            load_hosts_file(
-                pathlib.Path(args.hosts_file),
-                default_user=args.user,
-                default_port=args.port,
-                identity_file=args.identity_file,
-            )
-        )
     for raw in args.hosts or []:
         user, host, port = _parse_ssh_target(raw, default_user=args.user, default_port=args.port)
         hosts.append(
@@ -354,7 +300,7 @@ def _iter_hosts(args: argparse.Namespace) -> tuple[list[Host], str | None]:
         )
 
     if not hosts:
-        raise SystemExit("no hosts provided (use --inventory, --hosts-file, or --hosts)")
+        raise SystemExit("no hosts provided (use --inventory or --hosts)")
 
     seen: set[tuple[str, str, int, str | None]] = set()
     deduped: list[Host] = []
@@ -440,7 +386,6 @@ def main(argv: list[str] | None = None) -> int:
         "--inventory",
         help="Path to inventory.toml (supports [ssh]/[paths]/[controller]/[[nodes]]).",
     )
-    p.add_argument("--hosts-file", help="Path to hosts.txt (node_id|user@host|public_ip).")
     p.add_argument("--hosts", action="append", help="Extra SSH targets (user@host[:port]).")
     p.add_argument("--user", default="ubuntu", help="Default SSH user when omitted.")
     p.add_argument("--port", type=int, default=22, help="Default SSH port when omitted.")

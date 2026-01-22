@@ -1,4 +1,4 @@
-# Python API quickstart (PyTorch-friendly)
+# PyTorch + Nextmini Python API quickstart
 
 This guide shows how to embed the Nextmini dataplane inside a Python process using the `nextmini_py` extension (described in [Python dataplane API](../design/python-api.md)), then send and receive payloads without going through TUN.
 

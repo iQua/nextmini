@@ -8,8 +8,7 @@
 //! - Use multicast helpers (`create_group`, `join_group`, `set_group_routes`, …).
 //! - Transfer large buffers losslessly (`send_data` / `receive_data` + `lossless_wait`).
 //!
-//! For the user-facing guide, see `docs/docs/design/python-api.md` and
-//! `docs/docs/examples/pytorch_python_api.md`.
+//! For the user-facing guide, see `docs/docs/design/python-api.md`.
 
 mod buffer;
 
