@@ -58,7 +58,7 @@ Notes:
 This mirrors your local `nextmini/` checkout into a remote directory on every host:
 
 ```bash
-python3 tools/multidc/multidc.py sync \
+python3.13 tools/multidc/multidc.py sync \
   --inventory examples/rl/multidc/inventory.toml \
   --jobs 16 \
   --batch-ssh
@@ -74,7 +74,7 @@ Notes:
 Run a remote command in parallel:
 
 ```bash
-python3 tools/multidc/multidc.py run \
+python3.13 tools/multidc/multidc.py run \
   --inventory examples/rl/multidc/inventory.toml \
   --batch-ssh \
   --cmd 'cd ~/nextmini && ./target/release/nextmini --help'
@@ -87,7 +87,7 @@ Tip: you can still use `--hosts-file examples/bare-metal/dataplane/hosts.txt` if
 If you want a single command that syncs the repo and then runs a command on every host:
 
 ```bash
-python3 tools/multidc/multidc.py sync-run \
+python3.13 tools/multidc/multidc.py sync-run \
   --inventory examples/rl/multidc/inventory.toml \
   --batch-ssh \
   --cmd 'cd ~/nextmini && ./target/release/nextmini --help'

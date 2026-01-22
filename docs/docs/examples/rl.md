@@ -4,6 +4,9 @@ This example runs a trainer/worker workload that uses `nextmini_py` to exchange 
 
 See also: [Python dataplane API](../design/python-api.md).
 
+If you only want a minimal end-to-end smoke test for multicast groups + lossless transfer (without the RL training loop),
+see: [Multicast Docker Example](multicast-docker.md).
+
 ## Run (Docker)
 
 ```bash

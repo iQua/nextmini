@@ -7,14 +7,14 @@
 #   cp examples/rl/multidc/inventory.example.toml examples/rl/multidc/inventory.toml
 #
 # Sync your local checkout to all hosts (uses [paths].remote_repo_dir):
-#   python3 tools/multidc/multidc.py sync --inventory examples/rl/multidc/inventory.toml --batch-ssh
+#   python3.13 tools/multidc/multidc.py sync --inventory examples/rl/multidc/inventory.toml --batch-ssh
 #
 # Run a command on all hosts:
-#   python3 tools/multidc/multidc.py run --inventory examples/rl/multidc/inventory.toml --batch-ssh \
+#   python3.13 tools/multidc/multidc.py run --inventory examples/rl/multidc/inventory.toml --batch-ssh \
 #     --cmd 'cd ~/nextmini && git status'
 #
 # Or do both in one go:
-#   python3 tools/multidc/multidc.py sync-run --inventory examples/rl/multidc/inventory.toml --batch-ssh \
+#   python3.13 tools/multidc/multidc.py sync-run --inventory examples/rl/multidc/inventory.toml --batch-ssh \
 #     --cmd 'cd ~/nextmini && git status'
 
 [ssh]

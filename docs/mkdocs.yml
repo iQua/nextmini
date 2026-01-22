@@ -91,6 +91,7 @@ nav:
           - splice-test: examples/splice-test.md
           - curl: examples/curl.md
       - Python API examples:
+          - Multicast (Docker): examples/multicast-docker.md
           - RL Training (GSM8K): examples/rl.md
           - LP Toy Demo: examples/lp-toy.md
   - Deployment:

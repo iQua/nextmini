@@ -8,6 +8,12 @@ This example boots a complete Nextmini stack (Postgres, controller, and dataplan
 
 The Python driver lives in `examples/multicast-docker/scripts/multicast_node.py`.
 
+## How this differs from `examples/rl`
+
+- This is a focused smoke test for multicast group lifecycle + a lossless transfer (source + receivers).
+- `examples/rl` is an application-style trainer/worker workload with heavier dependencies (Transformers/datasets) and a longer-running loop.
+- If you are debugging multicast plumbing, start here; if you are validating the RL training workflow, use `examples/rl`.
+
 ## Run
 
 ```bash
@@ -16,6 +22,8 @@ docker compose up --build
 ```
 
 By default, each container builds `nextmini_py` in-place (via `maturin develop`) and then runs the Python driver.
+
+Note: startup order matters — receivers must connect to the controller before the source calls `create_group` (otherwise you may see `Unable to build route key for flow`). The driver waits for topology readiness and for multicast routes before starting `receive_data`.
 
 ## Faster startup (optional)
 

@@ -44,6 +44,7 @@ Forward TCP streams through the topology using SOCKS5 ingress and the MAX transp
 
 ### 5) Python API examples
 
+- [Multicast (Docker)](multicast-docker.md)
 - [RL Training (GSM8K)](rl.md)
 - [LP toy demo](lp-toy.md)
 
