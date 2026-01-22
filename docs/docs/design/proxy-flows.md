@@ -58,8 +58,8 @@ Proxy flows always use the MAX server + connector path because they start as inb
 
 The following examples exercise proxy flows:
 
-- `examples/splice-test`: high-throughput stream splicing through multiple hops
-- `examples/curl`: curl through SOCKS5 to an HTTP server
+- [`examples/splice-test`](../examples/splice-test.md): high-throughput stream splicing through multiple hops
+- [`examples/curl`](../examples/curl.md): curl through SOCKS5 to an HTTP server
 
 ## Troubleshooting
 
