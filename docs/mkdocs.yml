@@ -59,6 +59,7 @@ nav:
   - Getting Started:
       - What is Nextmini?: design/introduction.md
       - Quick Start: getting-started/quickstart.md
+      - Build & run (binaries): getting-started/build-and-run.md
       - Docs: getting-started/docs-and-api.md
   - Design:
       - Architecture:
@@ -73,10 +74,13 @@ nav:
       - MAX mode:
           - MAX mode: design/max-mode.md
           - Proxy flows (SOCKS5): design/proxy-flows.md
-      - Multicast Groups: design/multicast-groups.md
+      - Multicast Groups:
+          - Overview: design/multicast-groups.md
+          - Multicast Flow lifecycle: design/multicast-flow.md
       - Python dataplane API: design/python-api.md
       - Configuration Reference: design/config-reference.md
   - Examples:
+      - Overview: examples/overview.md
       - TUN (overlay):
           - Simple (iperf3): examples/simple.md
           - Topology & Routes: examples/routes.md
@@ -93,7 +97,9 @@ nav:
       - Python API examples:
           - Multicast (Docker): examples/multicast-docker.md
           - RL Training (GSM8K): examples/rl.md
-          - LP Toy Demo: examples/lp-toy.md
+          - LP multicast tree selection:
+              - Overview: examples/lp.md
+              - Toy demo: examples/lp-toy.md
   - Deployment:
       - Single host (Docker Compose): examples/single-host.md
       - Bare Metal: examples/bare-metal.md
@@ -103,3 +109,4 @@ nav:
       - Local Controller + Fly.io (experimental): examples/localserver-flyio.md
   - Testing:
       - Cargo Test Guide: testing/cargo-test.md
+      - Python API validation: testing/python-api-validation.md

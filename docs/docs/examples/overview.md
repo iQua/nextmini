@@ -46,7 +46,8 @@ Forward TCP streams through the topology using SOCKS5 ingress and the MAX transp
 
 - [Multicast (Docker)](multicast-docker.md)
 - [RL Training (GSM8K)](rl.md)
-- [LP toy demo](lp-toy.md)
+- [LP multicast tree selection](lp.md)
+  - [Toy demo](lp-toy.md)
 
 ### 6) Deployment
 

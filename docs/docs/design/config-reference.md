@@ -21,7 +21,7 @@ The controller configuration file (typically `controller-config.toml`) defines t
 |-------|------|---------|-------------|
 | `base_addr` | `Ipv4Addr` | `10.0.0.0` | Base IPv4 address for the TUN network. |
 | `net_mask` | `Ipv4Addr` | `255.255.0.0` | Network mask (accommodates up to 65,535 nodes). |
-| `user_space_base_addr` | `Ipv4Addr` | `192.168.0.0` | Base address for the user-space network (SmolTCP/Python/lossless). See [User-space flows](user-space-flows.md). |
+| `user_space_base_addr` | `Ipv4Addr` | `192.168.0.0` | Base address for the user-space network (SmolTCP/Python/lossless). |
 | `external_base_addr` | `Ipv4Addr` | `172.16.8.3` | Base address for external endpoints (used by SOCKS5/MAX proxy flows). See [Proxy flows](proxy-flows.md). |
 
 ### Multicast Configuration
@@ -306,7 +306,22 @@ These settings control multi-node deployment on a single machine using Linux nam
 
 ### Lossless Session Configuration
 
-See [Lossless Session Configuration](lossless_config.md) for details.
+Defines default behavior for the lossless session engines used by the dataplane.
+
+- Rust struct: `dataplane/src/node/config.rs` → `LosslessConfig`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_chunk_size` | `usize` | `8500` | Default payload chunk size in bytes. |
+| `data_bucket` | `Option<TokenBucketSpec>` | `None` | Optional token bucket for data pacing. |
+| `ready_grace_ms` | `u64` | `1500` | Grace window (ms) before the sender starts streaming when not all receivers have reported `Ready`. |
+
+#### TokenBucketSpec
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `rate` | `usize` | Pacing rate in bytes per second. |
+| `bucket_size` | `usize` | Token bucket size in bytes. |
 
 ```toml
 [lossless_runtime_config]
@@ -318,6 +333,13 @@ ready_grace_ms = 1500
 # rate = 50_000_000
 # bucket_size = 200_000
 ```
+
+Notes:
+
+- Session coordination uses deterministic session IDs derived from flow metadata (controller-assigned flows) or `(group_id, source_node_id)` for Python multicast helpers.
+- Receivers must be registered before send; if no receiver is active for a session, inbound frames are dropped.
+- Lossless sessions implement an application-level framing and acknowledgement protocol (`messages/src/lossless_session.rs`) on top of the normal dataplane forwarding path.
+- The sender uses `default_chunk_size`; it does not automatically clamp chunk sizes to `mtu`.
 
 ---
 

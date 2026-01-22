@@ -1,4 +1,4 @@
-# Build & run (native)
+# Build & run (binaries)
 
 This page is for running the controller and dataplane as native binaries (no Docker for Nextmini itself).
 

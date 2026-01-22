@@ -22,4 +22,4 @@ flow_spec = { flow_len = { Bytes = 10_000_000 }, flow_rate = 10_000_000 }
 
 - Lossless sessions: `dataplane/src/node/session/*`
 
-Runtime knobs live under `[lossless_runtime_config]`; see [Lossless Session Configuration](lossless_config.md). For a runnable scenario, see [Lossless flows (example)](../examples/simple-flow.md). For all config fields, see the [Configuration Reference](config-reference.md).
+Runtime knobs live under `[lossless_runtime_config]`; see [Lossless Session Configuration](config-reference.md#lossless-session-configuration). For a runnable scenario, see [Lossless flows (example)](../examples/simple-flow.md). For all config fields, see the [Configuration Reference](config-reference.md).

@@ -51,7 +51,7 @@ The controller can install flows that are generated and consumed entirely in use
 - SmolTCP TCP flows (`FlowTransport::Tcp`)
 - Lossless unicast sessions (`FlowTransport::LosslessUnicast`)
 
-See: [User-space flows](user-space-flows.md).
+See: [SmolTCP flows](smoltcp-flows.md) and [Lossless flows](lossless-flows.md).
 
 ### MAX / SOCKS5 proxy ingress
 

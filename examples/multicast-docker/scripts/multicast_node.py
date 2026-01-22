@@ -336,6 +336,15 @@ def run_receiver(args: argparse.Namespace) -> None:
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
 
+    log("Waiting for multicast routes to reach this node...", args.quiet)
+    if not dataplane.wait_for_group_routes(
+        group_id,
+        args.source_node_id,
+        min_routes=0,
+        timeout_ms=args.group_timeout * 1000,
+    ):
+        raise TimeoutError("Timed out waiting for multicast routes to install.")
+
     load_tensor_metadata_if_needed(args)
     if args.expected_bytes is None and args.payload_count:
         args.expected_bytes = args.payload_count * args.chunk_size

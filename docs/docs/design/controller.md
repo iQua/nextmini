@@ -76,4 +76,4 @@ Multicast is a controller-owned feature:
 4. Members call `JoinGroup` / `LeaveGroup`.
 5. Membership changes trigger a route rebuild; the controller pushes `InstallGroupRoutes` to affected nodes.
 
-See: [Multicast Groups](multicast-groups.md) and [Example: Multicast Flow Lifecycle](../examples/multicast-flow.md).
+See: [Multicast Groups](multicast-groups.md) and [Example: Multicast Flow Lifecycle](multicast-flow.md).
