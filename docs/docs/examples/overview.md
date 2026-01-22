@@ -39,8 +39,8 @@ Exercise controller-managed flows that are generated and consumed inside the dat
 
 Forward TCP streams through the topology using SOCKS5 ingress and the MAX transport.
 
-- [splice-test](splice-test.md)
-- [curl](curl.md)
+- [Proxy Flow Test](splice-test.md)
+- [Curl](curl.md)
 
 ### 5) Python API examples
 
