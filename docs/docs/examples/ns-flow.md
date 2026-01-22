@@ -1,6 +1,6 @@
-# ns-flow (namespace flow scaling)
+# Namespace flows scaling
 
-`examples/ns-flow` runs a high-node-count scenario on a single machine using Linux namespaces. It is useful for stress-testing controller flow installation and “flow finished” bookkeeping.
+`examples/ns-flow` runs a high-node-count with multiple flows on a single machine using Linux namespaces.
 
 ## Quick start
 

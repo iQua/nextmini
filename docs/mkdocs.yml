@@ -83,7 +83,7 @@ nav:
           - PyTorch (DDP): examples/pytorch.md
       - Namespace (Linux):
           - Nodes Scaling: examples/namespace.md
-          - Flow Running: examples/ns-flow.md
+          - Flows Running: examples/ns-flow.md
       - User-space flows:
           - Lossless Flows: examples/simple-flow.md
           - SmolTCP Flows: examples/smoltcp-flows.md

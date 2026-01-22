@@ -1,4 +1,4 @@
-# Namespace scaling (single host)
+# Nodes Scaling in Namespace Mode (single host)
 
 `examples/namespace` spawns many dataplane nodes as Linux network namespaces on a single host. It is useful for measuring:
 
