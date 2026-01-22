@@ -1,4 +1,4 @@
-# PyTorch + Nextmini Python API quickstart
+# PyTorch + Nextmini Python API Quickstart
 
 This guide shows how to embed the Nextmini dataplane inside a Python process using the `nextmini_py` extension (described in [Python dataplane API](../design/python-api.md)), then send and receive payloads without going through TUN.
 
@@ -42,7 +42,7 @@ import nextmini_py as nm
 dp = nm.Dataplane("/abs/path/to/node-config.toml")
 
 tensor = torch.randn(1024, dtype=torch.float32)
-payload = nm.PacketView(tensor.detach().cpu().numpy().tobytes())
+payload = nm.PacketView(tensor.detach().contiguous().cpu().numpy().tobytes())
 dp.send_to_node(dst_node_id=2, frozen=payload)
 ```
 
@@ -69,7 +69,7 @@ if delivery:
 
 ## 5) Lossless transfer for large buffers (multicast helper)
 
-For large payloads (for example model weights), use the lossless session helpers:
+For large payloads (for example, model weights), use the lossless session helpers:
 
 - Sender: `send_data(...)` → returns `session_id`, then `lossless_wait(session_id)`
 - Receiver: `receive_data(...)` → returns `session_id`, then `lossless_wait(session_id)` and finally `get_data_buffer(session_id)`

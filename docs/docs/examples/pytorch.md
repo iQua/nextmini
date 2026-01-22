@@ -2,11 +2,9 @@
 
 ## Running a Distributed PyTorch Trainer with OpenMPI on a Single Machine
 
-`Nextmini` is designed to facilitate distributed machine learning training. We now show a simple example of training an MNIST model between multiple docker containers using PyTorch's own distributed data parallel framework and OpenMPI. All docker containers will be launched on the same physical machine (Linux or macOS).
+Nextmini is designed to facilitate distributed machine learning training. This example trains an MNIST model using PyTorch DistributedDataParallel (DDP) and OpenMPI across multiple Docker containers, all running on a single machine (Linux or macOS).
 
 Scenario directory: `examples/pytorch/`.
-
-This runs a DistributedDataParallel job with OpenMPI across four Nextmini dataplane containers **on a single machine** (Linux or macOS).
 
 !!! warning "Optional: start from a clean Docker slate"
 
@@ -17,14 +15,14 @@ This runs a DistributedDataParallel job with OpenMPI across four Nextmini datapl
     # docker system prune -a --volumes -f
     ```
 
-To build and run the docker image in this example, run the following in the `examples/pytorch` directory:
+To build and start the containers, run the following in `examples/pytorch/`:
 
 ```bash
 cd examples/pytorch
 docker compose up --build
 ```
 
-This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with:
+This starts four Nextmini dataplane nodes with OpenMPI installed and connects them to a single Nextmini controller. To start training, open another terminal and attach to `node1`:
 
 ```bash
 docker exec -it node1 /bin/bash
@@ -55,7 +53,7 @@ sh train_lenet5.sh
 # sh train_vgg16.sh
 ```
 
-This should start a training session for a `LeNet-5` model to be trained with the `MNIST` dataset across four training nodes for 10 epochs, each running in its own Docker container.
+This should train a `LeNet-5` model on the `MNIST` dataset across four training nodes for 10 epochs.
 
 Stop and clean up:
 
@@ -66,19 +64,19 @@ docker compose down -v
 
 ## Running a Distributed PyTorch Trainer across Multiple Machines
 
-Before starting, make sure all the containers are stopped and removed.
+Before starting, make sure all containers are stopped and removed:
 
 ```bash
 docker rm -f $(docker ps -aq)
 ```
 
-And remove all the Nextmini related networks, for example, `nextmini_network`.
+Remove any Nextmini-related networks, for example `nextmini_network`:
 
 ```bash
 docker network rm nextmini_network
 ```
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges.
+Before running this example, at least three Linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker must be installed and usable with `sudo`.
 
 Use the swarm manifests in `examples/pytorch/` when you have a Swarm manager + workers.
 

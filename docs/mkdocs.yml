@@ -91,6 +91,7 @@ nav:
           - Proxy Flow Test: examples/splice-test.md
           - Curl: examples/curl.md
       - Python API Examples:
+          - PyTorch + Nextmini Python API Quickstart: examples/pytorch_python_api.md
           - Multicast (Docker): examples/multicast-docker.md
           - RL Training (GSM8K): examples/rl.md
           - LP Multicast Tree Selection:

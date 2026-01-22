@@ -44,7 +44,7 @@ Forward TCP streams through the topology using SOCKS5 ingress and the MAX transp
 
 ### 5) Python API examples
 
-- [PyTorch + Nextmini Python API quickstart](pytorch_python_api.md)
+- [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md)
 - [Multicast (Docker)](multicast-docker.md)
 - [RL Training (GSM8K)](rl.md)
 - [LP multicast tree selection](lp.md)
