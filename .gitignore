@@ -1,6 +1,5 @@
 /controller/**/*.js
 /controller/node_modules
-.vscode
 test.txt
 bigfile.zip
 .DS_Store

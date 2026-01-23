@@ -1,0 +1,25 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "logging": 
+    {
+        "trace"        : false,
+        "traceResponse": false,
+        "engineLogging": false
+    },
+    "configurations": 
+    [
+        {
+            "name"         : "Compose Nexmini",
+            "type"         : "lldb",
+            "request"      : "launch",
+            "env"          : { "RUST_BACKTRACE" : "1" },
+            "preLaunchTask": "Compose", 
+            "cwd"          : "${workspaceFolder}",
+            "program"      : "${workspaceFolder}/target/debug/nextmini",
+            "args"         : [ "controller" ]
+        }
+    ]
+}
