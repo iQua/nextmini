@@ -1,0 +1,9 @@
+version: "3"
+services:
+  nextmini-docs:
+    image: nextmini/docs
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
