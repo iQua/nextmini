@@ -1,5 +1,6 @@
 #!/bin/bash
 reset
+set -euo pipefail
 
 # Set environment to current script directory
 export THIS_SHELL_SCRIPT_FULL_PATH=$(readlink -f "$0")
@@ -8,6 +9,8 @@ pushd $COMPOSE_PATH
 
 InstallCargoOnce() {
 
+    export PATH="/${HOME}/.cargo/bin:${PATH}"
+
     if [ ! $(command -v cargo) ]; then
         echo "Installing cargo & rust once..."
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -15,9 +18,6 @@ InstallCargoOnce() {
     else
         echo "Cargo found!"
     fi
-
-    export PATH="/${HOME}/.cargo/bin:${PATH}"
-
 }
 
 InstallCcCompilerToolchainOnce() {
@@ -50,6 +50,9 @@ ComposeDocs() {
 
     pushd docs
         sudo docker compose -f docker-compose.yml build --parallel
+        sudo docker compose -f docker-compose.yml up -d
+        echo "Opening nextmini documentation in a new tab..."
+        xdg-open http://0.0.0.0:8000
     popd
 }
 
@@ -57,6 +60,7 @@ ComposeController() {
 
     pushd controller
         sudo docker compose -f docker-compose.yml build --parallel
+        sudo docker compose -f docker-compose.yml up
     popd
 }
 
@@ -64,6 +68,7 @@ ComposeDataplane() {
 
     pushd dataplane
         sudo docker compose -f docker-compose.yml build --parallel
+        sudo docker compose -f docker-compose.yml up
     popd
 }
 
