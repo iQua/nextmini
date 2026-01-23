@@ -56,17 +56,9 @@ ComposeDocs() {
     popd
 }
 
-ComposeController() {
+ComposeNextmini() {
 
-    pushd controller
-        sudo docker compose -f docker-compose.yml build --parallel
-        sudo docker compose -f docker-compose.yml up
-    popd
-}
-
-ComposeDataplane() {
-
-    pushd dataplane
+    pushd examples/simple
         sudo docker compose -f docker-compose.yml build --parallel
         sudo docker compose -f docker-compose.yml up
     popd
@@ -86,13 +78,7 @@ ComposeAllResources() {
     cargo build -p nextmini   --release
 
     ComposeDocs
-    ComposeController
-    ComposeDataplane
-
-    sudo docker run -itd nextmini_docs
-    sudo docker run -itd nextmini_controller ./target/release/controller
-    sudo docker run      nextmini_datapath   ./target/release/nextmini
-
+    ComposeNextmini
 }
 ComposeAllResources
 popd
