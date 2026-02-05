@@ -1,6 +1,6 @@
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Pool, Postgres, Row};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config;
 use crate::utils::merge_all_routes;
@@ -70,18 +70,25 @@ async fn seed_routes(pool: &Pool<Postgres>, config: &config::Config) {
         .bind(dst_node_id as i32)
         .bind(edges_json)
         .fetch_optional(pool)
-        .await
-        .expect("Failed to insert route");
+        .await;
 
-        if let Some(row) = result {
-            let route_id: i32 = row.get("route_id");
-            info!(
-                "Created route_id {} from {}→{} with {} edges.",
-                route_id,
-                src_node_id,
-                dst_node_id,
-                edges.len()
-            );
+        match result {
+            Ok(Some(row)) => {
+                let route_id: i32 = row.get("route_id");
+                info!(
+                    "Created route_id {} from {}→{} with {} edges.",
+                    route_id,
+                    src_node_id,
+                    dst_node_id,
+                    edges.len()
+                );
+            }
+            Ok(None) => {
+                warn!("Route insertion returned no result for {} → {}", src_node_id, dst_node_id);
+            }
+            Err(e) => {
+                error!("Failed to insert route {} → {}: {}", src_node_id, dst_node_id, e);
+            }
         }
     }
 }
@@ -123,15 +130,28 @@ async fn seed_custom_flows(pool: &Pool<Postgres>, config: &config::Config) {
         .bind(flow.flow_spec.flow_weight.map(|w| w as i32))
         .bind(false) // is_finished defaults to false
         .fetch_optional(pool)
-        .await
-        .expect("Failed to insert custom flow");
+        .await;
 
-        if let Some(row) = result {
-            let flow_id: i32 = row.get("id");
-            info!(
-                "Auto-assigned flow id {} to custom flow from node {} to node {} with {:?}",
-                flow_id, src_node_id, dst_node_id, flow.flow_spec
-            );
+        match result {
+            Ok(Some(row)) => {
+                let flow_id: i32 = row.get("id");
+                info!(
+                    "Auto-assigned flow id {} to custom flow from node {} to node {} with {:?}",
+                    flow_id, src_node_id, dst_node_id, flow.flow_spec
+                );
+            }
+            Ok(None) => {
+                warn!(
+                    "Custom flow insertion returned no result for {} → {}",
+                    src_node_id, dst_node_id
+                );
+            }
+            Err(e) => {
+                error!(
+                    "Failed to insert custom flow {} → {}: {}",
+                    src_node_id, dst_node_id, e
+                );
+            }
         }
     }
 }
