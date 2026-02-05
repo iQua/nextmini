@@ -22,6 +22,22 @@ const HANDSHAKE_LEN: usize = 1 + std::mem::size_of::<u64>();
 const SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_UDP_WORKERS: usize = 2;
 
+/// Prepares a BytesMut buffer for receiving up to RECEIVE_BUF_SIZE bytes.
+///
+/// # Safety
+/// The caller must overwrite the buffer contents after calling this function,
+/// typically via a recv operation that writes actual data.
+fn prepare_recv_buf(recv_buf: &mut BytesMut) {
+    if recv_buf.capacity() < RECEIVE_BUF_SIZE {
+        recv_buf.reserve(RECEIVE_BUF_SIZE - recv_buf.capacity());
+    }
+    // SAFETY: Capacity is >= RECEIVE_BUF_SIZE. The subsequent recv_from/recv
+    // call will write actual data, and we reset length after receiving.
+    unsafe {
+        recv_buf.set_len(RECEIVE_BUF_SIZE);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PeerState {
     sender: mpsc::Sender<PacketBuf>,
@@ -75,12 +91,7 @@ impl UdpServer {
             tokio::spawn(async move {
                 let mut recv_buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
                 loop {
-                    if recv_buf.capacity() < RECEIVE_BUF_SIZE {
-                        recv_buf.reserve(RECEIVE_BUF_SIZE - recv_buf.capacity());
-                    }
-                    unsafe {
-                        recv_buf.set_len(RECEIVE_BUF_SIZE);
-                    }
+                    prepare_recv_buf(&mut recv_buf);
 
                     let (len, remote_addr) = match socket.recv_from(&mut recv_buf[..]).await {
                         Ok(res) => res,
@@ -226,12 +237,7 @@ impl UdpClient {
         tokio::spawn(async move {
             let mut recv_buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
             loop {
-                if recv_buf.capacity() < RECEIVE_BUF_SIZE {
-                    recv_buf.reserve(RECEIVE_BUF_SIZE - recv_buf.capacity());
-                }
-                unsafe {
-                    recv_buf.set_len(RECEIVE_BUF_SIZE);
-                }
+                prepare_recv_buf(&mut recv_buf);
 
                 match socket_for_recv.recv(&mut recv_buf[..]).await {
                     Ok(len) => {

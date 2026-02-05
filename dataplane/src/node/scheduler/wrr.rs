@@ -1,11 +1,25 @@
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crossbeam_queue::ArrayQueue;
 
 use crate::node::FlowId;
 use crate::node::packet::Packet;
 use crate::node::scheduler::queue::SchedulerQueue;
+
+fn read_or_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    match lock.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn write_or_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    match lock.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 pub struct WrrQueue {
     flow_queues: RwLock<HashMap<FlowId, ArrayQueue<Packet>>>,
@@ -26,7 +40,7 @@ impl WrrQueue {
 impl SchedulerQueue for WrrQueue {
     fn enqueue(&self, packet: Packet) -> Result<(), Packet> {
         let flow_id = packet.flow_id;
-        let mut flow_queues = self.flow_queues.write().unwrap();
+        let mut flow_queues = write_or_recover(&self.flow_queues);
         let flow_queue = flow_queues
             .entry(flow_id)
             .or_insert_with(|| ArrayQueue::new(self.capacity));
@@ -35,8 +49,8 @@ impl SchedulerQueue for WrrQueue {
     }
 
     fn collect_packets(&self, batch: &mut Vec<Packet>) {
-        let flow_queues = self.flow_queues.read().unwrap();
-        let flow_weights = self.flow_weights.read().unwrap();
+        let flow_queues = read_or_recover(&self.flow_queues);
+        let flow_weights = read_or_recover(&self.flow_weights);
 
         let mut min_rounds: Option<usize> = None;
         let mut flow_ids: Vec<FlowId> = Vec::new();
@@ -72,8 +86,8 @@ impl SchedulerQueue for WrrQueue {
         // where W is the integer weight of a flow.
         for _ in 0..min_rounds.unwrap() {
             for flow_id in &flow_ids {
-                let flow_weights = self.flow_weights.read().unwrap();
-                let flow_queues = self.flow_queues.read().unwrap();
+                let flow_weights = read_or_recover(&self.flow_weights);
+                let flow_queues = read_or_recover(&self.flow_queues);
                 let weight = flow_weights.get(flow_id).unwrap_or(&1);
 
                 if let Some(flow_queue) = flow_queues.get(flow_id) {
@@ -88,17 +102,17 @@ impl SchedulerQueue for WrrQueue {
     }
 
     fn is_empty(&self) -> bool {
-        let flow_queues = self.flow_queues.read().unwrap();
+        let flow_queues = read_or_recover(&self.flow_queues);
         flow_queues.values().all(|queue| queue.is_empty())
     }
 
     fn queue_len(&self, flow_id: FlowId) -> usize {
-        let flow_queues = self.flow_queues.read().unwrap();
+        let flow_queues = read_or_recover(&self.flow_queues);
         flow_queues.get(&flow_id).map_or(0, |queue| queue.len())
     }
 
     fn set_flow_weight(&self, flow_id: FlowId, weight: usize) {
-        let mut flow_weights = self.flow_weights.write().unwrap();
+        let mut flow_weights = write_or_recover(&self.flow_weights);
         flow_weights.insert(flow_id, weight);
     }
 }
