@@ -27,7 +27,10 @@ impl Default for PacketBuf {
 impl PacketBuf {
     /// Acquires a buffer from the global pool, allocating on demand.
     pub fn new() -> Self {
-        let mut pool = PACKET_BUFFER_POOL.lock().unwrap();
+        let mut pool = match PACKET_BUFFER_POOL.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let mut buf = pool
             .pop()
             .unwrap_or_else(|| BytesMut::with_capacity(RECEIVE_BUF_SIZE));
@@ -65,6 +68,9 @@ impl PacketBuf {
         }
         let current_len = buf.len();
         if len > current_len {
+            // SAFETY: We have ensured capacity >= len via reserve() above (line 64).
+            // The caller is responsible for initializing all bytes in the returned
+            // slice before reading, as documented in the function's doc comment.
             unsafe {
                 buf.set_len(len);
             }
@@ -129,7 +135,11 @@ impl Drop for PacketBuf {
             if buf.capacity() > RECEIVE_BUF_SIZE * 4 {
                 buf = BytesMut::with_capacity(RECEIVE_BUF_SIZE);
             }
-            PACKET_BUFFER_POOL.lock().unwrap().push(buf);
+            // Recover from poisoned lock - the buffer pool remains valid even after a panic.
+            match PACKET_BUFFER_POOL.lock() {
+                Ok(mut pool) => pool.push(buf),
+                Err(poisoned) => poisoned.into_inner().push(buf),
+            }
         }
     }
 }
