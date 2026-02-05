@@ -31,7 +31,13 @@ impl RoutingProtocol for ShortestPath {
 
         match path {
             Some((_, path)) => path,
-            None => panic!("No path can be found."),
+            None => {
+                tracing::warn!(
+                    "No path found from node {:?} to node {:?} - topology may be incomplete",
+                    start, end
+                );
+                Vec::new()
+            }
         }
     }
 }
