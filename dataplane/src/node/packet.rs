@@ -68,7 +68,7 @@ impl PacketBuf {
         }
         let current_len = buf.len();
         if len > current_len {
-            // SAFETY: We have ensured capacity >= len via reserve() above (line 64).
+            // SAFETY: We have ensured capacity >= len via reserve() above.
             // The caller is responsible for initializing all bytes in the returned
             // slice before reading, as documented in the function's doc comment.
             unsafe {
