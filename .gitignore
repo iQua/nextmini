@@ -6,7 +6,6 @@ bigfile.zip
 .DS_Store
 lightning_logs/
 **/*.der
-**/Cargo.lock
 **/.venv
 **/uv.lock
 **/__pycache__
