@@ -889,14 +889,21 @@ impl Processor {
 
                 for (idx, next_hop_id) in next_hops.into_iter().enumerate() {
                     let pkt = if idx == last {
-                        primary_packet
-                            .take()
-                            .expect("packet already dispatched to last hop")
+                        match primary_packet.take() {
+                            Some(p) => p,
+                            None => {
+                                error!("packet already dispatched to last hop - logic error");
+                                continue;
+                            }
+                        }
                     } else {
-                        primary_packet
-                            .as_ref()
-                            .expect("packet missing during multicast fan-out")
-                            .clone()
+                        match primary_packet.as_ref() {
+                            Some(p) => p.clone(),
+                            None => {
+                                error!("packet missing during multicast fan-out - logic error");
+                                continue;
+                            }
+                        }
                     };
 
                     self.send_packet(pkt, next_hop_id).await;
@@ -915,10 +922,13 @@ impl Processor {
                 return None;
             }
 
-            let server_handle = self
-                .server
-                .clone()
-                .expect("The user-space server has not yet been connected.");
+            let server_handle = match self.server.clone() {
+                Some(h) => h,
+                None => {
+                    error!("The user-space server has not yet been connected.");
+                    return None;
+                }
+            };
 
             let sender = server_handle.add_server(flow_id);
             self.user_space_senders.insert(flow_id, sender.clone());
