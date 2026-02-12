@@ -89,6 +89,10 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T1]`
 - **Location**: `fec-raptorq/`, root `Cargo.toml`
 - **Description**: Add a dedicated crate for migrated RaptorQ primitives and deterministic helpers.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Acceptance Review**:
+  - [x] New crate builds in workspace.
+  - [x] No dataplane integration yet.
 - **Acceptance Criteria**:
   - New crate builds in workspace.
   - No dataplane integration yet.
@@ -305,6 +309,21 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `docs/docs/design/raptorq-migration-notes.md`
 - Gotchas:
   - The `fec` token matched many unrelated words (for example `effective` and `lifecycle`), so inventory curation required path-level review rather than regex matches alone.
+
+## T2 Work Log (2026-02-12)
+- Work log:
+  - Bootstrapped new workspace crate `fec-raptorq` via `cargo new --lib`.
+  - Replaced template code with a migration-ready scaffold: core `Error`/`Result`, `BlockId`/`SymbolId` primitives, and deterministic RNG helper.
+  - Ran required validation command: `cargo check -p fec-raptorq`.
+- Files modified:
+  - `Cargo.toml`
+  - `fec-raptorq/Cargo.toml`
+  - `fec-raptorq/src/lib.rs`
+  - `fec-raptorq/src/primitives.rs`
+  - `fec-raptorq/src/deterministic.rs`
+  - `raptorq-wan-multicast-plan.md`
+- Gotchas:
+  - `cargo new` auto-added `fec-raptorq` to workspace membership, so manual root-workspace edits were only a review pass.
 
 ## Risks
 - API mismatch between asupersync symbol model and nextmini session model.
