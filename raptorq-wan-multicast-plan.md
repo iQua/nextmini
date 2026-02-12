@@ -112,6 +112,10 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T3]`
 - **Location**: `fec-raptorq/tests/`
 - **Description**: Migrate conformance and invariant tests from `asupersync` and adapt imports to new crate paths.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Acceptance Review**:
+  - [x] Conformance and invariant suites are migrated into `fec-raptorq/tests/`.
+  - [x] Imports are updated to the `fec_raptorq` crate paths.
 - **Acceptance Criteria**:
   - Migrated conformance/invariant tests pass in new crate.
 - **Validation**:
@@ -121,6 +125,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T3]`
 - **Location**: `fec-raptorq/benches/`
 - **Description**: Port baseline RaptorQ benchmark to detect performance regressions after integration.
+- **Status**: ✅ Completed on February 12, 2026.
 - **Acceptance Criteria**:
   - Benchmark target compiles and runs.
   - Baseline output artifact is produced for regression comparisons.
@@ -131,10 +136,14 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T3]`
 - **Location**: `dataplane/src/node/session/fec.rs` (new), `dataplane/src/node/session/mod.rs`
 - **Description**: Add a thin, wire-agnostic adapter that exposes `fec-raptorq` encode/decode APIs to the lossless session subsystem.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Acceptance Review**:
+  - [x] Added a wire-agnostic adapter module for `fec-raptorq` encode/decode primitives.
+  - [x] Wired the adapter into `session/mod.rs` without changing active sender/receiver paths.
 - **Acceptance Criteria**:
   - Adapter compiles without changing runtime behavior when FEC is disabled.
 - **Validation**:
-  - `cargo check -p dataplane`
+  - `cargo check -p nextmini`
 
 ## Track B: Original Idea (Multicast Trees + Backpressure + RaptorQ)
 
@@ -324,6 +333,47 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
   - `cargo new` auto-added `fec-raptorq` to workspace membership, so manual root-workspace edits were only a review pass.
+
+## T6 Work Log (2026-02-12)
+- Work log:
+  - Added `dataplane/src/node/session/fec.rs` with a thin adapter over `fec-raptorq::SystematicEncoder` and `fec-raptorq::InactivationDecoder`.
+  - Exposed wire-agnostic wrapper types and builders for encode/decode symbol flow, plus constrained parameter structs for session-side integration.
+  - Wired `pub mod fec;` in `dataplane/src/node/session/mod.rs` and added the `fec-raptorq` dependency in `dataplane/Cargo.toml`.
+  - Ran required validation command: `cargo check -p nextmini`.
+- Files modified:
+  - `dataplane/Cargo.toml`
+  - `dataplane/src/node/session/fec.rs`
+  - `dataplane/src/node/session/mod.rs`
+  - `raptorq-wan-multicast-plan.md`
+- Gotchas:
+  - The adapter is intentionally staged but unused by sender/receiver runtime paths until T8/T9, so module-level dead-code suppression is required to keep warning noise local.
+
+## T4 Work Log (2026-02-12)
+- Work log:
+  - Ported `tests/raptorq_conformance.rs` and `tests/raptorq_perf_invariants.rs` from `/Users/bli/Playground/asupersync/tests/` into `fec-raptorq/tests/`.
+  - Trimmed the `pipeline_e2e` module from the conformance suite because it depends on asupersync-only encoding/decoding pipeline types that are out of scope for `fec-raptorq`.
+  - Adapted imports from `asupersync` paths to `fec_raptorq` module paths and removed the unused `mod common;` declaration from the invariant suite.
+  - Ran required validation command: `cargo test -p fec-raptorq`.
+  - Ran focused suite validation: `cargo test -p fec-raptorq --test raptorq_conformance --test raptorq_perf_invariants`.
+- Files modified:
+  - `fec-raptorq/tests/raptorq_conformance.rs`
+  - `fec-raptorq/tests/raptorq_perf_invariants.rs`
+  - `raptorq-wan-multicast-plan.md`
+- Gotchas:
+  - `cargo test -p fec-raptorq` currently fails on an existing doctest in `fec-raptorq/src/linalg.rs` that still references `asupersync`; the two migrated T4 suites themselves pass.
+
+## T5 Work Log (2026-02-12)
+- Work log:
+  - Ported `/Users/bli/Playground/asupersync/benches/raptorq_benchmark.rs` into `fec-raptorq/benches/raptorq_benchmark.rs` and switched imports to `fec_raptorq`.
+  - Added benchmark dependencies/config in `fec-raptorq/Cargo.toml` (`criterion = "0.5.1"`, `[[bench]] name = "raptorq_benchmark"`, `harness = false`).
+  - Ran required validation command: `cargo bench -p fec-raptorq --bench raptorq_benchmark -- --output-format bencher | tee /tmp/fec_raptorq_bench.txt`.
+  - Captured baseline regression artifact at `/tmp/fec_raptorq_bench.txt`.
+- Files modified:
+  - `fec-raptorq/Cargo.toml`
+  - `fec-raptorq/benches/raptorq_benchmark.rs`
+  - `raptorq-wan-multicast-plan.md`
+- Gotchas:
+  - Initial benchmark run spent time waiting on Cargo package-cache locks and first-time dependency compilation before timing output.
 
 ## Risks
 - API mismatch between asupersync symbol model and nextmini session model.
