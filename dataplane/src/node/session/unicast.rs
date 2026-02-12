@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use bytes::Bytes;
 use tracing::{debug, warn};
 
+use nextmini_messages::lossless_session::FecCapabilities;
 use nextmini_messages::{Flow, FlowLen, TokenBucketSpec};
 
 use crate::node::config::LocalConfig;
@@ -111,6 +112,7 @@ impl LosslessUnicastFlowManager {
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
+                fec_manifest: None,
                 ready_grace_ms: runtime_config.ready_grace_ms,
                 topology_ready: None,
             };
@@ -194,6 +196,7 @@ impl LosslessUnicastFlowManager {
                 source_node_id: flow.src_node_id,
                 expected_bytes,
                 sink_buffer: None,
+                fec_capabilities: FecCapabilities::default(),
             };
 
             // Register receiver directly with the pre-computed session_id.

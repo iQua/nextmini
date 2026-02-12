@@ -68,6 +68,35 @@ dp.send_to_node(dst_node_id=2, frozen=payload)
 
 `send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the lossless session APIs to transmit payloads.
 
+### Optional FEC kwargs for lossless sessions
+
+Lossless multicast helpers expose optional FEC controls while keeping older call patterns valid:
+
+```python
+sid = dp.send_data(
+    group_id,
+    group_ip,
+    receiver_ids,
+    payload,
+    chunk_size=8_500,
+    fec_enabled=True,
+    fec_symbols_per_block=32,  # optional
+    fec_symbol_size=1_400,     # optional
+)
+
+rx_sid = dp.receive_data(
+    group_id,
+    group_ip,
+    source_node_id=1,
+    expected_bytes=payload_len,
+    fec_enabled=True,
+)
+```
+
+- Default behavior is unchanged: sender FEC stays disabled unless `fec_enabled=True` (or explicit FEC sizing kwargs are provided).
+- Receiver capability advertisement defaults to FEC-capable; pass `fec_enabled=False` to explicitly reject FEC sessions for that receiver.
+- Runtime policy still applies. If `lossless_runtime_config.fec_enabled=false` in the node config, sender preflight rejects FEC sessions.
+
 ### PacketView in detail
 
 `PacketView` keeps a reference-counted `Bytes` backing store so clones are cheap. The object:

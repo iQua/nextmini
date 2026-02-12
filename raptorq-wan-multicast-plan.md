@@ -223,6 +223,23 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T10]`
 - **Location**: `python-api/src/lib.rs`, `examples/multicast-docker/scripts/multicast_node.py`, `tools/experiments/raptorq/smoke_python_api.py`, docs
 - **Description**: Add optional FEC parameters for send/receive APIs and runnable example toggles; add a lightweight Python smoke harness.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Work Log**:
+  - Extended Python `Dataplane.send_data` with backward-compatible optional FEC kwargs (`fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`) and mapped them to runtime `SenderConfig.fec_manifest` only when requested.
+  - Extended Python `Dataplane.receive_data` / `receive_data_async` with optional `fec_enabled` to control receiver-side advertised FEC capabilities (`default` vs `empty`) without breaking existing callers.
+  - Added multicast example CLI toggles (`--fec`, `--fec-symbols-per-block`, `--fec-symbol-size`) and wired source/receiver calls to pass FEC mode through the updated Python APIs.
+  - Added `tools/experiments/raptorq/smoke_python_api.py` with `--help`, `--fec`, `--output`, and `--assert-success`; the script writes JSON artifacts with required `mode`, `success`, and `timing` fields.
+  - Added Python API and example documentation notes for FEC usage/toggles.
+- **Files Updated**:
+  - `python-api/src/lib.rs`
+  - `examples/multicast-docker/scripts/multicast_node.py`
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - `docs/docs/design/python-api.md`
+  - `examples/multicast-docker/README.md`
+  - `raptorq-wan-multicast-plan.md`
+- **Gotchas**:
+  - Sender FEC manifest defaults (`symbols_per_block=32`, `symbol_size=chunk_size`) are applied only when FEC is explicitly requested.
+  - Smoke harness is intentionally lightweight: if `nextmini_py` is unavailable, it falls back to static wiring checks and still emits a deterministic JSON artifact.
 - **Acceptance Criteria**:
   - Python flow can enable/disable FEC without breaking existing usage.
   - `smoke_python_api.py` writes a JSON artifact with mode, success, and timing fields.
