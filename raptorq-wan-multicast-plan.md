@@ -225,6 +225,28 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - Define a deterministic multicast route-id scheme so `tree_id` maps to a unique `route_id` without extra per-node state:
     - Example: `route_id = group_id * MULTITREE_STRIDE + tree_id`, with `tree_id < MULTITREE_STRIDE` and `route_id < 2^30` (to stay below `MULTICAST_ROUTE_FLAG`).
   - Ensure installs are canonically ordered by `tree_id` ascending.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Work Log**:
+  - Added a new controller migration that upgrades `group_routes` to `(group_id, tree_id)` primary key, with optional `weight` and backward-compatible `tree_id=0`.
+  - Added `SetGroupRoutesMulti { group_id, trees }` message support while retaining legacy `SetGroupRoutes`.
+  - Implemented shared deterministic route-id helpers and canonical tree ordering in controller utils.
+  - Updated controller route update + snapshot + DB-sync paths to persist and install multi-tree payloads.
+  - Aligned dataplane multicast route namespace constant with shared message constants and canonicalized installed multicast route ID ordering.
+  - Added regression test `controller/tests/multicast_multitree.rs` for stable/complete multi-tree payload generation.
+- **Files Updated**:
+  - `controller/migrations/20260212010000_group_routes_multitree.sql`
+  - `controller/src/main.rs`
+  - `controller/src/utils.rs`
+  - `controller/src/db/group_routes.rs`
+  - `controller/src/db_sync.rs`
+  - `controller/src/models.rs`
+  - `controller/src/lib.rs`
+  - `controller/tests/multicast_multitree.rs`
+  - `dataplane/src/node/route.rs`
+  - `messages/src/lib.rs`
+- **Gotchas**:
+  - Multi-tree route IDs are bounded by both `MULTITREE_STRIDE` and `MULTICAST_ROUTE_FLAG`; out-of-range/duplicate trees are rejected before persistence.
+  - Legacy single-tree updates are normalized to tree `0` and continue to function through the same deterministic route-id path.
 - **Acceptance Criteria**:
   - Controller persists and installs multiple trees for a group.
   - Existing single-tree APIs remain functional during migration window.

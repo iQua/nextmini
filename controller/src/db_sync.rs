@@ -7,11 +7,13 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, FlowTransport, GroupRoutingTableEntry};
+use nextmini_messages::{ControllerToDataplane, FlowTransport};
 
 use crate::db::{DbEvent, RecomputedGroupRoutes};
 use crate::models::{DbFlow, DbFlowRoute, DbRoute, Route};
-use crate::utils::{build_flows_for_node, build_group_routes_for_node, build_routes_for_node};
+use crate::utils::{
+    build_flows_for_node, build_group_routes_for_node_multitree, build_routes_for_node,
+};
 use crate::{NodeWriterMap, WebSocketWriter};
 
 pub fn spawn_db_sync(
@@ -158,14 +160,22 @@ async fn sync_group_routes(
     }
 
     for (node_id, writer) in send_targets {
-        let entry = build_group_routes_for_node(
+        let routes = match build_group_routes_for_node_multitree(
             plan.group.id as usize,
             plan.group.src_node_id as u32,
-            &plan.dag_edges,
+            &plan.trees,
             node_id,
             &plan.member_node_set,
-        );
-        let routes: Vec<GroupRoutingTableEntry> = entry.into_iter().collect();
+        ) {
+            Ok(routes) => routes,
+            Err(e) => {
+                error!(
+                    "Failed to build multi-tree InstallGroupRoutes payload for group {} node {}: {}",
+                    plan.group.id, node_id, e
+                );
+                continue;
+            }
+        };
         let message = ControllerToDataplane::InstallGroupRoutes {
             group_id: plan.group.id as usize,
             src_node_id: plan.group.src_node_id as usize,
@@ -190,9 +200,9 @@ async fn sync_group_routes(
 
 fn multicast_nodes_to_notify(plan: &RecomputedGroupRoutes) -> HashSet<u32> {
     let mut nodes: HashSet<u32> = plan
-        .previous_edges
+        .trees
         .iter()
-        .flat_map(|(a, b)| [*a, *b])
+        .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b]))
         .collect();
     nodes.extend(plan.dag_nodes.iter().copied());
     nodes.insert(plan.group.src_node_id as u32);

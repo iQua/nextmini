@@ -6,7 +6,8 @@ use std::net::Ipv4Addr;
 use tracing::debug;
 
 use nextmini_messages::{
-    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, RoutingTableEntry,
+    GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, MULTICAST_ROUTE_FLAG,
+    RoutingTableEntry,
 };
 
 use crate::node::config::LocalConfig;
@@ -45,12 +46,6 @@ pub struct RoutingTable {
 }
 
 const INLINE_HOPS: usize = 4;
-/// High-bit flag used to keep multicast route IDs in a disjoint namespace from
-/// unicast route IDs. This prevents group routes (whose IDs are derived from
-/// group IDs in the controller/DB) from overwriting unicast entries in the
-/// shared `route_next_hop` map.
-const MULTICAST_ROUTE_FLAG: usize = 1 << 30;
-
 pub type HopBuffer = SmallVec<[NodeId; INLINE_HOPS]>;
 
 fn encode_multicast_route_id(route_id: usize) -> usize {
@@ -146,6 +141,10 @@ impl RoutingTable {
                 .entry(key)
                 .or_default()
                 .push(encoded_id);
+        }
+
+        if let Some(route_ids) = self.available_routes.get_mut(&key) {
+            route_ids.sort_unstable();
         }
 
         // clear cache so flows pick up the refreshed routes immediately

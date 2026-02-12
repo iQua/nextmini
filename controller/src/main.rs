@@ -8,7 +8,7 @@ mod routing;
 mod topology;
 mod utils;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +25,7 @@ use tracing::{error, info, warn};
 
 use anyhow::Result as AnyResult;
 use nextmini_messages::{
-    ControllerToDataplane, DataplaneToController, GroupDirectoryEntry, GroupRoutingTableEntry,
+    ControllerToDataplane, DataplaneToController, GroupDirectoryEntry, GroupRouteTree,
 };
 
 use crate::config::{Config, get_config};
@@ -38,8 +38,8 @@ use crate::db_sync::spawn_db_sync;
 use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, TopologyEvent, new_node_connected};
 use crate::utils::{
-    StartupResponseParams, build_group_routes_for_node, build_routes_for_node,
-    build_startup_response,
+    StartupResponseParams, build_group_routes_for_node_multitree, build_routes_for_node,
+    build_startup_response, canonicalize_group_route_trees,
 };
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
@@ -969,191 +969,50 @@ async fn handle_connection(
                             warn!("SetGroupRoutes received before node registration; ignoring.");
                             continue;
                         };
-
-                        // Load group to validate ownership and get src_node_id.
-                        let group = match sqlx::query_as::<_, crate::models::Group>(
-                            "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
+                        let trees = vec![GroupRouteTree {
+                            tree_id: 0,
+                            weight: None,
+                            edges,
+                        }];
+                        if let Err(e) = handle_set_group_routes_update(
+                            &db_pool,
+                            &node_ws,
+                            node_id,
+                            group_id,
+                            trees,
+                            "SetGroupRoutes",
                         )
-                        .bind(group_id as i32)
-                        .fetch_optional(&*db_pool)
-                        .await
-                        {
-                            Ok(opt) => opt,
-                            Err(e) => {
-                                error!(
-                                    "SetGroupRoutes: failed to load group {} from DB: {}",
-                                    group_id, e
-                                );
-                                continue;
-                            }
-                        };
-
-                        let Some(group) = group else {
-                            warn!("SetGroupRoutes: unknown group id {}; ignoring.", group_id);
-                            continue;
-                        };
-
-                        if group.src_node_id as usize != node_id {
-                            warn!(
-                                "SetGroupRoutes: node {} attempted to set routes for group {} owned by node {}. Ignoring.",
-                                node_id, group_id, group.src_node_id
-                            );
-                            continue;
-                        }
-
-                        // Fetch previous edges so we can clear stale routes on nodes that are no
-                        // longer part of the DAG after the update.
-                        let previous_edges_value: Option<serde_json::Value> =
-                            match sqlx::query_scalar(
-                                "SELECT edges FROM group_routes WHERE group_id = $1",
-                            )
-                            .bind(group_id as i32)
-                            .fetch_optional(&*db_pool)
-                            .await
-                            {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    error!(
-                                        "SetGroupRoutes: failed to read previous group_routes for group {}: {}",
-                                        group_id, e
-                                    );
-                                    None
-                                }
-                            };
-
-                        let previous_edges: Vec<(u32, u32)> = previous_edges_value
-                            .as_ref()
-                            .map(|value| {
-                                serde_json::from_value::<Vec<(u32, u32)>>(value.clone())
-                                    .unwrap_or_default()
-                            })
-                            .unwrap_or_default();
-
-                        // Persist edges for this group.
-                        let edges_json = match serde_json::to_value(
-                            edges
-                                .iter()
-                                .map(|(a, b)| [*a, *b])
-                                .collect::<Vec<[u32; 2]>>(),
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!(
-                                    "SetGroupRoutes: failed to encode edges JSON for group {}: {}",
-                                    group_id, e
-                                );
-                                continue;
-                            }
-                        };
-
-                        if let Err(e) = sqlx::query(
-                            r#"
-                            INSERT INTO group_routes (group_id, src_node_id, edges)
-                            VALUES ($1, $2, $3)
-                            ON CONFLICT (group_id)
-                            DO UPDATE SET
-                                src_node_id = EXCLUDED.src_node_id,
-                                edges = EXCLUDED.edges,
-                                updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT * 1000
-                            "#,
-                        )
-                        .bind(group_id as i32)
-                        .bind(group.src_node_id)
-                        .bind(edges_json)
-                        .execute(&*db_pool)
                         .await
                         {
                             error!(
-                                "SetGroupRoutes: failed to upsert group_routes for group {}: {}",
+                                "SetGroupRoutes: failed to update routes for group {}: {}",
                                 group_id, e
                             );
-                            continue;
                         }
-
-                        // Load members and compute node set for delivery and notifications.
-                        let members = match load_group_members(&db_pool, group_id as i32).await {
-                            Ok(m) => m,
-                            Err(e) => {
-                                error!(
-                                    "SetGroupRoutes: failed to load members for group {}: {}",
-                                    group_id, e
-                                );
-                                continue;
-                            }
-                        };
-                        let member_node_ids: Vec<u32> =
-                            members.iter().map(|m| m.node_id as u32).collect();
-                        let member_node_set: HashSet<u32> =
-                            member_node_ids.iter().copied().collect();
-
-                        // Notify union(previous_nodes, new_nodes, src, members) so stale entries are cleared.
-                        let mut nodes_to_notify: HashSet<u32> =
-                            previous_edges.iter().flat_map(|(a, b)| [*a, *b]).collect();
-                        nodes_to_notify.extend(edges.iter().flat_map(|(a, b)| [*a, *b]));
-                        nodes_to_notify.insert(group.src_node_id as u32);
-                        nodes_to_notify.extend(member_node_ids.iter().copied());
-
-                        // Snapshot writers to avoid holding the lock while sending.
-                        let send_targets: Vec<(u32, Arc<tokio::sync::Mutex<WebSocketWriter>>)> = {
-                            let guard = node_ws.read().await;
-                            nodes_to_notify
-                                .iter()
-                                .filter_map(|node| {
-                                    guard
-                                        .get(&(*node as usize))
-                                        .map(|writer| (*node, Arc::clone(writer)))
-                                })
-                                .collect()
-                        };
-
-                        if send_targets.is_empty() {
+                    }
+                    DataplaneToController::SetGroupRoutesMulti { group_id, trees } => {
+                        let Some(node_id) = current_node_id else {
                             warn!(
-                                "SetGroupRoutes: no active websocket connections for group {} update.",
-                                group_id
+                                "SetGroupRoutesMulti received before node registration; ignoring."
                             );
                             continue;
-                        }
+                        };
 
-                        for (target_node_id, writer) in send_targets {
-                            let entry = build_group_routes_for_node(
-                                group.id as usize,
-                                group.src_node_id as u32,
-                                &edges,
-                                target_node_id,
-                                &member_node_set,
-                            );
-                            let routes: Vec<GroupRoutingTableEntry> = entry.into_iter().collect();
-                            let message = ControllerToDataplane::InstallGroupRoutes {
-                                group_id: group.id as usize,
-                                src_node_id: group.src_node_id as usize,
-                                routes,
-                            };
-
-                            let payload = match rmp_serde::to_vec(&message) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    error!(
-                                        "SetGroupRoutes: failed to encode InstallGroupRoutes for group {}: {}",
-                                        group_id, e
-                                    );
-                                    continue;
-                                }
-                            };
-                            if let Err(e) = writer.lock().await.send(Message::binary(payload)).await
-                            {
-                                error!(
-                                    "SetGroupRoutes: failed to send InstallGroupRoutes for group {} to node {}: {}",
-                                    group_id, target_node_id, e
-                                );
-                            }
-                        }
-
-                        info!(
-                            "SetGroupRoutes: installed DAG ({} edges) for group {} (src {}).",
-                            edges.len(),
+                        if let Err(e) = handle_set_group_routes_update(
+                            &db_pool,
+                            &node_ws,
+                            node_id,
                             group_id,
-                            group.src_node_id
-                        );
+                            trees,
+                            "SetGroupRoutesMulti",
+                        )
+                        .await
+                        {
+                            error!(
+                                "SetGroupRoutesMulti: failed to update routes for group {}: {}",
+                                group_id, e
+                            );
+                        }
                     }
                     DataplaneToController::LosslessStats { stats } => {
                         info!(
@@ -1248,6 +1107,234 @@ async fn load_group_directory_entries(
     Ok(entries)
 }
 
+async fn handle_set_group_routes_update(
+    db_pool: &Pool<Postgres>,
+    node_ws: &NodeWriterMap,
+    requester_node_id: usize,
+    group_id: usize,
+    trees: Vec<GroupRouteTree>,
+    label: &str,
+) -> AnyResult<()> {
+    let group = sqlx::query_as::<_, crate::models::Group>(
+        "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
+    )
+    .bind(group_id as i32)
+    .fetch_optional(db_pool)
+    .await?;
+
+    let Some(group) = group else {
+        warn!("{}: unknown group id {}; ignoring.", label, group_id);
+        return Ok(());
+    };
+
+    if group.src_node_id as usize != requester_node_id {
+        warn!(
+            "{}: node {} attempted to set routes for group {} owned by node {}. Ignoring.",
+            label, requester_node_id, group_id, group.src_node_id
+        );
+        return Ok(());
+    }
+
+    let trees = match canonicalize_group_route_trees(group_id, &trees) {
+        Ok(trees) => trees,
+        Err(e) => {
+            warn!(
+                "{}: invalid trees payload for group {}: {}",
+                label, group_id, e
+            );
+            return Ok(());
+        }
+    };
+
+    let previous_trees = load_group_route_trees_for_group(db_pool, group_id as i32).await?;
+    replace_group_route_trees(db_pool, group_id as i32, group.src_node_id, &trees).await?;
+
+    let members = load_group_members(db_pool, group_id as i32).await?;
+    let member_node_ids: Vec<u32> = members.iter().map(|m| m.node_id as u32).collect();
+    let member_node_set: HashSet<u32> = member_node_ids.iter().copied().collect();
+
+    // Notify union(previous_nodes, new_nodes, src, members) so stale entries are cleared.
+    let mut nodes_to_notify: HashSet<u32> = previous_trees
+        .iter()
+        .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b]))
+        .collect();
+    nodes_to_notify.extend(
+        trees
+            .iter()
+            .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b])),
+    );
+    nodes_to_notify.insert(group.src_node_id as u32);
+    nodes_to_notify.extend(member_node_ids.iter().copied());
+
+    // Snapshot writers to avoid holding the lock while sending.
+    let send_targets: Vec<(u32, Arc<tokio::sync::Mutex<WebSocketWriter>>)> = {
+        let guard = node_ws.read().await;
+        nodes_to_notify
+            .iter()
+            .filter_map(|node| {
+                guard
+                    .get(&(*node as usize))
+                    .map(|writer| (*node, Arc::clone(writer)))
+            })
+            .collect()
+    };
+
+    if send_targets.is_empty() {
+        warn!(
+            "{}: no active websocket connections for group {} update.",
+            label, group_id
+        );
+        return Ok(());
+    }
+
+    for (target_node_id, writer) in send_targets {
+        let routes = match build_group_routes_for_node_multitree(
+            group.id as usize,
+            group.src_node_id as u32,
+            &trees,
+            target_node_id,
+            &member_node_set,
+        ) {
+            Ok(routes) => routes,
+            Err(e) => {
+                error!(
+                    "{}: failed to build InstallGroupRoutes for group {} node {}: {}",
+                    label, group_id, target_node_id, e
+                );
+                continue;
+            }
+        };
+
+        let message = ControllerToDataplane::InstallGroupRoutes {
+            group_id: group.id as usize,
+            src_node_id: group.src_node_id as usize,
+            routes,
+        };
+        let payload = match rmp_serde::to_vec(&message) {
+            Ok(payload) => payload,
+            Err(e) => {
+                error!(
+                    "{}: failed to encode InstallGroupRoutes for group {}: {}",
+                    label, group_id, e
+                );
+                continue;
+            }
+        };
+
+        if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
+            error!(
+                "{}: failed to send InstallGroupRoutes for group {} to node {}: {}",
+                label, group_id, target_node_id, e
+            );
+        }
+    }
+
+    let total_edges = trees.iter().map(|tree| tree.edges.len()).sum::<usize>();
+    info!(
+        "{}: installed {} tree(s) ({} total edges) for group {} (src {}).",
+        label,
+        trees.len(),
+        total_edges,
+        group_id,
+        group.src_node_id
+    );
+
+    Ok(())
+}
+
+async fn load_group_route_trees_for_group(
+    db_pool: &Pool<Postgres>,
+    group_id: i32,
+) -> AnyResult<Vec<GroupRouteTree>> {
+    let rows = sqlx::query_as::<_, DbGroupRoute>(
+        r#"
+        SELECT group_id, tree_id, src_node_id, weight, edges
+        FROM group_routes
+        WHERE group_id = $1
+        ORDER BY tree_id ASC
+        "#,
+    )
+    .bind(group_id)
+    .fetch_all(db_pool)
+    .await?;
+
+    let mut trees = Vec::with_capacity(rows.len());
+    for row in rows {
+        let tree_id = usize::try_from(row.tree_id).map_err(|_| {
+            anyhow::anyhow!(
+                "group_routes.tree_id must be non-negative (group_id={}, tree_id={})",
+                group_id,
+                row.tree_id
+            )
+        })?;
+        trees.push(GroupRouteTree {
+            tree_id,
+            weight: row.weight,
+            edges: decode_tree_edges(row.edges)?,
+        });
+    }
+
+    Ok(trees)
+}
+
+async fn replace_group_route_trees(
+    db_pool: &Pool<Postgres>,
+    group_id: i32,
+    src_node_id: i32,
+    trees: &[GroupRouteTree],
+) -> AnyResult<()> {
+    let mut tx = db_pool.begin().await?;
+    sqlx::query("DELETE FROM group_routes WHERE group_id = $1")
+        .bind(group_id)
+        .execute(&mut *tx)
+        .await?;
+
+    for tree in trees {
+        let tree_id = i32::try_from(tree.tree_id).map_err(|_| {
+            anyhow::anyhow!(
+                "tree_id {} exceeds i32 range for group {}",
+                tree.tree_id,
+                group_id
+            )
+        })?;
+
+        let edges_json = encode_tree_edges(&tree.edges)?;
+        sqlx::query(
+            r#"
+            INSERT INTO group_routes (group_id, tree_id, src_node_id, weight, edges, updated_at)
+            VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000)
+            "#,
+        )
+        .bind(group_id)
+        .bind(tree_id)
+        .bind(src_node_id)
+        .bind(tree.weight)
+        .bind(edges_json)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+fn decode_tree_edges(value: serde_json::Value) -> AnyResult<Vec<(u32, u32)>> {
+    if let Ok(raw) = serde_json::from_value::<Vec<[u32; 2]>>(value.clone()) {
+        return Ok(raw.into_iter().map(|pair| (pair[0], pair[1])).collect());
+    }
+
+    Ok(serde_json::from_value::<Vec<(u32, u32)>>(value)?)
+}
+
+fn encode_tree_edges(edges: &[(u32, u32)]) -> AnyResult<serde_json::Value> {
+    Ok(serde_json::to_value(
+        edges
+            .iter()
+            .map(|(a, b)| [*a, *b])
+            .collect::<Vec<[u32; 2]>>(),
+    )?)
+}
+
 async fn send_multicast_state_to_node(
     db_pool: &Pool<Postgres>,
     node_id: usize,
@@ -1290,52 +1377,90 @@ async fn send_group_routes_snapshot_to_node(
     node_id: usize,
     writer: &Arc<Mutex<WebSocketWriter>>,
 ) -> AnyResult<()> {
-    let stored_routes =
-        sqlx::query_as::<_, DbGroupRoute>("SELECT group_id, src_node_id, edges FROM group_routes")
-            .fetch_all(db_pool)
-            .await?;
+    let stored_routes = sqlx::query_as::<_, DbGroupRoute>(
+        r#"
+        SELECT group_id, tree_id, src_node_id, weight, edges
+        FROM group_routes
+        ORDER BY group_id ASC, tree_id ASC
+        "#,
+    )
+    .fetch_all(db_pool)
+    .await?;
 
     if stored_routes.is_empty() {
         return Ok(());
     }
 
+    let mut by_group: BTreeMap<i32, (i32, Vec<GroupRouteTree>)> = BTreeMap::new();
     for group_route in stored_routes {
-        let dag_raw: Vec<[u32; 2]> = serde_json::from_value(group_route.edges.clone())?;
-        if dag_raw.is_empty() {
+        let tree_id = match usize::try_from(group_route.tree_id) {
+            Ok(tree_id) => tree_id,
+            Err(_) => {
+                warn!(
+                    "Skipping invalid group_routes row with negative tree_id={} for group {}.",
+                    group_route.tree_id, group_route.group_id
+                );
+                continue;
+            }
+        };
+
+        let entry = by_group
+            .entry(group_route.group_id)
+            .or_insert((group_route.src_node_id, Vec::new()));
+        if entry.0 != group_route.src_node_id {
+            warn!(
+                "Group {} has inconsistent src_node_id values in group_routes ({} vs {}).",
+                group_route.group_id, entry.0, group_route.src_node_id
+            );
+        }
+
+        entry.1.push(GroupRouteTree {
+            tree_id,
+            weight: group_route.weight,
+            edges: decode_tree_edges(group_route.edges)?,
+        });
+    }
+
+    for (group_id, (src_node_id, trees)) in by_group {
+        let members = load_group_members(db_pool, group_id).await?;
+        let member_set: HashSet<u32> = members.iter().map(|m| m.node_id as u32).collect();
+        let routes = match build_group_routes_for_node_multitree(
+            group_id as usize,
+            src_node_id as u32,
+            &trees,
+            node_id as u32,
+            &member_set,
+        ) {
+            Ok(routes) => routes,
+            Err(e) => {
+                warn!(
+                    "Skipping invalid group_routes snapshot for group {} on node {}: {}",
+                    group_id, node_id, e
+                );
+                continue;
+            }
+        };
+
+        if routes.is_empty() {
             continue;
         }
 
-        let dag_edges: Vec<(u32, u32)> =
-            dag_raw.into_iter().map(|pair| (pair[0], pair[1])).collect();
-        let members = load_group_members(db_pool, group_route.group_id).await?;
-        let member_set: HashSet<u32> = members.iter().map(|m| m.node_id as u32).collect();
-
-        let Some(entry) = build_group_routes_for_node(
-            group_route.group_id as usize,
-            group_route.src_node_id as u32,
-            &dag_edges,
-            node_id as u32,
-            &member_set,
-        ) else {
-            continue;
-        };
-
         let message = ControllerToDataplane::InstallGroupRoutes {
-            group_id: group_route.group_id as usize,
-            src_node_id: group_route.src_node_id as usize,
-            routes: vec![entry],
+            group_id: group_id as usize,
+            src_node_id: src_node_id as usize,
+            routes,
         };
         let payload = rmp_serde::to_vec(&message)?;
 
         if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
             error!(
                 "Failed to send InstallGroupRoutes for group {} to node {}: {}",
-                group_route.group_id, node_id, e
+                group_id, node_id, e
             );
         } else {
             info!(
                 "Sent InstallGroupRoutes snapshot for group {} to node {}.",
-                group_route.group_id, node_id
+                group_id, node_id
             );
         }
     }
