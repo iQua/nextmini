@@ -197,11 +197,27 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T8, T9]`
 - **Location**: `dataplane/src/node/config.rs`, `dataplane/src/node/session/runtime.rs`
 - **Description**: Add config flags (`fec_enabled`, `fec_require_capability`, sizing bounds) and abort FEC session when negotiation fails; never auto-fallback to non-FEC for an in-flight FEC session.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Work Log**:
+  - Extended `LosslessConfig` with explicit FEC policy knobs: kill-switch (`fec_enabled`), strict negotiation toggle (`fec_require_capability`), and manifest sizing bounds (`fec_symbols_per_block_*`, `fec_symbol_size_*`).
+  - Added normalized bounds helpers in config so reversed min/max values remain deterministic at runtime.
+  - Wired runtime preflight to reject FEC sender sessions before task spawn when FEC is disabled, capability negotiation is not strict, scheme is unknown, or manifest/chunk sizing violates configured bounds.
+  - Preserved strict no-fallback semantics by rejecting FEC sessions directly rather than downgrading to non-FEC.
+  - Wired controller runtime construction to pass `lossless_runtime_config` into `LosslessRuntimeHandle` so policy is enforced in production startup paths.
+  - Added regression unit tests for runtime FEC preflight accept/reject behavior and config default/bounds behavior.
+- **Files Updated**:
+  - `dataplane/src/node/config.rs`
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/controller/interface.rs`
+  - `raptorq-wan-multicast-plan.md`
+- **Gotchas**:
+  - `fec_enabled` defaults to `false`, so FEC now requires explicit opt-in.
+  - Runtime currently enforces strict capability negotiation for FEC sessions; setting `fec_require_capability=false` causes deterministic preflight rejection to avoid any implicit downgrade/fallback path.
 - **Acceptance Criteria**:
   - FEC is opt-in and kill-switchable.
   - Incompatible peers cause deterministic preflight failure.
 - **Validation**:
-  - `cargo test -p dataplane session -- --nocapture`
+  - `cargo test -p nextmini session -- --nocapture`
 
 ### T11: Python API + Example Wiring
 - `depends_on: [T10]`

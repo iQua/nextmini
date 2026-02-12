@@ -10,6 +10,7 @@ use tracing::warn;
 use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
 
+use crate::node::config::LosslessConfig;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{Command, InboundFrame, SessionId};
 use crate::node::session::{receiver, sender};
@@ -61,10 +62,10 @@ pub struct LosslessRuntimeHandle {
 }
 
 impl LosslessRuntimeHandle {
-    pub fn new(processors: ProcessorHandle) -> Self {
+    pub fn new(processors: ProcessorHandle, config: LosslessConfig) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-        let runtime = LosslessRuntime::new(processors, command_rx);
+        let runtime = LosslessRuntime::new(processors, config, command_rx);
 
         // spawns the lossless runtime actor task
         tokio::spawn(async move {
@@ -143,6 +144,7 @@ impl LosslessRuntimeHandle {
 /// This is the actor that processes commands and manages session lifecycle.
 struct LosslessRuntime {
     processors: ProcessorHandle,
+    config: LosslessConfig,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
@@ -153,11 +155,16 @@ struct LosslessRuntime {
 
 impl LosslessRuntime {
     /// Constructs a runtime that can spawn sender/receiver tasks and track their lifetimes.
-    fn new(processors: ProcessorHandle, command_rx: mpsc::UnboundedReceiver<Command>) -> Self {
+    fn new(
+        processors: ProcessorHandle,
+        config: LosslessConfig,
+        command_rx: mpsc::UnboundedReceiver<Command>,
+    ) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
 
         Self {
             processors,
+            config,
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
             next_session_id: 1,
@@ -246,6 +253,10 @@ impl LosslessRuntime {
     /// returning its assigned session ID.
     fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
+        if let Err(err) = validate_fec_sender_config(&self.config, &cfg) {
+            self.reject_sender_preflight(sid, err);
+            return sid;
+        }
         let processors = self.processors.clone();
 
         // subscribes to topology readiness if not already ready
@@ -266,6 +277,11 @@ impl LosslessRuntime {
 
     /// Spawns a receiver task and hand it a bounded inbox for inbound frames.
     fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
+        let mut cfg = cfg;
+        if !self.config.fec_enabled {
+            cfg.fec_capabilities = FecCapabilities::empty();
+        }
+
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 
@@ -304,5 +320,188 @@ impl LosslessRuntime {
     fn set_topology_ready(&mut self, ready: bool) {
         self.topology_ready = ready;
         let _ = self.topology_ready_tx.send(ready);
+    }
+
+    fn reject_sender_preflight(&mut self, sid: SessionId, err: FecPreflightError) {
+        if let Some(handle) = self.tasks.remove(&sid) {
+            handle.abort();
+        }
+        self.inputs.remove(&sid);
+        warn!(
+            session_id = sid,
+            reason = %err,
+            "Lossless runtime: rejected sender session during deterministic preflight"
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FecPreflightError {
+    DisabledByConfig,
+    CapabilityRequirementDisabled,
+    UnknownScheme { scheme: u8 },
+    SymbolsPerBlockOutOfBounds { value: u16, min: u16, max: u16 },
+    SymbolSizeOutOfBounds { value: u16, min: u16, max: u16 },
+    ChunkSizeExceedsSymbolSize { chunk_size: usize, symbol_size: u16 },
+}
+
+impl std::fmt::Display for FecPreflightError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::DisabledByConfig => write!(f, "fec is disabled by local runtime configuration"),
+            Self::CapabilityRequirementDisabled => write!(
+                f,
+                "fec_require_capability=false is unsupported with strict no-fallback sessions"
+            ),
+            Self::UnknownScheme { scheme } => write!(f, "unknown fec scheme {scheme} requested"),
+            Self::SymbolsPerBlockOutOfBounds { value, min, max } => write!(
+                f,
+                "fec symbols_per_block {value} out of bounds [{min}, {max}]"
+            ),
+            Self::SymbolSizeOutOfBounds { value, min, max } => {
+                write!(f, "fec symbol_size {value} out of bounds [{min}, {max}]")
+            }
+            Self::ChunkSizeExceedsSymbolSize {
+                chunk_size,
+                symbol_size,
+            } => write!(
+                f,
+                "chunk_size {chunk_size} exceeds fec symbol_size {symbol_size}"
+            ),
+        }
+    }
+}
+
+fn validate_fec_sender_config(
+    runtime_config: &LosslessConfig,
+    sender_cfg: &SenderConfig,
+) -> Result<(), FecPreflightError> {
+    let Some(manifest) = sender_cfg.fec_manifest else {
+        return Ok(());
+    };
+
+    if !runtime_config.fec_enabled {
+        return Err(FecPreflightError::DisabledByConfig);
+    }
+    if !runtime_config.fec_require_capability {
+        return Err(FecPreflightError::CapabilityRequirementDisabled);
+    }
+    if manifest.scheme_kind().is_none() {
+        return Err(FecPreflightError::UnknownScheme {
+            scheme: manifest.scheme,
+        });
+    }
+
+    let (symbols_min, symbols_max) = runtime_config.fec_symbols_per_block_bounds();
+    if manifest.symbols_per_block < symbols_min || manifest.symbols_per_block > symbols_max {
+        return Err(FecPreflightError::SymbolsPerBlockOutOfBounds {
+            value: manifest.symbols_per_block,
+            min: symbols_min,
+            max: symbols_max,
+        });
+    }
+
+    let (size_min, size_max) = runtime_config.fec_symbol_size_bounds();
+    if manifest.symbol_size < size_min || manifest.symbol_size > size_max {
+        return Err(FecPreflightError::SymbolSizeOutOfBounds {
+            value: manifest.symbol_size,
+            min: size_min,
+            max: size_max,
+        });
+    }
+
+    if sender_cfg.common.chunk_size > usize::from(manifest.symbol_size) {
+        return Err(FecPreflightError::ChunkSizeExceedsSymbolSize {
+            chunk_size: sender_cfg.common.chunk_size,
+            symbol_size: manifest.symbol_size,
+        });
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use bytes::Bytes;
+
+    use nextmini_messages::lossless_session::FecManifest;
+
+    use super::{CommonConfig, SenderConfig, validate_fec_sender_config};
+    use crate::node::config::LosslessConfig;
+
+    fn sender_cfg_with_manifest(manifest: Option<FecManifest>, chunk_size: usize) -> SenderConfig {
+        SenderConfig {
+            common: CommonConfig {
+                session_id: 17,
+                dest_ip: Ipv4Addr::new(10, 0, 0, 2),
+                chunk_size,
+                src_port: 3000,
+                dst_port: 4000,
+                data_bucket: None,
+                local_node_id: 1,
+                user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+                local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            },
+            receiver_ids: vec![2],
+            total_bytes: 128,
+            source_buffer: Bytes::from(vec![0xAB; 64]),
+            fec_manifest: manifest,
+            ready_grace_ms: 1,
+            topology_ready: None,
+        }
+    }
+
+    #[test]
+    fn fec_preflight_rejects_when_disabled() {
+        let runtime = LosslessConfig::default();
+        let manifest = FecManifest::new_raptorq(8, 1400);
+        let sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "FEC sessions should be deterministically rejected when kill-switch is off"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_rejects_out_of_bounds_manifest() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            fec_symbols_per_block_min: 8,
+            fec_symbols_per_block_max: 16,
+            fec_symbol_size_min: 1400,
+            fec_symbol_size_max: 1600,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(32, 1400);
+        let sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "invalid manifest bounds must fail preflight"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_accepts_in_bounds_manifest_when_enabled() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            fec_symbols_per_block_min: 8,
+            fec_symbols_per_block_max: 64,
+            fec_symbol_size_min: 1200,
+            fec_symbol_size_max: 2000,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(result.is_ok());
     }
 }

@@ -683,6 +683,46 @@ pub struct LosslessConfig {
     /// Grace period (ms) to wait for receiver READY before opening the data gate.
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
+
+    /// Global kill-switch for FEC sessions. When false, all FEC session requests are rejected.
+    #[serde(default = "default_fec_enabled")]
+    pub fec_enabled: bool,
+
+    /// Strict compatibility gate for FEC sessions. When false, runtime rejects FEC sessions
+    /// rather than allowing non-negotiated operation.
+    #[serde(default = "default_fec_require_capability")]
+    pub fec_require_capability: bool,
+
+    /// Lower bound for `FecManifest.symbols_per_block` accepted by runtime preflight.
+    #[serde(default = "default_fec_symbols_per_block_min")]
+    pub fec_symbols_per_block_min: u16,
+
+    /// Upper bound for `FecManifest.symbols_per_block` accepted by runtime preflight.
+    #[serde(default = "default_fec_symbols_per_block_max")]
+    pub fec_symbols_per_block_max: u16,
+
+    /// Lower bound for `FecManifest.symbol_size` accepted by runtime preflight.
+    #[serde(default = "default_fec_symbol_size_min")]
+    pub fec_symbol_size_min: u16,
+
+    /// Upper bound for `FecManifest.symbol_size` accepted by runtime preflight.
+    #[serde(default = "default_fec_symbol_size_max")]
+    pub fec_symbol_size_max: u16,
+}
+
+impl LosslessConfig {
+    /// Returns an ordered `(min, max)` range for `symbols_per_block`.
+    pub fn fec_symbols_per_block_bounds(&self) -> (u16, u16) {
+        ordered_u16_bounds(
+            self.fec_symbols_per_block_min,
+            self.fec_symbols_per_block_max,
+        )
+    }
+
+    /// Returns an ordered `(min, max)` range for `symbol_size`.
+    pub fn fec_symbol_size_bounds(&self) -> (u16, u16) {
+        ordered_u16_bounds(self.fec_symbol_size_min, self.fec_symbol_size_max)
+    }
 }
 
 impl Default for LosslessConfig {
@@ -691,12 +731,46 @@ impl Default for LosslessConfig {
             default_chunk_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
+            fec_enabled: false,
+            fec_require_capability: true,
+            fec_symbols_per_block_min: 1,
+            fec_symbols_per_block_max: 1024,
+            fec_symbol_size_min: 1,
+            fec_symbol_size_max: 16_384,
         }
     }
 }
 
 const fn default_ready_grace_ms() -> u64 {
     1500
+}
+
+const fn default_fec_enabled() -> bool {
+    false
+}
+
+const fn default_fec_require_capability() -> bool {
+    true
+}
+
+const fn default_fec_symbols_per_block_min() -> u16 {
+    1
+}
+
+const fn default_fec_symbols_per_block_max() -> u16 {
+    1024
+}
+
+const fn default_fec_symbol_size_min() -> u16 {
+    1
+}
+
+const fn default_fec_symbol_size_max() -> u16 {
+    16_384
+}
+
+const fn ordered_u16_bounds(a: u16, b: u16) -> (u16, u16) {
+    if a <= b { (a, b) } else { (b, a) }
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -731,7 +805,7 @@ fn default_netmask() -> Ipv4Addr {
 
 #[cfg(test)]
 mod tests {
-    use super::LocalConfig;
+    use super::{LocalConfig, LosslessConfig};
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
@@ -800,5 +874,36 @@ mod tests {
         let cfg = LocalConfig::default();
         let ip = Ipv4Addr::new(172, 16, 8, 2); // below default external_base_addr (172.16.8.3)
         assert_eq!(cfg.ip_to_node_id(ip), nextmini_messages::INVALID);
+    }
+
+    #[test]
+    fn lossless_defaults_keep_fec_opt_in_and_strict() {
+        let cfg = LocalConfig::default();
+        let lossless = cfg.lossless_runtime_config;
+
+        assert!(
+            !lossless.fec_enabled,
+            "FEC must be explicit opt-in by default"
+        );
+        assert!(
+            lossless.fec_require_capability,
+            "strict capability negotiation should be enabled by default"
+        );
+        assert_eq!(lossless.fec_symbols_per_block_bounds(), (1, 1024));
+        assert_eq!(lossless.fec_symbol_size_bounds(), (1, 16_384));
+    }
+
+    #[test]
+    fn lossless_bounds_are_normalized_when_reversed() {
+        let cfg = LosslessConfig {
+            fec_symbols_per_block_min: 96,
+            fec_symbols_per_block_max: 8,
+            fec_symbol_size_min: 8192,
+            fec_symbol_size_max: 1400,
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.fec_symbols_per_block_bounds(), (8, 96));
+        assert_eq!(cfg.fec_symbol_size_bounds(), (1400, 8192));
     }
 }

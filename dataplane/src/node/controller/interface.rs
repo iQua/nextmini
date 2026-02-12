@@ -108,7 +108,8 @@ impl ControllerInterfaceHandle {
         processors.connect_tcp_max_client(tcp_max_client).await;
 
         // creates the lossless runtime handle with the correct processors
-        let lossless_runtime = LosslessRuntimeHandle::new(processors.clone());
+        let lossless_runtime =
+            LosslessRuntimeHandle::new(processors.clone(), config.lossless_runtime_config.clone());
         processors.connect_lossless_handle(lossless_runtime.clone());
 
         // creates the lossless unicast flow manager with the correct processors
