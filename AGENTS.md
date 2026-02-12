@@ -84,3 +84,35 @@ Common pitfalls:
 - "from_agent not registered": always `register_agent` in the correct `project_key` first.
 - "FILE_RESERVATION_CONFLICT": adjust patterns, wait for expiry, or use a non-exclusive reservation when appropriate.
 - Auth errors: if JWT+JWKS is enabled, include a bearer token with a `kid` that matches server JWKS; static bearer is used only when JWT is disabled.
+
+## Additional Agent Operating Rules
+
+### Context7
+- ALWAYS proactively use Context7 MCP when library/API documentation, code generation, setup, or configuration steps are needed.
+- External libraries/docs/framework guidance should come from Context7 where applicable.
+
+### Planning
+- All plans MUST include a dependency graph.
+- Every task in a plan must declare `depends_on: []` using explicit task IDs such as `T1`, `T2`.
+
+### Execution
+- Complete all tasks from a plan without stopping for permission between steps.
+- Only stop to ask when a step is destructive/irreversible or there is a genuine blocker.
+
+### Subagents
+- Spawn subagents automatically when:
+  - Work is parallelizable.
+  - A long-running or blocking task can run independently.
+  - Isolation is useful for risky changes or checks.
+  - Code review would be useful.
+- When launching subagents for parallel work, include robust context in the prompt:
+  - Context (plan path and current state).
+  - Dependencies (completed work/files and prerequisites).
+  - Related tasks (adjacent files/agents).
+  - Exact task (scope, paths, acceptance criteria).
+  - Validation (how to verify output).
+  - Constraints (risks, gotchas, what to avoid).
+- ALWAYS wait for all subagents to complete before yielding.
+
+### Bugs
+- Add a regression test when it is appropriate for bug-related changes.
