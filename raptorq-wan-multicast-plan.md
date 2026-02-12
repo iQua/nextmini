@@ -185,6 +185,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - **Description**:
   - Buffer symbols by block, decode once sufficient, throttle/jitter feedback, and validate object integrity.
   - Implement explicit FEC status signaling semantics (`block_id`, deficit count) rather than reusing cumulative ACK semantics.
+- **Status**: ✅ Completed on February 12, 2026.
 - **Acceptance Criteria**:
   - Receiver reconstructs a 64 MiB payload under 10% IID loss and completes session.
   - Receiver-side control feedback remains bounded (throttled) under fanout.
@@ -370,6 +371,21 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
   - The adapter is intentionally staged but unused by sender/receiver runtime paths until T8/T9, so module-level dead-code suppression is required to keep warning noise local.
+
+## T9 Work Log (2026-02-12)
+- Work log:
+  - Reworked receiver FEC path to buffer symbols per block and decode through `session::fec::Decoder`, with deterministic block seed derivation and per-block payload reconstruction into the existing in-order pending window.
+  - Added bounded FEC feedback emission in receiver (`FecStatus { block_id, deficit_symbols }`) with deterministic jitter and throttle interval, plus immediate terminal status (`deficit_symbols = 0`) on successful block decode.
+  - Added explicit sender-side helper semantics in `dataplane/src/node/session/control.rs` via `update_receiver_fec_status` so FEC progress is interpreted from per-block deficit signals rather than cumulative ACK semantics.
+  - Added regression test `dataplane/tests/fec_receiver.rs` that drives `receiver::run` end-to-end with 64 MiB payload, deterministic 10% IID symbol loss, and repair-symbol recovery.
+  - Ran required validation command: `cargo test -p nextmini --test fec_receiver -- --exact receiver_recovers_under_10pct_loss`.
+- Files modified:
+  - `dataplane/src/node/session/receiver.rs`
+  - `dataplane/src/node/session/control.rs`
+  - `dataplane/tests/fec_receiver.rs`
+  - `raptorq-wan-multicast-plan.md`
+- Gotchas:
+  - The default receiver reordering window can drop far-ahead recovered chunks under persistent block gaps, so the regression config uses a large token-bucket-derived window to keep recovery behavior bounded and deterministic during IID-loss decode validation.
 
 ## T8 Work Log (2026-02-12)
 - Work log:
