@@ -43,7 +43,7 @@ This plan has two coupled tracks:
 - T4 -> T14
 - T5 -> T14
 - T6 -> T8, T9
-- T7 -> T6, T8, T9, T12
+- T7 -> T8, T9, T12
 - T8 -> T10
 - T9 -> T10
 - T10 -> T11, T13
@@ -51,6 +51,23 @@ This plan has two coupled tracks:
 - T13 -> T14
 - T14 -> T15
 - T11 -> T15
+- T11 -> T14
+
+## Experiment Harness Structure (Minimal)
+All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via `--output`.
+
+- `smoke_python_api.py`
+  - Purpose: Validate Python bindings + FEC toggle behavior.
+  - CLI: `--fec {on|off}`, `--output <path>`, `--assert-success`.
+  - Output JSON: `mode`, `fec`, `success`, `elapsed_ms`, `error` (optional).
+- `run_smoke.py`
+  - Purpose: Single-node smoke run for metrics collection (no external deps).
+  - CLI: `--mode {lossless|parity|raptorq}`, `--loss <float>`, `--output <path>`, `--assert-metrics`.
+  - Output JSON: `mode`, `loss`, `success`, `completion_ms`, `p95_ms`, `p99_ms`, `overhead`, `cpu_pct`, `mem_mb`, `error` (optional).
+- `check_compat_matrix.py`
+  - Purpose: Verify strict FEC-only compatibility rules (no fallback).
+  - CLI: `--require-homogeneous-fec`, `--output <path>`, `--assert-strict`.
+  - Output JSON: `strict_ok`, `notes`, `error` (optional).
 
 ## Track A: Migration (Bring All RaptorQ Code + Tests)
 
@@ -103,9 +120,9 @@ This plan has two coupled tracks:
   - `cargo bench -p fec-raptorq --bench raptorq_benchmark -- --output-format bencher | tee /tmp/fec_raptorq_bench.txt`
 
 ### T6: Add Dataplane Adapter Layer
-- `depends_on: [T3, T7]`
+- `depends_on: [T3]`
 - **Location**: `dataplane/src/node/session/fec.rs` (new), `dataplane/src/node/session/mod.rs`
-- **Description**: Add a thin adapter that maps nextmini session blocks/chunks to `fec-raptorq` encode/decode APIs.
+- **Description**: Add a thin, wire-agnostic adapter that exposes `fec-raptorq` encode/decode APIs to the lossless session subsystem.
 - **Acceptance Criteria**:
   - Adapter compiles without changing runtime behavior when FEC is disabled.
 - **Validation**:
@@ -115,112 +132,137 @@ This plan has two coupled tracks:
 
 ### T7: Extend Session Protocol For FEC
 - `depends_on: [T2]`
-- **Location**: `messages/src/lossless_session.rs`, `messages/src/lib.rs`, `controller/src/main.rs`, `dataplane/src/node/controller/interface.rs`
+- **Location**: `messages/src/lossless_session.rs`, `messages/src/lib.rs`, `dataplane/src/node/session/control.rs`, `dataplane/src/node/session/{sender,receiver,runtime}.rs`, `dataplane/tests/fec_handshake.rs`
 - **Description**:
   - Add FEC-capable control/data metadata (`FecManifest`, `FecCapabilities`, `FecStatus`, block/symbol fields).
-  - Add explicit protocol-version strategy for FEC frames and define mixed-version behavior.
-  - Add capability negotiation so sender enables FEC only when all target receivers support it; otherwise fallback to classic v1 lossless before data transmission.
+  - Add `tree_id` in FEC data metadata (default `0`) so multi-tree can be enabled later without revisiting the wire format.
+  - Add explicit protocol-version strategy for FEC frames and define strict FEC-only behavior (no downgrade fallback once a session is declared FEC).
+  - Implement capability negotiation using lossless session control frames directly between sender and receivers (no controller involvement); sender enables FEC only when all target receivers support it, otherwise abort before sending any FEC data.
+  - Keep `FecStatus` control messages fixed-size by reporting a per-block deficit (how many additional symbols are needed) rather than large missing-bitmaps.
 - **Acceptance Criteria**:
   - Backward compatibility preserved for existing non-FEC sessions.
-  - Mixed-version clusters fall back deterministically to non-FEC without transfer failure.
+  - Incompatible peers are rejected deterministically before first FEC data frame.
   - Unknown schemes are rejected cleanly.
+  - New regression test `dataplane/tests/fec_handshake.rs` exists and covers strict abort when any required peer is incompatible.
 - **Validation**:
   - `cargo test -p messages lossless_session`
-  - `cargo test -p controller -- --exact fec_negotiation_falls_back_to_v1`
+  - `cargo test -p dataplane --test fec_handshake -- --exact aborts_when_peer_incompatible`
 
 ### T8: Source-Side FEC Sender Integration
 - `depends_on: [T6, T7]`
-- **Location**: `dataplane/src/node/session/sender.rs`, `dataplane/src/node/session/runtime.rs`
+- **Location**: `dataplane/src/node/session/sender.rs`, `dataplane/src/node/session/runtime.rs`, `dataplane/tests/fec_sender.rs`
 - **Description**:
   - Implement source-only RaptorQ mode with repair-budget bounds, pacing, and topology/ready gating reuse.
   - Add FEC-specific sender state semantics (per-block repair accounting), separate from cumulative `Ack { up_to }` retirement semantics used by non-FEC mode.
 - **Acceptance Criteria**:
   - Sender can emit systematic + repair symbols through existing processor pipeline.
   - Non-FEC path unchanged.
+  - New regression test `dataplane/tests/fec_sender.rs` exists and covers repair budget/pacing invariants.
 - **Validation**:
   - `cargo test -p dataplane --test fec_sender -- --exact sender_emits_repairs_with_budget`
 
 ### T9: Receiver Decode + Feedback Integration
 - `depends_on: [T6, T7]`
-- **Location**: `dataplane/src/node/session/receiver.rs`, `dataplane/src/node/session/control.rs`
+- **Location**: `dataplane/src/node/session/receiver.rs`, `dataplane/src/node/session/control.rs`, `dataplane/tests/fec_receiver.rs`
 - **Description**:
   - Buffer symbols by block, decode once sufficient, throttle/jitter feedback, and validate object integrity.
-  - Implement explicit FEC status signaling semantics (`block_id`, missing symbol set/bitmap) rather than reusing cumulative ACK semantics.
+  - Implement explicit FEC status signaling semantics (`block_id`, deficit count) rather than reusing cumulative ACK semantics.
 - **Acceptance Criteria**:
   - Receiver reconstructs a 64 MiB payload under 10% IID loss and completes session.
   - Receiver-side control feedback remains bounded (throttled) under fanout.
+  - New regression test `dataplane/tests/fec_receiver.rs` exists and covers end-to-end decode under configured loss.
 - **Validation**:
   - `cargo test -p dataplane --test fec_receiver -- --exact receiver_recovers_under_10pct_loss`
 
-### T10: Runtime Negotiation + Fallback + Config Gating
+### T10: Runtime Negotiation + Config Gating
 - `depends_on: [T8, T9]`
 - **Location**: `dataplane/src/node/config.rs`, `dataplane/src/node/session/runtime.rs`
-- **Description**: Add config flags (`fec_enabled`, `fec_require_capability`, sizing bounds) and fallback to classic lossless when negotiation fails.
+- **Description**: Add config flags (`fec_enabled`, `fec_require_capability`, sizing bounds) and abort FEC session when negotiation fails; never auto-fallback to non-FEC for an in-flight FEC session.
 - **Acceptance Criteria**:
   - FEC is opt-in and kill-switchable.
-  - Mixed-version fallback path is explicit.
+  - Incompatible peers cause deterministic preflight failure.
 - **Validation**:
   - `cargo test -p dataplane session -- --nocapture`
 
 ### T11: Python API + Example Wiring
 - `depends_on: [T10]`
-- **Location**: `python-api/src/lib.rs`, `examples/multicast-docker/scripts/multicast_node.py`, docs
-- **Description**: Add optional FEC parameters for send/receive APIs and runnable example toggles.
+- **Location**: `python-api/src/lib.rs`, `examples/multicast-docker/scripts/multicast_node.py`, `tools/experiments/raptorq/smoke_python_api.py`, docs
+- **Description**: Add optional FEC parameters for send/receive APIs and runnable example toggles; add a lightweight Python smoke harness.
 - **Acceptance Criteria**:
   - Python flow can enable/disable FEC without breaking existing usage.
+  - `smoke_python_api.py` writes a JSON artifact with mode, success, and timing fields.
+  - `tools/experiments/raptorq/smoke_python_api.py` exists and is runnable with `--help`.
 - **Validation**:
-  - `python tools/experiments/raptorq/smoke_python_api.py --fec off --output /tmp/py_fec_off.json`
-  - `python tools/experiments/raptorq/smoke_python_api.py --fec on --output /tmp/py_fec_on.json`
+  - `python tools/experiments/raptorq/smoke_python_api.py --fec off --output /tmp/py_fec_off.json --assert-success`
+  - `python tools/experiments/raptorq/smoke_python_api.py --fec on --output /tmp/py_fec_on.json --assert-success`
 
 ### T12: Multi-Tree Route Model Upgrade
 - `depends_on: [T7]`
-- **Location**: `controller/migrations/`, `controller/src/main.rs`, `controller/src/utils.rs`, `controller/src/db/group_routes.rs`, `dataplane/src/node/route.rs`, `messages/src/lib.rs`
+- **Location**: `controller/migrations/`, `controller/src/main.rs`, `controller/src/utils.rs`, `controller/src/db/group_routes.rs`, `controller/tests/multicast_multitree.rs`, `dataplane/src/node/route.rs`, `messages/src/lib.rs`
 - **Description**:
-  - Add DB/schema migration for multi-tree persistence (tree_id, weight, edges) and compatibility with existing single-tree groups.
-  - Add message schema evolution for multi-tree install/update payloads.
-  - Support multiple trees per group (tree_id/weight), route-id namespace safety, and per-node install payload updates.
+  - Add DB/schema migration for multi-tree persistence (per-group `tree_id`, optional `weight`, edges) and compatibility with existing single-tree groups (`tree_id=0`).
+  - Extend the group-route update API so an external optimizer can set **multiple trees** for a group (each tree has its own edge list + optional weight).
+    - Message evolution in `messages/src/lib.rs`: add a new `DataplaneToController` variant (keep legacy single-tree for migration), e.g.:
+      - `SetGroupRoutesMulti { group_id, trees: Vec<{ tree_id, weight, edges }> }`
+  - Controller installs multiple trees by sending multiple `GroupRoutingTableEntry` items per `(src_node_id, group_id)`, one per tree (with `tree_id` encoded into `route_id` via the deterministic scheme below).
+  - Define a deterministic multicast route-id scheme so `tree_id` maps to a unique `route_id` without extra per-node state:
+    - Example: `route_id = group_id * MULTITREE_STRIDE + tree_id`, with `tree_id < MULTITREE_STRIDE` and `route_id < 2^30` (to stay below `MULTICAST_ROUTE_FLAG`).
+  - Ensure installs are canonically ordered by `tree_id` ascending.
 - **Acceptance Criteria**:
   - Controller persists and installs multiple trees for a group.
   - Existing single-tree APIs remain functional during migration window.
+  - New regression test `controller/tests/multicast_multitree.rs` exists and asserts multi-tree install payloads are stable and complete.
 - **Validation**:
   - `cargo test -p controller --test multicast_multitree`
 
 ### T13: Tree-Aware Symbol Scheduling + Relay Behavior
 - `depends_on: [T10, T12]`
-- **Location**: `dataplane/src/node/session/sender.rs`, `dataplane/src/node/route.rs`, `dataplane/src/node/processor.rs`, `dataplane/src/node/packet.rs`, scheduler files
+- **Location**: `dataplane/src/node/session/sender.rs`, `dataplane/src/node/route.rs`, `dataplane/src/node/processor.rs`, `dataplane/src/node/packet.rs`, `dataplane/tests/fec_multitree.rs`, `dataplane/tests/fec_backpressure.rs`, scheduler files
 - **Description**:
-  - Add true multi-tree symbol scheduling for a single transfer.
-  - Update routing behavior so per-symbol/per-batch tree selection is possible despite flow-level route caching (e.g., explicit route hint/tree_id path).
-  - Keep relays forwarding; optional relay cache/repair remains feature-gated.
+  - Add true multi-tree symbol scheduling for a single transfer:
+    - For each `(block_id, symbol_id)`, the sender selects a `tree_id` and encodes it into the FEC data metadata (added in T7).
+    - Default selection: `tree_id = hash64(session_id, block_id, symbol_id) % num_trees` (extend to weighted selection once tree weights exist).
+    - Enforce multi-tree as a hard requirement for this mode: abort the transfer if `num_trees < 2`.
+  - Make relays forward on the intended tree:
+    - Add a routing-table fast path that routes multicast packets by `(src_node_id, group_id, tree_id)` (rather than caching a single route per `flow_id`).
+    - Route selection is a pure function of `(group_id, tree_id)` via the deterministic `route_id` scheme (no per-hop hashing and no per-flow cache pinning).
+    - Update `processor.rs` to extract `tree_id` from FEC lossless-session payloads (parse `Packet::tcp_payload()`), then route the packet using the `(key, tree_id)` fast path so every hop forwards on the same tree.
+    - Unknown `(group_id, tree_id)` at any hop is a hard drop with a trace warning (no fallback to another tree).
+  - Keep relays as pure forwarders initially; optional relay cache/repair remains feature-gated.
 - **Acceptance Criteria**:
   - Multi-tree symbol split works deterministically.
   - One transfer session uses at least two distinct tree_ids in routing telemetry.
   - Backpressure does not starve non-FEC traffic.
+  - New regression tests exist:
+    - `dataplane/tests/fec_multitree.rs` asserts symbols from one session span multiple trees.
+    - `dataplane/tests/fec_backpressure.rs` asserts non-FEC traffic is not starved under FEC load.
 - **Validation**:
   - `cargo test -p dataplane --test fec_multitree -- --exact symbols_span_multiple_trees`
   - `cargo test -p dataplane --test fec_backpressure -- --exact non_fec_flow_not_starved`
 
 ### T14: End-to-End Verification + Regression Matrix
-- `depends_on: [T4, T5, T13]`
-- **Location**: `tests/`, `tools/experiments/`, docs
-- **Description**: Add regression coverage and reproducible experiment scripts (baseline lossless, unicast baseline, parity baseline, RaptorQ modes).
+- `depends_on: [T4, T5, T11, T13]`
+- **Location**: `tests/`, `tools/experiments/raptorq/`, docs
+- **Description**: Add regression coverage and reproducible experiment scripts (baseline lossless, unicast baseline, parity baseline, RaptorQ modes) plus a minimal smoke runner.
 - **Acceptance Criteria**:
   - CI-suitable tests pass for migrated core and integrated session paths.
   - Experiment harness emits metrics (completion, P95/P99, overhead, CPU/mem).
+  - Harness writes JSON artifacts under the path provided by `--output`.
+  - `tools/experiments/raptorq/run_smoke.py` exists and is runnable with `--help`.
 - **Validation**:
   - `cargo test --workspace`
-  - `python tools/experiments/raptorq/run_smoke.py --mode raptorq --loss 0.1 --output /tmp/raptorq_smoke.json`
-  - `rg -n "\"p95\"|\"p99\"|\"overhead|cpu|mem\"" /tmp/raptorq_smoke.json`
+  - `python tools/experiments/raptorq/run_smoke.py --mode raptorq --loss 0.1 --output /tmp/raptorq_smoke.json --assert-metrics`
 
-### T15: Release Gate + Rollback Artifacts
+### T15: Release Gate + Ops Kill-Switch
 - `depends_on: [T14, T11]`
-- **Location**: docs + config defaults
-- **Description**: Finalize rollout stages, compatibility matrix, and rollback procedure (`fec_enabled=false` path).
+- **Location**: docs + config defaults, `tools/experiments/raptorq/check_compat_matrix.py`
+- **Description**: Finalize rollout stages, compatibility matrix, and disablement procedure (`fec_enabled=false` to prevent new FEC sessions, while existing FEC sessions must fail fast without downgrade).
 - **Acceptance Criteria**:
-  - Clear operational playbook for enable/disable and mixed-version behavior.
+  - Clear operational playbook for enable/disable and strict FEC-only behavior.
+  - `tools/experiments/raptorq/check_compat_matrix.py` exists and is runnable with `--help`.
 - **Validation**:
-  - `python tools/experiments/raptorq/check_compat_matrix.py --require-fallback`
-  - `python tools/experiments/raptorq/smoke_python_api.py --fec off --output /tmp/py_release_fallback.json`
+  - `python tools/experiments/raptorq/check_compat_matrix.py --require-homogeneous-fec --output /tmp/fec_compat.json --assert-strict`
+  - `python tools/experiments/raptorq/smoke_python_api.py --fec off --output /tmp/py_release_strict.json --assert-success`
 
 ## Source -> Target Mapping (Concrete)
 - `asupersync/src/raptorq/gf256.rs` -> `fec-raptorq/src/gf256.rs`
@@ -239,7 +281,7 @@ This plan has two coupled tracks:
 - Multi-tree route-id collisions if namespace encoding is not strict.
 - Performance regressions from pure-Rust baseline before optimization.
 
-## Rollback
+## Disablement (No Downgrade)
 - Keep all FEC features behind config + feature flags.
-- Preserve non-FEC lossless path as default.
-- If instability appears, disable FEC via config and continue with existing multicast/lossless pipeline.
+- Preserve non-FEC lossless path as default for sessions that are explicitly non-FEC.
+- If instability appears, disable FEC via config to prevent new FEC sessions; any FEC session must fail fast and must not downgrade to non-FEC.
