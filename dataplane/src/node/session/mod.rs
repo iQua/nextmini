@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod control;
+pub mod fec;
 pub mod receiver;
 pub mod runtime;
 pub mod sender;
