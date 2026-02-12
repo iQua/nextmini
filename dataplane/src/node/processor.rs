@@ -999,6 +999,8 @@ impl Processor {
             hdr.session_id
         } else if let Some((hdr, _)) = lossless_session::decode_control(payload) {
             hdr.session_id
+        } else if let Some((hdr, _, _)) = lossless_session::decode_fec_data(payload) {
+            hdr.session_id
         } else {
             return false;
         };

@@ -506,7 +506,8 @@ impl SenderState {
         }
 
         let block_id = self.fec_blocks_sent;
-        let mut source_symbols: Vec<Vec<u8>> = Vec::with_capacity(chunks.len());
+        let source_symbols_in_block = chunks.len();
+        let mut source_symbols: Vec<Vec<u8>> = Vec::with_capacity(symbols_per_block);
 
         for chunk in &chunks {
             if chunk.data.len() > symbol_size {
@@ -520,6 +521,10 @@ impl SenderState {
             let mut padded = vec![0u8; symbol_size];
             padded[..chunk.data.len()].copy_from_slice(&chunk.data);
             source_symbols.push(padded);
+        }
+
+        while source_symbols.len() < symbols_per_block {
+            source_symbols.push(vec![0u8; symbol_size]);
         }
 
         let params =
@@ -559,7 +564,7 @@ impl SenderState {
         self.fec_block_stats.insert(
             block_id,
             FecBlockStats {
-                source_symbols: source_symbols.len(),
+                source_symbols: source_symbols_in_block,
                 repair_budget,
                 repairs_sent: repair_budget,
             },
@@ -570,7 +575,7 @@ impl SenderState {
         debug!(
             session_id = self.session_id,
             block_id,
-            source_symbols = source_symbols.len(),
+            source_symbols = source_symbols_in_block,
             repairs = repair_budget,
             symbols_queued = self.fec_pending_symbols.len(),
             "Lossless sender: queued FEC block symbols"

@@ -481,11 +481,26 @@ impl FecReceiverState {
         payload: &[u8],
         now: Instant,
     ) -> FecIngestOutcome {
+        if !self.is_valid_block_id(block_id) {
+            warn!(
+                session_id = self.session_id,
+                block_id,
+                total_chunks = self.total_chunks,
+                symbols_per_block = self.symbols_per_block,
+                "Lossless receiver: dropping FEC symbol for unexpected block"
+            );
+            return FecIngestOutcome {
+                decoded_chunks: Vec::new(),
+                feedback: None,
+            };
+        }
+
         let params = self.block_params(block_id);
         let first_feedback_at = now + feedback_jitter(self.local_node_id, block_id);
 
         let mut decoded_symbols: Option<Vec<Vec<u8>>> = None;
         let payload_malformed;
+        let mut remove_block = false;
         let feedback = {
             let block = self
                 .blocks
@@ -502,6 +517,7 @@ impl FecReceiverState {
                         block.decoded = true;
                         block.received.clear();
                         deficit = 0;
+                        remove_block = decoded_symbols.is_none();
                         decoded_symbols = Some(decoded.source_symbols);
                     }
                     Err(err) => {
@@ -519,6 +535,9 @@ impl FecReceiverState {
 
             block.maybe_feedback(block_id, deficit, now)
         };
+        if remove_block {
+            self.blocks.remove(&block_id);
+        }
 
         if payload_malformed {
             self.integrity_error = true;
@@ -559,6 +578,22 @@ impl FecReceiverState {
             self.symbol_size,
             fec_block_seed(self.session_id, block_id),
         )
+    }
+
+    fn total_fec_blocks(&self) -> u64 {
+        if self.total_chunks == 0 {
+            0
+        } else {
+            self.total_chunks.div_ceil(self.symbols_per_block as u64)
+        }
+    }
+
+    fn is_valid_block_id(&self, block_id: u64) -> bool {
+        let total_blocks = self.total_fec_blocks();
+        if total_blocks == 0 {
+            return false;
+        }
+        block_id < total_blocks
     }
 
     fn chunk_len_for_index(&self, index: u64) -> usize {
