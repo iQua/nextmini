@@ -10,12 +10,12 @@
 //! - Seed sweep with structured logging for regression triage
 //! - Dense decode regime (heavy loss → Gaussian elimination heavy)
 
-use fec_raptorq::decoder::{DecodeError, InactivationDecoder, ReceivedSymbol};
-use fec_raptorq::deterministic::DetRng;
-use fec_raptorq::gf256::Gf256;
-use fec_raptorq::proof::ProofOutcome;
-use fec_raptorq::systematic::{ConstraintMatrix, SystematicEncoder, SystematicParams};
-use fec_raptorq::ObjectId;
+use raptorq::decoder::{DecodeError, InactivationDecoder, ReceivedSymbol};
+use raptorq::deterministic::DetRng;
+use raptorq::gf256::Gf256;
+use raptorq::proof::ProofOutcome;
+use raptorq::systematic::{ConstraintMatrix, SystematicEncoder, SystematicParams};
+use raptorq::ObjectId;
 
 // ============================================================================
 // Test helpers

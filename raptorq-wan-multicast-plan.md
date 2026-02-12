@@ -87,7 +87,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 
 ### T2: Create New Workspace Crate For Migrated Core
 - `depends_on: [T1]`
-- **Location**: `fec-raptorq/`, root `Cargo.toml`
+- **Location**: `raptorq/`, root `Cargo.toml`
 - **Description**: Add a dedicated crate for migrated RaptorQ primitives and deterministic helpers.
 - **Status**: ✅ Completed on February 12, 2026.
 - **Acceptance Review**:
@@ -97,48 +97,48 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - New crate builds in workspace.
   - No dataplane integration yet.
 - **Validation**:
-  - `cargo check -p fec-raptorq`
+  - `cargo check -p raptorq`
 
 ### T3: Port Core Algorithm Modules
 - `depends_on: [T2]`
-- **Location**: `fec-raptorq/src/*.rs`
+- **Location**: `raptorq/src/*.rs`
 - **Description**: Port `gf256`, `linalg`, `rfc6330`, `systematic`, `decoder`, `proof`, and deterministic RNG helpers.
 - **Acceptance Criteria**:
   - Core encode/decode APIs compile and expose a stable Rust interface for nextmini session adapters.
 - **Validation**:
-  - `cargo check -p fec-raptorq`
+  - `cargo check -p raptorq`
 
 ### T4: Port RaptorQ Test Suites
 - `depends_on: [T3]`
-- **Location**: `fec-raptorq/tests/`
+- **Location**: `raptorq/tests/`
 - **Description**: Migrate conformance and invariant tests from `asupersync` and adapt imports to new crate paths.
 - **Status**: ✅ Completed on February 12, 2026.
 - **Acceptance Review**:
-  - [x] Conformance and invariant suites are migrated into `fec-raptorq/tests/`.
-  - [x] Imports are updated to the `fec_raptorq` crate paths.
+  - [x] Conformance and invariant suites are migrated into `raptorq/tests/`.
+  - [x] Imports are updated to the `raptorq` crate paths.
 - **Acceptance Criteria**:
   - Migrated conformance/invariant tests pass in new crate.
 - **Validation**:
-  - `cargo test -p fec-raptorq`
+  - `cargo test -p raptorq`
 
 ### T5: Port Benchmark Harness
 - `depends_on: [T3]`
-- **Location**: `fec-raptorq/benches/`
+- **Location**: `raptorq/benches/`
 - **Description**: Port baseline RaptorQ benchmark to detect performance regressions after integration.
 - **Status**: ✅ Completed on February 12, 2026.
 - **Acceptance Criteria**:
   - Benchmark target compiles and runs.
   - Baseline output artifact is produced for regression comparisons.
 - **Validation**:
-  - `cargo bench -p fec-raptorq --bench raptorq_benchmark -- --output-format bencher | tee /tmp/fec_raptorq_bench.txt`
+  - `cargo bench -p raptorq --bench raptorq_benchmark -- --output-format bencher | tee /tmp/raptorq_bench.txt`
 
 ### T6: Add Dataplane Adapter Layer
 - `depends_on: [T3]`
 - **Location**: `dataplane/src/node/session/fec.rs` (new), `dataplane/src/node/session/mod.rs`
-- **Description**: Add a thin, wire-agnostic adapter that exposes `fec-raptorq` encode/decode APIs to the lossless session subsystem.
+- **Description**: Add a thin, wire-agnostic adapter that exposes `raptorq` encode/decode APIs to the lossless session subsystem.
 - **Status**: ✅ Completed on February 12, 2026.
 - **Acceptance Review**:
-  - [x] Added a wire-agnostic adapter module for `fec-raptorq` encode/decode primitives.
+  - [x] Added a wire-agnostic adapter module for `raptorq` encode/decode primitives.
   - [x] Wired the adapter into `session/mod.rs` without changing active sender/receiver paths.
 - **Acceptance Criteria**:
   - Adapter compiles without changing runtime behavior when FEC is disabled.
@@ -328,7 +328,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - **Gotchas**:
   - Tree-aware multicast install now enforces deterministic `(group_id, tree_id) -> route_id`; non-conforming route IDs are ignored during installation.
   - Unknown `(group_id, tree_id)` now hard-fails route resolution for multicast/FEC packets (no fallback tree selection).
-  - Local validation is currently blocked by unrelated workspace state: `fec-raptorq/src/lib.rs` is missing, so `cargo test -p nextmini ...` fails before test execution.
+  - Local validation is currently blocked by unrelated workspace state: `raptorq/src/lib.rs` is missing, so `cargo test -p nextmini ...` fails before test execution.
 - **Acceptance Criteria**:
   - Multi-tree symbol split works deterministically.
   - One transfer session uses at least two distinct tree_ids in routing telemetry.
@@ -369,22 +369,22 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - Source root: `/Users/bli/Playground/asupersync`
 - Source commit (for provenance): `f388be666a8b1aab04b9dfecec4ca962fa378d1d`
 - Reviewed mapping (16 files):
-  - `/Users/bli/Playground/asupersync/src/raptorq/gf256.rs` -> `fec-raptorq/src/gf256.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/linalg.rs` -> `fec-raptorq/src/linalg.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/rfc6330.rs` -> `fec-raptorq/src/rfc6330.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/systematic.rs` -> `fec-raptorq/src/systematic.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/decoder.rs` -> `fec-raptorq/src/decoder.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/proof.rs` -> `fec-raptorq/src/proof.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/mod.rs` -> `fec-raptorq/src/lib.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/pipeline.rs` -> `fec-raptorq/src/pipeline.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/builder.rs` -> `fec-raptorq/src/builder.rs`
-  - `/Users/bli/Playground/asupersync/src/encoding.rs` -> `fec-raptorq/src/encoding.rs`
-  - `/Users/bli/Playground/asupersync/src/decoding.rs` -> `fec-raptorq/src/decoding.rs`
-  - `/Users/bli/Playground/asupersync/src/codec/raptorq.rs` -> `fec-raptorq/src/codec/raptorq.rs`
-  - `/Users/bli/Playground/asupersync/src/raptorq/tests.rs` -> `fec-raptorq/src/tests.rs`
-  - `/Users/bli/Playground/asupersync/tests/raptorq_conformance.rs` -> `fec-raptorq/tests/raptorq_conformance.rs`
-  - `/Users/bli/Playground/asupersync/tests/raptorq_perf_invariants.rs` -> `fec-raptorq/tests/raptorq_perf_invariants.rs`
-  - `/Users/bli/Playground/asupersync/benches/raptorq_benchmark.rs` -> `fec-raptorq/benches/raptorq_benchmark.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/gf256.rs` -> `raptorq/src/gf256.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/linalg.rs` -> `raptorq/src/linalg.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/rfc6330.rs` -> `raptorq/src/rfc6330.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/systematic.rs` -> `raptorq/src/systematic.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/decoder.rs` -> `raptorq/src/decoder.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/proof.rs` -> `raptorq/src/proof.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/mod.rs` -> `raptorq/src/lib.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/pipeline.rs` -> `raptorq/src/pipeline.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/builder.rs` -> `raptorq/src/builder.rs`
+  - `/Users/bli/Playground/asupersync/src/encoding.rs` -> `raptorq/src/encoding.rs`
+  - `/Users/bli/Playground/asupersync/src/decoding.rs` -> `raptorq/src/decoding.rs`
+  - `/Users/bli/Playground/asupersync/src/codec/raptorq.rs` -> `raptorq/src/codec/raptorq.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/tests.rs` -> `raptorq/src/tests.rs`
+  - `/Users/bli/Playground/asupersync/tests/raptorq_conformance.rs` -> `raptorq/tests/raptorq_conformance.rs`
+  - `/Users/bli/Playground/asupersync/tests/raptorq_perf_invariants.rs` -> `raptorq/tests/raptorq_perf_invariants.rs`
+  - `/Users/bli/Playground/asupersync/benches/raptorq_benchmark.rs` -> `raptorq/benches/raptorq_benchmark.rs`
 
 ## Licensing Snapshot (T1)
 - License file checked: `/Users/bli/Playground/asupersync/LICENSE` (MIT License text).
@@ -404,24 +404,24 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 
 ## T2 Work Log (2026-02-12)
 - Work log:
-  - Bootstrapped new workspace crate `fec-raptorq` via `cargo new --lib`.
+  - Bootstrapped new workspace crate `raptorq` via `cargo new --lib`.
   - Replaced template code with a migration-ready scaffold: core `Error`/`Result`, `BlockId`/`SymbolId` primitives, and deterministic RNG helper.
-  - Ran required validation command: `cargo check -p fec-raptorq`.
+  - Ran required validation command: `cargo check -p raptorq`.
 - Files modified:
   - `Cargo.toml`
-  - `fec-raptorq/Cargo.toml`
-  - `fec-raptorq/src/lib.rs`
-  - `fec-raptorq/src/primitives.rs`
-  - `fec-raptorq/src/deterministic.rs`
+  - `raptorq/Cargo.toml`
+  - `raptorq/src/lib.rs`
+  - `raptorq/src/primitives.rs`
+  - `raptorq/src/deterministic.rs`
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
-  - `cargo new` auto-added `fec-raptorq` to workspace membership, so manual root-workspace edits were only a review pass.
+  - `cargo new` auto-added `raptorq` to workspace membership, so manual root-workspace edits were only a review pass.
 
 ## T6 Work Log (2026-02-12)
 - Work log:
-  - Added `dataplane/src/node/session/fec.rs` with a thin adapter over `fec-raptorq::SystematicEncoder` and `fec-raptorq::InactivationDecoder`.
+  - Added `dataplane/src/node/session/fec.rs` with a thin adapter over `raptorq::SystematicEncoder` and `raptorq::InactivationDecoder`.
   - Exposed wire-agnostic wrapper types and builders for encode/decode symbol flow, plus constrained parameter structs for session-side integration.
-  - Wired `pub mod fec;` in `dataplane/src/node/session/mod.rs` and added the `fec-raptorq` dependency in `dataplane/Cargo.toml`.
+  - Wired `pub mod fec;` in `dataplane/src/node/session/mod.rs` and added the `raptorq` dependency in `dataplane/Cargo.toml`.
   - Ran required validation command: `cargo check -p nextmini`.
 - Files modified:
   - `dataplane/Cargo.toml`
@@ -459,31 +459,31 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `dataplane/tests/fec_sender.rs`
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
-  - `fec-raptorq` expects fixed-size source symbols; sender-side FEC integration pads source chunks up to manifest `symbol_size` and aborts strict FEC preflight if a chunk exceeds the configured symbol size.
+  - `raptorq` expects fixed-size source symbols; sender-side FEC integration pads source chunks up to manifest `symbol_size` and aborts strict FEC preflight if a chunk exceeds the configured symbol size.
 
 ## T4 Work Log (2026-02-12)
 - Work log:
-  - Ported `tests/raptorq_conformance.rs` and `tests/raptorq_perf_invariants.rs` from `/Users/bli/Playground/asupersync/tests/` into `fec-raptorq/tests/`.
-  - Trimmed the `pipeline_e2e` module from the conformance suite because it depends on asupersync-only encoding/decoding pipeline types that are out of scope for `fec-raptorq`.
-  - Adapted imports from `asupersync` paths to `fec_raptorq` module paths and removed the unused `mod common;` declaration from the invariant suite.
-  - Ran required validation command: `cargo test -p fec-raptorq`.
-  - Ran focused suite validation: `cargo test -p fec-raptorq --test raptorq_conformance --test raptorq_perf_invariants`.
+  - Ported `tests/raptorq_conformance.rs` and `tests/raptorq_perf_invariants.rs` from `/Users/bli/Playground/asupersync/tests/` into `raptorq/tests/`.
+  - Trimmed the `pipeline_e2e` module from the conformance suite because it depends on asupersync-only encoding/decoding pipeline types that are out of scope for `raptorq`.
+  - Adapted imports from `asupersync` paths to `raptorq` module paths and removed the unused `mod common;` declaration from the invariant suite.
+  - Ran required validation command: `cargo test -p raptorq`.
+  - Ran focused suite validation: `cargo test -p raptorq --test raptorq_conformance --test raptorq_perf_invariants`.
 - Files modified:
-  - `fec-raptorq/tests/raptorq_conformance.rs`
-  - `fec-raptorq/tests/raptorq_perf_invariants.rs`
+  - `raptorq/tests/raptorq_conformance.rs`
+  - `raptorq/tests/raptorq_perf_invariants.rs`
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
-  - `cargo test -p fec-raptorq` currently fails on an existing doctest in `fec-raptorq/src/linalg.rs` that still references `asupersync`; the two migrated T4 suites themselves pass.
+  - `cargo test -p raptorq` currently fails on an existing doctest in `raptorq/src/linalg.rs` that still references `asupersync`; the two migrated T4 suites themselves pass.
 
 ## T5 Work Log (2026-02-12)
 - Work log:
-  - Ported `/Users/bli/Playground/asupersync/benches/raptorq_benchmark.rs` into `fec-raptorq/benches/raptorq_benchmark.rs` and switched imports to `fec_raptorq`.
-  - Added benchmark dependencies/config in `fec-raptorq/Cargo.toml` (`criterion = "0.5.1"`, `[[bench]] name = "raptorq_benchmark"`, `harness = false`).
-  - Ran required validation command: `cargo bench -p fec-raptorq --bench raptorq_benchmark -- --output-format bencher | tee /tmp/fec_raptorq_bench.txt`.
-  - Captured baseline regression artifact at `/tmp/fec_raptorq_bench.txt`.
+  - Ported `/Users/bli/Playground/asupersync/benches/raptorq_benchmark.rs` into `raptorq/benches/raptorq_benchmark.rs` and switched imports to `raptorq`.
+  - Added benchmark dependencies/config in `raptorq/Cargo.toml` (`criterion = "0.5.1"`, `[[bench]] name = "raptorq_benchmark"`, `harness = false`).
+  - Ran required validation command: `cargo bench -p raptorq --bench raptorq_benchmark -- --output-format bencher | tee /tmp/raptorq_bench.txt`.
+  - Captured baseline regression artifact at `/tmp/raptorq_bench.txt`.
 - Files modified:
-  - `fec-raptorq/Cargo.toml`
-  - `fec-raptorq/benches/raptorq_benchmark.rs`
+  - `raptorq/Cargo.toml`
+  - `raptorq/benches/raptorq_benchmark.rs`
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
   - Initial benchmark run spent time waiting on Cargo package-cache locks and first-time dependency compilation before timing output.

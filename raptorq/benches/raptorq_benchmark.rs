@@ -11,10 +11,10 @@
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
-use fec_raptorq::decoder::{InactivationDecoder, ReceivedSymbol};
-use fec_raptorq::gf256::{Gf256, gf256_add_slice, gf256_addmul_slice, gf256_mul_slice};
-use fec_raptorq::linalg::{DenseRow, GaussianSolver, row_scale_add, row_xor};
-use fec_raptorq::systematic::SystematicEncoder;
+use raptorq::decoder::{InactivationDecoder, ReceivedSymbol};
+use raptorq::gf256::{Gf256, gf256_add_slice, gf256_addmul_slice, gf256_mul_slice};
+use raptorq::linalg::{DenseRow, GaussianSolver, row_scale_add, row_xor};
+use raptorq::systematic::SystematicEncoder;
 
 // ============================================================================
 // GF(256) primitive benchmarks

@@ -6,10 +6,10 @@
 //! - Edge cases: empty, tiny, large blocks, various loss patterns
 //! - Fuzz testing with fixed seeds for reproducibility
 
-use fec_raptorq::decoder::{DecodeError, InactivationDecoder, ReceivedSymbol};
-use fec_raptorq::deterministic::DetRng;
-use fec_raptorq::gf256::Gf256;
-use fec_raptorq::systematic::{
+use raptorq::decoder::{DecodeError, InactivationDecoder, ReceivedSymbol};
+use raptorq::deterministic::DetRng;
+use raptorq::gf256::Gf256;
+use raptorq::systematic::{
     ConstraintMatrix, RobustSoliton, SystematicEncoder, SystematicParams,
 };
 

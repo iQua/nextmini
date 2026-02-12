@@ -1,12 +1,12 @@
-//! Thin, wire-agnostic adapter between session logic and `fec-raptorq` primitives.
+//! Thin, wire-agnostic adapter between session logic and `raptorq` primitives.
 //!
 //! The lossless session subsystem can use this module without taking a direct
 //! dependency on frame layout or transport metadata.
 #![allow(dead_code)]
 
-use fec_raptorq::{EmittedSymbol, InactivationDecoder, SystematicEncoder};
+use raptorq::{EmittedSymbol, InactivationDecoder, SystematicEncoder};
 
-pub use fec_raptorq::{DecodeError, DecodeStats, ReceivedSymbol};
+pub use raptorq::{DecodeError, DecodeStats, ReceivedSymbol};
 
 /// Shared block-level parameters for encoder/decoder construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ impl From<EmittedSymbol> for EncodedSymbol {
     }
 }
 
-/// Thin encoder wrapper around `fec-raptorq`.
+/// Thin encoder wrapper around `raptorq`.
 #[derive(Debug)]
 pub struct Encoder {
     inner: SystematicEncoder,
@@ -127,7 +127,7 @@ pub struct DecodeOutput {
     pub stats: DecodeStats,
 }
 
-/// Thin decoder wrapper around `fec-raptorq`.
+/// Thin decoder wrapper around `raptorq`.
 pub struct Decoder {
     inner: InactivationDecoder,
 }

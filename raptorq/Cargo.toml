@@ -1,5 +1,5 @@
 [package]
-name = "fec-raptorq"
+name = "raptorq"
 version = "0.1.0"
 edition = "2024"
 
