@@ -1,8 +1,8 @@
 # Plan: RaptorQ Migration + Multicast-Tree Integration In Nextmini
 
 **Generated**: February 12, 2026
-**Source Repo**: `/Users/winifred/asupersync`
-**Target Repo**: `/Users/winifred/nextmini`
+**Source Repo**: `/Users/bli/Playground/asupersync`
+**Target Repo**: `/Users/bli/Playground/nextmini`
 **Estimated Complexity**: High
 
 ## Overview
@@ -75,11 +75,15 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: []`
 - **Location**: `raptorq-wan-multicast-plan.md` (mapping section), `docs/` migration notes
 - **Description**: Record exact source file list, target destination list, and license notes before code moves.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Acceptance Review**:
+  - [x] Complete source->target mapping exists and is reviewed.
+  - [x] MIT license provenance from `asupersync` is documented.
 - **Acceptance Criteria**:
   - Complete source->target mapping exists and is reviewed.
   - MIT license provenance from `asupersync` is documented.
 - **Validation**:
-  - `rg -n "raptorq|fec|fountain" /Users/winifred/asupersync`
+  - `rg -n "raptorq|fec|fountain" /Users/bli/Playground/asupersync`
 
 ### T2: Create New Workspace Crate For Migrated Core
 - `depends_on: [T1]`
@@ -264,16 +268,43 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `python tools/experiments/raptorq/check_compat_matrix.py --require-homogeneous-fec --output /tmp/fec_compat.json --assert-strict`
   - `python tools/experiments/raptorq/smoke_python_api.py --fec off --output /tmp/py_release_strict.json --assert-success`
 
-## Source -> Target Mapping (Concrete)
-- `asupersync/src/raptorq/gf256.rs` -> `fec-raptorq/src/gf256.rs`
-- `asupersync/src/raptorq/linalg.rs` -> `fec-raptorq/src/linalg.rs`
-- `asupersync/src/raptorq/rfc6330.rs` -> `fec-raptorq/src/rfc6330.rs`
-- `asupersync/src/raptorq/systematic.rs` -> `fec-raptorq/src/systematic.rs`
-- `asupersync/src/raptorq/decoder.rs` -> `fec-raptorq/src/decoder.rs`
-- `asupersync/src/raptorq/proof.rs` -> `fec-raptorq/src/proof.rs`
-- `asupersync/tests/raptorq_conformance.rs` -> `fec-raptorq/tests/conformance.rs`
-- `asupersync/tests/raptorq_perf_invariants.rs` -> `fec-raptorq/tests/perf_invariants.rs`
-- `asupersync/benches/raptorq_benchmark.rs` -> `fec-raptorq/benches/raptorq_benchmark.rs`
+## Source -> Target Mapping (Concrete, T1 Frozen Snapshot)
+- Snapshot date: February 12, 2026
+- Source root: `/Users/bli/Playground/asupersync`
+- Source commit (for provenance): `f388be666a8b1aab04b9dfecec4ca962fa378d1d`
+- Reviewed mapping (16 files):
+  - `/Users/bli/Playground/asupersync/src/raptorq/gf256.rs` -> `fec-raptorq/src/gf256.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/linalg.rs` -> `fec-raptorq/src/linalg.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/rfc6330.rs` -> `fec-raptorq/src/rfc6330.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/systematic.rs` -> `fec-raptorq/src/systematic.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/decoder.rs` -> `fec-raptorq/src/decoder.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/proof.rs` -> `fec-raptorq/src/proof.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/mod.rs` -> `fec-raptorq/src/lib.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/pipeline.rs` -> `fec-raptorq/src/pipeline.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/builder.rs` -> `fec-raptorq/src/builder.rs`
+  - `/Users/bli/Playground/asupersync/src/encoding.rs` -> `fec-raptorq/src/encoding.rs`
+  - `/Users/bli/Playground/asupersync/src/decoding.rs` -> `fec-raptorq/src/decoding.rs`
+  - `/Users/bli/Playground/asupersync/src/codec/raptorq.rs` -> `fec-raptorq/src/codec/raptorq.rs`
+  - `/Users/bli/Playground/asupersync/src/raptorq/tests.rs` -> `fec-raptorq/src/tests.rs`
+  - `/Users/bli/Playground/asupersync/tests/raptorq_conformance.rs` -> `fec-raptorq/tests/raptorq_conformance.rs`
+  - `/Users/bli/Playground/asupersync/tests/raptorq_perf_invariants.rs` -> `fec-raptorq/tests/raptorq_perf_invariants.rs`
+  - `/Users/bli/Playground/asupersync/benches/raptorq_benchmark.rs` -> `fec-raptorq/benches/raptorq_benchmark.rs`
+
+## Licensing Snapshot (T1)
+- License file checked: `/Users/bli/Playground/asupersync/LICENSE` (MIT License text).
+- Cargo metadata checked: `/Users/bli/Playground/asupersync/Cargo.toml` has `license = "MIT"`.
+- Carry-forward requirement for migrated files: preserve MIT copyright + permission notice in distributed copies.
+
+## T1 Work Log (2026-02-12)
+- Work log:
+  - Ran required validation command: `rg -n "raptorq|fec|fountain" /Users/bli/Playground/asupersync`.
+  - Validation returned 1130 matching lines across 216 files; curated the migration-relevant set to the 16-file inventory above.
+  - Added frozen mapping + source commit pin + MIT provenance snapshot, then mirrored notes into `docs/`.
+- Files modified:
+  - `raptorq-wan-multicast-plan.md`
+  - `docs/docs/design/raptorq-migration-notes.md`
+- Gotchas:
+  - The `fec` token matched many unrelated words (for example `effective` and `lifecycle`), so inventory curation required path-level review rather than regex matches alone.
 
 ## Risks
 - API mismatch between asupersync symbol model and nextmini session model.
