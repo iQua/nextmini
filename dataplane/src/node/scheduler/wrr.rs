@@ -49,8 +49,8 @@ impl SchedulerQueue for WrrQueue {
                 // Calculates the minimum number of rounds allowed. For example, if flow 1 with weight 2
                 // has 5 packets in its queue, flow 2 with weight 1 has 3 packets, 4 packets should be
                 // scheduled for sending from flow 1, and 2 from flow 2.
-                let weight = *flow_weights.get(flow_id).unwrap_or(&1);
-                let rounds = flow_queue.len() / weight;
+                let weight = (*flow_weights.get(flow_id).unwrap_or(&1)).max(1);
+                let rounds = (flow_queue.len() / weight).max(1);
 
                 min_rounds = match min_rounds {
                     Some(current_min_rounds) => Some(current_min_rounds.min(rounds)),
@@ -74,10 +74,10 @@ impl SchedulerQueue for WrrQueue {
             for flow_id in &flow_ids {
                 let flow_weights = self.flow_weights.read().unwrap();
                 let flow_queues = self.flow_queues.read().unwrap();
-                let weight = flow_weights.get(flow_id).unwrap_or(&1);
+                let weight = (*flow_weights.get(flow_id).unwrap_or(&1)).max(1);
 
                 if let Some(flow_queue) = flow_queues.get(flow_id) {
-                    for _ in 0..*weight {
+                    for _ in 0..weight {
                         if let Some(packet) = flow_queue.pop() {
                             batch.push(packet);
                         }

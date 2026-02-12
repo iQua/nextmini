@@ -872,12 +872,14 @@ impl Processor {
     /// Processes inbound packets for outbound delivery.
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
+        let fec_tree_id = packet.lossless_fec_tree_id();
 
         let reporter = self.flowstats_reporter.as_ref();
-        match self
-            .routing_table
-            .get_next_hops_by_flow(packet_flow_id, reporter)
-        {
+        match self.routing_table.get_next_hops_by_flow_and_tree(
+            packet_flow_id,
+            fec_tree_id,
+            reporter,
+        ) {
             Ok(next_hops) => {
                 if next_hops.is_empty() {
                     error!("No next hops available for flow {}.", packet_flow_id);
@@ -902,7 +904,20 @@ impl Processor {
                     self.send_packet(pkt, next_hop_id).await;
                 }
             }
-            Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
+            Err(e) => {
+                if let Some(tree_id) = fec_tree_id
+                    && e.contains("Unknown multicast tree route")
+                {
+                    warn!(
+                        flow_id = packet_flow_id,
+                        tree_id,
+                        reason = %e,
+                        "Dropping packet because multicast tree route is unknown"
+                    );
+                    return;
+                }
+                error!("Error resolving route for flow {}: {}", packet_flow_id, e);
+            }
         }
     }
 

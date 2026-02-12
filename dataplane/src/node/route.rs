@@ -7,7 +7,7 @@ use tracing::debug;
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, MULTICAST_ROUTE_FLAG,
-    RoutingTableEntry,
+    MULTITREE_STRIDE, RoutingTableEntry,
 };
 
 use crate::node::config::LocalConfig;
@@ -18,7 +18,11 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RouteKey {
     Unicast(NodeId, NodeId),
-    Multicast(NodeId, GroupId),
+    Multicast {
+        src_node_id: NodeId,
+        group_id: GroupId,
+        tree_id: u16,
+    },
 }
 
 /// The routing table in the dataplane.
@@ -43,6 +47,9 @@ pub struct RoutingTable {
 
     /// Cache for flow to route ID mappings
     cache: AHashMap<FlowId, usize>,
+
+    /// Fast path cache for multicast tree selections keyed by `(src, group, tree)`.
+    multicast_tree_cache: AHashMap<(NodeId, GroupId, u16), usize>,
 }
 
 const INLINE_HOPS: usize = 4;
@@ -50,6 +57,29 @@ pub type HopBuffer = SmallVec<[NodeId; INLINE_HOPS]>;
 
 fn encode_multicast_route_id(route_id: usize) -> usize {
     MULTICAST_ROUTE_FLAG | route_id
+}
+
+fn deterministic_multicast_route_id(group_id: GroupId, tree_id: u16) -> Option<usize> {
+    let tree = usize::from(tree_id);
+    if tree >= MULTITREE_STRIDE {
+        return None;
+    }
+    group_id
+        .checked_mul(MULTITREE_STRIDE)?
+        .checked_add(tree)
+        .filter(|route_id| *route_id < MULTICAST_ROUTE_FLAG)
+}
+
+fn tree_id_from_route_id(group_id: GroupId, route_id: usize) -> Option<u16> {
+    let base = group_id.checked_mul(MULTITREE_STRIDE)?;
+    if route_id < base {
+        return None;
+    }
+    let tree = route_id - base;
+    if tree >= MULTITREE_STRIDE {
+        return None;
+    }
+    u16::try_from(tree).ok()
 }
 
 impl RoutingTable {
@@ -64,6 +94,7 @@ impl RoutingTable {
             // rather than using the default jump hasher with randomized keys, use fixed keys instead
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
+            multicast_tree_cache: AHashMap::default(),
         }
     }
 
@@ -125,26 +156,68 @@ impl RoutingTable {
         src_node_id: NodeId,
         routes: Vec<GroupRoutingTableEntry>,
     ) {
-        let key = RouteKey::Multicast(src_node_id, group_id);
+        let existing_multicast_keys: Vec<RouteKey> = self
+            .available_routes
+            .keys()
+            .filter(|key| {
+                matches!(
+                    key,
+                    RouteKey::Multicast {
+                        src_node_id: existing_src,
+                        group_id: existing_group,
+                        ..
+                    } if *existing_src == src_node_id && *existing_group == group_id
+                )
+            })
+            .copied()
+            .collect();
 
-        if let Some(old_route_ids) = self.available_routes.remove(&key) {
-            for route_id in old_route_ids {
-                self.route_next_hop.remove(&route_id);
+        for key in existing_multicast_keys {
+            if let Some(old_route_ids) = self.available_routes.remove(&key) {
+                for route_id in old_route_ids {
+                    self.route_next_hop.remove(&route_id);
+                }
             }
         }
+        self.multicast_tree_cache
+            .retain(|(cached_src, cached_group, _), _| {
+                *cached_src != src_node_id || *cached_group != group_id
+            });
 
         for route in routes {
+            let Some(tree_id) = tree_id_from_route_id(group_id, route.route_id) else {
+                debug!(
+                    "RoutingTable: skipping multicast route {} for group {} due to invalid deterministic tree mapping",
+                    route.route_id, group_id
+                );
+                continue;
+            };
+            let Some(expected_route_id) = deterministic_multicast_route_id(group_id, tree_id)
+            else {
+                debug!(
+                    "RoutingTable: skipping multicast route {} for group {} tree {} due to deterministic route-id overflow",
+                    route.route_id, group_id, tree_id
+                );
+                continue;
+            };
+            if expected_route_id != route.route_id {
+                debug!(
+                    "RoutingTable: skipping multicast route {} for group {} tree {} (expected deterministic route id {})",
+                    route.route_id, group_id, tree_id, expected_route_id
+                );
+                continue;
+            }
+
+            let key = RouteKey::Multicast {
+                src_node_id,
+                group_id,
+                tree_id,
+            };
             let encoded_id = encode_multicast_route_id(route.route_id);
+
             self.route_next_hop
                 .insert(encoded_id, route.next_hops.clone());
-            self.available_routes
-                .entry(key)
-                .or_default()
-                .push(encoded_id);
-        }
-
-        if let Some(route_ids) = self.available_routes.get_mut(&key) {
-            route_ids.sort_unstable();
+            self.available_routes.insert(key, vec![encoded_id]);
         }
 
         // clear cache so flows pick up the refreshed routes immediately
@@ -152,7 +225,7 @@ impl RoutingTable {
     }
 
     /// Builds the routing key for a flow, incorporating multicast groups when applicable.
-    fn key_for_flow(&self, flow_id: FlowId) -> Option<RouteKey> {
+    fn key_for_flow(&self, flow_id: FlowId, tree_id: Option<u16>) -> Option<RouteKey> {
         if flow_id == flow::INVALID_FLOW_ID {
             return None;
         }
@@ -163,7 +236,11 @@ impl RoutingTable {
             if src_node == INVALID {
                 return None;
             }
-            return Some(RouteKey::Multicast(src_node, group_id));
+            return Some(RouteKey::Multicast {
+                src_node_id: src_node,
+                group_id,
+                tree_id: tree_id.unwrap_or(0),
+            });
         }
 
         self.config
@@ -173,17 +250,42 @@ impl RoutingTable {
 
     /// Selects a route id for the provided route key.
     fn select_route_for_key(&mut self, key: &RouteKey) -> Option<usize> {
-        let ids = self.available_routes.get(key)?;
-        if ids.is_empty() {
-            return None;
-        }
+        match key {
+            RouteKey::Unicast(_, _) => {
+                let ids = self.available_routes.get(key)?;
+                if ids.is_empty() {
+                    return None;
+                }
 
-        if ids.len() == 1 {
-            return Some(ids[0]);
-        }
+                if ids.len() == 1 {
+                    return Some(ids[0]);
+                }
 
-        let slot = self.jump_hasher.slot(key, ids.len() as u32);
-        Some(ids[slot as usize])
+                let slot = self.jump_hasher.slot(key, ids.len() as u32);
+                Some(ids[slot as usize])
+            }
+            RouteKey::Multicast {
+                src_node_id,
+                group_id,
+                tree_id,
+            } => {
+                let cache_key = (*src_node_id, *group_id, *tree_id);
+                if let Some(cached_route_id) = self.multicast_tree_cache.get(&cache_key)
+                    && self.route_next_hop.contains_key(cached_route_id)
+                {
+                    return Some(*cached_route_id);
+                }
+
+                let route_id = deterministic_multicast_route_id(*group_id, *tree_id)?;
+                let encoded_id = encode_multicast_route_id(route_id);
+                if self.route_next_hop.contains_key(&encoded_id) {
+                    self.multicast_tree_cache.insert(cache_key, encoded_id);
+                    Some(encoded_id)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     /// Returns the next hops for a flow, supporting multicast fan-out.
@@ -192,25 +294,43 @@ impl RoutingTable {
         flow_id: FlowId,
         flowstats_reporter: Option<&FlowStatsReporterHandle>,
     ) -> Result<HopBuffer, String> {
+        self.get_next_hops_by_flow_and_tree(flow_id, None, flowstats_reporter)
+    }
+
+    /// Returns the next hops for a flow, optionally forcing a multicast tree id.
+    pub fn get_next_hops_by_flow_and_tree(
+        &mut self,
+        flow_id: FlowId,
+        tree_id: Option<u16>,
+        flowstats_reporter: Option<&FlowStatsReporterHandle>,
+    ) -> Result<HopBuffer, String> {
         if flow_id == flow::INVALID_FLOW_ID {
             // the flow ID cannot be successfully extracted, no routing is possible
             return Err("No route can be selected.".to_string());
         }
 
-        // checks the cache first
-        if let Some(route_id) = self.cache.get(&flow_id)
+        let key = self
+            .key_for_flow(flow_id, tree_id)
+            .ok_or_else(|| "Unable to build route key for flow".to_string())?;
+
+        if matches!(key, RouteKey::Unicast(_, _))
+            && let Some(route_id) = self.cache.get(&flow_id)
             && let Some(next_hops) = self.route_next_hop.get(route_id)
         {
             return Self::copy_next_hops(*route_id, next_hops);
         }
 
-        let key = self
-            .key_for_flow(flow_id)
-            .ok_or_else(|| "Unable to build route key for flow".to_string())?;
-
-        let route_id = self
-            .select_route_for_key(&key)
-            .ok_or_else(|| "No route ids available for route key".to_string())?;
+        let route_id = self.select_route_for_key(&key).ok_or_else(|| match key {
+            RouteKey::Multicast {
+                src_node_id,
+                group_id,
+                tree_id,
+            } => format!(
+                "Unknown multicast tree route for src_node_id={}, group_id={}, tree_id={}",
+                src_node_id, group_id, tree_id
+            ),
+            RouteKey::Unicast(_, _) => "No route ids available for route key".to_string(),
+        })?;
 
         self.report_route_assignment(flow_id, route_id, flowstats_reporter);
 
@@ -227,7 +347,9 @@ impl RoutingTable {
                 .unwrap_or(0)
         );
 
-        self.cache.insert(flow_id, route_id);
+        if matches!(key, RouteKey::Unicast(_, _)) {
+            self.cache.insert(flow_id, route_id);
+        }
 
         let hops = self
             .route_next_hop
@@ -350,6 +472,10 @@ mod tests {
         }
     }
 
+    fn multicast_route_id(group_id: GroupId, tree_id: u16) -> usize {
+        deterministic_multicast_route_id(group_id, tree_id).expect("deterministic multicast route")
+    }
+
     #[test]
     fn returns_multicast_next_hops_from_group_routes() {
         let config = make_config(2);
@@ -365,7 +491,7 @@ mod tests {
             7,
             1,
             vec![GroupRoutingTableEntry {
-                route_id: 7,
+                route_id: multicast_route_id(7, 0),
                 next_hops: vec![3, 4],
                 src_node_id: 1,
                 group_id: 7,
@@ -408,7 +534,7 @@ mod tests {
             9,
             1,
             vec![GroupRoutingTableEntry {
-                route_id: 9,
+                route_id: multicast_route_id(9, 0),
                 next_hops: vec![5],
                 src_node_id: 1,
                 group_id: 9,
@@ -424,7 +550,7 @@ mod tests {
             9,
             1,
             vec![GroupRoutingTableEntry {
-                route_id: 9,
+                route_id: multicast_route_id(9, 0),
                 next_hops: vec![6],
                 src_node_id: 1,
                 group_id: 9,
@@ -435,6 +561,92 @@ mod tests {
             .get_next_hops_by_flow(flow_id, None)
             .expect("updated multicast hop");
         assert_eq!(&updated[..], &[6]);
+    }
+
+    #[test]
+    fn multicast_lookup_respects_explicit_tree_id() {
+        let config = make_config(2);
+        let mut table = RoutingTable::new(config.clone());
+
+        let group_ip = Ipv4Addr::new(10, 0, 0, 181);
+        table.install_group_directory(vec![GroupDirectoryEntry {
+            group_id: 12,
+            group_ip,
+        }]);
+
+        table.install_group_routes(
+            12,
+            1,
+            vec![
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(12, 0),
+                    next_hops: vec![5],
+                    src_node_id: 1,
+                    group_id: 12,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(12, 1),
+                    next_hops: vec![6, 7],
+                    src_node_id: 1,
+                    group_id: 12,
+                },
+            ],
+        );
+
+        let flow_id = make_flow_id(
+            Ipv4Addr::new(10, 0, 0, 1),
+            group_ip,
+            4322,
+            config.user_space_server_port,
+        );
+
+        let default_tree_hops = table
+            .get_next_hops_by_flow(flow_id, None)
+            .expect("default tree should resolve");
+        assert_eq!(&default_tree_hops[..], &[5]);
+
+        let explicit_tree_hops = table
+            .get_next_hops_by_flow_and_tree(flow_id, Some(1), None)
+            .expect("explicit tree should resolve");
+        assert_eq!(&explicit_tree_hops[..], &[6, 7]);
+    }
+
+    #[test]
+    fn multicast_lookup_hard_fails_on_unknown_tree() {
+        let config = make_config(2);
+        let mut table = RoutingTable::new(config.clone());
+
+        let group_ip = Ipv4Addr::new(10, 0, 0, 182);
+        table.install_group_directory(vec![GroupDirectoryEntry {
+            group_id: 13,
+            group_ip,
+        }]);
+
+        table.install_group_routes(
+            13,
+            1,
+            vec![GroupRoutingTableEntry {
+                route_id: multicast_route_id(13, 0),
+                next_hops: vec![9],
+                src_node_id: 1,
+                group_id: 13,
+            }],
+        );
+
+        let flow_id = make_flow_id(
+            Ipv4Addr::new(10, 0, 0, 1),
+            group_ip,
+            4323,
+            config.user_space_server_port,
+        );
+
+        let err = table
+            .get_next_hops_by_flow_and_tree(flow_id, Some(3), None)
+            .expect_err("unknown tree must hard fail");
+        assert!(
+            err.contains("Unknown multicast tree route"),
+            "expected hard drop reason, got {err}"
+        );
     }
 
     #[test]
@@ -499,7 +711,7 @@ mod tests {
                 1,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 100,
+                    route_id: multicast_route_id(1, 0),
                     next_hops: vec![2, 3],
                     src_node_id: 1,
                     group_id: 1,
@@ -507,10 +719,14 @@ mod tests {
             );
 
             // Verify the route was installed
-            let key = RouteKey::Multicast(1, 1);
+            let key = RouteKey::Multicast {
+                src_node_id: 1,
+                group_id: 1,
+                tree_id: 0,
+            };
             assert!(table.available_routes.contains_key(&key));
             assert_eq!(table.available_routes.get(&key).unwrap().len(), 1);
-            let encoded = encode_multicast_route_id(100);
+            let encoded = encode_multicast_route_id(multicast_route_id(1, 0));
             assert_eq!(table.route_next_hop.get(&encoded).unwrap(), &vec![2, 3]);
         }
 
@@ -530,7 +746,7 @@ mod tests {
                 2,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 200,
+                    route_id: multicast_route_id(2, 0),
                     next_hops: vec![2, 3],
                     src_node_id: 1,
                     group_id: 2,
@@ -542,7 +758,7 @@ mod tests {
                 2,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 201,
+                    route_id: multicast_route_id(2, 1),
                     next_hops: vec![2, 4],
                     src_node_id: 1,
                     group_id: 2,
@@ -550,13 +766,18 @@ mod tests {
             );
 
             // Old route should be removed
-            assert!(table.route_next_hop.get(&200).is_none());
+            let old_encoded = encode_multicast_route_id(multicast_route_id(2, 0));
+            assert!(table.route_next_hop.get(&old_encoded).is_none());
 
             // New route should be active
-            let encoded = encode_multicast_route_id(201);
+            let encoded = encode_multicast_route_id(multicast_route_id(2, 1));
             assert_eq!(table.route_next_hop.get(&encoded).unwrap(), &vec![2, 4]);
 
-            let key = RouteKey::Multicast(1, 2);
+            let key = RouteKey::Multicast {
+                src_node_id: 1,
+                group_id: 2,
+                tree_id: 1,
+            };
             let route_ids = table.available_routes.get(&key).unwrap();
             assert_eq!(route_ids.len(), 1);
             assert_eq!(route_ids[0], encoded);
@@ -578,7 +799,7 @@ mod tests {
                 4,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 400,
+                    route_id: multicast_route_id(4, 0),
                     next_hops: vec![],
                     src_node_id: 1,
                     group_id: 4,
@@ -623,7 +844,7 @@ mod tests {
                 10,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 1000,
+                    route_id: multicast_route_id(10, 0),
                     next_hops: vec![2, 3],
                     src_node_id: 1,
                     group_id: 10,
@@ -635,7 +856,7 @@ mod tests {
                 20,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 2000,
+                    route_id: multicast_route_id(20, 0),
                     next_hops: vec![4, 5],
                     src_node_id: 1,
                     group_id: 20,
@@ -731,9 +952,16 @@ mod tests {
                 config.user_space_server_port,
             );
 
-            let key = table.key_for_flow(flow_id);
+            let key = table.key_for_flow(flow_id, None);
 
-            assert_eq!(key, Some(RouteKey::Multicast(1, 100)));
+            assert_eq!(
+                key,
+                Some(RouteKey::Multicast {
+                    src_node_id: 1,
+                    group_id: 100,
+                    tree_id: 0
+                })
+            );
         }
 
         #[test]
@@ -753,13 +981,13 @@ mod tests {
                 1,
                 vec![
                     GroupRoutingTableEntry {
-                        route_id: 2001,
+                        route_id: multicast_route_id(200, 1),
                         next_hops: vec![3],
                         src_node_id: 1,
                         group_id: 200,
                     },
                     GroupRoutingTableEntry {
-                        route_id: 2002,
+                        route_id: multicast_route_id(200, 2),
                         next_hops: vec![4],
                         src_node_id: 1,
                         group_id: 200,
@@ -767,14 +995,24 @@ mod tests {
                 ],
             );
 
-            let key = RouteKey::Multicast(1, 200);
+            let key = RouteKey::Multicast {
+                src_node_id: 1,
+                group_id: 200,
+                tree_id: 1,
+            };
             let route_ids = table.available_routes.get(&key).unwrap();
-
-            assert_eq!(route_ids.len(), 2);
-            let enc1 = encode_multicast_route_id(2001);
-            let enc2 = encode_multicast_route_id(2002);
-            assert!(route_ids.contains(&enc1));
-            assert!(route_ids.contains(&enc2));
+            assert_eq!(route_ids.len(), 1);
+            let enc1 = encode_multicast_route_id(multicast_route_id(200, 1));
+            assert_eq!(route_ids[0], enc1);
+            let key_tree_2 = RouteKey::Multicast {
+                src_node_id: 1,
+                group_id: 200,
+                tree_id: 2,
+            };
+            let route_ids_tree_2 = table.available_routes.get(&key_tree_2).unwrap();
+            assert_eq!(route_ids_tree_2.len(), 1);
+            let enc2 = encode_multicast_route_id(multicast_route_id(200, 2));
+            assert_eq!(route_ids_tree_2[0], enc2);
         }
 
         #[test]
@@ -802,7 +1040,7 @@ mod tests {
                 500,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 5001,
+                    route_id: multicast_route_id(500, 0),
                     next_hops: vec![8, 9],
                     src_node_id: 1,
                     group_id: 500,
@@ -845,7 +1083,7 @@ mod tests {
                 999,
                 1,
                 vec![GroupRoutingTableEntry {
-                    route_id: 9999,
+                    route_id: multicast_route_id(999, 0),
                     next_hops: vec![10, 11, 12],
                     src_node_id: 1,
                     group_id: 999,
@@ -874,19 +1112,25 @@ mod tests {
         }
 
         #[test]
-        fn select_route_for_key_distributes_across_multiple_routes() {
+        fn select_route_for_multicast_tree_is_deterministic_and_cached() {
             let config = make_config(1);
             let mut table = RoutingTable::new(config);
 
-            let key = RouteKey::Multicast(1, 200);
-            table.available_routes.insert(key, vec![2001, 2002, 2003]);
+            let key = RouteKey::Multicast {
+                src_node_id: 1,
+                group_id: 200,
+                tree_id: 3,
+            };
+            let encoded = encode_multicast_route_id(multicast_route_id(200, 3));
+            table.route_next_hop.insert(encoded, vec![42]);
 
             // Call multiple times to verify deterministic selection
             let first = table.select_route_for_key(&key);
             let second = table.select_route_for_key(&key);
 
             assert_eq!(first, second, "Same key should select same route");
-            assert!([2001, 2002, 2003].contains(&first.unwrap()));
+            assert_eq!(first, Some(encoded));
+            assert_eq!(table.multicast_tree_cache.get(&(1, 200, 3)), Some(&encoded));
         }
         #[test]
         fn pick_single_hop_chooses_from_multiple() {

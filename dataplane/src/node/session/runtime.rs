@@ -39,6 +39,11 @@ pub struct SenderConfig {
     /// Optional FEC declaration. When present, sender uses strict FEC-only negotiation
     /// and switches retirement semantics from cumulative chunk ACKs to per-block FEC status.
     pub fec_manifest: Option<FecManifest>,
+    /// Optional multi-tree width for deterministic FEC symbol scheduling.
+    ///
+    /// `None` preserves legacy single-tree semantics (`tree_id = 0`).
+    /// `Some(num_trees)` enables multi-tree symbol assignment and requires `num_trees >= 2`.
+    pub fec_num_trees: Option<u16>,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
@@ -340,6 +345,7 @@ enum FecPreflightError {
     DisabledByConfig,
     CapabilityRequirementDisabled,
     UnknownScheme { scheme: u8 },
+    InvalidTreeCount { num_trees: u16 },
     SymbolsPerBlockOutOfBounds { value: u16, min: u16, max: u16 },
     SymbolSizeOutOfBounds { value: u16, min: u16, max: u16 },
     ChunkSizeExceedsSymbolSize { chunk_size: usize, symbol_size: u16 },
@@ -354,6 +360,12 @@ impl std::fmt::Display for FecPreflightError {
                 "fec_require_capability=false is unsupported with strict no-fallback sessions"
             ),
             Self::UnknownScheme { scheme } => write!(f, "unknown fec scheme {scheme} requested"),
+            Self::InvalidTreeCount { num_trees } => {
+                write!(
+                    f,
+                    "multi-tree fec requires num_trees >= 2 (got {num_trees})"
+                )
+            }
             Self::SymbolsPerBlockOutOfBounds { value, min, max } => write!(
                 f,
                 "fec symbols_per_block {value} out of bounds [{min}, {max}]"
@@ -390,6 +402,11 @@ fn validate_fec_sender_config(
         return Err(FecPreflightError::UnknownScheme {
             scheme: manifest.scheme,
         });
+    }
+    if let Some(num_trees) = sender_cfg.fec_num_trees
+        && num_trees < 2
+    {
+        return Err(FecPreflightError::InvalidTreeCount { num_trees });
     }
 
     let (symbols_min, symbols_max) = runtime_config.fec_symbols_per_block_bounds();
@@ -448,6 +465,7 @@ mod tests {
             total_bytes: 128,
             source_buffer: Bytes::from(vec![0xAB; 64]),
             fec_manifest: manifest,
+            fec_num_trees: None,
             ready_grace_ms: 1,
             topology_ready: None,
         }
@@ -503,5 +521,23 @@ mod tests {
 
         let result = validate_fec_sender_config(&runtime, &sender_cfg);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn fec_preflight_rejects_multitree_with_single_tree() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+        sender_cfg.fec_num_trees = Some(1);
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "multi-tree mode must require num_trees >= 2"
+        );
     }
 }

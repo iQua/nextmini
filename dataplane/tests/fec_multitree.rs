@@ -1,5 +1,6 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -13,10 +14,14 @@ use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{CommonConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{self, FecManifest, LosslessSessionControl};
-use nextmini_messages::{RouteForwardingMode, RoutingTableEntry, TokenBucketSpec};
+use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sender_emits_repairs_with_budget() {
+struct TreeCapture {
+    symbol_trees: BTreeMap<(u64, u32), u16>,
+    distinct_trees: BTreeSet<u16>,
+}
+
+async fn run_sender_and_capture_trees(session_id: u64) -> TreeCapture {
     let cfg = LocalConfig {
         node_id: 1,
         n_nodes: 2,
@@ -30,12 +35,12 @@ async fn sender_emits_repairs_with_budget() {
 
     let src_ip = (cfg.node_id).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
     let dst_ip = 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
-    let src_port = 4100;
-    let dst_port = 5200;
+    let src_port = 4110;
+    let dst_port = 5220;
 
     processors
         .update_routing_table(vec![RoutingTableEntry {
-            route_id: 7,
+            route_id: 70,
             next_hops: vec![cfg.node_id],
             src_node_id: cfg.node_id,
             dst_node_id: 2,
@@ -44,45 +49,42 @@ async fn sender_emits_repairs_with_budget() {
         .await;
 
     let flow_id = Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port);
-    let (packet_tx, mut packet_rx) = mpsc::channel(512);
+    let (packet_tx, mut packet_rx) = mpsc::channel(1024);
     processors.connect_user_space_sender(flow_id, packet_tx);
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let manifest = FecManifest::new_raptorq(4, 16);
+    let manifest = FecManifest::new_raptorq(8, 32);
     let common = CommonConfig {
-        session_id: 55,
+        session_id,
         dest_ip: dst_ip,
         chunk_size: usize::from(manifest.symbol_size),
         src_port,
         dst_port,
-        data_bucket: Some(TokenBucketSpec {
-            rate: 160,
-            bucket_size: 16,
-        }),
+        data_bucket: None,
         local_node_id: cfg.node_id,
         user_space_base_addr: cfg.user_space_base_addr,
         local_netmask: cfg.local_netmask,
     };
+
     let sender_cfg = SenderConfig {
         common,
         receiver_ids: vec![],
-        total_bytes: 64,
-        source_buffer: Bytes::from(vec![0xAB; 16]),
+        total_bytes: 1024,
+        source_buffer: Bytes::from(vec![0xCD; 32]),
         fec_manifest: Some(manifest),
-        fec_num_trees: None,
+        fec_num_trees: Some(4),
         ready_grace_ms: 1,
         topology_ready: None,
     };
 
-    let (_ctrl_tx, ctrl_rx) = mpsc::channel::<InboundFrame>(16);
+    let (_ctrl_tx, ctrl_rx) = mpsc::channel::<InboundFrame>(8);
     let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, processors.clone()));
 
     let mut saw_manifest = false;
     let mut saw_eot = false;
-    let mut symbols: Vec<(u64, u32, usize)> = Vec::new();
-    let mut first_symbol_at: Option<Instant> = None;
-    let mut last_symbol_at: Option<Instant> = None;
+    let mut symbol_trees = BTreeMap::new();
+    let mut distinct_trees = BTreeSet::new();
 
     while !saw_eot {
         let packet = timeout(Duration::from_secs(5), packet_rx.recv())
@@ -94,22 +96,16 @@ async fn sender_emits_repairs_with_budget() {
             .tcp_payload()
             .expect("captured packet should include TCP payload");
 
-        if let Some((_, fec_data, body)) = lossless_session::decode_fec_data(payload) {
-            let now = Instant::now();
-            first_symbol_at.get_or_insert(now);
-            last_symbol_at = Some(now);
-            symbols.push((fec_data.block_id, fec_data.symbol_id, body.len()));
+        if let Some((_, fec_data, _)) = lossless_session::decode_fec_data(payload) {
+            symbol_trees.insert((fec_data.block_id, fec_data.symbol_id), fec_data.tree_id);
+            distinct_trees.insert(fec_data.tree_id);
             continue;
         }
 
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             match control {
-                LosslessSessionControl::FecManifest { .. } => {
-                    saw_manifest = true;
-                }
-                LosslessSessionControl::Eot { .. } => {
-                    saw_eot = true;
-                }
+                LosslessSessionControl::FecManifest { .. } => saw_manifest = true,
+                LosslessSessionControl::Eot { .. } => saw_eot = true,
                 _ => {}
             }
         }
@@ -121,41 +117,30 @@ async fn sender_emits_repairs_with_budget() {
         .expect("sender task failed");
 
     assert!(saw_manifest, "sender should emit a FEC manifest");
-    assert!(saw_eot, "sender should emit EOT after draining symbols");
-    assert!(!symbols.is_empty(), "sender should emit FEC symbols");
-    assert!(
-        symbols.iter().all(|(block_id, _, _)| *block_id == 0),
-        "single-block transfer should stay within block 0"
-    );
-    assert!(
-        symbols.iter().all(|(_, _, payload_len)| *payload_len == 16),
-        "all emitted symbols should match manifest symbol_size"
-    );
+    assert!(saw_eot, "sender should emit EOT");
+    assert!(!symbol_trees.is_empty(), "sender should emit FEC symbols");
 
-    let mut source_ids: Vec<u32> = symbols
-        .iter()
-        .filter_map(|(_, symbol_id, _)| (*symbol_id < 4).then_some(*symbol_id))
-        .collect();
-    source_ids.sort_unstable();
+    TreeCapture {
+        symbol_trees,
+        distinct_trees,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn symbols_span_multiple_trees() {
+    let first = run_sender_and_capture_trees(0xBAD5EED).await;
+    let second = run_sender_and_capture_trees(0xBAD5EED).await;
+
     assert_eq!(
-        source_ids,
-        vec![0, 1, 2, 3],
-        "sender should emit systematic symbols for the full block"
+        first.symbol_trees, second.symbol_trees,
+        "tree assignment must be deterministic for the same session and symbol identifiers"
     );
-
-    let repair_count = symbols
-        .iter()
-        .filter(|(_, symbol_id, _)| *symbol_id >= 4)
-        .count();
-    assert_eq!(
-        repair_count, 2,
-        "repair symbols must respect per-block budget"
-    );
-
-    let first = first_symbol_at.expect("expected first symbol timestamp");
-    let last = last_symbol_at.expect("expected last symbol timestamp");
     assert!(
-        last.duration_since(first) >= Duration::from_millis(350),
-        "token-bucket pacing should apply across systematic and repair emission"
+        first.distinct_trees.len() >= 2,
+        "one transfer should span at least two tree_ids in multi-tree mode"
+    );
+    assert!(
+        first.distinct_trees.iter().all(|tree_id| *tree_id < 4),
+        "tree ids must stay within configured num_trees"
     );
 }

@@ -301,6 +301,7 @@ impl Dataplane {
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
                     fec_manifest,
+                    fec_num_trees: None,
                     ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
                 };

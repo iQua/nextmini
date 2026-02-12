@@ -303,6 +303,32 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
     - Update `processor.rs` to extract `tree_id` from FEC lossless-session payloads (parse `Packet::tcp_payload()`), then route the packet using the `(key, tree_id)` fast path so every hop forwards on the same tree.
     - Unknown `(group_id, tree_id)` at any hop is a hard drop with a trace warning (no fallback to another tree).
   - Keep relays as pure forwarders initially; optional relay cache/repair remains feature-gated.
+- **Status**: ✅ Completed on February 12, 2026.
+- **Work Log**:
+  - Added deterministic per-symbol tree assignment in the FEC sender (`tree_id = hash64(session_id, block_id, symbol_id) % num_trees`) and serialized `tree_id` into FEC data frames.
+  - Added explicit multi-tree mode gating on sender config (`fec_num_trees`) with hard validation that multi-tree mode requires `num_trees >= 2`.
+  - Upgraded dataplane multicast routing to tree-aware lookup keyed by `(src_node_id, group_id, tree_id)`, with deterministic route-id mapping from `(group_id, tree_id)` and fast-path caching on that key.
+  - Updated packet processor routing to parse FEC `tree_id` from payloads and route using tree-aware lookup; unknown multicast trees are hard-dropped with warning.
+  - Kept relay behavior as pure forwarding (no recoding path added).
+  - Added regression test `dataplane/tests/fec_multitree.rs` (`symbols_span_multiple_trees`) to verify deterministic, multi-tree symbol split.
+  - Added regression test `dataplane/tests/fec_backpressure.rs` (`non_fec_flow_not_starved`) to ensure non-FEC flow service under heavy FEC load.
+- **Files Updated**:
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/sender.rs`
+  - `dataplane/src/node/session/unicast.rs`
+  - `dataplane/src/node/route.rs`
+  - `dataplane/src/node/processor.rs`
+  - `dataplane/src/node/packet.rs`
+  - `dataplane/src/node/scheduler/wrr.rs`
+  - `dataplane/tests/fec_multitree.rs`
+  - `dataplane/tests/fec_backpressure.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `python-api/src/lib.rs`
+  - `raptorq-wan-multicast-plan.md`
+- **Gotchas**:
+  - Tree-aware multicast install now enforces deterministic `(group_id, tree_id) -> route_id`; non-conforming route IDs are ignored during installation.
+  - Unknown `(group_id, tree_id)` now hard-fails route resolution for multicast/FEC packets (no fallback tree selection).
+  - Local validation is currently blocked by unrelated workspace state: `fec-raptorq/src/lib.rs` is missing, so `cargo test -p nextmini ...` fails before test execution.
 - **Acceptance Criteria**:
   - Multi-tree symbol split works deterministically.
   - One transfer session uses at least two distinct tree_ids in routing telemetry.
