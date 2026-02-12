@@ -9,11 +9,11 @@
 
 #![allow(missing_docs)]
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
 use fec_raptorq::decoder::{InactivationDecoder, ReceivedSymbol};
-use fec_raptorq::gf256::{gf256_add_slice, gf256_addmul_slice, gf256_mul_slice, Gf256};
-use fec_raptorq::linalg::{row_scale_add, row_xor, DenseRow, GaussianSolver};
+use fec_raptorq::gf256::{Gf256, gf256_add_slice, gf256_addmul_slice, gf256_mul_slice};
+use fec_raptorq::linalg::{DenseRow, GaussianSolver, row_scale_add, row_xor};
 use fec_raptorq::systematic::SystematicEncoder;
 
 // ============================================================================
