@@ -167,6 +167,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 
 ### T8: Source-Side FEC Sender Integration
 - `depends_on: [T6, T7]`
+- **Status**: ✅ Completed on February 12, 2026.
 - **Location**: `dataplane/src/node/session/sender.rs`, `dataplane/src/node/session/runtime.rs`, `dataplane/tests/fec_sender.rs`
 - **Description**:
   - Implement source-only RaptorQ mode with repair-budget bounds, pacing, and topology/ready gating reuse.
@@ -369,6 +370,21 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `raptorq-wan-multicast-plan.md`
 - Gotchas:
   - The adapter is intentionally staged but unused by sender/receiver runtime paths until T8/T9, so module-level dead-code suppression is required to keep warning noise local.
+
+## T8 Work Log (2026-02-12)
+- Work log:
+  - Integrated `session::fec` adapter into sender-side FEC emission by materializing source chunks into per-block systematic symbols and bounded repair symbols.
+  - Added source-only FEC sender queueing for `(block_id, symbol_id)` emission and paced every FEC symbol through the existing token-bucket path.
+  - Added FEC-specific retirement semantics in sender state: inflight tracking/retirement now uses per-block progress from `FecStatus` and ignores cumulative `Ack { up_to }` in FEC mode; non-FEC ACK semantics remain unchanged.
+  - Added regression test `dataplane/tests/fec_sender.rs` that exercises the live sender + processor pipeline and asserts systematic+repair emission, per-block repair budget cap, and pacing behavior.
+  - Ran required validation command: `cargo test -p nextmini --test fec_sender -- --exact sender_emits_repairs_with_budget`.
+- Files modified:
+  - `dataplane/src/node/session/sender.rs`
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `raptorq-wan-multicast-plan.md`
+- Gotchas:
+  - `fec-raptorq` expects fixed-size source symbols; sender-side FEC integration pads source chunks up to manifest `symbol_size` and aborts strict FEC preflight if a chunk exceeds the configured symbol size.
 
 ## T4 Work Log (2026-02-12)
 - Work log:

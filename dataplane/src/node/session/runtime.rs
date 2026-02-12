@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use nextmini_messages::TokenBucketSpec;
+use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{Command, InboundFrame, SessionId};
@@ -34,6 +35,9 @@ pub struct SenderConfig {
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_buffer: Bytes,
+    /// Optional FEC declaration. When present, sender uses strict FEC-only negotiation
+    /// and switches retirement semantics from cumulative chunk ACKs to per-block FEC status.
+    pub fec_manifest: Option<FecManifest>,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
@@ -45,6 +49,8 @@ pub struct ReceiverConfig {
     pub source_node_id: usize,
     pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Advertised FEC capabilities for sender preflight compatibility checks.
+    pub fec_capabilities: FecCapabilities,
 }
 
 /// Handle for communicating with the lossless runtime actor.

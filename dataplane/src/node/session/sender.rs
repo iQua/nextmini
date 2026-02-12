@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
@@ -6,13 +6,17 @@ use bytes::{Bytes, BytesMut};
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, trace, warn};
 
-use nextmini_messages::lossless_session::{self, LosslessSessionControl};
+use nextmini_messages::lossless_session::{
+    self, FecCapabilities, FecManifest, LOSSLESS_SESSION_BASE_VERSION,
+    LOSSLESS_SESSION_FEC_VERSION, LosslessSessionControl,
+};
 
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
+use crate::node::session::fec;
 use crate::node::session::runtime::{CommonConfig, SenderConfig};
 use crate::node::{NodeId, NodeIdExt};
 
@@ -20,6 +24,9 @@ pub(super) const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
 const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
+const FEC_REPAIR_BUDGET_DIVISOR: usize = 2;
+const FEC_MAX_REPAIR_BUDGET_PER_BLOCK: usize = 64;
+const FEC_BLOCK_SEED_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
 /// to control frames emitted by receivers.
@@ -42,6 +49,7 @@ pub async fn run(
         total_bytes,
         total_chunks,
         receivers = cfg.receiver_ids.len(),
+        fec = cfg.fec_manifest.is_some(),
         "Lossless sender started"
     );
 
@@ -88,7 +96,18 @@ pub async fn run(
             progressed = true;
         }
 
-        if state.ready_for_data()
+        if state.is_fec_session() {
+            if state.ready_for_data() && state.maybe_queue_next_fec_block(&mut chunk_source) {
+                progressed = true;
+            }
+            if state.ready_for_data()
+                && state
+                    .try_send_next_fec_symbol(&mut data_pacer, &processors)
+                    .await
+            {
+                progressed = true;
+            }
+        } else if state.ready_for_data()
             && !chunk_source.finished()
             && state.inflight_len() < state.window_limit()
         {
@@ -109,7 +128,6 @@ pub async fn run(
                         "Lossless sender: sending data chunk."
                     );
                     data_pacer.wait_for(state.common.chunk_size).await;
-                    // sends the data chunk to the processors
                     state.send_data_chunk(chunk, &processors).await;
                     progressed = true;
                 }
@@ -125,12 +143,20 @@ pub async fn run(
         }
 
         if state.is_complete() {
-            info!(
-                session_id = sid,
-                bytes_sent = state.bytes_sent,
-                chunks_sent = state.primary_chunks,
-                "Lossless sender finished with lossless delivery guarantees"
-            );
+            if state.aborted {
+                warn!(
+                    session_id = sid,
+                    reason = state.abort_reason.as_deref().unwrap_or("unknown"),
+                    "Lossless sender aborted"
+                );
+            } else {
+                info!(
+                    session_id = sid,
+                    bytes_sent = state.bytes_sent,
+                    chunks_sent = state.primary_chunks,
+                    "Lossless sender finished with lossless delivery guarantees"
+                );
+            }
             break;
         }
 
@@ -153,14 +179,32 @@ pub async fn run(
 /// Encapsulates all mutable sender-side state (window, inflight accounting,
 /// pacing, manifest timing, etc.). Keeping the logic centralized makes the event
 /// loop above easier to read and test.
+#[derive(Debug)]
+struct PendingFecSymbol {
+    block_id: u64,
+    symbol_id: u32,
+    payload: Bytes,
+    is_repair: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FecBlockStats {
+    source_symbols: usize,
+    repair_budget: usize,
+    repairs_sent: usize,
+}
+
 struct SenderState {
     session_id: u64,
     common: CommonConfig,
+    fec_manifest: Option<FecManifest>,
     receiver_count: usize,
     window: usize,
     total_chunks: u64,
     total_bytes: u64,
     receiver_progress: BTreeMap<usize, u64>,
+    fec_capabilities: BTreeMap<usize, FecCapabilities>,
+    fec_incompatible_peers: HashSet<usize>,
     retired_up_to: u64,
     ready_nodes: HashSet<usize>,
     topology_gate_open: bool,
@@ -173,7 +217,12 @@ struct SenderState {
     manifest_interval: Duration,
     source_drained: bool,
     eot_sent: bool,
+    aborted: bool,
+    abort_reason: Option<String>,
     primary_chunks: u64,
+    fec_blocks_sent: u64,
+    fec_pending_symbols: VecDeque<PendingFecSymbol>,
+    fec_block_stats: BTreeMap<u64, FecBlockStats>,
     bytes_sent: u64,
     src_ip: Ipv4Addr,
     dst_ip: Ipv4Addr,
@@ -190,6 +239,7 @@ impl SenderState {
     /// and initializing per-receiver progress counters.
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
+        let fec_manifest = cfg.fec_manifest;
         let receiver_count = cfg.receiver_ids.len();
 
         let ready_gate_open = receiver_count == 0;
@@ -216,11 +266,14 @@ impl SenderState {
         let mut state = Self {
             session_id: common.session_id,
             common,
+            fec_manifest,
             receiver_count,
             window,
             total_chunks,
             total_bytes: cfg.total_bytes,
             receiver_progress,
+            fec_capabilities: BTreeMap::new(),
+            fec_incompatible_peers: HashSet::new(),
             retired_up_to: 0,
             ready_nodes: HashSet::new(),
             topology_gate_open,
@@ -233,7 +286,12 @@ impl SenderState {
             manifest_interval: Duration::from_millis(MANIFEST_RETRY_INTERVAL_MS),
             source_drained: total_chunks == 0,
             eot_sent: false,
+            aborted: false,
+            abort_reason: None,
             primary_chunks: 0,
+            fec_blocks_sent: 0,
+            fec_pending_symbols: VecDeque::new(),
+            fec_block_stats: BTreeMap::new(),
             bytes_sent: 0,
             src_ip,
             dst_ip,
@@ -249,9 +307,17 @@ impl SenderState {
 
     /// Emit a MANIFEST describing the file transfer so receivers can prime their state.
     async fn send_manifest(&mut self, processors: &ProcessorHandle) {
-        let manifest = LosslessSessionControl::Manifest {
-            chunk_size: self.common.chunk_size as u32,
-            total_bytes: self.total_bytes,
+        let manifest = if let Some(fec) = self.fec_manifest {
+            LosslessSessionControl::FecManifest {
+                chunk_size: self.common.chunk_size as u32,
+                total_bytes: self.total_bytes,
+                fec,
+            }
+        } else {
+            LosslessSessionControl::Manifest {
+                chunk_size: self.common.chunk_size as u32,
+                total_bytes: self.total_bytes,
+            }
         };
         self.send_control(&manifest, processors).await;
         self.manifest_last_sent = Instant::now();
@@ -261,6 +327,7 @@ impl SenderState {
         self.manifest_sent = true;
         info!(
             session_id = self.session_id,
+            fec = self.fec_manifest.is_some(),
             src = %self.src_ip,
             dst = %self.dst_ip,
             dst_port = self.dst_port,
@@ -273,22 +340,80 @@ impl SenderState {
 
     /// Determines whether the sender is allowed to transmit data frames.
     fn ready_for_data(&self) -> bool {
-        self.topology_gate_open && self.ready_gate_open && !self.source_drained
+        self.topology_gate_open
+            && self.ready_gate_open
+            && !self.aborted
+            && self.fec_preflight_satisfied()
+            && (!self.source_drained || !self.fec_pending_symbols.is_empty())
+    }
+
+    #[inline]
+    fn is_fec_session(&self) -> bool {
+        self.fec_manifest.is_some()
+    }
+
+    #[inline]
+    fn control_protocol_version(&self) -> u8 {
+        if self.is_fec_session() {
+            LOSSLESS_SESSION_FEC_VERSION
+        } else {
+            LOSSLESS_SESSION_BASE_VERSION
+        }
+    }
+
+    fn has_all_fec_capabilities(&self) -> bool {
+        self.receiver_progress
+            .keys()
+            .all(|peer| self.fec_capabilities.contains_key(peer))
+    }
+
+    fn fec_preflight_satisfied(&self) -> bool {
+        if !self.is_fec_session() {
+            return true;
+        }
+        self.fec_incompatible_peers.is_empty() && self.has_all_fec_capabilities()
     }
 
     /// Ensures the window never collapses to zero (which would deadlock the loop).
     fn window_limit(&self) -> usize {
+        if let Some(manifest) = self.fec_manifest {
+            let symbols_per_block = usize::from(manifest.symbols_per_block.max(1));
+            return self.window.div_ceil(symbols_per_block).max(1);
+        }
         self.window.max(1)
     }
 
-    /// Returns the number of outstanding chunks still waiting for ACKs.
+    /// Returns the number of outstanding transfer units waiting for receiver retirement.
+    /// Non-FEC sessions track chunks; FEC sessions track blocks.
     fn inflight_len(&self) -> usize {
-        self.outstanding_chunks() as usize
+        self.outstanding_units() as usize
     }
 
-    /// Returns the number of chunks currently outside of the retired window.
-    fn outstanding_chunks(&self) -> u64 {
-        self.primary_chunks.saturating_sub(self.retired_up_to)
+    /// Returns the number of chunks or blocks currently outside of the retired window.
+    fn outstanding_units(&self) -> u64 {
+        if self.is_fec_session() {
+            self.fec_blocks_sent.saturating_sub(self.retired_up_to)
+        } else {
+            self.primary_chunks.saturating_sub(self.retired_up_to)
+        }
+    }
+
+    fn total_fec_blocks(&self) -> u64 {
+        let Some(manifest) = self.fec_manifest else {
+            return 0;
+        };
+        let symbols_per_block = u64::from(manifest.symbols_per_block.max(1));
+        self.total_chunks.div_ceil(symbols_per_block)
+    }
+
+    fn compute_repair_budget(source_symbols: usize) -> usize {
+        if source_symbols == 0 {
+            return 0;
+        }
+        source_symbols
+            .div_ceil(FEC_REPAIR_BUDGET_DIVISOR)
+            .clamp(1, FEC_MAX_REPAIR_BUDGET_PER_BLOCK)
+            .min(source_symbols)
     }
 
     /// Decide whether we should re-send the MANIFEST while the ready gate stays closed.
@@ -296,6 +421,7 @@ impl SenderState {
         self.manifest_sent
             && self.topology_gate_open
             && !self.ready_gate_open
+            && !self.aborted
             && self.manifest_last_sent.elapsed() >= self.manifest_interval
     }
 
@@ -313,6 +439,10 @@ impl SenderState {
     /// Marks the source buffer as fully drained (preventing redundant reads).
     fn mark_source_drained(&mut self) {
         self.source_drained = true;
+    }
+
+    fn block_seed(&self, block_id: u64) -> u64 {
+        self.session_id ^ block_id.rotate_left(17) ^ FEC_BLOCK_SEED_SALT
     }
 
     // reports throughput every 1 second
@@ -342,7 +472,144 @@ impl SenderState {
         }
     }
 
-    /// Encode and hand off a chunk to the processor, updating accounting.
+    /// Materialize the next FEC block (systematic + bounded repairs) into the send queue.
+    fn maybe_queue_next_fec_block(&mut self, chunk_source: &mut ChunkSource) -> bool {
+        let Some(manifest) = self.fec_manifest else {
+            return false;
+        };
+        if self.fec_pending_symbols.len() > 0
+            || self.source_drained
+            || self.inflight_len() >= self.window_limit()
+        {
+            return false;
+        }
+
+        let symbols_per_block = usize::from(manifest.symbols_per_block.max(1));
+        let symbol_size = usize::from(manifest.symbol_size.max(1));
+        let mut chunks = Vec::with_capacity(symbols_per_block);
+
+        while chunks.len() < symbols_per_block {
+            match chunk_source.next_chunk() {
+                Some(chunk) => chunks.push(chunk),
+                None => break,
+            }
+        }
+
+        if chunks.is_empty() {
+            self.mark_source_drained();
+            return true;
+        }
+
+        let block_id = self.fec_blocks_sent;
+        let mut source_symbols: Vec<Vec<u8>> = Vec::with_capacity(chunks.len());
+
+        for chunk in &chunks {
+            if chunk.data.len() > symbol_size {
+                self.abort_fec_preflight(format!(
+                    "fec symbol_size {} is smaller than source chunk {} bytes",
+                    symbol_size,
+                    chunk.data.len()
+                ));
+                return true;
+            }
+            let mut padded = vec![0u8; symbol_size];
+            padded[..chunk.data.len()].copy_from_slice(&chunk.data);
+            source_symbols.push(padded);
+        }
+
+        let params =
+            fec::BlockParams::new(source_symbols.len(), symbol_size, self.block_seed(block_id));
+        let Some(mut encoder) = fec::Encoder::from_block(params, &source_symbols) else {
+            self.abort_fec_preflight(format!(
+                "failed to initialize FEC encoder for block {block_id}"
+            ));
+            return true;
+        };
+
+        let systematic = encoder.emit_systematic();
+        let repair_budget = Self::compute_repair_budget(systematic.len());
+        let repairs = encoder.emit_repair(repair_budget);
+
+        for symbol in systematic {
+            self.fec_pending_symbols.push_back(PendingFecSymbol {
+                block_id,
+                symbol_id: symbol.esi,
+                payload: Bytes::from(symbol.payload),
+                is_repair: false,
+            });
+        }
+        for symbol in repairs {
+            self.fec_pending_symbols.push_back(PendingFecSymbol {
+                block_id,
+                symbol_id: symbol.esi,
+                payload: Bytes::from(symbol.payload),
+                is_repair: true,
+            });
+        }
+
+        self.fec_block_stats.insert(
+            block_id,
+            FecBlockStats {
+                source_symbols: source_symbols.len(),
+                repair_budget,
+                repairs_sent: repair_budget,
+            },
+        );
+        self.fec_blocks_sent += 1;
+        self.update_retired_up_to();
+
+        debug!(
+            session_id = self.session_id,
+            block_id,
+            source_symbols = source_symbols.len(),
+            repairs = repair_budget,
+            symbols_queued = self.fec_pending_symbols.len(),
+            "Lossless sender: queued FEC block symbols"
+        );
+
+        true
+    }
+
+    async fn try_send_next_fec_symbol(
+        &mut self,
+        data_pacer: &mut DataPacer,
+        processors: &ProcessorHandle,
+    ) -> bool {
+        let Some(symbol) = self.fec_pending_symbols.pop_front() else {
+            return false;
+        };
+
+        data_pacer.wait_for(symbol.payload.len()).await;
+
+        let frame = Bytes::from(lossless_session::encode_fec_data_default_tree(
+            self.session_id,
+            symbol.block_id,
+            symbol.symbol_id,
+            &symbol.payload,
+        ));
+
+        let payload_len = symbol.payload.len() as u64;
+        self.bytes_sent += payload_len;
+        self.bytes_since_last_report += payload_len;
+        if !symbol.is_repair {
+            self.primary_chunks += 1;
+        }
+        self.report_throughput();
+        self.send_frame(&frame, processors).await;
+
+        debug!(
+            session_id = self.session_id,
+            block_id = symbol.block_id,
+            symbol_id = symbol.symbol_id,
+            is_repair = symbol.is_repair,
+            payload_len = symbol.payload.len(),
+            "Lossless sender: emitted FEC symbol"
+        );
+
+        true
+    }
+
+    /// Encode and hand off a non-FEC chunk to the processor, updating accounting.
     async fn send_data_chunk(&mut self, chunk: ChunkPayload, processors: &ProcessorHandle) {
         let frame = Bytes::from(lossless_session::encode_data(
             self.session_id,
@@ -370,7 +637,11 @@ impl SenderState {
     /// Advance the retired watermark based on the slowest receiver.
     fn update_retired_up_to(&mut self) {
         if self.receiver_count == 0 {
-            self.retired_up_to = self.primary_chunks;
+            self.retired_up_to = if self.is_fec_session() {
+                self.fec_blocks_sent
+            } else {
+                self.primary_chunks
+            };
             return;
         }
         if self.receiver_progress.is_empty() {
@@ -382,38 +653,69 @@ impl SenderState {
             .copied()
             .min()
             .unwrap_or(self.retired_up_to);
-        self.retired_up_to = min_progress.min(self.total_chunks);
+        self.retired_up_to = if self.is_fec_session() {
+            min_progress.min(self.total_fec_blocks())
+        } else {
+            min_progress.min(self.total_chunks)
+        };
     }
 
-    /// Emit an End-of-Transfer once all chunks have been acknowledged.
+    /// Emit an End-of-Transfer once all units have been acknowledged.
     async fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
-        if self.eot_sent || !self.source_drained || self.outstanding_chunks() > 0 {
-            if !self.eot_sent && self.source_drained && self.outstanding_chunks() > 0 {
+        if self.eot_sent
+            || !self.source_drained
+            || !self.fec_pending_symbols.is_empty()
+            || self.outstanding_units() > 0
+        {
+            if !self.eot_sent && self.source_drained && self.outstanding_units() > 0 {
                 trace!(
                     session_id = self.session_id,
-                    inflight_count = self.outstanding_chunks(),
-                    "Lossless sender: cannot send EOT - chunks still inflight"
+                    inflight_count = self.outstanding_units(),
+                    "Lossless sender: cannot send EOT - transfer units still inflight"
                 );
             }
             return false;
         }
-        let eot = LosslessSessionControl::Eot {
-            last_index: self.total_chunks,
+        let last_index = if self.is_fec_session() {
+            self.total_fec_blocks()
+        } else {
+            self.total_chunks
         };
+        let eot = LosslessSessionControl::Eot { last_index };
         self.send_control(&eot, processors).await;
         self.eot_sent = true;
 
         info!(
             session_id = self.session_id,
-            last_index = self.total_chunks,
-            "Lossless sender: EOT sent"
+            last_index, "Lossless sender: EOT sent"
         );
         true
     }
 
     /// Returns true when the sender drained the source and all acknowledgements were processed.
     fn is_complete(&self) -> bool {
-        self.source_drained && self.eot_sent && self.outstanding_chunks() == 0
+        self.aborted
+            || (self.source_drained
+                && self.eot_sent
+                && self.fec_pending_symbols.is_empty()
+                && self.outstanding_units() == 0)
+    }
+
+    fn abort_fec_preflight(&mut self, reason: impl Into<String>) {
+        if self.aborted {
+            return;
+        }
+        let reason = reason.into();
+        self.aborted = true;
+        self.abort_reason = Some(reason.clone());
+        self.ready_gate_open = false;
+        self.source_drained = true;
+        self.eot_sent = true;
+        warn!(
+            session_id = self.session_id,
+            reason = reason,
+            "Lossless sender: aborting session before FEC data emission"
+        );
     }
 
     /// Handles READY/ACK/EOT control frames coming from receivers.
@@ -436,10 +738,63 @@ impl SenderState {
                     *node_id
                 );
             }
-            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot { .. } => {
+            LosslessSessionControl::FecCapabilities {
+                node_id,
+                capabilities,
+            } => {
+                if !self.is_fec_session() {
+                    trace!(
+                        session_id = self.session_id,
+                        node_id = *node_id,
+                        "Lossless sender: ignoring FEC capabilities in non-FEC session"
+                    );
+                    return;
+                }
+                let from_node = peer_id.unwrap_or(*node_id as usize);
+                if !self.receiver_progress.contains_key(&from_node) {
+                    warn!(
+                        session_id = self.session_id,
+                        from_node, "Lossless sender: ignoring capabilities from unexpected node"
+                    );
+                    return;
+                }
+                self.fec_capabilities.insert(from_node, *capabilities);
+
+                let Some(manifest) = self.fec_manifest else {
+                    return;
+                };
+                match control::ensure_fec_compatible(&manifest, capabilities) {
+                    Ok(()) => {
+                        self.fec_incompatible_peers.remove(&from_node);
+                        debug!(
+                            session_id = self.session_id,
+                            from_node,
+                            supported_schemes = capabilities.supported_schemes,
+                            "Lossless sender: peer FEC capabilities accepted"
+                        );
+                    }
+                    Err(err) => {
+                        self.fec_incompatible_peers.insert(from_node);
+                        self.abort_fec_preflight(format!(
+                            "peer {from_node} incompatible with requested FEC manifest: {err:?}"
+                        ));
+                    }
+                }
+            }
+            LosslessSessionControl::Manifest { .. }
+            | LosslessSessionControl::FecManifest { .. }
+            | LosslessSessionControl::Eot { .. } => {
                 // ignores if the sender-originated control frames somehow looped back
             }
             LosslessSessionControl::Ack { .. } => {
+                if self.is_fec_session() {
+                    trace!(
+                        session_id = self.session_id,
+                        ?control,
+                        "Lossless sender: ignoring cumulative ACK in FEC mode"
+                    );
+                    return;
+                }
                 let Some(from_node) = peer_id else {
                     warn!(
                         session_id = self.session_id,
@@ -467,7 +822,7 @@ impl SenderState {
                         from_node = from_node,
                         up_to = new_value,
                         retired_up_to = self.retired_up_to,
-                        inflight_count = self.outstanding_chunks(),
+                        inflight_count = self.outstanding_units(),
                         "Lossless sender: cumulative ACK processed"
                     );
                 } else {
@@ -477,6 +832,48 @@ impl SenderState {
                         "Lossless sender: ACK made no progress"
                     );
                 }
+            }
+            LosslessSessionControl::FecStatus { status } => {
+                if !self.is_fec_session() {
+                    return;
+                }
+                let Some(from_node) = peer_id else {
+                    warn!(
+                        session_id = self.session_id,
+                        "Lossless sender: dropping FEC status without peer id"
+                    );
+                    return;
+                };
+                if !self.receiver_progress.contains_key(&from_node) {
+                    return;
+                }
+                if status.deficit_symbols == 0
+                    && let Some(entry) = self.receiver_progress.get_mut(&from_node)
+                    && status.block_id.saturating_add(1) > *entry
+                {
+                    *entry = status.block_id.saturating_add(1);
+                    self.update_retired_up_to();
+                }
+                let (planned_source, planned_repairs, remaining_budget) = self
+                    .fec_block_stats
+                    .get(&status.block_id)
+                    .map(|stats| {
+                        (
+                            stats.source_symbols,
+                            stats.repairs_sent,
+                            stats.repair_budget.saturating_sub(stats.repairs_sent),
+                        )
+                    })
+                    .unwrap_or((0, 0, 0));
+                trace!(
+                    session_id = self.session_id,
+                    block_id = status.block_id,
+                    deficit_symbols = status.deficit_symbols,
+                    source_symbols = planned_source,
+                    repairs_sent = planned_repairs,
+                    repair_budget_remaining = remaining_budget,
+                    "Lossless sender: receiver FEC status update"
+                );
             }
         }
     }
@@ -498,7 +895,12 @@ impl SenderState {
     async fn send_control(&self, control: &LosslessSessionControl, processors: &ProcessorHandle) {
         // Use stack-allocated buffer to avoid heap allocation for small control frames
         let mut buf = [0u8; lossless_session::MAX_CONTROL_FRAME_SIZE];
-        let frame = lossless_session::encode_control_into(&mut buf, self.session_id, control);
+        let frame = lossless_session::encode_control_into_with_version(
+            &mut buf,
+            self.session_id,
+            self.control_protocol_version(),
+            control,
+        );
 
         let packet = Packet::build_ipv4_tcp_packet(
             self.src_ip,
@@ -534,7 +936,58 @@ impl SenderState {
 
     /// Once every receiver signals READY (or we time out), unblock data transfer.
     fn maybe_release_ready_gate(&mut self) {
-        if self.ready_gate_open || !self.manifest_sent {
+        if self.ready_gate_open || !self.manifest_sent || self.aborted {
+            return;
+        }
+
+        if self.is_fec_session() {
+            if let Some(manifest) = self.fec_manifest
+                && manifest.scheme_kind().is_none()
+            {
+                self.abort_fec_preflight(format!(
+                    "unknown fec scheme {} requested by sender",
+                    manifest.scheme
+                ));
+                return;
+            }
+            let all_ready =
+                self.receiver_count == 0 || self.ready_nodes.len() == self.receiver_count;
+            let all_capabilities = self.receiver_count == 0 || self.has_all_fec_capabilities();
+            let all_compatible = if let Some(manifest) = self.fec_manifest {
+                let required_receivers: Vec<usize> =
+                    self.receiver_progress.keys().copied().collect();
+                !control::should_abort_fec_preflight(
+                    &required_receivers,
+                    &manifest,
+                    &self.fec_capabilities,
+                ) && self.fec_incompatible_peers.is_empty()
+            } else {
+                true
+            };
+
+            if all_ready && all_capabilities && all_compatible {
+                self.ready_gate_open = true;
+                self.ready_deadline = None;
+                info!(
+                    session_id = self.session_id,
+                    "Lossless sender: all receivers accepted FEC preflight."
+                );
+                return;
+            }
+
+            if let Some(deadline) = self.ready_deadline
+                && Instant::now() >= deadline
+            {
+                if !all_capabilities {
+                    self.abort_fec_preflight(
+                        "missing one or more FEC capability responses from required receivers",
+                    );
+                } else if !all_compatible {
+                    self.abort_fec_preflight("at least one receiver rejected requested FEC mode");
+                } else if !all_ready {
+                    self.abort_fec_preflight("missing READY from one or more receivers");
+                }
+            }
             return;
         }
 
@@ -864,6 +1317,7 @@ mod tests {
             receiver_ids: vec![],
             total_bytes: 0,
             source_buffer: Bytes::new(),
+            fec_manifest: None,
             ready_grace_ms: 1,
             topology_ready: None,
         }
