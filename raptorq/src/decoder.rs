@@ -105,8 +105,6 @@ pub struct DecodeResultWithProof {
 
 /// Internal decoder state during the decode process.
 struct DecoderState {
-    /// Encoding parameters.
-    params: SystematicParams,
     /// Received equations (row-major, each row is an equation).
     equations: Vec<Equation>,
     /// Right-hand side data for each equation.
@@ -159,11 +157,6 @@ impl Equation {
         self.terms.len()
     }
 
-    /// Returns the lowest column index (pivot candidate).
-    fn lowest_col(&self) -> Option<usize> {
-        self.terms.first().map(|(col, _)| *col)
-    }
-
     /// Returns the coefficient for the given column, or zero.
     fn coef(&self, col: usize) -> Gf256 {
         self.terms
@@ -172,46 +165,6 @@ impl Equation {
             .unwrap_or(Gf256::ZERO)
     }
 
-    /// Substitute: eliminate `col` using `pivot_coef * pivot_rhs`.
-    fn eliminate(&mut self, _col: usize, pivot_terms: &[(usize, Gf256)], factor: Gf256) {
-        // self -= factor * pivot (for the column `col`)
-        // This effectively does: self.terms = self.terms XOR (factor * pivot.terms)
-        // but only for terms that would affect our equation.
-
-        // Build new terms by merging
-        let mut new_terms = Vec::with_capacity(self.terms.len() + pivot_terms.len());
-        let mut i = 0;
-        let mut j = 0;
-
-        while i < self.terms.len() || j < pivot_terms.len() {
-            let self_col = self.terms.get(i).map_or(usize::MAX, |(c, _)| *c);
-            let pivot_col = pivot_terms.get(j).map_or(usize::MAX, |(c, _)| *c);
-
-            match self_col.cmp(&pivot_col) {
-                std::cmp::Ordering::Less => {
-                    new_terms.push(self.terms[i]);
-                    i += 1;
-                }
-                std::cmp::Ordering::Greater => {
-                    let (c, coef) = pivot_terms[j];
-                    new_terms.push((c, factor * coef));
-                    j += 1;
-                }
-                std::cmp::Ordering::Equal => {
-                    let self_coef = self.terms[i].1;
-                    let pivot_coef = pivot_terms[j].1;
-                    let new_coef = self_coef + factor * pivot_coef;
-                    if !new_coef.is_zero() {
-                        new_terms.push((self_col, new_coef));
-                    }
-                    i += 1;
-                    j += 1;
-                }
-            }
-        }
-
-        self.terms = new_terms;
-    }
 }
 
 // ============================================================================
@@ -415,7 +368,6 @@ impl InactivationDecoder {
         let active_cols: BTreeSet<usize> = (0..l).collect();
 
         DecoderState {
-            params: self.params.clone(),
             equations,
             rhs,
             solved: vec![None; l],
