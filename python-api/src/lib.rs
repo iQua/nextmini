@@ -40,7 +40,7 @@ use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
 #[cfg(feature = "python-extension")]
-use nextmini_messages::lossless_session::FecCapabilities;
+use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
 
 pub use crate::buffer::{PacketBuilder, PacketView};
 
@@ -228,7 +228,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None))]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None, fec_enabled=None, fec_symbols_per_block=None, fec_symbol_size=None))]
     fn send_data(
         &self,
         group_id: u64,
@@ -239,6 +239,9 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         congestion: Option<String>,
+        fec_enabled: Option<bool>,
+        fec_symbols_per_block: Option<u16>,
+        fec_symbol_size: Option<u16>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let dest_ip_addr = parse_ipv4(dest_ip)?;
@@ -286,12 +289,18 @@ impl Dataplane {
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
                 };
+                let fec_manifest = sender_fec_manifest(
+                    chunk_size,
+                    fec_enabled,
+                    fec_symbols_per_block,
+                    fec_symbol_size,
+                )?;
                 let cfg = session::runtime::SenderConfig {
                     common,
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
-                    fec_manifest: None,
+                    fec_manifest,
                     fec_num_trees: None,
                     ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
@@ -301,11 +310,14 @@ impl Dataplane {
             }
         }
 
+        #[cfg(not(feature = "python-extension"))]
+        let _ = (fec_enabled, fec_symbols_per_block, fec_symbol_size);
+
         Ok(sid)
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, fec_enabled=None))]
     fn receive_data(
         &self,
         group_id: u64,
@@ -315,6 +327,7 @@ impl Dataplane {
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
+        fec_enabled: Option<bool>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
@@ -351,7 +364,7 @@ impl Dataplane {
                     source_node_id,
                     expected_bytes,
                     sink_buffer: Some(sink_buf.clone()),
-                    fec_capabilities: FecCapabilities::default(),
+                    fec_capabilities: receiver_fec_capabilities(fec_enabled),
                 };
                 // Direct registration - both sender and receiver compute same session_id
                 let started_sid = rt().block_on(handle.start_receiver(cfg));
@@ -360,11 +373,14 @@ impl Dataplane {
             }
         }
 
+        #[cfg(not(feature = "python-extension"))]
+        let _ = fec_enabled;
+
         Ok(sid)
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, fec_enabled=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
@@ -375,6 +391,7 @@ impl Dataplane {
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
+        fec_enabled: Option<bool>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
@@ -397,7 +414,7 @@ impl Dataplane {
                 let local_node_id = self.cfg.node_id;
                 let base_addr = self.cfg.user_space_base_addr;
                 let netmask = self.cfg.local_netmask;
-                let fec_capabilities = FecCapabilities::default();
+                let fec_capabilities = receiver_fec_capabilities(fec_enabled);
 
                 return future_into_py(py, async move {
                     let ip = parse_ipv4(&dest_ip)?;
@@ -435,6 +452,9 @@ impl Dataplane {
                 });
             }
         }
+
+        #[cfg(not(feature = "python-extension"))]
+        let _ = fec_enabled;
 
         // Fallback if feature disabled (immediate return)
         future_into_py(py, async move {
@@ -927,4 +947,67 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn parse_ipv4(addr: &str) -> PyResult<Ipv4Addr> {
     addr.parse::<Ipv4Addr>()
         .map_err(|e| PyRuntimeError::new_err(format!("invalid IPv4 address \"{addr}\": {e}")))
+}
+
+#[cfg(feature = "python-extension")]
+const DEFAULT_FEC_SYMBOLS_PER_BLOCK: u16 = 32;
+
+#[cfg(feature = "python-extension")]
+fn sender_fec_manifest(
+    chunk_size: usize,
+    fec_enabled: Option<bool>,
+    fec_symbols_per_block: Option<u16>,
+    fec_symbol_size: Option<u16>,
+) -> PyResult<Option<FecManifest>> {
+    if matches!(fec_enabled, Some(false))
+        && (fec_symbols_per_block.is_some() || fec_symbol_size.is_some())
+    {
+        return Err(PyRuntimeError::new_err(
+            "fec_enabled=False cannot be combined with fec_symbols_per_block or fec_symbol_size.",
+        ));
+    }
+
+    let enable_fec =
+        fec_enabled.unwrap_or(fec_symbols_per_block.is_some() || fec_symbol_size.is_some());
+    if !enable_fec {
+        return Ok(None);
+    }
+
+    let symbols_per_block = fec_symbols_per_block.unwrap_or(DEFAULT_FEC_SYMBOLS_PER_BLOCK);
+    if symbols_per_block == 0 {
+        return Err(PyRuntimeError::new_err(
+            "fec_symbols_per_block must be positive.",
+        ));
+    }
+
+    let symbol_size = match fec_symbol_size {
+        Some(size) => size,
+        None => u16::try_from(chunk_size).map_err(|_| {
+            PyRuntimeError::new_err(format!(
+                "chunk_size {chunk_size} exceeds default FEC symbol_size range; set fec_symbol_size explicitly."
+            ))
+        })?,
+    };
+    if symbol_size == 0 {
+        return Err(PyRuntimeError::new_err("fec_symbol_size must be positive."));
+    }
+    if chunk_size > usize::from(symbol_size) {
+        return Err(PyRuntimeError::new_err(format!(
+            "chunk_size ({chunk_size}) cannot exceed fec_symbol_size ({symbol_size})."
+        )));
+    }
+
+    Ok(Some(FecManifest::new_raptorq(
+        symbols_per_block,
+        symbol_size,
+    )))
+}
+
+#[cfg(feature = "python-extension")]
+fn receiver_fec_capabilities(fec_enabled: Option<bool>) -> FecCapabilities {
+    if matches!(fec_enabled, Some(false)) {
+        FecCapabilities::empty()
+    } else {
+        FecCapabilities::default()
+    }
 }
