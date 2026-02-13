@@ -865,11 +865,9 @@ impl SenderState {
                 if !self.receiver_progress.contains_key(&from_node) {
                     return;
                 }
-                if status.deficit_symbols == 0
-                    && let Some(entry) = self.receiver_progress.get_mut(&from_node)
-                    && status.block_id.saturating_add(1) > *entry
+                if control::update_receiver_fec_status(from_node, &control, &mut self.receiver_progress)
+                    .is_some()
                 {
-                    *entry = status.block_id.saturating_add(1);
                     self.update_retired_up_to();
                 }
                 let (planned_source, planned_repairs, remaining_budget) = self

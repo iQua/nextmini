@@ -36,6 +36,8 @@ pub fn update_receiver_progress(
 ///
 /// `FecStatus` is interpreted as explicit block state, not cumulative ACK
 /// progress. Only `deficit_symbols == 0` advances the completed block watermark.
+/// Watermark units are completed blocks (`block_id + 1`), matching sender
+/// retirement semantics in FEC mode.
 pub fn update_receiver_fec_status(
     from_node: usize,
     ctrl: &LosslessSessionControl,
@@ -46,10 +48,11 @@ pub fn update_receiver_fec_status(
             if status.deficit_symbols != 0 {
                 return None;
             }
+            let completed_blocks = status.block_id.saturating_add(1);
             if let Some(entry) = progress.get_mut(&from_node)
-                && status.block_id > *entry
+                && completed_blocks > *entry
             {
-                *entry = status.block_id;
+                *entry = completed_blocks;
                 return Some(*entry);
             }
             None
@@ -176,8 +179,8 @@ mod tests {
             },
             &mut progress,
         );
-        assert_eq!(complete, Some(4));
-        assert_eq!(progress.get(&7).copied(), Some(4));
+        assert_eq!(complete, Some(5));
+        assert_eq!(progress.get(&7).copied(), Some(5));
     }
 
     #[test]

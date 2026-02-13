@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,7 @@ use crate::node::{NodeId, NodeIdExt};
 const ACK_EVERY_CHUNKS: u64 = 16; // ensure <= sender DEFAULT_WINDOW
 const FEC_FEEDBACK_INTERVAL: Duration = Duration::from_millis(20);
 const FEC_FEEDBACK_MAX_JITTER_MS: u64 = 11;
+const FEC_DECODED_HISTORY_LEN: usize = 1024;
 
 /// Utility for emitting completion control traffic (ACKs) via the node
 /// processor stack using the same addressing the sender expects.
@@ -443,6 +444,8 @@ struct FecReceiverState {
     expected_bytes: u64,
     total_chunks: u64,
     blocks: BTreeMap<u64, FecBlockState>,
+    decoded_recent: VecDeque<u64>,
+    decoded_set: BTreeSet<u64>,
     integrity_error: bool,
 }
 
@@ -470,6 +473,8 @@ impl FecReceiverState {
             expected_bytes,
             total_chunks,
             blocks: BTreeMap::new(),
+            decoded_recent: VecDeque::new(),
+            decoded_set: BTreeSet::new(),
             integrity_error: false,
         }
     }
@@ -481,6 +486,13 @@ impl FecReceiverState {
         payload: &[u8],
         now: Instant,
     ) -> FecIngestOutcome {
+        if self.decoded_set.contains(&block_id) {
+            return FecIngestOutcome {
+                decoded_chunks: Vec::new(),
+                feedback: None,
+            };
+        }
+
         if !self.is_valid_block_id(block_id) {
             warn!(
                 session_id = self.session_id,
@@ -500,7 +512,7 @@ impl FecReceiverState {
 
         let mut decoded_symbols: Option<Vec<Vec<u8>>> = None;
         let payload_malformed;
-        let mut remove_block = false;
+        let mut decoded_block = false;
         let feedback = {
             let block = self
                 .blocks
@@ -517,7 +529,7 @@ impl FecReceiverState {
                         block.decoded = true;
                         block.received.clear();
                         deficit = 0;
-                        remove_block = decoded_symbols.is_none();
+                        decoded_block = true;
                         decoded_symbols = Some(decoded.source_symbols);
                     }
                     Err(err) => {
@@ -535,8 +547,9 @@ impl FecReceiverState {
 
             block.maybe_feedback(block_id, deficit, now)
         };
-        if remove_block {
+        if decoded_block {
             self.blocks.remove(&block_id);
+            self.mark_block_decoded(block_id);
         }
 
         if payload_malformed {
@@ -578,6 +591,18 @@ impl FecReceiverState {
             self.symbol_size,
             fec::block_seed(self.session_id, block_id),
         )
+    }
+
+    fn mark_block_decoded(&mut self, block_id: u64) {
+        if !self.decoded_set.insert(block_id) {
+            return;
+        }
+        self.decoded_recent.push_back(block_id);
+        while self.decoded_recent.len() > FEC_DECODED_HISTORY_LEN {
+            if let Some(old) = self.decoded_recent.pop_front() {
+                self.decoded_set.remove(&old);
+            }
+        }
     }
 
     fn total_fec_blocks(&self) -> u64 {
@@ -1079,5 +1104,39 @@ mod tests {
         assert_eq!(state.chunk_len_for_index(1), 8);
         assert_eq!(state.chunk_len_for_index(2), 8);
         assert_eq!(state.chunk_len_for_index(3), 2);
+    }
+
+    #[test]
+    fn fec_receiver_state_ignores_late_symbols_after_decode() {
+        let cfg = ReceiverConfig {
+            common: crate::node::session::runtime::CommonConfig {
+                session_id: 11,
+                dest_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                chunk_size: 8,
+                src_port: 2000,
+                dst_port: 3000,
+                data_bucket: None,
+                local_node_id: 0,
+                user_space_base_addr: std::net::Ipv4Addr::new(10, 0, 0, 0),
+                local_netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+            },
+            source_node_id: 2,
+            expected_bytes: 16,
+            sink_buffer: None,
+            fec_capabilities: nextmini_messages::lossless_session::FecCapabilities::default(),
+        };
+
+        let mut state = FecReceiverState::new(11, 0, FecManifest::new_raptorq(2, 8), &cfg);
+        let t0 = Instant::now();
+
+        let first = state.ingest_symbol(0, 0, &[1u8; 8], t0);
+        assert!(first.decoded_chunks.is_empty());
+
+        let second = state.ingest_symbol(0, 1, &[2u8; 8], t0 + Duration::from_millis(1));
+        assert_eq!(second.decoded_chunks.len(), 2);
+
+        let late = state.ingest_symbol(0, 2, &[3u8; 8], t0 + Duration::from_millis(2));
+        assert!(late.decoded_chunks.is_empty());
+        assert!(late.feedback.is_none());
     }
 }
