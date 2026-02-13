@@ -564,7 +564,7 @@ impl SenderState {
             FecBlockStats {
                 source_symbols: source_symbols_in_block,
                 repair_budget,
-                repairs_sent: repair_budget,
+                repairs_sent: 0,
             },
         );
         self.fec_blocks_sent += 1;
@@ -606,6 +606,8 @@ impl SenderState {
         self.bytes_since_last_report += payload_len;
         if !symbol.is_repair {
             self.primary_chunks += 1;
+        } else if let Some(stats) = self.fec_block_stats.get_mut(&symbol.block_id) {
+            stats.repairs_sent = stats.repairs_sent.saturating_add(1);
         }
         self.report_throughput();
         self.send_frame(&frame, processors).await;
