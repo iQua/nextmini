@@ -690,11 +690,7 @@ impl SenderState {
             }
             return false;
         }
-        let last_index = if self.is_fec_session() {
-            self.total_fec_blocks()
-        } else {
-            self.total_chunks
-        };
+        let last_index = self.eot_last_index();
         let eot = LosslessSessionControl::Eot { last_index };
         self.send_control(&eot, processors).await;
         self.eot_sent = true;
@@ -704,6 +700,12 @@ impl SenderState {
             last_index, "Lossless sender: EOT sent"
         );
         true
+    }
+
+    fn eot_last_index(&self) -> u64 {
+        // EOT remains chunk-index based for both legacy and FEC sessions.
+        // Receivers gate completion on contiguous chunk reconstruction.
+        self.total_chunks
     }
 
     /// Returns true when the sender drained the source and all acknowledgements were processed.
@@ -1238,7 +1240,7 @@ impl DataPacer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nextmini_messages::TokenBucketSpec;
+    use nextmini_messages::{TokenBucketSpec, lossless_session};
     use std::net::Ipv4Addr;
 
     #[test]
@@ -1388,5 +1390,23 @@ mod tests {
         let cfg = sender_cfg(2_048, Some(bucket));
         // bucket_size / chunk_size = 4, lower than DEFAULT_WINDOW
         assert_eq!(compute_window(&cfg), 4);
+    }
+
+    #[test]
+    fn fec_eot_last_index_uses_chunk_count() {
+        let chunk_size = 1_024usize;
+        let total_bytes = (chunk_size * 5) as u64;
+        let mut cfg = sender_cfg(chunk_size, None);
+        cfg.total_bytes = total_bytes;
+        cfg.fec_manifest = Some(FecManifest::new_raptorq(2, chunk_size as u16));
+
+        let total_chunks = total_bytes.div_ceil(chunk_size as u64);
+        let state = SenderState::new(cfg, total_chunks);
+
+        assert_eq!(
+            state.eot_last_index(),
+            total_chunks,
+            "FEC EOT must use chunk index units so receiver completion checks remain correct"
+        );
     }
 }
