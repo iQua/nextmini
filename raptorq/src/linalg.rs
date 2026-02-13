@@ -18,8 +18,8 @@
 //! # Usage
 //!
 //! ```
-//! use asupersync::raptorq::linalg::{DenseRow, SparseRow, row_xor, row_scale_add};
-//! use asupersync::raptorq::gf256::Gf256;
+//! use raptorq::linalg::{DenseRow, SparseRow, row_xor, row_scale_add};
+//! use raptorq::gf256::Gf256;
 //!
 //! // Dense rows for symbol data
 //! let mut r1 = DenseRow::new(vec![1, 2, 3, 4]);
