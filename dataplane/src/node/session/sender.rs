@@ -477,7 +477,7 @@ impl SenderState {
         let Some(manifest) = self.fec_manifest else {
             return false;
         };
-        if self.fec_pending_symbols.len() > 0
+        if !self.fec_pending_symbols.is_empty()
             || self.source_drained
             || self.inflight_len() >= self.window_limit()
         {
