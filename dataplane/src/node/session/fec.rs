@@ -8,6 +8,16 @@ use raptorq::{EmittedSymbol, InactivationDecoder, SystematicEncoder};
 
 pub use raptorq::{DecodeError, DecodeStats, ReceivedSymbol};
 
+const FEC_BLOCK_SEED_SESSION_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
+const FEC_BLOCK_SEED_BLOCK_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
+
+/// Deterministically derives the FEC block seed shared by sender and receiver.
+#[must_use]
+pub const fn block_seed(session_id: u64, block_id: u64) -> u64 {
+    session_id.wrapping_mul(FEC_BLOCK_SEED_SESSION_MULTIPLIER)
+        ^ block_id.wrapping_mul(FEC_BLOCK_SEED_BLOCK_MULTIPLIER)
+}
+
 /// Shared block-level parameters for encoder/decoder construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockParams {
@@ -184,5 +194,15 @@ impl Decoder {
             intermediate_symbols: decoded.intermediate,
             stats: decoded.stats,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_seed;
+
+    #[test]
+    fn block_seed_is_stable_for_known_input() {
+        assert_eq!(block_seed(0xA55A, 17), 0xD429_E47F_291A_692B);
     }
 }

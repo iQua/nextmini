@@ -26,7 +26,6 @@ const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FEC_REPAIR_BUDGET_DIVISOR: usize = 2;
 const FEC_MAX_REPAIR_BUDGET_PER_BLOCK: usize = 64;
-const FEC_BLOCK_SEED_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 const FEC_TREE_HASH_SALT: u64 = 0xD6E8_FD9C_B3A5_7A1D;
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
@@ -446,10 +445,6 @@ impl SenderState {
         self.source_drained = true;
     }
 
-    fn block_seed(&self, block_id: u64) -> u64 {
-        self.session_id ^ block_id.rotate_left(17) ^ FEC_BLOCK_SEED_SALT
-    }
-
     // reports throughput every 1 second
     fn report_throughput(&mut self) {
         let now = Instant::now();
@@ -527,8 +522,11 @@ impl SenderState {
             source_symbols.push(vec![0u8; symbol_size]);
         }
 
-        let params =
-            fec::BlockParams::new(source_symbols.len(), symbol_size, self.block_seed(block_id));
+        let params = fec::BlockParams::new(
+            source_symbols.len(),
+            symbol_size,
+            fec::block_seed(self.session_id, block_id),
+        );
         let Some(mut encoder) = fec::Encoder::from_block(params, &source_symbols) else {
             self.abort_fec_preflight(format!(
                 "failed to initialize FEC encoder for block {block_id}"

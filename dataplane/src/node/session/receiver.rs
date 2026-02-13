@@ -576,7 +576,7 @@ impl FecReceiverState {
         BlockParams::new(
             usize::from(self.symbols_per_block),
             self.symbol_size,
-            fec_block_seed(self.session_id, block_id),
+            fec::block_seed(self.session_id, block_id),
         )
     }
 
@@ -688,10 +688,6 @@ impl FecBlockState {
             deficit_symbols: deficit,
         })
     }
-}
-
-fn fec_block_seed(session_id: u64, block_id: u64) -> u64 {
-    session_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ block_id.wrapping_mul(0xBF58_476D_1CE4_E5B9)
 }
 
 fn feedback_jitter(local_node_id: usize, block_id: u64) -> Duration {

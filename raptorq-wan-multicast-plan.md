@@ -66,8 +66,8 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - Output JSON: `mode`, `loss`, `success`, `completion_ms`, `p95_ms`, `p99_ms`, `overhead`, `cpu_pct`, `mem_mb`, `error` (optional).
 - `check_compat_matrix.py`
   - Purpose: Verify strict FEC-only compatibility rules (no fallback).
-  - CLI: `--require-homogeneous-fec`, `--output <path>`, `--assert-strict`.
-  - Output JSON: `strict_ok`, `notes`, `error` (optional).
+  - CLI: `--input <node-report.json>` (repeatable), `--require-homogeneous-fec`, `--output <path>`, `--assert-strict`.
+  - Output JSON: `success`, `failed_checks`, `failed_count`, `compatibility_checks`, `mismatches`.
 
 ## Track A: Migration (Bring All RaptorQ Code + Tests)
 
@@ -361,7 +361,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - Clear operational playbook for enable/disable and strict FEC-only behavior.
   - `tools/experiments/raptorq/check_compat_matrix.py` exists and is runnable with `--help`.
 - **Validation**:
-  - `python tools/experiments/raptorq/check_compat_matrix.py --require-homogeneous-fec --output /tmp/fec_compat.json --assert-strict`
+  - `python tools/experiments/raptorq/check_compat_matrix.py --input /tmp/node_a.json --input /tmp/node_b.json --require-homogeneous-fec --output /tmp/fec_compat.json --assert-strict`
   - `python tools/experiments/raptorq/smoke_python_api.py --fec off --output /tmp/py_release_strict.json --assert-success`
 
 ## Source -> Target Mapping (Concrete, T1 Frozen Snapshot)

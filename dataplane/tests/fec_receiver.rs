@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc};
 use nextmini::node::config::LocalConfig;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
-use nextmini::node::session::fec::{BlockParams, Encoder};
+use nextmini::node::session::fec::{block_seed, BlockParams, Encoder};
 use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig};
 use nextmini_messages::TokenBucketSpec;
@@ -24,10 +24,6 @@ const SYMBOL_SIZE: usize = 4096;
 const REPAIR_PER_BLOCK: usize = 64;
 const IID_LOSS_RATE: f64 = 0.10;
 const PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
-
-fn fec_block_seed(session_id: u64, block_id: u64) -> u64 {
-    session_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ block_id.wrapping_mul(0xBF58_476D_1CE4_E5B9)
-}
 
 fn test_processor_handle() -> ProcessorHandle {
     let cfg = LocalConfig {
@@ -115,7 +111,7 @@ async fn receiver_recovers_under_10pct_loss() {
         let params = BlockParams::new(
             SYMBOLS_PER_BLOCK,
             SYMBOL_SIZE,
-            fec_block_seed(SESSION_ID, block_id),
+            block_seed(SESSION_ID, block_id),
         );
         let mut encoder =
             Encoder::from_block(params, &source_symbols).expect("encoder should build for block");
