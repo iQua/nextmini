@@ -22,15 +22,9 @@ class CheckResult:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Lightweight smoke harness for Python API FEC wiring. "
+            "Lightweight smoke harness for Python API surface compatibility. "
             "Writes a JSON artifact containing mode/success/timing."
         )
-    )
-    parser.add_argument(
-        "--fec",
-        choices=("off", "on"),
-        default="off",
-        help="Requested transfer mode to validate in the artifact.",
     )
     parser.add_argument(
         "--output",
@@ -85,44 +79,44 @@ def run_checks(root: Path) -> list[CheckResult]:
 
     results.append(
         check(
-            "fec_enabled=None" in api_src,
-            "api_has_fec_enabled_kwarg",
-            "Expected fec_enabled keyword arg in Python API signatures.",
+            "fec_enabled" not in api_src,
+            "api_has_no_fec_enabled_kwarg",
+            "Unexpected fec_enabled keyword arg in Python API signatures.",
         )
     )
     results.append(
         check(
-            "fec_symbols_per_block=None" in api_src,
-            "api_has_fec_symbols_kwarg",
-            "Expected fec_symbols_per_block keyword arg in send_data signature.",
+            "fec_symbols_per_block" not in api_src,
+            "api_has_no_fec_symbols_kwarg",
+            "Unexpected fec_symbols_per_block keyword arg in send_data signature.",
         )
     )
     results.append(
         check(
-            "fec_symbol_size=None" in api_src,
-            "api_has_fec_symbol_size_kwarg",
-            "Expected fec_symbol_size keyword arg in send_data signature.",
+            "fec_symbol_size" not in api_src,
+            "api_has_no_fec_symbol_size_kwarg",
+            "Unexpected fec_symbol_size keyword arg in send_data signature.",
         )
     )
     results.append(
         check(
-            "sender_fec_manifest(" in api_src and "receiver_fec_capabilities(" in api_src,
-            "api_has_fec_mapping_helpers",
-            "Expected sender/receiver helper mapping for FEC kwargs.",
+            "sender_fec_manifest(" not in api_src and "receiver_fec_capabilities(" not in api_src,
+            "api_has_no_fec_mapping_helpers",
+            "Unexpected sender/receiver helper mapping for FEC kwargs.",
         )
     )
     results.append(
         check(
-            "--fec" in example_src,
-            "example_has_fec_toggle",
-            "Expected --fec CLI toggle in multicast example.",
+            "--fec" not in example_src,
+            "example_has_no_fec_toggle",
+            "Unexpected --fec CLI toggle in multicast example.",
         )
     )
     results.append(
         check(
-            "fec_enabled=fec_enabled(args)" in example_src,
-            "example_passes_fec_flag",
-            "Expected example to pass fec_enabled through send/receive API calls.",
+            "fec_enabled=" not in example_src,
+            "example_has_no_fec_kwargs",
+            "Unexpected per-call FEC kwargs in multicast example send/receive calls.",
         )
     )
 
@@ -145,17 +139,17 @@ def run_checks(root: Path) -> list[CheckResult]:
         receive_async_sig = inspect.signature(nm.Dataplane.receive_data_async)
         results.append(
             check(
-                signature_contains_param(send_sig, "fec_enabled")
-                and signature_contains_param(send_sig, "fec_symbols_per_block")
-                and signature_contains_param(send_sig, "fec_symbol_size"),
+                not signature_contains_param(send_sig, "fec_enabled")
+                and not signature_contains_param(send_sig, "fec_symbols_per_block")
+                and not signature_contains_param(send_sig, "fec_symbol_size"),
                 "extension_send_data_signature",
                 f"send_data signature={send_sig}",
             )
         )
         results.append(
             check(
-                signature_contains_param(receive_sig, "fec_enabled")
-                and signature_contains_param(receive_async_sig, "fec_enabled"),
+                not signature_contains_param(receive_sig, "fec_enabled")
+                and not signature_contains_param(receive_async_sig, "fec_enabled"),
                 "extension_receive_signature",
                 f"receive_data signature={receive_sig}; receive_data_async signature={receive_async_sig}",
             )
@@ -186,7 +180,7 @@ def main() -> int:
     end_wall = datetime.now(timezone.utc)
 
     artifact = {
-        "mode": f"fec_{args.fec}",
+        "mode": "python_api_surface",
         "success": success,
         "timing": {
             "started_at": start_wall.isoformat(),

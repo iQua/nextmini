@@ -72,9 +72,6 @@ Key environment overrides (set via `docker compose run -e ...` or exported befor
 - `EXPECTED_BYTES` – total byte count for the tensor; defaults to the auto-generated file
   size when `TENSOR_PATH` is not provided.
 - `CHUNK_SIZE` – payload slice size (defaults to 8500 bytes; lossless senders automatically clamp this to fit the dataplane MTU so you never have to tune fragmentation manually).
-- `FEC` – set to `on` to enable FEC-backed lossless sessions (default `off`).
-- `FEC_SYMBOLS_PER_BLOCK` – optional sender override for FEC `symbols_per_block` when `FEC=on`.
-- `FEC_SYMBOL_SIZE` – optional sender override for FEC `symbol_size` when `FEC=on`.
 - `SINK_PATH_A` / `SINK_PATH_B` – optional override for where each receiver writes the
   reconstructed tensor under `/artifacts`.
 - `ARTIFACT_DIR` – shared volume for tensors and metadata.

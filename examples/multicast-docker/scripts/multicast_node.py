@@ -38,32 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-label", required=True)
     parser.add_argument("--chunk-size", type=int, default=8500)
     parser.add_argument(
-        "--fec",
-        choices=("off", "on"),
-        default=os.environ.get("FEC", "off").strip().lower(),
-        help="Enable FEC-backed transfer mode (default: off).",
-    )
-    parser.add_argument(
-        "--fec-symbols-per-block",
-        type=int,
-        default=(
-            int(os.environ["FEC_SYMBOLS_PER_BLOCK"])
-            if "FEC_SYMBOLS_PER_BLOCK" in os.environ
-            else None
-        ),
-        help="Optional FEC symbols_per_block override when --fec on.",
-    )
-    parser.add_argument(
-        "--fec-symbol-size",
-        type=int,
-        default=(
-            int(os.environ["FEC_SYMBOL_SIZE"])
-            if "FEC_SYMBOL_SIZE" in os.environ
-            else None
-        ),
-        help="Optional FEC symbol_size override when --fec on.",
-    )
-    parser.add_argument(
         "--receive-timeout-ms",
         type=int,
         default=int(os.environ.get("RECEIVE_TIMEOUT_MS", "5000")),
@@ -128,10 +102,6 @@ def log(message: str, quiet: bool = False) -> None:
     if quiet:
         return
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
-
-
-def fec_enabled(args: argparse.Namespace) -> bool:
-    return args.fec == "on"
 
 
 def format_throughput(bytes_transferred: int, elapsed_seconds: float) -> str:
@@ -287,14 +257,6 @@ def run_source(args: argparse.Namespace) -> None:
         f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
         args.quiet,
     )
-    log(
-        (
-            "FEC mode="
-            f"{args.fec} symbols_per_block={args.fec_symbols_per_block} "
-            f"symbol_size={args.fec_symbol_size}"
-        ),
-        args.quiet,
-    )
 
     if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
         raise TimeoutError("Timed out waiting for topology readiness.")
@@ -345,9 +307,6 @@ def run_source(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        fec_enabled=fec_enabled(args),
-        fec_symbols_per_block=args.fec_symbols_per_block if fec_enabled(args) else None,
-        fec_symbol_size=args.fec_symbol_size if fec_enabled(args) else None,
     )
     log(f"Started lossless send session (session ID = {sid}).", args.quiet)
 
@@ -377,7 +336,6 @@ def run_receiver(args: argparse.Namespace) -> None:
     local_node_id = dataplane.node_id
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
-    log(f"Receiver FEC mode={args.fec}.", args.quiet)
 
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:
@@ -395,7 +353,6 @@ def run_receiver(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        fec_enabled=fec_enabled(args),
     )
 
     write_receiver_ready(args, local_node_id)
@@ -429,11 +386,6 @@ def main() -> int:
     args = parse_args()
     if args.chunk_size <= 0:
         raise SystemExit("--chunk-size must be positive.")
-    if args.fec == "on":
-        if args.fec_symbols_per_block is not None and args.fec_symbols_per_block <= 0:
-            raise SystemExit("--fec-symbols-per-block must be positive when --fec on.")
-        if args.fec_symbol_size is not None and args.fec_symbol_size <= 0:
-            raise SystemExit("--fec-symbol-size must be positive when --fec on.")
     if args.role == "source" and args.tensor_path is None:
         args.generate_tensor = True
     if args.artifact_dir:
