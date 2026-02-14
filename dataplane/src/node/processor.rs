@@ -1309,10 +1309,12 @@ mod tests {
         let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
 
         let mut processor_senders = Vec::new();
+        // Keep receivers alive so lanes can become Full instead of Closed.
+        let mut _processor_receivers = Vec::new();
         for _ in 0..config.num_packet_processors {
             let (sender, receiver) = mpsc::channel(1);
-            drop(receiver);
             processor_senders.push(sender);
+            _processor_receivers.push(receiver);
         }
         let (connector_sender, connector_receiver) = mpsc::channel(1);
         drop(connector_receiver);
