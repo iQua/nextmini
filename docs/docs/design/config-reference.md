@@ -287,6 +287,11 @@ fec_max_tree_lanes = 64
 fec_collaborative_multitree_enabled = true
 fec_enabled = false
 fec_require_capability = true
+fec_default_symbols_per_block = 32
+fec_symbol_size_policy = "chunk_size"
+fec_default_symbol_size = 8500
+fec_tree_ids_source = "config"
+fec_default_tree_ids = [0]
 fec_symbols_per_block_min = 1
 fec_symbols_per_block_max = 1024
 fec_symbol_size_min = 1
@@ -299,6 +304,7 @@ fec_symbol_size_max = 16384
 ```
 
 `fec_collaborative_multitree_enabled` is a rollout gate only: when enabled, multi-tree FEC uses collaborative dispatch-time assignment exclusively (no hash/legacy strategy mode).
+`fec_symbol_size_policy` accepts `chunk_size` or `fixed`; `fec_tree_ids_source` accepts `config` or `installed_routes`.
 
 ---
 
@@ -482,6 +488,11 @@ fec_max_tree_lanes = 64
 fec_collaborative_multitree_enabled = true
 fec_enabled = false
 fec_require_capability = true
+fec_default_symbols_per_block = 32
+fec_symbol_size_policy = "chunk_size"
+fec_default_symbol_size = 8500
+fec_tree_ids_source = "config"
+fec_default_tree_ids = [0]
 fec_symbols_per_block_min = 1
 fec_symbols_per_block_max = 1024
 fec_symbol_size_min = 1

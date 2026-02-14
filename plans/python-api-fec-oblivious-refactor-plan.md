@@ -163,12 +163,36 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Keep strict preflight rules centralized in runtime.
 - Files:
   - `dataplane/src/node/config.rs`
-  - `dataplane/src/node/session/runtime.rs`
   - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/config-reference.md`
 - Deliverables:
   - Config-backed internal FEC policy with no Python dependency.
 - Validation:
   - Runtime config tests cover defaults/bounds/canonicalization.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Extended `LosslessConfig` runtime FEC knobs in `dataplane/src/node/config.rs` to cover the Python-owned defaults/overrides being internalized:
+    - `fec_default_symbols_per_block`
+    - `fec_symbol_size_policy` (`chunk_size` or `fixed`)
+    - `fec_default_symbol_size`
+    - `fec_tree_ids_source` (`config` or `installed_routes`)
+    - `fec_default_tree_ids`
+  - Added canonicalization helpers in `LosslessConfig`:
+    - `canonical_fec_default_symbols_per_block()` clamps defaults into configured bounds.
+    - `canonical_fec_default_symbol_size(chunk_size)` derives policy-driven defaults and clamps to bounds.
+    - `canonical_fec_default_tree_ids()` enforces sorted+unique allowlists.
+  - Added/updated config-focused tests for defaults, bounds normalization, symbol-size policy behavior, and tree-id canonicalization in `dataplane/src/node/config.rs`.
+  - Updated runtime-config docs/examples in:
+    - `docs/docs/design/lossless_config.md`
+    - `docs/docs/design/config-reference.md`
+- Files modified:
+  - `dataplane/src/node/config.rs`
+  - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/config-reference.md`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Runtime session-start still consumes explicit sender FEC fields today; T5 remains responsible for wiring these new config defaults into startup flow end-to-end.
 
 ### T5 — Refactor Runtime Session Start APIs To Be FEC-Agnostic At Boundary
 - `depends_on: [T3, T4]`

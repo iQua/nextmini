@@ -23,10 +23,23 @@ Defines default behavior for the lossless session engines used by the dataplane.
 | `fec_collaborative_multitree_enabled` | `bool` | `true` | On/off gate for collaborative multi-tree FEC mode. |
 | `fec_enabled` | `bool` | `false` | Global enable switch for FEC sessions (opt-in by default). |
 | `fec_require_capability` | `bool` | `true` | Reject FEC sessions unless receiver capability negotiation is present. |
+| `fec_default_symbols_per_block` | `u16` | `32` | Runtime-derived default `FecManifest.symbols_per_block` before preflight. |
+| `fec_symbol_size_policy` | `FecSymbolSizePolicy` | `"chunk_size"` | Default symbol-size policy: `chunk_size` follows session chunk size, `fixed` uses `fec_default_symbol_size`. |
+| `fec_default_symbol_size` | `u16` | `8500` | Fixed default `FecManifest.symbol_size` when `fec_symbol_size_policy="fixed"`. |
+| `fec_tree_ids_source` | `FecTreeIdsSource` | `"config"` | Source for internal sender tree-id allowlist (`config` or `installed_routes`). |
+| `fec_default_tree_ids` | `Vec<u16>` | `[0]` | Config fallback tree-id allowlist used when `fec_tree_ids_source="config"`. |
 | `fec_symbols_per_block_min` | `u16` | `1` | Lower bound enforced at runtime for FEC symbols-per-block. |
 | `fec_symbols_per_block_max` | `u16` | `1024` | Upper bound enforced at runtime for FEC symbols-per-block. |
 | `fec_symbol_size_min` | `u16` | `1` | Lower bound enforced at runtime for FEC symbol size. |
 | `fec_symbol_size_max` | `u16` | `16384` | Upper bound enforced at runtime for FEC symbol size. |
+
+### FEC Runtime-Derived Defaults
+
+- Runtime derives default `symbols_per_block` from `fec_default_symbols_per_block`, canonicalized into `fec_symbols_per_block_[min,max]`.
+- Runtime derives default `symbol_size` from `fec_symbol_size_policy`:
+  - `chunk_size`: use the session `chunk_size`.
+  - `fixed`: use `fec_default_symbol_size`.
+- Runtime canonicalizes derived/default tree IDs to sorted + unique before sender startup checks.
 
 ### TokenBucketSpec Fields
 
@@ -87,6 +100,11 @@ fec_max_tree_lanes = 64
 fec_collaborative_multitree_enabled = true
 fec_enabled = false
 fec_require_capability = true
+fec_default_symbols_per_block = 32
+fec_symbol_size_policy = "chunk_size"
+fec_default_symbol_size = 8500
+fec_tree_ids_source = "config"
+fec_default_tree_ids = [0]
 fec_symbols_per_block_min = 1
 fec_symbols_per_block_max = 1024
 fec_symbol_size_min = 1
