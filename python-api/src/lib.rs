@@ -226,7 +226,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None, fec_enabled=None, fec_symbols_per_block=None, fec_symbol_size=None, fec_tree_ids=None))]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None))]
     fn send_data(
         &self,
         group_id: u64,
@@ -237,10 +237,6 @@ impl Dataplane {
         src_port: Option<u16>,
         dst_port: Option<u16>,
         congestion: Option<String>,
-        fec_enabled: Option<bool>,
-        fec_symbols_per_block: Option<u16>,
-        fec_symbol_size: Option<u16>,
-        fec_tree_ids: Option<Vec<u16>>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let dest_ip_addr = parse_ipv4(dest_ip)?;
@@ -277,12 +273,6 @@ impl Dataplane {
                 }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                let _ = (
-                    fec_enabled,
-                    fec_symbols_per_block,
-                    fec_symbol_size,
-                    fec_tree_ids,
-                );
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: dest_ip_addr,
@@ -311,18 +301,13 @@ impl Dataplane {
         }
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = (
-            fec_enabled,
-            fec_symbols_per_block,
-            fec_symbol_size,
-            fec_tree_ids,
-        );
+        let _ = (&congestion, total_bytes);
 
         Ok(sid)
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, fec_enabled=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
     fn receive_data(
         &self,
         group_id: u64,
@@ -332,7 +317,6 @@ impl Dataplane {
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        fec_enabled: Option<bool>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let ip = parse_ipv4(dest_ip)?;
@@ -353,7 +337,6 @@ impl Dataplane {
                 let runtime_config = &self.cfg.lossless_runtime_config;
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
-                let _ = fec_enabled;
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: ip,
@@ -379,13 +362,13 @@ impl Dataplane {
         }
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = fec_enabled;
+        let _ = (src_port, dst_port);
 
         Ok(sid)
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None, fec_enabled=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
@@ -396,7 +379,6 @@ impl Dataplane {
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        fec_enabled: Option<bool>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
@@ -419,7 +401,6 @@ impl Dataplane {
                 let local_node_id = self.cfg.node_id;
                 let base_addr = self.cfg.user_space_base_addr;
                 let netmask = self.cfg.local_netmask;
-                let _ = fec_enabled;
 
                 return future_into_py(py, async move {
                     let ip = parse_ipv4(&dest_ip)?;
@@ -458,7 +439,7 @@ impl Dataplane {
         }
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = fec_enabled;
+        let _ = (&dest_ip, src_port, dst_port);
 
         // Fallback if feature disabled (immediate return)
         future_into_py(py, async move {

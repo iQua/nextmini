@@ -292,6 +292,22 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Python extension API is FEC-oblivious.
 - Validation:
   - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids|FecManifest|FecCapabilities|sender_fec_manifest|receiver_fec_capabilities" python-api/src/lib.rs` returns no API-surface hits.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Updated public Python signatures in `python-api/src/lib.rs`:
+    - `send_data(..., congestion=None)` (removed `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`).
+    - `receive_data(...)` (removed `fec_enabled`).
+    - `receive_data_async(...)` (removed `fec_enabled`).
+  - Removed now-unused FEC kwarg plumbing from method parameter lists and internal no-op placeholder bindings.
+  - Confirmed `python-api/src/lib.rs` contains no Python-surface `sender_fec_manifest`, `sender_fec_tree_ids`, `receiver_fec_capabilities`, `FecManifest`, or `FecCapabilities` references.
+  - Preserved existing user-oriented sender preflight rejection mapping (`lossless sender preflight rejected session {sid}: {err}`) and receiver preflight behavior.
+- Files modified:
+  - `python-api/src/lib.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - This is an intentional API break: Python callers still passing removed `fec_*` kwargs now fail at call binding with Python `TypeError` (unexpected keyword argument), as defined in T2.
+  - T8/T9/T10 remain responsible for callsite/docs/guardrail updates outside `python-api/src/lib.rs`.
 
 ### T8 — Update Python Examples/Tooling To New Contract
 - `depends_on: [T7]`
