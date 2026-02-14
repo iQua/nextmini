@@ -1,14 +1,15 @@
-# fuma
+# Nextmini: a High-Performance Network Emulation and Experimentation Testbed
 
-This is a Tanstack Start application generated with
-[Create Fumadocs](https://github.com/fuma-nama/fumadocs).
+This is the canonical documentation for the Nextmini framework.
 
-Run development server:
+To run development server:
 
 ```bash
-npm run dev
-# or
-pnpm dev
-# or
-yarn dev
+bun dev
+```
+
+To build:
+
+```bash
+bun run build
 ```
