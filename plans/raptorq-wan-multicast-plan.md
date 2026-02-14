@@ -234,8 +234,8 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `python-api/src/lib.rs`
   - `examples/multicast-docker/scripts/multicast_node.py`
   - `tools/experiments/raptorq/smoke_python_api.py`
-  - `docs/docs/design/python-api.md`
-  - `fuma/content/docs/testing/multicast.md`
+  - `docs/content/docs/design/python-api.md`
+  - `docs/content/docs/testing/multicast.md`
   - `raptorq-wan-multicast-plan.md`
 - **Gotchas**:
   - Sender FEC manifest defaults (`symbols_per_block=32`, `symbol_size=chunk_size`) are applied only when FEC is explicitly requested.
@@ -384,8 +384,8 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - **Files Updated**:
   - `tools/experiments/raptorq/check_compat_matrix.py`
   - `tools/experiments/raptorq/tests/test_check_compat_matrix.py`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/raptorq-migration-notes.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/raptorq-migration-notes.md`
   - `plans/raptorq-wan-multicast-plan.md`
 - **Acceptance Criteria**:
   - Clear operational playbook for enable/disable and strict FEC-only behavior.
@@ -428,7 +428,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - Added frozen mapping + source commit pin + MIT provenance snapshot, then mirrored notes into `docs/`.
 - Files modified:
   - `raptorq-wan-multicast-plan.md`
-  - `docs/docs/design/raptorq-migration-notes.md`
+  - `docs/content/docs/design/raptorq-migration-notes.md`
 - Gotchas:
   - The `fec` token matched many unrelated words (for example `effective` and `lifecycle`), so inventory curation required path-level review rather than regex matches alone.
 

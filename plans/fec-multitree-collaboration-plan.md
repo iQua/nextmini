@@ -90,8 +90,8 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Status:** completed.
 - **Work log:** documented sender `fec_tree_ids` contract (sorted/unique allowlist, deterministic tie-breakers, invalid-config rejection, explicit single-tree exception) and documented deterministic multicast control-tree routing policy (`tree_id=0` if installed, else smallest installed tree).
 - **Files changed (T0):**
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/multicast-groups.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/multicast-groups.md`
   - `plans/fec-multitree-collaboration-plan.md`
 - **Gotchas:** runtime still uses `fec_num_trees` and default `tree_id=None -> 0` behavior in code today; this task records the v3 contract only. Enforcement/implementation lands in T1/T2/T8.
 
@@ -116,7 +116,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Files changed (T1):**
   - `dataplane/src/node/session/sender.rs`
   - `dataplane/tests/fec_multitree.rs`
-  - `docs/docs/design/lossless_config.md`
+  - `docs/content/docs/design/lossless_config.md`
   - `plans/fec-multitree-collaboration-plan.md`
 - **Gotchas:** multi-tree collaborative dispatch is not implemented in T1; with hash removed, current sender path emits FEC symbols on `DEFAULT_TREE_ID` until T3/T6 land.
 
@@ -296,9 +296,9 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
   - `python-api/src/lib.rs`
   - `dataplane/tests/fec_multitree.rs`
   - `dataplane/tests/fec_sender.rs`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/config-reference.md`
-  - `docs/docs/design/python-api.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
+  - `docs/content/docs/design/python-api.md`
   - `plans/fec-multitree-collaboration-plan.md`
 - **Gotchas:** Python API now rejects FEC sender calls that omit `fec_tree_ids`; runtime preflight now also rejects multi-tree FEC whenever dataplane `feature=concurrent`, so collaborative sessions require `feature=sequential`.
 
@@ -363,8 +363,8 @@ Replace tests that assume per-symbol hash determinism with tests aligned to coll
 - **Work log:** added sender-local per-tree observability counters (`queued`, `sent`, `blocked`, `drained`, `wakeups`) on collaborative FEC tree lanes and surfaced them in dispatch logs (queued/all-blocked/wakeup) plus a session-end per-tree counter snapshot for postmortems. Added a dedicated FEC session-start log that records configured `fec_tree_ids`, `fec_tree_lane_depth`, `fec_dispatch_burst`, and processor ingress policy/support (`sequential_only` policy with support/unsupported status). Updated rollout docs to state collaborative dispatch is the only multi-tree behavior and that `fec_collaborative_multitree_enabled` is an explicit on/off rollout gate (not a strategy selector).
 - **Files changed (T10):**
   - `dataplane/src/node/session/sender.rs`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/config-reference.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
   - `plans/fec-multitree-collaboration-plan.md`
 - **Gotchas:** per-tree counters are lock-free atomic snapshots sampled across async lane workers, so logs are diagnostically stable but not a strict total-order event trace at sub-event granularity.
 

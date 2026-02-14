@@ -34,15 +34,15 @@
 
 ## Python Bindings & Tooling
 
-- The `python-api/src` crate exposes `nextmini_py::Dataplane`, `PacketReceiver`, and frozen buffer helpers so Python workloads can inject or tap flows in-process. Follow `docs/docs/examples/pytorch_python_api.md` for end-to-end guidance.
+- The `python-api/src` crate exposes `nextmini_py::Dataplane`, `PacketReceiver`, and frozen buffer helpers so Python workloads can inject or tap flows in-process. Follow `docs/content/docs/examples/pytorch_python_api.md` for end-to-end guidance.
 - Wheels are compiled with `pyo3`'s `abi3-py313` feature, so ensure CPython 3.13.* is active when running the `maturin build --release -m python-api/Cargo.toml` or `maturin develop --release -m python-api/Cargo.toml` commands listed above.
 - Most automation (`examples/pytorch`, `examples/multicast-*`, `tools/monitor`, routing utilities) dynamically import the module and expect a valid node config path plus the `NEXTMINI_CONFIG` / `NEXTMINI_DST_NODE` environment variables noted in the docs; keep those hooks intact when extending the scripts.
 - When writing new Python helpers, reuse the buffer adapters in `python-api/src/buffer.rs` and register flows via `Dataplane::register_receiver_*` instead of rolling bespoke socket glue—this keeps behavior aligned with the Rust dataplane.
 
 ## Documentation Tooling
 
-- `docs/` hosts the MkDocs site. Bootstrap its environment with `uv venv && source .venv/bin/activate && uv pip install mkdocs-material`.
-- Run `mkdocs serve` for a live preview and `mkdocs build` to generate the static `site/` output; commit doc changes alongside the features they cover.
+- `docs/` hosts the Fuma docs app. Bootstrap tooling in `docs/` (`bun`, `bun run`, and dependencies in `docs/package.json`) before editing.
+- Run `cd docs && bun dev` for a live docs preview; run `bun run types:check` before publishing documentation updates.
 
 ## Commit & Pull Request Guidelines
 

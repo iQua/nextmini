@@ -10,7 +10,7 @@ Today, the Python extension exposes FEC internals directly:
 - `python-api/src/lib.rs` `Dataplane::send_data` exposes `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`.
 - `python-api/src/lib.rs` `Dataplane::receive_data` and `receive_data_async` expose `fec_enabled`.
 - `python-api/src/lib.rs` imports and constructs `FecManifest` / `FecCapabilities` via `sender_fec_manifest`, `sender_fec_tree_ids`, `receiver_fec_capabilities`.
-- Docs/examples/tooling teach users to pass FEC arguments (`docs/docs/design/python-api.md`, `examples/multicast-docker/scripts/multicast_node.py`, `tools/experiments/raptorq/smoke_python_api.py`).
+- Docs/examples/tooling teach users to pass FEC arguments (`docs/content/docs/design/python-api.md`, `examples/multicast-docker/scripts/multicast_node.py`, `tools/experiments/raptorq/smoke_python_api.py`).
 
 This breaks encapsulation: the Python layer currently owns policy/validation that should live in dataplane runtime internals.
 
@@ -54,13 +54,13 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Capture all FEC-exposed callsites in docs/examples/tooling.
 - Files:
   - `python-api/src/lib.rs`
-  - `docs/docs/design/python-api.md`
+  - `docs/content/docs/design/python-api.md`
   - `examples/multicast-docker/scripts/multicast_node.py`
   - `tools/experiments/raptorq/smoke_python_api.py`
 - Deliverables:
   - Short checklist of existing API parameters and expected error semantics to preserve.
 - Validation:
-  - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids" python-api/src/lib.rs docs/docs/design/python-api.md examples tools`
+  - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids" python-api/src/lib.rs docs/content/docs/design/python-api.md examples tools`
 - Status:
   - Completed on February 14, 2026.
 - Work log:
@@ -86,7 +86,7 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
     - Sender runtime preflight rejection wrapping preserved as `lossless sender preflight rejected session {sid}: {err}` in `python-api/src/lib.rs:312`.
     - Receiver-side validation errors (`PyRuntimeError`) captured in `python-api/src/lib.rs:347`, `python-api/src/lib.rs:351`, `python-api/src/lib.rs:409`, `python-api/src/lib.rs:412`: `expected_bytes must be positive.` and `chunk_size must be positive.`
   - Captured FEC-exposed docs/examples/tooling callsites:
-    - Docs teach FEC kwargs in `docs/docs/design/python-api.md:85`, `docs/docs/design/python-api.md:94`, `docs/docs/design/python-api.md:95`, `docs/docs/design/python-api.md:103`.
+    - Docs teach FEC kwargs in `docs/content/docs/design/python-api.md:85`, `docs/content/docs/design/python-api.md:94`, `docs/content/docs/design/python-api.md:95`, `docs/content/docs/design/python-api.md:103`.
     - Example CLI and callsites in `examples/multicast-docker/scripts/multicast_node.py:41`, `examples/multicast-docker/scripts/multicast_node.py:47`, `examples/multicast-docker/scripts/multicast_node.py:57`, `examples/multicast-docker/scripts/multicast_node.py:67`, `examples/multicast-docker/scripts/multicast_node.py:370`, `examples/multicast-docker/scripts/multicast_node.py:421`.
     - Smoke harness explicitly asserts FEC kwargs/helpers in `tools/experiments/raptorq/smoke_python_api.py:115`, `tools/experiments/raptorq/smoke_python_api.py:122`, `tools/experiments/raptorq/smoke_python_api.py:129`, `tools/experiments/raptorq/smoke_python_api.py:136`, `tools/experiments/raptorq/smoke_python_api.py:179`, `tools/experiments/raptorq/smoke_python_api.py:188`, and runtime probe calls `send_data(..., fec_enabled=False)` at `tools/experiments/raptorq/smoke_python_api.py:218`.
 - T1 checklist (baseline to preserve/migrate deliberately):
@@ -110,7 +110,7 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Define invariant: Python cannot supply or override manifest/capability/tree-ID internals.
 - Files:
   - `python-api/src/lib.rs`
-  - `docs/docs/design/python-api.md` (contract section)
+  - `docs/content/docs/design/python-api.md` (contract section)
 - Deliverables:
   - Final method signatures and migration note approved in plan/doc.
 - Validation:
@@ -130,10 +130,10 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Confirmed current public signatures in `python-api/src/lib.rs` still include `fec_*` kwargs; used this as baseline for the target contract checklist.
   - Locked final FEC-oblivious signatures and migration policy wording in this plan for downstream tasks T3/T4/T7/T8/T9/T10.
   - Added explicit boundary invariant that Python cannot supply manifest/capability/tree-ID internals.
-  - Added contract section + migration notes in `docs/docs/design/python-api.md` to keep implementation and docs aligned.
+  - Added contract section + migration notes in `docs/content/docs/design/python-api.md` to keep implementation and docs aligned.
 - Files modified:
   - `plans/python-api-fec-oblivious-refactor-plan.md`
-  - `docs/docs/design/python-api.md`
+  - `docs/content/docs/design/python-api.md`
 - Errors/gotchas:
   - Current `python-api/src/lib.rs` still contains `fec_*` kwargs and helper plumbing by design at this stage; removal is deferred to T7.
   - Existing docs/examples still include legacy FEC kwargs outside the new contract section and will be cleaned in later tasks (T8/T9).
@@ -182,8 +182,8 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Keep strict preflight rules centralized in runtime.
 - Files:
   - `dataplane/src/node/config.rs`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/config-reference.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
 - Deliverables:
   - Config-backed internal FEC policy with no Python dependency.
 - Validation:
@@ -203,12 +203,12 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
     - `canonical_fec_default_tree_ids()` enforces sorted+unique allowlists.
   - Added/updated config-focused tests for defaults, bounds normalization, symbol-size policy behavior, and tree-id canonicalization in `dataplane/src/node/config.rs`.
   - Updated runtime-config docs/examples in:
-    - `docs/docs/design/lossless_config.md`
-    - `docs/docs/design/config-reference.md`
+    - `docs/content/docs/design/lossless_config.md`
+    - `docs/content/docs/design/config-reference.md`
 - Files modified:
   - `dataplane/src/node/config.rs`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/config-reference.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
   - `plans/python-api-fec-oblivious-refactor-plan.md`
 - Errors/gotchas:
   - Runtime session-start still consumes explicit sender FEC fields today; T5 remains responsible for wiring these new config defaults into startup flow end-to-end.
@@ -368,23 +368,23 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Move FEC tuning guidance to runtime config docs.
   - Document migration steps for removed kwargs and expected failure mode (Python `TypeError` on old kwargs, if no shim).
 - Files:
-  - `docs/docs/design/python-api.md`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/config-reference.md` (if Python examples or references mention old kwargs)
+  - `docs/content/docs/design/python-api.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md` (if Python examples or references mention old kwargs)
 - Deliverables:
   - Consistent docs with zero instruction to pass FEC parameters in Python API calls.
 - Validation:
-  - `rg -n "send_data\\(|receive_data\\(|fec_enabled|fec_tree_ids|fec_symbol" docs/docs/design`
+  - `rg -n "send_data\\(|receive_data\\(|fec_enabled|fec_tree_ids|fec_symbol" docs/content/docs/design`
 - Status:
   - Completed on February 14, 2026.
 - Work log:
-  - Updated `docs/docs/design/python-api.md` migration section with explicit caller steps: remove `fec_*` kwargs, move FEC tuning to `[lossless_runtime_config]`, and expect Python `TypeError` on stale kwargs.
-  - Clarified `docs/docs/design/lossless_config.md` as runtime-config ownership for FEC defaults/tree IDs and added explicit FEC-oblivious Python boundary wording.
-  - Added migration/ownership note in `docs/docs/design/config-reference.md` under lossless config so runtime FEC tuning is documented outside Python call signatures.
+  - Updated `docs/content/docs/design/python-api.md` migration section with explicit caller steps: remove `fec_*` kwargs, move FEC tuning to `[lossless_runtime_config]`, and expect Python `TypeError` on stale kwargs.
+  - Clarified `docs/content/docs/design/lossless_config.md` as runtime-config ownership for FEC defaults/tree IDs and added explicit FEC-oblivious Python boundary wording.
+  - Added migration/ownership note in `docs/content/docs/design/config-reference.md` under lossless config so runtime FEC tuning is documented outside Python call signatures.
 - Files modified:
-  - `docs/docs/design/python-api.md`
-  - `docs/docs/design/lossless_config.md`
-  - `docs/docs/design/config-reference.md`
+  - `docs/content/docs/design/python-api.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
   - `plans/python-api-fec-oblivious-refactor-plan.md`
 - Errors/gotchas:
   - Validation grep intentionally still matches `fec_*` tokens in runtime-config documentation; this is expected because those are config fields, not Python kwargs.
