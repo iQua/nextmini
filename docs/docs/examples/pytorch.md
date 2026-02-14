@@ -23,7 +23,7 @@ To build and run the docker image in this example, run the following in the `exa
 docker compose build && docker compose up
 ```
 
-This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Strato controller. To start training, open another terminal and attach to `node1` with
+This will start four Nextmini dataplane nodes with OpenMPI installed, and connect them to a single Nextmini controller. To start training, open another terminal and attach to `node1` with
 
 ```bash
 docker exec -it node1 /bin/bash
@@ -53,19 +53,19 @@ This should start a training session for a `LeNet-5` model to be trained with th
 
 ## Optional: Stream training metrics through the Python dataplane API
 
-When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, enable the Python bindings described in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
+When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, use the Python bindings described in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
 
 1. Build and install the `nextmini_py` wheel (`maturin build --release -m python-api/Cargo.toml; pip install target/wheels/nextmini_py-*.whl`).
-2. Export the environment variables consumed by `examples/pytorch/gpt2.py` (or your custom script):
+2. In your trainer script, gate the telemetry path behind environment variables (or any equivalent config):
 
    ```bash
    export NEXTMINI_CONFIG=/absolute/path/node-config.toml
    export NEXTMINI_DST_NODE=2   # numeric node id that should receive telemetry
    ```
 
-3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). When both variables are present the script loads `nextmini_py.Dataplane`, wraps each per-step loss tensor in a `FrozenBuffer`, and ships it via `send_to_node`.
+3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). If your hook is enabled, build a `PacketView` from each tensor and ship it with `send_to_node`.
 
-On the destination node you can mirror the setup with another Python worker and call `rx.recv(timeout_ms=2000)` to consume the metrics. The bindings reuse the same routing tables as the Rust dataplane, so multicast fan-out and QoS policies apply automatically. Consult the quickstart for queue sizing, fallbacks, and additional helpers.
+The current `examples/pytorch/*.py` files do not include this telemetry hook by default, so add it explicitly where needed. On the destination node you can mirror the setup with another Python worker and call `rx.recv(timeout_ms=2000)` to consume metrics. The bindings reuse the same routing tables as the Rust dataplane, so multicast fan-out and QoS policies apply automatically.
 
 ## Running a Distributed PyTorch Trainer across Multiple Machines
 
@@ -86,7 +86,7 @@ And remove all the Nextmini related networks, for example, `nextmini_network`.
 docker network rm nextmini_network
 ```
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nextmini/examples/arbutus/readme.md` for guides towards setting up docker properly.
 
 ### Step 1
 

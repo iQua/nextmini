@@ -1,39 +1,38 @@
 # Python dataplane API
 
-The `python-api/` crate builds the `nextmini_py` extension, letting Python workloads instantiate the dataplane in the
-same process, inject buffers directly into the Rust routing stack, and subscribe to reconstructed payloads without going
-through TUN. This note documents the shipped API surface, how it maps onto the Rust implementation, and the knobs that
-govern fragmentation, telemetry, and group coordination.
+The `python-api/` crate builds the `nextmini_py` extension. It lets Python workloads run the Rust dataplane in-process, send payloads directly through the routing stack, and subscribe to delivered payloads without reading from TUN.
 
-## Building and installing `nextmini_py`
+## Build and install `nextmini_py`
 
-1. Install [maturin](https://github.com/PyO3/maturin) inside the target virtualenv.
-2. Build or develop the wheel against CPython 3.13 (the bindings are compiled with `abi3-py313`):
+1. Install `maturin` in your Python environment.
+2. Build against CPython 3.13 (`abi3-py313` is enabled in `python-api/Cargo.toml`).
 
-   ```bash
-   pip install maturin
-   maturin develop --release -m python-api/Cargo.toml    # editable install while iterating
-   # or:
-   maturin build --release -m python-api/Cargo.toml
-   pip install target/wheels/nextmini_py-*.whl
-   ```
+```bash
+pip install maturin
+maturin develop --release -m python-api/Cargo.toml
+# or:
+maturin build --release -m python-api/Cargo.toml
+pip install target/wheels/nextmini_py-*.whl
+```
 
-3. When running the Rust unit tests for this crate, disable the default extension module feature so the binary links
-   against `libpython`:
+## Run crate tests
 
-   ```bash
-   PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
-   cargo nextest run -p nextmini_py --no-default-features --features dev-tests
-   ```
+When running Rust tests for `nextmini_py`, point PyO3 at Python 3.13 and disable the default extension-module build mode:
 
-## Public surface at a glance
+```bash
+PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
+cargo nextest run -p nextmini_py --no-default-features --features dev-tests
+```
+
+## Public API surface
 
 | Python type | Key members | Notes |
 | --- | --- | --- |
-| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready` | Embeds a Tokio runtime, spins up the Rust dataplane (`Conductor`), wires the Python delivery interface, and proxies controller RPCs for multicast helpers. |
-| `nextmini_py.PacketView` | `__len__`, `read()`, `slice(start, length=None)` | Read-only wrapper around `bytes` that implements the Python buffer protocol so the Rust sender can copy exactly once into the `Packet`. |
-| `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Waits for traffic on a specific flow. Returns a `PayloadDelivery` object containing the payload and metadata. |
-| `nextmini_py.PayloadDelivery` | `.payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Metadata-rich wrapper returned by receivers. Fragmentation metadata fields are optional and may be `None`. |
+| `nextmini_py.Dataplane` | `send_to_node`, `register_receiver_from_node`, `register_receiver_for_group`, `create_group`, `join_group`, `leave_group`, `group_is_ready`, `wait_for_local_membership`, `set_group_routes`, `wait_for_group_routes`, `wait_for_topology_ready`, `send_data`, `receive_data`, `receive_data_async`, `lossless_wait`, `lossless_wait_async`, `get_data_buffer`, `get_network_info`, `node_id` | Owns the embedded dataplane runtime and controller bridge. |
+| `nextmini_py.PacketView` | `__len__`, `read()`, `slice(start, length=None)` | Immutable bytes view with Python buffer protocol support. |
+| `nextmini_py.PacketBuilder` | `write(bytes)`, `freeze()` | Mutable builder that produces a `PacketView`. |
+| `nextmini_py.PacketReceiver` | `recv(timeout_ms=None)`, `recv_async()` | Receives `PayloadDelivery` objects for a registered flow. |
+| `nextmini_py.PayloadDelivery` | `.payload`, `.frozen_payload`, `.flow_id`, `.src_ip`, `.dst_ip`, `.src_port`, `.dst_port`, `.message_id`, `.total_len`, `.fragment_count` | Payload bytes plus flow metadata. |
 
 ## Dataplane lifecycle
 
@@ -43,161 +42,99 @@ import nextmini_py as nm
 dp = nm.Dataplane("/abs/path/to/node-config.toml")
 ```
 
-Instantiating `Dataplane` loads the TOML config, disables the local TUN reader (`enable_local_interface = false`),
-constructs the `Conductor`, and attaches the `PythonInterfaceHandle` plus controller bridge. The Rust dataplane continues
-to run on background Tokio tasks until the `Dataplane` object is dropped or the host process exits. Each call to
-`Dataplane` is isolated; if you need multiple simultaneous nodes you should spawn multiple processes rather than
-multiple `Dataplane` objects inside one interpreter.
+`Dataplane(...)` loads the TOML config, forces `enable_local_interface = false`, starts the Rust conductor/runtime, and wires Python delivery + controller events. Keep the `Dataplane` instance alive while traffic is active.
 
-## Sending payloads
-
-All outbound APIs accept a `PacketView`. Creating one from NumPy or PyTorch tensors looks like:
+## Unicast payload send/receive
 
 ```python
-import numpy as np
 import nextmini_py as nm
 
 def packet_view_from_tensor(tensor) -> nm.PacketView:
-    host_tensor = tensor.detach().contiguous().cpu()
-    return nm.PacketView(host_tensor.numpy().tobytes())
+    arr = tensor.detach().contiguous().cpu().numpy()
+    return nm.PacketView(arr.tobytes())
 
-dp = nm.Dataplane("/abs/path/to/node-config.toml")
 payload = packet_view_from_tensor(loss_tensor)
+dp = nm.Dataplane("/abs/path/to/node-config.toml")
+
+# Send to node ID 2 using default user-space ports from config
 dp.send_to_node(dst_node_id=2, frozen=payload)
+
+# Receive from source node ID 1
+rx = dp.register_receiver_from_node(src_node_id=1)
+delivery = rx.recv(timeout_ms=5_000)
+if delivery:
+    print(delivery.flow_id, len(delivery.payload))
 ```
 
-`send_to_node` synthesizes an IPv4/TCP tuple using the node ID and the user-space port range defined in the config. For multicast-aware senders, create the group, install a DAG via `set_group_routes`, and then use the lossless session APIs to transmit payloads.
+`register_receiver_for_group(src_node_id=..., group_ip="239.1.1.10")` is the multicast equivalent.
 
-### Optional FEC kwargs for lossless sessions
+## Multicast group helpers
 
-Lossless multicast helpers expose optional FEC controls while keeping older call patterns valid:
+Use controller-backed helpers from Python when managing group lifecycle:
+
+- `create_group(label)`
+- `group_is_ready(timeout_ms=None)`
+- `set_group_routes(group_id, edges)`
+- `join_group(group_id)` / `leave_group(group_id)`
+- `wait_for_local_membership(group_id, timeout_ms=None)`
+- `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)`
+- `wait_for_topology_ready(timeout_ms=None)`
+
+## Lossless session helpers (`send_data` / `receive_data`)
+
+`send_data(...)` and `receive_data(...)` expose lossless session APIs for larger multicast transfers. Optional FEC arguments on sender/receiver calls map to runtime preflight checks in Rust.
 
 ```python
 sid = dp.send_data(
-    group_id,
-    group_ip,
-    receiver_ids,
-    payload,
-    chunk_size=8_500,
+    group_id=7,
+    dest_ip="239.255.0.10",
+    receiver_ids=[2, 3],
+    buffer=payload,
+    chunk_size=8500,
     fec_enabled=True,
-    fec_tree_ids=[1, 3, 5],   # required when FEC is enabled
-    fec_symbols_per_block=32,  # optional
-    fec_symbol_size=1_400,     # optional
+    fec_tree_ids=[1, 3],
 )
 
 rx_sid = dp.receive_data(
-    group_id,
-    group_ip,
+    group_id=7,
+    dest_ip="239.255.0.10",
     source_node_id=1,
-    expected_bytes=payload_len,
+    expected_bytes=len(payload),
     fec_enabled=True,
 )
 ```
 
-- Default behavior is unchanged: sender FEC stays disabled unless `fec_enabled=True` (or explicit FEC sizing kwargs are provided).
-- FEC senders must provide explicit `fec_tree_ids`; runtime preflight requires a non-empty, sorted, unique list and enforces sequential-ingress policy for multi-tree sessions.
-- Receiver capability advertisement defaults to FEC-capable; pass `fec_enabled=False` to explicitly reject FEC sessions for that receiver.
-- Runtime policy still applies. If `lossless_runtime_config.fec_enabled=false` in the node config, sender preflight rejects FEC sessions.
+Use `lossless_wait(...)` / `lossless_wait_async(...)` to block on completion, then `get_data_buffer(session_id)` on receivers to retrieve reconstructed bytes.
 
-### PacketView in detail
+## Payload metadata behavior
 
-`PacketView` keeps a reference-counted `Bytes` backing store so clones are cheap. The object:
+Python deliveries are payload-only (TCP/IP headers stripped). Metadata fields `message_id`, `total_len`, and `fragment_count` are reserved compatibility fields and are currently `None` in the payload delivery path.
 
-- Accepts any `bytes` value in its constructor.
-- Implements `memoryview(packet_view)`/`np.frombuffer(...)` via the Python buffer protocol.
-- Provides `slice(start, length=None)` for zero-copy views into subranges.
-- Supplies `read()` if you need an owned `bytes` copy on the Python side.
+## Script integration pattern
 
-The Rust bindings treat a `PacketView` as immutable; if you need to mutate the payload, build a new instance.
-
-## Receiving payloads
-
-Register receivers per flow using the node ID (or group IP) of the expected sender:
+Environment variables like `NEXTMINI_CONFIG` and `NEXTMINI_DST_NODE` are conventions used by your scripts, not variables consumed directly by the Rust binaries. A common opt-in pattern is:
 
 ```python
-import numpy as np
+import os
 import nextmini_py as nm
 
-dp = nm.Dataplane("/abs/path/to/node-config.toml")
-rx = dp.register_receiver_from_node(src_node_id=1)
+dp = None
+dst = os.getenv("NEXTMINI_DST_NODE")
+config = os.getenv("NEXTMINI_CONFIG")
 
-delivery = rx.recv(timeout_ms=5_000)
-if delivery:
-    arr = np.frombuffer(delivery.payload, dtype=np.float32)
-    print("flow:", delivery.flow_id, "message:", delivery.message_id)
+if dst and config:
+    dp = nm.Dataplane(config)
+
+# Later, only publish telemetry when configured
+if dp is not None:
+    payload = nm.PacketView(loss_tensor.detach().contiguous().cpu().numpy().tobytes())
+    dp.send_to_node(dst_node_id=int(dst), frozen=payload)
 ```
 
-- Receivers deliver `PayloadDelivery` objects whose `.payload` is already stripped of IPv4/TCP headers, and
-  whose metadata reflects the reconstructed message.
-- `register_receiver_for_group(src_node_id=…, group_ip="239.1.1.1")` uses the same interface for
-  multicast traffic. Both methods accept optional `src_port` and `dst_port` parameters to override the defaults.
-- `PacketReceiver.recv(timeout_ms)` blocks until a payload becomes available or the deadline expires, returning `None`
-  on timeout. `recv_async()` returns an awaitable compatible with `asyncio`.
+For working end-to-end Python dataplane integrations in this repo, see `examples/rl/src/trainer.py`, `examples/rl/src/worker.py`, and `examples/multicast-docker/scripts/multicast_node.py`.
 
-## Flow and group helpers
+## Troubleshooting
 
-The bindings expose a few controller-facing helpers so Python workloads can manage multicast membership without a
-secondary CLI:
-
-| Method | Description |
-| --- | --- |
-| `create_group(label)` | Requests a new multicast group through the controller. |
-| `join_group(group_id)` / `leave_group(group_id)` | Adds or removes the local node from a multicast group. |
-| `group_is_ready(timeout_ms=None)` | Waits for a `GroupCreated` event and returns `(group_id, group_ip, src_node_id)` when the controller finishes provisioning. |
-| `set_group_routes(group_id, edges)` | Persists DAG edges for a multicast group so the controller can install routes. |
-| `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)` | Waits until the controller installs multicast routes for a group. |
-| `wait_for_topology_ready(timeout_ms=None)` | Waits until all nodes have installed the base route tables. |
-
-Each method leverages the `PythonEvent` queue maintained inside the dataplane (`PythonInterfaceHandle`). Events are only
-delivered to Python receivers that have called one of the waiters above; they are not broadcast globally.
-
-## Payload size behavior
-
-The bindings now ship every payload as a single TCP frame; there is no application-level fragmentation to configure. The operating system handles any link-layer segmentation, and the dataplane enforces the configured MTU when chunking lossless session transfers. This keeps the API predictable: the bytes you send are the bytes delivered.
-
-## Telemetry and troubleshooting
-
-- `PayloadDelivery` metadata mirrors the transport tuple plus optional `message_id`, `total_len`, `fragment_count`, and
-  `payload_format` (`"payload"` vs `"raw_packet"`). Since fragmentation is gone the optional fields are always `None`, but
-  they remain for backward compatibility with older tooling.
-- The bindings log backpressure warnings if a receiver queue fills up. Increase `channel_capacity` in node configs or
-  call `recv()` more aggressively when this appears.
-
-## Worked example: gating PyTorch metrics on env vars
-
-`examples/pytorch/gpt2.py` and other training scripts already include opt-in hooks. Set the following environment
-variables before launching the job:
-
-```bash
-export NEXTMINI_CONFIG=/absolute/path/node-config.toml
-export NEXTMINI_DST_NODE=2
-```
-
-Inside the script:
-
-```python
-import nextmini_py as nm
-
-dp = nm.Dataplane(os.environ["NEXTMINI_CONFIG"])
-tx = dp.send_to_node
-rx = dp.register_receiver_from_node(
-    src_node_id=int(os.environ["NEXTMINI_DST_NODE"]),
-)
-
-frozen = nm.PacketView(loss_tensor.detach().contiguous().cpu().numpy().tobytes())
-tx(dst_node_id=int(os.environ["NEXTMINI_DST_NODE"]), frozen=frozen)
-maybe_delivery = rx.recv(timeout_ms=200)
-```
-
-Receivers can run in a separate process (using the same config) and call `dp.register_receiver_from_node` with the
-sender’s node ID to ingest the stream.
-
-## Packaging checklist
-
-- Build wheels with `maturin build --release -m python-api/Cargo.toml`. The crate targets `abi3`, so one build works
-  across CPython 3.13 patch releases.
-- Document the path to the TOML config in deployment scripts (`NEXTMINI_CONFIG`).
-- Keep `python-api/README.md` instructions handy for developers who need to run `cargo test` on Apple Silicon (where the
-  linker requires `libpython` headers).
-- When distributing examples or tools under `examples/**` and `tools/**`, import `nextmini_py` dynamically so they keep
-  working in environments where the extension is optional.
+- Increase `channel_capacity` in node config if Python receivers fall behind.
+- Enable `RUST_LOG=info` (or `debug`) to inspect controller events and packet handling.
+- If `Dataplane(...)` fails in Python, verify the config path and that the wheel was built for Python 3.13.

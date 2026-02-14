@@ -14,7 +14,7 @@ docker network rm nextmini_network
 
 Then add `"examples/sba-swarm/ring-emu"` to `/nextmini/Cargo.toml`.
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nextmini/examples/arbutus/readme.md` for guides towards setting up docker properly.
 
 ### Step 1
 
@@ -134,7 +134,7 @@ If you want these SBA scenarios to stream intermediate loss/activation tensors t
 
 1. Install the `nextmini_py` wheel on the swarm nodes.
 2. Set `NEXTMINI_CONFIG=/var/nextmini/node-config.toml` (or the appropriate mounted path) and `NEXTMINI_DST_NODE=<target node id>` before invoking the training scripts.
-3. The provided `gpt2.py` and other helpers already gate the Python bridge behind those variables; once set, they wrap each metric in a `FrozenBuffer`, publish it with `send_to_node`, and log errors without aborting the job.
+3. Add a small telemetry hook in your trainer script that builds `nextmini_py.PacketView` objects and publishes metrics with `send_to_node` when those variables are set.
 
 A companion receiver (launched on another trainer or analytics node) can call `rx.recv()` to ingest the payloads for dashboards or adaptive schedulers.
 

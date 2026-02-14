@@ -12,7 +12,7 @@ And remove all the Nextmini related networks, for example, `nextmini_network`.
 docker network rm nextmini_network
 ```
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nexminit/examples/arbutus/readme.md` for guides towards setting up docker properly.
+Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer the `Step 2` in `nextmini/examples/arbutus/readme.md` for guides towards setting up docker properly.
 
 ### Step 1
 
@@ -50,16 +50,7 @@ To monitor network flows and system status, you can start the dashboard on the c
 # Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Navigate to the monitor directory
-cd nextmini/monitor
-
-# Run the monitor dashboard
-uv run monitor.py
-```
-
-Or use:
-
-```bash
+# Navigate to the monitor directory and run the dashboard
 cd nextmini/tools/monitor
 uv run dashboard.py
 ```

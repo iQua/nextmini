@@ -167,7 +167,7 @@ Current coverage (see `controller/src/utils.rs` and `dataplane/src/node/route.rs
 - Unit tests validate DAG construction, membership pruning, and per-node route assembly.
 - Dataplane tests exercise directory installation, route fan-out, and cache flushing.
 
-Planned follow-ups tracked in `docs/testing/python_api_validation.md` and project mail:
+Planned follow-ups tracked in [`../testing/python_api_validation.md`](../testing/python_api_validation.md) and project mail:
 
 - Controller integration test that drives `CreateGroup`/`JoinGroup` against a live Postgres instance and verifies websocket pushes.
 - End-to-end soak demonstrating packet fan-out across multiple branches (normal + Max mode).
@@ -177,11 +177,11 @@ Planned follow-ups tracked in `docs/testing/python_api_validation.md` and projec
 
 ## Related Material
 
-- **Example walkthrough** – `docs/docs/examples/multicast-flow.md` shows the CLI/API flow for creating a group, joining members, and verifying delivery.
-- **Testing harness plan** – `docs/testing/python_api_validation.md` describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
+- **Example walkthrough** – [`../examples/multicast-flow.md`](../examples/multicast-flow.md) shows the CLI/API flow for creating a group, joining members, and verifying delivery.
+- **Testing harness plan** – [`../testing/python_api_validation.md`](../testing/python_api_validation.md) describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
 - **Controller configuration** – See `controller/src/config.rs` for the multicast pool defaults and other tunables.
 - Dataplane routing-table tests that validate group directory lookups.
 - Integration tests that drive membership changes via Postgres notifications.
 - Performance checks for high-fan-out multicast branches.
 
-See `docs/docs/examples/multicast-flow.md` for an end-to-end walkthrough.
+See [`../examples/multicast-flow.md`](../examples/multicast-flow.md) for an end-to-end walkthrough.

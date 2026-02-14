@@ -25,7 +25,7 @@ Local Server (like 206.12.89.244)       Fly.io (edge)
 ### 1. Start Local Controller
 
 ```bash
-cd /home/ubuntu/nextmini/examples/sim-flyio
+cd /home/ubuntu/nextmini/examples/localserver-flyio
 uv run start-controller.py
 ```
 

@@ -11,7 +11,7 @@ The dataplane supports multiple transport protocols for inter-node communication
 All tuning happens through the standard dataplane configuration (`config.toml` or CLI flags):
 
 ```toml
-# Transport protocol: tcp (default) | quic
+# Transport protocol: tcp (default) | udp | quic
 protocol = "tcp"
 
 # When using QUIC, configure congestion control (bbr | cubic)
@@ -26,6 +26,8 @@ quic_congestion_control = "bbr"
 ```
 
 Use `--protocol quic --quic-congestion-control cubic` on the CLI to switch to QUIC with CUBIC congestion control.
+
+Use `--protocol udp` to run dataplane links over UDP.
 
 ### Operational Notes
 

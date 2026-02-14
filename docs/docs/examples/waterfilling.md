@@ -6,7 +6,7 @@
     The following instructions have not been verified to work correctly.
 
 
-The water-filling routing example, writtin in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:
+The water-filling routing example, written in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:
 
 ```bash
 cd ./examples/routing/waterfilling && docker compose build && docker compose up
@@ -33,11 +33,11 @@ docker compose build --no-cache
 
 _Note:_ Port `5432` is the default for PostgreSQL. On macOS, running a local PostgreSQL instance may conflict with Docker containers using the same port. To avoid issues, do not run another PostgreSQL server on macOS while using Docker.
 
-This will start a Strato network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Strato's built-in link rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured in contained in the `controller-config.toml` file.
+This will start a Nextmini network with 4 nodes and a controller. We are interested in having `node1` as the data source and `node2` as data destination. We configure 3 paths between the two nodes, 1→2, 1→3→2, and 1→4→2. In addition, we leverage Nextmini's link-rate control feature to manually set link 1→2 to have a bandwidth of 10 Mbps, link 3→2 20 Mbps, and link 4→2 30 Mbps. This effectively limits the bandwidth for the three paths to 10 Mbps, 20 Mbps, and 30 Mbps respectively. Details regarding how these are configured are contained in the `controller-config.toml` file.
 
 _Running the workload._ We can now generate arbitrary data with `iperf3` workloads. In this case, we use 6 iperf connections each with 10 Mbps bandwidth using the UDP protocol (TCP won't allow us to set the bandwidth). Manually setting up these iperf connections can be a hassle, so we included two shell scripts to automatically set them up. To execute them, in separate terminals, run the following commands respectively.
 
-In a new terminal, start the iperf3 servers on node2 by runnig:
+In a new terminal, start the iperf3 servers on node2 by running:
 
 ```bash
 docker exec -it node2 /bin/bash -c "./iperf3_s.sh"

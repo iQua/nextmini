@@ -1,17 +1,24 @@
-Run all workspace tests with a single command:
+# Cargo Test Guide
 
-Prerequisite: Python 3.13 on PATH.
+Run tests from the repository root (`nextmini/`).
 
-1) Verify Python 3.13:
-
-```bash
-which python3.13
-```
-Note the path (e.g. `/opt/homebrew/bin/python3.13`).
-
-2) Run tests pointing PyO3 at that interpreter:
+## Workspace test command
 
 ```bash
-PYO3_PYTHON=<Change to Your PATH: /opt/homebrew/bin/python3.13> \
+PYO3_PYTHON=/path/to/python3.13 \
 cargo nextest run --no-default-features --features python-extension --features dev-tests
+```
+
+Notes:
+
+- `PYO3_PYTHON` should point to a CPython 3.13 interpreter.
+- Controller integration tests that require Postgres need the database started first (for example `./utils/start-database.sh`).
+
+## Python API crate-only tests
+
+If you only want `nextmini_py` crate tests:
+
+```bash
+PYO3_PYTHON=/path/to/python3.13 \
+cargo nextest run -p nextmini_py --no-default-features --features dev-tests
 ```

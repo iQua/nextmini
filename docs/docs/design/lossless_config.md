@@ -21,6 +21,12 @@ Defines default behavior for the lossless session engines used by the dataplane.
 | `fec_dispatch_burst` | `usize` | `1` | Max FEC symbols dispatched per sender scheduling cycle. |
 | `fec_max_tree_lanes` | `usize` | `64` | Max allowed `fec_tree_ids` length at runtime preflight. |
 | `fec_collaborative_multitree_enabled` | `bool` | `true` | On/off gate for collaborative multi-tree FEC mode. |
+| `fec_enabled` | `bool` | `false` | Global enable switch for FEC sessions (opt-in by default). |
+| `fec_require_capability` | `bool` | `true` | Reject FEC sessions unless receiver capability negotiation is present. |
+| `fec_symbols_per_block_min` | `u16` | `1` | Lower bound enforced at runtime for FEC symbols-per-block. |
+| `fec_symbols_per_block_max` | `u16` | `1024` | Upper bound enforced at runtime for FEC symbols-per-block. |
+| `fec_symbol_size_min` | `u16` | `1` | Lower bound enforced at runtime for FEC symbol size. |
+| `fec_symbol_size_max` | `u16` | `16384` | Upper bound enforced at runtime for FEC symbol size. |
 
 ### TokenBucketSpec Fields
 
@@ -79,6 +85,12 @@ fec_tree_lane_depth = 32
 fec_dispatch_burst = 1
 fec_max_tree_lanes = 64
 fec_collaborative_multitree_enabled = true
+fec_enabled = false
+fec_require_capability = true
+fec_symbols_per_block_min = 1
+fec_symbols_per_block_max = 1024
+fec_symbol_size_min = 1
+fec_symbol_size_max = 16384
 
 # Optional pacing
 # [lossless_runtime_config.data_bucket]

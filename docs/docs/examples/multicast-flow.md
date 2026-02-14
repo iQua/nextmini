@@ -137,7 +137,6 @@ rx_dp.join_group(group_id)
 rx = rx_dp.register_receiver_for_group(
     src_node_id=src_node_id,
     group_ip=group_ip,
-    payload_only=True,
 )
 payload = rx.recv(timeout_ms=2_000)
 rx_dp.leave_group(group_id)
@@ -152,11 +151,11 @@ rx_dp.leave_group(group_id)
 - `cargo test -p controller build_group_routes_for_node_includes_local_delivery`
 - `cargo test -p controller build_routes_for_node_multicast_entries`
 - `cargo test -p dataplane returns_multicast_next_hops_from_group_routes`
-- Follow the integration recipe in `docs/testing/python_api_validation.md` to exercise membership churn once the docker-compose harness is available.
+- Follow the integration recipe in [`../testing/python_api_validation.md`](../testing/python_api_validation.md) to exercise membership churn with the docker-compose harness.
 
 ---
 
 ## Next Steps
 
 - Automate the Postgres-backed integration test so group membership churn runs in CI.
-- Add operational guidance (failover procedures, idle group garbage collection/ACLs) once exercised in dev clusters—track progress in `docs/docs/design/multicast-groups.md#operational-notes`.
+- Add operational guidance (failover procedures, idle group garbage collection/ACLs) once exercised in dev clusters—track progress in [`../design/multicast-groups.md#operational-notes`](../design/multicast-groups.md#operational-notes).

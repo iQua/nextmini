@@ -73,4 +73,5 @@ nav:
       - Local Server + Fly.io: examples/localserver-flyio.md
   - Testing:
       - Cargo Test Guide: testing/cargo-test.md
+      - Python API Validation: testing/python_api_validation.md
       - Multicast Flow: examples/multicast-flow.md

@@ -172,7 +172,7 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 
 | Field | Type | Default | CLI Flag | Description |
 |-------|------|---------|----------|-------------|
-| `controller_addr` | `String` | `""` | `--controller-addr` | WebSocket address of the controller (e.g., `ws://192.168.1.1:3000`). |
+| `controller_addr` | `String` | `""` | `--controller-addr` | WebSocket address of the controller (e.g., `ws://192.168.1.1:3000`). A plain `host:port` value is normalized to `ws://host:port`. |
 
 ### Node Identity
 
@@ -188,8 +188,10 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 |-------|------|---------|----------|-------------|
 | `private_network_name` | `String` | `""` | `--private-network-name` | Shared private network identifier. |
 | `private_network_interface` | `String` | `"eth0"` | `--private-network-interface` | Network interface for private network. |
+| `private_network_addr` | `String` | `""` | `--private-network-addr` | Explicit IPv4 address for private network interface (auto-detected when empty). |
 | `private_network_port` | `String` | `"8080"` | `--private-network-port` | Port for private network communication. |
 | `public_network_interface` | `String` | `"eth0"` | `--public-network-interface` | Network interface for public network. |
+| `public_network_addr` | `String` | `""` | `--public-network-addr` | Explicit IPv4 address for public network interface (auto-detected when empty). |
 | `public_network_port` | `String` | `"8080"` | `--public-network-port` | Port for public network communication. |
 | `tun_interface_name` | `String` | `"utun"` | `--tun-interface-name` | Name of the TUN interface. |
 | `mtu` | `i32` | `1400` | `--mtu` | MTU of the TUN interface (max 6400). |
@@ -283,6 +285,12 @@ fec_tree_lane_depth = 32
 fec_dispatch_burst = 1
 fec_max_tree_lanes = 64
 fec_collaborative_multitree_enabled = true
+fec_enabled = false
+fec_require_capability = true
+fec_symbols_per_block_min = 1
+fec_symbols_per_block_max = 1024
+fec_symbol_size_min = 1
+fec_symbol_size_max = 16384
 
 # Optional pacing
 # [lossless_runtime_config.data_bucket]
@@ -375,11 +383,11 @@ How routes forward traffic.
 
 | Variable | Description |
 |----------|-------------|
-| `NEXTMINI_CONFIG` | Path to dataplane configuration file. |
-| `NEXTMINI_DST_NODE` | Destination node ID for telemetry. |
+| `NEXTMINI_CONFIG` | Optional script convention for Python examples/tools: path passed to `nextmini_py.Dataplane(...)`. Not consumed directly by Rust binaries. |
+| `NEXTMINI_DST_NODE` | Optional script convention for Python examples/tools: destination node ID used by user-defined telemetry hooks. |
 | `RUST_LOG` | Logging level (`info`, `debug`, `trace`). |
-| `PYO3_PYTHON` | Path to Python 3.13 interpreter (for running tests). |
-| `DATABASE_URL` | PostgreSQL connection string for controller. |
+| `PYO3_PYTHON` | Path to Python 3.13 interpreter for `nextmini_py` Rust tests. |
+| `DATABASE_URL` | PostgreSQL connection string used by helper scripts such as `utils/start-database.sh` (controller runtime uses `[db]` config fields). |
 
 ---
 
@@ -472,4 +480,10 @@ fec_tree_lane_depth = 32
 fec_dispatch_burst = 1
 fec_max_tree_lanes = 64
 fec_collaborative_multitree_enabled = true
+fec_enabled = false
+fec_require_capability = true
+fec_symbols_per_block_min = 1
+fec_symbols_per_block_max = 1024
+fec_symbol_size_min = 1
+fec_symbol_size_max = 16384
 ```
