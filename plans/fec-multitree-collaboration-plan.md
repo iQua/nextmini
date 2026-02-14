@@ -186,7 +186,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T5 — Ensure Tree-Visible Backpressure Domains at Processor Ingress (UPDATE)
+### T5 — Ensure Tree-Visible Backpressure Domains at Processor Ingress (COMPLETE — February 14, 2026)
 - **depends_on: [T4]**
 - Make processor ingress queue selection tree-aware for FEC packets:
   - sequential handle: choose ingress lane based on `(flow_id, tree_id)` for FEC data frames
@@ -198,6 +198,12 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Files:** `dataplane/src/node/processor.rs`
 
 - **Output:** one tree’s congestion does not force cross-tree HOL at ingress (in supported modes).
+- **Status:** completed.
+- **Work log:** added sequential ingress lane selection keyed by `(flow_id, tree_id)` for lossless FEC data frames and reused that selector across async, non-blocking, and blocking processor send paths; non-FEC packets keep legacy flow-hash lane selection. Added focused ingress tests validating non-FEC routing stability, per-tree `WouldBlock` isolation in sequential mode, and blocking-path FEC lane placement.
+- **Files changed (T5):**
+  - `dataplane/src/node/processor.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** concurrent ingress intentionally remains a shared queue; code now logs a one-time warning when FEC data is submitted through `ConcurrentProcHandle` to make Option A policy explicit until runtime preflight enforcement lands in T8.
 
 ---
 
