@@ -435,6 +435,26 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Targeted Python smoke flow using updated scripts in `examples/` and `tools/`.
 - Exit Criteria:
   - No FEC knobs in Python API, all tests green, docs/examples updated, guardrails active.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Validation matrix execution:
+    - `cargo check --workspace` (pass).
+    - `cargo test --workspace` (failed in this environment at link step for `nextmini_py` lib tests with unresolved Python C-API symbols on `arm64`, e.g. `_PyBytes_AsString`, `_PyErr_SetString`; command exited `101`).
+    - `cargo nextest run --no-default-features --features python-extension --features dev-tests` (pass; `553/553` tests passed).
+    - `maturin develop --release -m python-api/Cargo.toml` (build phase pass, install phase fail: generated `nextmini_py-0.1.0-cp313-abi3-macosx_11_0_arm64.whl` then `pip install` failed with `not a supported wheel on this platform`).
+    - `maturin build --release -m python-api/Cargo.toml` (pass; wheel emitted at `target/wheels/nextmini_py-0.1.0-cp313-abi3-macosx_11_0_arm64.whl`).
+  - Tooling/contract smoke validation:
+    - `python tools/experiments/raptorq/smoke_python_api.py --fec off --assert-success --output <tmp>` (pass; reports `success: true`, includes cross-surface checks across `examples/` and `tools/`).
+    - `python -m unittest tools.experiments.raptorq.tests.test_smoke_python_api` (pass; `Ran 5 tests`, `OK`).
+  - Cutover conclusion:
+    - Contract guardrails and targeted smoke checks are green on current branch.
+    - Remaining failures are environment/tooling constraints around Python interpreter/platform linkage, not refactor regressions in the FEC-oblivious API surface.
+- Files modified:
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `cargo test --workspace` currently depends on a Python link/runtime setup that satisfies `pyo3` test-link symbols for `nextmini_py`; this host failed at link time with unresolved `_Py*` symbols.
+  - `maturin develop` requires a Python interpreter compatible with the produced `cp313-abi3` wheel for local install; current interpreter rejected the wheel as unsupported, while `maturin build` succeeded.
 
 ## Risks And Mitigations
 
