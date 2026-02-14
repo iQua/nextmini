@@ -240,7 +240,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T7 — Preserve Reliability Semantics + Completion Rules (UPDATE)
+### T7 — Preserve Reliability Semantics + Completion Rules (COMPLETE — February 14, 2026)
 - **depends_on: [T3, T6]**
 - Keep `FecStatus` semantics block-level only (no per-tree protocol change).
 - Ensure retire/EOT checks include:
@@ -253,6 +253,13 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Files:** `dataplane/src/node/session/sender.rs`
 
 - **Output:** lossless guarantees preserved under collaborative scheduling, no early EOT.
+
+- **Status:** completed.
+- **Work log:** tightened sender completion gating so EOT/terminal completion now require block-level required work cleared, scheduler drained, per-tree dispatch lanes drained, and consistent required-work inflight accounting; added contiguous per-receiver FEC block completion tracking in sender so `FecStatus` remains block-scoped and cannot over-retire out-of-order blocks; kept control-frame protocol/wire behavior unchanged so T2 control-tree routing remains the delivery mechanism for MANIFEST/EOT/FEC control traffic.
+- **Files changed (T7):**
+  - `dataplane/src/node/session/sender.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** targeted sender/FEC test runs are currently blocked by an existing non-T7 compile issue in runtime preflight typing (`Feature` missing `Eq` derive for `FecPreflightError`), so regression coverage was added in sender tests but could not be executed in this branch state.
 
 ---
 

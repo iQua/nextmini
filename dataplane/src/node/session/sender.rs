@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,7 +29,6 @@ const ALL_FEC_LANES_BLOCKED_WAIT_MS: u64 = 250;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FEC_REPAIR_BUDGET_DIVISOR: usize = 2;
 const FEC_MAX_REPAIR_BUDGET_PER_BLOCK: usize = 64;
-const FEC_TREE_LANE_DEPTH: usize = 32;
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
 /// to control frames emitted by receivers.
@@ -549,19 +548,6 @@ impl FecScheduler {
     }
 }
 
-fn configured_fec_tree_ids(fec_num_trees: Option<u16>) -> Vec<u16> {
-    let default_tree = lossless_session::LosslessSessionFecData::DEFAULT_TREE_ID;
-    let Some(num_trees) = fec_num_trees else {
-        return vec![default_tree];
-    };
-
-    if num_trees == 0 {
-        return vec![default_tree];
-    }
-
-    (0..num_trees).collect()
-}
-
 /// Encapsulates all mutable sender-side state (window, inflight accounting,
 /// pacing, manifest timing, etc.). Keeping the logic centralized makes the event
 /// loop above easier to read and test.
@@ -570,13 +556,15 @@ struct SenderState {
     session_id: u64,
     common: CommonConfig,
     fec_manifest: Option<FecManifest>,
-    fec_num_trees: Option<u16>,
     fec_tree_ids: Vec<u16>,
+    fec_tree_lane_depth: usize,
+    fec_dispatch_burst: usize,
     receiver_count: usize,
     window: usize,
     total_chunks: u64,
     total_bytes: u64,
     receiver_progress: BTreeMap<usize, u64>,
+    receiver_completed_fec_blocks: BTreeMap<usize, BTreeSet<u64>>,
     fec_capabilities: BTreeMap<usize, FecCapabilities>,
     fec_incompatible_peers: HashSet<usize>,
     retired_up_to: u64,
@@ -613,8 +601,9 @@ impl SenderState {
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
         let fec_manifest = cfg.fec_manifest;
-        let fec_num_trees = cfg.fec_num_trees;
-        let fec_tree_ids = configured_fec_tree_ids(fec_num_trees);
+        let fec_tree_ids = cfg.fec_tree_ids.clone();
+        let fec_tree_lane_depth = cfg.fec_tree_lane_depth;
+        let fec_dispatch_burst = cfg.fec_dispatch_burst;
         let receiver_count = cfg.receiver_ids.len();
 
         let ready_gate_open = receiver_count == 0;
@@ -634,21 +623,25 @@ impl SenderState {
         let window = compute_window(&cfg);
 
         let mut receiver_progress = BTreeMap::new();
+        let mut receiver_completed_fec_blocks = BTreeMap::new();
         for node_id in &cfg.receiver_ids {
             receiver_progress.insert(*node_id, 0);
+            receiver_completed_fec_blocks.insert(*node_id, BTreeSet::new());
         }
 
         let mut state = Self {
             session_id: common.session_id,
             common,
             fec_manifest,
-            fec_num_trees,
             fec_tree_ids,
+            fec_tree_lane_depth,
+            fec_dispatch_burst,
             receiver_count,
             window,
             total_chunks,
             total_bytes: cfg.total_bytes,
             receiver_progress,
+            receiver_completed_fec_blocks,
             fec_capabilities: BTreeMap::new(),
             fec_incompatible_peers: HashSet::new(),
             retired_up_to: 0,
@@ -725,10 +718,7 @@ impl SenderState {
 
     fn has_pending_fec_symbols(&self) -> bool {
         let scheduler_pending = self.has_scheduler_pending_fec_symbols();
-        let lane_pending = self
-            .fec_dispatch
-            .as_ref()
-            .is_some_and(FecTreeDispatch::has_outstanding_symbols);
+        let lane_pending = self.has_pending_fec_lane_symbols();
         scheduler_pending || lane_pending
     }
 
@@ -736,6 +726,12 @@ impl SenderState {
         self.fec_scheduler
             .as_ref()
             .is_some_and(FecScheduler::has_pending_symbols)
+    }
+
+    fn has_pending_fec_lane_symbols(&self) -> bool {
+        self.fec_dispatch
+            .as_ref()
+            .is_some_and(FecTreeDispatch::has_outstanding_symbols)
     }
 
     fn fec_blocks_planned(&self) -> u64 {
@@ -802,6 +798,33 @@ impl SenderState {
         };
         let symbols_per_block = u64::from(manifest.symbols_per_block.max(1));
         self.total_chunks.div_ceil(symbols_per_block)
+    }
+
+    fn all_required_fec_blocks_planned(&self) -> bool {
+        if !self.is_fec_session() || !self.source_drained {
+            return true;
+        }
+        self.fec_blocks_planned() >= self.total_fec_blocks()
+    }
+
+    fn required_work_tracking_consistent(&self) -> bool {
+        self.outstanding_units() == self.inflight_len() as u64
+    }
+
+    fn completion_guards_satisfied(&self) -> bool {
+        let scheduler_drained = !self.has_scheduler_pending_fec_symbols();
+        let lanes_drained = !self.has_pending_fec_lane_symbols();
+        let required_work_done = self.outstanding_units() == 0;
+
+        scheduler_drained
+            && lanes_drained
+            && required_work_done
+            && self.all_required_fec_blocks_planned()
+            && self.required_work_tracking_consistent()
+    }
+
+    fn ready_to_emit_eot(&self) -> bool {
+        !self.eot_sent && self.source_drained && self.completion_guards_satisfied()
     }
 
     /// Decide whether we should re-send the MANIFEST while the ready gate stays closed.
@@ -876,7 +899,7 @@ impl SenderState {
         };
         self.fec_dispatch = Some(FecTreeDispatch::spawn(
             &self.fec_tree_ids,
-            FEC_TREE_LANE_DEPTH,
+            self.fec_tree_lane_depth,
             processors,
             session,
         ));
@@ -884,7 +907,7 @@ impl SenderState {
         info!(
             session_id = self.session_id,
             tree_ids = ?self.fec_tree_ids,
-            lane_depth = FEC_TREE_LANE_DEPTH,
+            lane_depth = self.fec_tree_lane_depth,
             "Lossless sender: started collaborative per-tree FEC lanes"
         );
         true
@@ -919,8 +942,12 @@ impl SenderState {
         if self.maybe_queue_next_fec_block(chunk_source) {
             progressed = true;
         }
-        if self.try_send_next_fec_symbol(data_pacer).await {
-            progressed = true;
+        for _ in 0..self.fec_dispatch_burst.max(1) {
+            if self.try_send_next_fec_symbol(data_pacer).await {
+                progressed = true;
+            } else {
+                break;
+            }
         }
         progressed
     }
@@ -1093,24 +1120,83 @@ impl SenderState {
             .min()
             .unwrap_or(self.retired_up_to);
         self.retired_up_to = if self.is_fec_session() {
-            min_progress.min(self.total_fec_blocks())
+            min_progress
+                .min(self.total_fec_blocks())
+                .min(self.fec_blocks_planned())
         } else {
             min_progress.min(self.total_chunks)
         };
     }
 
+    fn update_receiver_fec_status(
+        &mut self,
+        from_node: usize,
+        status: &lossless_session::FecStatus,
+    ) -> Option<u64> {
+        if status.deficit_symbols != 0 {
+            return None;
+        }
+        if !self.receiver_progress.contains_key(&from_node) {
+            return None;
+        }
+
+        let total_blocks = self.total_fec_blocks();
+        if status.block_id >= total_blocks {
+            trace!(
+                session_id = self.session_id,
+                from_node,
+                block_id = status.block_id,
+                total_blocks,
+                "Lossless sender: ignoring out-of-range FEC status block"
+            );
+            return None;
+        }
+
+        let mut contiguous_completed = self
+            .receiver_progress
+            .get(&from_node)
+            .copied()
+            .unwrap_or_default();
+        if status.block_id < contiguous_completed {
+            return None;
+        }
+
+        let completed_blocks = self
+            .receiver_completed_fec_blocks
+            .entry(from_node)
+            .or_default();
+        if !completed_blocks.insert(status.block_id) {
+            return None;
+        }
+
+        let mut advanced = false;
+        while completed_blocks.remove(&contiguous_completed) {
+            contiguous_completed = contiguous_completed.saturating_add(1);
+            advanced = true;
+        }
+        if !advanced {
+            return None;
+        }
+
+        if let Some(progress) = self.receiver_progress.get_mut(&from_node) {
+            *progress = contiguous_completed;
+            return Some(*progress);
+        }
+        None
+    }
+
     /// Emit an End-of-Transfer once all units have been acknowledged.
     async fn try_emit_eot(&mut self, processors: &ProcessorHandle) -> bool {
-        if self.eot_sent
-            || !self.source_drained
-            || self.has_pending_fec_symbols()
-            || self.outstanding_units() > 0
-        {
-            if !self.eot_sent && self.source_drained && self.outstanding_units() > 0 {
+        if !self.ready_to_emit_eot() {
+            if !self.eot_sent && self.source_drained {
                 trace!(
                     session_id = self.session_id,
+                    scheduler_pending = self.has_scheduler_pending_fec_symbols(),
+                    lane_pending = self.has_pending_fec_lane_symbols(),
                     inflight_count = self.outstanding_units(),
-                    "Lossless sender: cannot send EOT - transfer units still inflight"
+                    required_work_tracking_consistent = self.required_work_tracking_consistent(),
+                    all_required_fec_blocks_planned = self.all_required_fec_blocks_planned(),
+                    "Lossless sender: cannot send EOT yet"
                 );
             }
             return false;
@@ -1135,11 +1221,7 @@ impl SenderState {
 
     /// Returns true when the sender drained the source and all acknowledgements were processed.
     fn is_complete(&self) -> bool {
-        self.aborted
-            || (self.source_drained
-                && self.eot_sent
-                && !self.has_pending_fec_symbols()
-                && self.outstanding_units() == 0)
+        self.aborted || (self.source_drained && self.eot_sent && self.completion_guards_satisfied())
     }
 
     fn abort_fec_preflight(&mut self, reason: impl Into<String>) {
@@ -1288,13 +1370,7 @@ impl SenderState {
                 if !self.receiver_progress.contains_key(&from_node) {
                     return;
                 }
-                if control::update_receiver_fec_status(
-                    from_node,
-                    &control,
-                    &mut self.receiver_progress,
-                )
-                .is_some()
-                {
+                if self.update_receiver_fec_status(from_node, status).is_some() {
                     self.update_retired_up_to();
                 }
                 let (planned_source, planned_repairs, remaining_budget) = self
@@ -1385,14 +1461,6 @@ impl SenderState {
         }
 
         if self.is_fec_session() {
-            if let Some(num_trees) = self.fec_num_trees
-                && num_trees < 2
-            {
-                self.abort_fec_preflight(format!(
-                    "multi-tree fec requires num_trees >= 2 (got {num_trees})"
-                ));
-                return;
-            }
             if let Some(manifest) = self.fec_manifest
                 && manifest.scheme_kind().is_none()
             {
@@ -1999,9 +2067,36 @@ mod tests {
             total_bytes: 0,
             source_buffer: Bytes::new(),
             fec_manifest: None,
-            fec_num_trees: None,
+            fec_tree_ids: Vec::new(),
+            fec_tree_lane_depth: 32,
+            fec_dispatch_burst: 1,
             ready_grace_ms: 1,
             topology_ready: None,
+        }
+    }
+
+    fn fec_sender_cfg(
+        chunk_size: usize,
+        total_bytes: u64,
+        symbols_per_block: u16,
+        receiver_ids: Vec<usize>,
+    ) -> SenderConfig {
+        let mut cfg = sender_cfg(chunk_size, None);
+        cfg.total_bytes = total_bytes;
+        cfg.source_buffer = Bytes::from(vec![0xAB; total_bytes as usize]);
+        cfg.receiver_ids = receiver_ids;
+        cfg.fec_manifest = Some(FecManifest::new_raptorq(
+            symbols_per_block,
+            chunk_size as u16,
+        ));
+        cfg.fec_tree_ids = vec![0, 1];
+        cfg
+    }
+
+    fn fec_status(block_id: u64, deficit_symbols: u16) -> lossless_session::FecStatus {
+        lossless_session::FecStatus {
+            block_id,
+            deficit_symbols,
         }
     }
 
@@ -2020,6 +2115,93 @@ mod tests {
         let cfg = sender_cfg(2_048, Some(bucket));
         // bucket_size / chunk_size = 4, lower than DEFAULT_WINDOW
         assert_eq!(compute_window(&cfg), 4);
+    }
+
+    #[test]
+    fn fec_status_advances_only_for_contiguous_completed_blocks() {
+        let chunk_size = 8usize;
+        let total_chunks = 3u64;
+        let total_bytes = total_chunks * chunk_size as u64;
+        let cfg = fec_sender_cfg(chunk_size, total_bytes, 1, vec![7]);
+        let mut state = SenderState::new(cfg, total_chunks);
+
+        assert_eq!(state.retired_up_to, 0);
+
+        let non_contiguous = state.update_receiver_fec_status(7, &fec_status(2, 0));
+        assert!(
+            non_contiguous.is_none(),
+            "block-level status should not advance retire watermark across missing blocks"
+        );
+        state.update_retired_up_to();
+        assert_eq!(state.retired_up_to, 0);
+
+        let first = state.update_receiver_fec_status(7, &fec_status(0, 0));
+        assert_eq!(
+            first,
+            Some(1),
+            "first contiguous completed block should advance by one"
+        );
+        state.update_retired_up_to();
+        assert_eq!(state.retired_up_to, 1);
+
+        let second = state.update_receiver_fec_status(7, &fec_status(1, 0));
+        assert_eq!(
+            second,
+            Some(3),
+            "buffered out-of-order completion should flush contiguous progress"
+        );
+        state.update_retired_up_to();
+        assert_eq!(state.retired_up_to, 3);
+    }
+
+    #[test]
+    fn fec_completion_waits_for_lane_drain_under_asymmetric_pressure() {
+        let chunk_size = 16usize;
+        let total_chunks = 1u64;
+        let total_bytes = total_chunks * chunk_size as u64;
+        let cfg = fec_sender_cfg(chunk_size, total_bytes, 1, vec![11]);
+        let mut state = SenderState::new(cfg, total_chunks);
+
+        state.source_drained = true;
+        if let Some(scheduler) = state.fec_scheduler.as_mut() {
+            scheduler.next_block_id = 1;
+        }
+        state
+            .update_receiver_fec_status(11, &fec_status(0, 0))
+            .expect("receiver should report block completion");
+        state.update_retired_up_to();
+
+        let (tx_a, _rx_a) = mpsc::channel::<FecSymbolWorkItem>(1);
+        let (tx_b, _rx_b) = mpsc::channel::<FecSymbolWorkItem>(1);
+        let outstanding = Arc::new(AtomicUsize::new(1));
+        state.fec_dispatch = Some(FecTreeDispatch {
+            lanes: vec![
+                FecTreeLane {
+                    tree_id: 1,
+                    tx: tx_a,
+                },
+                FecTreeLane {
+                    tree_id: 2,
+                    tx: tx_b,
+                },
+            ],
+            next_rr_idx: 0,
+            wakeup: Arc::new(Notify::new()),
+            outstanding_symbols: Arc::clone(&outstanding),
+            all_lanes_blocked: false,
+        });
+
+        assert_eq!(state.outstanding_units(), 0);
+        assert!(
+            !state.ready_to_emit_eot(),
+            "EOT must wait for delayed lane drain even when block progress is complete"
+        );
+
+        outstanding.store(0, Ordering::Relaxed);
+        assert!(
+            state.ready_to_emit_eot(),
+            "EOT should become eligible once all per-tree lane work is drained"
+        );
     }
 
     #[test]
