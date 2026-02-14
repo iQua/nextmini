@@ -113,7 +113,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T2 — Add Control-Tree Selection for Multicast Control Frames (NEW)
+### T2 — Add Control-Tree Selection for Multicast Control Frames (COMPLETE — February 14, 2026)
 - **depends_on: [T0]**
 - Implement deterministic control-tree selection in dataplane routing:
   - When routing multicast packets with `tree_id=None`:
@@ -126,6 +126,13 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
   - `dataplane/src/node/route.rs`
 
 - **Output:** MANIFEST/EOT/control frames route correctly for multi-tree groups without requiring tree 0.
+
+- **Status:** completed.
+- **Work log:** implemented deterministic multicast control-tree selection in dataplane routing (`tree_id=None` chooses tree 0 when present, otherwise smallest installed tree), added `(src, group)` control-tree caching, and invalidated cached control-tree selection on `(src, group)` route reinstall.
+- **Files changed (T2):**
+  - `dataplane/src/node/route.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** `cargo test --workspace -- --list` still fails in this environment due Python linker/toolchain setup (`nextmini_py`), so validation was run with targeted `nextmini` route tests.
 
 ---
 

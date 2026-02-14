@@ -50,6 +50,9 @@ pub struct RoutingTable {
 
     /// Fast path cache for multicast tree selections keyed by `(src, group, tree)`.
     multicast_tree_cache: AHashMap<(NodeId, GroupId, u16), usize>,
+
+    /// Cached control-tree selections for multicast lookups with `tree_id=None`.
+    multicast_control_tree_cache: AHashMap<(NodeId, GroupId), u16>,
 }
 
 const INLINE_HOPS: usize = 4;
@@ -95,6 +98,7 @@ impl RoutingTable {
             jump_hasher: JumpHasher::new_with_keys(0x1234567890ABCDEF, 0xFEDCBA0987654321),
             cache: AHashMap::default(),
             multicast_tree_cache: AHashMap::default(),
+            multicast_control_tree_cache: AHashMap::default(),
         }
     }
 
@@ -183,6 +187,10 @@ impl RoutingTable {
             .retain(|(cached_src, cached_group, _), _| {
                 *cached_src != src_node_id || *cached_group != group_id
             });
+        self.multicast_control_tree_cache
+            .retain(|(cached_src, cached_group), _| {
+                *cached_src != src_node_id || *cached_group != group_id
+            });
 
         for route in routes {
             let Some(tree_id) = tree_id_from_route_id(group_id, route.route_id) else {
@@ -248,6 +256,69 @@ impl RoutingTable {
             .map(|(src_node, dst_node)| RouteKey::Unicast(src_node, dst_node))
     }
 
+    fn select_multicast_control_tree(
+        &mut self,
+        src_node_id: NodeId,
+        group_id: GroupId,
+    ) -> Option<u16> {
+        let cache_key = (src_node_id, group_id);
+        if let Some(cached_tree_id) = self.multicast_control_tree_cache.get(&cache_key).copied() {
+            let cached_route_key = RouteKey::Multicast {
+                src_node_id,
+                group_id,
+                tree_id: cached_tree_id,
+            };
+            if self
+                .available_routes
+                .get(&cached_route_key)
+                .is_some_and(|route_ids| !route_ids.is_empty())
+            {
+                return Some(cached_tree_id);
+            }
+            self.multicast_control_tree_cache.remove(&cache_key);
+        }
+
+        let mut smallest_tree_id: Option<u16> = None;
+        let mut has_tree_zero = false;
+        for (route_key, route_ids) in &self.available_routes {
+            if route_ids.is_empty() {
+                continue;
+            }
+            let RouteKey::Multicast {
+                src_node_id: route_src_node_id,
+                group_id: route_group_id,
+                tree_id: route_tree_id,
+            } = route_key
+            else {
+                continue;
+            };
+
+            if *route_src_node_id != src_node_id || *route_group_id != group_id {
+                continue;
+            }
+
+            if *route_tree_id == 0 {
+                has_tree_zero = true;
+                break;
+            }
+
+            smallest_tree_id = Some(
+                smallest_tree_id
+                    .map(|current| current.min(*route_tree_id))
+                    .unwrap_or(*route_tree_id),
+            );
+        }
+
+        let selected_tree = if has_tree_zero {
+            Some(0)
+        } else {
+            smallest_tree_id
+        }?;
+        self.multicast_control_tree_cache
+            .insert(cache_key, selected_tree);
+        Some(selected_tree)
+    }
+
     /// Selects a route id for the provided route key.
     fn select_route_for_key(&mut self, key: &RouteKey) -> Option<usize> {
         match key {
@@ -309,9 +380,31 @@ impl RoutingTable {
             return Err("No route can be selected.".to_string());
         }
 
-        let key = self
+        let mut key = self
             .key_for_flow(flow_id, tree_id)
             .ok_or_else(|| "Unable to build route key for flow".to_string())?;
+
+        if tree_id.is_none()
+            && let RouteKey::Multicast {
+                src_node_id,
+                group_id,
+                ..
+            } = key
+        {
+            let selected_tree_id = self
+                .select_multicast_control_tree(src_node_id, group_id)
+                .ok_or_else(|| {
+                    format!(
+                        "Unknown multicast control tree route for src_node_id={}, group_id={}",
+                        src_node_id, group_id
+                    )
+                })?;
+            key = RouteKey::Multicast {
+                src_node_id,
+                group_id,
+                tree_id: selected_tree_id,
+            };
+        }
 
         if matches!(key, RouteKey::Unicast(_, _))
             && let Some(route_id) = self.cache.get(&flow_id)
@@ -533,34 +626,106 @@ mod tests {
         table.install_group_routes(
             9,
             1,
-            vec![GroupRoutingTableEntry {
-                route_id: multicast_route_id(9, 0),
-                next_hops: vec![5],
-                src_node_id: 1,
-                group_id: 9,
-            }],
+            vec![
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(9, 2),
+                    next_hops: vec![5],
+                    src_node_id: 1,
+                    group_id: 9,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(9, 7),
+                    next_hops: vec![8],
+                    src_node_id: 1,
+                    group_id: 9,
+                },
+            ],
         );
 
         let first = table
             .get_next_hops_by_flow(flow_id, None)
             .expect("initial multicast hop");
         assert_eq!(&first[..], &[5]);
+        assert_eq!(table.multicast_control_tree_cache.get(&(1, 9)), Some(&2));
 
         table.install_group_routes(
             9,
             1,
-            vec![GroupRoutingTableEntry {
-                route_id: multicast_route_id(9, 0),
-                next_hops: vec![6],
-                src_node_id: 1,
-                group_id: 9,
-            }],
+            vec![
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(9, 5),
+                    next_hops: vec![6],
+                    src_node_id: 1,
+                    group_id: 9,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(9, 7),
+                    next_hops: vec![9],
+                    src_node_id: 1,
+                    group_id: 9,
+                },
+            ],
+        );
+        assert!(
+            !table.multicast_control_tree_cache.contains_key(&(1, 9)),
+            "control-tree cache should be invalidated when group routes are reinstalled"
         );
 
         let updated = table
             .get_next_hops_by_flow(flow_id, None)
             .expect("updated multicast hop");
         assert_eq!(&updated[..], &[6]);
+        assert_eq!(table.multicast_control_tree_cache.get(&(1, 9)), Some(&5));
+    }
+
+    #[test]
+    fn multicast_lookup_without_tree_zero_uses_smallest_installed_tree() {
+        let config = make_config(2);
+        let mut table = RoutingTable::new(config.clone());
+
+        let group_ip = Ipv4Addr::new(10, 0, 0, 183);
+        table.install_group_directory(vec![GroupDirectoryEntry {
+            group_id: 14,
+            group_ip,
+        }]);
+
+        table.install_group_routes(
+            14,
+            1,
+            vec![
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(14, 9),
+                    next_hops: vec![30],
+                    src_node_id: 1,
+                    group_id: 14,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(14, 2),
+                    next_hops: vec![20],
+                    src_node_id: 1,
+                    group_id: 14,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(14, 5),
+                    next_hops: vec![50],
+                    src_node_id: 1,
+                    group_id: 14,
+                },
+            ],
+        );
+
+        let flow_id = make_flow_id(
+            Ipv4Addr::new(10, 0, 0, 1),
+            group_ip,
+            4324,
+            config.user_space_server_port,
+        );
+
+        let hops = table
+            .get_next_hops_by_flow(flow_id, None)
+            .expect("multicast control-tree lookup should resolve");
+        assert_eq!(&hops[..], &[20]);
+        assert_eq!(table.multicast_control_tree_cache.get(&(1, 14)), Some(&2));
     }
 
     #[test]
@@ -604,6 +769,7 @@ mod tests {
             .get_next_hops_by_flow(flow_id, None)
             .expect("default tree should resolve");
         assert_eq!(&default_tree_hops[..], &[5]);
+        assert_eq!(table.multicast_control_tree_cache.get(&(1, 12)), Some(&0));
 
         let explicit_tree_hops = table
             .get_next_hops_by_flow_and_tree(flow_id, Some(1), None)
