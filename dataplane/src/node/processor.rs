@@ -46,6 +46,7 @@ pub enum ProcessorPacket {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub enum SendOutcome {
     Queued,
     WouldBlock,
@@ -262,6 +263,7 @@ impl ProcessorHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
         match self {
             ProcessorHandle::Sequential(handle) => handle.try_process_packet(packet),
@@ -462,6 +464,7 @@ impl SequentialProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
         let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
 
@@ -517,12 +520,14 @@ impl SequentialProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
         let idx = self.select_processor_ingress_lane(&packet);
         let sender = &self.packet_senders[idx];
         map_tokio_try_send_outcome(sender.try_send(ProcessorPacket::ProcessPacket(packet)))
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_send_to_connector(&self, packet: Packet) -> SendOutcome {
         map_tokio_try_send_outcome(
             self.connector_packet_sender
@@ -652,6 +657,7 @@ impl ConcurrentProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
         let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
 
@@ -729,6 +735,7 @@ impl ConcurrentProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
         self.maybe_warn_collaborative_multitree_policy(&packet);
         map_flume_try_send_outcome(
@@ -737,6 +744,7 @@ impl ConcurrentProcHandle {
         )
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_send_to_connector(&self, packet: Packet) -> SendOutcome {
         map_tokio_try_send_outcome(
             self.connector_packet_sender
@@ -782,6 +790,7 @@ impl ConcurrentProcHandle {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_tokio_try_send_outcome<T>(result: Result<(), mpsc::error::TrySendError<T>>) -> SendOutcome {
     match result {
         Ok(()) => SendOutcome::Queued,
@@ -790,6 +799,7 @@ fn map_tokio_try_send_outcome<T>(result: Result<(), mpsc::error::TrySendError<T>
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn map_flume_try_send_outcome<T>(result: Result<(), flume::TrySendError<T>>) -> SendOutcome {
     match result {
         Ok(()) => SendOutcome::Queued,

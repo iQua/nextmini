@@ -724,7 +724,6 @@ impl FecScheduler {
 /// Encapsulates all mutable sender-side state (window, inflight accounting,
 /// pacing, manifest timing, etc.). Keeping the logic centralized makes the event
 /// loop above easier to read and test.
-
 struct SenderState {
     session_id: u64,
     common: CommonConfig,

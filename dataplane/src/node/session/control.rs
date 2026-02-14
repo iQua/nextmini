@@ -38,6 +38,7 @@ pub fn update_receiver_progress(
 /// progress. Only `deficit_symbols == 0` advances the completed block watermark.
 /// Watermark units are completed blocks (`block_id + 1`), matching sender
 /// retirement semantics in FEC mode.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn update_receiver_fec_status(
     from_node: usize,
     ctrl: &LosslessSessionControl,
