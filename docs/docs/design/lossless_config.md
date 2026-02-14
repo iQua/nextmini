@@ -49,7 +49,7 @@ This contract defines sender-side tree selection for collaborative multi-tree FE
 
 ### Hash Assignment Is Removed
 
-- The older per-symbol strategy (`hash(...) % num_trees`) is not part of v3 behavior.
+- The older per-symbol hash strategy is not part of v3 behavior.
 - Tree assignment is a dispatch-time decision driven by current backpressure and the configured `fec_tree_ids` set.
 
 ## Example

@@ -26,7 +26,6 @@ const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FEC_REPAIR_BUDGET_DIVISOR: usize = 2;
 const FEC_MAX_REPAIR_BUDGET_PER_BLOCK: usize = 64;
-const FEC_TREE_HASH_SALT: u64 = 0xD6E8_FD9C_B3A5_7A1D;
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
 /// to control frames emitted by receivers.
@@ -183,7 +182,6 @@ pub async fn run(
 struct PendingFecSymbol {
     block_id: u64,
     symbol_id: u32,
-    tree_id: u16,
     payload: Bytes,
     is_repair: bool,
 }
@@ -539,21 +537,17 @@ impl SenderState {
         let repairs = encoder.emit_repair(repair_budget);
 
         for symbol in systematic {
-            let tree_id = self.select_fec_tree_id(block_id, symbol.esi);
             self.fec_pending_symbols.push_back(PendingFecSymbol {
                 block_id,
                 symbol_id: symbol.esi,
-                tree_id,
                 payload: Bytes::from(symbol.payload),
                 is_repair: false,
             });
         }
         for symbol in repairs {
-            let tree_id = self.select_fec_tree_id(block_id, symbol.esi);
             self.fec_pending_symbols.push_back(PendingFecSymbol {
                 block_id,
                 symbol_id: symbol.esi,
-                tree_id,
                 payload: Bytes::from(symbol.payload),
                 is_repair: true,
             });
@@ -591,13 +585,16 @@ impl SenderState {
             return false;
         };
 
+        // v3 removes hash-based tree assignment. Until collaborative dispatch
+        // lands, FEC symbols are emitted on the default tree.
+        let tree_id = lossless_session::LosslessSessionFecData::DEFAULT_TREE_ID;
         data_pacer.wait_for(symbol.payload.len()).await;
 
         let frame = Bytes::from(lossless_session::encode_fec_data(
             self.session_id,
             symbol.block_id,
             symbol.symbol_id,
-            symbol.tree_id,
+            tree_id,
             &symbol.payload,
         ));
 
@@ -616,7 +613,7 @@ impl SenderState {
             session_id = self.session_id,
             block_id = symbol.block_id,
             symbol_id = symbol.symbol_id,
-            tree_id = symbol.tree_id,
+            tree_id,
             is_repair = symbol.is_repair,
             payload_len = symbol.payload.len(),
             "Lossless sender: emitted FEC symbol"
@@ -1040,33 +1037,6 @@ impl SenderState {
             );
         }
     }
-
-    /// Deterministically maps a `(block_id, symbol_id)` pair to a multicast tree id.
-    fn select_fec_tree_id(&self, block_id: u64, symbol_id: u32) -> u16 {
-        let Some(num_trees) = self.fec_num_trees else {
-            return lossless_session::LosslessSessionFecData::DEFAULT_TREE_ID;
-        };
-
-        if num_trees < 2 {
-            return lossless_session::LosslessSessionFecData::DEFAULT_TREE_ID;
-        }
-
-        let combined = self.session_id
-            ^ block_id.rotate_left(19)
-            ^ (u64::from(symbol_id) << 1)
-            ^ FEC_TREE_HASH_SALT;
-        let hash = splitmix64(combined);
-        (hash % u64::from(num_trees)) as u16
-    }
-}
-
-#[inline]
-fn splitmix64(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = x;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
 }
 
 /// Compute a sliding window size based on the default limit and, if present,

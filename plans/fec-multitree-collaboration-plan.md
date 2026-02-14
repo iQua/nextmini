@@ -111,6 +111,15 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 - **Output:** repository contains no hash-based FEC tree assignment strategy.
 
+- **Status:** completed.
+- **Work log:** removed sender hash-based tree assignment helpers (`select_fec_tree_id`, `FEC_TREE_HASH_SALT`, `splitmix64`), stopped assigning `tree_id` during symbol materialization, and moved FEC data emission to use the default tree at dispatch-time while collaborative scheduling is implemented in later tasks. Updated docs/tests so hash assignment is documented only as removed behavior.
+- **Files changed (T1):**
+  - `dataplane/src/node/session/sender.rs`
+  - `dataplane/tests/fec_multitree.rs`
+  - `docs/docs/design/lossless_config.md`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** multi-tree collaborative dispatch is not implemented in T1; with hash removed, current sender path emits FEC symbols on `DEFAULT_TREE_ID` until T3/T6 land.
+
 ---
 
 ### T2 — Add Control-Tree Selection for Multicast Control Frames (COMPLETE — February 14, 2026)
