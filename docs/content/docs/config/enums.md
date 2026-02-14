@@ -1,6 +1,6 @@
 ---
 title: "Config Enums"
-description: ""
+description: "Reference for all enum values used in Nextmini controller and dataplane configuration."
 ---
 
 ## Protocol

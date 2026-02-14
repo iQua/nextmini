@@ -1,6 +1,6 @@
 ---
 title: "Testing Multicast and Membership Churn"
-description: ""
+description: "Validates multicast delivery and membership churn behavior with the dockerized multicast test harness."
 ---
 
 This guide validates end-to-end multicast behavior through `nextmini_py` using the dockerized harness in `examples/multicast-docker`.

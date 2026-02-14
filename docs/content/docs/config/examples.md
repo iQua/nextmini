@@ -1,6 +1,6 @@
 ---
-title: "Config Examples"
-description: ""
+title: "Example Configurations"
+description: "Collects practical TOML snippets for common Nextmini controller and dataplane setups."
 ---
 
 ## Minimal Controller Configuration

@@ -2,7 +2,7 @@ import { docs } from "fumadocs-mdx:collections/server";
 import { loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 
-const sidebarOrder = ["examples", "design", "testing"];
+const sidebarOrder = ["examples", "design", "testing", "config"];
 
 const examplesSidebarOrder = [
 	"simple",
@@ -20,6 +20,16 @@ const examplesSidebarOrder = [
 const folderOrderByPath: Record<string, string[]> = {
 	"": ["index", ...sidebarOrder],
 	examples: examplesSidebarOrder,
+	config: [
+		"index",
+		"controller",
+		"dataplane",
+		"lossless_config",
+		"transport",
+		"enums",
+		"environment",
+		"examples",
+	],
 };
 
 const docsNavOrderPlugin = {

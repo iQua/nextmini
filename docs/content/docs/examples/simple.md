@@ -1,6 +1,6 @@
 ---
 title: "Running Nextmini in Docker Containers"
-description: ""
+description: "A minimal Docker-based walkthrough for running Nextmini with an iperf3 traffic scenario."
 ---
 
 

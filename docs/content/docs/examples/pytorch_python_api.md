@@ -1,6 +1,6 @@
 ---
 title: "PyTorch + Nextmini Python API quickstart"
-description: ""
+description: "A guide to streaming PyTorch tensors through the nextmini_py bindings."
 ---
 
 

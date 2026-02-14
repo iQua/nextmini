@@ -1,6 +1,6 @@
 ---
 title: "Nextmini Hybrid Deployment: Local Server + Fly.io"
-description: ""
+description: "Explains hybrid deployment with a local controller/PostgreSQL and Fly.io-hosted dataplane nodes."
 ---
 
 

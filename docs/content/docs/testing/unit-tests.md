@@ -1,6 +1,6 @@
 ---
 title: "Running Unit Tests"
-description: ""
+description: "Run Nextmini unit and session tests with the required Python 3.13 environment setup."
 ---
 
 Before running tests, make sure `PYO3_PYTHON` represents `/path/to/python3.13`, such as the following on macOS:

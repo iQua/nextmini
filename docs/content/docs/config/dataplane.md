@@ -54,10 +54,7 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 
 ## Protocol Configuration
 
-| Field | Type | Default | CLI Flag | Description |
-|-------|------|---------|----------|-------------|
-| `protocol` | `Protocol` | `tcp` | `--protocol` | Transport protocol: `tcp`, `udp`, or `quic`. |
-| `quic_congestion_control` | `CongestionControl` | `bbr` | `--quic-congestion-control` | QUIC congestion control: `bbr` or `cubic`. |
+Dataplane transport settings are documented in [Transport Configuration](/docs/config/transport), including CLI usage and examples for `protocol` and `quic_congestion_control`.
 
 ## Scheduling Configuration
 
@@ -90,26 +87,11 @@ These fields are maintained at runtime and should not be treated as user tuning 
 
 ## Implementation-Level Behavior
 
-- A lane is one ingress queue owned by one processor worker in sequential mode. Sequential mode only spreads work across lanes at ingress; packets assigned to one lane remain ordered relative to that lane.
-- `Sequential` mode (`Feature::Sequential`) creates one `mpsc` ingress channel per packet processor (`num_packet_processors` total). `ProcessorHandle::Sequential::new` builds `packet_senders` as a vector of per-worker channels and spawns one processor task per receiver.
-- The per-packet ingress lane is selected in `SequentialProcHandle::select_processor_ingress_lane`:
-  - regular packets: `packet.flow_id.hash(num_lanes)`.
-  - lossless FEC packets (detected via `packet.lossless_fec_tree_id()`): `JumpHasher::slot((flow_id, tree_id), num_lanes)`.
-- `Concurrent` mode (`Feature::Concurrent`) creates one shared bounded `flume` queue and spawns multiple processor workers that all consume from the same queue, so packets can be dequeued and processed by different workers and observed out-of-order unless downstream flow reordering is applied.
-- Route lookup and all mutable processor state still use per-actor broadcast updates; there is no per-lane cache sharing.
-- `channel_backpressure` determines queueing policy before routing and dispatch:
-  - `true`: await producer queue space (`send`/`send_async`) so ingress blocks until capacity is available.
-  - `false`: `try_send`; if full, packet is dropped after warning.
-- In both modes, packet forwarding to connector vs local processors still follows `operating_mode`:
-  - local destination or `OperatingMode::Normal` -> processor path.
-  - remote destination and `OperatingMode::Max` -> connector path.
-- All processor updates (routes, node changes, reporters, lossless handle, and related control state) are broadcast so each processor worker receives the same control updates.
+A lane is a single ingress queue owned by one processor worker in sequential mode. In that mode, parallelism is distributed only at ingress, and packets assigned to the same lane stay ordered relative to each other. With `Feature::Sequential`, the runtime allocates one `mpsc` ingress channel per packet processor (`num_packet_processors` total), and `ProcessorHandle::Sequential::new` creates a `packet_senders` vector and one processor task per receiver. Lane selection is handled by `SequentialProcHandle::select_processor_ingress_lane`: standard packets use `packet.flow_id.hash(num_lanes)`, while lossless FEC packets detected by `packet.lossless_fec_tree_id()` use `JumpHasher::slot((flow_id, tree_id), num_lanes)`. `Concurrent` mode instead uses one shared bounded `flume` queue with multiple workers pulling from the same queue; packets can therefore be processed out of lane order unless downstream logic reorders them. Route lookup and mutable processor state updates are still carried through per-actor broadcast updates, and there is no per-lane cache sharing. `channel_backpressure` controls queueing behavior at the edge: when true, producers await queue space (`send`/`send_async`) and ingress blocks until capacity is available, while false switches to `try_send` and drops packets when full. Forwarding remains based on `operating_mode` in both modes; local destinations or `OperatingMode::Normal` follow the processor path, while remote routes in `OperatingMode::Max` use the connector path. All processor updates (routes, node changes, reporters, lossless handle, and control state) are broadcast so every worker receives the same control stream.
 
 ## Processor Route Resolution
 
-- The hot path calls into the routing table with tree context: `get_next_hops_by_flow_and_tree(flow_id, fec_tree_id, reporter)` from `RoutingTable`.
-- For legacy non-FEC packets, `fec_tree_id` is `None`, so behavior matches the old `get_next_hops_by_flow` path.
-- For multicast trees, FEC packets route to the `(src_node_id, tree_id)` space when present; if no route exists, the processor logs a warning and drops the packet.
+In the hot path, routing calls flow through `get_next_hops_by_flow_and_tree(flow_id, fec_tree_id, reporter)` on the `RoutingTable`. When `fec_tree_id` is absent, non-FEC packets keep the legacy behavior of `get_next_hops_by_flow`. Multicast-tree FEC packets additionally route in `(src_node_id, tree_id)` space when available, and packets with no corresponding route are warned and dropped.
 
 ## TCP Reordering Configuration
 
@@ -158,35 +140,4 @@ These settings control multi-node deployment on a single machine using Linux nam
 
 ## Lossless Session Configuration
 
-See [Lossless Session Configuration](/docs/design/lossless_config) for details.
-
-```toml
-[lossless_runtime_config]
-default_chunk_size = 8500
-ready_grace_ms = 1500
-fec_tree_lane_depth = 32
-fec_dispatch_burst = 1
-fec_max_tree_lanes = 64
-fec_collaborative_multitree_enabled = true
-fec_enabled = false
-fec_require_capability = true
-fec_default_symbols_per_block = 32
-fec_symbol_size_policy = "chunk_size"
-fec_default_symbol_size = 8500
-fec_tree_ids_source = "config"
-fec_default_tree_ids = [0]
-fec_symbols_per_block_min = 1
-fec_symbols_per_block_max = 1024
-fec_symbol_size_min = 1
-fec_symbol_size_max = 16384
-
-# Optional pacing
-# [lossless_runtime_config.data_bucket]
-# rate = 50_000_000
-# bucket_size = 200_000
-```
-
-`fec_collaborative_multitree_enabled` is a rollout gate only: when enabled, multi-tree FEC uses collaborative dispatch-time assignment exclusively.
-`fec_symbol_size_policy` accepts `chunk_size` or `fixed`; `fec_tree_ids_source` accepts `config` or `installed_routes`.
-Python lossless helpers (`send_data`, `receive_data`, `receive_data_async`) do not accept `fec_*` kwargs; configure FEC behavior through `[lossless_runtime_config]`.
-Legacy kwargs (`fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`) fail at Python bind time with `TypeError` (unexpected keyword argument).
+See [Lossless Session Configuration](/docs/config/lossless_config) for the full configuration details, sample `[lossless_runtime_config]` block, and runtime Python interop notes.

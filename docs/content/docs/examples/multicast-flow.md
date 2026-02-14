@@ -1,6 +1,6 @@
 ---
 title: "Example: Multicast Flow Lifecycle"
-description: ""
+description: "Walks through multicast flow setup, routing, and data delivery with one source and member nodes."
 ---
 
 

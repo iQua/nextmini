@@ -1,6 +1,6 @@
 ---
 title: "Distributed ring all-reduce on Sim, Boston and Arbutus"
-description: ""
+description: "Sets up distributed ring all-reduce workloads across Sim, Boston, and Arbutus environments."
 ---
 
 

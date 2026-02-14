@@ -1,6 +1,6 @@
 ---
 title: "Distributed PyTorch Trainers"
-description: ""
+description: "Runs distributed PyTorch trainer nodes using OpenMPI on a single host."
 ---
 
 

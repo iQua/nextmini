@@ -1,195 +1,83 @@
 ---
-title: "Multicast Groups in Nextmini"
-description: ""
+title: "Multicast Groups"
+description: "Architectural overview of Nextmini multicast groups, DAG propagation, and forwarding behavior."
 ---
 
+Nextmini uses in-band logical groups to let one source node fan one flow toward many receivers.
 
-Multicast groups let a single source node deliver packets to many receivers through one logical destination IP. The controller owns group lifecycle and persistence; multicast DAG edges are supplied externally and pushed to the dataplane, which mirrors the group directory, fans out packets hop-by-hop, and preserves the existing scheduling pipeline.
+Each group is treated as an `(S, G)` pair where `S` is a single source node and `G` is a group identity backed by a virtual destination IP. Applications send traffic to that group IP, and the dataplane expands it along pre-installed DAG branches. The controller owns group registration, membership, and group route persistence, while the dataplane keeps a fast forwarding path for both unicast and multicast lookups.
 
----
+## Design goals and boundaries
 
-## Feature Goals
+The design intentionally targets one-source groups first. In this release, `*, G` style shared-source groups are not part of the contract, and multicast group behavior is not tied to IGMP snooping.
 
-- **(S, G) semantics** – each group `G` belongs to one source node `S`; the source pushes traffic to the group IP.
-- **Dynamic membership** – destinations may join and leave while the system runs; the controller reapplies stored DAG edges and ships incremental updates for local delivery.
-- **Fast-path fan-out** – branching dataplane nodes clone packets for every next hop, both in normal and Max scheduling paths.
-- **Backwards compatibility** – unicast routing, flow installation, and rollout tooling continue to behave unchanged.
+The controller requires explicit DAG guidance for each group. That lets routing and rollout stay deterministic and makes tree behavior predictable under testing and production control.
 
-Non-goals for this iteration:
+## Group data model
 
-- IGMP snooping or transparent interoperability with arbitrary L3 applications.
-- Shared, multi-source groups (`*, G`).
+The controller maps each group to two logical artifacts:
 
----
+- `group_id`: numeric identifier of the group.
+- `group_ip`: virtual destination IP used by applications.
 
-## Terminology & Group Identity
+Group identity is synchronized as directory state across nodes, while actual forwarding state is stored as per-node routes derived from `(src_node_id, group_id)` combinations. That split is what allows membership and topology updates to be localized without changing every node’s policy at once.
 
-- **Group ID (`group_id`)** – numeric identifier allocated by the controller.
-- **Group IP (`group_ip`)** – virtual IPv4 address used by applications. Addresses are allocated from a configurable pool (`multicast_pool_base` / `multicast_pool_mask` in `controller/src/config.rs`).
-- **Directory entry** – `{ group_id, group_ip }` tuple distributed to all nodes (`GroupDirectoryEntry`).
-- **Route entry** – `{ route_id, next_hops }` per `(src, group)` pair, delivered as `GroupRoutingTableEntry` objects.
+## Controller flow
 
-The directory is global; route entries are scoped to nodes that appear in the multicast DAG.
+The controller stores multicast state in Postgres tables for durability and change propagation. Route materialization is then driven by notifications, not polling:
 
----
+- `groups` holds definitions and allocation state.
+- `group_members` tracks membership changes.
+- `group_routes` stores DAG edges for each `(src, group)` pair.
 
-## Control Plane Implementation
+A database trigger on `group_members` publishes `sync_group_routes`. The controller reloads the stored DAGs, rebuilds per-node route vectors, and pushes updates to nodes participating in each DAG.
 
-### Persistence & Notification
+If a node is temporarily disconnected when a route update is published, the update is not lost. That node receives a full snapshot during its next websocket handshake.
 
-The controller persists multicast data in Postgres:
+In message flow terms, the controller continues to use the same websocket envelope family to deliver directory and route installs:
 
-| Table | Purpose |
-|-------|---------|
-| `groups` | Defines each multicast group, including `label`, `src_node_id`, and `group_ip`. |
-| `group_members` | Join table keyed by `(group_id, member_node_id)` with timestamps. |
-| `group_routes` | Cached DAG edges (JSON) for each `(src, group)` combination. |
+- directory installs share the current group-to-id mapping across nodes,
+- and route installs deliver per-node next-hop vectors for active DAGs.
 
-`controller/src/db.rs` installs database triggers so that any insert/delete on `group_members` fires `pg_notify('sync_group_routes', ...)`. A Tokio task (`setup_group_notification`) listens on that channel, reloads the stored DAG edges from `group_routes` (written via `SetGroupRoutes`), rebuilds per-node routes with `build_group_routes_for_node` (`controller/src/utils.rs`), and pushes fresh routes. Membership changes now only affect local delivery; the DAG itself is externally supplied.
+## Dataplane flow and forwarding behavior
 
-### Message Surface
+Within the dataplane routing table, group packets are handled by extending existing route-keyed lookup to include multicast source/group keys. Incoming packets are first checked for group destination context:
 
-New MessagePack payloads (defined in `messages/src/lib.rs`):
+1. when destination resolves to a known `group_ip`, the key becomes `(src, group_id)`;
+2. route lookup returns zero, one, or many next hops;
+3. multiple next hops are fanned out as packet copies into the scheduler.
 
-- **Dataplane → Controller**: `CreateGroup`, `JoinGroup`, `LeaveGroup`, `SetGroupRoutes`.
-- **Controller → Dataplane**:
-  - `GroupCreated { group_id, group_ip, src_node_id }` (acknowledges creation back to the source).
-  - `InstallGroupDirectory { groups }` (broadcast directory refresh for every node).
-  - `InstallGroupRoutes { group_id, src_node_id, routes }` (per-node next-hop vectors, sent only to nodes participating in the DAG).
+This keeps multicast inside the normal scheduling and transport stack instead of introducing a separate forwarding pipeline.
 
-### Lifecycle Walkthrough
+The dataplane also tracks two cache layers for multicast lookup:
 
-1. **Create** – A node invokes `CreateGroup`. The controller reserves an IP from the configured pool, stores the group, and replies with `GroupCreated`. It then calls `broadcast_group_directory` so every node learns the new mapping.
-2. **Install DAG** – The source (or an external solver) calls `SetGroupRoutes` with explicit DAG edges. The controller persists the edges in `group_routes` and pushes `InstallGroupRoutes` to nodes referenced by the DAG.
-3. **Join / Leave** – Each member submits `JoinGroup` or `LeaveGroup`. The resulting database mutation triggers `sync_group_routes`. The controller reuses the stored DAG edges, rebuilds per-node routes (including local delivery for members), and calls `push_group_routes` to send `InstallGroupRoutes` updates.
-4. **Delivery** – Once the directory is replicated, the source sends packets toward `group_ip`. Membership changes eventually propagate through the same notification channel.
-5. **Tear-down** – When the last member leaves, the group remains until explicitly deleted or garbage-collected; future work may add timers to prune empty groups.
+- exact `(src_node_id, group_id, tree_id)` entries for steady-state forwarding;
+- fallback control-tree cache entries when tree context is absent.
 
-The controller tolerates intermittent websocket outages—if a node lacks an active writer when routes are pushed, the update is skipped and retried once the node reconnects (leveraging the full snapshot sent during handshake).
+Both caches are refreshed when group routes are installed so stale entries are short-lived and replacement is consistent.
 
----
+## Control-frame routing in the absence of `tree_id`
 
-## Dataplane Implementation
+Lossless control frames do not always carry `tree_id`. For those cases, the dataplane uses a deterministic policy: prefer tree `0` when available for that `(src_node_id, group_id)`, otherwise choose the smallest available tree. If no tree exists for the pair, forwarding drops with the same missing-route path used for unicast miss behavior.
 
-### Routing Table Structure
+This policy is a local control-plane decision only; it does not alter packet formats.
 
-`dataplane/src/node/route.rs` extends the routing table with:
+## Lifecycle at a glance
 
-- `RouteKey::Unicast(src, dst)` and `RouteKey::Multicast(src, group_id)` variants.
-- A global `group_dir` map from `group_ip → group_id` refreshed via `install_group_directory`.
-- Per-key route pools stored in `available_routes`, with next-hop vectors cached in `route_next_hop`.
-- Deterministic route-id mapping (`messages/src/lib.rs`): `route_id = group_id * MULTITREE_STRIDE + tree_id`, where `MULTITREE_STRIDE = 1 << 16`.
-- `install_group_routes` enforces that every incoming route ID is reversible to `(group_id, tree_id)` and matches expected deterministic form before insertion.
-- Jump consistent hashing (`JumpHasher`) reused for multicast to keep flow-to-route mapping stable even as routes churn.
-- `get_next_hops_by_flow_and_tree` is used when tree context is present and supports explicit `(src_node_id, group_id, tree_id)` selection.
+A group can be thought of as five phases: create, install, join/leave, deliver, and retire. Create generates group identity, install binds DAG state, join/leave updates membership and route materialization, delivery streams to group endpoints, and retirement waits for explicit cleanup when the group is no longer needed.
 
-### Packet Processing
+The key operational rule is that membership churn and route projection share the same notification loop, so one update path drives both state transitions.
 
-- **Processor** (`dataplane/src/node/processor.rs`) calls `get_next_hops_by_flow` for every packet. When multiple hops exist, it clones the packet payload and enqueues each hop on the scheduler. Flow-to-route caching accelerates steady-state traffic but is cleared whenever new routes arrive. Processors react to `InstallGroupDirectory` and `InstallGroupRoutes` messages.
+## Integration points
 
-- **Directory lookups** happen inline: if a flow’s destination IP appears in `group_dir`, the route key converts to `(src, group_id)` before hashing.
+Application APIs and concrete call examples are documented in [`Python dataplane API`](./python-api). This page focuses on control-plane and dataplane mechanics.
 
-If no route is available, the dataplane logs a warning and drops the packet (matching the existing unicast behaviour). Stale cache entries are purged automatically when the controller pushes updated route IDs.
+## Operational notes
 
-The routing table also keeps two cache layers for multicast lookup speed:
+`RUST_LOG=info` is useful for observing group directory sync, route installation, and membership transitions. Multicast counters are accumulated through ordinary flow accounting, so fanned payloads naturally increase hop-level counters as branching occurs.
 
-- `multicast_tree_cache` for exact `(src_node_id, group_id, tree_id)` hits.
-- `multicast_control_tree_cache` for fallback control-tree selection when `tree_id` is not supplied.
+The default multicast pool remains `239.255.0.0/16`; override controller pool settings (`multicast_pool_base`, `multicast_pool_mask`) only if your environment requires a different namespace.
 
-Both caches are invalidated for a source/group pair during `install_group_routes` refresh so future lookups use new topology immediately.
+## Validation focus
 
-### Control-Frame Tree Routing Policy
-
-Lossless multicast control frames do not carry `tree_id` on the wire. Routing therefore applies a deterministic control-tree policy for multicast lookups when `tree_id` is absent:
-
-- Candidate set is the installed tree IDs for `(src_node_id, group_id)`.
-- Tie-breaker #1: use tree `0` when present in the installed set.
-- Tie-breaker #2: otherwise use the smallest installed tree ID.
-- If no tree is installed for `(src_node_id, group_id)`, the frame is dropped with a warning (same missing-route behavior as data).
-- Selection is deterministic and should not depend on hash map iteration order or timing.
-- Route-install refreshes for the same `(src_node_id, group_id)` invalidate cached control-tree choices before the next lookup.
-
-This policy is routing-only and does not change the control-frame wire format.
-
----
-
-## Client APIs
-
-### Python bindings (`nextmini_py`)
-
-`nextmini_py.Dataplane` exposes a minimal set of helpers so applications can manage multicast membership without touching
-the controller CLI:
-
-| Method | Purpose |
-| --- | --- |
-| `create_group(label)` | Requests a new `(group_id, group_ip)` pair for the local node (the source). |
-| `group_is_ready(timeout_ms=None)` | Blocks until the controller acknowledges a group and returns `(group_id, group_ip, src_node_id)`. |
-| `set_group_routes(group_id, edges)` | Persists DAG edges for a multicast group so the controller can install routes. |
-| `wait_for_group_routes(group_id, src_node_id, min_routes=1, timeout_ms=None)` | Blocks until multicast routes are installed on the local node. |
-| `join_group(group_id)` / `leave_group(group_id)` | Adds or drops the local node from the specified group. |
-| `register_receiver_for_group(src_node_id, group_ip, src_port=None, dst_port=None)` | Binds a Python-side queue to packets sourced from `src_node_id` and destined for `group_ip`. |
-
-Example sender workflow:
-
-```python
-import nextmini_py as nm
-
-dp = nm.Dataplane("/abs/path/node-config.toml")
-dp.create_group("training-run-42")
-group = dp.group_is_ready(timeout_ms=5_000)
-assert group, "controller never acknowledged the group"
-group_id, group_ip, _ = group
-edges = [(1, 2), (1, 3)]
-dp.set_group_routes(group_id, edges)
-dp.wait_for_group_routes(group_id, 1, timeout_ms=5_000)
-```
-
-Example receiver workflow:
-
-```python
-import nextmini_py as nm
-
-dp = nm.Dataplane("/abs/path/node-config.toml")
-dp.join_group(group_id)
-rx = dp.register_receiver_for_group(
-    src_node_id=1,
-    group_ip=group_ip,
-)
-payload = rx.recv(timeout_ms=2_000)
-dp.leave_group(group_id)
-```
-
-All helpers run over the existing websocket between the dataplane and controller, so no additional services are
-required. Events flow through the same `PythonEvent` queue used by the PyTorch bindings, enabling scripts to await group
-creation or membership changes.
-
----
-
-## Operational Notes
-
-- **Logging** – `RUST_LOG=info` surfaces directory broadcasts, route pushes, and membership changes on both controller and dataplane sides.
-- **Metrics** – Flow statistics code treats multicast flows identically; per-hop byte counters expand naturally as the same flow ID fans out.
-- **Configuration** – The multicast pool defaults to `239.255.0.0/16`. Override `controller.config.multicast_pool_base` / `multicast_pool_mask` to carve a different range.
-- **Resilience** – Controller retries on serialization errors and warns when websocket writers vanish. Dataplane caches clear on every install so stale entries never linger.
-
----
-
-## Testing & Verification
-
-Current coverage (see `controller/src/utils.rs` and `dataplane/src/node/route.rs`):
-
-- Unit tests validate DAG construction, membership pruning, and per-node route assembly.
-- Dataplane tests exercise directory installation, route fan-out, and cache flushing.
-
----
-
-## Related Material
-
-- **Example walkthrough** – [`multicast-flow`](/docs/examples/multicast-flow) shows the CLI/API flow for creating a group, joining members, and verifying delivery.
-- **Testing harness plan** – [`multicast`](/docs/testing/multicast) describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
-- **Controller configuration** – See `controller/src/config.rs` for the multicast pool defaults and other tunables.
-- Dataplane routing-table tests that validate group directory lookups.
-- Integration tests that drive membership changes via Postgres notifications.
-- Performance checks for high-fan-out multicast branches.
-
-See [`multicast-flow`](/docs/examples/multicast-flow) for an end-to-end walkthrough.
+Most behavior is covered in controller and route-table tests. The main areas are DAG materialization, per-node route assembly, cache refresh behavior, and control-plane replay correctness when route updates arrive under churn.

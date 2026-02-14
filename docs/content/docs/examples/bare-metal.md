@@ -1,6 +1,6 @@
 ---
 title: "Bare Metal Deployment"
-description: ""
+description: "Documents native binary deployment of controller and dataplane across physical hosts."
 ---
 
 

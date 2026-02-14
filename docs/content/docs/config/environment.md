@@ -1,6 +1,6 @@
 ---
 title: "Config Environment Variables"
-description: ""
+description: "Lists environment variables that control controller startup, resets, and runtime behavior."
 ---
 
 | Variable | Description |

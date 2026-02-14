@@ -1,6 +1,6 @@
 ---
 title: "Distributed PyTorch Trainers on Sim, Boston and Arbutus"
-description: ""
+description: "Runs distributed PyTorch trainer workflows across Sim, Boston, and Arbutus nodes."
 ---
 
 

@@ -1,6 +1,6 @@
 ---
 title: "Running Nextmini's dataplane nodes in virtualized network namespaces on a single host"
-description: ""
+description: "Benchmarks topology startup and memory behavior using virtualized network namespaces."
 ---
 
 

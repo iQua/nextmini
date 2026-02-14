@@ -1,6 +1,6 @@
 ---
 title: "Defining the Network Topology and Routes"
-description: ""
+description: "Shows how to encode topology and route definitions in controller configuration."
 ---
 
 

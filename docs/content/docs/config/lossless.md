@@ -1,0 +1,157 @@
+---
+title: "Lossless Session Configuration"
+description: "Defines lossless session defaults, limits, and runtime preflight behavior."
+---
+
+We now define default behavior for the lossless session engines used by the dataplane.
+
+## Location
+
+The implementation is anchored in `dataplane/src/node/config.rs` via `LosslessConfig`, which owns all default session behavior for the dataplane.
+
+## Glossary: Lossless Terms
+
+This page uses several runtime terms in close proximity; the definitions below keep the sequence clear:
+
+| Term | Meaning |
+|------|---------|
+| `Session` | One sender-receiver agreement started by runtime control messages, represented by a session identifier (`session_id`). |
+| `Chunk` | A contiguous slice of payload data taken from the application stream before coding. |
+| `Block` | A set of chunks grouped together for scheduling and manifest negotiation in one lossless transfer unit. |
+| `Symbol` | The FEC encoded unit produced inside a block; symbols are what get tracked by `symbols_per_block` and sent with symbol-level ACK/state. |
+| `Manifest` | Metadata advertised at session start, including chosen coding mode and expected reconstruction expectations. |
+| `FEC` (`fec_*`) | Forward error correction runtime knobs on the sender side that control symbol sizing, block structure, and routing constraints. |
+
+```mermaid
+flowchart LR
+  AppData["Application payload bytes"]
+  Chunk["Chunk (chunk_size)"]
+  Block["Block (session chunk grouping)"]
+  Symbol["FEC Symbol"]
+  Session["Lossless Session"]
+
+  AppData --> Chunk
+  Chunk --> Block
+  Block --> Symbol
+  Symbol --> Session
+```
+
+## Fields
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `default_chunk_size` | `8500` | Default payload chunk size in bytes. |
+| `data_bucket` | `None` | Optional token bucket for data pacing. |
+| `ready_grace_ms` | `1500` | Grace window (ms) before the sender starts streaming when not all receivers have reported `Ready`. |
+| `fec_tree_lane_depth` | `32` | Per-tree sender lane depth for collaborative FEC dispatch. |
+| `fec_dispatch_burst` | `1` | Max FEC symbols dispatched per sender scheduling cycle. |
+| `fec_max_tree_lanes` | `64` | Max allowed `fec_tree_ids` length at runtime preflight. |
+| `fec_collaborative_multitree_enabled` | `true` | On/off gate for collaborative multi-tree FEC mode. |
+| `fec_enabled` | `false` | Global enable switch for FEC sessions (opt-in by default). |
+| `fec_require_capability` | `true` | Reject FEC sessions unless receiver capability negotiation is present. |
+| `fec_default_symbols_per_block` | `32` | Runtime-derived default `FecManifest.symbols_per_block` before preflight. |
+| `fec_symbol_size_policy` | `"chunk_size"` | Default symbol-size policy: `chunk_size` follows session `chunk_size`, `fixed` uses `fec_default_symbol_size`. |
+| `fec_default_symbol_size` | `8500` | Fixed default `FecManifest.symbol_size` when `fec_symbol_size_policy="fixed"`. |
+| `fec_tree_ids_source` | `"config"` | Source for internal sender tree-id allowlist (`config` or `installed_routes`). |
+| `fec_default_tree_ids` | `[0]` | Config fallback tree-id allowlist used when `fec_tree_ids_source="config"`. |
+| `fec_symbols_per_block_min` | `1` | Lower bound enforced at runtime for FEC symbols-per-block. |
+| `fec_symbols_per_block_max` | `1024` | Upper bound enforced at runtime for FEC symbols-per-block. |
+| `fec_symbol_size_min` | `1` | Lower bound enforced at runtime for FEC symbol size. |
+| `fec_symbol_size_max` | `16384` | Upper bound enforced at runtime for FEC symbol size. |
+
+### FEC Runtime-Derived Defaults
+
+At startup, the sender runtime derives `symbols_per_block` from `fec_default_symbols_per_block` and then canonicalizes it into the `[fec_symbols_per_block_min, fec_symbols_per_block_max]` range. It also derives the symbol size from `fec_symbol_size_policy`: with `chunk_size`, each session follows its own `chunk_size`, while `fixed` uses `fec_default_symbol_size`. Tree IDs flow from `fec_tree_ids_source` and `fec_default_tree_ids`, then become a sorted unique set before sender preflight. For Python callers, there are no per-session FEC overrides; the runtime config values remain authoritative.
+
+### TokenBucketSpec Fields
+
+| Field | Description |
+|-------|-------------|
+| `rate` | Pacing rate in bytes per second. |
+| `bucket_size` | Token bucket size in bytes. |
+
+## Session Coordination
+
+Session coordination uses deterministic session IDs derived from flow metadata (controller-assigned flows) or `(group_id, source_node_id)` for Python multicast helpers. Receivers must be registered before send; if no receiver is active for a session, inbound frames are dropped.
+
+## Multi-Tree FEC Contract
+
+This contract defines sender-side tree selection for collaborative multi-tree FEC scheduling and supersedes the older hash-based assignment model.
+
+### Tree-ID Set Invariants
+
+Multi-tree sessions are driven by a runtime-resolved `fec_tree_ids` allowlist, and that list is canonicalized into sorted, unique tree IDs before use. Packet emission is constrained to the IDs in this list. In practice, multi-tree mode requires at least two IDs, while single-tree operation is only valid when it is explicitly configured and therefore contains exactly one tree ID. An empty `fec_tree_ids` set is always rejected.
+
+### Deterministic Tie-Breakers
+
+The scheduling path keeps tie-breaks deterministic by iterating the canonical `fec_tree_ids` list in a stable round-robin order. When multiple trees are writable, the sender chooses the first candidate in that sequence and wraps around as needed, which means tree selection is driven at dispatch time by current backpressure and the configured set.
+
+### Packet-Path Integration (Dataplane Processor)
+
+Lossless FEC packets are classified directly from packet payload via `packet.lossless_fec_tree_id()`, avoiding out-of-band metadata paths. When a tree id exists, forwarding uses `route::RoutingTable::get_next_hops_by_flow_and_tree(flow_id, tree_id, reporter)` for per-packet routing; otherwise, the legacy flow-only lookup path remains in use. In `Sequential` mode, each processor worker owns one `mpsc` ingress queue and lane assignment stays deterministic, with FEC packets hashed by `(flow_id, tree_id)` so concurrent trees can be spread across lanes. In `Concurrent` mode, workers consume from a single shared `flume` queue so all packets share one ingress surface; tree-level lane partitioning is unavailable there, which is why the sender runtime requires `Feature::Sequential` when collaborative multi-tree is enabled. During preflight, if `fec_collaborative_multitree_enabled` is true, the runtime also requires `Feature::Sequential` and `ingress_channel_backpressure` to be true, otherwise startup is rejected with a preflight error diagnostic.
+
+### Sender Preflight Matrix
+
+`LosslessRuntime::spawn_sender` derives sender policy in `derive_sender_policy` and rejects startup for any hard error:
+
+`LosslessRuntime::spawn_sender` first handles non-FEC flows by accepting `fec_enabled=false`, which results in `SenderPolicy { manifest=None, tree_ids=[] }` without a preflight block. For FEC flows, each strict check must pass, including capability and tree-id compatibility gates: if `fec_enabled=true` while `fec_require_capability=false`, the policy is `CapabilityRequirementDisabled`; setting `fec_tree_ids_source=installed_routes` still maps to `InstalledRoutesTreeIdsUnsupported` because that path is not implemented yet. Numeric tuning and structural constraints are validated next: `fec_tree_lane_depth` and `fec_dispatch_burst` must be non-zero, `fec_max_tree_lanes` must be non-zero, and the derived tree set must not be empty or unsorted/duplicate and must stay within the configured lane limit. If collaborative mode is disabled or the sender is not running with `Feature::Sequential` and backpressure, multi-tree selection is rejected through `CollaborativeMultiTreeDisabled`, `MultiTreeRequiresSequentialIngress`, or `MultiTreeRequiresIngressBackpressure`. Finally, manifest derivation is validated against symbol and symbol-size bounds, ensuring `symbols_per_block` stays inside `[fec_symbols_per_block_min, fec_symbols_per_block_max]`, symbol size stays inside `[fec_symbol_size_min, fec_symbol_size_max]`, `chunk_size` does not exceed the derived symbol size, and fixed-size derivation from `chunk_size` is possible.
+
+Any preflight rejection is logged as `Lossless runtime: rejected sender session during deterministic preflight` and returned to the caller as `PreflightError`.
+
+### Sender Runtime State Machine
+
+The sender event loop (`sender::run`) moves through three gates before first emission: topology gate, manifest gate, and ready gate. The topology gate (`topology_gate_open`) stays false until either `set_topology_ready(true)` is observed or the runtime starts preconfigured as ready. Once topology is open, the manifest gate sends `MANIFEST`. The ready gate (`ready_gate_open`) requires all peers to be ready and, in FEC mode, for preflight checks to be satisfied. Non-FEC senders still rely on cumulative ACK progress, while FEC senders retire by FEC status tracking and ignore ACK consumption. `MANIFEST` messages are retried every 250 ms (`MANIFEST_RETRY_INTERVAL_MS`) while not ready. In FEC mode, if peers are still missing after `ready_grace_ms`, runtime continues with a warning when only `Ready` is missing in legacy behavior, and aborts if capability or compatibility checks fail.
+
+### FEC Symbol Dispatch Pipeline
+
+On first FEC symbol emission, the sender initializes `FecTreeDispatch`:
+
+The sender creates one dispatch lane for each tree in canonical `fec_tree_ids`, builds one bounded MPSC queue per lane at `fec_tree_lane_depth`, and drives them with a shared round-robin index (`next_rr_idx`) plus a shared notify handle for wakeups.
+
+`drive_fec_scheduler` loops in bursts:
+
+It enqueues one new FEC block when window and capacity allow, emits up to `fec_dispatch_burst` symbols per cycle, and for each symbol calls `FecTreeDispatch::try_enqueue`.
+
+`try_enqueue` returns one of three outcomes: `Queued(tree_id)` increments `queued`/`sent` counters and tracks outstanding symbols, `AllBlocked` puts the symbol back on the local scheduler queue and sets `all_lanes_blocked=true`, and `Closed` moves the session into preflight-failed state.
+
+When all lanes are blocked, the main loop pauses with a `Notify` wakeup or control-frame receive bounded by `ALL_FEC_LANES_BLOCKED_WAIT_MS` (250 ms). The sender returns to work whenever lane capacity opens, and logs include per-tree counters for `queued`, `sent`, `blocked`, `drained`, and `wakeups`.
+
+### Receiver-Side and Control-Plane Semantics
+
+`sender::handle_control` dispatches control frames by mode: `Ready` updates the ready gate, `FecCapabilities` checks manifest compatibility via `control::ensure_fec_compatible`, `FecStatus` updates per-receiver completion watermarks and retirement limits, while `Ack` is ignored in FEC mode and only used for non-FEC cumulative completion. On the receiver side, `receiver::run` emits `Ready` at startup, sends batched `Ack` in groups of 16 contiguous chunks or completion edges, advertises `FecCapabilities` only when runtime has FEC enabled, and provides `FecManifest`/`Manifest` during handshakes. Frames that arrive before manifest, carry invalid payload lengths, or use unknown formats are dropped, with warnings for unknown formats.
+
+## Observability + Rollout Guardrails
+
+Collaborative dispatch-time assignment remains the only supported multi-tree FEC behavior. `fec_collaborative_multitree_enabled` is purely a rollout gate and does not choose between different strategies. Runtime preflight enforces sequential ingress whenever collaborative multi-tree is used. Session-start logs explicitly include `fec_tree_ids`, `fec_tree_lane_depth`, `fec_dispatch_burst`, and processor ingress policy details. They also surface per-tree counters (`queued`, `sent`, `blocked`, `drained`, `wakeups`), and all-lanes-blocked waits/wakeups now emit per-tree snapshots to speed backpressure diagnosis.
+
+## Example
+
+```toml
+[lossless_runtime_config]
+default_chunk_size = 8500
+ready_grace_ms = 1500
+fec_tree_lane_depth = 32
+fec_dispatch_burst = 1
+fec_max_tree_lanes = 64
+fec_collaborative_multitree_enabled = true
+fec_enabled = false
+fec_require_capability = true
+fec_default_symbols_per_block = 32
+fec_symbol_size_policy = "chunk_size"
+fec_default_symbol_size = 8500
+fec_tree_ids_source = "config"
+fec_default_tree_ids = [0]
+fec_symbols_per_block_min = 1
+fec_symbols_per_block_max = 1024
+fec_symbol_size_min = 1
+fec_symbol_size_max = 16384
+
+# Optional pacing
+# [lossless_runtime_config.data_bucket]
+# rate = 50_000_000    # bytes/sec
+# bucket_size = 200_000  # bytes
+```
+
+## Notes
+
+Lossless delivery relies on TCP with back pressure in the default path. In practice, tune `default_chunk_size` alongside MTU constraints; the shipped default of 8500 bytes is optimized for jumbo-frame environments.
