@@ -115,6 +115,28 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Final method signatures and migration note approved in plan/doc.
 - Validation:
   - Signature checklist documented before code edits.
+- Signature checklist (target contract):
+  - `send_data(group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None) -> int`
+  - `receive_data(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> int`
+  - `receive_data_async(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> Awaitable[int]`
+- Contract decisions:
+  - Migration mode: explicit breaking change, no compatibility shim for removed `fec_*` kwargs.
+  - Legacy keyword behavior: passing `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, or `fec_tree_ids` raises Python `TypeError` (unexpected keyword argument) once T7 lands.
+  - Invariant boundary: Python callsites cannot provide or override `FecManifest`, `FecCapabilities`, tree IDs, or any equivalent FEC policy internals.
+  - Runtime ownership: FEC enablement, manifest/capability derivation, validation, and tree-ID policy are runtime/config responsibilities (T3/T4/T5).
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Confirmed current public signatures in `python-api/src/lib.rs` still include `fec_*` kwargs; used this as baseline for the target contract checklist.
+  - Locked final FEC-oblivious signatures and migration policy wording in this plan for downstream tasks T3/T4/T7/T8/T9/T10.
+  - Added explicit boundary invariant that Python cannot supply manifest/capability/tree-ID internals.
+  - Added contract section + migration notes in `docs/docs/design/python-api.md` to keep implementation and docs aligned.
+- Files modified:
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+  - `docs/docs/design/python-api.md`
+- Errors/gotchas:
+  - Current `python-api/src/lib.rs` still contains `fec_*` kwargs and helper plumbing by design at this stage; removal is deferred to T7.
+  - Existing docs/examples still include legacy FEC kwargs outside the new contract section and will be cleaned in later tasks (T8/T9).
 
 ### T3 — Introduce Internal Runtime FEC Policy Layer
 - `depends_on: [T2]`

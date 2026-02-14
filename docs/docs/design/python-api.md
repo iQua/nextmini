@@ -82,7 +82,24 @@ Use controller-backed helpers from Python when managing group lifecycle:
 
 ## Lossless session helpers (`send_data` / `receive_data`)
 
-`send_data(...)` and `receive_data(...)` expose lossless session APIs for larger multicast transfers. Optional FEC arguments on sender/receiver calls map to runtime preflight checks in Rust.
+This section defines the FEC-oblivious public contract for Python lossless APIs.
+
+### Contracted method signatures
+
+- `send_data(group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None) -> int`
+- `receive_data(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> int`
+- `receive_data_async(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> Awaitable[int]`
+
+### Boundary invariant
+
+Python callers cannot provide or override FEC internals. `FecManifest`, `FecCapabilities`, tree IDs, and related policy/validation are runtime/config-owned internals.
+
+### Migration behavior
+
+- This is an explicit breaking change.
+- Removed kwargs: `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`.
+- Compatibility policy: no short-lived Python shim.
+- Caller impact: old kwargs fail fast with Python `TypeError` (unexpected keyword argument) once the signature removal lands.
 
 ```python
 sid = dp.send_data(
@@ -91,8 +108,6 @@ sid = dp.send_data(
     receiver_ids=[2, 3],
     buffer=payload,
     chunk_size=8500,
-    fec_enabled=True,
-    fec_tree_ids=[1, 3],
 )
 
 rx_sid = dp.receive_data(
@@ -100,7 +115,6 @@ rx_sid = dp.receive_data(
     dest_ip="239.255.0.10",
     source_node_id=1,
     expected_bytes=len(payload),
-    fec_enabled=True,
 )
 ```
 
