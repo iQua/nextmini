@@ -1,9 +1,7 @@
 ---
-title: "architecture"
-description: ""
+title: "Architectural Design"
+description: "Nextmini: a High-Performance Network Emulation and Experimentation Testbed"
 ---
-
-## Architectural Design
 
 Nextmini is organized as a small workspace of focused crates:
 

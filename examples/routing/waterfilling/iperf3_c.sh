@@ -1,1 +1,0 @@
-iperf3 -c 10.0.0.2 -p 5201 -b 10M -n 2G & iperf3 -c 10.0.0.2 -p 5202 -b 10M -n 2G & iperf3 -c 10.0.0.2 -p 5203 -b 10M -n 2G & iperf3 -c 10.0.0.2 -p 5204 -b 10M -n 2G & iperf3 -c 10.0.0.2 -p 5205 -b 10M -n 2G & iperf3 -c 10.0.0.2 -p 5206 -b 10M -n 2G
