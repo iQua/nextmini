@@ -2,35 +2,26 @@ import { docs } from "fumadocs-mdx:collections/server";
 import { loader } from "fumadocs-core/source";
 import { lucideIconsPlugin } from "fumadocs-core/source/lucide-icons";
 
-const sidebarOrder = ["examples", "design", "testing", "config"];
+const metaFiles = import.meta.glob("../../content/docs/**/_meta.json", {
+	eager: true,
+	import: "default",
+});
 
-const examplesSidebarOrder = [
-	"simple",
-	"pytorch",
-	"pytorch_python_api",
-	"routes",
-	"namespace",
-	"bare-metal",
-	"pytorch-sba",
-	"ring_allreduce-sba",
-	"localserver-flyio",
-	"multicast-flow",
-];
-
-const folderOrderByPath: Record<string, string[]> = {
-	"": ["index", ...sidebarOrder],
-	examples: examplesSidebarOrder,
-	config: [
-		"index",
-		"controller",
-		"dataplane",
-		"lossless_config",
-		"transport",
-		"enums",
-		"environment",
-		"examples",
-	],
-};
+const folderOrderByPath = Object.fromEntries(
+	Object.entries(metaFiles as Record<string, { pages?: string[] }>)
+		.map(([path, meta]) => {
+			const normalizedPath = path.replace(/\\/g, "/");
+			const folderPath = normalizedPath
+				.replace(/^.*\/content\/docs\//, "")
+				.replace(/^\.?\//, "")
+				.replace(/\/_meta\.json$/, "")
+				.replace(/^_meta\.json$/, "");
+			const pages = Array.isArray(meta.pages)
+				? meta.pages.map((entry) => entry.toLowerCase())
+				: [];
+			return [folderPath, pages];
+		}),
+);
 
 const docsNavOrderPlugin = {
 	name: "docs-sidebar-order",
@@ -47,6 +38,7 @@ function sortSidebarByOrder(
 	children: Array<{
 		type: string;
 		name?: unknown;
+		index?: { url?: unknown };
 		url?: unknown;
 		children?: Array<{ type: string; name?: unknown; children?: any }>;
 	}>,
@@ -60,10 +52,7 @@ function sortSidebarByOrder(
 
 	folderNodes.forEach((folder) => {
 		if (Array.isArray(folder.children)) {
-			const folderPath =
-				typeof folder.name === "string"
-					? `${parentPath ? `${parentPath}/` : ""}${folder.name.toLowerCase()}`
-					: parentPath;
+			const folderPath = getFolderPath(folder, parentPath);
 			folder.children = sortSidebarByOrder(folder.children, folderPath);
 		}
 	});
@@ -95,10 +84,43 @@ function sortSidebarByOrder(
 	return [...pageNodes, ...sortedFolderNodes];
 }
 
-function getNodeSortKey(node: { name?: unknown; url?: unknown }): string {
+function getFolderPath(
+	folder: { index?: { url?: unknown } },
+	parentPath = "",
+): string {
+	const indexUrl = folder.index?.url;
+	if (typeof indexUrl === "string") {
+		return pathFromUrl(indexUrl);
+	}
+
+	const folderSlug = getNodeSortKey(folder);
+	return parentPath ? `${parentPath}/${folderSlug}` : folderSlug;
+}
+
+function pathFromUrl(url: string): string {
+	const normalized = url.replace(/\/+$/, "");
+	if (normalized === "/docs") return "";
+	return normalized.startsWith("/docs/")
+		? normalized.slice(6)
+		: normalized.replace(/^\//, "");
+}
+
+function getNodeSortKey(node: {
+	name?: unknown;
+	url?: unknown;
+	index?: { url?: unknown };
+}): string {
+	if (typeof node.index?.url === "string") {
+		const indexPath = pathFromUrl(node.index.url);
+		if (!indexPath) return "index";
+		return indexPath.split("/").at(-1) ?? "";
+	}
+
 	if (typeof node.url === "string") {
 		const normalized = node.url.replace(/\/+$/, "");
-		return normalized.split("/").at(-1) ?? "";
+		const path = pathFromUrl(normalized);
+		if (!path) return "index";
+		return path.split("/").at(-1) ?? "";
 	}
 
 	return typeof node.name === "string" ? node.name.toLowerCase() : "";

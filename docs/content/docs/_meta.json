@@ -1,9 +1,3 @@
 {
-  "pages": [
-    "index",
-    "config",
-    "examples",
-    "design",
-    "testing"
-  ]
+  "pages": ["index", "examples", "devel", "config", "design"]
 }

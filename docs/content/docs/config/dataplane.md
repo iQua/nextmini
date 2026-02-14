@@ -140,4 +140,4 @@ These settings control multi-node deployment on a single machine using Linux nam
 
 ## Lossless Session Configuration
 
-See [Lossless Session Configuration](/docs/config/lossless_config) for the full configuration details, sample `[lossless_runtime_config]` block, and runtime Python interop notes.
+See [Lossless Session Configuration](/docs/config/lossless) for the full configuration details, sample `[lossless_runtime_config]` block, and runtime Python interop notes.

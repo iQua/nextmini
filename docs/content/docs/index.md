@@ -29,6 +29,7 @@ Python integrations are first-class through `nextmini_py`. This includes direct 
 
 - [Examples](/docs/examples/simple) for some end-to-end example scenarios.
 
+- [Configuration Settings](/docs/config) for a complete reference of all configuration settings.
 - [Design](/docs/design/architecture) for the architectural design.
 
-- [Testing](/docs/testing/unit-tests) for development notes on testing.
+- [Development Guide](/docs/devel) for building, running, and testing Nextmini.

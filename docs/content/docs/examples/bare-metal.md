@@ -33,7 +33,7 @@ cargo build --release -p nextmini
 ### Optional Step: Start Database (One-time)
 
 ```bash
-./utils/start-database.sh
+bash utils/start-database.sh
 ```
 
 ### Step 2: Deploy Controller
