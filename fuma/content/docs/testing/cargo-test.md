@@ -1,28 +1,18 @@
 ---
-title: "Cargo Test Guide"
+title: "Testing the project"
 description: ""
 ---
 
+Before running tests, make sure `PYO3_PYTHON` represents `/path/to/python3.13`, such as the following on macOS:
 
-Run tests from the repository root (`nextmini/`).
-
-## Workspace test command
-
-```bash
-PYO3_PYTHON=/path/to/python3.13 \
-cargo nextest run --no-default-features --features python-extension --features dev-tests
+```
+export PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13
 ```
 
-Notes:
+Controller integration tests that require Postgres also need the database started first (for example, by running `bash ./utils/start-database.sh`).
 
-- `PYO3_PYTHON` should point to a CPython 3.13 interpreter.
-- Controller integration tests that require Postgres need the database started first (for example `./utils/start-database.sh`).
-
-## Python API crate-only tests
-
-If you only want `nextmini_py` crate tests:
+Then run all tests from the repository root (`nextmini/`):
 
 ```bash
-PYO3_PYTHON=/path/to/python3.13 \
-cargo nextest run -p nextmini_py --no-default-features --features dev-tests
+cargo nextest run --no-default-features --features python-extension --features dev-tests
 ```
