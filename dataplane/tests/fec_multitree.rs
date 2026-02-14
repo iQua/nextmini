@@ -21,7 +21,7 @@ struct TreeCapture {
     distinct_trees: BTreeSet<u16>,
 }
 
-async fn run_sender_and_capture_trees(session_id: u64) -> TreeCapture {
+async fn run_sender_and_capture_trees(session_id: u64, fec_tree_ids: Vec<u16>) -> TreeCapture {
     let cfg = LocalConfig {
         node_id: 1,
         n_nodes: 2,
@@ -73,7 +73,7 @@ async fn run_sender_and_capture_trees(session_id: u64) -> TreeCapture {
         total_bytes: 1024,
         source_buffer: Bytes::from(vec![0xCD; 32]),
         fec_manifest: Some(manifest),
-        fec_tree_ids: vec![0, 1, 2, 3],
+        fec_tree_ids,
         fec_tree_lane_depth: 32,
         fec_dispatch_burst: 1,
         ready_grace_ms: 1,
@@ -130,23 +130,23 @@ async fn run_sender_and_capture_trees(session_id: u64) -> TreeCapture {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn symbols_are_collaboratively_dispatched_across_configured_trees() {
-    let first = run_sender_and_capture_trees(0xBAD5EED).await;
-    let second = run_sender_and_capture_trees(0xDEADBEEF).await;
-    let expected_trees = BTreeSet::from([0u16, 1, 2, 3]);
+    let configured_trees = vec![1u16, 3, 5];
+    let capture = run_sender_and_capture_trees(0xBAD5EED, configured_trees.clone()).await;
+    let configured_tree_set: BTreeSet<u16> = configured_trees.into_iter().collect();
 
-    assert_eq!(
-        first.distinct_trees, expected_trees,
-        "sender should collaboratively emit symbols across the configured tree IDs"
-    );
     assert!(
-        first
+        capture
             .symbol_trees
             .values()
-            .all(|tree_id| expected_trees.contains(tree_id)),
+            .all(|tree_id| configured_tree_set.contains(tree_id)),
         "sender must not emit symbols on unconfigured tree IDs"
     );
-    assert_eq!(
-        first.symbol_trees, second.symbol_trees,
-        "collaborative dispatch should be deterministic and independent of session id"
+    assert!(
+        capture.distinct_trees.is_subset(&configured_tree_set),
+        "all observed trees must be a subset of configured fec_tree_ids"
+    );
+    assert!(
+        capture.distinct_trees.len() >= 2,
+        "unblocked collaborative dispatch should use at least two distinct trees"
     );
 }

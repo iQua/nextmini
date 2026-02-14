@@ -2048,6 +2048,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn collaborative_dispatch_resumes_after_capacity_returns() {
+        let (tx_a, _rx_a) = mpsc::channel::<FecSymbolWorkItem>(1);
+        let (tx_b, mut rx_b) = mpsc::channel::<FecSymbolWorkItem>(1);
+        let outstanding = Arc::new(AtomicUsize::new(0));
+
+        tx_a.try_send(work_item(21))
+            .expect("test setup should fill lane A");
+        tx_b.try_send(work_item(22))
+            .expect("test setup should fill lane B");
+
+        let mut dispatch = FecTreeDispatch {
+            lanes: vec![
+                FecTreeLane {
+                    tree_id: 3,
+                    tx: tx_a,
+                },
+                FecTreeLane {
+                    tree_id: 4,
+                    tx: tx_b,
+                },
+            ],
+            next_rr_idx: 0,
+            wakeup: Arc::new(Notify::new()),
+            outstanding_symbols: Arc::clone(&outstanding),
+            all_lanes_blocked: false,
+        };
+
+        let blocked = dispatch.try_enqueue(work_item(23));
+        assert!(
+            matches!(blocked, FecDispatchEnqueueResult::AllBlocked { .. }),
+            "dispatcher should return all-blocked when every tree lane is saturated"
+        );
+        assert!(
+            dispatch.blocked_on_all_lanes(),
+            "all-lanes-blocked state should be latched while capacity is unavailable"
+        );
+        assert_eq!(
+            outstanding.load(Ordering::Relaxed),
+            0,
+            "blocked enqueue must not inflate outstanding queue accounting"
+        );
+
+        let drained = rx_b
+            .try_recv()
+            .expect("test should free one saturated lane");
+        assert_eq!(drained.symbol_id, 22);
+
+        let resumed = dispatch.try_enqueue(work_item(24));
+        assert!(
+            matches!(resumed, FecDispatchEnqueueResult::Queued { tree_id: 4 }),
+            "dispatcher should resume as soon as any tree lane becomes writable"
+        );
+        assert!(
+            !dispatch.blocked_on_all_lanes(),
+            "successful resume should clear all-lanes-blocked state"
+        );
+
+        let delivered = rx_b
+            .try_recv()
+            .expect("freed lane should receive resumed symbol");
+        assert_eq!(delivered.symbol_id, 24);
+    }
+
     fn sender_cfg(chunk_size: usize, bucket: Option<TokenBucketSpec>) -> SenderConfig {
         let common = CommonConfig {
             session_id: 1,

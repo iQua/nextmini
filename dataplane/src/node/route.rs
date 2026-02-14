@@ -694,20 +694,20 @@ mod tests {
             1,
             vec![
                 GroupRoutingTableEntry {
-                    route_id: multicast_route_id(14, 9),
-                    next_hops: vec![30],
-                    src_node_id: 1,
-                    group_id: 14,
-                },
-                GroupRoutingTableEntry {
-                    route_id: multicast_route_id(14, 2),
-                    next_hops: vec![20],
-                    src_node_id: 1,
-                    group_id: 14,
-                },
-                GroupRoutingTableEntry {
                     route_id: multicast_route_id(14, 5),
                     next_hops: vec![50],
+                    src_node_id: 1,
+                    group_id: 14,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(14, 1),
+                    next_hops: vec![10],
+                    src_node_id: 1,
+                    group_id: 14,
+                },
+                GroupRoutingTableEntry {
+                    route_id: multicast_route_id(14, 3),
+                    next_hops: vec![30],
                     src_node_id: 1,
                     group_id: 14,
                 },
@@ -724,8 +724,8 @@ mod tests {
         let hops = table
             .get_next_hops_by_flow(flow_id, None)
             .expect("multicast control-tree lookup should resolve");
-        assert_eq!(&hops[..], &[20]);
-        assert_eq!(table.multicast_control_tree_cache.get(&(1, 14)), Some(&2));
+        assert_eq!(&hops[..], &[10]);
+        assert_eq!(table.multicast_control_tree_cache.get(&(1, 14)), Some(&1));
     }
 
     #[test]

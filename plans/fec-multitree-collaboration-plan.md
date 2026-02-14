@@ -332,6 +332,15 @@ Replace tests that assume per-symbol hash determinism with tests aligned to coll
 
 - **Output:** correctness confidence for collaborative scheduling and regression safety without hash.
 
+- **Status:** completed.
+- **Work log:** rewrote `dataplane/tests/fec_multitree.rs` to remove cross-session deterministic `(block_id,symbol_id)->tree_id` assertions and instead validate collaborative invariants (observed tree IDs are within configured sparse `fec_tree_ids`, and unblocked runs exercise at least two distinct trees). Tightened multicast control-tree routing coverage in `route.rs` to explicit sparse installed trees `{1,3,5}` (tree 0 omitted) and deterministic smallest-tree fallback. Added sender dispatch regression coverage proving all-lanes-blocked state resumes immediately when capacity returns, while preserving existing per-tree blocked-lane skip and asymmetric-pressure completion guards.
+- **Files changed (T9):**
+  - `dataplane/tests/fec_multitree.rs`
+  - `dataplane/src/node/route.rs`
+  - `dataplane/src/node/session/sender.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** integration-level multi-tree tests intentionally avoid asserting a full per-symbol RR mapping across runs because worker concurrency can reorder emission timing; RR determinism remains validated at the sender dispatch unit-test seam where behavior is stable-by-design.
+
 ---
 
 ### T10 — Observability + Rollout Strategy (UPDATE)
