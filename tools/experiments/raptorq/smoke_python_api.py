@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,28 @@ class CheckResult:
     success: bool
     detail: str
     required: bool = True
+
+
+LEGACY_ENABLED_KW = "_".join(("fec", "enabled"))
+LEGACY_SYMBOLS_KW = "_".join(("fec", "symbols", "per", "block"))
+LEGACY_SYMBOL_SIZE_KW = "_".join(("fec", "symbol", "size"))
+LEGACY_TREE_IDS_KW = "_".join(("fec", "tree", "ids"))
+LEGACY_SENDER_PARAMS = (
+    LEGACY_ENABLED_KW,
+    LEGACY_SYMBOLS_KW,
+    LEGACY_SYMBOL_SIZE_KW,
+    LEGACY_TREE_IDS_KW,
+)
+LEGACY_RECEIVE_PARAMS = (LEGACY_ENABLED_KW,)
+LEGACY_SENDER_HELPER = "_".join(("sender", "fec", "manifest"))
+LEGACY_SENDER_TREE_HELPER = "_".join(("sender", "fec", "tree", "ids"))
+LEGACY_RECEIVER_HELPER = "_".join(("receiver", "fec", "capabilities"))
+LEGACY_KWARG_PATTERN = re.compile(
+    r"\b("
+    + "|".join(re.escape(param) for param in LEGACY_SENDER_PARAMS)
+    + r")\s*="
+)
+DATAPLANE_METHOD_PATTERN = re.compile(r"\.(?:send_data|receive_data|receive_data_async)\s*\(")
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,6 +110,39 @@ def signature_contains_param(signature_obj: Any, param_name: str) -> bool:
         return False
 
 
+def find_legacy_kwargs(src: str, allowed: tuple[str, ...]) -> list[str]:
+    allowed_set = set(allowed)
+    return sorted({m.group(1) for m in LEGACY_KWARG_PATTERN.finditer(src) if m.group(1) in allowed_set})
+
+
+def surface_scan_paths(root: Path) -> list[Path]:
+    paths: list[Path] = []
+    for base in (root / "examples", root / "tools"):
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*.py")):
+            if "tests" in path.parts:
+                continue
+            paths.append(path)
+    return paths
+
+
+def scan_surface_legacy_kwargs(root: Path) -> tuple[int, list[str]]:
+    scanned = 0
+    violations: list[str] = []
+    for path in surface_scan_paths(root):
+        src = path.read_text(encoding="utf-8")
+        if not DATAPLANE_METHOD_PATTERN.search(src):
+            continue
+        scanned += 1
+        found = find_legacy_kwargs(src, LEGACY_SENDER_PARAMS)
+        if not found:
+            continue
+        rel_path = path.relative_to(root)
+        violations.append(f"{rel_path}: {', '.join(found)}")
+    return scanned, violations
+
+
 def resolve_runtime_config(root: Path, override: Path | None) -> Path:
     if override is not None:
         return override.resolve()
@@ -109,41 +165,37 @@ def run_checks(
 
     api_src = api_file.read_text(encoding="utf-8")
     example_src = example_file.read_text(encoding="utf-8")
-    legacy_enabled_kw = "_".join(("fec", "enabled"))
-    legacy_symbols_kw = "_".join(("fec", "symbols", "per", "block"))
-    legacy_symbol_size_kw = "_".join(("fec", "symbol", "size"))
-    legacy_tree_ids_kw = "_".join(("fec", "tree", "ids"))
-    legacy_sender_params = (
-        legacy_enabled_kw,
-        legacy_symbols_kw,
-        legacy_symbol_size_kw,
-        legacy_tree_ids_kw,
-    )
-    legacy_receive_params = (legacy_enabled_kw,)
-    sender_helper = "_".join(("sender", "fec", "manifest"))
-    sender_tree_helper = "_".join(("sender", "fec", "tree", "ids"))
-    receiver_helper = "_".join(("receiver", "fec", "capabilities"))
+    legacy_sender_reintroduced = find_legacy_kwargs(api_src, LEGACY_SENDER_PARAMS)
+    legacy_receive_reintroduced = find_legacy_kwargs(api_src, LEGACY_RECEIVE_PARAMS)
 
     results.append(
         check(
-            all(f"{param}=None" not in api_src for param in legacy_sender_params),
+            not legacy_sender_reintroduced,
             "api_omits_legacy_sender_kwargs",
-            "Expected Python API to omit all legacy sender transfer kwargs.",
+            (
+                "Expected Python API to omit all legacy sender transfer kwargs."
+                if not legacy_sender_reintroduced
+                else f"Reintroduced sender kwargs in python-api/src/lib.rs: {', '.join(legacy_sender_reintroduced)}"
+            ),
         )
     )
     results.append(
         check(
-            all(f"{param}=None" not in api_src for param in legacy_receive_params),
+            not legacy_receive_reintroduced,
             "api_omits_legacy_receive_kwargs",
-            "Expected Python API to omit all legacy receive transfer kwargs.",
+            (
+                "Expected Python API to omit all legacy receive transfer kwargs."
+                if not legacy_receive_reintroduced
+                else f"Reintroduced receive kwargs in python-api/src/lib.rs: {', '.join(legacy_receive_reintroduced)}"
+            ),
         )
     )
     results.append(
         check(
             (
-                f"{sender_helper}(" not in api_src
-                and f"{sender_tree_helper}(" not in api_src
-                and f"{receiver_helper}(" not in api_src
+                f"{LEGACY_SENDER_HELPER}(" not in api_src
+                and f"{LEGACY_SENDER_TREE_HELPER}(" not in api_src
+                and f"{LEGACY_RECEIVER_HELPER}(" not in api_src
             ),
             "api_omits_legacy_fec_helpers",
             "Expected Python API to omit legacy sender/receiver helper mapping.",
@@ -158,16 +210,29 @@ def run_checks(
     )
     results.append(
         check(
-            all(f"{param}=" not in example_src for param in legacy_sender_params),
+            not find_legacy_kwargs(example_src, LEGACY_SENDER_PARAMS),
             "example_omits_legacy_send_kwargs",
             "Expected multicast example send path to omit legacy transfer kwargs.",
         )
     )
     results.append(
         check(
-            all(f"{param}=" not in example_src for param in legacy_receive_params),
+            not find_legacy_kwargs(example_src, LEGACY_RECEIVE_PARAMS),
             "example_omits_legacy_receive_kwargs",
             "Expected multicast example receive path to omit legacy transfer kwargs.",
+        )
+    )
+    scanned_surface_files, surface_violations = scan_surface_legacy_kwargs(root)
+    results.append(
+        check(
+            not surface_violations,
+            "surface_omits_legacy_fec_kwargs",
+            (
+                f"Scanned {scanned_surface_files} Python dataplane callsite file(s) under examples/tools."
+                if not surface_violations
+                else "Legacy FEC kwargs found in dataplane callsites: "
+                + "; ".join(surface_violations)
+            ),
         )
     )
 
@@ -195,8 +260,7 @@ def run_checks(
         results.append(
             check(
                 all(
-                    not signature_contains_param(send_sig, param)
-                    for param in legacy_sender_params
+                    not signature_contains_param(send_sig, param) for param in LEGACY_SENDER_PARAMS
                 ),
                 "extension_send_data_signature",
                 f"send_data signature={send_sig}",
@@ -206,11 +270,11 @@ def run_checks(
             check(
                 all(
                     not signature_contains_param(receive_sig, param)
-                    for param in legacy_receive_params
+                    for param in LEGACY_RECEIVE_PARAMS
                 )
                 and all(
                     not signature_contains_param(receive_async_sig, param)
-                    for param in legacy_receive_params
+                    for param in LEGACY_RECEIVE_PARAMS
                 ),
                 "extension_receive_signature",
                 f"receive_data signature={receive_sig}; receive_data_async signature={receive_async_sig}",

@@ -402,6 +402,25 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Automated detection of regressions in API encapsulation boundary.
 - Validation:
   - Contract check fails when `fec_*` params are reintroduced; passes on clean branch.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Strengthened `tools/experiments/raptorq/smoke_python_api.py` contract checks so legacy kwargs are detected with whitespace-tolerant matching (`fec_*\\s*=`) in `python-api/src/lib.rs`, preventing formatting variants from bypassing the guardrail.
+  - Added cross-surface scan in `tools/experiments/raptorq/smoke_python_api.py` over Python dataplane callsites in `examples/` and `tools/` (excluding tests), with required check `surface_omits_legacy_fec_kwargs` that fails with offending file/kwarg details.
+  - Added deterministic pass/fail fixture tests in `tools/experiments/raptorq/tests/test_smoke_python_api.py` covering:
+    - clean contract surface passes,
+    - legacy kwarg reintroduced in `python-api/src/lib.rs` fails,
+    - legacy kwarg reintroduced in tools callsite fails.
+  - Validation run completed:
+    - `python -m unittest tools.experiments.raptorq.tests.test_smoke_python_api` (pass; includes new failure-path fixtures).
+    - `python tools/experiments/raptorq/smoke_python_api.py --fec off --assert-success --output <tmp>` (pass on current branch).
+- Files modified:
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - `tools/experiments/raptorq/tests/test_smoke_python_api.py`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Surface scan intentionally skips `tests/` paths so regression fixtures/assertions can reference legacy `fec_*` tokens without causing false failures in the production guardrail.
+  - No CI workflow file changes were made in this task; guardrail enforcement is currently through the smoke script + unit test coverage.
 
 ### T11 — End-to-End Validation + Cutover
 - `depends_on: [T10]`
