@@ -4,7 +4,6 @@ use std::hash::{Hash, Hasher};
 use bytes::Bytes;
 use tracing::{debug, warn};
 
-use nextmini_messages::lossless_session::FecCapabilities;
 use nextmini_messages::{Flow, FlowLen, TokenBucketSpec};
 
 use crate::node::config::LocalConfig;
@@ -12,7 +11,7 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{LosslessRuntimeHandle, SessionId};
-use crate::node::session::runtime::{CommonConfig, ReceiverConfig, SenderConfig};
+use crate::node::session::runtime::{CommonConfig, ReceiverRequest, SenderRequest};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
 /// Manages controller-assigned lossless unicast flows on a dataplane node.
@@ -107,17 +106,12 @@ impl LosslessUnicastFlowManager {
                 local_netmask: cfg.local_netmask,
             };
 
-            let sender_cfg = SenderConfig {
+            let sender_cfg = SenderRequest {
                 common,
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
-                fec_manifest: None,
-                fec_tree_ids: Vec::new(),
-                fec_tree_lane_depth: runtime_config.fec_tree_lane_depth,
-                fec_dispatch_burst: runtime_config.fec_dispatch_burst,
                 ready_grace_ms: runtime_config.ready_grace_ms,
-                topology_ready: None,
             };
 
             if let Some(weight) = flow.flow_spec.flow_weight {
@@ -205,12 +199,11 @@ impl LosslessUnicastFlowManager {
                 local_netmask: cfg.local_netmask,
             };
 
-            let receiver_cfg = ReceiverConfig {
+            let receiver_cfg = ReceiverRequest {
                 common,
                 source_node_id: flow.src_node_id,
                 expected_bytes,
                 sink_buffer: None,
-                fec_capabilities: FecCapabilities::default(),
             };
 
             // Register receiver directly with the pre-computed session_id.

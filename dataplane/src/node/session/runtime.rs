@@ -33,6 +33,25 @@ pub struct CommonConfig {
 
 /// Sender-only configuration (fan-out, source path, ready grace, etc.).
 #[derive(Clone, Debug)]
+pub struct SenderRequest {
+    pub common: CommonConfig,
+    pub receiver_ids: Vec<usize>,
+    pub total_bytes: u64,
+    pub source_buffer: Bytes,
+    pub ready_grace_ms: u64,
+}
+
+/// Receiver-only request payload accepted at the runtime API boundary.
+#[derive(Clone, Debug)]
+pub struct ReceiverRequest {
+    pub common: CommonConfig,
+    pub source_node_id: usize,
+    pub expected_bytes: u64,
+    pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+}
+
+/// Sender task configuration after runtime derives internal FEC policy.
+#[derive(Clone, Debug)]
 pub struct SenderConfig {
     pub common: CommonConfig,
     pub receiver_ids: Vec<usize>,
@@ -51,7 +70,7 @@ pub struct SenderConfig {
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
 
-/// Receiver-only configuration (source node, expected bytes, sink path, etc.).
+/// Receiver task configuration after runtime derives internal FEC policy.
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     pub common: CommonConfig,
@@ -87,7 +106,7 @@ impl LosslessRuntimeHandle {
 
     /// Requests that the runtime spin up a sender session with the supplied
     /// configuration and return its session ID.
-    pub async fn start_sender(&self, cfg: SenderConfig) -> Result<SessionId, PreflightError> {
+    pub async fn start_sender(&self, cfg: SenderRequest) -> Result<SessionId, PreflightError> {
         let (reply_tx, reply_rx) = oneshot::channel();
 
         if self
@@ -107,7 +126,7 @@ impl LosslessRuntimeHandle {
     }
 
     /// Request that the runtime spin up a receiver immediately.
-    pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
+    pub async fn start_receiver(&self, cfg: ReceiverRequest) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
         let _ = self.command_tx.send(Command::StartReceiver {
@@ -267,24 +286,27 @@ impl LosslessRuntime {
 
     /// Spawns a sender task, wiring up control-plane readiness watchers and
     /// returning its assigned session ID.
-    fn spawn_sender(&mut self, mut cfg: SenderConfig) -> Result<SessionId, PreflightError> {
-        let sid = cfg.common.session_id;
-        let policy = match fec_policy::derive_sender_policy(
-            &self.config,
-            cfg.common.chunk_size,
-            cfg.fec_manifest,
-            &cfg.fec_tree_ids,
-        ) {
+    fn spawn_sender(&mut self, req: SenderRequest) -> Result<SessionId, PreflightError> {
+        let sid = req.common.session_id;
+        let policy = match fec_policy::derive_sender_policy(&self.config, req.common.chunk_size) {
             Ok(policy) => policy,
             Err(err) => {
                 self.reject_sender_preflight(sid, &err);
                 return Err(err);
             }
         };
-        cfg.fec_manifest = policy.manifest;
-        cfg.fec_tree_ids = policy.tree_ids;
-        cfg.fec_tree_lane_depth = policy.tree_lane_depth;
-        cfg.fec_dispatch_burst = policy.dispatch_burst;
+        let mut cfg = SenderConfig {
+            common: req.common,
+            receiver_ids: req.receiver_ids,
+            total_bytes: req.total_bytes,
+            source_buffer: req.source_buffer,
+            fec_manifest: policy.manifest,
+            fec_tree_ids: policy.tree_ids,
+            fec_tree_lane_depth: policy.tree_lane_depth,
+            fec_dispatch_burst: policy.dispatch_burst,
+            ready_grace_ms: req.ready_grace_ms,
+            topology_ready: None,
+        };
         let processors = self.processors.clone();
 
         // subscribes to topology readiness if not already ready
@@ -304,11 +326,14 @@ impl LosslessRuntime {
     }
 
     /// Spawns a receiver task and hand it a bounded inbox for inbound frames.
-    fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
-        let mut cfg = cfg;
-        cfg.fec_capabilities =
-            fec_policy::derive_receiver_capabilities(&self.config, cfg.fec_capabilities);
-
+    fn spawn_receiver(&mut self, req: ReceiverRequest) -> SessionId {
+        let cfg = ReceiverConfig {
+            common: req.common,
+            source_node_id: req.source_node_id,
+            expected_bytes: req.expected_bytes,
+            sink_buffer: req.sink_buffer,
+            fec_capabilities: fec_policy::derive_receiver_capabilities(&self.config),
+        };
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 

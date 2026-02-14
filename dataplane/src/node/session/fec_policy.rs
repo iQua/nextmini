@@ -1,18 +1,17 @@
 use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
 
-use crate::node::config::{Feature, LosslessConfig};
+use crate::node::config::{Feature, FecTreeIdsSource, LosslessConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreflightError {
     RuntimeChannelClosed,
-    DisabledByConfig,
     CapabilityRequirementDisabled,
-    UnknownScheme { scheme: u8 },
     CollaborativeMultiTreeDisabled,
     InvalidTreeLaneDepth { value: usize },
     InvalidDispatchBurst { value: usize },
     InvalidMaxTreeLanes { value: usize },
-    TreeIdsRequireFec,
+    InstalledRoutesTreeIdsUnsupported,
+    ChunkSizeCannotDeriveDefaultSymbolSize { chunk_size: usize },
     MissingTreeIds,
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
@@ -34,17 +33,12 @@ pub(super) struct SenderFecPolicy {
 pub(super) fn derive_sender_policy(
     runtime_config: &LosslessConfig,
     chunk_size: usize,
-    requested_manifest: Option<FecManifest>,
-    requested_tree_ids: &[u16],
 ) -> Result<SenderFecPolicy, PreflightError> {
     let tree_lane_depth = runtime_config.fec_tree_lane_depth;
     let dispatch_burst = runtime_config.fec_dispatch_burst;
-    let manifest = derive_sender_manifest(runtime_config, chunk_size, requested_manifest)?;
+    let manifest = derive_sender_manifest(runtime_config, chunk_size)?;
 
     if manifest.is_none() {
-        if !requested_tree_ids.is_empty() {
-            return Err(PreflightError::TreeIdsRequireFec);
-        }
         return Ok(SenderFecPolicy {
             manifest: None,
             tree_ids: Vec::new(),
@@ -69,7 +63,7 @@ pub(super) fn derive_sender_policy(
         });
     }
 
-    let tree_ids = derive_sender_tree_ids(runtime_config, requested_tree_ids)?;
+    let tree_ids = derive_sender_tree_ids(runtime_config)?;
 
     Ok(SenderFecPolicy {
         manifest,
@@ -79,12 +73,9 @@ pub(super) fn derive_sender_policy(
     })
 }
 
-pub(super) fn derive_receiver_capabilities(
-    runtime_config: &LosslessConfig,
-    requested: FecCapabilities,
-) -> FecCapabilities {
+pub(super) fn derive_receiver_capabilities(runtime_config: &LosslessConfig) -> FecCapabilities {
     if runtime_config.fec_enabled {
-        requested
+        FecCapabilities::default()
     } else {
         FecCapabilities::empty()
     }
@@ -93,23 +84,19 @@ pub(super) fn derive_receiver_capabilities(
 fn derive_sender_manifest(
     runtime_config: &LosslessConfig,
     chunk_size: usize,
-    requested_manifest: Option<FecManifest>,
 ) -> Result<Option<FecManifest>, PreflightError> {
-    let Some(manifest) = requested_manifest else {
-        return Ok(None);
-    };
-
     if !runtime_config.fec_enabled {
-        return Err(PreflightError::DisabledByConfig);
+        return Ok(None);
     }
     if !runtime_config.fec_require_capability {
         return Err(PreflightError::CapabilityRequirementDisabled);
     }
-    if manifest.scheme_kind().is_none() {
-        return Err(PreflightError::UnknownScheme {
-            scheme: manifest.scheme,
-        });
-    }
+
+    let symbols_per_block = runtime_config.canonical_fec_default_symbols_per_block();
+    let symbol_size = runtime_config
+        .canonical_fec_default_symbol_size(chunk_size)
+        .ok_or(PreflightError::ChunkSizeCannotDeriveDefaultSymbolSize { chunk_size })?;
+    let manifest = FecManifest::new_raptorq(symbols_per_block, symbol_size);
 
     let (symbols_min, symbols_max) = runtime_config.fec_symbols_per_block_bounds();
     if manifest.symbols_per_block < symbols_min || manifest.symbols_per_block > symbols_max {
@@ -139,16 +126,20 @@ fn derive_sender_manifest(
     Ok(Some(manifest))
 }
 
-fn derive_sender_tree_ids(
-    runtime_config: &LosslessConfig,
-    requested_tree_ids: &[u16],
-) -> Result<Vec<u16>, PreflightError> {
+fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, PreflightError> {
+    let requested_tree_ids = match runtime_config.fec_tree_ids_source {
+        FecTreeIdsSource::Config => runtime_config.canonical_fec_default_tree_ids(),
+        FecTreeIdsSource::InstalledRoutes => {
+            return Err(PreflightError::InstalledRoutesTreeIdsUnsupported);
+        }
+    };
+
     if requested_tree_ids.is_empty() {
         return Err(PreflightError::MissingTreeIds);
     }
     if !requested_tree_ids.windows(2).all(|pair| pair[0] < pair[1]) {
         return Err(PreflightError::TreeIdsMustBeSortedUnique {
-            tree_ids: requested_tree_ids.to_vec(),
+            tree_ids: requested_tree_ids,
         });
     }
 
@@ -174,7 +165,7 @@ fn derive_sender_tree_ids(
         }
     }
 
-    Ok(requested_tree_ids.to_vec())
+    Ok(requested_tree_ids)
 }
 
 fn feature_mode_label(feature: &Feature) -> &'static str {
@@ -191,12 +182,18 @@ impl std::fmt::Display for PreflightError {
                 f,
                 "lossless runtime channel closed before sender start could complete"
             ),
-            Self::DisabledByConfig => write!(f, "fec is disabled by local runtime configuration"),
             Self::CapabilityRequirementDisabled => write!(
                 f,
                 "fec_require_capability=false is unsupported with strict no-fallback sessions"
             ),
-            Self::UnknownScheme { scheme } => write!(f, "unknown fec scheme {scheme} requested"),
+            Self::InstalledRoutesTreeIdsUnsupported => write!(
+                f,
+                "fec_tree_ids_source=installed_routes is not implemented; set fec_tree_ids_source=config with fec_default_tree_ids"
+            ),
+            Self::ChunkSizeCannotDeriveDefaultSymbolSize { chunk_size } => write!(
+                f,
+                "chunk_size {chunk_size} cannot derive default fec symbol_size under current fec_symbol_size_policy"
+            ),
             Self::CollaborativeMultiTreeDisabled => write!(
                 f,
                 "collaborative multi-tree fec is disabled by local runtime configuration"
@@ -210,10 +207,6 @@ impl std::fmt::Display for PreflightError {
             Self::InvalidMaxTreeLanes { value } => {
                 write!(f, "fec_max_tree_lanes must be >= 1 (got {value})")
             }
-            Self::TreeIdsRequireFec => write!(
-                f,
-                "fec_tree_ids requires an active fec manifest for sender sessions"
-            ),
             Self::MissingTreeIds => {
                 write!(f, "fec_tree_ids must be non-empty for fec sender sessions")
             }
@@ -256,10 +249,10 @@ impl std::fmt::Display for PreflightError {
 
 #[cfg(test)]
 mod tests {
-    use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
+    use nextmini_messages::lossless_session::FecCapabilities;
 
     use super::{PreflightError, derive_receiver_capabilities, derive_sender_policy};
-    use crate::node::config::{Feature, LosslessConfig};
+    use crate::node::config::{Feature, FecSymbolSizePolicy, FecTreeIdsSource, LosslessConfig};
 
     fn enabled_runtime() -> LosslessConfig {
         LosslessConfig {
@@ -274,29 +267,29 @@ mod tests {
     }
 
     #[test]
-    fn sender_policy_rejects_fec_when_runtime_disables_it() {
+    fn sender_policy_disables_fec_when_runtime_disables_it() {
         let runtime = LosslessConfig::default();
-        let err = derive_sender_policy(
-            &runtime,
-            1200,
-            Some(FecManifest::new_raptorq(16, 1400)),
-            &[0],
-        )
-        .expect_err("fec should be rejected when runtime kill-switch is off");
+        let policy = derive_sender_policy(&runtime, 1200)
+            .expect("non-fec policy should be derived when runtime kill-switch is off");
 
-        assert_eq!(err, PreflightError::DisabledByConfig);
+        assert_eq!(policy.manifest, None);
+        assert!(policy.tree_ids.is_empty());
     }
 
     #[test]
     fn sender_policy_rejects_chunk_size_larger_than_symbol_size() {
-        let runtime = enabled_runtime();
-        let err = derive_sender_policy(
-            &runtime,
-            1501,
-            Some(FecManifest::new_raptorq(16, 1500)),
-            &[0],
-        )
-        .expect_err("chunk_size must remain <= derived symbol_size");
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            fec_symbol_size_policy: FecSymbolSizePolicy::Fixed,
+            fec_default_symbol_size: 1500,
+            fec_symbol_size_min: 1,
+            fec_symbol_size_max: 4096,
+            fec_default_tree_ids: vec![0],
+            ..Default::default()
+        };
+        let err = derive_sender_policy(&runtime, 1501)
+            .expect_err("chunk_size must remain <= symbol_size");
 
         assert_eq!(
             err,
@@ -308,46 +301,51 @@ mod tests {
     }
 
     #[test]
-    fn sender_policy_rejects_tree_ids_without_fec_manifest() {
+    fn sender_policy_derives_manifest_and_tree_ids_from_runtime_defaults() {
         let runtime = enabled_runtime();
-        let err =
-            derive_sender_policy(&runtime, 1200, None, &[1]).expect_err("tree IDs require FEC");
+        let policy = derive_sender_policy(&runtime, 1200)
+            .expect("runtime should derive sender manifest/tree defaults");
 
-        assert_eq!(err, PreflightError::TreeIdsRequireFec);
+        let manifest = policy
+            .manifest
+            .expect("fec should be enabled in test runtime");
+        assert_eq!(manifest.symbols_per_block, 32);
+        assert_eq!(manifest.symbol_size, 1200);
+        assert_eq!(policy.tree_ids, vec![0]);
     }
 
     #[test]
-    fn sender_policy_rejects_unsorted_or_duplicate_tree_ids() {
-        let runtime = enabled_runtime();
-        let err = derive_sender_policy(
-            &runtime,
-            1200,
-            Some(FecManifest::new_raptorq(16, 1400)),
-            &[3, 1, 1],
-        )
-        .expect_err("tree IDs must be strictly ascending and duplicate free");
+    fn sender_policy_rejects_missing_config_tree_ids_for_fec_sessions() {
+        let runtime = LosslessConfig {
+            fec_default_tree_ids: vec![],
+            ..enabled_runtime()
+        };
+        let err = derive_sender_policy(&runtime, 1200).expect_err("fec sessions require tree IDs");
 
-        assert_eq!(
-            err,
-            PreflightError::TreeIdsMustBeSortedUnique {
-                tree_ids: vec![3, 1, 1]
-            }
-        );
+        assert_eq!(err, PreflightError::MissingTreeIds);
+    }
+
+    #[test]
+    fn sender_policy_rejects_installed_routes_tree_source_until_implemented() {
+        let runtime = LosslessConfig {
+            fec_tree_ids_source: FecTreeIdsSource::InstalledRoutes,
+            ..enabled_runtime()
+        };
+        let err = derive_sender_policy(&runtime, 1200)
+            .expect_err("installed_routes source should fail deterministically until implemented");
+
+        assert_eq!(err, PreflightError::InstalledRoutesTreeIdsUnsupported);
     }
 
     #[test]
     fn sender_policy_rejects_multi_tree_on_concurrent_ingress() {
         let runtime = LosslessConfig {
+            fec_default_tree_ids: vec![1, 3],
             ingress_feature: Feature::Concurrent,
             ..enabled_runtime()
         };
-        let err = derive_sender_policy(
-            &runtime,
-            1200,
-            Some(FecManifest::new_raptorq(16, 1400)),
-            &[1, 3],
-        )
-        .expect_err("multi-tree requires sequential ingress feature");
+        let err = derive_sender_policy(&runtime, 1200)
+            .expect_err("multi-tree requires sequential ingress feature");
 
         assert_eq!(
             err,
@@ -359,8 +357,11 @@ mod tests {
 
     #[test]
     fn sender_policy_accepts_non_fec_sessions_without_tree_ids() {
-        let runtime = enabled_runtime();
-        let policy = derive_sender_policy(&runtime, 1200, None, &[])
+        let runtime = LosslessConfig {
+            fec_enabled: false,
+            ..enabled_runtime()
+        };
+        let policy = derive_sender_policy(&runtime, 1200)
             .expect("non-fec sessions should pass with empty tree set");
 
         assert_eq!(policy.manifest, None);
@@ -372,15 +373,14 @@ mod tests {
     #[test]
     fn receiver_policy_disables_capabilities_when_fec_runtime_disabled() {
         let runtime = LosslessConfig::default();
-        let derived = derive_receiver_capabilities(&runtime, FecCapabilities::default());
+        let derived = derive_receiver_capabilities(&runtime);
         assert_eq!(derived, FecCapabilities::empty());
     }
 
     #[test]
-    fn receiver_policy_preserves_requested_capabilities_when_enabled() {
+    fn receiver_policy_advertises_default_capabilities_when_enabled() {
         let runtime = enabled_runtime();
-        let requested = FecCapabilities::default();
-        let derived = derive_receiver_capabilities(&runtime, requested);
-        assert_eq!(derived, requested);
+        let derived = derive_receiver_capabilities(&runtime);
+        assert_eq!(derived, FecCapabilities::default());
     }
 }

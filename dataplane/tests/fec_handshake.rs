@@ -12,7 +12,7 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::{InboundFrame, LosslessRuntimeHandle};
 use nextmini::node::session::control::should_abort_fec_preflight;
-use nextmini::node::session::runtime::{CommonConfig, PreflightError, SenderConfig};
+use nextmini::node::session::runtime::{CommonConfig, PreflightError, SenderRequest};
 use nextmini_messages::lossless_session::{
     self, FecCapabilities, FecManifest, LosslessSessionControl,
 };
@@ -45,10 +45,12 @@ async fn start_sender_surfaces_preflight_error_to_caller() {
         ..Default::default()
     };
     let processors = ProcessorHandle::new(cfg.clone());
-    let runtime = LosslessRuntimeHandle::new(processors, cfg.lossless_runtime_config.clone());
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_tree_ids.clear();
+    let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
 
-    let manifest = FecManifest::new_raptorq(4, 16);
-    let sender_cfg = SenderConfig {
+    let sender_cfg = SenderRequest {
         common: CommonConfig {
             session_id: 0x0FEC_2001,
             dest_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
@@ -63,17 +65,12 @@ async fn start_sender_surfaces_preflight_error_to_caller() {
         receiver_ids: vec![2],
         total_bytes: 64,
         source_buffer: Bytes::from(vec![0xAA; 16]),
-        fec_manifest: Some(manifest),
-        fec_tree_ids: vec![0],
-        fec_tree_lane_depth: 4,
-        fec_dispatch_burst: 1,
         ready_grace_ms: 1,
-        topology_ready: None,
     };
 
     let started = runtime.start_sender(sender_cfg).await;
     assert!(
-        matches!(started, Err(PreflightError::DisabledByConfig)),
+        matches!(started, Err(PreflightError::MissingTreeIds)),
         "caller should get a typed preflight error instead of a best-effort session id"
     );
 }
@@ -127,12 +124,11 @@ async fn start_runtime_sender(receiver_ids: Vec<usize>, ready_grace_ms: u64) -> 
     runtime.set_topology_ready(true);
 
     let session_id = 0x0FEC_0001;
-    let manifest = FecManifest::new_raptorq(4, 16);
-    let sender_cfg = SenderConfig {
+    let sender_cfg = SenderRequest {
         common: CommonConfig {
             session_id,
             dest_ip: dst_ip,
-            chunk_size: usize::from(manifest.symbol_size),
+            chunk_size: 16,
             src_port,
             dst_port,
             data_bucket: None,
@@ -143,12 +139,7 @@ async fn start_runtime_sender(receiver_ids: Vec<usize>, ready_grace_ms: u64) -> 
         receiver_ids,
         total_bytes: 64,
         source_buffer: Bytes::from(vec![0xAB; 16]),
-        fec_manifest: Some(manifest),
-        fec_tree_ids: vec![0],
-        fec_tree_lane_depth: 16,
-        fec_dispatch_burst: 1,
         ready_grace_ms,
-        topology_ready: None,
     };
 
     let started_sid = runtime

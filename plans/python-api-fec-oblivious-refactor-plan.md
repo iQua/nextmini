@@ -228,6 +228,36 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Runtime startup paths no longer require FEC input from Python caller.
 - Validation:
   - Existing `dataplane/tests/fec_*` suites still pass with equivalent behavior.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Added FEC-agnostic runtime boundary structs in `dataplane/src/node/session/runtime.rs`:
+    - `SenderRequest` (no manifest/tree/collab-FEC fields)
+    - `ReceiverRequest` (no capability field)
+  - Switched runtime command surface in `dataplane/src/node/session/api.rs` and `LosslessRuntimeHandle::start_sender/start_receiver` to consume request structs only.
+  - Refactored runtime spawn path to derive internal FEC values before task launch:
+    - Sender: runtime derives `fec_manifest`, `fec_tree_ids`, lane depth, and dispatch burst via `fec_policy`.
+    - Receiver: runtime derives `fec_capabilities` via `fec_policy`.
+  - Internalized T4 config defaults in `dataplane/src/node/session/fec_policy.rs`:
+    - Uses `canonical_fec_default_symbols_per_block()`.
+    - Uses `canonical_fec_default_symbol_size(chunk_size)`.
+    - Uses `fec_tree_ids_source` + `canonical_fec_default_tree_ids()`.
+    - Adds deterministic typed preflight rejection for `fec_tree_ids_source=installed_routes` via `PreflightError::InstalledRoutesTreeIdsUnsupported`.
+  - Updated runtime callers to new boundary types:
+    - `dataplane/src/node/session/unicast.rs`
+    - `python-api/src/lib.rs` (compile adaptation only; API signature cleanup remains T7).
+  - Updated regression coverage wiring for the new boundary in `dataplane/tests/fec_handshake.rs`.
+- Files modified:
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/api.rs`
+  - `dataplane/src/node/session/fec_policy.rs`
+  - `dataplane/src/node/session/unicast.rs`
+  - `dataplane/tests/fec_handshake.rs`
+  - `python-api/src/lib.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `python-api/src/lib.rs` still exposes legacy `fec_*` kwargs in method signatures for now; they are no longer part of runtime startup requests and are deferred for full removal in T7.
+  - Sender preflight error shape changed for one validation path: with runtime FEC enabled and empty configured tree IDs, startup now fails with `MissingTreeIds` derived from runtime config policy.
 
 ### T6 — Add Regression Coverage For Internalized FEC Policy
 - `depends_on: [T5]`
