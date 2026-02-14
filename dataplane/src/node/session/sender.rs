@@ -2124,6 +2124,9 @@ mod tests {
         let total_bytes = total_chunks * chunk_size as u64;
         let cfg = fec_sender_cfg(chunk_size, total_bytes, 1, vec![7]);
         let mut state = SenderState::new(cfg, total_chunks);
+        if let Some(scheduler) = state.fec_scheduler.as_mut() {
+            scheduler.next_block_id = total_chunks;
+        }
 
         assert_eq!(state.retired_up_to, 0);
 
