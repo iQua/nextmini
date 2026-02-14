@@ -72,7 +72,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ## Task Plan (with dependencies)
 
-### T0 — Define Tree-ID Contract + Control-Tree Routing Policy (NEW)
+### T0 — Define Tree-ID Contract + Control-Tree Routing Policy (COMPLETE — February 14, 2026)
 - **depends_on: []**
 - Define and document invariants required for correctness:
   - Sender multi-tree uses `fec_tree_ids` (explicit allowed set).
@@ -86,6 +86,14 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Files:** docs + plan notes + runtime preflight notes.
 
 - **Output:** clear behavioral contract for tree IDs and control frame delivery.
+
+- **Status:** completed.
+- **Work log:** documented sender `fec_tree_ids` contract (sorted/unique allowlist, deterministic tie-breakers, invalid-config rejection, explicit single-tree exception) and documented deterministic multicast control-tree routing policy (`tree_id=0` if installed, else smallest installed tree).
+- **Files changed (T0):**
+  - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/multicast-groups.md`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** runtime still uses `fec_num_trees` and default `tree_id=None -> 0` behavior in code today; this task records the v3 contract only. Enforcement/implementation lands in T1/T2/T8.
 
 ---
 

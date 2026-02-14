@@ -84,6 +84,19 @@ The controller tolerates intermittent websocket outages—if a node lacks an act
 
 If no route is available, the dataplane logs a warning and drops the packet (matching the existing unicast behaviour). Stale cache entries are purged automatically when the controller pushes updated route IDs.
 
+### Control-Frame Tree Routing Policy
+
+Lossless multicast control frames do not carry `tree_id` on the wire. Routing therefore applies a deterministic control-tree policy for multicast lookups when `tree_id` is absent:
+
+- Candidate set is the installed tree IDs for `(src_node_id, group_id)`.
+- Tie-breaker #1: use tree `0` when present in the installed set.
+- Tie-breaker #2: otherwise use the smallest installed tree ID.
+- If no tree is installed for `(src_node_id, group_id)`, the frame is dropped with a warning (same missing-route behavior as data).
+- Selection is deterministic and should not depend on hash map iteration order or timing.
+- Route-install refreshes for the same `(src_node_id, group_id)` invalidate cached control-tree choices before the next lookup.
+
+This policy is routing-only and does not change the control-frame wire format.
+
 ---
 
 ## Client APIs
