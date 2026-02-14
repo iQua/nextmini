@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, trace, warn};
 
 use nextmini_messages::lossless_session::{
@@ -141,103 +142,132 @@ pub async fn run(
     let mut eot_index: Option<u64> = None;
     let mut fec_manifest: Option<FecManifest> = None;
     let mut fec_state: Option<FecReceiverState> = None;
+    let mut terminal_feedback_tick = tokio::time::interval(FEC_FEEDBACK_INTERVAL);
+    terminal_feedback_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    terminal_feedback_tick.tick().await;
 
-    while let Some(frame) = rx.recv().await {
-        trace!(
-            session_id = sid,
-            frame_len = frame.bytes.len(),
-            "Lossless receiver: received inbound frame"
-        );
-        if let Some((_, data, body)) = lossless_session::decode_data(&frame.bytes) {
-            let payload_range = {
-                let base_ptr = frame.bytes.as_ptr() as usize;
-                let start = body.as_ptr() as usize - base_ptr;
-                let end = start + body.len();
-                start..end
-            };
-            process_decoded_data_frame(
-                sid,
-                &cfg,
-                &control_io,
-                &sink_buffer,
-                data,
-                frame.bytes,
-                payload_range,
-                &mut expected,
-                &mut pending,
-                &mut bytes_received,
-                &mut last_ack_up_to,
-                eot_index,
-            )
-            .await;
-            continue;
-        }
+    loop {
+        tokio::select! {
+            maybe_frame = rx.recv() => {
+                let Some(frame) = maybe_frame else {
+                    break;
+                };
+                trace!(
+                    session_id = sid,
+                    frame_len = frame.bytes.len(),
+                    "Lossless receiver: received inbound frame"
+                );
+                if let Some((_, data, body)) = lossless_session::decode_data(&frame.bytes) {
+                    let payload_range = {
+                        let base_ptr = frame.bytes.as_ptr() as usize;
+                        let start = body.as_ptr() as usize - base_ptr;
+                        let end = start + body.len();
+                        start..end
+                    };
+                    process_decoded_data_frame(
+                        sid,
+                        &cfg,
+                        &control_io,
+                        &sink_buffer,
+                        data,
+                        frame.bytes,
+                        payload_range,
+                        &mut expected,
+                        &mut pending,
+                        &mut bytes_received,
+                        &mut last_ack_up_to,
+                        eot_index,
+                    )
+                    .await;
+                    continue;
+                }
 
-        if let Some((_, fec_data, body)) = lossless_session::decode_fec_data(&frame.bytes) {
-            let Some(manifest) = fec_manifest else {
+                if let Some((_, fec_data, body)) = lossless_session::decode_fec_data(&frame.bytes) {
+                    let Some(manifest) = fec_manifest else {
+                        warn!(
+                            session_id = sid,
+                            block_id = fec_data.block_id,
+                            symbol_id = fec_data.symbol_id,
+                            "Lossless receiver: dropping FEC data before receiving FEC manifest"
+                        );
+                        continue;
+                    };
+                    if !cfg.fec_capabilities.supports_manifest(&manifest) {
+                        warn!(
+                            session_id = sid,
+                            scheme = manifest.scheme,
+                            "Lossless receiver: dropping FEC data for unsupported manifest"
+                        );
+                        continue;
+                    }
+                    if let Some(state) = fec_state.as_ref()
+                        && (state.symbols_per_block != manifest.symbols_per_block.max(1)
+                            || state.symbol_size != usize::from(manifest.symbol_size.max(1)))
+                    {
+                        fec_state = None;
+                    }
+                    let state = fec_state.get_or_insert_with(|| {
+                        FecReceiverState::new(sid, cfg.common.local_node_id, manifest, &cfg)
+                    });
+                    let payload_range = {
+                        let base_ptr = frame.bytes.as_ptr() as usize;
+                        let start = body.as_ptr() as usize - base_ptr;
+                        let end = start + body.len();
+                        start..end
+                    };
+                    process_fec_data_frame(
+                        sid,
+                        &cfg,
+                        &control_io,
+                        &sink_buffer,
+                        fec_data,
+                        manifest,
+                        frame.bytes,
+                        payload_range,
+                        state,
+                        &mut expected,
+                        &mut pending,
+                        &mut bytes_received,
+                    )
+                    .await;
+                    continue;
+                }
+
+                if handle_control_frame(&frame, &cfg, &control_io, &mut eot_index, &mut fec_manifest).await
+                {
+                    if let Some(last) = eot_index
+                        && expected.saturating_sub(1) >= last
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
                 warn!(
                     session_id = sid,
-                    block_id = fec_data.block_id,
-                    symbol_id = fec_data.symbol_id,
-                    "Lossless receiver: dropping FEC data before receiving FEC manifest"
+                    "Lossless receiver: received frame that was neither DATA nor CONTROL"
                 );
-                continue;
-            };
-            if !cfg.fec_capabilities.supports_manifest(&manifest) {
-                warn!(
-                    session_id = sid,
-                    scheme = manifest.scheme,
-                    "Lossless receiver: dropping FEC data for unsupported manifest"
-                );
-                continue;
             }
-            if let Some(state) = fec_state.as_ref()
-                && (state.symbols_per_block != manifest.symbols_per_block.max(1)
-                    || state.symbol_size != usize::from(manifest.symbol_size.max(1)))
-            {
-                fec_state = None;
-            }
-            let state = fec_state.get_or_insert_with(|| {
-                FecReceiverState::new(sid, cfg.common.local_node_id, manifest, &cfg)
-            });
-            let payload_range = {
-                let base_ptr = frame.bytes.as_ptr() as usize;
-                let start = body.as_ptr() as usize - base_ptr;
-                let end = start + body.len();
-                start..end
-            };
-            process_fec_data_frame(
-                sid,
-                &cfg,
-                &control_io,
-                &sink_buffer,
-                fec_data,
-                manifest,
-                frame.bytes,
-                payload_range,
-                state,
-                &mut expected,
-                &mut pending,
-                &mut bytes_received,
-            )
-            .await;
-            continue;
-        }
+            _ = terminal_feedback_tick.tick() => {
+                let Some(state) = fec_state.as_mut() else {
+                    continue;
+                };
 
-        if handle_control_frame(&frame, &cfg, &control_io, &mut eot_index, &mut fec_manifest).await
-        {
-            if let Some(last) = eot_index
-                && expected.saturating_sub(1) >= last
-            {
-                break;
+                for status in state.take_due_terminal_feedback(Instant::now()) {
+                    debug!(
+                        session_id = sid,
+                        block_id = status.block_id,
+                        "Lossless receiver: re-sending terminal FEC status update"
+                    );
+                    control_io
+                        .send_with_version(
+                            &LosslessSessionControl::FecStatus { status },
+                            LOSSLESS_SESSION_FEC_VERSION,
+                        )
+                        .await;
+                }
             }
-            continue;
         }
-
-        warn!(
-            session_id = sid,
-            "Lossless receiver: received frame that was neither DATA nor CONTROL"
-        );
     }
 
     if bytes_received != cfg.expected_bytes {
@@ -446,6 +476,7 @@ struct FecReceiverState {
     blocks: BTreeMap<u64, FecBlockState>,
     decoded_recent: VecDeque<u64>,
     decoded_set: BTreeSet<u64>,
+    terminal_feedback_resend_at: BTreeMap<u64, Instant>,
     integrity_error: bool,
 }
 
@@ -475,6 +506,7 @@ impl FecReceiverState {
             blocks: BTreeMap::new(),
             decoded_recent: VecDeque::new(),
             decoded_set: BTreeSet::new(),
+            terminal_feedback_resend_at: BTreeMap::new(),
             integrity_error: false,
         }
     }
@@ -550,6 +582,7 @@ impl FecReceiverState {
         if decoded_block {
             self.blocks.remove(&block_id);
             self.mark_block_decoded(block_id);
+            self.arm_terminal_feedback(block_id, now);
         }
 
         if payload_malformed {
@@ -601,8 +634,29 @@ impl FecReceiverState {
         while self.decoded_recent.len() > FEC_DECODED_HISTORY_LEN {
             if let Some(old) = self.decoded_recent.pop_front() {
                 self.decoded_set.remove(&old);
+                self.terminal_feedback_resend_at.remove(&old);
             }
         }
+    }
+
+    fn arm_terminal_feedback(&mut self, block_id: u64, now: Instant) {
+        self.terminal_feedback_resend_at
+            .insert(block_id, now + FEC_FEEDBACK_INTERVAL);
+    }
+
+    fn take_due_terminal_feedback(&mut self, now: Instant) -> Vec<lossless_session::FecStatus> {
+        let mut due = Vec::new();
+        for (block_id, resend_at) in &mut self.terminal_feedback_resend_at {
+            if now < *resend_at {
+                continue;
+            }
+            due.push(lossless_session::FecStatus {
+                block_id: *block_id,
+                deficit_symbols: 0,
+            });
+            *resend_at = now + FEC_FEEDBACK_INTERVAL;
+        }
+        due
     }
 
     fn total_fec_blocks(&self) -> u64 {
@@ -701,7 +755,7 @@ impl FecBlockState {
         if !terminal && now < self.next_feedback_at {
             return None;
         }
-        if !terminal && !changed {
+        if !terminal && !changed && deficit != 0 {
             return None;
         }
 
@@ -1077,6 +1131,63 @@ mod tests {
             .maybe_feedback(3, 0, t0 + Duration::from_millis(31))
             .expect("terminal completion should bypass throttle");
         assert_eq!(terminal.deficit_symbols, 0);
+
+        assert!(
+            block
+                .maybe_feedback(3, 0, t0 + Duration::from_millis(50))
+                .is_none(),
+            "terminal completion should still respect the resend interval"
+        );
+
+        let resend = block
+            .maybe_feedback(3, 0, t0 + Duration::from_millis(51))
+            .expect("terminal completion should be re-advertised periodically");
+        assert_eq!(resend.deficit_symbols, 0);
+    }
+
+    #[test]
+    fn fec_receiver_state_re_advertises_decoded_block_completion() {
+        let cfg = ReceiverConfig {
+            common: crate::node::session::runtime::CommonConfig {
+                session_id: 12,
+                dest_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                chunk_size: 8,
+                src_port: 2000,
+                dst_port: 3000,
+                data_bucket: None,
+                local_node_id: 1,
+                user_space_base_addr: std::net::Ipv4Addr::new(10, 0, 0, 0),
+                local_netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+            },
+            source_node_id: 2,
+            expected_bytes: 16,
+            sink_buffer: None,
+            fec_capabilities: nextmini_messages::lossless_session::FecCapabilities::default(),
+        };
+
+        let mut state = FecReceiverState::new(12, 1, FecManifest::new_raptorq(2, 8), &cfg);
+        let t0 = Instant::now();
+
+        assert!(state.ingest_symbol(0, 0, &[1u8; 8], t0).feedback.is_none());
+
+        let t1 = t0 + Duration::from_millis(1);
+        let completion = state.ingest_symbol(0, 1, &[2u8; 8], t1);
+        let status = completion
+            .feedback
+            .expect("block completion should emit terminal feedback immediately");
+        assert_eq!(status.block_id, 0);
+        assert_eq!(status.deficit_symbols, 0);
+
+        assert!(
+            state
+                .take_due_terminal_feedback(t1 + Duration::from_millis(19))
+                .is_empty(),
+            "terminal feedback should wait for resend interval"
+        );
+        let resend = state.take_due_terminal_feedback(t1 + Duration::from_millis(20));
+        assert_eq!(resend.len(), 1);
+        assert_eq!(resend[0].block_id, 0);
+        assert_eq!(resend[0].deficit_symbols, 0);
     }
 
     #[test]

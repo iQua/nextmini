@@ -1381,6 +1381,11 @@ async fn send_group_routes_snapshot_to_node(
     node_id: usize,
     writer: &Arc<Mutex<WebSocketWriter>>,
 ) -> AnyResult<()> {
+    let groups = load_group_directory(db_pool).await?;
+    if groups.is_empty() {
+        return Ok(());
+    }
+
     let stored_routes = sqlx::query_as::<_, DbGroupRoute>(
         r#"
         SELECT group_id, tree_id, src_node_id, weight, edges
@@ -1391,39 +1396,7 @@ async fn send_group_routes_snapshot_to_node(
     .fetch_all(db_pool)
     .await?;
 
-    if stored_routes.is_empty() {
-        return Ok(());
-    }
-
-    let mut by_group: BTreeMap<i32, (i32, Vec<GroupRouteTree>)> = BTreeMap::new();
-    for group_route in stored_routes {
-        let tree_id = match usize::try_from(group_route.tree_id) {
-            Ok(tree_id) => tree_id,
-            Err(_) => {
-                warn!(
-                    "Skipping invalid group_routes row with negative tree_id={} for group {}.",
-                    group_route.tree_id, group_route.group_id
-                );
-                continue;
-            }
-        };
-
-        let entry = by_group
-            .entry(group_route.group_id)
-            .or_insert((group_route.src_node_id, Vec::new()));
-        if entry.0 != group_route.src_node_id {
-            warn!(
-                "Group {} has inconsistent src_node_id values in group_routes ({} vs {}).",
-                group_route.group_id, entry.0, group_route.src_node_id
-            );
-        }
-
-        entry.1.push(GroupRouteTree {
-            tree_id,
-            weight: group_route.weight,
-            edges: decode_tree_edges(group_route.edges)?,
-        });
-    }
+    let by_group = build_group_routes_snapshot_trees(groups, stored_routes)?;
 
     for (group_id, (src_node_id, trees)) in by_group {
         let members = load_group_members(db_pool, group_id).await?;
@@ -1459,6 +1432,52 @@ async fn send_group_routes_snapshot_to_node(
     }
 
     Ok(())
+}
+
+fn build_group_routes_snapshot_trees(
+    groups: Vec<crate::models::Group>,
+    stored_routes: Vec<DbGroupRoute>,
+) -> AnyResult<BTreeMap<i32, (i32, Vec<GroupRouteTree>)>> {
+    let mut by_group: BTreeMap<i32, (i32, Vec<GroupRouteTree>)> = groups
+        .into_iter()
+        .map(|group| (group.id, (group.src_node_id, Vec::new())))
+        .collect();
+
+    for group_route in stored_routes {
+        let Some((group_src_node_id, trees)) = by_group.get_mut(&group_route.group_id) else {
+            warn!(
+                "Skipping group_routes row for unknown group {}.",
+                group_route.group_id
+            );
+            continue;
+        };
+
+        let tree_id = match usize::try_from(group_route.tree_id) {
+            Ok(tree_id) => tree_id,
+            Err(_) => {
+                warn!(
+                    "Skipping invalid group_routes row with negative tree_id={} for group {}.",
+                    group_route.tree_id, group_route.group_id
+                );
+                continue;
+            }
+        };
+
+        if *group_src_node_id != group_route.src_node_id {
+            warn!(
+                "Group {} has mismatched src_node_id values (groups={}, group_routes={}).",
+                group_route.group_id, *group_src_node_id, group_route.src_node_id
+            );
+        }
+
+        trees.push(GroupRouteTree {
+            tree_id,
+            weight: group_route.weight,
+            edges: decode_tree_edges(group_route.edges)?,
+        });
+    }
+
+    Ok(by_group)
 }
 
 fn encode_group_routes_snapshot_payload(
@@ -1499,9 +1518,11 @@ fn encode_group_routes_snapshot_payload(
 mod tests {
     use std::collections::HashSet;
 
+    use crate::models::{DbGroupRoute, Group};
     use nextmini_messages::{ControllerToDataplane, GroupRouteTree};
+    use serde_json::json;
 
-    use super::encode_group_routes_snapshot_payload;
+    use super::{build_group_routes_snapshot_trees, encode_group_routes_snapshot_payload};
 
     #[test]
     fn reconnect_snapshot_encodes_empty_routes_for_nonparticipant_node() {
@@ -1532,5 +1553,53 @@ mod tests {
             }
             other => panic!("expected InstallGroupRoutes snapshot, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reconnect_snapshot_includes_groups_with_zero_trees() {
+        let groups = vec![
+            Group {
+                id: 42,
+                label: "alpha".to_string(),
+                src_node_id: 1,
+                group_ip: "239.0.0.1".to_string(),
+            },
+            Group {
+                id: 77,
+                label: "beta".to_string(),
+                src_node_id: 9,
+                group_ip: "239.0.0.2".to_string(),
+            },
+        ];
+        let stored_routes = vec![DbGroupRoute {
+            group_id: 42,
+            tree_id: 0,
+            src_node_id: 99,
+            weight: None,
+            edges: json!([[1, 2], [2, 3]]),
+        }];
+
+        let by_group = build_group_routes_snapshot_trees(groups, stored_routes)
+            .expect("snapshot trees should decode");
+
+        assert_eq!(
+            by_group.len(),
+            2,
+            "every group must appear in reconnect snapshot"
+        );
+
+        let (src_42, trees_42) = by_group.get(&42).expect("group 42 must be present");
+        assert_eq!(
+            *src_42, 1,
+            "reconnect snapshot should use groups.src_node_id as source of truth"
+        );
+        assert_eq!(trees_42.len(), 1);
+
+        let (src_77, trees_77) = by_group.get(&77).expect("group 77 must be present");
+        assert_eq!(*src_77, 9);
+        assert!(
+            trees_77.is_empty(),
+            "groups with no rows in group_routes must still emit an empty InstallGroupRoutes snapshot"
+        );
     }
 }
