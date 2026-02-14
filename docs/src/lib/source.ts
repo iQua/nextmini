@@ -4,6 +4,25 @@ import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
 
 const sidebarOrder = ['examples', 'design', 'testing'];
 
+const examplesSidebarOrder = [
+  'simple',
+  'pytorch',
+  'pytorch_python_api',
+  'waterfilling',
+  'routes',
+  'namespace',
+  'bare-metal',
+  'pytorch-sba',
+  'ring_allreduce-sba',
+  'localserver-flyio',
+  'multicast-flow',
+];
+
+const folderOrderByPath: Record<string, string[]> = {
+  '': ['index', ...sidebarOrder],
+  examples: examplesSidebarOrder,
+};
+
 const docsNavOrderPlugin = {
   name: 'docs-sidebar-order',
   enforce: 'pre' as const,
@@ -15,25 +34,57 @@ const docsNavOrderPlugin = {
   },
 };
 
-function sortSidebarByOrder(children: Array<{ type: string; name?: unknown }>) {
-  const order = new Map(sidebarOrder.map((name, index) => [name, index]));
-  const pageNodes = children.filter((node) => node.type !== 'folder');
+function sortSidebarByOrder(
+  children: Array<{
+    type: string;
+    name?: unknown;
+    children?: Array<{ type: string; name?: unknown; children?: any }>;
+  }>,
+  parentPath = '',
+) {
+  const order = new Map(
+    folderOrderByPath[parentPath]?.map((name, index) => [name, index]) ?? [],
+  );
+
   const folderNodes = children.filter((node) => node.type === 'folder');
 
-  folderNodes.sort((a, b) => {
-    const first = order.get(
-      typeof a.name === 'string' ? a.name.toLowerCase() : '',
-    );
-    const second = order.get(
-      typeof b.name === 'string' ? b.name.toLowerCase() : '',
-    );
-    if (first === undefined) return 1;
-    if (second === undefined) return -1;
-    if (first === second) return 0;
-    return first - second;
+  folderNodes.forEach((folder) => {
+    if (Array.isArray(folder.children)) {
+      const folderPath =
+        typeof folder.name === 'string'
+          ? `${parentPath ? `${parentPath}/` : ''}${folder.name.toLowerCase()}`
+          : parentPath;
+      folder.children = sortSidebarByOrder(folder.children, folderPath);
+    }
   });
 
-  return [...pageNodes, ...folderNodes];
+  children.sort((a, b) => {
+    const firstName =
+      typeof a.name === 'string' ? a.name.toLowerCase() : '';
+    const secondName =
+      typeof b.name === 'string' ? b.name.toLowerCase() : '';
+    const first = order.get(firstName);
+    const second = order.get(secondName);
+
+    if (first !== undefined || second !== undefined) {
+      if (first === undefined) return 1;
+      if (second === undefined) return -1;
+      if (first === second) return 0;
+      return first - second;
+    }
+
+    if (firstName && secondName) {
+      return firstName.localeCompare(secondName);
+    }
+    if (!firstName) return 1;
+    if (!secondName) return -1;
+    return 0;
+  });
+
+  const pageNodes = children.filter((node) => node.type !== 'folder');
+  const sortedFolderNodes = children.filter((node) => node.type === 'folder');
+
+  return [...pageNodes, ...sortedFolderNodes];
 }
 
 export const source = loader({
