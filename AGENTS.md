@@ -50,7 +50,7 @@
 
 ## Additional Agent Operating Rules
 
-## Context7
+### Context7
 
 - ALWAYS proactively use Context7 when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.
 - External libraries/docs/frameworks should be guided by Context7.
@@ -63,7 +63,7 @@
 - Complete all tasks from a plan without stopping for permission between steps. Use best judgment, keep moving.
 - Only stop to ask when a step is destructive/irreversible or there is a genuine blocker.
 
-## Subagents
+### Subagents
 
 - Spawn subagents automatically when:
   - Parallelizable work (e.g., install + verify, npm test + typecheck, unblocked tasks from plan)
