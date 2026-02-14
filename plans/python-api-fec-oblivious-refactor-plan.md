@@ -154,6 +154,25 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Runtime-only FEC policy API consumed by session startup paths.
 - Validation:
   - Unit tests for policy input/output edge cases (chunk-size bounds, disabled FEC, tree-ID validation).
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Added `dataplane/src/node/session/fec_policy.rs` as the runtime-owned FEC policy boundary with:
+    - sender manifest decision/derivation + bounds validation,
+    - sender tree-ID derivation/validation (including explicit non-FEC tree-id rejection),
+    - receiver capability derivation from runtime config.
+  - Moved preflight error ownership into the policy layer and re-exported `PreflightError` through `session::runtime` so existing runtime/API callsites remain stable.
+  - Updated runtime startup flow to consume policy outputs:
+    - `spawn_sender` now derives/apply policy-owned manifest/tree IDs/lane tunables before task spawn.
+    - `spawn_receiver` now derives effective `fec_capabilities` via policy instead of ad hoc branching in runtime.
+  - Added unit coverage in `fec_policy.rs` for required edge classes: FEC-disabled rejection, chunk-size vs symbol-size bound rejection, and tree-ID validation paths.
+- Files modified:
+  - `dataplane/src/node/session/fec_policy.rs`
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/mod.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Runtime now emits a dedicated `TreeIdsRequireFec` preflight error when tree IDs are supplied without an active FEC manifest. This aligns internal runtime policy with prior Python-side helper invariants before T7 removes Python helper ownership.
 
 ### T4 — Move FEC Defaults/Overrides To Runtime Config
 - `depends_on: [T2]`
