@@ -35,6 +35,31 @@ Key modules:
 - `dataplane/src/node/route.rs`: route tables, multicast directory, and route cache.
 - `dataplane/src/node/session/*`: lossless session sender/receiver and runtime checks.
 
+### Processor and Routing Path (Implementation)
+
+The packet ingress and forwarding path is centralized in `dataplane/src/node/processor.rs`:
+
+- `ProcessorHandle::new` selects a concrete mode (`Sequential` vs `Concurrent`) from `feature`.
+- `process_packet`/`process_packet_blocking` compute destination locality and send packets either to a processor worker or the connector depending on `operating_mode`.
+- A **lane** is one ingress queue slot owned by one worker in sequential mode; packets mapped to different lanes are processed in parallel workers, packets on the same lane preserve relative order.
+- `Sequential` mode creates:
+  - per-worker processor channels (`PacketReceiver::Sequential`) and
+  - per-flow/per-tree deterministic lane selection.
+- `Concurrent` mode creates:
+  - one shared MPMC processor channel (`PacketReceiver::Concurrent`) and
+  - worker fan-in across all processors.
+- `SequentialProcHandle::select_processor_ingress_lane` maps each packet at ingress:
+  - non-FEC packets use `flow_id.hash(num_lanes)`.
+  - FEC packets use `JumpHasher::slot((flow_id, tree_id), num_lanes)` where `tree_id` comes from `Packet::lossless_fec_tree_id()`.
+- `Concurrent` mode does not apply lane-level FEC partitioning: all packets go through one shared channel and scheduler order can interleave trees.
+- Route resolution happens inside each worker on receive and includes tree context:
+  - `RoutingTable::get_next_hops_by_flow_and_tree(flow_id, fec_tree_id, reporter)`.
+  - if `fec_tree_id` is absent, behavior is backwards-compatible flow-only selection.
+- Processed packets are forwarded hop-by-hop; for multicast fan-out, `Processor` clones the packet for all next hops after route selection.
+- Unknown multicast control-tree / tree-specific misses emit a dedicated warn/drop path (`Dropping packet because multicast tree route is unknown`), matching control/data consistency goals without crashing packet flow.
+- Runtime control updates (routing install, group routes, user-space senders, flow weights, route pins, reporters, lossless handle) are fan-out through a broadcast channel and applied by every processor instance.
+- Connector path (`Connector::get_next_hop_by_flow`) still uses flow-only routing because max-mode connection selection is based on destination host and not per-tree FEC metadata.
+
 ### Shared protocol (`messages`)
 
 Controller/dataplane communication uses `messages/src/lib.rs` enums (`DataplaneToController`, `ControllerToDataplane`) and shared data structures (`Flow`, `FlowSpec`, route/group payloads). This keeps both sides consistent without duplicated wire schemas.

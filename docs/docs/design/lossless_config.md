@@ -79,6 +79,106 @@ This contract defines sender-side tree selection for collaborative multi-tree FE
 - The older per-symbol hash strategy is not part of v3 behavior.
 - Tree assignment is a dispatch-time decision driven by current backpressure and the configured `fec_tree_ids` set.
 
+### Packet-Path Integration (Dataplane Processor)
+
+- Lossless FEC packets are classified in the dataplane processor by reading tree id from packet payload (`packet.lossless_fec_tree_id()`), not from out-of-band metadata.
+- The processor uses tree-aware route resolution:
+  - `route::RoutingTable::get_next_hops_by_flow_and_tree(flow_id, tree_id, reporter)` for per-packet forwarding.
+  - if no tree id is present, it follows the legacy flow-only lookup path.
+- `Sequential` ingress behavior:
+  - one `mpsc` queue per processor worker plus deterministic lane hashing.
+  - FEC packets route to an ingress lane via hash of `(flow_id, tree_id)` so concurrent trees can be distributed across lanes.
+- `Concurrent` ingress behavior:
+  - one shared `flume` queue for all workers; FEC packets still work, but tree-level lane partitioning is not available.
+  - the sender-side runtime therefore enforces `Feature::Sequential` for collaborative multi-tree sessions.
+- At sender session preflight time (`fec_collaborative_multitree_enabled` true), the runtime enforces:
+  - `ingress_feature == Feature::Sequential`
+  - `ingress_channel_backpressure == true`
+  - otherwise session startup is rejected with a preflight error (`Runtime check failed` style diagnostic in logs).
+
+### Sender Preflight Matrix
+
+`LosslessRuntime::spawn_sender` derives sender policy in `derive_sender_policy` and rejects startup for any hard error:
+
+- Non-FEC sessions:
+  - `fec_enabled=false` yields `SenderPolicy { manifest=None, tree_ids=[] }` and no preflight block.
+- FEC sessions:
+  - `fec_enabled=true` + `fec_require_capability=false` -> `CapabilityRequirementDisabled`.
+  - `fec_tree_ids_source=installed_routes` -> `InstalledRoutesTreeIdsUnsupported` (not implemented yet).
+  - `fec_tree_lane_depth==0` -> `InvalidTreeLaneDepth`.
+  - `fec_dispatch_burst==0` -> `InvalidDispatchBurst`.
+  - `fec_max_tree_lanes==0` -> `InvalidMaxTreeLanes`.
+  - `fec_default_tree_ids` empty after canonicalization -> `MissingTreeIds`.
+  - Duplicate/unsorted tree IDs -> `TreeIdsMustBeSortedUnique`.
+  - Configured count exceeds `fec_max_tree_lanes` -> `TooManyTreeIds`.
+  - More than one tree selected while `fec_collaborative_multitree_enabled=false` -> `CollaborativeMultiTreeDisabled`.
+  - More than one tree while ingress is not `Feature::Sequential` -> `MultiTreeRequiresSequentialIngress`.
+  - More than one tree while `ingress_channel_backpressure=false` -> `MultiTreeRequiresIngressBackpressure`.
+  - Derived manifest outside bounds:
+    - symbols-per-block out of `[fec_symbols_per_block_min, fec_symbols_per_block_max]`
+    - symbol-size out of `[fec_symbol_size_min, fec_symbol_size_max]`
+    - `chunk_size` exceeding derived `symbol_size`
+    - fixed symbol-size policy failure to derive from `chunk_size`.
+
+Any preflight rejection is logged as `Lossless runtime: rejected sender session during deterministic preflight` and returned to the caller as `PreflightError`.
+
+### Sender Runtime State Machine
+
+The sender event loop (`sender::run`) transitions through three control gates before emitting any data:
+
+1. **Topology gate** (`topology_gate_open`): false until either `set_topology_ready(true)` has been observed or the runtime is configured as already ready.
+2. **Manifest gate**: sends MANIFEST once topology is open.
+3. **Ready gate** (`ready_gate_open`): opens when all peers are ready and FEC preflight checks are satisfied (if FEC mode).
+
+Non-FEC senders rely on cumulative ACK progress; FEC senders switch retirement to FEC status tracking and skip ACK consumption.
+
+- MANIFEST is retried every `MANIFEST_RETRY_INTERVAL_MS` (250 ms) while not ready.
+- In FEC mode, if all peers are not ready after `ready_grace_ms`, sender proceeds with:
+  - warning when missing READY only (legacy mode),
+  - abort when missing capability or compatibility conditions.
+
+### FEC Symbol Dispatch Pipeline
+
+On first FEC symbol emission, the sender initializes `FecTreeDispatch`:
+
+- one dispatch lane per `tree_id` in canonical `fec_tree_ids`,
+- one bounded MPSC queue per lane with depth `fec_tree_lane_depth`,
+- round-robin starting point (`next_rr_idx`) and shared notify handle for wakeups.
+
+`drive_fec_scheduler` loops in bursts:
+
+- enqueue one new FEC block when window/capacity allows,
+- emit up to `fec_dispatch_burst` symbols per cycle,
+- for each symbol, call `FecTreeDispatch::try_enqueue`.
+
+`try_enqueue` behavior:
+
+- `Queued(tree_id)`: counters increment (`queued`, `sent`, outstanding symbol count).
+- `AllBlocked`: returns the symbol to front of local scheduler queue and sets `all_lanes_blocked=true`.
+- `Closed`: closes session as preflight-failed with an error.
+
+When all lanes are blocked, the main loop waits with `Notify` wakeup or control-frame receive for `ALL_FEC_LANES_BLOCKED_WAIT_MS` (250 ms). Wakeups are emitted whenever lane receive slots free.
+
+`FecTreeDispatch` tracks per-tree counters `queued/sent/blocked/drained/wakeups` and exposes snapshots in logs.
+
+### Receiver-Side and Control-Plane Semantics
+
+`sender::handle_control` handles control frames differently by mode:
+
+- `Ready`: records ready nodes for the ready gate.
+- `FecCapabilities`: validates against requested manifest via `control::ensure_fec_compatible`.
+- `FecStatus`: updates per-receiver FEC completion watermark in `SenderState` and retirement limits.
+- `Ack`: ignored in FEC mode, used only for non-FEC cumulative completion.
+
+`receiver::run` emits:
+
+- `Ready` immediately on startup,
+- `Ack` (batched every 16 contiguous chunks or completion edges),
+- `FecCapabilities` (requested only if runtime advertises FEC),
+- `FecManifest` / `Manifest` during handshakes as needed.
+
+Receiver side drops FEC symbols that arrive before manifest or with invalid payload lengths, and drops all unknown frame formats after warning.
+
 ## Observability + Rollout Guardrails (v3)
 
 - Collaborative dispatch-time assignment is the only supported multi-tree FEC behavior.

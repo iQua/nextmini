@@ -228,6 +228,31 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 | `feature` | `Feature` | `sequential` | `--feature` | Processing mode: `sequential` (in-order) or `concurrent` (parallel, may reorder). |
 | `operating_mode` | `OperatingMode` | `normal` | (from controller) | Operating mode: `normal` or `max`. |
 
+#### Implementation-Level Behavior
+
+- A **lane** is one ingress queue owned by one processor worker in sequential mode. Sequential mode only spreads work across lanes at ingress; packets assigned to one lane remain ordered relative to that lane.
+
+- `Sequential` mode (`Feature::Sequential`) creates one `mpsc` ingress channel per packet processor (`num_packet_processors` total). `ProcessorHandle::Sequential::new` builds `packet_senders` as a vector of per-worker channels and spawns one processor task per receiver.
+- The per-packet ingress lane is selected in `SequentialProcHandle::select_processor_ingress_lane`:
+  - regular packets: `packet.flow_id.hash(num_lanes)`.
+  - lossless FEC packets (detected via `packet.lossless_fec_tree_id()`): `JumpHasher::slot((flow_id, tree_id), num_lanes)`.
+- `Concurrent` mode (`Feature::Concurrent`) creates one shared bounded `flume` queue and spawns multiple processor workers that all consume from the same queue, so packets can be dequeued and processed by different workers and observed out-of-order unless downstream flow reordering is applied.
+- Route lookup and all mutable processor state still use per-actor broadcast updates; there is no per-lane cache sharing.
+- `channel_backpressure` determines queueing policy before routing and dispatch:
+  - `true`: await producer queue space (`send`/`send_async`) so ingress blocks until capacity is available.
+  - `false`: `try_send`; if full, packet is dropped after warning.
+- In both modes, packet forwarding to connector vs local processors still follows `operating_mode`:
+  - local destination or `OperatingMode::Normal` → processor path
+  - remote destination and `OperatingMode::Max` → connector path
+- All processor updates (routes, node changes, reporters, lossless handle, etc.) are still broadcast via `broadcast_sender` so each processor worker receives the same control state.
+
+#### Processor Route Resolution
+
+- The hot path calls into the routing table with tree context:
+  - current code uses `get_next_hops_by_flow_and_tree(flow_id, fec_tree_id, reporter)` from `RoutingTable`.
+  - for legacy non-FEC packets, `fec_tree_id` is `None`, so it behaves as the old `get_next_hops_by_flow` path.
+- For multicast trees, FEC packets route to the `(src_node_id, tree_id)` space when present; if no route exists, the processor logs a warning and drops the packet (`Dropping packet because multicast tree route is unknown`).
+
 ### TCP Reordering Configuration
 
 | Field | Type | Default | CLI Flag | Description |

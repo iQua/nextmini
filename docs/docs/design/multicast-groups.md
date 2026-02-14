@@ -74,7 +74,10 @@ The controller tolerates intermittent websocket outages—if a node lacks an act
 - `RouteKey::Unicast(src, dst)` and `RouteKey::Multicast(src, group_id)` variants.
 - A global `group_dir` map from `group_ip → group_id` refreshed via `install_group_directory`.
 - Per-key route pools stored in `available_routes`, with next-hop vectors cached in `route_next_hop`.
+- Deterministic route-id mapping (`messages/src/lib.rs`): `route_id = group_id * MULTITREE_STRIDE + tree_id`, where `MULTITREE_STRIDE = 1 << 16`.
+- `install_group_routes` enforces that every incoming route ID is reversible to `(group_id, tree_id)` and matches expected deterministic form before insertion.
 - Jump consistent hashing (`JumpHasher`) reused for multicast to keep flow-to-route mapping stable even as routes churn.
+- `get_next_hops_by_flow_and_tree` is used when tree context is present and supports explicit `(src_node_id, group_id, tree_id)` selection.
 
 ### Packet Processing
 
@@ -83,6 +86,13 @@ The controller tolerates intermittent websocket outages—if a node lacks an act
 - **Directory lookups** happen inline: if a flow’s destination IP appears in `group_dir`, the route key converts to `(src, group_id)` before hashing.
 
 If no route is available, the dataplane logs a warning and drops the packet (matching the existing unicast behaviour). Stale cache entries are purged automatically when the controller pushes updated route IDs.
+
+The routing table also keeps two cache layers for multicast lookup speed:
+
+- `multicast_tree_cache` for exact `(src_node_id, group_id, tree_id)` hits.
+- `multicast_control_tree_cache` for fallback control-tree selection when `tree_id` is not supplied.
+
+Both caches are invalidated for a source/group pair during `install_group_routes` refresh so future lookups use new topology immediately.
 
 ### Control-Frame Tree Routing Policy
 
