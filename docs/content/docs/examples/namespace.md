@@ -117,7 +117,7 @@ ring_config = { n_nodes = 600 }
 [db]
 user = "pgusr"
 password = "pgpwrd"
-host = "170.16.8.2"
+host = "172.16.8.2"
 database = "nextmini"
 port = "5432"
 ```

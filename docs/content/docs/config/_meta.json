@@ -1,0 +1,10 @@
+{
+  "pages": [
+    "index",
+    "controller",
+    "dataplane",
+    "enums",
+    "environment",
+    "examples"
+  ]
+}

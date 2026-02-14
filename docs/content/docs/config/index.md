@@ -1,12 +1,10 @@
 ---
-title: "Configuration Reference (Moved)"
-description: "This page has moved to the dedicated Configuration section."
+title: "Configuration"
+description: "Reference for controller and dataplane configuration, enums, environment variables, and examples."
 ---
 
+This section splits configuration reference material into focused pages:
 
-The configuration reference has moved to a dedicated section:
-
-- [Configuration Overview](/docs/config)
 - [Controller Configuration](/docs/config/controller)
 - [Dataplane Configuration](/docs/config/dataplane)
 - [Enums Reference](/docs/config/enums)

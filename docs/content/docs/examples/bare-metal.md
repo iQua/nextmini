@@ -67,7 +67,7 @@ Enter passphrase once, it will persist across terminal sessions.
 
 ### Step 4: Configure
 
-For a complete list of configuration options, see the [Configuration Reference](/docs/design/config-reference).
+For a complete list of configuration options, see the [Configuration](/docs/config) section.
 
 Edit `controller/config.toml`:
 

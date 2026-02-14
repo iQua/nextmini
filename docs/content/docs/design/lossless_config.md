@@ -4,7 +4,7 @@ description: ""
 ---
 
 
-This page covers lossless session settings. For a complete list of all configuration options, see the [Configuration Reference](/docs/design/config-reference).
+This page covers lossless session settings. For a complete list of all configuration options, see the [Configuration](/docs/config) section.
 
 ## Overview
 

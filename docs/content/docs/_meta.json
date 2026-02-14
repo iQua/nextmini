@@ -1,6 +1,7 @@
 {
   "pages": [
     "index",
+    "config",
     "examples",
     "design",
     "testing"
