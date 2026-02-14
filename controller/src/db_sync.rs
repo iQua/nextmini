@@ -7,11 +7,13 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
-use nextmini_messages::{ControllerToDataplane, FlowTransport, GroupRoutingTableEntry};
+use nextmini_messages::{ControllerToDataplane, FlowTransport};
 
 use crate::db::{DbEvent, RecomputedGroupRoutes};
 use crate::models::{DbFlow, DbFlowRoute, DbRoute, Route};
-use crate::utils::{build_flows_for_node, build_group_routes_for_node, build_routes_for_node};
+use crate::utils::{
+    build_flows_for_node, build_group_routes_for_node_multitree, build_routes_for_node,
+};
 use crate::{NodeWriterMap, WebSocketWriter};
 
 pub fn spawn_db_sync(
@@ -33,8 +35,13 @@ pub fn spawn_db_sync(
                         error!("Failed to sync flow {}: {}", flow_id, e);
                     }
                 }
-                DbEvent::GroupRoutesSync { group_id } => {
-                    if let Err(e) = sync_group_routes(&db_pool, &node_ws, group_id).await {
+                DbEvent::GroupRoutesSync {
+                    group_id,
+                    prior_member_node_id,
+                } => {
+                    if let Err(e) =
+                        sync_group_routes(&db_pool, &node_ws, group_id, prior_member_node_id).await
+                    {
                         error!("Failed to sync group routes for group {}: {}", group_id, e);
                     }
                 }
@@ -127,12 +134,13 @@ async fn sync_group_routes(
     db_pool: &Pool<Postgres>,
     node_ws: &NodeWriterMap,
     group_id: i32,
+    prior_member_node_id: Option<u32>,
 ) -> anyhow::Result<()> {
     let Some(plan) = crate::db::recompute_group_routes(group_id, db_pool).await? else {
         return Ok(());
     };
 
-    let nodes_to_notify = multicast_nodes_to_notify(&plan);
+    let nodes_to_notify = multicast_nodes_to_notify(&plan, prior_member_node_id);
     if nodes_to_notify.is_empty() {
         return Ok(());
     }
@@ -158,14 +166,22 @@ async fn sync_group_routes(
     }
 
     for (node_id, writer) in send_targets {
-        let entry = build_group_routes_for_node(
+        let routes = match build_group_routes_for_node_multitree(
             plan.group.id as usize,
             plan.group.src_node_id as u32,
-            &plan.dag_edges,
+            &plan.trees,
             node_id,
             &plan.member_node_set,
-        );
-        let routes: Vec<GroupRoutingTableEntry> = entry.into_iter().collect();
+        ) {
+            Ok(routes) => routes,
+            Err(e) => {
+                error!(
+                    "Failed to build multi-tree InstallGroupRoutes payload for group {} node {}: {}",
+                    plan.group.id, node_id, e
+                );
+                continue;
+            }
+        };
         let message = ControllerToDataplane::InstallGroupRoutes {
             group_id: plan.group.id as usize,
             src_node_id: plan.group.src_node_id as usize,
@@ -188,15 +204,21 @@ async fn sync_group_routes(
     Ok(())
 }
 
-fn multicast_nodes_to_notify(plan: &RecomputedGroupRoutes) -> HashSet<u32> {
+fn multicast_nodes_to_notify(
+    plan: &RecomputedGroupRoutes,
+    prior_member_node_id: Option<u32>,
+) -> HashSet<u32> {
     let mut nodes: HashSet<u32> = plan
-        .previous_edges
+        .trees
         .iter()
-        .flat_map(|(a, b)| [*a, *b])
+        .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b]))
         .collect();
     nodes.extend(plan.dag_nodes.iter().copied());
     nodes.insert(plan.group.src_node_id as u32);
     nodes.extend(plan.member_node_ids.iter().copied());
+    if let Some(node_id) = prior_member_node_id {
+        nodes.insert(node_id);
+    }
     nodes
 }
 
@@ -223,5 +245,42 @@ async fn send_to_node(
             "Failed to send flow {} to {} node {}: {}",
             flow_id, label, node_id, e
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use nextmini_messages::GroupRouteTree;
+
+    use super::multicast_nodes_to_notify;
+    use crate::db::RecomputedGroupRoutes;
+    use crate::models::Group;
+
+    #[test]
+    fn multicast_nodes_to_notify_includes_prior_member_hint() {
+        let plan = RecomputedGroupRoutes {
+            group: Group {
+                id: 8,
+                label: "g".to_string(),
+                src_node_id: 1,
+                group_ip: "224.0.0.8".to_string(),
+            },
+            member_node_ids: vec![3],
+            member_node_set: HashSet::from([3u32]),
+            trees: vec![GroupRouteTree {
+                tree_id: 0,
+                weight: None,
+                edges: vec![(1, 2)],
+            }],
+            dag_nodes: HashSet::from([1u32, 2]),
+        };
+
+        let nodes = multicast_nodes_to_notify(&plan, Some(9));
+        assert!(
+            nodes.contains(&9),
+            "prior member hint should be included so member-only leaves get cleared"
+        );
     }
 }

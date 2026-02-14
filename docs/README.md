@@ -1,36 +1,15 @@
-# Nextmini Documentation (MkDocs)
+# Nextmini: a High-Performance Network Emulation and Experimentation Testbed
 
-This directory contains the Nextmini documentation built with [MkDocs](https://www.mkdocs.org/) and [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/).
+This is the canonical documentation for the Nextmini framework.
 
-## Installation
-
-To install Material for MkDocs, run:
+To run development server:
 
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install mkdocs-material
+bun dev
 ```
 
-## Usage
-
-### Development Server
-
-To serve the website for development, run:
+To build:
 
 ```bash
-mkdocs serve
+bun run build
 ```
-
-Then open your browser to `http://127.0.0.1:8000/`
-
-### Build Static Site
-
-To compile it to a static website, run:
-
-```bash
-mkdocs build
-```
-
-The static website will be available in the `site/` directory.
-

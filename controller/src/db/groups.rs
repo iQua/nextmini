@@ -1,10 +1,11 @@
 use std::net::Ipv4Addr;
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context, Result as AnyResult};
 use sqlx::{Pool, Postgres};
 
 use crate::models::{Group, GroupMember};
 use crate::utils::allocate_multicast_ip;
+use nextmini_messages::{MULTICAST_ROUTE_FLAG, MULTITREE_STRIDE};
 
 pub async fn create_group(
     db_pool: &Pool<Postgres>,
@@ -17,6 +18,16 @@ pub async fn create_group(
     let next_id: i64 = sqlx::query_scalar("SELECT nextval('groups_id_seq')")
         .fetch_one(&mut *tx)
         .await?;
+    if next_id < 0 {
+        anyhow::bail!("groups_id_seq produced a negative id: {next_id}");
+    }
+    let next_id = usize::try_from(next_id).context("groups_id_seq produced out-of-range id")?;
+    let max_group_id = (MULTICAST_ROUTE_FLAG / MULTITREE_STRIDE).saturating_sub(1);
+    if next_id > max_group_id {
+        anyhow::bail!(
+            "group id {next_id} exceeds supported multicast route namespace (max {max_group_id})"
+        );
+    }
 
     let group_ip = allocate_multicast_ip(base_addr, mask, next_id as u32);
     let group_ip_string = group_ip.to_string();

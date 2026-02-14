@@ -3,9 +3,10 @@
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
 use std::fmt::{Display, Formatter};
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 
 use ahash::AHashMap;
+use jumphash::JumpHasher;
 use tokio;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -34,9 +35,22 @@ use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::{InboundFrame as LosslessInboundFrame, LosslessRuntimeHandle};
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
+// Keep tree-aware ingress hashing deterministic and aligned with FlowIdExt::hash.
+const FLOW_TREE_HASH_KEY_0: u64 = 0x1234567890ABCDEF;
+const FLOW_TREE_HASH_KEY_1: u64 = 0xFEDCBA0987654321;
+static CONCURRENT_FEC_INGRESS_POLICY_WARN_ONCE: Once = Once::new();
+
 // Message types for the processor actor.
 pub enum ProcessorPacket {
     ProcessPacket(Packet),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub enum SendOutcome {
+    Queued,
+    WouldBlock,
+    Closed,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +263,14 @@ impl ProcessorHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.try_process_packet(packet),
+            ProcessorHandle::Concurrent(handle) => handle.try_process_packet(packet),
+        }
+    }
+
     /// For synchronous producers (Python bindings, smoltcp virtual NIC).
     pub fn process_packet_blocking(&self, packet: Packet) {
         match self {
@@ -442,8 +464,34 @@ impl SequentialProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            self.try_send_to_processor(packet)
+        } else {
+            // sends according to the operating mode
+            match self.config.operating_mode {
+                OperatingMode::Normal => self.try_send_to_processor(packet),
+                OperatingMode::Max => self.try_send_to_connector(packet),
+            }
+        }
+    }
+
+    fn select_processor_ingress_lane(&self, packet: &Packet) -> usize {
+        let lane_count = self.packet_senders.len();
+        if let Some(tree_id) = packet.lossless_fec_tree_id() {
+            let hasher = JumpHasher::new_with_keys(FLOW_TREE_HASH_KEY_0, FLOW_TREE_HASH_KEY_1);
+            hasher.slot(&(packet.flow_id, tree_id), lane_count as u32) as usize
+        } else {
+            packet.flow_id.hash(lane_count)
+        }
+    }
+
     async fn send_to_processor(&self, packet: Packet) {
-        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let idx = self.select_processor_ingress_lane(&packet);
         let sender = &self.packet_senders[idx];
 
         if self.config.channel_backpressure {
@@ -472,6 +520,21 @@ impl SequentialProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
+        let idx = self.select_processor_ingress_lane(&packet);
+        let sender = &self.packet_senders[idx];
+        map_tokio_try_send_outcome(sender.try_send(ProcessorPacket::ProcessPacket(packet)))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn try_send_to_connector(&self, packet: Packet) -> SendOutcome {
+        map_tokio_try_send_outcome(
+            self.connector_packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet)),
+        )
+    }
+
     /// For sync producers (Python API, TCP readers, and QUIC readers).
     pub fn process_packet_blocking(&self, packet: Packet) {
         let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
@@ -491,7 +554,7 @@ impl SequentialProcHandle {
     }
 
     fn send_to_processor_blocking(&self, packet: Packet) {
-        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let idx = self.select_processor_ingress_lane(&packet);
         let sender = &self.packet_senders[idx];
 
         if self.config.channel_backpressure {
@@ -594,6 +657,22 @@ impl ConcurrentProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            self.try_send_to_processor(packet)
+        } else {
+            // sends according to the operating mode
+            match self.config.operating_mode {
+                OperatingMode::Normal => self.try_send_to_processor(packet),
+                OperatingMode::Max => self.try_send_to_connector(packet),
+            }
+        }
+    }
+
     pub fn process_packet_blocking(&self, packet: Packet) {
         let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
 
@@ -611,7 +690,18 @@ impl ConcurrentProcHandle {
         }
     }
 
+    fn maybe_warn_collaborative_multitree_policy(&self, packet: &Packet) {
+        if packet.lossless_fec_tree_id().is_some() {
+            CONCURRENT_FEC_INGRESS_POLICY_WARN_ONCE.call_once(|| {
+                warn!(
+                    "ConcurrentProcHandle: FEC ingress uses a shared queue across all trees; collaborative multi-tree mode is supported only with sequential ingress."
+                );
+            });
+        }
+    }
+
     async fn send_to_processor(&self, packet: Packet) {
+        self.maybe_warn_collaborative_multitree_policy(&packet);
         if self.config.channel_backpressure {
             if let Err(e) = self
                 .packet_sender
@@ -645,7 +735,25 @@ impl ConcurrentProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
+        self.maybe_warn_collaborative_multitree_policy(&packet);
+        map_flume_try_send_outcome(
+            self.packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet)),
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn try_send_to_connector(&self, packet: Packet) -> SendOutcome {
+        map_tokio_try_send_outcome(
+            self.connector_packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet)),
+        )
+    }
+
     fn send_to_processor_blocking(&self, packet: Packet) {
+        self.maybe_warn_collaborative_multitree_policy(&packet);
         if self.config.channel_backpressure {
             if let Err(e) = self
                 .packet_sender
@@ -679,6 +787,24 @@ impl ConcurrentProcHandle {
         {
             warn!("ConcurrentProcHandle: connector channel full; dropping packet: {e}");
         }
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn map_tokio_try_send_outcome<T>(result: Result<(), mpsc::error::TrySendError<T>>) -> SendOutcome {
+    match result {
+        Ok(()) => SendOutcome::Queued,
+        Err(mpsc::error::TrySendError::Full(_)) => SendOutcome::WouldBlock,
+        Err(mpsc::error::TrySendError::Closed(_)) => SendOutcome::Closed,
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn map_flume_try_send_outcome<T>(result: Result<(), flume::TrySendError<T>>) -> SendOutcome {
+    match result {
+        Ok(()) => SendOutcome::Queued,
+        Err(flume::TrySendError::Full(_)) => SendOutcome::WouldBlock,
+        Err(flume::TrySendError::Disconnected(_)) => SendOutcome::Closed,
     }
 }
 
@@ -872,12 +998,14 @@ impl Processor {
     /// Processes inbound packets for outbound delivery.
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
+        let fec_tree_id = packet.lossless_fec_tree_id();
 
         let reporter = self.flowstats_reporter.as_ref();
-        match self
-            .routing_table
-            .get_next_hops_by_flow(packet_flow_id, reporter)
-        {
+        match self.routing_table.get_next_hops_by_flow_and_tree(
+            packet_flow_id,
+            fec_tree_id,
+            reporter,
+        ) {
             Ok(next_hops) => {
                 if next_hops.is_empty() {
                     error!("No next hops available for flow {}.", packet_flow_id);
@@ -902,7 +1030,20 @@ impl Processor {
                     self.send_packet(pkt, next_hop_id).await;
                 }
             }
-            Err(e) => error!("Error resolving route for flow {}: {}", packet_flow_id, e),
+            Err(e) => {
+                if let Some(tree_id) = fec_tree_id
+                    && e.contains("Unknown multicast tree route")
+                {
+                    warn!(
+                        flow_id = packet_flow_id,
+                        tree_id,
+                        reason = %e,
+                        "Dropping packet because multicast tree route is unknown"
+                    );
+                    return;
+                }
+                error!("Error resolving route for flow {}: {}", packet_flow_id, e);
+            }
         }
     }
 
@@ -984,6 +1125,8 @@ impl Processor {
             hdr.session_id
         } else if let Some((hdr, _)) = lossless_session::decode_control(payload) {
             hdr.session_id
+        } else if let Some((hdr, _, _)) = lossless_session::decode_fec_data(payload) {
+            hdr.session_id
         } else {
             return false;
         };
@@ -1005,5 +1148,290 @@ impl Processor {
             },
         );
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    fn base_config(operating_mode: OperatingMode) -> LocalConfig {
+        LocalConfig {
+            node_id: 1,
+            local_address: Ipv4Addr::new(10, 0, 0, 1),
+            operating_mode,
+            channel_capacity: 1,
+            num_packet_processors: 1,
+            channel_backpressure: true,
+            ..Default::default()
+        }
+    }
+
+    fn make_packet(dst_ip: Ipv4Addr) -> Packet {
+        Packet::build_ipv4_tcp_packet(Ipv4Addr::new(10, 0, 0, 9), 4000, dst_ip, 5000, b"x")
+    }
+
+    fn make_fec_packet(dst_ip: Ipv4Addr, tree_id: u16) -> Packet {
+        let payload = lossless_session::encode_fec_data(17, 3, 9, tree_id, b"x");
+        Packet::build_ipv4_tcp_packet(Ipv4Addr::new(10, 0, 0, 9), 4000, dst_ip, 5000, &payload)
+    }
+
+    fn make_sequential_handle_with_lanes(
+        config: LocalConfig,
+        packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
+        connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    ) -> SequentialProcHandle {
+        let (broadcast_sender, _) = broadcast::channel(1);
+        let (connector_message_sender, _) = mpsc::channel(1);
+        SequentialProcHandle {
+            config,
+            broadcast_sender,
+            packet_senders,
+            connector_packet_sender,
+            connector_message_sender,
+        }
+    }
+
+    fn make_sequential_handle(
+        config: LocalConfig,
+        packet_sender: mpsc::Sender<ProcessorPacket>,
+        connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    ) -> SequentialProcHandle {
+        make_sequential_handle_with_lanes(config, vec![packet_sender], connector_packet_sender)
+    }
+
+    fn find_distinct_fec_tree_lanes(
+        handle: &SequentialProcHandle,
+        dst_ip: Ipv4Addr,
+    ) -> ((u16, usize), (u16, usize)) {
+        let first_tree = 0u16;
+        let first_lane = handle.select_processor_ingress_lane(&make_fec_packet(dst_ip, first_tree));
+        for tree_id in 1u16..=255 {
+            let lane = handle.select_processor_ingress_lane(&make_fec_packet(dst_ip, tree_id));
+            if lane != first_lane {
+                return ((first_tree, first_lane), (tree_id, lane));
+            }
+        }
+        panic!("expected at least two distinct ingress lanes for FEC tree IDs");
+    }
+
+    fn make_concurrent_handle(
+        config: LocalConfig,
+        packet_sender: flume::Sender<ProcessorPacket>,
+        connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    ) -> ConcurrentProcHandle {
+        let (broadcast_sender, _) = broadcast::channel(1);
+        let (connector_message_sender, _) = mpsc::channel(1);
+        ConcurrentProcHandle {
+            config,
+            broadcast_sender,
+            packet_sender,
+            connector_packet_sender,
+            connector_message_sender,
+        }
+    }
+
+    #[test]
+    fn sequential_try_process_packet_routes_local_packets_to_processor_in_max_mode() {
+        let config = base_config(OperatingMode::Max);
+        let local_ip = config.local_address;
+
+        let (processor_sender, _processor_receiver) = mpsc::channel(1);
+        processor_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(local_ip)))
+            .expect("failed to fill processor lane");
+
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(local_ip)),
+            SendOutcome::WouldBlock
+        );
+    }
+
+    #[test]
+    fn sequential_try_process_packet_routes_remote_packets_to_connector_in_max_mode() {
+        let config = base_config(OperatingMode::Max);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, processor_receiver) = mpsc::channel(1);
+        drop(processor_receiver);
+
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        connector_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
+            .expect("failed to fill connector lane");
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::WouldBlock
+        );
+    }
+
+    #[test]
+    fn sequential_try_process_packet_reports_closed_when_processor_lane_closed() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, processor_receiver) = mpsc::channel(1);
+        drop(processor_receiver);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::Closed
+        );
+    }
+
+    #[test]
+    fn sequential_non_fec_ingress_lane_uses_flow_hash() {
+        let mut config = base_config(OperatingMode::Normal);
+        config.num_packet_processors = 4;
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let mut processor_senders = Vec::new();
+        for _ in 0..config.num_packet_processors {
+            let (sender, receiver) = mpsc::channel(1);
+            drop(receiver);
+            processor_senders.push(sender);
+        }
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+        let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
+
+        let packet = make_packet(remote_ip);
+        assert_eq!(
+            handle.select_processor_ingress_lane(&packet),
+            packet.flow_id.hash(handle.packet_senders.len())
+        );
+    }
+
+    #[test]
+    fn sequential_try_process_packet_exposes_per_tree_backpressure_domains() {
+        let mut config = base_config(OperatingMode::Normal);
+        config.num_packet_processors = 4;
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let mut processor_senders = Vec::new();
+        // Keep receivers alive so lanes can become Full instead of Closed.
+        let mut _processor_receivers = Vec::new();
+        for _ in 0..config.num_packet_processors {
+            let (sender, receiver) = mpsc::channel(1);
+            processor_senders.push(sender);
+            _processor_receivers.push(receiver);
+        }
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+        let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
+
+        let ((blocked_tree, blocked_lane), (writable_tree, _writable_lane)) =
+            find_distinct_fec_tree_lanes(&handle, remote_ip);
+        handle.packet_senders[blocked_lane]
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
+            .expect("failed to fill selected tree lane");
+
+        assert_eq!(
+            handle.try_process_packet(make_fec_packet(remote_ip, blocked_tree)),
+            SendOutcome::WouldBlock
+        );
+        assert_eq!(
+            handle.try_process_packet(make_fec_packet(remote_ip, writable_tree)),
+            SendOutcome::Queued
+        );
+    }
+
+    #[test]
+    fn sequential_process_packet_blocking_routes_fec_tree_to_selected_lane() {
+        let mut config = base_config(OperatingMode::Normal);
+        config.num_packet_processors = 4;
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let mut processor_senders = Vec::new();
+        let mut processor_receivers = Vec::new();
+        for _ in 0..config.num_packet_processors {
+            let (sender, receiver) = mpsc::channel(1);
+            processor_senders.push(sender);
+            processor_receivers.push(receiver);
+        }
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+        let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
+
+        let packet = make_fec_packet(remote_ip, 3);
+        let expected_lane = handle.select_processor_ingress_lane(&packet);
+        handle.process_packet_blocking(packet);
+
+        for (idx, receiver) in processor_receivers.iter_mut().enumerate() {
+            let recv_result = receiver.try_recv();
+            if idx == expected_lane {
+                assert!(
+                    recv_result.is_ok(),
+                    "expected selected lane to receive packet"
+                );
+            } else {
+                assert!(
+                    matches!(recv_result, Err(mpsc::error::TryRecvError::Empty)),
+                    "unexpected packet on non-selected lane {idx}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_try_process_packet_routes_remote_packets_to_connector_in_max_mode() {
+        let config = base_config(OperatingMode::Max);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (packet_sender, packet_receiver) = flume::bounded(1);
+        drop(packet_receiver);
+
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        connector_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
+            .expect("failed to fill connector lane");
+
+        let handle = make_concurrent_handle(config, packet_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::WouldBlock
+        );
+    }
+
+    #[test]
+    fn concurrent_try_process_packet_reports_closed_when_processor_lane_closed() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (packet_sender, packet_receiver) = flume::bounded(1);
+        drop(packet_receiver);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+
+        let handle = make_concurrent_handle(config, packet_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::Closed
+        );
+    }
+
+    #[test]
+    fn processor_handle_try_process_packet_reports_queued() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, _processor_receiver) = mpsc::channel(1);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        let inner = make_sequential_handle(config, processor_sender, connector_sender);
+        let handle = ProcessorHandle::Sequential(inner);
+
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::Queued
+        );
     }
 }

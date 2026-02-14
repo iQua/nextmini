@@ -9,12 +9,26 @@ use serde::{Deserialize, Serialize};
 
 mod ip_ser;
 pub mod lossless_session;
+pub use lossless_session::{
+    FecCapabilities, FecManifest, FecScheme, FecStatus, LOSSLESS_SESSION_BASE_VERSION,
+    LOSSLESS_SESSION_FEC_VERSION, LosslessSessionFecData,
+};
 
 /// Used to indicate that an integer value is invalid.
 pub const INVALID: usize = usize::MAX;
 
 /// Identifier for a multicast group allocated by the controller.
 pub type GroupId = usize;
+
+/// High-bit namespace separator for multicast route IDs inside dataplane tables.
+///
+/// Multicast route IDs produced by the controller must stay below this value.
+pub const MULTICAST_ROUTE_FLAG: usize = 1 << 30;
+
+/// Number of route-id slots reserved per multicast group for deterministic tree mapping.
+///
+/// Route IDs are computed as: `group_id * MULTITREE_STRIDE + tree_id`.
+pub const MULTITREE_STRIDE: usize = 1 << 16;
 
 /// Directory entry mapping a multicast group id to its allocated IP.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -27,11 +41,21 @@ pub struct GroupDirectoryEntry {
 /// Routing table entry describing multicast fan-out from a node.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GroupRoutingTableEntry {
-    /// Route identifier equals the multicast group id for now.
+    /// Controller-defined deterministic multicast route identifier.
     pub route_id: usize,
     pub next_hops: Vec<usize>,
     pub src_node_id: usize,
     pub group_id: GroupId,
+}
+
+/// One multicast tree definition for a group route update.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GroupRouteTree {
+    pub tree_id: usize,
+    #[serde(default)]
+    pub weight: Option<f64>,
+    /// Directed edges (from_node_id, to_node_id) describing this tree.
+    pub edges: Vec<(u32, u32)>,
 }
 
 /// Types of messages used to communicate from the dataplane to the controller.
@@ -80,6 +104,11 @@ pub enum DataplaneToController {
         group_id: GroupId,
         /// Directed edges (from_node_id, to_node_id) describing the multicast DAG.
         edges: Vec<(u32, u32)>,
+    },
+    /// Sets multiple multicast trees for a group.
+    SetGroupRoutesMulti {
+        group_id: GroupId,
+        trees: Vec<GroupRouteTree>,
     },
     /// Periodic lossless session stats from dataplane (feature-gated at source).
     LosslessStats {

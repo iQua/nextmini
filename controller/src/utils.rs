@@ -7,9 +7,9 @@ use petgraph::graph::DiGraph;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::{
-    ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, GroupId, GroupRoutingTableEntry,
-    INVALID, NodeSpec, OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry,
-    SchedulingDiscipline,
+    ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, GroupId, GroupRouteTree,
+    GroupRoutingTableEntry, INVALID, MULTICAST_ROUTE_FLAG, MULTITREE_STRIDE, NodeSpec,
+    OperatingMode, Protocol, RouteForwardingMode, RoutingTableEntry, SchedulingDiscipline,
 };
 
 use crate::config;
@@ -281,9 +281,62 @@ pub fn allocate_multicast_ip(base_addr: Ipv4Addr, mask: Ipv4Addr, ordinal: u32) 
     Ipv4Addr::from(network | offset)
 }
 
-/// Build per-node multicast routing entries including local delivery for members.
-pub fn build_group_routes_for_node(
+/// Computes a deterministic multicast route ID for a `(group_id, tree_id)` pair.
+///
+/// The result is bounded so it can be safely namespaced under the dataplane's
+/// multicast route flag (`MULTICAST_ROUTE_FLAG`).
+pub fn compute_multitree_route_id(group_id: GroupId, tree_id: usize) -> Result<usize, String> {
+    if tree_id >= MULTITREE_STRIDE {
+        return Err(format!(
+            "tree_id {} exceeds stride {}",
+            tree_id, MULTITREE_STRIDE
+        ));
+    }
+
+    let base = group_id
+        .checked_mul(MULTITREE_STRIDE)
+        .ok_or_else(|| format!("group_id {} overflows route-id computation", group_id))?;
+    let route_id = base
+        .checked_add(tree_id)
+        .ok_or_else(|| "route-id addition overflowed".to_string())?;
+
+    if route_id >= MULTICAST_ROUTE_FLAG {
+        return Err(format!(
+            "route_id {} must stay below {}",
+            route_id, MULTICAST_ROUTE_FLAG
+        ));
+    }
+
+    Ok(route_id)
+}
+
+/// Returns a canonicalized copy of group trees: sorted by tree_id ascending and validated.
+pub fn canonicalize_group_route_trees(
     group_id: GroupId,
+    trees: &[GroupRouteTree],
+) -> Result<Vec<GroupRouteTree>, String> {
+    let mut ordered = trees.to_vec();
+    ordered.sort_by_key(|tree| tree.tree_id);
+
+    let mut previous_tree_id = None;
+    for tree in &ordered {
+        if previous_tree_id == Some(tree.tree_id) {
+            return Err(format!(
+                "duplicate tree_id {} for group {}",
+                tree.tree_id, group_id
+            ));
+        }
+        compute_multitree_route_id(group_id, tree.tree_id)?;
+        previous_tree_id = Some(tree.tree_id);
+    }
+
+    Ok(ordered)
+}
+
+/// Build one per-node multicast routing entry for a specific precomputed route ID.
+pub fn build_group_routes_for_node_with_route_id(
+    group_id: GroupId,
+    route_id: usize,
     src_node_id: u32,
     dag_edges: &[(u32, u32)],
     node_id: u32,
@@ -311,11 +364,71 @@ pub fn build_group_routes_for_node(
     }
 
     Some(GroupRoutingTableEntry {
-        route_id: group_id,
+        route_id,
         next_hops,
         src_node_id: src_node_id as usize,
         group_id,
     })
+}
+
+/// Build all per-node multicast routing entries for a multi-tree group update.
+///
+/// Output routes are canonically sorted by `tree_id` ascending.
+pub fn build_group_routes_for_node_multitree(
+    group_id: GroupId,
+    src_node_id: u32,
+    trees: &[GroupRouteTree],
+    node_id: u32,
+    member_node_ids: &HashSet<u32>,
+) -> Result<Vec<GroupRoutingTableEntry>, String> {
+    let trees = canonicalize_group_route_trees(group_id, trees)?;
+    let mut routes = Vec::with_capacity(trees.len());
+
+    for tree in &trees {
+        let route_id = compute_multitree_route_id(group_id, tree.tree_id)?;
+        if let Some(route) = build_group_routes_for_node_with_route_id(
+            group_id,
+            route_id,
+            src_node_id,
+            &tree.edges,
+            node_id,
+            member_node_ids,
+        ) {
+            routes.push(route);
+        }
+    }
+
+    Ok(routes)
+}
+
+/// Build per-node multicast routing entries including local delivery for members.
+#[allow(dead_code)]
+pub fn build_group_routes_for_node(
+    group_id: GroupId,
+    src_node_id: u32,
+    dag_edges: &[(u32, u32)],
+    node_id: u32,
+    member_node_ids: &HashSet<u32>,
+) -> Option<GroupRoutingTableEntry> {
+    let route_id = match compute_multitree_route_id(group_id, 0) {
+        Ok(route_id) => route_id,
+        Err(e) => {
+            warn!(
+                "Skipping legacy multicast route for group {} due to invalid route-id: {}",
+                group_id, e
+            );
+            return None;
+        }
+    };
+
+    build_group_routes_for_node_with_route_id(
+        group_id,
+        route_id,
+        src_node_id,
+        dag_edges,
+        node_id,
+        member_node_ids,
+    )
 }
 
 /// Merge all routes from configuration (both custom and topology-generated).
@@ -483,7 +596,10 @@ mod tests {
     use super::*;
     use crate::config;
     use crate::models::{DbFlow, DbFlowRoute, Route};
-    use nextmini_messages::{FlowLen, FlowTransport, NodeSpec, OperatingMode, Protocol};
+    use nextmini_messages::{
+        FlowLen, FlowTransport, GroupRouteTree, MULTICAST_ROUTE_FLAG, NodeSpec, OperatingMode,
+        Protocol,
+    };
     use std::collections::HashSet;
     use std::net::Ipv4Addr;
 
@@ -1081,5 +1197,66 @@ mod tests {
             let entry = build_group_routes_for_node(7, 1, &dag_edges, 9, &member_nodes).unwrap();
             assert_eq!(entry.next_hops, vec![9]);
         }
+    }
+
+    #[test]
+    fn test_compute_multitree_route_id_bounds() {
+        let route_id = compute_multitree_route_id(7, 3).unwrap();
+        assert_eq!(route_id, 7 * MULTITREE_STRIDE + 3);
+        assert!(route_id < MULTICAST_ROUTE_FLAG);
+
+        let too_large_tree = compute_multitree_route_id(7, MULTITREE_STRIDE);
+        assert!(too_large_tree.is_err());
+
+        let max_group = (MULTICAST_ROUTE_FLAG / MULTITREE_STRIDE) - 1;
+        assert!(compute_multitree_route_id(max_group, MULTITREE_STRIDE - 1).is_ok());
+        assert!(compute_multitree_route_id(max_group + 1, 0).is_err());
+    }
+
+    #[test]
+    fn test_build_group_routes_for_node_multitree_orders_by_tree_id() {
+        let trees = vec![
+            GroupRouteTree {
+                tree_id: 4,
+                weight: Some(0.7),
+                edges: vec![(1, 2), (2, 5)],
+            },
+            GroupRouteTree {
+                tree_id: 1,
+                weight: Some(0.3),
+                edges: vec![(1, 3), (3, 5)],
+            },
+        ];
+        let members = HashSet::from_iter([5u32]);
+
+        let routes = build_group_routes_for_node_multitree(11, 1, &trees, 1, &members).unwrap();
+        assert_eq!(routes.len(), 2);
+
+        let expected_first = compute_multitree_route_id(11, 1).unwrap();
+        let expected_second = compute_multitree_route_id(11, 4).unwrap();
+        assert_eq!(routes[0].route_id, expected_first);
+        assert_eq!(routes[0].next_hops, vec![3]);
+        assert_eq!(routes[1].route_id, expected_second);
+        assert_eq!(routes[1].next_hops, vec![2]);
+    }
+
+    #[test]
+    fn test_build_group_routes_for_node_multitree_rejects_duplicate_tree_id() {
+        let trees = vec![
+            GroupRouteTree {
+                tree_id: 2,
+                weight: None,
+                edges: vec![(1, 2)],
+            },
+            GroupRouteTree {
+                tree_id: 2,
+                weight: None,
+                edges: vec![(1, 3)],
+            },
+        ];
+        let members = HashSet::new();
+
+        let err = build_group_routes_for_node_multitree(9, 1, &trees, 1, &members).unwrap_err();
+        assert!(err.contains("duplicate tree_id"));
     }
 }

@@ -34,53 +34,51 @@
 
 ## Python Bindings & Tooling
 
-- The `python-api/src` crate exposes `nextmini_py::Dataplane`, `PacketReceiver`, and frozen buffer helpers so Python workloads can inject or tap flows in-process. Follow `docs/docs/examples/pytorch_python_api.md` for end-to-end guidance.
+- The `python-api/src` crate exposes `nextmini_py::Dataplane`, `PacketReceiver`, and frozen buffer helpers so Python workloads can inject or tap flows in-process. Follow `docs/content/docs/examples/pytorch_python_api.md` for end-to-end guidance.
 - Wheels are compiled with `pyo3`'s `abi3-py313` feature, so ensure CPython 3.13.* is active when running the `maturin build --release -m python-api/Cargo.toml` or `maturin develop --release -m python-api/Cargo.toml` commands listed above.
 - Most automation (`examples/pytorch`, `examples/multicast-*`, `tools/monitor`, routing utilities) dynamically import the module and expect a valid node config path plus the `NEXTMINI_CONFIG` / `NEXTMINI_DST_NODE` environment variables noted in the docs; keep those hooks intact when extending the scripts.
 - When writing new Python helpers, reuse the buffer adapters in `python-api/src/buffer.rs` and register flows via `Dataplane::register_receiver_*` instead of rolling bespoke socket glue—this keeps behavior aligned with the Rust dataplane.
 
 ## Documentation Tooling
 
-- `docs/` hosts the MkDocs site. Bootstrap its environment with `uv venv && source .venv/bin/activate && uv pip install mkdocs-material`.
-- Run `mkdocs serve` for a live preview and `mkdocs build` to generate the static `site/` output; commit doc changes alongside the features they cover.
+- `docs/` hosts the Fuma docs app. Bootstrap tooling in `docs/` (`bun`, `bun run`, and dependencies in `docs/package.json`) before editing.
+- Run `cd docs && bun dev` for a live docs preview; run `bun run types:check` before publishing documentation updates.
 
 ## Commit & Pull Request Guidelines
 
 - Commits follow short, descriptive titles in sentence-style messages with initial capitals and closing periods (e.g., “Fixed user-space flow finished reporting.”); summarize scope, not the workflow.
 
-## MCP Agent Mail — coordination for multi-agent workflows
+## Additional Agent Operating Rules
 
-What it is:
+### Context7
 
-- A mail-like layer that lets coding agents coordinate asynchronously via MCP tools and resources.
-- Provides identities, inbox/outbox, searchable threads, and advisory file reservations, with human-auditable artifacts in Git.
+- ALWAYS proactively use Context7 when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.
+- External libraries/docs/frameworks should be guided by Context7.
 
-Why it's useful:
+### Planning
+- All plans MUST include a dependency graph.
+- Every task in a plan must declare `depends_on: []` using explicit task IDs such as `T1`, `T2`.
 
-- Prevents agents from stepping on each other with explicit file reservations (leases) for files/globs.
-- Keeps communication out of your token budget by storing messages in a per-project archive.
-- Offers quick reads (`resource://inbox/...`, `resource://thread/...`) and macros that bundle common flows.
+### Execution
+- Complete all tasks from a plan without stopping for permission between steps. Use best judgment, keep moving.
+- Only stop to ask when a step is destructive/irreversible or there is a genuine blocker.
 
-How to use it effectively:
+### Subagents
 
-1) Same repository
-   - Register an identity: call `ensure_project`, then `register_agent` using this repo's absolute path as `project_key`.
-   - Reserve files before you edit: `file_reservation_paths(project_key, agent_name, ["src/**"], ttl_seconds=3600, exclusive=true)` to signal intent and avoid conflict.
-   - Communicate with threads: use `send_message(..., thread_id="FEAT-123")`; check inbox with `fetch_inbox` and acknowledge with `acknowledge_message`.
-   - Read fast: `resource://inbox/{Agent}?project=<abs-path>&limit=20` or `resource://thread/{id}?project=<abs-path>&include_bodies=true`.
-   - Tip: set `AGENT_NAME` in your environment so the pre-commit guard can block commits that conflict with others' active exclusive file reservations.
+- Spawn subagents automatically when:
+  - Parallelizable work (e.g., install + verify, npm test + typecheck, unblocked tasks from plan)
+  - Long‑running or blocking tasks where a worker can run independently.
+  - Isolation for risky changes or checks
+  - Code review would be helpful
+- If you're launching subagents for parallelization, add this robust context to your prompt:
+  - **Context**: Share plan file location and info if available
+  - **Dependencies**: What work/files are completed? Any dependencies?
+  - **Related tasks**: Any adjacent tasks, files, or agents?
+  - **Exact task**: Description, file paths/names, acceptance criteria
+  - **Validation**: How to validate work if possible.
+  - **Constraints**: Risks, gotchas, things to avoid
+  - **Be thorough**: Provide ANY/ALL context that will aid success.
+- ALWAYS wait for all subagents to complete before yielding.
 
-2) Across different repos in one project (e.g., Next.js frontend + FastAPI backend)
-   - Option A (single project bus): register both sides under the same `project_key` (shared key/path). Keep reservation patterns specific (e.g., `frontend/**` vs `backend/**`).
-   - Option B (separate projects): each repo has its own `project_key`; use `macro_contact_handshake` or `request_contact`/`respond_contact` to link agents, then message directly. Keep a shared `thread_id` (e.g., ticket key) across repos for clean summaries/audits.
-
-Macros vs. granular tools:
-
-- Prefer macros when you want speed or are on a smaller model: `macro_start_session`, `macro_prepare_thread`, `macro_file_reservation_cycle`, `macro_contact_handshake`.
-- Use granular tools when you need control: `register_agent`, `file_reservation_paths`, `send_message`, `fetch_inbox`, `acknowledge_message`.
-
-Common pitfalls:
-
-- "from_agent not registered": always `register_agent` in the correct `project_key` first.
-- "FILE_RESERVATION_CONFLICT": adjust patterns, wait for expiry, or use a non-exclusive reservation when appropriate.
-- Auth errors: if JWT+JWKS is enabled, include a bearer token with a `kid` that matches server JWKS; static bearer is used only when JWT is disabled.
+### Bugs
+- Add a regression test when it is appropriate for bug-related changes.

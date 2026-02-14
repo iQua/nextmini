@@ -1,0 +1,473 @@
+# Plan: Refactor Dataplane Python API To Be FEC-Oblivious
+
+**Generated**: February 14, 2026  
+**Target Repo**: `/Users/bli/Playground/nextmini`  
+**Primary Goal**: remove all FEC-specific knobs/types from the Python dataplane API so FEC remains an internal runtime implementation detail.
+
+## Problem Summary
+
+Today, the Python extension exposes FEC internals directly:
+- `python-api/src/lib.rs` `Dataplane::send_data` exposes `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`.
+- `python-api/src/lib.rs` `Dataplane::receive_data` and `receive_data_async` expose `fec_enabled`.
+- `python-api/src/lib.rs` imports and constructs `FecManifest` / `FecCapabilities` via `sender_fec_manifest`, `sender_fec_tree_ids`, `receiver_fec_capabilities`.
+- Docs/examples/tooling teach users to pass FEC arguments (`docs/content/docs/design/python-api.md`, `examples/multicast-docker/scripts/multicast_node.py`, `tools/experiments/raptorq/smoke_python_api.py`).
+
+This breaks encapsulation: the Python layer currently owns policy/validation that should live in dataplane runtime internals.
+
+## Success Criteria
+
+1. Python API signatures contain no FEC-specific parameters.
+2. `python-api/src/lib.rs` no longer imports or constructs `FecManifest` / `FecCapabilities`.
+3. FEC selection, manifest derivation, capability handling, and tree-ID policy are decided inside dataplane runtime/config code.
+4. Existing non-FEC Python call flows continue working with no callsite changes beyond removed FEC kwargs.
+5. FEC regression tests still pass (behavior preserved), and new regression coverage prevents re-exposing FEC in Python API.
+
+## Target Design
+
+- Python API becomes transfer-oriented only (`send_data`, `receive_data`, `receive_data_async` accept transport/session inputs, not codec internals).
+- Dataplane runtime introduces an internal policy boundary that derives sender/receiver FEC behavior from runtime config + session metadata.
+- Runtime preflight keeps strict validation and all FEC invariants, but callers only see generic session-start errors.
+- Documentation shifts FEC guidance from Python callsite knobs to runtime/configuration-level behavior.
+
+## Dependency Graph
+
+- `T1 -> T2`
+- `T2 -> T3`
+- `T2 -> T4`
+- `T3 -> T5`
+- `T4 -> T5`
+- `T5 -> T6`
+- `T5 -> T7`
+- `T7 -> T8`
+- `T7 -> T9`
+- `T6 -> T10`
+- `T8 -> T10`
+- `T9 -> T10`
+- `T10 -> T11`
+
+## Task Plan
+
+### T1 — Baseline Inventory + Behavior Snapshot
+- `depends_on: []`
+- Scope:
+  - Freeze current Python FEC surface and current runtime preflight behavior.
+  - Capture all FEC-exposed callsites in docs/examples/tooling.
+- Files:
+  - `python-api/src/lib.rs`
+  - `docs/content/docs/design/python-api.md`
+  - `examples/multicast-docker/scripts/multicast_node.py`
+  - `tools/experiments/raptorq/smoke_python_api.py`
+- Deliverables:
+  - Short checklist of existing API parameters and expected error semantics to preserve.
+- Validation:
+  - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids" python-api/src/lib.rs docs/content/docs/design/python-api.md examples tools`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Captured current Python API FEC surface in `python-api/src/lib.rs:231`, `python-api/src/lib.rs:333`, `python-api/src/lib.rs:396`:
+    - `send_data(..., fec_enabled=None, fec_symbols_per_block=None, fec_symbol_size=None, fec_tree_ids=None)`
+    - `receive_data(..., fec_enabled=None)`
+    - `receive_data_async(..., fec_enabled=None)`
+  - Captured Python-side FEC mapping helpers in `python-api/src/lib.rs:969`, `python-api/src/lib.rs:1020`, `python-api/src/lib.rs:1040`:
+    - `sender_fec_manifest(...)` constructs `FecManifest` with validation.
+    - `sender_fec_tree_ids(...)` enforces FEC tree-id policy.
+    - `receiver_fec_capabilities(...)` maps `fec_enabled` to `FecCapabilities`.
+  - Captured current runtime preflight/error behavior:
+    - Generic sender validation errors (`PyRuntimeError`): `receiver_ids must contain at least one entry.`, `chunk_size must be positive.`, `buffer is empty; nothing to transmit.`, `invalid congestion control: {mode}` from `python-api/src/lib.rs:249`, `python-api/src/lib.rs:255`, `python-api/src/lib.rs:260`, `python-api/src/lib.rs:273`.
+    - Sender FEC-specific validation errors (`PyRuntimeError`) from `python-api/src/lib.rs:975` and `python-api/src/lib.rs:1024`:
+      - `fec_enabled=False cannot be combined with fec_symbols_per_block or fec_symbol_size.`
+      - `fec_symbols_per_block must be positive.`
+      - `chunk_size {chunk_size} exceeds default FEC symbol_size range; set fec_symbol_size explicitly.`
+      - `fec_symbol_size must be positive.`
+      - `chunk_size ({chunk_size}) cannot exceed fec_symbol_size ({symbol_size}).`
+      - `fec_tree_ids requires FEC; set fec_enabled=True (or FEC sizing kwargs).`
+      - `fec_tree_ids must be non-empty for FEC sessions.`
+      - `fec_tree_ids must be provided explicitly for FEC sessions.`
+    - Sender runtime preflight rejection wrapping preserved as `lossless sender preflight rejected session {sid}: {err}` in `python-api/src/lib.rs:312`.
+    - Receiver-side validation errors (`PyRuntimeError`) captured in `python-api/src/lib.rs:347`, `python-api/src/lib.rs:351`, `python-api/src/lib.rs:409`, `python-api/src/lib.rs:412`: `expected_bytes must be positive.` and `chunk_size must be positive.`
+  - Captured FEC-exposed docs/examples/tooling callsites:
+    - Docs teach FEC kwargs in `docs/content/docs/design/python-api.md:85`, `docs/content/docs/design/python-api.md:94`, `docs/content/docs/design/python-api.md:95`, `docs/content/docs/design/python-api.md:103`.
+    - Example CLI and callsites in `examples/multicast-docker/scripts/multicast_node.py:41`, `examples/multicast-docker/scripts/multicast_node.py:47`, `examples/multicast-docker/scripts/multicast_node.py:57`, `examples/multicast-docker/scripts/multicast_node.py:67`, `examples/multicast-docker/scripts/multicast_node.py:370`, `examples/multicast-docker/scripts/multicast_node.py:421`.
+    - Smoke harness explicitly asserts FEC kwargs/helpers in `tools/experiments/raptorq/smoke_python_api.py:115`, `tools/experiments/raptorq/smoke_python_api.py:122`, `tools/experiments/raptorq/smoke_python_api.py:129`, `tools/experiments/raptorq/smoke_python_api.py:136`, `tools/experiments/raptorq/smoke_python_api.py:179`, `tools/experiments/raptorq/smoke_python_api.py:188`, and runtime probe calls `send_data(..., fec_enabled=False)` at `tools/experiments/raptorq/smoke_python_api.py:218`.
+- T1 checklist (baseline to preserve/migrate deliberately):
+  - Existing API params currently exposed:
+    - Sender: `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`.
+    - Receiver sync/async: `fec_enabled`.
+  - Existing user-visible validation/error semantics:
+    - Keep non-FEC input checks and error text stability where feasible (`receiver_ids`, `chunk_size`, `expected_bytes`, empty buffer, invalid congestion).
+    - Preserve sender preflight rejection framing (`lossless sender preflight rejected session {sid}: ...`) unless intentionally revised in later tasks.
+    - Preserve FEC invariant enforcement semantics when moved into runtime (conflicting toggle/size args, symbol bounds, chunk/symbol relation, FEC tree-id requirements).
+- Errors/gotchas:
+  - `receive_data` and `receive_data_async` currently call `start_receiver` without a sender-style `map_err` preflight wrapper (`python-api/src/lib.rs:383`, `python-api/src/lib.rs:457`), so receiver rejection semantics are asymmetric today.
+  - `receive_data_async` defers `dest_ip` parse into the async future (`python-api/src/lib.rs:433`), so invalid IP errors surface on await rather than at method call time.
+  - `tools/experiments/raptorq/smoke_python_api.py` is intentionally coupled to current FEC kwargs and will fail once T7 lands unless updated in T8/T10.
+
+### T2 — Define FEC-Oblivious Public Contract
+- `depends_on: [T1]`
+- Scope:
+  - Define the new Python API signatures (remove `fec_*` kwargs from sender/receiver methods).
+  - Define compatibility/migration behavior (breaking change with explicit docs, or short-lived compatibility shim).
+  - Define invariant: Python cannot supply or override manifest/capability/tree-ID internals.
+- Files:
+  - `python-api/src/lib.rs`
+  - `docs/content/docs/design/python-api.md` (contract section)
+- Deliverables:
+  - Final method signatures and migration note approved in plan/doc.
+- Validation:
+  - Signature checklist documented before code edits.
+- Signature checklist (target contract):
+  - `send_data(group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None) -> int`
+  - `receive_data(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> int`
+  - `receive_data_async(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> Awaitable[int]`
+- Contract decisions:
+  - Migration mode: explicit breaking change, no compatibility shim for removed `fec_*` kwargs.
+  - Legacy keyword behavior: passing `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, or `fec_tree_ids` raises Python `TypeError` (unexpected keyword argument) once T7 lands.
+  - Invariant boundary: Python callsites cannot provide or override `FecManifest`, `FecCapabilities`, tree IDs, or any equivalent FEC policy internals.
+  - Runtime ownership: FEC enablement, manifest/capability derivation, validation, and tree-ID policy are runtime/config responsibilities (T3/T4/T5).
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Confirmed current public signatures in `python-api/src/lib.rs` still include `fec_*` kwargs; used this as baseline for the target contract checklist.
+  - Locked final FEC-oblivious signatures and migration policy wording in this plan for downstream tasks T3/T4/T7/T8/T9/T10.
+  - Added explicit boundary invariant that Python cannot supply manifest/capability/tree-ID internals.
+  - Added contract section + migration notes in `docs/content/docs/design/python-api.md` to keep implementation and docs aligned.
+- Files modified:
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+  - `docs/content/docs/design/python-api.md`
+- Errors/gotchas:
+  - Current `python-api/src/lib.rs` still contains `fec_*` kwargs and helper plumbing by design at this stage; removal is deferred to T7.
+  - Existing docs/examples still include legacy FEC kwargs outside the new contract section and will be cleaned in later tasks (T8/T9).
+
+### T3 — Introduce Internal Runtime FEC Policy Layer
+- `depends_on: [T2]`
+- Scope:
+  - Add an internal module (for example `dataplane/src/node/session/fec_policy.rs`) that owns:
+    - sender FEC decision + manifest derivation,
+    - sender tree-ID derivation/validation,
+    - receiver capability derivation.
+  - Move Python helper logic into runtime-owned policy functions.
+- Files:
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/mod.rs`
+  - `dataplane/src/node/session/fec_policy.rs` (new)
+- Deliverables:
+  - Runtime-only FEC policy API consumed by session startup paths.
+- Validation:
+  - Unit tests for policy input/output edge cases (chunk-size bounds, disabled FEC, tree-ID validation).
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Added `dataplane/src/node/session/fec_policy.rs` as the runtime-owned FEC policy boundary with:
+    - sender manifest decision/derivation + bounds validation,
+    - sender tree-ID derivation/validation (including explicit non-FEC tree-id rejection),
+    - receiver capability derivation from runtime config.
+  - Moved preflight error ownership into the policy layer and re-exported `PreflightError` through `session::runtime` so existing runtime/API callsites remain stable.
+  - Updated runtime startup flow to consume policy outputs:
+    - `spawn_sender` now derives/apply policy-owned manifest/tree IDs/lane tunables before task spawn.
+    - `spawn_receiver` now derives effective `fec_capabilities` via policy instead of ad hoc branching in runtime.
+  - Added unit coverage in `fec_policy.rs` for required edge classes: FEC-disabled rejection, chunk-size vs symbol-size bound rejection, and tree-ID validation paths.
+- Files modified:
+  - `dataplane/src/node/session/fec_policy.rs`
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/mod.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Runtime now emits a dedicated `TreeIdsRequireFec` preflight error when tree IDs are supplied without an active FEC manifest. This aligns internal runtime policy with prior Python-side helper invariants before T7 removes Python helper ownership.
+
+### T4 — Move FEC Defaults/Overrides To Runtime Config
+- `depends_on: [T2]`
+- Scope:
+  - Ensure all FEC tuning currently supplied by Python is sourced from runtime internals/config.
+  - Add/adjust `LosslessConfig` fields if needed for defaults previously passed by Python (for example symbols/block, symbol-size policy, tree-ID allowlist source).
+  - Keep strict preflight rules centralized in runtime.
+- Files:
+  - `dataplane/src/node/config.rs`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
+- Deliverables:
+  - Config-backed internal FEC policy with no Python dependency.
+- Validation:
+  - Runtime config tests cover defaults/bounds/canonicalization.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Extended `LosslessConfig` runtime FEC knobs in `dataplane/src/node/config.rs` to cover the Python-owned defaults/overrides being internalized:
+    - `fec_default_symbols_per_block`
+    - `fec_symbol_size_policy` (`chunk_size` or `fixed`)
+    - `fec_default_symbol_size`
+    - `fec_tree_ids_source` (`config` or `installed_routes`)
+    - `fec_default_tree_ids`
+  - Added canonicalization helpers in `LosslessConfig`:
+    - `canonical_fec_default_symbols_per_block()` clamps defaults into configured bounds.
+    - `canonical_fec_default_symbol_size(chunk_size)` derives policy-driven defaults and clamps to bounds.
+    - `canonical_fec_default_tree_ids()` enforces sorted+unique allowlists.
+  - Added/updated config-focused tests for defaults, bounds normalization, symbol-size policy behavior, and tree-id canonicalization in `dataplane/src/node/config.rs`.
+  - Updated runtime-config docs/examples in:
+    - `docs/content/docs/design/lossless_config.md`
+    - `docs/content/docs/design/config-reference.md`
+- Files modified:
+  - `dataplane/src/node/config.rs`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Runtime session-start still consumes explicit sender FEC fields today; T5 remains responsible for wiring these new config defaults into startup flow end-to-end.
+
+### T5 — Refactor Runtime Session Start APIs To Be FEC-Agnostic At Boundary
+- `depends_on: [T3, T4]`
+- Scope:
+  - Update sender/receiver start flow so API-facing request structs do not require FEC fields.
+  - Derive internal `fec_manifest`, `fec_tree_ids`, `fec_capabilities` inside runtime startup path.
+  - Preserve existing telemetry semantics (including `fec_used`) in control/controller path.
+- Files:
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/sender.rs`
+  - `dataplane/src/node/session/receiver.rs`
+  - `controller/src/main.rs` (if telemetry mapping adjustments are required)
+- Deliverables:
+  - Runtime startup paths no longer require FEC input from Python caller.
+- Validation:
+  - Existing `dataplane/tests/fec_*` suites still pass with equivalent behavior.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Added FEC-agnostic runtime boundary structs in `dataplane/src/node/session/runtime.rs`:
+    - `SenderRequest` (no manifest/tree/collab-FEC fields)
+    - `ReceiverRequest` (no capability field)
+  - Switched runtime command surface in `dataplane/src/node/session/api.rs` and `LosslessRuntimeHandle::start_sender/start_receiver` to consume request structs only.
+  - Refactored runtime spawn path to derive internal FEC values before task launch:
+    - Sender: runtime derives `fec_manifest`, `fec_tree_ids`, lane depth, and dispatch burst via `fec_policy`.
+    - Receiver: runtime derives `fec_capabilities` via `fec_policy`.
+  - Internalized T4 config defaults in `dataplane/src/node/session/fec_policy.rs`:
+    - Uses `canonical_fec_default_symbols_per_block()`.
+    - Uses `canonical_fec_default_symbol_size(chunk_size)`.
+    - Uses `fec_tree_ids_source` + `canonical_fec_default_tree_ids()`.
+    - Adds deterministic typed preflight rejection for `fec_tree_ids_source=installed_routes` via `PreflightError::InstalledRoutesTreeIdsUnsupported`.
+  - Updated runtime callers to new boundary types:
+    - `dataplane/src/node/session/unicast.rs`
+    - `python-api/src/lib.rs` (compile adaptation only; API signature cleanup remains T7).
+  - Updated regression coverage wiring for the new boundary in `dataplane/tests/fec_handshake.rs`.
+- Files modified:
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/api.rs`
+  - `dataplane/src/node/session/fec_policy.rs`
+  - `dataplane/src/node/session/unicast.rs`
+  - `dataplane/tests/fec_handshake.rs`
+  - `python-api/src/lib.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `python-api/src/lib.rs` still exposes legacy `fec_*` kwargs in method signatures for now; they are no longer part of runtime startup requests and are deferred for full removal in T7.
+  - Sender preflight error shape changed for one validation path: with runtime FEC enabled and empty configured tree IDs, startup now fails with `MissingTreeIds` derived from runtime config policy.
+
+### T6 — Add Regression Coverage For Internalized FEC Policy
+- `depends_on: [T5]`
+- Scope:
+  - Add/adjust tests to ensure FEC behavior remains correct when derived internally.
+  - Add regression test(s) for previous Python-helper validation rules now enforced in runtime.
+- Files:
+  - `dataplane/src/node/session/runtime.rs` tests
+  - `dataplane/tests/fec_handshake.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `dataplane/tests/fec_receiver.rs`
+- Deliverables:
+  - Test evidence that FEC correctness does not depend on Python-provided manifest/capability data.
+- Validation:
+  - `cargo test -p dataplane --test fec_handshake`
+  - `cargo test -p dataplane --test fec_sender`
+  - `cargo test -p dataplane --test fec_receiver`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Added runtime-policy unit regressions in `dataplane/src/node/session/fec_policy.rs` for invariants previously enforced in Python helpers:
+    - Reject `fec_require_capability=false` under strict internalized FEC startup.
+    - Reject chunk sizes that cannot derive default symbol size under chunk-size policy.
+    - Verify manifest/tree defaults are canonicalized from runtime config (bounds + sorted/unique tree IDs) when caller provides no FEC fields.
+  - Expanded sender preflight regression coverage in `dataplane/tests/fec_handshake.rs`:
+    - `CapabilityRequirementDisabled` propagates through runtime API.
+    - `ChunkSizeCannotDeriveDefaultSymbolSize` propagates through runtime API.
+  - Refactored `dataplane/tests/fec_sender.rs` to drive sender startup through `LosslessRuntimeHandle::start_sender(SenderRequest)` and assert:
+    - runtime-derived manifest values,
+    - preserved repair budget behavior,
+    - preserved token-bucket pacing.
+  - Added receiver runtime regression probe in `dataplane/tests/fec_receiver.rs` to assert `FecCapabilities` advertisements are derived from runtime `fec_enabled` config (default vs empty) after `FecManifest`, with no caller-provided capability field.
+- Files modified:
+  - `dataplane/src/node/session/fec_policy.rs`
+  - `dataplane/tests/fec_handshake.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `dataplane/tests/fec_receiver.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `fec_sender` and `fec_receiver` regression probes now rely on runtime-owned session startup, so they intentionally capture and decode emitted control packets (manifest/capabilities) rather than asserting direct config struct contents.
+
+### T7 — Remove FEC From Python API Surface
+- `depends_on: [T5]`
+- Scope:
+  - Remove FEC kwargs from `send_data`, `receive_data`, `receive_data_async` signatures.
+  - Remove Python-side helper functions and message-type imports:
+    - `sender_fec_manifest`
+    - `sender_fec_tree_ids`
+    - `receiver_fec_capabilities`
+    - `FecManifest` / `FecCapabilities` imports
+  - Keep error paths user-oriented (session preflight rejection without exposing runtime internals unnecessarily).
+- Files:
+  - `python-api/src/lib.rs`
+- Deliverables:
+  - Python extension API is FEC-oblivious.
+- Validation:
+  - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids|FecManifest|FecCapabilities|sender_fec_manifest|receiver_fec_capabilities" python-api/src/lib.rs` returns no API-surface hits.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Updated public Python signatures in `python-api/src/lib.rs`:
+    - `send_data(..., congestion=None)` (removed `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`).
+    - `receive_data(...)` (removed `fec_enabled`).
+    - `receive_data_async(...)` (removed `fec_enabled`).
+  - Removed now-unused FEC kwarg plumbing from method parameter lists and internal no-op placeholder bindings.
+  - Confirmed `python-api/src/lib.rs` contains no Python-surface `sender_fec_manifest`, `sender_fec_tree_ids`, `receiver_fec_capabilities`, `FecManifest`, or `FecCapabilities` references.
+  - Preserved existing user-oriented sender preflight rejection mapping (`lossless sender preflight rejected session {sid}: {err}`) and receiver preflight behavior.
+- Files modified:
+  - `python-api/src/lib.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - This is an intentional API break: Python callers still passing removed `fec_*` kwargs now fail at call binding with Python `TypeError` (unexpected keyword argument), as defined in T2.
+  - T8/T9/T10 remain responsible for callsite/docs/guardrail updates outside `python-api/src/lib.rs`.
+
+### T8 — Update Python Examples/Tooling To New Contract
+- `depends_on: [T7]`
+- Scope:
+  - Remove FEC kwargs from example and tooling callsites.
+  - Update smoke checks that currently assert presence of FEC kwargs in signatures.
+  - Ensure examples still exercise lossless transfer using runtime-config-driven behavior.
+- Files:
+  - `examples/multicast-docker/scripts/multicast_node.py`
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - Any other Python callers found in T1 inventory.
+- Deliverables:
+  - No user-facing Python usage pattern depends on FEC kwargs.
+- Validation:
+  - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids" examples tools`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Removed legacy sender/receiver kwarg usage from `examples/multicast-docker/scripts/multicast_node.py` by deleting old per-call overrides and calling `Dataplane.send_data` / `Dataplane.receive_data` with the new FEC-oblivious signature.
+  - Removed obsolete example-side FEC override knobs (`--fec-symbols-per-block`, `--fec-symbol-size`, `--fec-tree-ids`) that no longer map to Python API args; retained `--fec` only as a transfer-mode hint for logging/artifacts while runtime config owns behavior.
+  - Updated `tools/experiments/raptorq/smoke_python_api.py` to validate the new contract by asserting legacy kwarg/helper absence (static + runtime signature introspection) and probing `send_data` without removed kwargs.
+  - Updated `tools/experiments/raptorq/check_compat_matrix.py` fallback parsing to use generic `enabled` instead of legacy top-level key naming so tooling no longer depends on removed kwarg-style names.
+- Files modified:
+  - `examples/multicast-docker/scripts/multicast_node.py`
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - `tools/experiments/raptorq/check_compat_matrix.py`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `--fec` remains in the multicast example for operator hinting, but it no longer alters Python API call signatures; runtime config is the single source of truth for FEC policy.
+
+### T9 — Documentation + Migration Notes
+- `depends_on: [T7]`
+- Scope:
+  - Rewrite Python API docs to show FEC-oblivious usage.
+  - Move FEC tuning guidance to runtime config docs.
+  - Document migration steps for removed kwargs and expected failure mode (Python `TypeError` on old kwargs, if no shim).
+- Files:
+  - `docs/content/docs/design/python-api.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md` (if Python examples or references mention old kwargs)
+- Deliverables:
+  - Consistent docs with zero instruction to pass FEC parameters in Python API calls.
+- Validation:
+  - `rg -n "send_data\\(|receive_data\\(|fec_enabled|fec_tree_ids|fec_symbol" docs/content/docs/design`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Updated `docs/content/docs/design/python-api.md` migration section with explicit caller steps: remove `fec_*` kwargs, move FEC tuning to `[lossless_runtime_config]`, and expect Python `TypeError` on stale kwargs.
+  - Clarified `docs/content/docs/design/lossless_config.md` as runtime-config ownership for FEC defaults/tree IDs and added explicit FEC-oblivious Python boundary wording.
+  - Added migration/ownership note in `docs/content/docs/design/config-reference.md` under lossless config so runtime FEC tuning is documented outside Python call signatures.
+- Files modified:
+  - `docs/content/docs/design/python-api.md`
+  - `docs/content/docs/design/lossless_config.md`
+  - `docs/content/docs/design/config-reference.md`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Validation grep intentionally still matches `fec_*` tokens in runtime-config documentation; this is expected because those are config fields, not Python kwargs.
+  - T8 owns example/tool callsite rewrites, so this task only updated design docs + migration guidance.
+
+### T10 — Add Guardrails To Prevent FEC Re-Exposure In Python API
+- `depends_on: [T6, T8, T9]`
+- Scope:
+  - Add a lightweight CI/test check that fails if FEC-specific Python API parameters are reintroduced.
+  - Gate on `python-api/src/lib.rs` signatures and docs/examples surface.
+- Files:
+  - `tools/experiments/raptorq/smoke_python_api.py` (or a dedicated API-contract check script/test)
+  - CI config if available in repo workflow.
+- Deliverables:
+  - Automated detection of regressions in API encapsulation boundary.
+- Validation:
+  - Contract check fails when `fec_*` params are reintroduced; passes on clean branch.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Strengthened `tools/experiments/raptorq/smoke_python_api.py` contract checks so legacy kwargs are detected with whitespace-tolerant matching (`fec_*\\s*=`) in `python-api/src/lib.rs`, preventing formatting variants from bypassing the guardrail.
+  - Added cross-surface scan in `tools/experiments/raptorq/smoke_python_api.py` over Python dataplane callsites in `examples/` and `tools/` (excluding tests), with required check `surface_omits_legacy_fec_kwargs` that fails with offending file/kwarg details.
+  - Added deterministic pass/fail fixture tests in `tools/experiments/raptorq/tests/test_smoke_python_api.py` covering:
+    - clean contract surface passes,
+    - legacy kwarg reintroduced in `python-api/src/lib.rs` fails,
+    - legacy kwarg reintroduced in tools callsite fails.
+  - Validation run completed:
+    - `python -m unittest tools.experiments.raptorq.tests.test_smoke_python_api` (pass; includes new failure-path fixtures).
+    - `python tools/experiments/raptorq/smoke_python_api.py --fec off --assert-success --output <tmp>` (pass on current branch).
+- Files modified:
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - `tools/experiments/raptorq/tests/test_smoke_python_api.py`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Surface scan intentionally skips `tests/` paths so regression fixtures/assertions can reference legacy `fec_*` tokens without causing false failures in the production guardrail.
+  - No CI workflow file changes were made in this task; guardrail enforcement is currently through the smoke script + unit test coverage.
+
+### T11 — End-to-End Validation + Cutover
+- `depends_on: [T10]`
+- Scope:
+  - Run full validation matrix and finalize cutover.
+  - Confirm build/test/docs/tooling all align with new contract.
+- Validation Commands:
+  - `cargo check --workspace`
+  - `cargo test --workspace`
+  - `cargo nextest run --no-default-features --features python-extension --features dev-tests`
+  - `maturin develop --release -m python-api/Cargo.toml` (or `maturin build --release -m python-api/Cargo.toml`)
+  - Targeted Python smoke flow using updated scripts in `examples/` and `tools/`.
+- Exit Criteria:
+  - No FEC knobs in Python API, all tests green, docs/examples updated, guardrails active.
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Validation matrix execution:
+    - `cargo check --workspace` (pass).
+    - `cargo test --workspace` (failed in this environment at link step for `nextmini_py` lib tests with unresolved Python C-API symbols on `arm64`, e.g. `_PyBytes_AsString`, `_PyErr_SetString`; command exited `101`).
+    - `cargo nextest run --no-default-features --features python-extension --features dev-tests` (pass; `553/553` tests passed).
+    - `maturin develop --release -m python-api/Cargo.toml` (build phase pass, install phase fail: generated `nextmini_py-0.1.0-cp313-abi3-macosx_11_0_arm64.whl` then `pip install` failed with `not a supported wheel on this platform`).
+    - `maturin build --release -m python-api/Cargo.toml` (pass; wheel emitted at `target/wheels/nextmini_py-0.1.0-cp313-abi3-macosx_11_0_arm64.whl`).
+  - Tooling/contract smoke validation:
+    - `python tools/experiments/raptorq/smoke_python_api.py --fec off --assert-success --output <tmp>` (pass; reports `success: true`, includes cross-surface checks across `examples/` and `tools/`).
+    - `python -m unittest tools.experiments.raptorq.tests.test_smoke_python_api` (pass; `Ran 5 tests`, `OK`).
+  - Cutover conclusion:
+    - Contract guardrails and targeted smoke checks are green on current branch.
+    - Remaining failures are environment/tooling constraints around Python interpreter/platform linkage, not refactor regressions in the FEC-oblivious API surface.
+- Files modified:
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `cargo test --workspace` currently depends on a Python link/runtime setup that satisfies `pyo3` test-link symbols for `nextmini_py`; this host failed at link time with unresolved `_Py*` symbols.
+  - `maturin develop` requires a Python interpreter compatible with the produced `cp313-abi3` wheel for local install; current interpreter rejected the wheel as unsupported, while `maturin build` succeeded.
+
+## Risks And Mitigations
+
+- Risk: Python API breakage for existing callers that pass `fec_*` kwargs.
+  - Mitigation: explicit migration notes + optional short-lived compatibility shim (if release policy demands).
+- Risk: Behavioral drift after moving validation out of Python helpers.
+  - Mitigation: regression tests in `dataplane` runtime and FEC integration suites before removing helpers.
+- Risk: Hidden dependency in tooling/docs still expects FEC kwargs.
+  - Mitigation: repository-wide grep checks and contract guardrail test in T10.
+
+## Definition Of Done
+
+- `python-api/src/lib.rs` has no FEC-specific API parameters, helpers, or FEC message imports.
+- Dataplane runtime internally owns FEC policy + preflight.
+- FEC integration behavior remains correct under runtime-config-driven operation.
+- Docs/examples/tools align with the new FEC-oblivious Python API contract.

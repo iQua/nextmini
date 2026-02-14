@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Bytes, BytesMut};
+use nextmini_messages::lossless_session;
 use once_cell::sync::Lazy;
 
 use crate::node::flow;
@@ -247,6 +248,13 @@ impl Packet {
         Some(&self.bytes()[start..end])
     }
 
+    /// Returns the FEC tree id when this packet carries a lossless-session FEC data frame.
+    pub fn lossless_fec_tree_id(&self) -> Option<u16> {
+        let payload = self.tcp_payload()?;
+        let (_, fec_data, _) = lossless_session::decode_fec_data(payload)?;
+        Some(fec_data.tree_id)
+    }
+
     #[cfg(feature = "python-extension")]
     pub fn into_bytes(self) -> Bytes {
         let packet_size = self.packet_size;
@@ -465,5 +473,33 @@ mod tests {
             &packet.bytes()[header_len..header_len + payload.len()],
             payload.as_slice()
         );
+    }
+
+    #[test]
+    fn extracts_lossless_fec_tree_id_from_tcp_payload() {
+        let fec_payload = lossless_session::encode_fec_data(17, 3, 9, 4, b"fec");
+        let packet = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            &fec_payload,
+        );
+
+        assert_eq!(packet.lossless_fec_tree_id(), Some(4));
+    }
+
+    #[test]
+    fn returns_none_for_non_fec_lossless_payload() {
+        let payload = lossless_session::encode_data(17, 1, b"data");
+        let packet = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            &payload,
+        );
+
+        assert_eq!(packet.lossless_fec_tree_id(), None);
     }
 }

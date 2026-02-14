@@ -38,6 +38,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group-label", required=True)
     parser.add_argument("--chunk-size", type=int, default=8500)
     parser.add_argument(
+        "--fec",
+        choices=("off", "on"),
+        default=os.environ.get("FEC", "off").strip().lower(),
+        help=(
+            "Transfer mode hint for logs/artifacts; runtime config controls "
+            "lossless FEC behavior."
+        ),
+    )
+    parser.add_argument(
         "--receive-timeout-ms",
         type=int,
         default=int(os.environ.get("RECEIVE_TIMEOUT_MS", "5000")),
@@ -257,6 +266,10 @@ def run_source(args: argparse.Namespace) -> None:
         f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
         args.quiet,
     )
+    log(
+        f"Transfer mode hint={args.fec}; runtime config controls FEC behavior.",
+        args.quiet,
+    )
 
     if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
         raise TimeoutError("Timed out waiting for topology readiness.")
@@ -336,6 +349,10 @@ def run_receiver(args: argparse.Namespace) -> None:
     local_node_id = dataplane.node_id
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
+    log(
+        f"Receiver transfer mode hint={args.fec}; runtime config controls FEC behavior.",
+        args.quiet,
+    )
 
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:

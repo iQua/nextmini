@@ -8,10 +8,14 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use nextmini_messages::TokenBucketSpec;
+use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
 
+use crate::node::config::LosslessConfig;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{Command, InboundFrame, SessionId};
-use crate::node::session::{receiver, sender};
+use crate::node::session::{fec_policy, receiver, sender};
+
+pub use crate::node::session::fec_policy::PreflightError;
 
 /// Socket addressing and runtime knobs shared by senders and receivers.
 #[derive(Clone, Debug)]
@@ -29,22 +33,52 @@ pub struct CommonConfig {
 
 /// Sender-only configuration (fan-out, source path, ready grace, etc.).
 #[derive(Clone, Debug)]
-pub struct SenderConfig {
+pub struct SenderRequest {
     pub common: CommonConfig,
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_buffer: Bytes,
     pub ready_grace_ms: u64,
+}
+
+/// Receiver-only request payload accepted at the runtime API boundary.
+#[derive(Clone, Debug)]
+pub struct ReceiverRequest {
+    pub common: CommonConfig,
+    pub source_node_id: usize,
+    pub expected_bytes: u64,
+    pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+}
+
+/// Sender task configuration after runtime derives internal FEC policy.
+#[derive(Clone, Debug)]
+pub struct SenderConfig {
+    pub common: CommonConfig,
+    pub receiver_ids: Vec<usize>,
+    pub total_bytes: u64,
+    pub source_buffer: Bytes,
+    /// Optional FEC declaration. When present, sender uses strict FEC-only negotiation
+    /// and switches retirement semantics from cumulative chunk ACKs to per-block FEC status.
+    pub fec_manifest: Option<FecManifest>,
+    /// Explicit sender-allowed tree IDs for collaborative FEC dispatch.
+    pub fec_tree_ids: Vec<u16>,
+    /// Per-tree lane depth for collaborative FEC dispatch.
+    pub fec_tree_lane_depth: usize,
+    /// Max FEC symbols to dispatch per sender scheduler cycle.
+    pub fec_dispatch_burst: usize,
+    pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
 
-/// Receiver-only configuration (source node, expected bytes, sink path, etc.).
+/// Receiver task configuration after runtime derives internal FEC policy.
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
     pub common: CommonConfig,
     pub source_node_id: usize,
     pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Advertised FEC capabilities for sender preflight compatibility checks.
+    pub fec_capabilities: FecCapabilities,
 }
 
 /// Handle for communicating with the lossless runtime actor.
@@ -55,10 +89,10 @@ pub struct LosslessRuntimeHandle {
 }
 
 impl LosslessRuntimeHandle {
-    pub fn new(processors: ProcessorHandle) -> Self {
+    pub fn new(processors: ProcessorHandle, config: LosslessConfig) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
 
-        let runtime = LosslessRuntime::new(processors, command_rx);
+        let runtime = LosslessRuntime::new(processors, config, command_rx);
 
         // spawns the lossless runtime actor task
         tokio::spawn(async move {
@@ -72,19 +106,27 @@ impl LosslessRuntimeHandle {
 
     /// Requests that the runtime spin up a sender session with the supplied
     /// configuration and return its session ID.
-    pub async fn start_sender(&self, cfg: SenderConfig) -> SessionId {
+    pub async fn start_sender(&self, cfg: SenderRequest) -> Result<SessionId, PreflightError> {
         let (reply_tx, reply_rx) = oneshot::channel();
 
-        let _ = self.command_tx.send(Command::StartSender {
-            cfg,
-            reply: reply_tx,
-        });
+        if self
+            .command_tx
+            .send(Command::StartSender {
+                cfg,
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            return Err(PreflightError::RuntimeChannelClosed);
+        }
 
-        reply_rx.await.expect("The session ID.")
+        reply_rx
+            .await
+            .unwrap_or(Err(PreflightError::RuntimeChannelClosed))
     }
 
     /// Request that the runtime spin up a receiver immediately.
-    pub async fn start_receiver(&self, cfg: ReceiverConfig) -> SessionId {
+    pub async fn start_receiver(&self, cfg: ReceiverRequest) -> SessionId {
         let (reply_tx, reply_rx) = oneshot::channel();
 
         let _ = self.command_tx.send(Command::StartReceiver {
@@ -137,6 +179,7 @@ impl LosslessRuntimeHandle {
 /// This is the actor that processes commands and manages session lifecycle.
 struct LosslessRuntime {
     processors: ProcessorHandle,
+    config: LosslessConfig,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
     next_session_id: SessionId,
@@ -147,11 +190,16 @@ struct LosslessRuntime {
 
 impl LosslessRuntime {
     /// Constructs a runtime that can spawn sender/receiver tasks and track their lifetimes.
-    fn new(processors: ProcessorHandle, command_rx: mpsc::UnboundedReceiver<Command>) -> Self {
+    fn new(
+        processors: ProcessorHandle,
+        config: LosslessConfig,
+        command_rx: mpsc::UnboundedReceiver<Command>,
+    ) -> Self {
         let (topology_ready_tx, _) = watch::channel(false);
 
         Self {
             processors,
+            config,
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
             next_session_id: 1,
@@ -238,8 +286,27 @@ impl LosslessRuntime {
 
     /// Spawns a sender task, wiring up control-plane readiness watchers and
     /// returning its assigned session ID.
-    fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
-        let sid = cfg.common.session_id;
+    fn spawn_sender(&mut self, req: SenderRequest) -> Result<SessionId, PreflightError> {
+        let sid = req.common.session_id;
+        let policy = match fec_policy::derive_sender_policy(&self.config, req.common.chunk_size) {
+            Ok(policy) => policy,
+            Err(err) => {
+                self.reject_sender_preflight(sid, &err);
+                return Err(err);
+            }
+        };
+        let mut cfg = SenderConfig {
+            common: req.common,
+            receiver_ids: req.receiver_ids,
+            total_bytes: req.total_bytes,
+            source_buffer: req.source_buffer,
+            fec_manifest: policy.manifest,
+            fec_tree_ids: policy.tree_ids,
+            fec_tree_lane_depth: policy.tree_lane_depth,
+            fec_dispatch_burst: policy.dispatch_burst,
+            ready_grace_ms: req.ready_grace_ms,
+            topology_ready: None,
+        };
         let processors = self.processors.clone();
 
         // subscribes to topology readiness if not already ready
@@ -255,11 +322,18 @@ impl LosslessRuntime {
         let sender_handle = tokio::spawn(sender::run(cfg, rx, processors));
         self.tasks.insert(sid, sender_handle);
 
-        sid
+        Ok(sid)
     }
 
     /// Spawns a receiver task and hand it a bounded inbox for inbound frames.
-    fn spawn_receiver(&mut self, cfg: ReceiverConfig) -> SessionId {
+    fn spawn_receiver(&mut self, req: ReceiverRequest) -> SessionId {
+        let cfg = ReceiverConfig {
+            common: req.common,
+            source_node_id: req.source_node_id,
+            expected_bytes: req.expected_bytes,
+            sink_buffer: req.sink_buffer,
+            fec_capabilities: fec_policy::derive_receiver_capabilities(&self.config),
+        };
         let sid = cfg.common.session_id;
         let processors = self.processors.clone();
 
@@ -298,5 +372,17 @@ impl LosslessRuntime {
     fn set_topology_ready(&mut self, ready: bool) {
         self.topology_ready = ready;
         let _ = self.topology_ready_tx.send(ready);
+    }
+
+    fn reject_sender_preflight(&mut self, sid: SessionId, err: &PreflightError) {
+        if let Some(handle) = self.tasks.remove(&sid) {
+            handle.abort();
+        }
+        self.inputs.remove(&sid);
+        warn!(
+            session_id = sid,
+            reason = %err,
+            "Lossless runtime: rejected sender session during deterministic preflight"
+        );
     }
 }

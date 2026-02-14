@@ -284,18 +284,24 @@ impl Dataplane {
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
                 };
-                let cfg = session::runtime::SenderConfig {
+                let cfg = session::runtime::SenderRequest {
                     common,
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
                     ready_grace_ms: runtime_config.ready_grace_ms,
-                    topology_ready: None,
                 };
-                let started_sid = rt().block_on(handle.start_sender(cfg));
+                let started_sid = rt().block_on(handle.start_sender(cfg)).map_err(|err| {
+                    PyRuntimeError::new_err(format!(
+                        "lossless sender preflight rejected session {sid}: {err}"
+                    ))
+                })?;
                 return Ok(started_sid);
             }
         }
+
+        #[cfg(not(feature = "python-extension"))]
+        let _ = (&congestion, total_bytes);
 
         Ok(sid)
     }
@@ -342,7 +348,7 @@ impl Dataplane {
                     user_space_base_addr: self.cfg.user_space_base_addr,
                     local_netmask: self.cfg.local_netmask,
                 };
-                let cfg = session::runtime::ReceiverConfig {
+                let cfg = session::runtime::ReceiverRequest {
                     common,
                     source_node_id,
                     expected_bytes,
@@ -354,6 +360,9 @@ impl Dataplane {
                 return Ok(started_sid);
             }
         }
+
+        #[cfg(not(feature = "python-extension"))]
+        let _ = (src_port, dst_port);
 
         Ok(sid)
     }
@@ -409,7 +418,7 @@ impl Dataplane {
                         user_space_base_addr: base_addr,
                         local_netmask: netmask,
                     };
-                    let cfg = session::runtime::ReceiverConfig {
+                    let cfg = session::runtime::ReceiverRequest {
                         common,
                         source_node_id,
                         expected_bytes,
@@ -428,6 +437,9 @@ impl Dataplane {
                 });
             }
         }
+
+        #[cfg(not(feature = "python-extension"))]
+        let _ = (&dest_ip, src_port, dst_port);
 
         // Fallback if feature disabled (immediate return)
         future_into_py(py, async move {

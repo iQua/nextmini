@@ -11,7 +11,7 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{LosslessRuntimeHandle, SessionId};
-use crate::node::session::runtime::{CommonConfig, ReceiverConfig, SenderConfig};
+use crate::node::session::runtime::{CommonConfig, ReceiverRequest, SenderRequest};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
 /// Manages controller-assigned lossless unicast flows on a dataplane node.
@@ -106,13 +106,12 @@ impl LosslessUnicastFlowManager {
                 local_netmask: cfg.local_netmask,
             };
 
-            let sender_cfg = SenderConfig {
+            let sender_cfg = SenderRequest {
                 common,
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
                 ready_grace_ms: runtime_config.ready_grace_ms,
-                topology_ready: None,
             };
 
             if let Some(weight) = flow.flow_spec.flow_weight {
@@ -133,7 +132,18 @@ impl LosslessUnicastFlowManager {
                 );
             }
 
-            let started_sid = lossless_runtime.start_sender(sender_cfg).await;
+            let started_sid = match lossless_runtime.start_sender(sender_cfg).await {
+                Ok(sid) => sid,
+                Err(err) => {
+                    warn!(
+                        flow_id = flow_id,
+                        reason = %err,
+                        "LosslessUnicastFlow: sender start rejected by runtime preflight"
+                    );
+                    flowstats.report_flow_finished(flow_id, flow.controller_id);
+                    return;
+                }
+            };
             let ok = lossless_runtime.wait_completion(started_sid).await;
 
             flowstats.report_flow_finished(flow_id, flow.controller_id);
@@ -189,7 +199,7 @@ impl LosslessUnicastFlowManager {
                 local_netmask: cfg.local_netmask,
             };
 
-            let receiver_cfg = ReceiverConfig {
+            let receiver_cfg = ReceiverRequest {
                 common,
                 source_node_id: flow.src_node_id,
                 expected_bytes,

@@ -87,6 +87,10 @@ impl Connector {
                 Some(msg) = self.message_receiver.recv() => {
                     self.handle_message(msg).await;
                 }
+                else => {
+                    info!("Connector channels closed; connector task exiting.");
+                    break;
+                }
             }
         }
     }

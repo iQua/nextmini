@@ -48,7 +48,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "    ${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${TAG} \\"
     echo "    ./nextmini --config-path config.toml ws://<controller-ip>:3000"
     echo ""
-    echo "See docs/pages/examples/docker-run.mdx for detailed guide."
+    echo "See the docs app pages under /docs/examples for detailed Docker deployment guidance."
 else
     echo "Skipping push."
 fi

@@ -61,7 +61,9 @@ pub struct GroupMember {
 #[derive(Clone, FromRow, Debug)]
 pub struct DbGroupRoute {
     pub group_id: i32,
+    pub tree_id: i32,
     pub src_node_id: i32,
+    pub weight: Option<f64>,
     pub edges: serde_json::Value,
 }
 
