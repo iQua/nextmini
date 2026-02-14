@@ -83,4 +83,4 @@ Use this path when application code (PyTorch/RL/multicast tools) should inject o
 4. Dataplane forwards packets using local route tables and selected transport stack.
 5. Optional Python consumers receive payload deliveries through `nextmini_py` receivers.
 
-For deployment workflows, see the examples under `docs/examples/`.
+For deployment workflows, see the examples under `/docs/examples/`.

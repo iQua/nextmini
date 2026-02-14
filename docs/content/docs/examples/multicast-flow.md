@@ -155,7 +155,7 @@ rx_dp.leave_group(group_id)
 - `cargo test -p controller build_group_routes_for_node_includes_local_delivery`
 - `cargo test -p controller build_routes_for_node_multicast_entries`
 - `cargo test -p dataplane returns_multicast_next_hops_from_group_routes`
-- Follow the integration recipe in [`python_api_validation`](/docs/testing/python_api_validation) to exercise membership churn with the docker-compose harness.
+- Follow the integration recipe in [`multicast`](/docs/testing/multicast) to exercise membership churn with the docker-compose harness.
 
 ---
 

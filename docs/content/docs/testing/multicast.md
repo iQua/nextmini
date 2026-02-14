@@ -1,8 +1,7 @@
 ---
-title: "Python API Validation (Multicast + Membership Churn)"
+title: "Testing Multicast and Membership Churn"
 description: ""
 ---
-
 
 This guide validates end-to-end multicast behavior through `nextmini_py` using the dockerized harness in `examples/multicast-docker`.
 
@@ -11,7 +10,7 @@ This guide validates end-to-end multicast behavior through `nextmini_py` using t
 This run verifies:
 
 - Group lifecycle (`create_group`, `group_is_ready`, `join_group`, `leave_group`).
-- Route installation waiters (`wait_for_group_routes`, `wait_for_local_membership`).
+- Route installation and readiness checks (`wait_for_topology_ready`, `wait_for_group_routes`).
 - Payload delivery from source to multiple receivers.
 - Membership churn handling after one receiver leaves.
 
@@ -20,6 +19,24 @@ This run verifies:
 - Docker and Docker Compose.
 - `maturin` available inside the containers (handled by the harness scripts).
 - From repo root: `examples/multicast-docker/` exists and contains `docker-compose.yml`.
+
+## Harness inputs (what is currently wired)
+
+The current harness uses these arguments and environment values:
+
+- `GROUP_LABEL` (environment) → forwarded as `--group-label`.
+- `RECEIVER_IDS` (environment) → forwarded as `--receiver-ids`.
+- `SOURCE_NODE_ID` (environment) → forwarded as `--source-node-id`.
+- `GROUP_TIMEOUT` (environment) → default wait timeout used for group creation, topology readiness, and receiver coordination.
+- `RECEIVE_TIMEOUT_MS` (environment) → forwarded as `--receive-timeout-ms`.
+- `ARTIFACT_DIR` (environment) → forwarded as `--artifact-dir` (defaults to `/artifacts`).
+- `CLEAN_SHARED_DIRS` (environment, default `1`) → controls whether source clears `artifacts/` and shared tensors before each run.
+- `SKIP_BUILD` / `NEXTMINI_PY_WHEEL` (environment) → choose between compiling in-container and using a provided wheel.
+- `--chunk-size` (CLI) controls transfer chunk size.
+- `--tensor-path` (CLI), or implicit `--generate-tensor` on source (the default path is `/workspace/tensors/tensor-auto-1g.pt`).
+- `--sink-path` (CLI) overrides per-receiver payload output file.
+- `--fec` (CLI, also accepts `FEC` env: `off` / `on`) is a runtime hint only; dataplane behavior is controlled by controller/runtime config.
+- `--payload-count`, `--expected-bytes` (CLI) can set expected receive size.
 
 ## Run the harness
 
@@ -52,6 +69,7 @@ docker compose logs -f controller source receiver_a receiver_b
 
 3. Confirm each receiver logs:
 
+- wait for `receiver-ready-<node_id>.json` under `artifacts/` (when using the docker harness),
 - joined membership,
 - routes installed locally,
 - payload/session receive completion.

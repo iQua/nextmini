@@ -235,7 +235,7 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
   - `examples/multicast-docker/scripts/multicast_node.py`
   - `tools/experiments/raptorq/smoke_python_api.py`
   - `docs/docs/design/python-api.md`
-  - `examples/multicast-docker/README.md`
+  - `fuma/content/docs/testing/multicast.md`
   - `raptorq-wan-multicast-plan.md`
 - **Gotchas**:
   - Sender FEC manifest defaults (`symbols_per_block=32`, `symbol_size=chunk_size`) are applied only when FEC is explicitly requested.
