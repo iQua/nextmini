@@ -90,7 +90,7 @@ This section defines the FEC-oblivious public contract for Python lossless APIs.
 
 ### Contracted method signatures
 
-- `send_data(group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None) -> int`
+- `send_data(group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None) -> int`
 - `receive_data(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> int`
 - `receive_data_async(group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None) -> Awaitable[int]`
 
@@ -131,27 +131,6 @@ Use `lossless_wait(...)` / `lossless_wait_async(...)` to block on completion, th
 ## Payload metadata behavior
 
 Python deliveries are payload-only (TCP/IP headers stripped). Metadata fields `message_id`, `total_len`, and `fragment_count` are reserved compatibility fields and are currently `None` in the payload delivery path.
-
-## Script integration pattern
-
-Environment variables like `NEXTMINI_CONFIG` and `NEXTMINI_DST_NODE` are conventions used by your scripts, not variables consumed directly by the Rust binaries. A common opt-in pattern is:
-
-```python
-import os
-import nextmini_py as nm
-
-dp = None
-dst = os.getenv("NEXTMINI_DST_NODE")
-config = os.getenv("NEXTMINI_CONFIG")
-
-if dst and config:
-    dp = nm.Dataplane(config)
-
-# Later, only publish telemetry when configured
-if dp is not None:
-    payload = nm.PacketView(loss_tensor.detach().contiguous().cpu().numpy().tobytes())
-    dp.send_to_node(dst_node_id=int(dst), frozen=payload)
-```
 
 For working end-to-end Python dataplane integrations in this repo, see `examples/rl/src/trainer.py`, `examples/rl/src/worker.py`, and `examples/multicast-docker/scripts/multicast_node.py`.
 

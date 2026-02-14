@@ -36,7 +36,7 @@
 
 - The `python-api/src` crate exposes `nextmini_py::Dataplane`, `PacketReceiver`, and frozen buffer helpers so Python workloads can inject or tap flows in-process. Follow `docs/content/docs/examples/pytorch_python_api.md` for end-to-end guidance.
 - Wheels are compiled with `pyo3`'s `abi3-py313` feature, so ensure CPython 3.13.* is active when running the `maturin build --release -m python-api/Cargo.toml` or `maturin develop --release -m python-api/Cargo.toml` commands listed above.
-- Most automation (`examples/pytorch`, `examples/multicast-*`, `tools/monitor`, routing utilities) dynamically import the module and expect a valid node config path plus the `NEXTMINI_CONFIG` / `NEXTMINI_DST_NODE` environment variables noted in the docs; keep those hooks intact when extending the scripts.
+- Most automation (`examples/pytorch`, `examples/multicast-*`, `tools/monitor`, routing utilities) dynamically imports the module and expects a valid node config path; keep those hooks intact when extending the scripts.
 - When writing new Python helpers, reuse the buffer adapters in `python-api/src/buffer.rs` and register flows via `Dataplane::register_receiver_*` instead of rolling bespoke socket glue—this keeps behavior aligned with the Rust dataplane.
 
 ## Documentation Tooling

@@ -65,25 +65,6 @@ For multicast receivers, use:
 rx = dp.register_receiver_for_group(src_node_id=1, group_ip="239.1.1.10")
 ```
 
-## 5. Optional env-gated hook for training scripts
-
-The current `examples/pytorch/*.py` scripts do not automatically publish telemetry via `nextmini_py`, so add a small opt-in hook if needed:
-
-```python
-import os
-import nextmini_py as nm
-
-NEXTMINI_CONFIG = os.getenv("NEXTMINI_CONFIG")
-NEXTMINI_DST_NODE = os.getenv("NEXTMINI_DST_NODE")
-DP = nm.Dataplane(NEXTMINI_CONFIG) if NEXTMINI_CONFIG and NEXTMINI_DST_NODE else None
-
-def maybe_publish_tensor(tensor):
-    if DP is None:
-        return
-    payload = nm.PacketView(tensor.detach().contiguous().cpu().numpy().tobytes())
-    DP.send_to_node(dst_node_id=int(NEXTMINI_DST_NODE), frozen=payload)
-```
-
-## 6. Payload delivery semantics
+## 5. Payload delivery semantics
 
 `nextmini_py` delivers payload bytes directly to Python receivers. There are no `python_fragmentation_*` configuration fields; link-layer segmentation is handled by the networking stack, while lossless session chunk sizing is controlled through runtime options (for `send_data` / `receive_data` flows).

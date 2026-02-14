@@ -60,14 +60,8 @@ This should start a training session for a `LeNet-5` model to be trained with th
 When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, use the Python bindings described in [PyTorch + Nextmini Python API Quickstart](/docs/examples/pytorch_python_api):
 
 1. Build and install the `nextmini_py` wheel (`maturin build --release -m python-api/Cargo.toml; pip install target/wheels/nextmini_py-*.whl`).
-2. In your trainer script, gate the telemetry path behind environment variables (or any equivalent config):
-
-   ```bash
-   export NEXTMINI_CONFIG=/absolute/path/node-config.toml
-   export NEXTMINI_DST_NODE=2   # numeric node id that should receive telemetry
-   ```
-
-3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`). If your hook is enabled, build a `PacketView` from each tensor and ship it with `send_to_node`.
+2. In your trainer script, add a telemetry hook that instantiates `nextmini_py.Dataplane("/abs/path/node-config.toml")`, builds a `PacketView` from each tensor, and sends with `send_to_node(dst_node_id=...)`.
+3. Run the training job (for example `python examples/pytorch/gpt2.py --num-epochs 1`).
 
 The current `examples/pytorch/*.py` files do not include this telemetry hook by default, so add it explicitly where needed. On the destination node you can mirror the setup with another Python worker and call `rx.recv(timeout_ms=2000)` to consume metrics. The bindings reuse the same routing tables as the Rust dataplane, so multicast fan-out and QoS policies apply automatically.
 

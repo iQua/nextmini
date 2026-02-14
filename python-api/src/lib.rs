@@ -226,7 +226,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None))]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None))]
     fn send_data(
         &self,
         group_id: u64,
@@ -236,7 +236,6 @@ impl Dataplane {
         chunk_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
-        congestion: Option<String>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let dest_ip_addr = parse_ipv4(dest_ip)?;
@@ -264,13 +263,6 @@ impl Dataplane {
         {
             if let Some(handle) = &self.lossless_runtime {
                 let runtime_config = &self.cfg.lossless_runtime_config;
-                if let Some(mode) = congestion.as_deref()
-                    && mode != "static"
-                {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "invalid congestion control: {mode}"
-                    )));
-                }
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 let common = session::runtime::CommonConfig {
@@ -301,7 +293,7 @@ impl Dataplane {
         }
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = (&congestion, total_bytes);
+        let _ = total_bytes;
 
         Ok(sid)
     }

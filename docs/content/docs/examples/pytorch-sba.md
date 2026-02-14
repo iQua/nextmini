@@ -137,8 +137,8 @@ To train different variants of resnet, simply simply change the `--type` command
 If you want these SBA scenarios to stream intermediate loss/activation tensors through Nextmini (instead of relying solely on TUN delivery), follow the steps in [PyTorch + Nextmini Python API Quickstart](/docs/examples/pytorch_python_api):
 
 1. Install the `nextmini_py` wheel on the swarm nodes.
-2. Set `NEXTMINI_CONFIG=/var/nextmini/node-config.toml` (or the appropriate mounted path) and `NEXTMINI_DST_NODE=<target node id>` before invoking the training scripts.
-3. Add a small telemetry hook in your trainer script that builds `nextmini_py.PacketView` objects and publishes metrics with `send_to_node` when those variables are set.
+2. Add a small telemetry hook in your trainer script that instantiates `nextmini_py.Dataplane("/abs/path/node-config.toml")`.
+3. Build `nextmini_py.PacketView` objects and publish metrics with `send_to_node(dst_node_id=...)`.
 
 A companion receiver (launched on another trainer or analytics node) can call `rx.recv()` to ingest the payloads for dashboards or adaptive schedulers.
 
