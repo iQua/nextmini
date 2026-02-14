@@ -109,7 +109,8 @@ impl FecCapabilities {
 
     #[inline]
     pub fn supports_manifest(&self, manifest: &FecManifest) -> bool {
-        self.protocol_version >= manifest.protocol_version && self.supports_scheme_wire(manifest.scheme)
+        self.protocol_version >= manifest.protocol_version
+            && self.supports_scheme_wire(manifest.scheme)
     }
 }
 
@@ -669,7 +670,10 @@ mod tests {
         assert_eq!(data.tree_id, 0);
         assert_eq!(data.payload_len as usize, payload.len());
         assert_eq!(body, payload);
-        assert!(decode_data(&buf).is_none(), "legacy decoder must reject v2 fec data");
+        assert!(
+            decode_data(&buf).is_none(),
+            "legacy decoder must reject v2 fec data"
+        );
     }
 
     #[test]
@@ -882,12 +886,8 @@ mod tests {
             },
         };
         let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
-        let frame = encode_control_into_with_version(
-            &mut buf,
-            11,
-            LOSSLESS_SESSION_BASE_VERSION,
-            &control,
-        );
+        let frame =
+            encode_control_into_with_version(&mut buf, 11, LOSSLESS_SESSION_BASE_VERSION, &control);
         let (hdr, decoded) = decode_control(frame).expect("decode control");
         assert_eq!(hdr.version, LOSSLESS_SESSION_FEC_VERSION);
         assert_eq!(decoded, control);

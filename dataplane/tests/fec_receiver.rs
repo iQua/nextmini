@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc};
 use nextmini::node::config::LocalConfig;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
-use nextmini::node::session::fec::{block_seed, BlockParams, Encoder};
+use nextmini::node::session::fec::{BlockParams, Encoder, block_seed};
 use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig};
 use nextmini_messages::TokenBucketSpec;

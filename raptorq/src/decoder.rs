@@ -137,10 +137,11 @@ impl Equation {
         let mut merged = Vec::with_capacity(terms.len());
         for (col, coef) in terms {
             if let Some((last_col, last_coef)) = merged.last_mut()
-                && *last_col == col {
-                    *last_coef += coef;
-                    continue;
-                }
+                && *last_col == col
+            {
+                *last_coef += coef;
+                continue;
+            }
             merged.push((col, coef));
         }
         // Remove zero coefficients
@@ -163,7 +164,6 @@ impl Equation {
             .map(|idx| self.terms[idx].1)
             .unwrap_or(Gf256::ZERO)
     }
-
 }
 
 // ============================================================================

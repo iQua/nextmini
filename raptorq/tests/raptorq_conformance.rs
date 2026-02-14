@@ -9,9 +9,7 @@
 use raptorq::decoder::{DecodeError, InactivationDecoder, ReceivedSymbol};
 use raptorq::deterministic::DetRng;
 use raptorq::gf256::Gf256;
-use raptorq::systematic::{
-    ConstraintMatrix, RobustSoliton, SystematicEncoder, SystematicParams,
-};
+use raptorq::systematic::{ConstraintMatrix, RobustSoliton, SystematicEncoder, SystematicParams};
 
 // ============================================================================
 // Test helpers

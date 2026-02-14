@@ -366,10 +366,11 @@ impl ReceivedSummary {
                 continue;
             }
             if let Some(&max) = esis_heap.peek()
-                && esi < max {
-                    esis_heap.pop();
-                    esis_heap.push(esi);
-                }
+                && esi < max
+            {
+                esis_heap.pop();
+                esis_heap.push(esi);
+            }
         }
 
         let truncated = total > MAX_RECEIVED_SYMBOLS;
