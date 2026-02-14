@@ -213,7 +213,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T6 — Implement Per-Tree Sender Lanes + Collaborative Dispatch (MERGED/UPDATED)
+### T6 — Implement Per-Tree Sender Lanes + Collaborative Dispatch (COMPLETE — February 14, 2026)
 - **depends_on: [T3, T4, T5]**
 - Implement sender-local per-tree lanes:
   - a bounded channel per `tree_id` in `fec_tree_ids`
@@ -230,6 +230,13 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Files:** `dataplane/src/node/session/sender.rs`
 
 - **Output:** true collaborative multi-tree emission with immediate per-tree adaptation.
+- **Status:** completed.
+- **Work log:** implemented sender-local per-tree bounded lanes and spawned one lane worker per configured tree to run the blocking processor send path; switched FEC symbol emission to dispatch-time RR assignment with non-blocking lane `try_send` and fallback to the first writable lane; added all-lanes-blocked wakeup waiting to avoid busy-spin while preserving session-level token-bucket pacing before enqueue; updated sender/test coverage for RR, blocked-lane skip behavior, and collaborative multitree emission.
+- **Files changed (T6):**
+  - `dataplane/src/node/session/sender.rs`
+  - `dataplane/tests/fec_multitree.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** tree-id configuration is still derived from `fec_num_trees` (`0..num_trees-1`) for now; explicit sparse `fec_tree_ids` propagation remains scheduled for T8.
 
 ---
 

@@ -127,26 +127,24 @@ async fn run_sender_and_capture_trees(session_id: u64) -> TreeCapture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn symbols_use_default_tree_without_hash_assignment() {
+async fn symbols_are_collaboratively_dispatched_across_configured_trees() {
     let first = run_sender_and_capture_trees(0xBAD5EED).await;
     let second = run_sender_and_capture_trees(0xDEADBEEF).await;
-    let default_tree = lossless_session::LosslessSessionFecData::DEFAULT_TREE_ID;
+    let expected_trees = BTreeSet::from([0u16, 1, 2, 3]);
 
     assert_eq!(
-        first.distinct_trees,
-        BTreeSet::from([default_tree]),
-        "sender should emit FEC symbols on the default tree until collaborative dispatch is enabled"
+        first.distinct_trees, expected_trees,
+        "sender should collaboratively emit symbols across the configured tree IDs"
     );
     assert!(
         first
             .symbol_trees
             .values()
-            .all(|tree_id| *tree_id == default_tree),
-        "per-symbol hash tree assignment should not be used"
+            .all(|tree_id| expected_trees.contains(tree_id)),
+        "sender must not emit symbols on unconfigured tree IDs"
     );
     assert_eq!(
-        second.distinct_trees,
-        BTreeSet::from([default_tree]),
-        "tree selection should not vary across session ids when hash assignment is removed"
+        first.symbol_trees, second.symbol_trees,
+        "collaborative dispatch should be deterministic and independent of session id"
     );
 }
