@@ -5,7 +5,7 @@ use tracing::{error, info};
 use crate::config;
 use crate::utils::merge_all_routes;
 
-use super::migrations::{reset_db, run_migrations};
+use super::schema::{apply_schema, reset_db};
 
 /// Connects to and initializes the PostgreSQL database.
 pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
@@ -34,9 +34,9 @@ pub async fn init_db(config: &config::Config) -> Pool<Postgres> {
             .await
             .unwrap_or_else(|e| panic!("Failed to reset database: {}", e));
     } else {
-        run_migrations(&pool)
+        apply_schema(&pool)
             .await
-            .unwrap_or_else(|e| panic!("Failed to run migrations: {}", e));
+            .unwrap_or_else(|e| panic!("Failed to apply schema: {}", e));
         info!("Database reset disabled via CONTROLLER_RESET_DB env var.");
     }
 

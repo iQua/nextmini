@@ -4,8 +4,8 @@ mod events;
 mod group_routes;
 mod groups;
 mod init;
-mod migrations;
 mod notifications;
+mod schema;
 
 pub use events::DbEvent;
 pub use groups::{
