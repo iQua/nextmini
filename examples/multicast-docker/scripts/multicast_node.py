@@ -41,35 +41,9 @@ def parse_args() -> argparse.Namespace:
         "--fec",
         choices=("off", "on"),
         default=os.environ.get("FEC", "off").strip().lower(),
-        help="Enable FEC-backed transfer mode (default: off).",
-    )
-    parser.add_argument(
-        "--fec-symbols-per-block",
-        type=int,
-        default=(
-            int(os.environ["FEC_SYMBOLS_PER_BLOCK"])
-            if "FEC_SYMBOLS_PER_BLOCK" in os.environ
-            else None
-        ),
-        help="Optional FEC symbols_per_block override when --fec on.",
-    )
-    parser.add_argument(
-        "--fec-symbol-size",
-        type=int,
-        default=(
-            int(os.environ["FEC_SYMBOL_SIZE"])
-            if "FEC_SYMBOL_SIZE" in os.environ
-            else None
-        ),
-        help="Optional FEC symbol_size override when --fec on.",
-    )
-    parser.add_argument(
-        "--fec-tree-ids",
-        type=str,
-        default=os.environ.get("FEC_TREE_IDS", "0"),
         help=(
-            "Comma-separated FEC tree IDs used when --fec on "
-            "(default: env FEC_TREE_IDS or '0')."
+            "Transfer mode hint for logs/artifacts; runtime config controls "
+            "lossless FEC behavior."
         ),
     )
     parser.add_argument(
@@ -124,27 +98,6 @@ def parse_receiver_ids(value: str) -> List[int]:
     return [int(part.strip()) for part in value.split(",") if part.strip()]
 
 
-def parse_fec_tree_ids(value: str) -> List[int]:
-    if not value:
-        return []
-    tree_ids: List[int] = []
-    for part in value.split(","):
-        token = part.strip()
-        if not token:
-            continue
-        tree_id = int(token)
-        if tree_id < 0:
-            raise SystemExit("--fec-tree-ids values must be >= 0.")
-        if tree_id > 65535:
-            raise SystemExit("--fec-tree-ids values must be <= 65535.")
-        tree_ids.append(tree_id)
-    if not tree_ids:
-        raise SystemExit("--fec-tree-ids must include at least one ID when --fec on.")
-    if tree_ids != sorted(set(tree_ids)):
-        raise SystemExit("--fec-tree-ids must be sorted ascending and unique.")
-    return tree_ids
-
-
 def build_star_edges(source_node_id: int, receiver_ids: List[int]) -> List[Tuple[int, int]]:
     edges: List[Tuple[int, int]] = []
     for node_id in sorted(set(receiver_ids)):
@@ -158,10 +111,6 @@ def log(message: str, quiet: bool = False) -> None:
     if quiet:
         return
     print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
-
-
-def fec_enabled(args: argparse.Namespace) -> bool:
-    return args.fec == "on"
 
 
 def format_throughput(bytes_transferred: int, elapsed_seconds: float) -> str:
@@ -318,11 +267,7 @@ def run_source(args: argparse.Namespace) -> None:
         args.quiet,
     )
     log(
-        (
-            "FEC mode="
-            f"{args.fec} symbols_per_block={args.fec_symbols_per_block} "
-            f"symbol_size={args.fec_symbol_size} tree_ids={args.fec_tree_ids}"
-        ),
+        f"Transfer mode hint={args.fec}; runtime config controls FEC behavior.",
         args.quiet,
     )
 
@@ -375,10 +320,6 @@ def run_source(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        fec_enabled=fec_enabled(args),
-        fec_symbols_per_block=args.fec_symbols_per_block if fec_enabled(args) else None,
-        fec_symbol_size=args.fec_symbol_size if fec_enabled(args) else None,
-        fec_tree_ids=parse_fec_tree_ids(args.fec_tree_ids) if fec_enabled(args) else None,
     )
     log(f"Started lossless send session (session ID = {sid}).", args.quiet)
 
@@ -408,7 +349,10 @@ def run_receiver(args: argparse.Namespace) -> None:
     local_node_id = dataplane.node_id
     log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
     dataplane.join_group(group_id)
-    log(f"Receiver FEC mode={args.fec}.", args.quiet)
+    log(
+        f"Receiver transfer mode hint={args.fec}; runtime config controls FEC behavior.",
+        args.quiet,
+    )
 
     sink_path = args.sink_path
     if sink_path is None and args.artifact_dir:
@@ -426,7 +370,6 @@ def run_receiver(args: argparse.Namespace) -> None:
         chunk_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
-        fec_enabled=fec_enabled(args),
     )
 
     write_receiver_ready(args, local_node_id)
@@ -460,12 +403,6 @@ def main() -> int:
     args = parse_args()
     if args.chunk_size <= 0:
         raise SystemExit("--chunk-size must be positive.")
-    if args.fec == "on":
-        if args.fec_symbols_per_block is not None and args.fec_symbols_per_block <= 0:
-            raise SystemExit("--fec-symbols-per-block must be positive when --fec on.")
-        if args.fec_symbol_size is not None and args.fec_symbol_size <= 0:
-            raise SystemExit("--fec-symbol-size must be positive when --fec on.")
-        parse_fec_tree_ids(args.fec_tree_ids)
     if args.role == "source" and args.tensor_path is None:
         args.generate_tensor = True
     if args.artifact_dir:

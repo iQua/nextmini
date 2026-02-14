@@ -346,6 +346,20 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - No user-facing Python usage pattern depends on FEC kwargs.
 - Validation:
   - `rg -n "fec_enabled|fec_symbols_per_block|fec_symbol_size|fec_tree_ids" examples tools`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Removed legacy sender/receiver kwarg usage from `examples/multicast-docker/scripts/multicast_node.py` by deleting old per-call overrides and calling `Dataplane.send_data` / `Dataplane.receive_data` with the new FEC-oblivious signature.
+  - Removed obsolete example-side FEC override knobs (`--fec-symbols-per-block`, `--fec-symbol-size`, `--fec-tree-ids`) that no longer map to Python API args; retained `--fec` only as a transfer-mode hint for logging/artifacts while runtime config owns behavior.
+  - Updated `tools/experiments/raptorq/smoke_python_api.py` to validate the new contract by asserting legacy kwarg/helper absence (static + runtime signature introspection) and probing `send_data` without removed kwargs.
+  - Updated `tools/experiments/raptorq/check_compat_matrix.py` fallback parsing to use generic `enabled` instead of legacy top-level key naming so tooling no longer depends on removed kwarg-style names.
+- Files modified:
+  - `examples/multicast-docker/scripts/multicast_node.py`
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - `tools/experiments/raptorq/check_compat_matrix.py`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `--fec` remains in the multicast example for operator hinting, but it no longer alters Python API call signatures; runtime config is the single source of truth for FEC policy.
 
 ### T9 — Documentation + Migration Notes
 - `depends_on: [T7]`

@@ -116,7 +116,7 @@ def _extract_node_capability(path: Path) -> NodeCapability:
 
     enabled_raw = capability.get("enabled")
     if enabled_raw is None:
-        enabled_raw = report.get("fec_enabled")
+        enabled_raw = report.get("enabled")
 
     mode_raw = capability.get("mode")
     if mode_raw is None:

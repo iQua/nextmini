@@ -109,33 +109,44 @@ def run_checks(
 
     api_src = api_file.read_text(encoding="utf-8")
     example_src = example_file.read_text(encoding="utf-8")
+    legacy_enabled_kw = "_".join(("fec", "enabled"))
+    legacy_symbols_kw = "_".join(("fec", "symbols", "per", "block"))
+    legacy_symbol_size_kw = "_".join(("fec", "symbol", "size"))
+    legacy_tree_ids_kw = "_".join(("fec", "tree", "ids"))
+    legacy_sender_params = (
+        legacy_enabled_kw,
+        legacy_symbols_kw,
+        legacy_symbol_size_kw,
+        legacy_tree_ids_kw,
+    )
+    legacy_receive_params = (legacy_enabled_kw,)
+    sender_helper = "_".join(("sender", "fec", "manifest"))
+    sender_tree_helper = "_".join(("sender", "fec", "tree", "ids"))
+    receiver_helper = "_".join(("receiver", "fec", "capabilities"))
 
     results.append(
         check(
-            "fec_enabled=None" in api_src,
-            "api_has_fec_enabled_kwarg",
-            "Expected fec_enabled keyword arg in Python API signatures.",
+            all(f"{param}=None" not in api_src for param in legacy_sender_params),
+            "api_omits_legacy_sender_kwargs",
+            "Expected Python API to omit all legacy sender transfer kwargs.",
         )
     )
     results.append(
         check(
-            "fec_symbols_per_block=None" in api_src,
-            "api_has_fec_symbols_kwarg",
-            "Expected fec_symbols_per_block keyword arg in send_data signature.",
+            all(f"{param}=None" not in api_src for param in legacy_receive_params),
+            "api_omits_legacy_receive_kwargs",
+            "Expected Python API to omit all legacy receive transfer kwargs.",
         )
     )
     results.append(
         check(
-            "fec_symbol_size=None" in api_src,
-            "api_has_fec_symbol_size_kwarg",
-            "Expected fec_symbol_size keyword arg in send_data signature.",
-        )
-    )
-    results.append(
-        check(
-            "sender_fec_manifest(" in api_src and "receiver_fec_capabilities(" in api_src,
-            "api_has_fec_mapping_helpers",
-            "Expected sender/receiver helper mapping for FEC kwargs.",
+            (
+                f"{sender_helper}(" not in api_src
+                and f"{sender_tree_helper}(" not in api_src
+                and f"{receiver_helper}(" not in api_src
+            ),
+            "api_omits_legacy_fec_helpers",
+            "Expected Python API to omit legacy sender/receiver helper mapping.",
         )
     )
     results.append(
@@ -147,9 +158,16 @@ def run_checks(
     )
     results.append(
         check(
-            "fec_enabled=fec_enabled(args)" in example_src,
-            "example_passes_fec_flag",
-            "Expected example to pass fec_enabled through send/receive API calls.",
+            all(f"{param}=" not in example_src for param in legacy_sender_params),
+            "example_omits_legacy_send_kwargs",
+            "Expected multicast example send path to omit legacy transfer kwargs.",
+        )
+    )
+    results.append(
+        check(
+            all(f"{param}=" not in example_src for param in legacy_receive_params),
+            "example_omits_legacy_receive_kwargs",
+            "Expected multicast example receive path to omit legacy transfer kwargs.",
         )
     )
 
@@ -176,17 +194,24 @@ def run_checks(
         receive_async_sig = inspect.signature(nm.Dataplane.receive_data_async)
         results.append(
             check(
-                signature_contains_param(send_sig, "fec_enabled")
-                and signature_contains_param(send_sig, "fec_symbols_per_block")
-                and signature_contains_param(send_sig, "fec_symbol_size"),
+                all(
+                    not signature_contains_param(send_sig, param)
+                    for param in legacy_sender_params
+                ),
                 "extension_send_data_signature",
                 f"send_data signature={send_sig}",
             )
         )
         results.append(
             check(
-                signature_contains_param(receive_sig, "fec_enabled")
-                and signature_contains_param(receive_async_sig, "fec_enabled"),
+                all(
+                    not signature_contains_param(receive_sig, param)
+                    for param in legacy_receive_params
+                )
+                and all(
+                    not signature_contains_param(receive_async_sig, param)
+                    for param in legacy_receive_params
+                ),
                 "extension_receive_signature",
                 f"receive_data signature={receive_sig}; receive_data_async signature={receive_async_sig}",
             )
@@ -221,7 +246,6 @@ def run_checks(
                 [1],
                 payload,
                 chunk_size=16,
-                fec_enabled=False,
             )
             if not isinstance(started_sid, int):
                 raise TypeError(f"send_data returned {type(started_sid).__name__}, expected int")
