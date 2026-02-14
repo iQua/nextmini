@@ -309,7 +309,11 @@ impl Dataplane {
                     ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
                 };
-                let started_sid = rt().block_on(handle.start_sender(cfg));
+                let started_sid = rt().block_on(handle.start_sender(cfg)).map_err(|err| {
+                    PyRuntimeError::new_err(format!(
+                        "lossless sender preflight rejected session {sid}: {err}"
+                    ))
+                })?;
                 return Ok(started_sid);
             }
         }

@@ -1147,6 +1147,9 @@ async fn handle_set_group_routes_update(
     };
 
     let previous_trees = load_group_route_trees_for_group(db_pool, group_id as i32).await?;
+    let previous_members = load_group_members(db_pool, group_id as i32).await?;
+    let previous_member_node_ids: Vec<u32> =
+        previous_members.iter().map(|m| m.node_id as u32).collect();
     replace_group_route_trees(db_pool, group_id as i32, group.src_node_id, &trees).await?;
 
     let members = load_group_members(db_pool, group_id as i32).await?;
@@ -1164,6 +1167,7 @@ async fn handle_set_group_routes_update(
             .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b])),
     );
     nodes_to_notify.insert(group.src_node_id as u32);
+    nodes_to_notify.extend(previous_member_node_ids.iter().copied());
     nodes_to_notify.extend(member_node_ids.iter().copied());
 
     // Snapshot writers to avoid holding the lock while sending.
@@ -1424,14 +1428,14 @@ async fn send_group_routes_snapshot_to_node(
     for (group_id, (src_node_id, trees)) in by_group {
         let members = load_group_members(db_pool, group_id).await?;
         let member_set: HashSet<u32> = members.iter().map(|m| m.node_id as u32).collect();
-        let routes = match build_group_routes_for_node_multitree(
-            group_id as usize,
-            src_node_id as u32,
+        let payload = match encode_group_routes_snapshot_payload(
+            group_id,
+            src_node_id,
             &trees,
-            node_id as u32,
+            node_id,
             &member_set,
         ) {
-            Ok(routes) => routes,
+            Ok(payload) => payload,
             Err(e) => {
                 warn!(
                     "Skipping invalid group_routes snapshot for group {} on node {}: {}",
@@ -1440,17 +1444,6 @@ async fn send_group_routes_snapshot_to_node(
                 continue;
             }
         };
-
-        if routes.is_empty() {
-            continue;
-        }
-
-        let message = ControllerToDataplane::InstallGroupRoutes {
-            group_id: group_id as usize,
-            src_node_id: src_node_id as usize,
-            routes,
-        };
-        let payload = rmp_serde::to_vec(&message)?;
 
         if let Err(e) = writer.lock().await.send(Message::binary(payload)).await {
             error!(
@@ -1466,4 +1459,78 @@ async fn send_group_routes_snapshot_to_node(
     }
 
     Ok(())
+}
+
+fn encode_group_routes_snapshot_payload(
+    group_id: i32,
+    src_node_id: i32,
+    trees: &[GroupRouteTree],
+    node_id: usize,
+    member_set: &HashSet<u32>,
+) -> AnyResult<Vec<u8>> {
+    let group_id_usize = usize::try_from(group_id).map_err(|_| {
+        anyhow::anyhow!("group_routes.group_id must be non-negative (group_id={group_id})")
+    })?;
+    let src_node_id_u32 = u32::try_from(src_node_id).map_err(|_| {
+        anyhow::anyhow!(
+            "group_routes.src_node_id must be non-negative (group_id={}, src_node_id={})",
+            group_id,
+            src_node_id
+        )
+    })?;
+    let routes = build_group_routes_for_node_multitree(
+        group_id_usize,
+        src_node_id_u32,
+        trees,
+        node_id as u32,
+        member_set,
+    )
+    .map_err(anyhow::Error::msg)?;
+
+    let message = ControllerToDataplane::InstallGroupRoutes {
+        group_id: group_id_usize,
+        src_node_id: src_node_id_u32 as usize,
+        routes,
+    };
+    Ok(rmp_serde::to_vec(&message)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use nextmini_messages::{ControllerToDataplane, GroupRouteTree};
+
+    use super::encode_group_routes_snapshot_payload;
+
+    #[test]
+    fn reconnect_snapshot_encodes_empty_routes_for_nonparticipant_node() {
+        let trees = vec![GroupRouteTree {
+            tree_id: 0,
+            weight: None,
+            edges: vec![(1, 2), (2, 3)],
+        }];
+        let members = HashSet::from([3u32]);
+
+        let payload = encode_group_routes_snapshot_payload(42, 1, &trees, 99, &members)
+            .expect("snapshot payload should encode even when routes are empty");
+        let decoded: ControllerToDataplane =
+            rmp_serde::from_slice(&payload).expect("snapshot payload should decode");
+
+        match decoded {
+            ControllerToDataplane::InstallGroupRoutes {
+                group_id,
+                src_node_id,
+                routes,
+            } => {
+                assert_eq!(group_id, 42);
+                assert_eq!(src_node_id, 1);
+                assert!(
+                    routes.is_empty(),
+                    "reconnect snapshot must still emit InstallGroupRoutes with an empty routes list to clear stale entries"
+                );
+            }
+            other => panic!("expected InstallGroupRoutes snapshot, got {other:?}"),
+        }
+    }
 }

@@ -138,7 +138,18 @@ impl LosslessUnicastFlowManager {
                 );
             }
 
-            let started_sid = lossless_runtime.start_sender(sender_cfg).await;
+            let started_sid = match lossless_runtime.start_sender(sender_cfg).await {
+                Ok(sid) => sid,
+                Err(err) => {
+                    warn!(
+                        flow_id = flow_id,
+                        reason = %err,
+                        "LosslessUnicastFlow: sender start rejected by runtime preflight"
+                    );
+                    flowstats.report_flow_finished(flow_id, flow.controller_id);
+                    return;
+                }
+            };
             let ok = lossless_runtime.wait_completion(started_sid).await;
 
             flowstats.report_flow_finished(flow_id, flow.controller_id);

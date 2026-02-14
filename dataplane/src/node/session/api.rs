@@ -1,6 +1,6 @@
 use tokio::sync::oneshot;
 
-use crate::node::session::runtime::{ReceiverConfig, SenderConfig};
+use crate::node::session::runtime::{PreflightError, ReceiverConfig, SenderConfig};
 
 pub type SessionId = u64;
 
@@ -22,7 +22,7 @@ pub struct InboundFrame {
 pub(super) enum Command {
     StartSender {
         cfg: SenderConfig,
-        reply: oneshot::Sender<SessionId>,
+        reply: oneshot::Sender<Result<SessionId, PreflightError>>,
     },
     StartReceiver {
         cfg: ReceiverConfig,

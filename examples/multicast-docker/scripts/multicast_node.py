@@ -64,6 +64,15 @@ def parse_args() -> argparse.Namespace:
         help="Optional FEC symbol_size override when --fec on.",
     )
     parser.add_argument(
+        "--fec-tree-ids",
+        type=str,
+        default=os.environ.get("FEC_TREE_IDS", "0"),
+        help=(
+            "Comma-separated FEC tree IDs used when --fec on "
+            "(default: env FEC_TREE_IDS or '0')."
+        ),
+    )
+    parser.add_argument(
         "--receive-timeout-ms",
         type=int,
         default=int(os.environ.get("RECEIVE_TIMEOUT_MS", "5000")),
@@ -113,6 +122,27 @@ def parse_receiver_ids(value: str) -> List[int]:
     if not value:
         return []
     return [int(part.strip()) for part in value.split(",") if part.strip()]
+
+
+def parse_fec_tree_ids(value: str) -> List[int]:
+    if not value:
+        return []
+    tree_ids: List[int] = []
+    for part in value.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        tree_id = int(token)
+        if tree_id < 0:
+            raise SystemExit("--fec-tree-ids values must be >= 0.")
+        if tree_id > 65535:
+            raise SystemExit("--fec-tree-ids values must be <= 65535.")
+        tree_ids.append(tree_id)
+    if not tree_ids:
+        raise SystemExit("--fec-tree-ids must include at least one ID when --fec on.")
+    if tree_ids != sorted(set(tree_ids)):
+        raise SystemExit("--fec-tree-ids must be sorted ascending and unique.")
+    return tree_ids
 
 
 def build_star_edges(source_node_id: int, receiver_ids: List[int]) -> List[Tuple[int, int]]:
@@ -291,7 +321,7 @@ def run_source(args: argparse.Namespace) -> None:
         (
             "FEC mode="
             f"{args.fec} symbols_per_block={args.fec_symbols_per_block} "
-            f"symbol_size={args.fec_symbol_size}"
+            f"symbol_size={args.fec_symbol_size} tree_ids={args.fec_tree_ids}"
         ),
         args.quiet,
     )
@@ -348,6 +378,7 @@ def run_source(args: argparse.Namespace) -> None:
         fec_enabled=fec_enabled(args),
         fec_symbols_per_block=args.fec_symbols_per_block if fec_enabled(args) else None,
         fec_symbol_size=args.fec_symbol_size if fec_enabled(args) else None,
+        fec_tree_ids=parse_fec_tree_ids(args.fec_tree_ids) if fec_enabled(args) else None,
     )
     log(f"Started lossless send session (session ID = {sid}).", args.quiet)
 
@@ -434,6 +465,7 @@ def main() -> int:
             raise SystemExit("--fec-symbols-per-block must be positive when --fec on.")
         if args.fec_symbol_size is not None and args.fec_symbol_size <= 0:
             raise SystemExit("--fec-symbol-size must be positive when --fec on.")
+        parse_fec_tree_ids(args.fec_tree_ids)
     if args.role == "source" and args.tensor_path is None:
         args.generate_tensor = True
     if args.artifact_dir:

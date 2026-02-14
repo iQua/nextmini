@@ -587,6 +587,7 @@ impl LocalConfig {
         }
 
         self.lossless_runtime_config.ingress_feature = self.feature.clone();
+        self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
     }
 
     /// Initializes the config for the namespace nodes.
@@ -731,6 +732,11 @@ pub struct LosslessConfig {
     /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
     #[serde(skip)]
     pub ingress_feature: Feature,
+
+    /// Effective ingress backpressure policy copied from `LocalConfig.channel_backpressure`.
+    /// Runtime preflight uses this to reject FEC modes that can silently drop on full queues.
+    #[serde(skip)]
+    pub ingress_channel_backpressure: bool,
 }
 
 impl LosslessConfig {
@@ -765,6 +771,7 @@ impl Default for LosslessConfig {
             fec_symbol_size_min: 1,
             fec_symbol_size_max: 16_384,
             ingress_feature: Feature::Sequential,
+            ingress_channel_backpressure: true,
         }
     }
 }
@@ -941,6 +948,10 @@ mod tests {
             "strict capability negotiation should be enabled by default"
         );
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
+        assert!(
+            lossless.ingress_channel_backpressure,
+            "lossless defaults should assume backpressured ingress unless synced from LocalConfig"
+        );
         assert_eq!(lossless.fec_symbols_per_block_bounds(), (1, 1024));
         assert_eq!(lossless.fec_symbol_size_bounds(), (1, 16_384));
     }
@@ -949,6 +960,7 @@ mod tests {
     fn populate_runtime_defaults_syncs_lossless_ingress_policy() {
         let mut cfg = LocalConfig {
             feature: super::Feature::Concurrent,
+            channel_backpressure: false,
             ..Default::default()
         };
 
@@ -957,6 +969,10 @@ mod tests {
         assert_eq!(
             cfg.lossless_runtime_config.ingress_feature,
             super::Feature::Concurrent
+        );
+        assert!(
+            !cfg.lossless_runtime_config.ingress_channel_backpressure,
+            "runtime ingress backpressure policy must mirror LocalConfig.channel_backpressure"
         );
     }
 

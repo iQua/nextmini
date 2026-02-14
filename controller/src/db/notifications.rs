@@ -66,9 +66,15 @@ pub async fn setup_group_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc
             match notification {
                 Ok(notif) => {
                     let payload = notif.payload();
-                    let group_id_opt = parse_group_id(payload);
-                    if let Some(group_id) = group_id_opt {
-                        if let Err(e) = sender.send(DbEvent::GroupRoutesSync { group_id }).await {
+                    let group_sync = parse_group_sync_payload(payload);
+                    if let Some((group_id, prior_member_node_id)) = group_sync {
+                        if let Err(e) = sender
+                            .send(DbEvent::GroupRoutesSync {
+                                group_id,
+                                prior_member_node_id,
+                            })
+                            .await
+                        {
                             warn!("Dropping group event (receiver closed): {}", e);
                             return;
                         }
@@ -120,12 +126,24 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc:
     });
 }
 
-fn parse_group_id(payload: &str) -> Option<i32> {
+fn parse_group_sync_payload(payload: &str) -> Option<(i32, Option<u32>)> {
     let parsed = serde_json::from_str::<serde_json::Value>(payload).ok()?;
-    parsed
-        .get("group_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse::<i32>().ok())
+
+    let group_id = parsed.get("group_id").and_then(parse_json_i32)?;
+    let prior_member_node_id = parsed
+        .get("node_id")
+        .and_then(parse_json_i32)
+        .and_then(|node_id| u32::try_from(node_id).ok());
+
+    Some((group_id, prior_member_node_id))
+}
+
+fn parse_json_i32(value: &serde_json::Value) -> Option<i32> {
+    match value {
+        serde_json::Value::String(s) => s.parse::<i32>().ok(),
+        serde_json::Value::Number(n) => n.as_i64().and_then(|v| i32::try_from(v).ok()),
+        _ => None,
+    }
 }
 
 fn parse_new_flow_id(payload: &str) -> Option<i32> {
@@ -133,4 +151,23 @@ fn parse_new_flow_id(payload: &str) -> Option<i32> {
     json.get("newly_inserted_id")
         .and_then(|v| v.as_str())
         .and_then(|s| s.parse::<i32>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_group_sync_payload;
+
+    #[test]
+    fn parse_group_sync_payload_accepts_legacy_payload_without_node_id() {
+        let payload = r#"{"group_id":"42"}"#;
+        let parsed = parse_group_sync_payload(payload).expect("legacy payload should parse");
+        assert_eq!(parsed, (42, None));
+    }
+
+    #[test]
+    fn parse_group_sync_payload_extracts_node_id_hint() {
+        let payload = r#"{"group_id":"7","node_id":"19"}"#;
+        let parsed = parse_group_sync_payload(payload).expect("payload should parse");
+        assert_eq!(parsed, (7, Some(19)));
+    }
 }

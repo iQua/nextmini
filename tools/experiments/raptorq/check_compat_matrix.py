@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+ALLOWED_FEC_MODES: tuple[str, ...] = ("off", "lossless", "parity", "raptorq")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -132,7 +134,13 @@ def _extract_node_capability(path: Path) -> NodeCapability:
 
     mode = None
     if isinstance(mode_raw, str) and mode_raw.strip():
-        mode = mode_raw.strip().lower()
+        normalized_mode = mode_raw.strip().lower()
+        if normalized_mode in ALLOWED_FEC_MODES:
+            mode = normalized_mode
+        else:
+            errors.append(
+                f"unsupported_mode:{normalized_mode}:expected_one_of:{'|'.join(ALLOWED_FEC_MODES)}"
+            )
     else:
         errors.append("missing_or_invalid:mode")
 

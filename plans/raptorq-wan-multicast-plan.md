@@ -344,6 +344,24 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T4, T5, T11, T13]`
 - **Location**: `tests/`, `tools/experiments/raptorq/`, docs
 - **Description**: Add regression coverage and reproducible experiment scripts (baseline lossless, unicast baseline, parity baseline, RaptorQ modes) plus a minimal smoke runner.
+- **Status**: ✅ Completed on February 14, 2026.
+- **Work Log**:
+  - Added regression tests for FEC sender pacing, receiver decode completion, strict handshake behavior, multi-tree dispatch, and non-FEC fairness under FEC load.
+  - Added and validated experiment harness scripts under `tools/experiments/raptorq/`:
+    - `run_smoke.py` (mode/loss metrics artifact + strict metric assertions).
+    - `smoke_python_api.py` (Python API smoke checks + artifact output).
+  - Added harness regression tests under `tools/experiments/raptorq/tests/` for CLI contracts and artifact schema checks.
+  - Verified smoke scripts run with `--help` and strict assertion modes.
+- **Files Updated**:
+  - `dataplane/tests/fec_backpressure.rs`
+  - `dataplane/tests/fec_handshake.rs`
+  - `dataplane/tests/fec_multitree.rs`
+  - `dataplane/tests/fec_receiver.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `tools/experiments/raptorq/run_smoke.py`
+  - `tools/experiments/raptorq/smoke_python_api.py`
+  - `tools/experiments/raptorq/tests/test_run_smoke.py`
+  - `plans/raptorq-wan-multicast-plan.md`
 - **Acceptance Criteria**:
   - CI-suitable tests pass for migrated core and integrated session paths.
   - Experiment harness emits metrics (completion, P95/P99, overhead, CPU/mem).
@@ -357,6 +375,18 @@ All scripts live under `tools/experiments/raptorq/` and write JSON artifacts via
 - `depends_on: [T14, T11]`
 - **Location**: docs + config defaults, `tools/experiments/raptorq/check_compat_matrix.py`
 - **Description**: Finalize rollout stages, compatibility matrix, and disablement procedure (`fec_enabled=false` to prevent new FEC sessions, while existing FEC sessions must fail fast without downgrade).
+- **Status**: ✅ Completed on February 14, 2026.
+- **Work Log**:
+  - Added strict compatibility matrix checker (`check_compat_matrix.py`) that validates homogeneous FEC capability tuples and emits machine-readable mismatch reports.
+  - Added strict-mode exit behavior (`--assert-strict` / `--strict`) for release-gate automation.
+  - Added regression tests for compatibility matrix success/failure scenarios in `tools/experiments/raptorq/tests/test_check_compat_matrix.py`.
+  - Documented strict no-fallback operational behavior and rollout guardrails in design docs (`lossless_config.md`, `raptorq-migration-notes.md`).
+- **Files Updated**:
+  - `tools/experiments/raptorq/check_compat_matrix.py`
+  - `tools/experiments/raptorq/tests/test_check_compat_matrix.py`
+  - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/raptorq-migration-notes.md`
+  - `plans/raptorq-wan-multicast-plan.md`
 - **Acceptance Criteria**:
   - Clear operational playbook for enable/disable and strict FEC-only behavior.
   - `tools/experiments/raptorq/check_compat_matrix.py` exists and is runnable with `--help`.

@@ -106,6 +106,40 @@ class CheckCompatMatrixTests(unittest.TestCase):
             self.assertFalse(artifact["success"])
             self.assertIn("input_reports_present", artifact["failed_checks"])
 
+    def test_strict_fails_when_mode_is_not_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            n1 = self.write_report(root, "node-a", True, "raptorq", 2)
+            n2 = self.write_report(root, "node-b", True, "experimental", 2)
+            out = root / "compat.json"
+
+            proc = run_script(
+                [
+                    "--input",
+                    str(n1),
+                    "--input",
+                    str(n2),
+                    "--require-homogeneous-fec",
+                    "--assert-strict",
+                    "--output",
+                    str(out),
+                ]
+            )
+            self.assertEqual(proc.returncode, 1, proc.stderr)
+
+            artifact = json.loads(out.read_text(encoding="utf-8"))
+            self.assertFalse(artifact["success"])
+            self.assertIn("report_schema_valid", artifact["failed_checks"])
+            invalid_details = [
+                mismatch.get("detail", "")
+                for mismatch in artifact["mismatches"]
+                if mismatch.get("type") == "invalid_report"
+            ]
+            self.assertTrue(
+                any("unsupported_mode:experimental" in detail for detail in invalid_details),
+                invalid_details,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
