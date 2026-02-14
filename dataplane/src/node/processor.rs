@@ -39,6 +39,13 @@ pub enum ProcessorPacket {
     ProcessPacket(Packet),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendOutcome {
+    Queued,
+    WouldBlock,
+    Closed,
+}
+
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
@@ -249,6 +256,13 @@ impl ProcessorHandle {
         }
     }
 
+    pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.try_process_packet(packet),
+            ProcessorHandle::Concurrent(handle) => handle.try_process_packet(packet),
+        }
+    }
+
     /// For synchronous producers (Python bindings, smoltcp virtual NIC).
     pub fn process_packet_blocking(&self, packet: Packet) {
         match self {
@@ -442,6 +456,21 @@ impl SequentialProcHandle {
         }
     }
 
+    pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            self.try_send_to_processor(packet)
+        } else {
+            // sends according to the operating mode
+            match self.config.operating_mode {
+                OperatingMode::Normal => self.try_send_to_processor(packet),
+                OperatingMode::Max => self.try_send_to_connector(packet),
+            }
+        }
+    }
+
     async fn send_to_processor(&self, packet: Packet) {
         let idx = packet.flow_id.hash(self.packet_senders.len());
         let sender = &self.packet_senders[idx];
@@ -470,6 +499,19 @@ impl SequentialProcHandle {
         {
             warn!("SequentialProcHandle: connector channel full; dropping packet: {e}");
         }
+    }
+
+    fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
+        let idx = packet.flow_id.hash(self.packet_senders.len());
+        let sender = &self.packet_senders[idx];
+        map_tokio_try_send_outcome(sender.try_send(ProcessorPacket::ProcessPacket(packet)))
+    }
+
+    fn try_send_to_connector(&self, packet: Packet) -> SendOutcome {
+        map_tokio_try_send_outcome(
+            self.connector_packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet)),
+        )
     }
 
     /// For sync producers (Python API, TCP readers, and QUIC readers).
@@ -594,6 +636,21 @@ impl ConcurrentProcHandle {
         }
     }
 
+    pub fn try_process_packet(&self, packet: Packet) -> SendOutcome {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+
+        // sends through the processor for local delivery
+        if dst_node_id == self.config.node_id {
+            self.try_send_to_processor(packet)
+        } else {
+            // sends according to the operating mode
+            match self.config.operating_mode {
+                OperatingMode::Normal => self.try_send_to_processor(packet),
+                OperatingMode::Max => self.try_send_to_connector(packet),
+            }
+        }
+    }
+
     pub fn process_packet_blocking(&self, packet: Packet) {
         let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
 
@@ -645,6 +702,20 @@ impl ConcurrentProcHandle {
         }
     }
 
+    fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
+        map_flume_try_send_outcome(
+            self.packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet)),
+        )
+    }
+
+    fn try_send_to_connector(&self, packet: Packet) -> SendOutcome {
+        map_tokio_try_send_outcome(
+            self.connector_packet_sender
+                .try_send(ProcessorPacket::ProcessPacket(packet)),
+        )
+    }
+
     fn send_to_processor_blocking(&self, packet: Packet) {
         if self.config.channel_backpressure {
             if let Err(e) = self
@@ -679,6 +750,22 @@ impl ConcurrentProcHandle {
         {
             warn!("ConcurrentProcHandle: connector channel full; dropping packet: {e}");
         }
+    }
+}
+
+fn map_tokio_try_send_outcome<T>(result: Result<(), mpsc::error::TrySendError<T>>) -> SendOutcome {
+    match result {
+        Ok(()) => SendOutcome::Queued,
+        Err(mpsc::error::TrySendError::Full(_)) => SendOutcome::WouldBlock,
+        Err(mpsc::error::TrySendError::Closed(_)) => SendOutcome::Closed,
+    }
+}
+
+fn map_flume_try_send_outcome<T>(result: Result<(), flume::TrySendError<T>>) -> SendOutcome {
+    match result {
+        Ok(()) => SendOutcome::Queued,
+        Err(flume::TrySendError::Full(_)) => SendOutcome::WouldBlock,
+        Err(flume::TrySendError::Disconnected(_)) => SendOutcome::Closed,
     }
 }
 
@@ -1022,5 +1109,168 @@ impl Processor {
             },
         );
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+
+    fn base_config(operating_mode: OperatingMode) -> LocalConfig {
+        LocalConfig {
+            node_id: 1,
+            local_address: Ipv4Addr::new(10, 0, 0, 1),
+            operating_mode,
+            channel_capacity: 1,
+            num_packet_processors: 1,
+            channel_backpressure: true,
+            ..Default::default()
+        }
+    }
+
+    fn make_packet(dst_ip: Ipv4Addr) -> Packet {
+        Packet::build_ipv4_tcp_packet(Ipv4Addr::new(10, 0, 0, 9), 4000, dst_ip, 5000, b"x")
+    }
+
+    fn make_sequential_handle(
+        config: LocalConfig,
+        packet_sender: mpsc::Sender<ProcessorPacket>,
+        connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    ) -> SequentialProcHandle {
+        let (broadcast_sender, _) = broadcast::channel(1);
+        let (connector_message_sender, _) = mpsc::channel(1);
+        SequentialProcHandle {
+            config,
+            broadcast_sender,
+            packet_senders: vec![packet_sender],
+            connector_packet_sender,
+            connector_message_sender,
+        }
+    }
+
+    fn make_concurrent_handle(
+        config: LocalConfig,
+        packet_sender: flume::Sender<ProcessorPacket>,
+        connector_packet_sender: mpsc::Sender<ProcessorPacket>,
+    ) -> ConcurrentProcHandle {
+        let (broadcast_sender, _) = broadcast::channel(1);
+        let (connector_message_sender, _) = mpsc::channel(1);
+        ConcurrentProcHandle {
+            config,
+            broadcast_sender,
+            packet_sender,
+            connector_packet_sender,
+            connector_message_sender,
+        }
+    }
+
+    #[test]
+    fn sequential_try_process_packet_routes_local_packets_to_processor_in_max_mode() {
+        let config = base_config(OperatingMode::Max);
+        let local_ip = config.local_address;
+
+        let (processor_sender, _processor_receiver) = mpsc::channel(1);
+        processor_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(local_ip)))
+            .expect("failed to fill processor lane");
+
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(local_ip)),
+            SendOutcome::WouldBlock
+        );
+    }
+
+    #[test]
+    fn sequential_try_process_packet_routes_remote_packets_to_connector_in_max_mode() {
+        let config = base_config(OperatingMode::Max);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, processor_receiver) = mpsc::channel(1);
+        drop(processor_receiver);
+
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        connector_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
+            .expect("failed to fill connector lane");
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::WouldBlock
+        );
+    }
+
+    #[test]
+    fn sequential_try_process_packet_reports_closed_when_processor_lane_closed() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, processor_receiver) = mpsc::channel(1);
+        drop(processor_receiver);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::Closed
+        );
+    }
+
+    #[test]
+    fn concurrent_try_process_packet_routes_remote_packets_to_connector_in_max_mode() {
+        let config = base_config(OperatingMode::Max);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (packet_sender, packet_receiver) = flume::bounded(1);
+        drop(packet_receiver);
+
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        connector_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
+            .expect("failed to fill connector lane");
+
+        let handle = make_concurrent_handle(config, packet_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::WouldBlock
+        );
+    }
+
+    #[test]
+    fn concurrent_try_process_packet_reports_closed_when_processor_lane_closed() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (packet_sender, packet_receiver) = flume::bounded(1);
+        drop(packet_receiver);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+
+        let handle = make_concurrent_handle(config, packet_sender, connector_sender);
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::Closed
+        );
+    }
+
+    #[test]
+    fn processor_handle_try_process_packet_reports_queued() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, _processor_receiver) = mpsc::channel(1);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        let inner = make_sequential_handle(config, processor_sender, connector_sender);
+        let handle = ProcessorHandle::Sequential(inner);
+
+        assert_eq!(
+            handle.try_process_packet(make_packet(remote_ip)),
+            SendOutcome::Queued
+        );
     }
 }

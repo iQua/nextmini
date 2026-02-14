@@ -145,7 +145,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T4 — Add Non-Blocking Packet Submission API + SendOutcome Contract (UPDATE)
+### T4 — Add Non-Blocking Packet Submission API + SendOutcome Contract (COMPLETE — February 14, 2026)
 - **depends_on: [T0]**
 - Add `try_process_packet(packet) -> SendOutcome` on `ProcessorHandle`:
   - `SendOutcome::Queued`
@@ -161,6 +161,12 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 - **Files:** `dataplane/src/node/processor.rs`
 
 - **Output:** sender can sense per-tree backpressure without stalling the main loop.
+- **Status:** completed.
+- **Work log:** added `SendOutcome::{Queued, WouldBlock, Closed}` and a strict non-blocking `try_process_packet(packet) -> SendOutcome` path on `ProcessorHandle`, `SequentialProcHandle`, and `ConcurrentProcHandle`; preserved existing `process_packet(packet).await` and `process_packet_blocking(packet)` behavior and kept local/normal/max routing decisions identical across all send entrypoints.
+- **Files changed (T4):**
+  - `dataplane/src/node/processor.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** `try_process_packet` intentionally bypasses `channel_backpressure` and always uses immediate `try_send` semantics so callers can detect `WouldBlock` deterministically.
 
 ---
 
