@@ -29,6 +29,49 @@ const ALL_FEC_LANES_BLOCKED_WAIT_MS: u64 = 250;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
 const FEC_REPAIR_BUDGET_DIVISOR: usize = 2;
 const FEC_MAX_REPAIR_BUDGET_PER_BLOCK: usize = 64;
+const COLLABORATIVE_MULTITREE_INGRESS_POLICY: &str = "sequential_only";
+
+fn processor_ingress_mode(handle: &ProcessorHandle) -> &'static str {
+    match handle {
+        ProcessorHandle::Sequential(_) => "sequential",
+        ProcessorHandle::Concurrent(_) => "concurrent",
+    }
+}
+
+fn collaborative_multitree_ingress_support(handle: &ProcessorHandle) -> &'static str {
+    match handle {
+        ProcessorHandle::Sequential(_) => "supported",
+        ProcessorHandle::Concurrent(_) => "unsupported_shared_queue",
+    }
+}
+
+enum FecDispatchWaitEvent {
+    ControlFrame(Option<InboundFrame>),
+    Wakeup,
+}
+
+type FecTreeCounterLog = (u16, usize, usize, usize, usize, usize);
+
+fn compact_fec_tree_snapshot(snapshot: FecTreeObservabilitySnapshot) -> FecTreeCounterLog {
+    (
+        snapshot.tree_id,
+        snapshot.queued,
+        snapshot.sent,
+        snapshot.blocked,
+        snapshot.drained,
+        snapshot.wakeups,
+    )
+}
+
+fn compact_fec_tree_observability(
+    snapshots: &[FecTreeObservabilitySnapshot],
+) -> Vec<FecTreeCounterLog> {
+    snapshots
+        .iter()
+        .copied()
+        .map(compact_fec_tree_snapshot)
+        .collect()
+}
 
 /// Drives a sender session: streams chunks, tracks inflight state, and reacts
 /// to control frames emitted by receivers.
@@ -54,6 +97,18 @@ pub async fn run(
         fec = cfg.fec_manifest.is_some(),
         "Lossless sender started"
     );
+    if cfg.fec_manifest.is_some() {
+        info!(
+            session_id = sid,
+            fec_tree_ids = ?cfg.fec_tree_ids,
+            fec_tree_lane_depth = cfg.fec_tree_lane_depth,
+            fec_dispatch_burst = cfg.fec_dispatch_burst,
+            processor_ingress_mode = processor_ingress_mode(&processors),
+            processor_ingress_policy = COLLABORATIVE_MULTITREE_INGRESS_POLICY,
+            processor_ingress_support = collaborative_multitree_ingress_support(&processors),
+            "Lossless sender: collaborative multi-tree FEC session config"
+        );
+    }
 
     let chunk_bytes = cfg.common.chunk_size;
     let source_buffer = cfg.source_buffer.clone();
@@ -141,6 +196,15 @@ pub async fn run(
         }
 
         if state.is_complete() {
+            let tree_counters = state.fec_dispatch_observability_snapshot();
+            if !tree_counters.is_empty() {
+                let compact_tree_counters = compact_fec_tree_observability(&tree_counters);
+                info!(
+                    session_id = sid,
+                    ?compact_tree_counters,
+                    "Lossless sender: collaborative FEC per-tree counters"
+                );
+            }
             if state.aborted {
                 warn!(
                     session_id = sid,
@@ -165,15 +229,38 @@ pub async fn run(
                         Duration::from_millis(ALL_FEC_LANES_BLOCKED_WAIT_MS),
                         async {
                             tokio::select! {
-                                maybe_frame = ctrl_rx.recv() => Some(maybe_frame),
-                                _ = wakeup.notified() => None,
+                                maybe_frame = ctrl_rx.recv() => FecDispatchWaitEvent::ControlFrame(maybe_frame),
+                                _ = wakeup.notified() => FecDispatchWaitEvent::Wakeup,
                             }
                         },
                     )
                     .await;
-
-                    if let Ok(Some(Some(frame))) = wait_result {
-                        state.handle_control(frame);
+                    match wait_result {
+                        Ok(FecDispatchWaitEvent::ControlFrame(Some(frame))) => {
+                            state.handle_control(frame);
+                        }
+                        Ok(FecDispatchWaitEvent::ControlFrame(None)) => {}
+                        Ok(FecDispatchWaitEvent::Wakeup) => {
+                            let tree_counters = state.fec_dispatch_observability_snapshot();
+                            let compact_tree_counters =
+                                compact_fec_tree_observability(&tree_counters);
+                            trace!(
+                                session_id = sid,
+                                ?compact_tree_counters,
+                                "Lossless sender: FEC dispatch wakeup received"
+                            );
+                        }
+                        Err(_) => {
+                            let tree_counters = state.fec_dispatch_observability_snapshot();
+                            let compact_tree_counters =
+                                compact_fec_tree_observability(&tree_counters);
+                            trace!(
+                                session_id = sid,
+                                wait_ms = ALL_FEC_LANES_BLOCKED_WAIT_MS,
+                                ?compact_tree_counters,
+                                "Lossless sender: FEC dispatch wakeup wait timed out"
+                            );
+                        }
                     }
                 } else if let Ok(Some(frame)) = tokio::time::timeout(
                     Duration::from_millis(CONTROL_POLL_TIMEOUT_MS),
@@ -218,10 +305,63 @@ struct FecLaneSessionMeta {
     dst_port: u16,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FecTreeObservabilitySnapshot {
+    tree_id: u16,
+    queued: usize,
+    sent: usize,
+    blocked: usize,
+    drained: usize,
+    wakeups: usize,
+}
+
+#[derive(Debug, Default)]
+struct FecTreeObservability {
+    queued: AtomicUsize,
+    sent: AtomicUsize,
+    blocked: AtomicUsize,
+    drained: AtomicUsize,
+    wakeups: AtomicUsize,
+}
+
+impl FecTreeObservability {
+    fn note_queued(&self) {
+        self.queued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_sent(&self) {
+        self.sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_blocked(&self) {
+        self.blocked.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_drained(&self) {
+        self.drained.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn note_wakeup(&self) {
+        self.wakeups.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self, tree_id: u16) -> FecTreeObservabilitySnapshot {
+        FecTreeObservabilitySnapshot {
+            tree_id,
+            queued: self.queued.load(Ordering::Relaxed),
+            sent: self.sent.load(Ordering::Relaxed),
+            blocked: self.blocked.load(Ordering::Relaxed),
+            drained: self.drained.load(Ordering::Relaxed),
+            wakeups: self.wakeups.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FecTreeLane {
     tree_id: u16,
     tx: mpsc::Sender<FecSymbolWorkItem>,
+    counters: Arc<FecTreeObservability>,
 }
 
 #[derive(Debug)]
@@ -231,6 +371,7 @@ enum FecDispatchEnqueueResult {
     },
     AllBlocked {
         work_item: FecSymbolWorkItem,
+        blocked_tree_ids: Vec<u16>,
     },
     Closed {
         tree_id: u16,
@@ -264,10 +405,14 @@ impl FecTreeDispatch {
             let wakeup = Arc::clone(&wakeup);
             let outstanding_symbols = Arc::clone(&outstanding_symbols);
             let processors = processors.clone();
+            let counters = Arc::new(FecTreeObservability::default());
+            let worker_counters = Arc::clone(&counters);
 
             tokio::spawn(async move {
                 while let Some(symbol) = rx.recv().await {
+                    worker_counters.note_drained();
                     // Slot freed: wake dispatchers waiting on lane capacity.
+                    worker_counters.note_wakeup();
                     wakeup.notify_waiters();
 
                     let frame = Bytes::from(lossless_session::encode_fec_data(
@@ -285,13 +430,20 @@ impl FecTreeDispatch {
                         &frame,
                     );
                     processors.process_packet_blocking(packet);
+                    worker_counters.note_sent();
                     outstanding_symbols.fetch_sub(1, Ordering::Relaxed);
+                    worker_counters.note_wakeup();
                     wakeup.notify_waiters();
                 }
+                worker_counters.note_wakeup();
                 wakeup.notify_waiters();
             });
 
-            lanes.push(FecTreeLane { tree_id, tx });
+            lanes.push(FecTreeLane {
+                tree_id,
+                tx,
+                counters,
+            });
         }
 
         Self {
@@ -315,6 +467,20 @@ impl FecTreeDispatch {
         Arc::clone(&self.wakeup)
     }
 
+    fn tree_observability_snapshot(&self, tree_id: u16) -> Option<FecTreeObservabilitySnapshot> {
+        self.lanes
+            .iter()
+            .find(|lane| lane.tree_id == tree_id)
+            .map(|lane| lane.counters.snapshot(lane.tree_id))
+    }
+
+    fn observability_snapshot(&self) -> Vec<FecTreeObservabilitySnapshot> {
+        self.lanes
+            .iter()
+            .map(|lane| lane.counters.snapshot(lane.tree_id))
+            .collect()
+    }
+
     fn try_enqueue(&mut self, work_item: FecSymbolWorkItem) -> FecDispatchEnqueueResult {
         if self.lanes.is_empty() {
             self.all_lanes_blocked = false;
@@ -327,12 +493,14 @@ impl FecTreeDispatch {
         let lane_count = self.lanes.len();
         let start_idx = self.next_rr_idx % lane_count;
         let mut work_item = work_item;
+        let mut blocked_tree_ids = Vec::with_capacity(lane_count);
 
         for step in 0..lane_count {
             let idx = (start_idx + step) % lane_count;
             let lane = &self.lanes[idx];
             match lane.tx.try_send(work_item) {
                 Ok(()) => {
+                    lane.counters.note_queued();
                     self.next_rr_idx = (idx + 1) % lane_count;
                     self.all_lanes_blocked = false;
                     self.outstanding_symbols.fetch_add(1, Ordering::Relaxed);
@@ -341,6 +509,8 @@ impl FecTreeDispatch {
                     };
                 }
                 Err(mpsc::error::TrySendError::Full(returned)) => {
+                    lane.counters.note_blocked();
+                    blocked_tree_ids.push(lane.tree_id);
                     work_item = returned;
                 }
                 Err(mpsc::error::TrySendError::Closed(returned)) => {
@@ -354,7 +524,10 @@ impl FecTreeDispatch {
         }
 
         self.all_lanes_blocked = true;
-        FecDispatchEnqueueResult::AllBlocked { work_item }
+        FecDispatchEnqueueResult::AllBlocked {
+            work_item,
+            blocked_tree_ids,
+        }
     }
 }
 
@@ -908,6 +1081,7 @@ impl SenderState {
             session_id = self.session_id,
             tree_ids = ?self.fec_tree_ids,
             lane_depth = self.fec_tree_lane_depth,
+            dispatch_burst = self.fec_dispatch_burst,
             "Lossless sender: started collaborative per-tree FEC lanes"
         );
         true
@@ -923,6 +1097,13 @@ impl SenderState {
         self.fec_dispatch
             .as_ref()
             .map(FecTreeDispatch::wakeup_handle)
+    }
+
+    fn fec_dispatch_observability_snapshot(&self) -> Vec<FecTreeObservabilitySnapshot> {
+        self.fec_dispatch
+            .as_ref()
+            .map(FecTreeDispatch::observability_snapshot)
+            .unwrap_or_default()
     }
 
     async fn drive_fec_scheduler(
@@ -1023,12 +1204,15 @@ impl SenderState {
         let payload_len = symbol.payload.len();
         let is_repair = symbol.is_repair;
 
-        let Some(dispatch) = self.fec_dispatch.as_mut() else {
-            self.abort_fec_preflight("fec dispatch lanes are unavailable in FEC session");
-            return true;
+        let enqueue_result = {
+            let Some(dispatch) = self.fec_dispatch.as_mut() else {
+                self.abort_fec_preflight("fec dispatch lanes are unavailable in FEC session");
+                return true;
+            };
+            dispatch.try_enqueue(symbol)
         };
 
-        match dispatch.try_enqueue(symbol) {
+        match enqueue_result {
             FecDispatchEnqueueResult::Queued { tree_id } => {
                 let payload_len_u64 = payload_len as u64;
                 self.bytes_sent += payload_len_u64;
@@ -1039,6 +1223,11 @@ impl SenderState {
                     scheduler.note_repair_symbol_sent(block_id);
                 }
                 self.report_throughput();
+                let tree_counters = self
+                    .fec_dispatch
+                    .as_ref()
+                    .and_then(|dispatch| dispatch.tree_observability_snapshot(tree_id));
+                let compact_tree_counters = tree_counters.map(compact_fec_tree_snapshot);
 
                 debug!(
                     session_id = self.session_id,
@@ -1047,11 +1236,17 @@ impl SenderState {
                     tree_id,
                     is_repair,
                     payload_len,
+                    ?compact_tree_counters,
                     "Lossless sender: dispatched FEC symbol to tree lane"
                 );
                 true
             }
-            FecDispatchEnqueueResult::AllBlocked { work_item } => {
+            FecDispatchEnqueueResult::AllBlocked {
+                work_item,
+                blocked_tree_ids,
+            } => {
+                let tree_counters = self.fec_dispatch_observability_snapshot();
+                let compact_tree_counters = compact_fec_tree_observability(&tree_counters);
                 if let Some(scheduler) = self.fec_scheduler.as_mut() {
                     scheduler.requeue_symbol_front(work_item);
                 }
@@ -1059,6 +1254,8 @@ impl SenderState {
                     session_id = self.session_id,
                     block_id,
                     symbol_id,
+                    ?blocked_tree_ids,
+                    ?compact_tree_counters,
                     "Lossless sender: all FEC tree lanes are backpressured; waiting for wakeup"
                 );
                 false
@@ -1915,6 +2112,14 @@ mod tests {
         }
     }
 
+    fn lane(tree_id: u16, tx: mpsc::Sender<FecSymbolWorkItem>) -> FecTreeLane {
+        FecTreeLane {
+            tree_id,
+            tx,
+            counters: Arc::new(FecTreeObservability::default()),
+        }
+    }
+
     #[test]
     fn collaborative_dispatch_round_robins_across_lanes() {
         let (tx_a, mut rx_a) = mpsc::channel::<FecSymbolWorkItem>(2);
@@ -1922,16 +2127,7 @@ mod tests {
         let outstanding = Arc::new(AtomicUsize::new(0));
 
         let mut dispatch = FecTreeDispatch {
-            lanes: vec![
-                FecTreeLane {
-                    tree_id: 10,
-                    tx: tx_a,
-                },
-                FecTreeLane {
-                    tree_id: 20,
-                    tx: tx_b,
-                },
-            ],
+            lanes: vec![lane(10, tx_a), lane(20, tx_b)],
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
@@ -1978,16 +2174,7 @@ mod tests {
             .expect("test setup should fill lane B");
 
         let mut dispatch = FecTreeDispatch {
-            lanes: vec![
-                FecTreeLane {
-                    tree_id: 1,
-                    tx: tx_a,
-                },
-                FecTreeLane {
-                    tree_id: 2,
-                    tx: tx_b,
-                },
-            ],
+            lanes: vec![lane(1, tx_a), lane(2, tx_b)],
             next_rr_idx: 1,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
@@ -2021,16 +2208,7 @@ mod tests {
             .expect("test setup should fill lane B");
 
         let mut dispatch = FecTreeDispatch {
-            lanes: vec![
-                FecTreeLane {
-                    tree_id: 3,
-                    tx: tx_a,
-                },
-                FecTreeLane {
-                    tree_id: 4,
-                    tx: tx_b,
-                },
-            ],
+            lanes: vec![lane(3, tx_a), lane(4, tx_b)],
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
@@ -2060,16 +2238,7 @@ mod tests {
             .expect("test setup should fill lane B");
 
         let mut dispatch = FecTreeDispatch {
-            lanes: vec![
-                FecTreeLane {
-                    tree_id: 3,
-                    tx: tx_a,
-                },
-                FecTreeLane {
-                    tree_id: 4,
-                    tx: tx_b,
-                },
-            ],
+            lanes: vec![lane(3, tx_a), lane(4, tx_b)],
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
@@ -2242,16 +2411,7 @@ mod tests {
         let (tx_b, _rx_b) = mpsc::channel::<FecSymbolWorkItem>(1);
         let outstanding = Arc::new(AtomicUsize::new(1));
         state.fec_dispatch = Some(FecTreeDispatch {
-            lanes: vec![
-                FecTreeLane {
-                    tree_id: 1,
-                    tx: tx_a,
-                },
-                FecTreeLane {
-                    tree_id: 2,
-                    tx: tx_b,
-                },
-            ],
+            lanes: vec![lane(1, tx_a), lane(2, tx_b)],
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),

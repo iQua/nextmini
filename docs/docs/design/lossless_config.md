@@ -56,6 +56,19 @@ This contract defines sender-side tree selection for collaborative multi-tree FE
 - The older per-symbol hash strategy is not part of v3 behavior.
 - Tree assignment is a dispatch-time decision driven by current backpressure and the configured `fec_tree_ids` set.
 
+## Observability + Rollout Guardrails (v3)
+
+- Collaborative dispatch-time assignment is the only supported multi-tree FEC behavior.
+- `fec_collaborative_multitree_enabled` is an explicit rollout on/off gate only; it does not select between multiple strategies.
+- Runtime preflight enforces sequential ingress for collaborative multi-tree sessions.
+- Sender session-start logs include:
+  - configured `fec_tree_ids`
+  - `fec_tree_lane_depth`
+  - `fec_dispatch_burst`
+  - processor ingress policy/support status
+- Sender logs now expose per-tree counters for `queued`, `sent`, `blocked`, `drained`, and `wakeups`.
+- All-lanes-blocked waits and wakeups include per-tree counter snapshots to speed up backpressure diagnosis.
+
 ## Example
 
 ```toml

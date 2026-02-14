@@ -359,6 +359,15 @@ Replace tests that assume per-symbol hash determinism with tests aligned to coll
 
 - **Output:** safe deployment and diagnosability per tree.
 
+- **Status:** completed.
+- **Work log:** added sender-local per-tree observability counters (`queued`, `sent`, `blocked`, `drained`, `wakeups`) on collaborative FEC tree lanes and surfaced them in dispatch logs (queued/all-blocked/wakeup) plus a session-end per-tree counter snapshot for postmortems. Added a dedicated FEC session-start log that records configured `fec_tree_ids`, `fec_tree_lane_depth`, `fec_dispatch_burst`, and processor ingress policy/support (`sequential_only` policy with support/unsupported status). Updated rollout docs to state collaborative dispatch is the only multi-tree behavior and that `fec_collaborative_multitree_enabled` is an explicit on/off rollout gate (not a strategy selector).
+- **Files changed (T10):**
+  - `dataplane/src/node/session/sender.rs`
+  - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/config-reference.md`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** per-tree counters are lock-free atomic snapshots sampled across async lane workers, so logs are diagnostically stable but not a strict total-order event trace at sub-event granularity.
+
 ---
 
 ## Dependency Graph (v3)

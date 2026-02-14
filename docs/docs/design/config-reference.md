@@ -290,6 +290,8 @@ fec_collaborative_multitree_enabled = true
 # bucket_size = 200_000
 ```
 
+`fec_collaborative_multitree_enabled` is a rollout gate only: when enabled, multi-tree FEC uses collaborative dispatch-time assignment exclusively (no hash/legacy strategy mode).
+
 ---
 
 ## Enums Reference
