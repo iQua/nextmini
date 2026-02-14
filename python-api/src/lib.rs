@@ -228,7 +228,7 @@ impl Dataplane {
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None, fec_enabled=None, fec_symbols_per_block=None, fec_symbol_size=None))]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None, congestion=None, fec_enabled=None, fec_symbols_per_block=None, fec_symbol_size=None, fec_tree_ids=None))]
     fn send_data(
         &self,
         group_id: u64,
@@ -242,6 +242,7 @@ impl Dataplane {
         fec_enabled: Option<bool>,
         fec_symbols_per_block: Option<u16>,
         fec_symbol_size: Option<u16>,
+        fec_tree_ids: Option<Vec<u16>>,
     ) -> PyResult<u64> {
         #[allow(unused_variables)]
         let dest_ip_addr = parse_ipv4(dest_ip)?;
@@ -295,13 +296,16 @@ impl Dataplane {
                     fec_symbols_per_block,
                     fec_symbol_size,
                 )?;
+                let fec_tree_ids = sender_fec_tree_ids(fec_manifest.as_ref(), fec_tree_ids)?;
                 let cfg = session::runtime::SenderConfig {
                     common,
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
                     fec_manifest,
-                    fec_num_trees: None,
+                    fec_tree_ids,
+                    fec_tree_lane_depth: runtime_config.fec_tree_lane_depth,
+                    fec_dispatch_burst: runtime_config.fec_dispatch_burst,
                     ready_grace_ms: runtime_config.ready_grace_ms,
                     topology_ready: None,
                 };
@@ -311,7 +315,12 @@ impl Dataplane {
         }
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = (fec_enabled, fec_symbols_per_block, fec_symbol_size);
+        let _ = (
+            fec_enabled,
+            fec_symbols_per_block,
+            fec_symbol_size,
+            fec_tree_ids,
+        );
 
         Ok(sid)
     }
@@ -1001,6 +1010,26 @@ fn sender_fec_manifest(
         symbols_per_block,
         symbol_size,
     )))
+}
+
+#[cfg(feature = "python-extension")]
+fn sender_fec_tree_ids(
+    fec_manifest: Option<&FecManifest>,
+    fec_tree_ids: Option<Vec<u16>>,
+) -> PyResult<Vec<u16>> {
+    match (fec_manifest.is_some(), fec_tree_ids) {
+        (false, Some(_)) => Err(PyRuntimeError::new_err(
+            "fec_tree_ids requires FEC; set fec_enabled=True (or FEC sizing kwargs).",
+        )),
+        (false, None) => Ok(Vec::new()),
+        (true, Some(tree_ids)) if tree_ids.is_empty() => Err(PyRuntimeError::new_err(
+            "fec_tree_ids must be non-empty for FEC sessions.",
+        )),
+        (true, Some(tree_ids)) => Ok(tree_ids),
+        (true, None) => Err(PyRuntimeError::new_err(
+            "fec_tree_ids must be provided explicitly for FEC sessions.",
+        )),
+    }
 }
 
 #[cfg(feature = "python-extension")]

@@ -80,6 +80,7 @@ sid = dp.send_data(
     payload,
     chunk_size=8_500,
     fec_enabled=True,
+    fec_tree_ids=[1, 3, 5],   # required when FEC is enabled
     fec_symbols_per_block=32,  # optional
     fec_symbol_size=1_400,     # optional
 )
@@ -94,6 +95,7 @@ rx_sid = dp.receive_data(
 ```
 
 - Default behavior is unchanged: sender FEC stays disabled unless `fec_enabled=True` (or explicit FEC sizing kwargs are provided).
+- FEC senders must provide explicit `fec_tree_ids`; runtime preflight requires a non-empty, sorted, unique list and enforces sequential-ingress policy for multi-tree sessions.
 - Receiver capability advertisement defaults to FEC-capable; pass `fec_enabled=False` to explicitly reject FEC sessions for that receiver.
 - Runtime policy still applies. If `lossless_runtime_config.fec_enabled=false` in the node config, sender preflight rejects FEC sessions.
 

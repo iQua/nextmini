@@ -113,7 +113,9 @@ impl LosslessUnicastFlowManager {
                 total_bytes,
                 source_buffer,
                 fec_manifest: None,
-                fec_num_trees: None,
+                fec_tree_ids: Vec::new(),
+                fec_tree_lane_depth: runtime_config.fec_tree_lane_depth,
+                fec_dispatch_burst: runtime_config.fec_dispatch_burst,
                 ready_grace_ms: runtime_config.ready_grace_ms,
                 topology_ready: None,
             };

@@ -10,7 +10,7 @@ use tracing::warn;
 use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{FecCapabilities, FecManifest};
 
-use crate::node::config::LosslessConfig;
+use crate::node::config::{Feature, LosslessConfig};
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{Command, InboundFrame, SessionId};
 use crate::node::session::{receiver, sender};
@@ -39,11 +39,12 @@ pub struct SenderConfig {
     /// Optional FEC declaration. When present, sender uses strict FEC-only negotiation
     /// and switches retirement semantics from cumulative chunk ACKs to per-block FEC status.
     pub fec_manifest: Option<FecManifest>,
-    /// Optional multi-tree width for deterministic FEC symbol scheduling.
-    ///
-    /// `None` preserves legacy single-tree semantics (`tree_id = 0`).
-    /// `Some(num_trees)` enables multi-tree symbol assignment and requires `num_trees >= 2`.
-    pub fec_num_trees: Option<u16>,
+    /// Explicit sender-allowed tree IDs for collaborative FEC dispatch.
+    pub fec_tree_ids: Vec<u16>,
+    /// Per-tree lane depth for collaborative FEC dispatch.
+    pub fec_tree_lane_depth: usize,
+    /// Max FEC symbols to dispatch per sender scheduler cycle.
+    pub fec_dispatch_burst: usize,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
@@ -258,6 +259,8 @@ impl LosslessRuntime {
     /// returning its assigned session ID.
     fn spawn_sender(&mut self, mut cfg: SenderConfig) -> SessionId {
         let sid = cfg.common.session_id;
+        cfg.fec_tree_lane_depth = self.config.fec_tree_lane_depth;
+        cfg.fec_dispatch_burst = self.config.fec_dispatch_burst;
         if let Err(err) = validate_fec_sender_config(&self.config, &cfg) {
             self.reject_sender_preflight(sid, err);
             return sid;
@@ -340,30 +343,69 @@ impl LosslessRuntime {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum FecPreflightError {
     DisabledByConfig,
     CapabilityRequirementDisabled,
     UnknownScheme { scheme: u8 },
-    InvalidTreeCount { num_trees: u16 },
+    CollaborativeMultiTreeDisabled,
+    InvalidTreeLaneDepth { value: usize },
+    InvalidDispatchBurst { value: usize },
+    InvalidMaxTreeLanes { value: usize },
+    MissingTreeIds,
+    TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
+    TooManyTreeIds { configured: usize, max: usize },
+    MultiTreeRequiresSequentialIngress { feature: Feature },
     SymbolsPerBlockOutOfBounds { value: u16, min: u16, max: u16 },
     SymbolSizeOutOfBounds { value: u16, min: u16, max: u16 },
     ChunkSizeExceedsSymbolSize { chunk_size: usize, symbol_size: u16 },
 }
 
+fn feature_mode_label(feature: &Feature) -> &'static str {
+    match feature {
+        Feature::Sequential => "sequential",
+        Feature::Concurrent => "concurrent",
+    }
+}
+
 impl std::fmt::Display for FecPreflightError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
+        match self {
             Self::DisabledByConfig => write!(f, "fec is disabled by local runtime configuration"),
             Self::CapabilityRequirementDisabled => write!(
                 f,
                 "fec_require_capability=false is unsupported with strict no-fallback sessions"
             ),
             Self::UnknownScheme { scheme } => write!(f, "unknown fec scheme {scheme} requested"),
-            Self::InvalidTreeCount { num_trees } => {
+            Self::CollaborativeMultiTreeDisabled => write!(
+                f,
+                "collaborative multi-tree fec is disabled by local runtime configuration"
+            ),
+            Self::InvalidTreeLaneDepth { value } => {
+                write!(f, "fec_tree_lane_depth must be >= 1 (got {value})")
+            }
+            Self::InvalidDispatchBurst { value } => {
+                write!(f, "fec_dispatch_burst must be >= 1 (got {value})")
+            }
+            Self::InvalidMaxTreeLanes { value } => {
+                write!(f, "fec_max_tree_lanes must be >= 1 (got {value})")
+            }
+            Self::MissingTreeIds => {
+                write!(f, "fec_tree_ids must be non-empty for fec sender sessions")
+            }
+            Self::TreeIdsMustBeSortedUnique { tree_ids } => write!(
+                f,
+                "fec_tree_ids must be sorted ascending and unique (got {tree_ids:?})"
+            ),
+            Self::TooManyTreeIds { configured, max } => write!(
+                f,
+                "configured fec_tree_ids length {configured} exceeds fec_max_tree_lanes {max}"
+            ),
+            Self::MultiTreeRequiresSequentialIngress { feature } => {
                 write!(
                     f,
-                    "multi-tree fec requires num_trees >= 2 (got {num_trees})"
+                    "collaborative multi-tree fec requires sequential ingress (feature={})",
+                    feature_mode_label(feature)
                 )
             }
             Self::SymbolsPerBlockOutOfBounds { value, min, max } => write!(
@@ -403,10 +445,53 @@ fn validate_fec_sender_config(
             scheme: manifest.scheme,
         });
     }
-    if let Some(num_trees) = sender_cfg.fec_num_trees
-        && num_trees < 2
+
+    if sender_cfg.fec_tree_lane_depth == 0 {
+        return Err(FecPreflightError::InvalidTreeLaneDepth {
+            value: sender_cfg.fec_tree_lane_depth,
+        });
+    }
+    if sender_cfg.fec_dispatch_burst == 0 {
+        return Err(FecPreflightError::InvalidDispatchBurst {
+            value: sender_cfg.fec_dispatch_burst,
+        });
+    }
+    if runtime_config.fec_max_tree_lanes == 0 {
+        return Err(FecPreflightError::InvalidMaxTreeLanes {
+            value: runtime_config.fec_max_tree_lanes,
+        });
+    }
+
+    if sender_cfg.fec_tree_ids.is_empty() {
+        return Err(FecPreflightError::MissingTreeIds);
+    }
+    if !sender_cfg
+        .fec_tree_ids
+        .windows(2)
+        .all(|pair| pair[0] < pair[1])
     {
-        return Err(FecPreflightError::InvalidTreeCount { num_trees });
+        return Err(FecPreflightError::TreeIdsMustBeSortedUnique {
+            tree_ids: sender_cfg.fec_tree_ids.clone(),
+        });
+    }
+
+    let tree_count = sender_cfg.fec_tree_ids.len();
+    if tree_count > runtime_config.fec_max_tree_lanes {
+        return Err(FecPreflightError::TooManyTreeIds {
+            configured: tree_count,
+            max: runtime_config.fec_max_tree_lanes,
+        });
+    }
+
+    if tree_count > 1 {
+        if !runtime_config.fec_collaborative_multitree_enabled {
+            return Err(FecPreflightError::CollaborativeMultiTreeDisabled);
+        }
+        if runtime_config.ingress_feature != Feature::Sequential {
+            return Err(FecPreflightError::MultiTreeRequiresSequentialIngress {
+                feature: runtime_config.ingress_feature.clone(),
+            });
+        }
     }
 
     let (symbols_min, symbols_max) = runtime_config.fec_symbols_per_block_bounds();
@@ -446,7 +531,7 @@ mod tests {
     use nextmini_messages::lossless_session::FecManifest;
 
     use super::{CommonConfig, SenderConfig, validate_fec_sender_config};
-    use crate::node::config::LosslessConfig;
+    use crate::node::config::{Feature, LosslessConfig};
 
     fn sender_cfg_with_manifest(manifest: Option<FecManifest>, chunk_size: usize) -> SenderConfig {
         SenderConfig {
@@ -465,7 +550,9 @@ mod tests {
             total_bytes: 128,
             source_buffer: Bytes::from(vec![0xAB; 64]),
             fec_manifest: manifest,
-            fec_num_trees: None,
+            fec_tree_ids: vec![0],
+            fec_tree_lane_depth: 32,
+            fec_dispatch_burst: 1,
             ready_grace_ms: 1,
             topology_ready: None,
         }
@@ -524,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn fec_preflight_rejects_multitree_with_single_tree() {
+    fn fec_preflight_rejects_missing_tree_ids() {
         let runtime = LosslessConfig {
             fec_enabled: true,
             fec_require_capability: true,
@@ -532,12 +619,105 @@ mod tests {
         };
         let manifest = FecManifest::new_raptorq(16, 1400);
         let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
-        sender_cfg.fec_num_trees = Some(1);
+        sender_cfg.fec_tree_ids.clear();
 
         let result = validate_fec_sender_config(&runtime, &sender_cfg);
         assert!(
             result.is_err(),
-            "multi-tree mode must require num_trees >= 2"
+            "FEC sessions must provide explicit, non-empty tree IDs"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_rejects_unsorted_or_duplicate_tree_ids() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+        sender_cfg.fec_tree_ids = vec![3, 1, 1];
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "tree IDs must be strictly ascending and duplicate-free"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_rejects_multitree_when_collaborative_mode_disabled() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            fec_collaborative_multitree_enabled: false,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+        sender_cfg.fec_tree_ids = vec![1, 3];
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "multi-tree mode should honor the explicit collaborative on/off gate"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_rejects_multitree_when_ingress_mode_is_concurrent() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            ingress_feature: Feature::Concurrent,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+        sender_cfg.fec_tree_ids = vec![1, 3];
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "T5 Option A requires deterministic rejection for concurrent ingress"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_rejects_tree_count_exceeding_runtime_limit() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            fec_max_tree_lanes: 2,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+        sender_cfg.fec_tree_ids = vec![1, 3, 5];
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "configured tree IDs must not exceed runtime lane cap"
+        );
+    }
+
+    #[test]
+    fn fec_preflight_rejects_zero_dispatch_burst() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            ..Default::default()
+        };
+        let manifest = FecManifest::new_raptorq(16, 1400);
+        let mut sender_cfg = sender_cfg_with_manifest(Some(manifest), 1200);
+        sender_cfg.fec_dispatch_burst = 0;
+
+        let result = validate_fec_sender_config(&runtime, &sender_cfg);
+        assert!(
+            result.is_err(),
+            "dispatch burst must be validated as a positive tunable"
         );
     }
 }

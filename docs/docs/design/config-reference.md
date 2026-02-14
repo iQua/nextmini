@@ -279,6 +279,10 @@ See [Lossless Session Configuration](lossless_config.md) for details.
 [lossless_runtime_config]
 default_chunk_size = 8500
 ready_grace_ms = 1500
+fec_tree_lane_depth = 32
+fec_dispatch_burst = 1
+fec_max_tree_lanes = 64
+fec_collaborative_multitree_enabled = true
 
 # Optional pacing
 # [lossless_runtime_config.data_bucket]
@@ -462,4 +466,8 @@ backlog_tolerance = 0
 [lossless_runtime_config]
 default_chunk_size = 8500
 ready_grace_ms = 1500
+fec_tree_lane_depth = 32
+fec_dispatch_burst = 1
+fec_max_tree_lanes = 64
+fec_collaborative_multitree_enabled = true
 ```

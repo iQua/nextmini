@@ -28,7 +28,7 @@ pub enum CongestionControl {
 }
 
 /// The processing mode for processing packets
-#[derive(Clone, Default, Debug, PartialEq, Deserialize, clap::ValueEnum)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Feature {
     /// The sequential feature guarantees that no packets are reordered throughout the entire path,
@@ -585,6 +585,8 @@ impl LocalConfig {
         if self.num_packet_processors == 0 {
             self.num_packet_processors = num_cpus::get();
         }
+
+        self.lossless_runtime_config.ingress_feature = self.feature.clone();
     }
 
     /// Initializes the config for the namespace nodes.
@@ -684,6 +686,22 @@ pub struct LosslessConfig {
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
 
+    /// Depth of each sender-local collaborative FEC tree lane.
+    #[serde(default = "default_fec_tree_lane_depth")]
+    pub fec_tree_lane_depth: usize,
+
+    /// Maximum FEC symbols a sender dispatches per scheduler cycle.
+    #[serde(default = "default_fec_dispatch_burst")]
+    pub fec_dispatch_burst: usize,
+
+    /// Upper bound on explicit `fec_tree_ids` accepted at runtime preflight.
+    #[serde(default = "default_fec_max_tree_lanes")]
+    pub fec_max_tree_lanes: usize,
+
+    /// On/off gate for collaborative multi-tree FEC sessions.
+    #[serde(default = "default_fec_collaborative_multitree_enabled")]
+    pub fec_collaborative_multitree_enabled: bool,
+
     /// Global kill-switch for FEC sessions. When false, all FEC session requests are rejected.
     #[serde(default = "default_fec_enabled")]
     pub fec_enabled: bool,
@@ -708,6 +726,11 @@ pub struct LosslessConfig {
     /// Upper bound for `FecManifest.symbol_size` accepted by runtime preflight.
     #[serde(default = "default_fec_symbol_size_max")]
     pub fec_symbol_size_max: u16,
+
+    /// Effective processor ingress policy copied from `LocalConfig.feature`.
+    /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
+    #[serde(skip)]
+    pub ingress_feature: Feature,
 }
 
 impl LosslessConfig {
@@ -731,18 +754,39 @@ impl Default for LosslessConfig {
             default_chunk_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
+            fec_tree_lane_depth: 32,
+            fec_dispatch_burst: 1,
+            fec_max_tree_lanes: 64,
+            fec_collaborative_multitree_enabled: true,
             fec_enabled: false,
             fec_require_capability: true,
             fec_symbols_per_block_min: 1,
             fec_symbols_per_block_max: 1024,
             fec_symbol_size_min: 1,
             fec_symbol_size_max: 16_384,
+            ingress_feature: Feature::Sequential,
         }
     }
 }
 
 const fn default_ready_grace_ms() -> u64 {
     1500
+}
+
+const fn default_fec_tree_lane_depth() -> usize {
+    32
+}
+
+const fn default_fec_dispatch_burst() -> usize {
+    1
+}
+
+const fn default_fec_max_tree_lanes() -> usize {
+    64
+}
+
+const fn default_fec_collaborative_multitree_enabled() -> bool {
+    true
 }
 
 const fn default_fec_enabled() -> bool {
@@ -881,6 +925,13 @@ mod tests {
         let cfg = LocalConfig::default();
         let lossless = cfg.lossless_runtime_config;
 
+        assert_eq!(lossless.fec_tree_lane_depth, 32);
+        assert_eq!(lossless.fec_dispatch_burst, 1);
+        assert_eq!(lossless.fec_max_tree_lanes, 64);
+        assert!(
+            lossless.fec_collaborative_multitree_enabled,
+            "collaborative multi-tree mode should be enabled by default"
+        );
         assert!(
             !lossless.fec_enabled,
             "FEC must be explicit opt-in by default"
@@ -889,8 +940,24 @@ mod tests {
             lossless.fec_require_capability,
             "strict capability negotiation should be enabled by default"
         );
+        assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert_eq!(lossless.fec_symbols_per_block_bounds(), (1, 1024));
         assert_eq!(lossless.fec_symbol_size_bounds(), (1, 16_384));
+    }
+
+    #[test]
+    fn populate_runtime_defaults_syncs_lossless_ingress_policy() {
+        let mut cfg = LocalConfig {
+            feature: super::Feature::Concurrent,
+            ..Default::default()
+        };
+
+        cfg.populate_runtime_defaults();
+
+        assert_eq!(
+            cfg.lossless_runtime_config.ingress_feature,
+            super::Feature::Concurrent
+        );
     }
 
     #[test]

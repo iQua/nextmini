@@ -263,7 +263,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T8 — Runtime Config + API Propagation (UPDATE; NO LEGACY)
+### T8 — Runtime Config + API Propagation (COMPLETE — February 14, 2026)
 - **depends_on: [T0, T6]**
 - Add/validate tunables:
   - `fec_tree_lane_depth`
@@ -286,6 +286,21 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
   - docs
 
 - **Output:** feature is configurable and externally usable without any hash-based behavior.
+
+- **Status:** completed.
+- **Work log:** replaced sender/runtime `fec_num_trees` wiring with explicit `fec_tree_ids`; added runtime tunables (`fec_tree_lane_depth`, `fec_dispatch_burst`, `fec_max_tree_lanes`) plus a simple collaborative on/off gate; enforced deterministic preflight for non-empty sorted+unique tree IDs, max-lane bounds, and sequential-only multi-tree ingress (T5 Option A). Wired Python `send_data` to require explicit `fec_tree_ids` for FEC sessions and propagate runtime tunables into sender config.
+- **Files changed (T8):**
+  - `dataplane/src/node/config.rs`
+  - `dataplane/src/node/session/runtime.rs`
+  - `dataplane/src/node/session/unicast.rs`
+  - `python-api/src/lib.rs`
+  - `dataplane/tests/fec_multitree.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/config-reference.md`
+  - `docs/docs/design/python-api.md`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** Python API now rejects FEC sender calls that omit `fec_tree_ids`; runtime preflight now also rejects multi-tree FEC whenever dataplane `feature=concurrent`, so collaborative sessions require `feature=sequential`.
 
 ---
 

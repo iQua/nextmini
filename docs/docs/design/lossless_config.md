@@ -17,6 +17,10 @@ Defines default behavior for the lossless session engines used by the dataplane.
 | `default_chunk_size` | `usize` | `8500` | Default payload chunk size in bytes. |
 | `data_bucket` | `Option<TokenBucketSpec>` | `None` | Optional token bucket for data pacing. |
 | `ready_grace_ms` | `u64` | `1500` | Grace window (ms) before the sender starts streaming when not all receivers have reported `Ready`. |
+| `fec_tree_lane_depth` | `usize` | `32` | Per-tree sender lane depth for collaborative FEC dispatch. |
+| `fec_dispatch_burst` | `usize` | `1` | Max FEC symbols dispatched per sender scheduling cycle. |
+| `fec_max_tree_lanes` | `usize` | `64` | Max allowed `fec_tree_ids` length at runtime preflight. |
+| `fec_collaborative_multitree_enabled` | `bool` | `true` | On/off gate for collaborative multi-tree FEC mode. |
 
 ### TokenBucketSpec Fields
 
@@ -58,6 +62,10 @@ This contract defines sender-side tree selection for collaborative multi-tree FE
 [lossless_runtime_config]
 default_chunk_size = 8500
 ready_grace_ms = 1500
+fec_tree_lane_depth = 32
+fec_dispatch_burst = 1
+fec_max_tree_lanes = 64
+fec_collaborative_multitree_enabled = true
 
 # Optional pacing
 # [lossless_runtime_config.data_bucket]

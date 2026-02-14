@@ -70,7 +70,9 @@ async fn sender_emits_repairs_with_budget() {
         total_bytes: 64,
         source_buffer: Bytes::from(vec![0xAB; 16]),
         fec_manifest: Some(manifest),
-        fec_num_trees: None,
+        fec_tree_ids: vec![0],
+        fec_tree_lane_depth: 32,
+        fec_dispatch_burst: 1,
         ready_grace_ms: 1,
         topology_ready: None,
     };

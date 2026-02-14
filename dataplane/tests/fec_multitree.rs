@@ -73,7 +73,9 @@ async fn run_sender_and_capture_trees(session_id: u64) -> TreeCapture {
         total_bytes: 1024,
         source_buffer: Bytes::from(vec![0xCD; 32]),
         fec_manifest: Some(manifest),
-        fec_num_trees: Some(4),
+        fec_tree_ids: vec![0, 1, 2, 3],
+        fec_tree_lane_depth: 32,
+        fec_dispatch_burst: 1,
         ready_grace_ms: 1,
         topology_ready: None,
     };
