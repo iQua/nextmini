@@ -300,7 +300,7 @@ These settings control multi-node deployment on a single machine using Linux nam
 
 ### Lossless Session Configuration
 
-See [Lossless Session Configuration](lossless_config.md) for details.
+See [Lossless Session Configuration](lossless_config) for details.
 
 ```toml
 [lossless_runtime_config]

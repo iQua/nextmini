@@ -1,6 +1,6 @@
 # Lossless Session Configuration
 
-This page covers lossless session settings. For a complete list of all configuration options, see the [Configuration Reference](config-reference.md).
+This page covers lossless session settings. For a complete list of all configuration options, see the [Configuration Reference](config-reference).
 
 ## Overview
 

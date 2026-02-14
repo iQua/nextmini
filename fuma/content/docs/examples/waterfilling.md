@@ -1,9 +1,8 @@
 
 ## Water-Filling Routing
 
-!!! warning
-    
-    The following instructions have not been verified to work correctly.
+> **Warning**
+> The following instructions have not been verified to work correctly.
 
 
 The water-filling routing example, written in Python, showcases run-time route adaptation based on live performance measurements. To start the experiment with water-filling routing, open a terminal and run the following:

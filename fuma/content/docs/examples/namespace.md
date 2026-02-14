@@ -185,9 +185,8 @@ Example (default settings):
 
 - `idx = 0 → ns_ip = 172.16.8.2 → node_id = 1` (host veth: `veth0a`, namespace veth: `veth0b`)
 
-!!! warning
-
-    The following instructions have not been verified to work correctly.
+> **Warning**
+> The following instructions have not been verified to work correctly.
 
 
 # Running Nextmini's dataplane nodes in virtualized network namespaces on multiple hosts

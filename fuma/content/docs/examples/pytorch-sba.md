@@ -130,7 +130,7 @@ To train different variants of resnet, simply simply change the `--type` command
 
 ### Optional: Emit metrics via the Python dataplane API
 
-If you want these SBA scenarios to stream intermediate loss/activation tensors through Nextmini (instead of relying solely on TUN delivery), follow the steps in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api.md):
+If you want these SBA scenarios to stream intermediate loss/activation tensors through Nextmini (instead of relying solely on TUN delivery), follow the steps in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api):
 
 1. Install the `nextmini_py` wheel on the swarm nodes.
 2. Set `NEXTMINI_CONFIG=/var/nextmini/node-config.toml` (or the appropriate mounted path) and `NEXTMINI_DST_NODE=<target node id>` before invoking the training scripts.
