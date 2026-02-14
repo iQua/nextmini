@@ -145,7 +145,7 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
 
 ---
 
-### T3 — Extract Sender-Side FEC Scheduler Core (UPDATE)
+### T3 — Extract Sender-Side FEC Scheduler Core (COMPLETE — February 14, 2026)
 - **depends_on: [T1]**
 - Extract an FEC planning/scheduling component from the sender loop:
   - active blocks, symbol cursor, repair budget accounting
@@ -158,6 +158,12 @@ Sender-side collaboration only works if congestion/backpressure can be observed 
   - `dataplane/src/node/session/sender.rs` (or new `fec_scheduler.rs`)
 
 - **Output:** maintainable scheduling core with unit-test seams.
+- **Status:** completed.
+- **Work log:** extracted sender FEC planning into a dedicated `FecScheduler` with scheduler-owned `FecSymbolSupply`, active block stats, block cursor, and repair-budget accounting; simplified the sender loop by driving FEC planning/emission through a single scheduler entrypoint while preserving pre-T6 default-tree dispatch behavior and tree-unassigned work items.
+- **Files changed (T3):**
+  - `dataplane/src/node/session/sender.rs`
+  - `plans/fec-multitree-collaboration-plan.md`
+- **Gotchas:** scheduler encapsulation keeps behavior equivalent to current pre-T6 semantics (single global dispatch path, no collaborative per-tree lanes yet); bounded `active_blocks` lifecycle cleanup is still deferred to later tasks focused on long-session retention.
 
 ---
 
