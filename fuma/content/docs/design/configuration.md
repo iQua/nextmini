@@ -3,7 +3,6 @@ title: "Transport Configuration"
 description: ""
 ---
 
-# Transport Configuration
 
 This page covers transport protocol settings. For a complete list of all configuration options, see the [Configuration Reference](/docs/design/config-reference).
 

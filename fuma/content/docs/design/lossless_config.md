@@ -3,7 +3,6 @@ title: "Lossless Session Configuration"
 description: ""
 ---
 
-# Lossless Session Configuration
 
 This page covers lossless session settings. For a complete list of all configuration options, see the [Configuration Reference](/docs/design/config-reference).
 

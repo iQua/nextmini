@@ -3,7 +3,6 @@ title: "Configuration Reference"
 description: ""
 ---
 
-# Configuration Reference
 
 This document provides a comprehensive reference for all configuration options in Nextmini.
 

@@ -4,7 +4,6 @@ description: ""
 ---
 
 
-# Distributed PyTorch Trainers
 
 ## Running a Distributed PyTorch Trainer with OpenMPI on a Single Machine
 

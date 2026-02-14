@@ -3,7 +3,6 @@ title: "Running Nextmini's dataplane nodes in virtualized network namespaces on 
 description: ""
 ---
 
-# Running Nextmini's dataplane nodes in virtualized network namespaces on a single host
 
 This example demonstrates and tests the startup time and memory usage when spawning different numbers of nodes using the namespace feature of Nextmini.
 

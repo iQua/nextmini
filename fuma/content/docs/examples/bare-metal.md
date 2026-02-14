@@ -3,7 +3,6 @@ title: "Bare Metal Deployment"
 description: ""
 ---
 
-# Bare Metal Deployment
 
 Deploy Nextmini Controller and Dataplane Nodes as native binaries across multiple physical machines.
 

@@ -3,7 +3,6 @@ title: "PyTorch + Nextmini Python API quickstart"
 description: ""
 ---
 
-# PyTorch + Nextmini Python API quickstart
 
 This guide shows how to stream PyTorch tensors through `nextmini_py` using the current Python API (`PacketView`, `Dataplane`, and `PacketReceiver`).
 

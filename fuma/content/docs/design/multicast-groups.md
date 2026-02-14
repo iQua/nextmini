@@ -3,7 +3,6 @@ title: "Multicast Groups in Nextmini"
 description: ""
 ---
 
-# Multicast Groups in Nextmini
 
 Multicast groups let a single source node deliver packets to many receivers through one logical destination IP. The controller owns group lifecycle and persistence; multicast DAG edges are supplied externally and pushed to the dataplane, which mirrors the group directory, fans out packets hop-by-hop, and preserves the existing scheduling pipeline.
 

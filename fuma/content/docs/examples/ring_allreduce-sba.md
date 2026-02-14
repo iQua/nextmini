@@ -3,7 +3,6 @@ title: "Distributed ring all-reduce on Sim, Boston and Arbutus"
 description: ""
 ---
 
-# Distributed ring all-reduce on Sim, Boston and Arbutus
 
 Before starting, make sure all the containers are stopped and removed.
 

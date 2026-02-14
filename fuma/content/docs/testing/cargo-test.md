@@ -3,7 +3,6 @@ title: "Cargo Test Guide"
 description: ""
 ---
 
-# Cargo Test Guide
 
 Run tests from the repository root (`nextmini/`).
 

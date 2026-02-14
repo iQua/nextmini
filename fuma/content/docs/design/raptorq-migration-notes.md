@@ -3,7 +3,6 @@ title: "RaptorQ Migration Notes (T1 Snapshot)"
 description: ""
 ---
 
-# RaptorQ Migration Notes (T1 Snapshot)
 
 Date: February 12, 2026
 
