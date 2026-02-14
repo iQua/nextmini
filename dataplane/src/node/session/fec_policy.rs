@@ -301,6 +301,61 @@ mod tests {
     }
 
     #[test]
+    fn sender_policy_rejects_when_capability_requirement_disabled() {
+        let runtime = LosslessConfig {
+            fec_require_capability: false,
+            ..enabled_runtime()
+        };
+        let err = derive_sender_policy(&runtime, 1200).expect_err(
+            "strict runtime-owned FEC negotiation should reject disabled capability requirements",
+        );
+
+        assert_eq!(err, PreflightError::CapabilityRequirementDisabled);
+    }
+
+    #[test]
+    fn sender_policy_rejects_chunk_size_that_cannot_derive_default_symbol_size() {
+        let runtime = enabled_runtime();
+        let chunk_size = usize::from(u16::MAX) + 1;
+        let err = derive_sender_policy(&runtime, chunk_size)
+            .expect_err("chunk-size-based symbol policy should reject chunk sizes larger than u16");
+
+        assert_eq!(
+            err,
+            PreflightError::ChunkSizeCannotDeriveDefaultSymbolSize { chunk_size }
+        );
+    }
+
+    #[test]
+    fn sender_policy_canonicalizes_runtime_defaults_for_manifest_and_tree_ids() {
+        let runtime = LosslessConfig {
+            fec_enabled: true,
+            fec_require_capability: true,
+            fec_default_symbols_per_block: 1,
+            fec_symbols_per_block_min: 8,
+            fec_symbols_per_block_max: 64,
+            fec_symbol_size_policy: FecSymbolSizePolicy::Fixed,
+            fec_default_symbol_size: 4096,
+            fec_symbol_size_min: 1200,
+            fec_symbol_size_max: 1500,
+            fec_default_tree_ids: vec![3, 1, 3],
+            ingress_feature: Feature::Sequential,
+            ingress_channel_backpressure: true,
+            ..Default::default()
+        };
+        let policy = derive_sender_policy(&runtime, 1200).expect(
+            "policy should use canonical runtime defaults when caller provides no FEC data",
+        );
+        let manifest = policy
+            .manifest
+            .expect("FEC runtime should derive a manifest from canonical defaults");
+
+        assert_eq!(manifest.symbols_per_block, 8);
+        assert_eq!(manifest.symbol_size, 1500);
+        assert_eq!(policy.tree_ids, vec![1, 3]);
+    }
+
+    #[test]
     fn sender_policy_derives_manifest_and_tree_ids_from_runtime_defaults() {
         let runtime = enabled_runtime();
         let policy = derive_sender_policy(&runtime, 1200)

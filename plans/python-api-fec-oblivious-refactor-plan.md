@@ -275,6 +275,29 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - `cargo test -p dataplane --test fec_handshake`
   - `cargo test -p dataplane --test fec_sender`
   - `cargo test -p dataplane --test fec_receiver`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Added runtime-policy unit regressions in `dataplane/src/node/session/fec_policy.rs` for invariants previously enforced in Python helpers:
+    - Reject `fec_require_capability=false` under strict internalized FEC startup.
+    - Reject chunk sizes that cannot derive default symbol size under chunk-size policy.
+    - Verify manifest/tree defaults are canonicalized from runtime config (bounds + sorted/unique tree IDs) when caller provides no FEC fields.
+  - Expanded sender preflight regression coverage in `dataplane/tests/fec_handshake.rs`:
+    - `CapabilityRequirementDisabled` propagates through runtime API.
+    - `ChunkSizeCannotDeriveDefaultSymbolSize` propagates through runtime API.
+  - Refactored `dataplane/tests/fec_sender.rs` to drive sender startup through `LosslessRuntimeHandle::start_sender(SenderRequest)` and assert:
+    - runtime-derived manifest values,
+    - preserved repair budget behavior,
+    - preserved token-bucket pacing.
+  - Added receiver runtime regression probe in `dataplane/tests/fec_receiver.rs` to assert `FecCapabilities` advertisements are derived from runtime `fec_enabled` config (default vs empty) after `FecManifest`, with no caller-provided capability field.
+- Files modified:
+  - `dataplane/src/node/session/fec_policy.rs`
+  - `dataplane/tests/fec_handshake.rs`
+  - `dataplane/tests/fec_sender.rs`
+  - `dataplane/tests/fec_receiver.rs`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - `fec_sender` and `fec_receiver` regression probes now rely on runtime-owned session startup, so they intentionally capture and decode emitted control packets (manifest/capabilities) rather than asserting direct config struct contents.
 
 ### T7 — Remove FEC From Python API Surface
 - `depends_on: [T5]`

@@ -6,12 +6,11 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use nextmini::node::NodeIdExt;
-use nextmini::node::config::LocalConfig;
+use nextmini::node::config::{FecSymbolSizePolicy, LocalConfig};
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::session::api::InboundFrame;
-use nextmini::node::session::runtime::{CommonConfig, SenderConfig};
-use nextmini::node::session::sender;
+use nextmini::node::session::api::LosslessRuntimeHandle;
+use nextmini::node::session::runtime::{CommonConfig, SenderRequest};
 use nextmini_messages::lossless_session::{self, FecManifest, LosslessSessionControl};
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry, TokenBucketSpec};
 
@@ -49,38 +48,49 @@ async fn sender_emits_repairs_with_budget() {
 
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let manifest = FecManifest::new_raptorq(4, 16);
-    let common = CommonConfig {
-        session_id: 55,
-        dest_ip: dst_ip,
-        chunk_size: usize::from(manifest.symbol_size),
-        src_port,
-        dst_port,
-        data_bucket: Some(TokenBucketSpec {
-            rate: 160,
-            bucket_size: 16,
-        }),
-        local_node_id: cfg.node_id,
-        user_space_base_addr: cfg.user_space_base_addr,
-        local_netmask: cfg.local_netmask,
-    };
-    let sender_cfg = SenderConfig {
-        common,
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_require_capability = true;
+    runtime_cfg.fec_default_symbols_per_block = 4;
+    runtime_cfg.fec_symbol_size_policy = FecSymbolSizePolicy::Fixed;
+    runtime_cfg.fec_default_symbol_size = 16;
+    runtime_cfg.fec_symbol_size_min = 1;
+    runtime_cfg.fec_symbol_size_max = 16_384;
+    runtime_cfg.ready_grace_ms = 1;
+    let runtime = LosslessRuntimeHandle::new(processors.clone(), runtime_cfg);
+    runtime.set_topology_ready(true);
+
+    let session_id = 55;
+    let sender_cfg = SenderRequest {
+        common: CommonConfig {
+            session_id,
+            dest_ip: dst_ip,
+            chunk_size: 16,
+            src_port,
+            dst_port,
+            data_bucket: Some(TokenBucketSpec {
+                rate: 160,
+                bucket_size: 16,
+            }),
+            local_node_id: cfg.node_id,
+            user_space_base_addr: cfg.user_space_base_addr,
+            local_netmask: cfg.local_netmask,
+        },
         receiver_ids: vec![],
         total_bytes: 64,
         source_buffer: Bytes::from(vec![0xAB; 16]),
-        fec_manifest: Some(manifest),
-        fec_tree_ids: vec![0],
-        fec_tree_lane_depth: 32,
-        fec_dispatch_burst: 1,
         ready_grace_ms: 1,
-        topology_ready: None,
     };
+    let started_sid = runtime
+        .start_sender(sender_cfg)
+        .await
+        .expect("runtime should derive sender FEC policy from internal config");
+    assert_eq!(
+        started_sid, session_id,
+        "runtime should preserve caller-provided session ID"
+    );
 
-    let (_ctrl_tx, ctrl_rx) = mpsc::channel::<InboundFrame>(16);
-    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, processors.clone()));
-
-    let mut saw_manifest = false;
+    let mut observed_manifest = None;
     let mut saw_eot = false;
     let mut symbols: Vec<(u64, u32, usize)> = Vec::new();
     let mut first_symbol_at: Option<Instant> = None;
@@ -106,8 +116,8 @@ async fn sender_emits_repairs_with_budget() {
 
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             match control {
-                LosslessSessionControl::FecManifest { .. } => {
-                    saw_manifest = true;
+                LosslessSessionControl::FecManifest { fec, .. } => {
+                    observed_manifest = Some(fec);
                 }
                 LosslessSessionControl::Eot { .. } => {
                     saw_eot = true;
@@ -117,12 +127,17 @@ async fn sender_emits_repairs_with_budget() {
         }
     }
 
-    timeout(Duration::from_secs(5), sender_task)
+    let completed = timeout(Duration::from_secs(5), runtime.wait_completion(session_id))
         .await
-        .expect("sender task timed out")
-        .expect("sender task failed");
+        .expect("sender runtime wait should not time out");
+    assert!(completed, "sender task should report completion");
 
-    assert!(saw_manifest, "sender should emit a FEC manifest");
+    let manifest = observed_manifest.expect("sender should emit a runtime-derived FEC manifest");
+    assert_eq!(
+        manifest,
+        FecManifest::new_raptorq(4, 16),
+        "manifest values should come from runtime config defaults, not caller-provided fields"
+    );
     assert!(saw_eot, "sender should emit EOT after draining symbols");
     assert!(!symbols.is_empty(), "sender should emit FEC symbols");
     assert!(

@@ -1,20 +1,24 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::timeout;
 
+use nextmini::node::NodeIdExt;
 use nextmini::node::config::LocalConfig;
+use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::session::api::InboundFrame;
+use nextmini::node::session::api::{InboundFrame, LosslessRuntimeHandle};
 use nextmini::node::session::fec::{BlockParams, Encoder, block_seed};
 use nextmini::node::session::receiver;
-use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig};
+use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig, ReceiverRequest};
 use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{
     self, FecCapabilities, FecManifest, LosslessSessionControl,
 };
+use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
 const SESSION_ID: u64 = 0xA55A;
 const SOURCE_NODE_ID: usize = 11;
@@ -41,6 +45,106 @@ fn build_payload(size: usize) -> Vec<u8> {
         *byte = ((idx as u64 * 31 + 17) & 0xFF) as u8;
     }
     payload
+}
+
+async fn runtime_advertised_capabilities(fec_enabled: bool) -> FecCapabilities {
+    let cfg = LocalConfig {
+        node_id: RECEIVER_NODE_ID,
+        n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+        num_packet_processors: 1,
+        channel_capacity: 1024,
+        user_space_base_addr: std::net::Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let processors = ProcessorHandle::new(cfg.clone());
+
+    let src_ip = cfg
+        .node_id
+        .ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+    let dst_ip = SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+    let src_port = 4700;
+    let dst_port = 5700;
+    processors
+        .update_routing_table(vec![RoutingTableEntry {
+            route_id: if fec_enabled { 88 } else { 89 },
+            next_hops: vec![cfg.node_id],
+            src_node_id: cfg.node_id,
+            dst_node_id: SOURCE_NODE_ID,
+            forward_mode: RouteForwardingMode::Unicast,
+        }])
+        .await;
+
+    let flow_id = Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port);
+    let (packet_tx, mut packet_rx) = mpsc::channel(512);
+    processors.connect_user_space_sender(flow_id, packet_tx);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = fec_enabled;
+    let runtime = LosslessRuntimeHandle::new(processors.clone(), runtime_cfg);
+
+    let session_id = if fec_enabled { 0xA55B } else { 0xA55C };
+    let receiver_sid = runtime
+        .start_receiver(ReceiverRequest {
+            common: CommonConfig {
+                session_id,
+                dest_ip: src_ip,
+                chunk_size: 16,
+                src_port,
+                dst_port,
+                data_bucket: None,
+                local_node_id: cfg.node_id,
+                user_space_base_addr: cfg.user_space_base_addr,
+                local_netmask: cfg.local_netmask,
+            },
+            source_node_id: SOURCE_NODE_ID,
+            expected_bytes: 16,
+            sink_buffer: None,
+        })
+        .await;
+    assert_eq!(
+        receiver_sid, session_id,
+        "runtime should preserve receiver session ID"
+    );
+
+    runtime.deliver(
+        receiver_sid,
+        InboundFrame {
+            bytes: lossless_session::encode_control(
+                receiver_sid,
+                &LosslessSessionControl::FecManifest {
+                    chunk_size: 16,
+                    total_bytes: 16,
+                    fec: FecManifest::new_raptorq(4, 16),
+                },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        },
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut observed = None;
+    while Instant::now() < deadline {
+        let packet = match timeout(Duration::from_millis(100), packet_rx.recv()).await {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(_) => continue,
+        };
+        let Some(payload) = packet.tcp_payload() else {
+            continue;
+        };
+        let Some((_, control)) = lossless_session::decode_control(payload) else {
+            continue;
+        };
+        if let LosslessSessionControl::FecCapabilities { capabilities, .. } = control {
+            observed = Some(capabilities);
+            break;
+        }
+    }
+
+    runtime.stop(receiver_sid);
+    observed.expect("receiver should advertise FEC capabilities after FEC manifest")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -168,5 +272,22 @@ async fn receiver_recovers_under_10pct_loss() {
         recovered.as_slice(),
         payload.as_slice(),
         "recovered payload content must match source object under configured IID loss"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_receiver_derives_capabilities_from_runtime_config() {
+    let enabled = runtime_advertised_capabilities(true).await;
+    assert_eq!(
+        enabled,
+        FecCapabilities::default(),
+        "fec_enabled=true should advertise default runtime capabilities without caller input"
+    );
+
+    let disabled = runtime_advertised_capabilities(false).await;
+    assert_eq!(
+        disabled,
+        FecCapabilities::empty(),
+        "fec_enabled=false should advertise empty capabilities without caller input"
     );
 }

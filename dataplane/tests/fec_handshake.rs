@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use nextmini::node::NodeIdExt;
-use nextmini::node::config::LocalConfig;
+use nextmini::node::config::{FecSymbolSizePolicy, LocalConfig};
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::{InboundFrame, LosslessRuntimeHandle};
@@ -72,6 +72,95 @@ async fn start_sender_surfaces_preflight_error_to_caller() {
     assert!(
         matches!(started, Err(PreflightError::MissingTreeIds)),
         "caller should get a typed preflight error instead of a best-effort session id"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_rejects_when_capability_requirement_is_disabled() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let processors = ProcessorHandle::new(cfg.clone());
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_require_capability = false;
+    let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
+
+    let sender_cfg = SenderRequest {
+        common: CommonConfig {
+            session_id: 0x0FEC_2002,
+            dest_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            chunk_size: 16,
+            src_port: 4411,
+            dst_port: 5411,
+            data_bucket: None,
+            local_node_id: cfg.node_id,
+            user_space_base_addr: cfg.user_space_base_addr,
+            local_netmask: cfg.local_netmask,
+        },
+        receiver_ids: vec![2],
+        total_bytes: 64,
+        source_buffer: Bytes::from(vec![0xAA; 16]),
+        ready_grace_ms: 1,
+    };
+
+    let started = runtime.start_sender(sender_cfg).await;
+    assert!(
+        matches!(started, Err(PreflightError::CapabilityRequirementDisabled)),
+        "runtime should enforce strict capability requirement when deriving FEC policy internally"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_rejects_chunk_size_that_cannot_derive_default_symbol_size() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let processors = ProcessorHandle::new(cfg.clone());
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_symbol_size_policy = FecSymbolSizePolicy::ChunkSize;
+    let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
+
+    let chunk_size = usize::from(u16::MAX) + 1;
+    let sender_cfg = SenderRequest {
+        common: CommonConfig {
+            session_id: 0x0FEC_2003,
+            dest_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            chunk_size,
+            src_port: 4412,
+            dst_port: 5412,
+            data_bucket: None,
+            local_node_id: cfg.node_id,
+            user_space_base_addr: cfg.user_space_base_addr,
+            local_netmask: cfg.local_netmask,
+        },
+        receiver_ids: vec![2],
+        total_bytes: 64,
+        source_buffer: Bytes::from(vec![0xAA; 16]),
+        ready_grace_ms: 1,
+    };
+
+    let started = runtime.start_sender(sender_cfg).await;
+    assert!(
+        matches!(
+            started,
+            Err(PreflightError::ChunkSizeCannotDeriveDefaultSymbolSize { chunk_size: value })
+                if value == chunk_size
+        ),
+        "runtime should reject chunk_size values that cannot produce a default symbol size"
     );
 }
 
