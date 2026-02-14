@@ -1,3 +1,8 @@
+---
+title: "architecture"
+description: ""
+---
+
 ## Architectural Design
 
 Nextmini is organized as a small workspace of focused crates:

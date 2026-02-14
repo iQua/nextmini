@@ -1,3 +1,8 @@
+---
+title: "Python API Validation (Multicast + Membership Churn)"
+description: ""
+---
+
 # Python API Validation (Multicast + Membership Churn)
 
 This guide validates end-to-end multicast behavior through `nextmini_py` using the dockerized harness in `examples/multicast-docker`.

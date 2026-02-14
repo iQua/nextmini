@@ -1,3 +1,8 @@
+---
+title: "Configuration Reference"
+description: ""
+---
+
 # Configuration Reference
 
 This document provides a comprehensive reference for all configuration options in Nextmini.
@@ -300,7 +305,7 @@ These settings control multi-node deployment on a single machine using Linux nam
 
 ### Lossless Session Configuration
 
-See [Lossless Session Configuration](lossless_config) for details.
+See [Lossless Session Configuration](/docs/design/lossless_config) for details.
 
 ```toml
 [lossless_runtime_config]

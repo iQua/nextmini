@@ -1,3 +1,8 @@
+---
+title: "Distributed PyTorch Trainers"
+description: ""
+---
+
 
 # Distributed PyTorch Trainers
 
@@ -53,7 +58,7 @@ This should start a training session for a `LeNet-5` model to be trained with th
 
 ## Optional: Stream training metrics through the Python dataplane API
 
-When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, use the Python bindings described in [PyTorch + Nextmini Python API Quickstart](pytorch_python_api):
+When you want to push tensors or scalar metrics directly into the Nextmini dataplane from the trainers, use the Python bindings described in [PyTorch + Nextmini Python API Quickstart](/docs/examples/pytorch_python_api):
 
 1. Build and install the `nextmini_py` wheel (`maturin build --release -m python-api/Cargo.toml; pip install target/wheels/nextmini_py-*.whl`).
 2. In your trainer script, gate the telemetry path behind environment variables (or any equivalent config):

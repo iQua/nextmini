@@ -1,3 +1,8 @@
+---
+title: "Defining the Network Topology and Routes"
+description: ""
+---
+
 # Defining the Network Topology and Routes
 
 The example in `examples/routes` shows how the network topology and routes can be defined in the controller's configuration file.

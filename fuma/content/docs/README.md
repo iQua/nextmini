@@ -1,3 +1,8 @@
+---
+title: Documentation Migration Notes
+description: Migration guide from the old MkDocs documentation layout to the Fumadocs-based docs system.
+---
+
 # Nextmini Documentation (MkDocs)
 
 This directory contains the Nextmini documentation built with [MkDocs](https://www.mkdocs.org/) and [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/).
@@ -33,4 +38,3 @@ mkdocs build
 ```
 
 The static website will be available in the `site/` directory.
-

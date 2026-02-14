@@ -1,3 +1,8 @@
+---
+title: "Multicast Groups in Nextmini"
+description: ""
+---
+
 # Multicast Groups in Nextmini
 
 Multicast groups let a single source node deliver packets to many receivers through one logical destination IP. The controller owns group lifecycle and persistence; multicast DAG edges are supplied externally and pushed to the dataplane, which mirrors the group directory, fans out packets hop-by-hop, and preserves the existing scheduling pipeline.
@@ -177,7 +182,7 @@ Current coverage (see `controller/src/utils.rs` and `dataplane/src/node/route.rs
 - Unit tests validate DAG construction, membership pruning, and per-node route assembly.
 - Dataplane tests exercise directory installation, route fan-out, and cache flushing.
 
-Planned follow-ups tracked in [`../testing/python_api_validation.md`](../testing/python_api_validation) and project mail:
+Planned follow-ups tracked in [`python_api_validation`](/docs/testing/python_api_validation) and project mail:
 
 - Controller integration test that drives `CreateGroup`/`JoinGroup` against a live Postgres instance and verifies websocket pushes.
 - End-to-end soak demonstrating packet fan-out across multiple branches (normal + Max mode).
@@ -187,11 +192,11 @@ Planned follow-ups tracked in [`../testing/python_api_validation.md`](../testing
 
 ## Related Material
 
-- **Example walkthrough** – [`../examples/multicast-flow.md`](../examples/multicast-flow) shows the CLI/API flow for creating a group, joining members, and verifying delivery.
-- **Testing harness plan** – [`../testing/python_api_validation.md`](../testing/python_api_validation) describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
+- **Example walkthrough** – [`multicast-flow`](/docs/examples/multicast-flow) shows the CLI/API flow for creating a group, joining members, and verifying delivery.
+- **Testing harness plan** – [`python_api_validation`](/docs/testing/python_api_validation) describes the multi-node docker-compose scenario used to validate multicast plus the Python dataplane bridge.
 - **Controller configuration** – See `controller/src/config.rs` for the multicast pool defaults and other tunables.
 - Dataplane routing-table tests that validate group directory lookups.
 - Integration tests that drive membership changes via Postgres notifications.
 - Performance checks for high-fan-out multicast branches.
 
-See [`../examples/multicast-flow.md`](../examples/multicast-flow) for an end-to-end walkthrough.
+See [`multicast-flow`](/docs/examples/multicast-flow) for an end-to-end walkthrough.

@@ -1,3 +1,8 @@
+---
+title: "Nextmini Hybrid Deployment: Local Server + Fly.io"
+description: ""
+---
+
 # Nextmini Hybrid Deployment: Local Server + Fly.io
 
 This deployment configuration runs the **Controller and PostgreSQL locally** (on your physical/virtual server) while deploying **Dataplane nodes to Fly.io**.

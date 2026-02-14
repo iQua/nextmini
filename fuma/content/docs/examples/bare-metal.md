@@ -1,3 +1,8 @@
+---
+title: "Bare Metal Deployment"
+description: ""
+---
+
 # Bare Metal Deployment
 
 Deploy Nextmini Controller and Dataplane Nodes as native binaries across multiple physical machines.
@@ -63,7 +68,7 @@ Enter passphrase once, it will persist across terminal sessions.
 
 ### Step 4: Configure
 
-For a complete list of configuration options, see the [Configuration Reference](../design/config-reference).
+For a complete list of configuration options, see the [Configuration Reference](/docs/design/config-reference).
 
 Edit `controller/config.toml`:
 

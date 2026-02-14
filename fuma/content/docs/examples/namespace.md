@@ -1,3 +1,7 @@
+---
+title: "Running Nextmini's dataplane nodes in virtualized network namespaces on a single host"
+description: ""
+---
 
 # Running Nextmini's dataplane nodes in virtualized network namespaces on a single host
 
@@ -91,7 +95,6 @@ This script stops the tmux session (if present), brings down the controller cont
 
 This example can be tested with the `c16-180-576` configuration in the Arbutus cloud (a part of the Digital Research Alliance of Canada). As shown in this figure, `c16-180-576` is the name of `Flavor` in the Arbutus cloud, which manage the sizes for the compute, memory and storage capacity of the instance.
 
-![Arbutus c16-180-576 Flavor Configuration](./images/arbutus-flavor.png)
 
 For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
 
@@ -198,7 +201,6 @@ Before running any commands, the port security on each instance should be disabl
 Choose `Edit port security group` and click `Edit Port` button.
 Then the following window will pop up, uncheck `Port Security` and click `Update` button.
 
-![Disable Port Security on Arbutus Instance](./images/arbutus-port-security.png)
 
 These steps are required to be done on all instances before running the example.
 
