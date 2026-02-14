@@ -1,4 +1,11 @@
-## Configuration File Example
+---
+title: "Custom Routes Configuration Example"
+description: "How Nextmini persists and distributes explicitly defined routes."
+---
+
+This example uses a `full_mesh` topology with four nodes and explicit route definitions in the controller configuration. The controller resolves these definitions into its route table, assigns route IDs, and distributes only the entries relevant to each dataplane node.
+
+## Configuration file example
 
 ```toml
 protocol = "quic"
@@ -33,9 +40,9 @@ route = [1, 2]
 route = [2, 1]
 ```
 
-## Routes Table in Database
+## Routes table in the database
 
-Routes stored in database after controller automatically assigns route_id:
+After startup, Nextmini stores the resolved routes in PostgreSQL and assigns stable `route_id` values.
 
 | route_id | src_node_id | dst_node_id | route         |
 |----------|-------------|-------------|---------------|
@@ -58,9 +65,9 @@ Routes stored in database after controller automatically assigns route_id:
 | 16       | 4           | 1           | [4, 2, 3, 1]  |
 | 17       | 4           | 1           | [4, 3, 1]     |
 
-Note: Custom routes `[1, 2]` and `[2, 1]` overlap with preset topology routes, so they won't be added to the database again.
+Custom routes that already exist as topology routes, such as `[1, 2]` and `[2, 1]`, are treated as duplicates and are not inserted again.
 
-## Routes Distributed to Each Node
+## Route entries sent to dataplane nodes
 
 ### Routes for Node 1 (MessagePack Format)
 
@@ -92,14 +99,6 @@ ControllerToDataplane::InstallRoutes {
 }
 ```
 
-## Key Logic
+## Routing behavior
 
-   - Default routes in the topology are direct one-hop links, and they are assigned before custom route IDs
-   - If the current node is the destination: next_hop = own node ID (local delivery)
-   - If current node is in the middle of the path: next_hop = next node ID in the path
-   - If current node is not in the path: next_hop = INVALID (invalid route)
-   - Duplicate routes are automatically skipped without assigning new route_id
-   - Uses MessagePack binary format for serialization
-   - Sent to dataplane nodes via WebSocket
-   - Implements automatic route table synchronization through the PostgreSQL notification mechanism
-   - Automatically distributes the latest route table to all available nodes when route table changes
+Route resolution is deterministic. The controller first materializes direct topology routes, then adds custom routes and assigns IDs. On each node, it computes the next hop: the destination node uses its own ID to indicate local delivery, intermediate nodes forward to the next node in the configured path, and nodes not on a path receive an `INVALID` next hop. Route updates propagate through PostgreSQL notifications and are pushed to dataplane nodes via WebSocket whenever the route table changes. The payload is serialized in MessagePack for efficient transport.
