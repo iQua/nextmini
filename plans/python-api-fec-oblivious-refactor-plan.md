@@ -361,6 +361,20 @@ This breaks encapsulation: the Python layer currently owns policy/validation tha
   - Consistent docs with zero instruction to pass FEC parameters in Python API calls.
 - Validation:
   - `rg -n "send_data\\(|receive_data\\(|fec_enabled|fec_tree_ids|fec_symbol" docs/docs/design`
+- Status:
+  - Completed on February 14, 2026.
+- Work log:
+  - Updated `docs/docs/design/python-api.md` migration section with explicit caller steps: remove `fec_*` kwargs, move FEC tuning to `[lossless_runtime_config]`, and expect Python `TypeError` on stale kwargs.
+  - Clarified `docs/docs/design/lossless_config.md` as runtime-config ownership for FEC defaults/tree IDs and added explicit FEC-oblivious Python boundary wording.
+  - Added migration/ownership note in `docs/docs/design/config-reference.md` under lossless config so runtime FEC tuning is documented outside Python call signatures.
+- Files modified:
+  - `docs/docs/design/python-api.md`
+  - `docs/docs/design/lossless_config.md`
+  - `docs/docs/design/config-reference.md`
+  - `plans/python-api-fec-oblivious-refactor-plan.md`
+- Errors/gotchas:
+  - Validation grep intentionally still matches `fec_*` tokens in runtime-config documentation; this is expected because those are config fields, not Python kwargs.
+  - T8 owns example/tool callsite rewrites, so this task only updated design docs + migration guidance.
 
 ### T10 — Add Guardrails To Prevent FEC Re-Exposure In Python API
 - `depends_on: [T6, T8, T9]`

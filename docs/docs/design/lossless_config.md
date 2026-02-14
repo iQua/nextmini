@@ -6,6 +6,9 @@ This page covers lossless session settings. For a complete list of all configura
 
 Defines default behavior for the lossless session engines used by the dataplane.
 
+Python `send_data(...)` / `receive_data(...)` / `receive_data_async(...)` calls are FEC-oblivious:
+FEC tuning belongs to `[lossless_runtime_config]` and is not passed as Python `fec_*` kwargs.
+
 ## Location
 
 - Rust struct: `dataplane/src/node/config.rs` → `LosslessConfig`.
@@ -39,7 +42,8 @@ Defines default behavior for the lossless session engines used by the dataplane.
 - Runtime derives default `symbol_size` from `fec_symbol_size_policy`:
   - `chunk_size`: use the session `chunk_size`.
   - `fixed`: use `fec_default_symbol_size`.
-- Runtime canonicalizes derived/default tree IDs to sorted + unique before sender startup checks.
+- Runtime resolves tree IDs from `fec_tree_ids_source` / `fec_default_tree_ids`, then canonicalizes to sorted + unique before sender startup checks.
+- Python callers do not provide per-session FEC overrides; runtime config is the source of truth.
 
 ### TokenBucketSpec Fields
 
@@ -58,7 +62,7 @@ This contract defines sender-side tree selection for collaborative multi-tree FE
 
 ### Tree-ID Set Invariants
 
-- Multi-tree senders use an explicit `fec_tree_ids` allowlist.
+- Multi-tree senders use a runtime-resolved `fec_tree_ids` allowlist.
 - `fec_tree_ids` is canonicalized as sorted ascending and unique.
 - Sender emission is limited to IDs in `fec_tree_ids`.
 - Multi-tree mode requires at least two IDs in `fec_tree_ids`.

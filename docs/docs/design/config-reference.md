@@ -305,6 +305,8 @@ fec_symbol_size_max = 16384
 
 `fec_collaborative_multitree_enabled` is a rollout gate only: when enabled, multi-tree FEC uses collaborative dispatch-time assignment exclusively (no hash/legacy strategy mode).
 `fec_symbol_size_policy` accepts `chunk_size` or `fixed`; `fec_tree_ids_source` accepts `config` or `installed_routes`.
+Python lossless helpers (`send_data`, `receive_data`, `receive_data_async`) do not accept `fec_*` kwargs; configure FEC behavior through `[lossless_runtime_config]`.
+Legacy kwargs (`fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`) now fail at Python bind time with `TypeError` (unexpected keyword argument).
 
 ---
 

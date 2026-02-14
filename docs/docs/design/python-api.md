@@ -96,10 +96,14 @@ Python callers cannot provide or override FEC internals. `FecManifest`, `FecCapa
 
 ### Migration behavior
 
-- This is an explicit breaking change.
-- Removed kwargs: `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`.
-- Compatibility policy: no short-lived Python shim.
-- Caller impact: old kwargs fail fast with Python `TypeError` (unexpected keyword argument) once the signature removal lands.
+This is an explicit breaking change with no compatibility shim.
+
+1. Remove legacy kwargs from Python callsites:
+   `fec_enabled`, `fec_symbols_per_block`, `fec_symbol_size`, `fec_tree_ids`.
+2. Move FEC tuning to node runtime config under `[lossless_runtime_config]`
+   (for example `fec_enabled`, symbol sizing fields, and tree-ID source/defaults).
+3. Expect Python `TypeError` on leftover kwargs at call binding time, for example:
+   `TypeError: Dataplane.send_data() got an unexpected keyword argument 'fec_enabled'`.
 
 ```python
 sid = dp.send_data(
