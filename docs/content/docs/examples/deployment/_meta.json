@@ -1,0 +1,11 @@
+{
+  "title": "Deployment Targets",
+  "pages": [
+    "bare-metal",
+    "public-network",
+    "sba-compose",
+    "flyio",
+    "localserver-flyio",
+    "arbutus"
+  ]
+}

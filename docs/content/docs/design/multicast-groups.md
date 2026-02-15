@@ -70,7 +70,7 @@ The key operational rule is that membership churn and route projection share the
 
 ## Integration points
 
-Application APIs and concrete call examples are documented in [`Python dataplane API`](./python-api). This page focuses on control-plane and dataplane mechanics.
+Application APIs and concrete call examples are documented in [`Python API`](/docs/python-api). Implementation notes for the Python embedding path are in [`Python API Design`](./python-api-design). This page focuses on control-plane and dataplane mechanics.
 
 ## Operational notes
 

@@ -78,10 +78,8 @@ function sortSidebarByOrder(
 		return 0;
 	});
 
-	const pageNodes = children.filter((node) => node.type !== "folder");
-	const sortedFolderNodes = children.filter((node) => node.type === "folder");
-
-	return [...pageNodes, ...sortedFolderNodes];
+	// Preserve the explicit `_meta.json` order across both pages and folders.
+	return children;
 }
 
 function getFolderPath(

@@ -1,14 +1,9 @@
 {
   "pages": [
-    "simple",
-    "pytorch",
-    "pytorch_python_api",
-    "routes",
-    "namespace",
-    "bare-metal",
-    "pytorch-sba",
-    "ring_allreduce-sba",
-    "localserver-flyio",
-    "multicast-flow"
+    "local",
+    "networking",
+    "workloads",
+    "distributed",
+    "deployment"
   ]
 }

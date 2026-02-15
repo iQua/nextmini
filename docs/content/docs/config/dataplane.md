@@ -85,14 +85,6 @@ These fields are maintained at runtime and should not be treated as user tuning 
 | `flow` | Updated from controller flow messages (`AddFlows`). |
 | `max_server_port` | Received from controller startup configuration. |
 
-## Implementation-Level Behavior
-
-A lane is a single ingress queue owned by one processor worker in sequential mode. In that mode, parallelism is distributed only at ingress, and packets assigned to the same lane stay ordered relative to each other. With `Feature::Sequential`, the runtime allocates one `mpsc` ingress channel per packet processor (`num_packet_processors` total), and `ProcessorHandle::Sequential::new` creates a `packet_senders` vector and one processor task per receiver. Lane selection is handled by `SequentialProcHandle::select_processor_ingress_lane`: standard packets use `packet.flow_id.hash(num_lanes)`, while lossless FEC packets detected by `packet.lossless_fec_tree_id()` use `JumpHasher::slot((flow_id, tree_id), num_lanes)`. `Concurrent` mode instead uses one shared bounded `flume` queue with multiple workers pulling from the same queue; packets can therefore be processed out of lane order unless downstream logic reorders them. Route lookup and mutable processor state updates are still carried through per-actor broadcast updates, and there is no per-lane cache sharing. `channel_backpressure` controls queueing behavior at the edge: when true, producers await queue space (`send`/`send_async`) and ingress blocks until capacity is available, while false switches to `try_send` and drops packets when full. Forwarding remains based on `operating_mode` in both modes; local destinations or `OperatingMode::Normal` follow the processor path, while remote routes in `OperatingMode::Max` use the connector path. All processor updates (routes, node changes, reporters, lossless handle, and control state) are broadcast so every worker receives the same control stream.
-
-## Processor Route Resolution
-
-In the hot path, routing calls flow through `get_next_hops_by_flow_and_tree(flow_id, fec_tree_id, reporter)` on the `RoutingTable`. When `fec_tree_id` is absent, non-FEC packets keep the legacy behavior of `get_next_hops_by_flow`. Multicast-tree FEC packets additionally route in `(src_node_id, tree_id)` space when available, and packets with no corresponding route are warned and dropped.
-
 ## TCP Reordering Configuration
 
 | Field | Type | Default | CLI Flag | Description |

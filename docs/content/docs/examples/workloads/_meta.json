@@ -1,0 +1,8 @@
+{
+  "title": "Workloads and Optimization",
+  "pages": [
+    "pytorch",
+    "rl",
+    "lp"
+  ]
+}
