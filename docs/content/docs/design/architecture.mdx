@@ -3,9 +3,25 @@ title: "Architectural Design"
 description: "Nextmini: a High-Performance Network Emulation and Experimentation Testbed"
 ---
 
-Nextmini is organized as a small workspace of focused crates: `controller/` for control-plane services (topology, routing, flow installation, multicast lifecycle, and Postgres integration), `dataplane/` (`nextmini` package) for node runtime behavior like network I/O, packet processing, scheduling, and lossless sessions, `messages/` for shared MessagePack protocol types, `python-api/` (`nextmini_py`) for PyO3 bindings, and `raptorq/` for the FEC primitives.
+Nextmini is organized as a small workspace of focused crates: `controller/` for control-plane services (topology, routing, flow installation, multicast lifecycle, and Postgres integration), `dataplane/` (`nextmini` package) for node runtime behavior like network I/O, packet processing, scheduling, and lossless sessions, `messages/` for shared MessagePack protocol types, `python-api/` (`nextmini_py`) for PyO3 bindings, and `raptorq/` for the FEC primitives using RaptorQ.
 
 ### Control plane (`controller`)
+
+<figure className="my-6">
+  <img
+    src="/images/controller-arch-light.svg"
+    alt="Controller and dataplane architecture"
+    className="block w-full dark:hidden"
+  />
+  <img
+    src="/images/controller-arch-dark.svg"
+    alt="Controller and dataplane architecture"
+    className="hidden w-full dark:block"
+  />
+  <figcaption className="mt-2 text-center text-sm text-fd-muted-foreground">
+    The control plane: an overview of the system architecture.
+  </figcaption>
+</figure>
 
 The controller accepts dataplane websocket connections, assigns startup parameters (`StartUp`), computes routes from configured topology or explicit route definitions, and pushes updates (`InstallRoutes`, `AddFlows`, multicast directory and route messages). Its most important modules are `controller/src/config.rs` for schema and config shape, `controller/src/db.rs` for Postgres persistence and notifications, and `controller/src/utils.rs` for route construction helpers, including multicast per-node route derivation.
 
