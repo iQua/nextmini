@@ -7,6 +7,38 @@ description: "Nextmini: a High-Performance Network Emulation and Experimentation
 
 Though Nextmini runs natively on Linux, the easiest way to get started with Nextmini is to run it within Docker containers. The Docker image is built atop the latest distribution of Alpine Linux and contains all the necessary dependencies to run Nextmini.
 
+### Bird's-eye architecture
+
+The following diagram shows the high-level structure of the repository and how the major runtime pieces interact.
+
+```mermaid
+flowchart LR
+  subgraph Repo[Nextmini Repository]
+    direction TB
+    M[messages crate]
+    C[controller crate]
+    D[dataplane crate]
+    P[python-api crate]
+    G[cert-gen crate]
+    T[tools / examples / docs]
+  end
+
+  W[Workloads and applications] -->|TUN-backed virtual network| D
+  C -->|topology, routes, flow policy| D
+  D -->|flow metrics and status| C
+  D -->|inter-node transport tcp/udp/quic| DP[peer dataplanes]
+  P -->|embedded dataplane APIs| D
+
+  M --> C
+  M --> D
+  M --> P
+
+  T -->|orchestration and experiments| C
+  T -->|orchestration and experiments| D
+  G -->|TLS and certificates| C
+  G -->|TLS and certificates| D
+```
+
 Thanks to the Rust programming language, Nextmini provides three core features, capable of satisfying modern network emulation needs:
 
 - **High performance, fully asynchronous architecture.** Based on the highly efficient [`tokio`](https://tokio.rs) library, Nextmini runs in userspace, and firmly embraces the `async/await` pattern throughout its design, ensuring _multi-Gbps_ throughput by taking full advantage of the abundance of compute cores in modern compute clusters.
