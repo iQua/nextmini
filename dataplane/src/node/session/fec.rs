@@ -49,7 +49,7 @@ impl BlockParams {
     }
 }
 
-/// Adapter-level representation of emitted source/repair symbols.
+/// Adapter-level representation of emitted source/coded symbols.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedSymbol {
     pub esi: u32,
@@ -87,7 +87,7 @@ pub struct Encoder {
     inner: SourceBlockEncoder,
     k: usize,
     symbol_size: usize,
-    next_repair_esi: u32,
+    next_coded_esi: u32,
 }
 
 impl Encoder {
@@ -105,7 +105,7 @@ impl Encoder {
             inner,
             k,
             symbol_size,
-            next_repair_esi: k as u32,
+            next_coded_esi: k as u32,
         })
     }
 
@@ -136,15 +136,15 @@ impl Encoder {
             .collect()
     }
 
-    /// Emits `repair_count` repair symbols in deterministic ESI order.
+    /// Emits `count` coded symbols (ESI >= K) in deterministic ESI order.
     #[must_use]
-    pub fn emit_repair(&mut self, repair_count: usize) -> Vec<EncodedSymbol> {
-        if repair_count == 0 {
+    pub fn emit_coded(&mut self, count: usize) -> Vec<EncodedSymbol> {
+        if count == 0 {
             return Vec::new();
         }
-        let repair_index = self.next_repair_esi - self.k as u32;
-        let packets = self.inner.repair_packets(repair_index, repair_count as u32);
-        self.next_repair_esi += repair_count as u32;
+        let coded_index = self.next_coded_esi - self.k as u32;
+        let packets = self.inner.repair_packets(coded_index, count as u32);
+        self.next_coded_esi += count as u32;
         packets
             .into_iter()
             .map(|pkt| {
@@ -159,17 +159,17 @@ impl Encoder {
             .collect()
     }
 
-    /// Generates a deterministic repair symbol for the provided ESI.
+    /// Generates a deterministic coded symbol payload for the provided ESI (ESI >= K).
     #[must_use]
-    pub fn repair_symbol(&self, esi: u32) -> Vec<u8> {
-        let repair_index = esi.saturating_sub(self.k as u32);
-        let packets = self.inner.repair_packets(repair_index, 1);
+    pub fn coded_symbol(&self, esi: u32) -> Vec<u8> {
+        let coded_index = esi.saturating_sub(self.k as u32);
+        let packets = self.inner.repair_packets(coded_index, 1);
         packets.into_iter().next().unwrap().data().to_vec()
     }
 
     #[must_use]
-    pub const fn next_repair_esi(&self) -> u32 {
-        self.next_repair_esi
+    pub const fn next_coded_esi(&self) -> u32 {
+        self.next_coded_esi
     }
 
     #[must_use]
@@ -244,9 +244,9 @@ impl Decoder {
         ReceivedSymbol { esi, payload }
     }
 
-    /// Builds a repair symbol in decoder input format.
+    /// Builds a coded symbol in decoder input format.
     #[must_use]
-    pub fn repair_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
+    pub fn coded_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
         ReceivedSymbol { esi, payload }
     }
 
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_with_repairs() {
+    fn decode_with_coded() {
         let k = 32usize;
         let symbol_size = 64;
         let source_data: Vec<Vec<u8>> = (0..k)
@@ -362,7 +362,7 @@ mod tests {
         let decoder = Decoder::from_block(params);
 
         let systematic = encoder.emit_systematic();
-        let repairs = encoder.emit_repair(k);
+        let coded = encoder.emit_coded(k);
         let half_k = k / 2;
 
         let mut symbols: Vec<ReceivedSymbol> = systematic[..half_k]
@@ -370,9 +370,9 @@ mod tests {
             .map(|s| decoder.source_symbol(s.esi, s.payload.clone()))
             .collect();
         symbols.extend(
-            repairs[..k - half_k]
+            coded[..k - half_k]
                 .iter()
-                .map(|s| decoder.repair_symbol(s.esi, s.payload.clone())),
+                .map(|s| decoder.coded_symbol(s.esi, s.payload.clone())),
         );
 
         let output = decoder.decode(&symbols).unwrap();

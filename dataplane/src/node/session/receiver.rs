@@ -736,7 +736,7 @@ impl FecBlockState {
             let symbol = if (*esi as usize) < source_symbols {
                 self.decoder.source_symbol(*esi, payload.clone())
             } else {
-                self.decoder.repair_symbol(*esi, payload.clone())
+                self.decoder.coded_symbol(*esi, payload.clone())
             };
             symbols.push(symbol);
         }
