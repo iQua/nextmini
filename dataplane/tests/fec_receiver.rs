@@ -221,7 +221,7 @@ async fn receiver_recovers_under_10pct_loss() {
             Encoder::from_block(params, &source_symbols).expect("encoder should build for block");
 
         let mut symbols = encoder.emit_systematic();
-        symbols.extend(encoder.emit_repair(REPAIR_PER_BLOCK));
+        symbols.extend(encoder.emit_coded(REPAIR_PER_BLOCK));
 
         for symbol in symbols {
             if rng.random::<f64>() < IID_LOSS_RATE {

@@ -699,7 +699,7 @@ impl FecScheduler {
 
         let systematic = encoder.emit_systematic();
         let repair_budget = Self::compute_repair_budget(systematic.len());
-        let repairs = encoder.emit_repair(repair_budget);
+        let repairs = encoder.emit_coded(repair_budget);
 
         self.symbol_supply.push_symbols(block_id, systematic, false);
         self.symbol_supply.push_symbols(block_id, repairs, true);
