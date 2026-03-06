@@ -19,7 +19,7 @@ use crate::node::session::fec::{self, BlockParams};
 use crate::node::session::runtime::ReceiverConfig;
 use crate::node::{NodeId, NodeIdExt};
 
-const ACK_EVERY_CHUNKS: u64 = 16; // ensure <= sender DEFAULT_WINDOW
+const ACK_EVERY_CHUNKS: u64 = 16;
 const FEC_FEEDBACK_INTERVAL: Duration = Duration::from_millis(20);
 const FEC_FEEDBACK_MAX_JITTER_MS: u64 = 11;
 const FEC_DECODED_HISTORY_LEN: usize = 1024;
@@ -100,18 +100,7 @@ pub async fn run(
 
     // Stream bookkeeping: lossless session chunk indices start at 1.
     let mut expected: u64 = 1;
-    let per_chunk = cfg.common.chunk_size.max(1);
-
-    // Uses a sliding window size corresponding to the burst size in the token bucket
-    // If the token bucket shaper is not configured, use the default window size
-    let window_size = cfg
-        .common
-        .data_bucket
-        .as_ref()
-        .map(|bucket| (bucket.bucket_size / per_chunk).max(1))
-        .unwrap_or(super::sender::DEFAULT_WINDOW);
-
-    let mut pending = PendingWindow::new(window_size, expected);
+    let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
     let mut bytes_received: u64 = 0;
     let sink_buffer = cfg.sink_buffer.clone();
 
@@ -305,7 +294,7 @@ async fn process_decoded_data_frame(
     frame_bytes: Vec<u8>,
     payload_range: std::ops::Range<usize>,
     expected: &mut u64,
-    pending: &mut PendingWindow,
+    pending: &mut BTreeMap<u64, Bytes>,
     bytes_received: &mut u64,
     last_ack_up_to: &mut u64,
     eot_index: Option<u64>,
@@ -369,7 +358,7 @@ async fn process_fec_data_frame(
     payload_range: std::ops::Range<usize>,
     fec_state: &mut FecReceiverState,
     expected: &mut u64,
-    pending: &mut PendingWindow,
+    pending: &mut BTreeMap<u64, Bytes>,
     bytes_received: &mut u64,
 ) {
     let frame_bytes = Bytes::from(frame_bytes);
@@ -777,106 +766,15 @@ fn feedback_jitter(local_node_id: usize, block_id: u64) -> Duration {
     Duration::from_millis(spread)
 }
 
-/// Fixed-size buffer that keeps track of out-of-order chunks within the current
-/// receiver window.
-struct PendingWindow {
-    base_index: u64,
-    head: usize,
-    slots: Vec<Option<Bytes>>,
-}
-
-impl PendingWindow {
-    /// Create a pending window sized to the configured sliding window.
-    fn new(window_size: usize, base_index: u64) -> Self {
-        let size = window_size.max(1);
-        Self {
-            base_index,
-            head: 0,
-            slots: vec![None; size],
-        }
+/// Drain contiguous payloads starting at `*expected` from the pending map,
+/// advancing the expected index as chunks are consumed.
+fn drain_contiguous(pending: &mut BTreeMap<u64, Bytes>, expected: &mut u64) -> Vec<Bytes> {
+    let mut ready = Vec::new();
+    while let Some(payload) = pending.remove(expected) {
+        ready.push(payload);
+        *expected += 1;
     }
-
-    /// Attempt to store a chunk for later delivery; returns true if it landed in
-    /// the buffer and false if it was out of range or a duplicate.
-    fn insert(&mut self, index: u64, payload: Bytes) -> bool {
-        if index < self.base_index {
-            return false;
-        }
-        let offset = index - self.base_index;
-        if offset >= self.slots.len() as u64 {
-            warn!(
-                chunk_index = index,
-                base_index = self.base_index,
-                window = self.slots.len(),
-                "Lossless receiver: chunk outside pending window, dropping"
-            );
-            return false;
-        }
-        let slot_idx = self.slot_index(offset);
-        if self.slots[slot_idx].is_none() {
-            self.slots[slot_idx] = Some(payload);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Drain any contiguous payloads starting at `expected`, advancing the base
-    /// index so future inserts can land.
-    fn take_contiguous_from(&mut self, expected: &mut u64) -> Vec<Bytes> {
-        let mut ready = Vec::new();
-        let mut chunks_to_advance = 0u64;
-
-        // First pass: collect all contiguous chunks
-        loop {
-            if *expected < self.base_index {
-                break;
-            }
-            let offset = *expected - self.base_index;
-            if offset >= self.slots.len() as u64 {
-                break;
-            }
-            let idx = self.slot_index(offset);
-            match self.slots[idx].take() {
-                Some(bytes) => {
-                    ready.push(bytes);
-                    *expected += 1;
-                    chunks_to_advance += 1;
-                }
-                None => break,
-            }
-        }
-
-        // Bulk advance the window (if we collected any chunks)
-        if chunks_to_advance > 0 {
-            self.advance_window_by(chunks_to_advance);
-        }
-
-        ready
-    }
-
-    /// Translate a logical offset relative to `base_index` into a circular slot.
-    fn slot_index(&self, offset: u64) -> usize {
-        if self.slots.is_empty() {
-            return 0;
-        }
-        (self.head + offset as usize) % self.slots.len()
-    }
-
-    /// Advance the window by the specified number of slots.
-    /// This efficiently handles both single and bulk advances.
-    fn advance_window_by(&mut self, count: u64) {
-        if count == 0 {
-            return;
-        }
-
-        self.base_index = self.base_index.saturating_add(count);
-        if !self.slots.is_empty() {
-            // For large advances, use modulo to avoid overflow
-            let count_usize = count as usize;
-            self.head = (self.head + count_usize) % self.slots.len();
-        }
-    }
+    ready
 }
 
 /// Borrowed state required to evaluate a DATA frame.
@@ -884,7 +782,7 @@ struct FrameCtx<'a> {
     data: &'a lossless_session::LosslessSessionData,
     payload: Bytes,
     expected: &'a mut u64,
-    pending: &'a mut PendingWindow,
+    pending: &'a mut BTreeMap<u64, Bytes>,
     bytes_received: &'a mut u64,
 }
 
@@ -913,14 +811,16 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
         };
     }
 
-    if pending.insert(idx, payload) {
+    use std::collections::btree_map::Entry;
+    if let Entry::Vacant(e) = pending.entry(idx) {
+        e.insert(payload);
         trace!(
             chunk_index = idx,
             "Lossless receiver: chunk stored for ordering"
         );
     }
 
-    let ready_chunks = pending.take_contiguous_from(expected);
+    let ready_chunks = drain_contiguous(pending, expected);
     if !ready_chunks.is_empty() {
         let ready_bytes: u64 = ready_chunks.iter().map(|chunk| chunk.len() as u64).sum();
         *bytes_received += ready_bytes;
@@ -1003,102 +903,44 @@ mod tests {
     use nextmini_messages::lossless_session::FecManifest;
 
     #[test]
-    fn pending_window_bulk_advance() {
-        let mut window = PendingWindow::new(16, 1);
+    fn drain_contiguous_in_order() {
+        let mut pending = BTreeMap::new();
         let mut expected = 1u64;
 
-        // Insert chunks 1-5 in order
         for i in 1..=5 {
-            let payload = Bytes::from(vec![i as u8; 100]);
-            assert!(window.insert(i, payload), "Should insert chunk {}", i);
+            pending.insert(i, Bytes::from(vec![i as u8; 100]));
         }
 
-        // Drain all contiguous chunks (should advance by 5)
-        let ready = window.take_contiguous_from(&mut expected);
-        assert_eq!(ready.len(), 5, "Should have drained 5 chunks");
-        assert_eq!(expected, 6, "Expected should advance to 6");
-        assert_eq!(window.base_index, 6, "Base index should advance to 6");
-        assert_eq!(window.head, 5, "Head should advance by 5");
-
-        // Insert chunk 10 (out of order)
-        let payload = Bytes::from(vec![10u8; 100]);
-        assert!(window.insert(10, payload), "Should insert chunk 10");
-
-        // Try to drain - should get nothing since 6-9 are missing
-        let ready = window.take_contiguous_from(&mut expected);
-        assert_eq!(ready.len(), 0, "Should not drain non-contiguous chunks");
-        assert_eq!(expected, 6, "Expected should stay at 6");
-        assert_eq!(window.base_index, 6, "Base index should stay at 6");
-
-        // Fill in chunks 6-9
-        for i in 6..=9 {
-            let payload = Bytes::from(vec![i as u8; 100]);
-            assert!(window.insert(i, payload), "Should insert chunk {}", i);
-        }
-
-        // Now drain should get 6-10 (5 chunks) in one bulk operation
-        let ready = window.take_contiguous_from(&mut expected);
-        assert_eq!(ready.len(), 5, "Should drain chunks 6-10");
-        assert_eq!(expected, 11, "Expected should advance to 11");
-        assert_eq!(window.base_index, 11, "Base index should advance to 11");
-        // Head advanced by 5 from position 5: (5 + 5) % 16 = 10
-        assert_eq!(window.head, 10, "Head should wrap correctly");
+        let ready = drain_contiguous(&mut pending, &mut expected);
+        assert_eq!(ready.len(), 5);
+        assert_eq!(expected, 6);
     }
 
     #[test]
-    fn pending_window_wrapping() {
-        let mut window = PendingWindow::new(8, 1);
+    fn drain_contiguous_gap_then_fill() {
+        let mut pending = BTreeMap::new();
         let mut expected = 1u64;
 
-        // Insert and drain enough to wrap around
-        for batch in 0..3 {
-            let start = batch * 8 + 1;
-            for i in start..start + 8 {
-                let payload = Bytes::from(vec![i as u8; 100]);
-                assert!(window.insert(i, payload));
-            }
-            let ready = window.take_contiguous_from(&mut expected);
-            assert_eq!(ready.len(), 8);
-            assert_eq!(expected, start + 8);
+        pending.insert(10, Bytes::from(vec![10u8; 100]));
+
+        let ready = drain_contiguous(&mut pending, &mut expected);
+        assert_eq!(ready.len(), 0);
+        assert_eq!(expected, 1);
+
+        for i in 1..=9 {
+            pending.insert(i, Bytes::from(vec![i as u8; 100]));
         }
 
-        // After 3 batches of 8, we should have advanced 24 slots
-        assert_eq!(window.base_index, 25);
-        // Head should wrap: (0 + 24) % 8 = 0
-        assert_eq!(window.head, 0);
+        let ready = drain_contiguous(&mut pending, &mut expected);
+        assert_eq!(ready.len(), 10);
+        assert_eq!(expected, 11);
     }
 
     #[test]
-    fn pending_window_duplicate_insert() {
-        let mut window = PendingWindow::new(16, 1);
-
-        let payload1 = Bytes::from(vec![1u8; 100]);
-        let payload2 = Bytes::from(vec![2u8; 100]);
-
-        // First insert should succeed
-        assert!(window.insert(5, payload1), "First insert should succeed");
-
-        // Duplicate insert should fail
-        assert!(!window.insert(5, payload2), "Duplicate insert should fail");
-    }
-
-    #[test]
-    fn pending_window_out_of_range() {
-        let mut window = PendingWindow::new(8, 10);
-
-        // Below base_index
-        let payload = Bytes::from(vec![1u8; 100]);
-        assert!(
-            !window.insert(5, payload),
-            "Should reject chunk below base_index"
-        );
-
-        // Beyond window size
-        let payload = Bytes::from(vec![2u8; 100]);
-        assert!(
-            !window.insert(20, payload),
-            "Should reject chunk beyond window"
-        );
+    fn pending_accepts_any_offset() {
+        let mut pending = BTreeMap::new();
+        pending.insert(1_000_000u64, Bytes::from(vec![1u8; 100]));
+        assert_eq!(pending.len(), 1);
     }
 
     #[test]
