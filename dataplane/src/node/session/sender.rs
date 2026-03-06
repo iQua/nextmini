@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,17 +18,14 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
-use crate::node::session::fec;
 use crate::node::session::runtime::{CommonConfig, SenderConfig};
 use crate::node::{NodeId, NodeIdExt};
 
-pub(super) const DEFAULT_WINDOW: usize = 512;
+const DEFAULT_WINDOW: usize = 512;
 const MANIFEST_RETRY_INTERVAL_MS: u64 = 250;
 const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const ALL_FEC_LANES_BLOCKED_WAIT_MS: u64 = 250;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
-const FEC_REPAIR_BUDGET_DIVISOR: usize = 2;
-const FEC_MAX_REPAIR_BUDGET_PER_BLOCK: usize = 64;
 const COLLABORATIVE_MULTITREE_INGRESS_POLICY: &str = "sequential_only";
 
 fn processor_ingress_mode(handle: &ProcessorHandle) -> &'static str {
@@ -531,195 +528,6 @@ impl FecTreeDispatch {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FecBlockStats {
-    source_symbols: usize,
-    repair_budget: usize,
-    repairs_sent: usize,
-}
-
-#[derive(Debug, Default)]
-struct FecSymbolSupply {
-    pending: VecDeque<FecSymbolWorkItem>,
-}
-
-impl FecSymbolSupply {
-    fn is_empty(&self) -> bool {
-        self.pending.is_empty()
-    }
-
-    fn len(&self) -> usize {
-        self.pending.len()
-    }
-
-    fn pop_front(&mut self) -> Option<FecSymbolWorkItem> {
-        self.pending.pop_front()
-    }
-
-    fn push_front(&mut self, work_item: FecSymbolWorkItem) {
-        self.pending.push_front(work_item);
-    }
-
-    fn push_symbols(
-        &mut self,
-        block_id: u64,
-        symbols: impl IntoIterator<Item = fec::EncodedSymbol>,
-        is_repair: bool,
-    ) {
-        for symbol in symbols {
-            self.pending.push_back(FecSymbolWorkItem {
-                block_id,
-                symbol_id: symbol.esi,
-                payload: Bytes::from(symbol.payload),
-                is_repair,
-            });
-        }
-    }
-}
-
-#[derive(Debug)]
-enum FecPlanResult {
-    BlockQueued {
-        block_id: u64,
-        source_symbols: usize,
-        repair_budget: usize,
-    },
-    SourceDrained,
-}
-
-#[derive(Debug)]
-struct FecScheduler {
-    symbols_per_block: usize,
-    symbol_size: usize,
-    next_block_id: u64,
-    active_blocks: BTreeMap<u64, FecBlockStats>,
-    symbol_supply: FecSymbolSupply,
-}
-
-impl FecScheduler {
-    fn new(manifest: FecManifest) -> Self {
-        Self {
-            symbols_per_block: usize::from(manifest.symbols_per_block.max(1)),
-            symbol_size: usize::from(manifest.symbol_size.max(1)),
-            next_block_id: 0,
-            active_blocks: BTreeMap::new(),
-            symbol_supply: FecSymbolSupply::default(),
-        }
-    }
-
-    fn planned_block_count(&self) -> u64 {
-        self.next_block_id
-    }
-
-    fn has_pending_symbols(&self) -> bool {
-        !self.symbol_supply.is_empty()
-    }
-
-    fn pending_symbol_count(&self) -> usize {
-        self.symbol_supply.len()
-    }
-
-    fn next_symbol_work_item(&mut self) -> Option<FecSymbolWorkItem> {
-        self.symbol_supply.pop_front()
-    }
-
-    fn requeue_symbol_front(&mut self, work_item: FecSymbolWorkItem) {
-        self.symbol_supply.push_front(work_item);
-    }
-
-    fn block_stats(&self, block_id: u64) -> Option<FecBlockStats> {
-        self.active_blocks.get(&block_id).copied()
-    }
-
-    fn note_repair_symbol_sent(&mut self, block_id: u64) {
-        if let Some(stats) = self.active_blocks.get_mut(&block_id) {
-            stats.repairs_sent = stats.repairs_sent.saturating_add(1);
-        }
-    }
-
-    fn compute_repair_budget(source_symbols: usize) -> usize {
-        if source_symbols == 0 {
-            return 0;
-        }
-        source_symbols
-            .div_ceil(FEC_REPAIR_BUDGET_DIVISOR)
-            .clamp(1, FEC_MAX_REPAIR_BUDGET_PER_BLOCK)
-            .min(source_symbols)
-    }
-
-    fn plan_next_block(
-        &mut self,
-        session_id: u64,
-        chunk_source: &mut ChunkSource,
-    ) -> Result<FecPlanResult, String> {
-        let mut chunks = Vec::with_capacity(self.symbols_per_block);
-
-        while chunks.len() < self.symbols_per_block {
-            match chunk_source.next_chunk() {
-                Some(chunk) => chunks.push(chunk),
-                None => break,
-            }
-        }
-
-        if chunks.is_empty() {
-            return Ok(FecPlanResult::SourceDrained);
-        }
-
-        let block_id = self.next_block_id;
-        let source_symbols_in_block = chunks.len();
-        let mut source_symbols: Vec<Vec<u8>> = Vec::with_capacity(self.symbols_per_block);
-
-        for chunk in &chunks {
-            if chunk.data.len() > self.symbol_size {
-                return Err(format!(
-                    "fec symbol_size {} is smaller than source chunk {} bytes",
-                    self.symbol_size,
-                    chunk.data.len()
-                ));
-            }
-            let mut padded = vec![0u8; self.symbol_size];
-            padded[..chunk.data.len()].copy_from_slice(&chunk.data);
-            source_symbols.push(padded);
-        }
-
-        while source_symbols.len() < self.symbols_per_block {
-            source_symbols.push(vec![0u8; self.symbol_size]);
-        }
-
-        let params = fec::BlockParams::new(
-            source_symbols.len(),
-            self.symbol_size,
-            fec::block_seed(session_id, block_id),
-        );
-        let Some(mut encoder) = fec::Encoder::from_block(params, &source_symbols) else {
-            return Err(format!(
-                "failed to initialize FEC encoder for block {block_id}"
-            ));
-        };
-
-        let systematic = encoder.emit_systematic();
-        let repair_budget = Self::compute_repair_budget(systematic.len());
-        let repairs = encoder.emit_coded(repair_budget);
-
-        self.symbol_supply.push_symbols(block_id, systematic, false);
-        self.symbol_supply.push_symbols(block_id, repairs, true);
-        self.active_blocks.insert(
-            block_id,
-            FecBlockStats {
-                source_symbols: source_symbols_in_block,
-                repair_budget,
-                repairs_sent: 0,
-            },
-        );
-        self.next_block_id = self.next_block_id.saturating_add(1);
-
-        Ok(FecPlanResult::BlockQueued {
-            block_id,
-            source_symbols: source_symbols_in_block,
-            repair_budget,
-        })
-    }
-}
 
 /// Encapsulates all mutable sender-side state (window, inflight accounting,
 /// pacing, manifest timing, etc.). Keeping the logic centralized makes the event
@@ -754,7 +562,8 @@ struct SenderState {
     aborted: bool,
     abort_reason: Option<String>,
     primary_chunks: u64,
-    fec_scheduler: Option<FecScheduler>,
+    fec_blocks_sent: u64,
+    fec_pending_symbol: Option<FecSymbolWorkItem>,
     fec_dispatch: Option<FecTreeDispatch>,
     bytes_sent: u64,
     src_ip: Ipv4Addr,
@@ -831,7 +640,8 @@ impl SenderState {
             aborted: false,
             abort_reason: None,
             primary_chunks: 0,
-            fec_scheduler: fec_manifest.map(FecScheduler::new),
+            fec_blocks_sent: 0,
+            fec_pending_symbol: None,
             fec_dispatch: None,
             bytes_sent: 0,
             src_ip,
@@ -895,9 +705,7 @@ impl SenderState {
     }
 
     fn has_scheduler_pending_fec_symbols(&self) -> bool {
-        self.fec_scheduler
-            .as_ref()
-            .is_some_and(FecScheduler::has_pending_symbols)
+        self.fec_pending_symbol.is_some()
     }
 
     fn has_pending_fec_lane_symbols(&self) -> bool {
@@ -907,10 +715,7 @@ impl SenderState {
     }
 
     fn fec_blocks_planned(&self) -> u64 {
-        self.fec_scheduler
-            .as_ref()
-            .map(FecScheduler::planned_block_count)
-            .unwrap_or_default()
+        self.fec_blocks_sent
     }
 
     #[inline]
@@ -1105,6 +910,8 @@ impl SenderState {
             .unwrap_or_default()
     }
 
+    /// Stream systematic symbols directly from ChunkSource to tree lanes.
+    /// Computes (block_id, esi) from the 1-based chunk index.
     async fn drive_fec_scheduler(
         &mut self,
         chunk_source: &mut ChunkSource,
@@ -1118,79 +925,35 @@ impl SenderState {
             return false;
         }
 
-        let mut progressed = false;
-        if self.maybe_queue_next_fec_block(chunk_source) {
-            progressed = true;
-        }
-        for _ in 0..self.fec_dispatch_burst.max(1) {
-            if self.try_send_next_fec_symbol(data_pacer).await {
-                progressed = true;
-            } else {
-                break;
-            }
-        }
-        progressed
-    }
-
-    /// Materialize the next FEC block (systematic + bounded repairs) into the scheduler queue.
-    fn maybe_queue_next_fec_block(&mut self, chunk_source: &mut ChunkSource) -> bool {
-        if self.fec_scheduler.is_none() {
+        let Some(manifest) = self.fec_manifest else {
             return false;
-        }
-        if self.has_scheduler_pending_fec_symbols()
-            || self.source_drained
-            || self.inflight_len() >= self.window_limit()
-        {
-            return false;
-        }
-
-        let plan_result = {
-            let scheduler = self
-                .fec_scheduler
-                .as_mut()
-                .expect("fec scheduler must exist in FEC sessions");
-            scheduler.plan_next_block(self.session_id, chunk_source)
         };
+        let symbols_per_block = u64::from(manifest.symbols_per_block.max(1));
 
-        match plan_result {
-            Ok(FecPlanResult::SourceDrained) => {
-                self.mark_source_drained();
-                true
-            }
-            Ok(FecPlanResult::BlockQueued {
-                block_id,
-                source_symbols,
-                repair_budget,
-            }) => {
-                let symbols_queued = self
-                    .fec_scheduler
-                    .as_ref()
-                    .map(FecScheduler::pending_symbol_count)
-                    .unwrap_or_default();
-                self.update_retired_up_to();
-                debug!(
-                    session_id = self.session_id,
+        // If we have a pending symbol from a previous all-lanes-blocked, try it first.
+        // Otherwise, get the next chunk from the source.
+        if self.fec_pending_symbol.is_none() && !chunk_source.finished() {
+            if let Some(chunk) = chunk_source.next_chunk() {
+                let zero_based = chunk.index - 1;
+                let block_id = zero_based / symbols_per_block;
+                let esi = (zero_based % symbols_per_block) as u32;
+
+                self.fec_pending_symbol = Some(FecSymbolWorkItem {
                     block_id,
-                    source_symbols,
-                    repairs = repair_budget,
-                    symbols_queued,
-                    "Lossless sender: queued FEC block symbols"
-                );
-                true
-            }
-            Err(reason) => {
-                self.abort_fec_preflight(reason);
-                true
+                    symbol_id: esi,
+                    payload: chunk.data,
+                    is_repair: false,
+                });
+
+                // Track completed blocks for retirement.
+                let next_block = block_id + 1;
+                if next_block > self.fec_blocks_sent {
+                    self.fec_blocks_sent = next_block;
+                }
             }
         }
-    }
 
-    async fn try_send_next_fec_symbol(&mut self, data_pacer: &mut DataPacer) -> bool {
-        let Some(symbol) = self
-            .fec_scheduler
-            .as_mut()
-            .and_then(FecScheduler::next_symbol_work_item)
-        else {
+        let Some(symbol) = self.fec_pending_symbol.take() else {
             if let Some(dispatch) = self.fec_dispatch.as_mut() {
                 dispatch.all_lanes_blocked = false;
             }
@@ -1201,7 +964,6 @@ impl SenderState {
         let block_id = symbol.block_id;
         let symbol_id = symbol.symbol_id;
         let payload_len = symbol.payload.len();
-        let is_repair = symbol.is_repair;
 
         let enqueue_result = {
             let Some(dispatch) = self.fec_dispatch.as_mut() else {
@@ -1216,27 +978,16 @@ impl SenderState {
                 let payload_len_u64 = payload_len as u64;
                 self.bytes_sent += payload_len_u64;
                 self.bytes_since_last_report += payload_len_u64;
-                if !is_repair {
-                    self.primary_chunks += 1;
-                } else if let Some(scheduler) = self.fec_scheduler.as_mut() {
-                    scheduler.note_repair_symbol_sent(block_id);
-                }
+                self.primary_chunks += 1;
                 self.report_throughput();
-                let tree_counters = self
-                    .fec_dispatch
-                    .as_ref()
-                    .and_then(|dispatch| dispatch.tree_observability_snapshot(tree_id));
-                let compact_tree_counters = tree_counters.map(compact_fec_tree_snapshot);
-
+                self.update_retired_up_to();
                 debug!(
                     session_id = self.session_id,
                     block_id,
                     symbol_id,
                     tree_id,
-                    is_repair,
                     payload_len,
-                    ?compact_tree_counters,
-                    "Lossless sender: dispatched FEC symbol to tree lane"
+                    "Lossless sender: dispatched FEC systematic symbol to tree lane"
                 );
                 true
             }
@@ -1244,25 +995,17 @@ impl SenderState {
                 work_item,
                 blocked_tree_ids,
             } => {
-                let tree_counters = self.fec_dispatch_observability_snapshot();
-                let compact_tree_counters = compact_fec_tree_observability(&tree_counters);
-                if let Some(scheduler) = self.fec_scheduler.as_mut() {
-                    scheduler.requeue_symbol_front(work_item);
-                }
+                self.fec_pending_symbol = Some(work_item);
                 trace!(
                     session_id = self.session_id,
                     block_id,
                     symbol_id,
                     ?blocked_tree_ids,
-                    ?compact_tree_counters,
-                    "Lossless sender: all FEC tree lanes are backpressured; waiting for wakeup"
+                    "Lossless sender: all FEC tree lanes are backpressured; holding symbol"
                 );
                 false
             }
-            FecDispatchEnqueueResult::Closed { tree_id, work_item } => {
-                if let Some(scheduler) = self.fec_scheduler.as_mut() {
-                    scheduler.requeue_symbol_front(work_item);
-                }
+            FecDispatchEnqueueResult::Closed { tree_id, work_item: _ } => {
                 self.abort_fec_preflight(format!(
                     "FEC dispatch lane for tree {tree_id} closed unexpectedly"
                 ));
@@ -1569,25 +1312,10 @@ impl SenderState {
                 if self.update_receiver_fec_status(from_node, status).is_some() {
                     self.update_retired_up_to();
                 }
-                let (planned_source, planned_repairs, remaining_budget) = self
-                    .fec_scheduler
-                    .as_ref()
-                    .and_then(|scheduler| scheduler.block_stats(status.block_id))
-                    .map(|stats| {
-                        (
-                            stats.source_symbols,
-                            stats.repairs_sent,
-                            stats.repair_budget.saturating_sub(stats.repairs_sent),
-                        )
-                    })
-                    .unwrap_or((0, 0, 0));
                 trace!(
                     session_id = self.session_id,
                     block_id = status.block_id,
                     deficit_symbols = status.deficit_symbols,
-                    source_symbols = planned_source,
-                    repairs_sent = planned_repairs,
-                    repair_budget_remaining = remaining_budget,
                     "Lossless sender: receiver FEC status update"
                 );
             }
@@ -2015,93 +1743,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fec_scheduler_plans_tree_unassigned_work_items() {
-        let manifest = FecManifest::new_raptorq(2, 16);
-        let mut scheduler = FecScheduler::new(manifest);
-        let mut chunk_source = ChunkSource::new(Bytes::from(vec![0xAA; 32]), 16, 2, 32);
-
-        let plan = scheduler
-            .plan_next_block(42, &mut chunk_source)
-            .expect("scheduler must plan block");
-        let FecPlanResult::BlockQueued {
-            block_id,
-            source_symbols,
-            repair_budget,
-        } = plan
-        else {
-            panic!("expected queued block");
-        };
-
-        assert_eq!(block_id, 0, "first planned block id should be zero");
-        assert_eq!(
-            source_symbols, 2,
-            "source symbol count should match chunk count"
-        );
-        assert_eq!(
-            repair_budget, 1,
-            "repair budget should follow current pre-T6 policy"
-        );
-        assert_eq!(
-            scheduler.planned_block_count(),
-            1,
-            "planner cursor should advance after one block"
-        );
-
-        let first = scheduler
-            .next_symbol_work_item()
-            .expect("first symbol should exist");
-        assert_eq!(first.block_id, 0);
-        assert!(
-            !first.is_repair,
-            "systematic symbols should be emitted before repairs"
-        );
-    }
-
-    #[test]
-    fn fec_scheduler_tracks_repair_accounting() {
-        let manifest = FecManifest::new_raptorq(4, 8);
-        let mut scheduler = FecScheduler::new(manifest);
-        let mut chunk_source = ChunkSource::new(Bytes::from(vec![0xCC; 32]), 8, 4, 32);
-
-        let plan = scheduler
-            .plan_next_block(7, &mut chunk_source)
-            .expect("scheduler must plan block");
-        let FecPlanResult::BlockQueued { repair_budget, .. } = plan else {
-            panic!("expected queued block");
-        };
-
-        let mut repairs_observed = 0usize;
-        while let Some(work_item) = scheduler.next_symbol_work_item() {
-            if work_item.is_repair {
-                repairs_observed = repairs_observed.saturating_add(1);
-                scheduler.note_repair_symbol_sent(work_item.block_id);
-            }
-        }
-
-        let stats = scheduler
-            .block_stats(0)
-            .expect("planned block stats should remain available");
-        assert_eq!(repairs_observed, repair_budget);
-        assert_eq!(stats.repairs_sent, repair_budget);
-        assert_eq!(stats.repair_budget, repair_budget);
-    }
-
-    #[test]
-    fn fec_scheduler_marks_source_drained_when_no_chunks_available() {
-        let manifest = FecManifest::new_raptorq(2, 8);
-        let mut scheduler = FecScheduler::new(manifest);
-        let mut chunk_source = ChunkSource::new(Bytes::new(), 8, 0, 0);
-
-        let plan = scheduler
-            .plan_next_block(1, &mut chunk_source)
-            .expect("empty source should not error");
-        assert!(
-            matches!(plan, FecPlanResult::SourceDrained),
-            "scheduler should surface source-drained when no chunks remain"
-        );
-    }
-
     fn work_item(symbol_id: u32) -> FecSymbolWorkItem {
         FecSymbolWorkItem {
             block_id: 0,
@@ -2356,9 +1997,7 @@ mod tests {
         let total_bytes = total_chunks * chunk_size as u64;
         let cfg = fec_sender_cfg(chunk_size, total_bytes, 1, vec![7]);
         let mut state = SenderState::new(cfg, total_chunks);
-        if let Some(scheduler) = state.fec_scheduler.as_mut() {
-            scheduler.next_block_id = total_chunks;
-        }
+        state.fec_blocks_sent = total_chunks;
 
         assert_eq!(state.retired_up_to, 0);
 
@@ -2398,9 +2037,7 @@ mod tests {
         let mut state = SenderState::new(cfg, total_chunks);
 
         state.source_drained = true;
-        if let Some(scheduler) = state.fec_scheduler.as_mut() {
-            scheduler.next_block_id = 1;
-        }
+        state.fec_blocks_sent = 1;
         state
             .update_receiver_fec_status(11, &fec_status(0, 0))
             .expect("receiver should report block completion");
