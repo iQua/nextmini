@@ -746,12 +746,8 @@ impl SenderState {
         self.fec_incompatible_peers.is_empty() && self.has_all_fec_capabilities()
     }
 
-    /// Ensures the window never collapses to zero (which would deadlock the loop).
+    /// Non-FEC sliding window limit. FEC sessions use tree-lane backpressure instead.
     fn window_limit(&self) -> usize {
-        if let Some(manifest) = self.fec_manifest {
-            let symbols_per_block = usize::from(manifest.symbols_per_block.max(1));
-            return self.window.div_ceil(symbols_per_block).max(1);
-        }
         self.window.max(1)
     }
 
