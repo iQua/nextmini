@@ -18,6 +18,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
+use crate::node::session::fec;
 use crate::node::session::runtime::{CommonConfig, SenderConfig};
 use crate::node::{NodeId, NodeIdExt};
 
@@ -27,6 +28,8 @@ const CONTROL_POLL_TIMEOUT_MS: u64 = 20;
 const ALL_FEC_LANES_BLOCKED_WAIT_MS: u64 = 250;
 const TRANSFER_TIMEOUT_SECS: u64 = 300;
 const COLLABORATIVE_MULTITREE_INGRESS_POLICY: &str = "sequential_only";
+const FEC_CHASE_HEDGE: u16 = 2;
+const STRIDE_LARGE_CONSTANT: u64 = 1_000_000;
 
 fn processor_ingress_mode(handle: &ProcessorHandle) -> &'static str {
     match handle {
@@ -564,6 +567,8 @@ struct SenderState {
     primary_chunks: u64,
     fec_blocks_sent: u64,
     fec_pending_symbol: Option<FecSymbolWorkItem>,
+    fec_pending_coded: Option<FecSymbolWorkItem>,
+    stride_scheduler: Option<StrideScheduler>,
     fec_dispatch: Option<FecTreeDispatch>,
     bytes_sent: u64,
     src_ip: Ipv4Addr,
@@ -581,6 +586,7 @@ impl SenderState {
     /// and initializing per-receiver progress counters.
     fn new(mut cfg: SenderConfig, total_chunks: u64) -> Self {
         let common = cfg.common.clone();
+        let session_id = common.session_id;
         let fec_manifest = cfg.fec_manifest;
         let fec_tree_ids = cfg.fec_tree_ids.clone();
         let fec_tree_lane_depth = cfg.fec_tree_lane_depth;
@@ -611,7 +617,7 @@ impl SenderState {
         }
 
         let mut state = Self {
-            session_id: common.session_id,
+            session_id,
             common,
             fec_manifest,
             fec_tree_ids,
@@ -642,6 +648,10 @@ impl SenderState {
             primary_chunks: 0,
             fec_blocks_sent: 0,
             fec_pending_symbol: None,
+            fec_pending_coded: None,
+            stride_scheduler: fec_manifest.map(|m| {
+                StrideScheduler::new(cfg.source_buffer.clone(), session_id, m)
+            }),
             fec_dispatch: None,
             bytes_sent: 0,
             src_ip,
@@ -706,6 +716,8 @@ impl SenderState {
 
     fn has_scheduler_pending_fec_symbols(&self) -> bool {
         self.fec_pending_symbol.is_some()
+            || self.fec_pending_coded.is_some()
+            || self.stride_scheduler.as_ref().map_or(false, |s| !s.is_idle())
     }
 
     fn has_pending_fec_lane_symbols(&self) -> bool {
@@ -910,8 +922,8 @@ impl SenderState {
             .unwrap_or_default()
     }
 
-    /// Stream systematic symbols directly from ChunkSource to tree lanes.
-    /// Computes (block_id, esi) from the 1-based chunk index.
+    /// Stream systematic + coded symbols to tree lanes. Coded symbols (from
+    /// the stride scheduler) have higher priority — they rescue stuck blocks.
     async fn drive_fec_scheduler(
         &mut self,
         chunk_source: &mut ChunkSource,
@@ -929,9 +941,70 @@ impl SenderState {
             return false;
         };
         let symbols_per_block = u64::from(manifest.symbols_per_block.max(1));
+        let mut progressed = false;
 
-        // If we have a pending symbol from a previous all-lanes-blocked, try it first.
-        // Otherwise, get the next chunk from the source.
+        // --- Priority 1: coded symbols (deficit-driven, rescuing stuck blocks) ---
+        if self.fec_pending_coded.is_none() {
+            if let Some(scheduler) = self.stride_scheduler.as_mut() {
+                self.fec_pending_coded = scheduler.next_coded();
+            }
+        }
+        if let Some(coded) = self.fec_pending_coded.take() {
+            data_pacer.wait_for(coded.payload.len()).await;
+            let block_id = coded.block_id;
+            let symbol_id = coded.symbol_id;
+            let payload_len = coded.payload.len();
+
+            let enqueue_result = {
+                let Some(dispatch) = self.fec_dispatch.as_mut() else {
+                    self.abort_fec_preflight(
+                        "fec dispatch lanes are unavailable in FEC session",
+                    );
+                    return true;
+                };
+                dispatch.try_enqueue(coded)
+            };
+
+            match enqueue_result {
+                FecDispatchEnqueueResult::Queued { tree_id } => {
+                    let payload_len_u64 = payload_len as u64;
+                    self.bytes_sent += payload_len_u64;
+                    self.bytes_since_last_report += payload_len_u64;
+                    self.report_throughput();
+                    debug!(
+                        session_id = self.session_id,
+                        block_id,
+                        symbol_id,
+                        tree_id,
+                        payload_len,
+                        "Lossless sender: dispatched coded symbol to tree lane"
+                    );
+                    progressed = true;
+                }
+                FecDispatchEnqueueResult::AllBlocked {
+                    work_item,
+                    blocked_tree_ids,
+                } => {
+                    self.fec_pending_coded = Some(work_item);
+                    trace!(
+                        session_id = self.session_id,
+                        block_id,
+                        symbol_id,
+                        ?blocked_tree_ids,
+                        "Lossless sender: all lanes blocked; holding coded symbol"
+                    );
+                    return progressed;
+                }
+                FecDispatchEnqueueResult::Closed { tree_id, work_item: _ } => {
+                    self.abort_fec_preflight(format!(
+                        "FEC dispatch lane for tree {tree_id} closed unexpectedly"
+                    ));
+                    return true;
+                }
+            }
+        }
+
+        // --- Priority 2: systematic symbols (streaming from ChunkSource) ---
         if self.fec_pending_symbol.is_none() && !chunk_source.finished() {
             if let Some(chunk) = chunk_source.next_chunk() {
                 let zero_based = chunk.index - 1;
@@ -945,7 +1018,6 @@ impl SenderState {
                     is_repair: false,
                 });
 
-                // Track completed blocks for retirement.
                 let next_block = block_id + 1;
                 if next_block > self.fec_blocks_sent {
                     self.fec_blocks_sent = next_block;
@@ -957,7 +1029,7 @@ impl SenderState {
             if let Some(dispatch) = self.fec_dispatch.as_mut() {
                 dispatch.all_lanes_blocked = false;
             }
-            return false;
+            return progressed;
         };
 
         data_pacer.wait_for(symbol.payload.len()).await;
@@ -987,7 +1059,7 @@ impl SenderState {
                     symbol_id,
                     tree_id,
                     payload_len,
-                    "Lossless sender: dispatched FEC systematic symbol to tree lane"
+                    "Lossless sender: dispatched systematic symbol to tree lane"
                 );
                 true
             }
@@ -1001,9 +1073,9 @@ impl SenderState {
                     block_id,
                     symbol_id,
                     ?blocked_tree_ids,
-                    "Lossless sender: all FEC tree lanes are backpressured; holding symbol"
+                    "Lossless sender: all lanes blocked; holding systematic symbol"
                 );
-                false
+                progressed
             }
             FecDispatchEnqueueResult::Closed { tree_id, work_item: _ } => {
                 self.abort_fec_preflight(format!(
@@ -1072,9 +1144,6 @@ impl SenderState {
         from_node: usize,
         status: &lossless_session::FecStatus,
     ) -> Option<u64> {
-        if status.deficit_symbols != 0 {
-            return None;
-        }
         if !self.receiver_progress.contains_key(&from_node) {
             return None;
         }
@@ -1089,6 +1158,26 @@ impl SenderState {
                 "Lossless sender: ignoring out-of-range FEC status block"
             );
             return None;
+        }
+
+        // Non-zero deficit: feed into stride scheduler for coded symbol generation.
+        if status.deficit_symbols != 0 {
+            if let Some(scheduler) = self.stride_scheduler.as_mut() {
+                scheduler.update_deficit(status.block_id, status.deficit_symbols);
+                debug!(
+                    session_id = self.session_id,
+                    from_node,
+                    block_id = status.block_id,
+                    deficit = status.deficit_symbols,
+                    "Lossless sender: deficit report → stride scheduler"
+                );
+            }
+            return None;
+        }
+
+        // deficit_symbols == 0: block completed — retire from stride scheduler.
+        if let Some(scheduler) = self.stride_scheduler.as_mut() {
+            scheduler.retire(status.block_id);
         }
 
         let mut contiguous_completed = self
@@ -1607,6 +1696,141 @@ impl ChunkSource {
     }
 }
 
+/// Generates coded symbols on demand for blocks that receivers report as stuck.
+///
+/// Each active block tracks its deficit (symbols needed), a stride value
+/// inversely proportional to the deficit, and a pass accumulator. The block
+/// with the lowest pass value is served next, giving higher-deficit blocks
+/// more coded symbols proportionally.
+struct StrideScheduler {
+    blocks: BTreeMap<u64, StrideBlock>,
+    source_buffer: Bytes,
+    session_id: u64,
+    symbols_per_block: u16,
+    symbol_size: u16,
+}
+
+struct StrideBlock {
+    deficit: u16,
+    stride: u64,
+    pass: u64,
+    encoder: Option<fec::Encoder>,
+    next_coded_esi: u32,
+    coded_budget: u16,
+    coded_sent: u16,
+}
+
+impl StrideScheduler {
+    fn new(source_buffer: Bytes, session_id: u64, manifest: FecManifest) -> Self {
+        Self {
+            blocks: BTreeMap::new(),
+            source_buffer,
+            session_id,
+            symbols_per_block: manifest.symbols_per_block,
+            symbol_size: manifest.symbol_size,
+        }
+    }
+
+    /// Update the deficit for a block. Creates the block entry if new.
+    fn update_deficit(&mut self, block_id: u64, deficit: u16) {
+        let k = self.symbols_per_block;
+        let budget = deficit.saturating_add(FEC_CHASE_HEDGE);
+        let stride = STRIDE_LARGE_CONSTANT / u64::from(deficit.max(1));
+
+        let block = self.blocks.entry(block_id).or_insert_with(|| StrideBlock {
+            deficit: 0,
+            stride,
+            pass: 0,
+            encoder: None,
+            next_coded_esi: u32::from(k),
+            coded_budget: 0,
+            coded_sent: 0,
+        });
+        block.deficit = deficit;
+        block.stride = stride;
+        block.coded_budget = budget.max(block.coded_sent);
+    }
+
+    /// Remove a block from the scheduler (terminal deficit=0 feedback).
+    fn retire(&mut self, block_id: u64) {
+        self.blocks.remove(&block_id);
+    }
+
+    /// Returns true when no block has pending coded work.
+    fn is_idle(&self) -> bool {
+        !self.blocks.values().any(|b| b.coded_sent < b.coded_budget)
+    }
+
+    /// Pick the next block and generate one coded symbol for it.
+    fn next_coded(&mut self) -> Option<FecSymbolWorkItem> {
+        let k = self.symbols_per_block;
+        let symbol_size = usize::from(self.symbol_size);
+
+        // Find eligible block with lowest pass value; break ties by highest deficit.
+        let block_id = self
+            .blocks
+            .iter()
+            .filter(|(_, b)| b.coded_sent < b.coded_budget)
+            .min_by(|(_, a), (_, b)| {
+                a.pass
+                    .cmp(&b.pass)
+                    .then_with(|| b.deficit.cmp(&a.deficit))
+            })
+            .map(|(&id, _)| id)?;
+
+        let block = self.blocks.get_mut(&block_id)?;
+
+        // Lazy-create encoder for this block.
+        if block.encoder.is_none() {
+            let k_usize = usize::from(k);
+            let base_chunk = block_id * u64::from(k);
+            let total_source_chunks = if self.source_buffer.is_empty() {
+                0u64
+            } else {
+                (self.source_buffer.len() as u64).div_ceil(symbol_size as u64)
+            };
+            let actual_k = ((total_source_chunks.saturating_sub(base_chunk)) as usize).min(k_usize);
+            if actual_k == 0 {
+                return None;
+            }
+
+            let mut source_symbols = Vec::with_capacity(actual_k);
+            for i in 0..actual_k {
+                let byte_off = (base_chunk + i as u64) as usize * symbol_size;
+                let end = (byte_off + symbol_size).min(self.source_buffer.len());
+                let mut sym = vec![0u8; symbol_size];
+                if byte_off < self.source_buffer.len() {
+                    let pay_len = end - byte_off;
+                    sym[..pay_len].copy_from_slice(&self.source_buffer[byte_off..end]);
+                }
+                source_symbols.push(sym);
+            }
+            // Pad to full K if last block is short.
+            while source_symbols.len() < k_usize {
+                source_symbols.push(vec![0u8; symbol_size]);
+            }
+
+            let seed = fec::block_seed(self.session_id, block_id);
+            block.encoder = fec::Encoder::new(&source_symbols, symbol_size, seed);
+        }
+
+        let encoder = block.encoder.as_ref()?;
+        let esi = block.next_coded_esi;
+        let payload = encoder.coded_symbol(esi);
+
+        block.next_coded_esi += 1;
+        block.coded_sent += 1;
+        block.pass += block.stride;
+
+        Some(FecSymbolWorkItem {
+            block_id,
+            symbol_id: esi,
+            payload: Bytes::from(payload),
+            is_repair: true,
+        })
+    }
+}
+
 /// Simple token-bucket pacer used to honor optional bandwidth caps.
 ///
 /// This is now just a thin wrapper around the shared scheduler TokenBucket
@@ -2083,5 +2307,77 @@ mod tests {
             total_chunks,
             "FEC EOT must use chunk index units so receiver completion checks remain correct"
         );
+    }
+
+    #[test]
+    fn stride_scheduler_emits_coded_for_deficit_block() {
+        let k = 4u16;
+        let symbol_size = 64u16;
+        let manifest = FecManifest::new_raptorq(k, symbol_size);
+        let source_data = vec![0xABu8; k as usize * symbol_size as usize];
+        let mut sched = StrideScheduler::new(Bytes::from(source_data), 42, manifest);
+
+        assert!(sched.is_idle(), "fresh scheduler should be idle");
+
+        sched.update_deficit(0, 2);
+        assert!(!sched.is_idle(), "scheduler should have work after deficit report");
+
+        let coded = sched.next_coded().expect("should produce a coded symbol");
+        assert_eq!(coded.block_id, 0);
+        assert_eq!(coded.symbol_id, k as u32, "first coded ESI should be K");
+        assert!(coded.is_repair);
+        assert_eq!(coded.payload.len(), symbol_size as usize);
+    }
+
+    #[test]
+    fn stride_scheduler_prioritizes_higher_deficit() {
+        let k = 4u16;
+        let symbol_size = 64u16;
+        let manifest = FecManifest::new_raptorq(k, symbol_size);
+        let source_data = vec![0xCCu8; 2 * k as usize * symbol_size as usize];
+        let mut sched = StrideScheduler::new(Bytes::from(source_data), 7, manifest);
+
+        sched.update_deficit(0, 1); // low deficit
+        sched.update_deficit(1, 4); // high deficit
+
+        // First coded symbol should come from block 1 (higher deficit → lower stride → lower pass).
+        let first = sched.next_coded().expect("should produce coded");
+        assert_eq!(first.block_id, 1, "higher-deficit block should be served first");
+    }
+
+    #[test]
+    fn stride_scheduler_retires_completed_block() {
+        let k = 4u16;
+        let symbol_size = 32u16;
+        let manifest = FecManifest::new_raptorq(k, symbol_size);
+        let source_data = vec![0xDDu8; k as usize * symbol_size as usize];
+        let mut sched = StrideScheduler::new(Bytes::from(source_data), 1, manifest);
+
+        sched.update_deficit(0, 1);
+        assert!(!sched.is_idle());
+
+        sched.retire(0);
+        assert!(sched.is_idle(), "retired block should be removed");
+        assert!(sched.next_coded().is_none());
+    }
+
+    #[test]
+    fn stride_scheduler_respects_coded_budget() {
+        let k = 4u16;
+        let symbol_size = 32u16;
+        let manifest = FecManifest::new_raptorq(k, symbol_size);
+        let source_data = vec![0xEEu8; k as usize * symbol_size as usize];
+        let mut sched = StrideScheduler::new(Bytes::from(source_data), 1, manifest);
+
+        sched.update_deficit(0, 1);
+        let budget = 1 + FEC_CHASE_HEDGE; // deficit + hedge
+
+        let mut count = 0u16;
+        while sched.next_coded().is_some() {
+            count += 1;
+            assert!(count <= budget + 1, "runaway coded generation");
+        }
+        assert_eq!(count, budget, "should emit exactly deficit + hedge coded symbols");
+        assert!(sched.is_idle());
     }
 }
