@@ -205,6 +205,16 @@ pub async fn run(
                     "Lossless sender: collaborative FEC per-tree counters"
                 );
             }
+            if let Some(sched) = &state.stride_scheduler {
+                info!(
+                    session_id = sid,
+                    blocks_helped = sched.blocks_helped,
+                    blocks_retired = sched.blocks_retired,
+                    blocks_active = sched.blocks.len(),
+                    coded_symbols_sent = state.coded_symbols_sent,
+                    "Lossless sender: stride scheduler summary"
+                );
+            }
             if state.aborted {
                 warn!(
                     session_id = sid,
@@ -216,6 +226,8 @@ pub async fn run(
                     session_id = sid,
                     bytes_sent = state.bytes_sent,
                     chunks_sent = state.primary_chunks,
+                    coded_symbols_sent = state.coded_symbols_sent,
+                    tree_lane_depth = state.fec_tree_lane_depth,
                     "Lossless sender finished with lossless delivery guarantees"
                 );
             }
@@ -557,6 +569,7 @@ struct SenderState {
     fec_blocks_sent: u64,
     fec_pending_symbol: Option<FecSymbolWorkItem>,
     fec_pending_coded: Option<FecSymbolWorkItem>,
+    coded_symbols_sent: u64,
     stride_scheduler: Option<StrideScheduler>,
     fec_dispatch: Option<FecTreeDispatch>,
     bytes_sent: u64,
@@ -638,6 +651,7 @@ impl SenderState {
             fec_blocks_sent: 0,
             fec_pending_symbol: None,
             fec_pending_coded: None,
+            coded_symbols_sent: 0,
             stride_scheduler: fec_manifest.map(|m| {
                 StrideScheduler::new(cfg.source_buffer.clone(), session_id, m)
             }),
@@ -955,6 +969,7 @@ impl SenderState {
                     let payload_len_u64 = payload_len as u64;
                     self.bytes_sent += payload_len_u64;
                     self.bytes_since_last_report += payload_len_u64;
+                    self.coded_symbols_sent += 1;
                     self.report_throughput();
                     debug!(
                         session_id = self.session_id,
@@ -962,6 +977,7 @@ impl SenderState {
                         symbol_id,
                         tree_id,
                         payload_len,
+                        coded_total = self.coded_symbols_sent,
                         "Lossless sender: dispatched coded symbol to tree lane"
                     );
                     progressed = true;
@@ -1692,6 +1708,8 @@ struct StrideScheduler {
     session_id: u64,
     symbols_per_block: u16,
     symbol_size: u16,
+    blocks_helped: u64,
+    blocks_retired: u64,
 }
 
 struct StrideBlock {
@@ -1712,6 +1730,8 @@ impl StrideScheduler {
             session_id,
             symbols_per_block: manifest.symbols_per_block,
             symbol_size: manifest.symbol_size,
+            blocks_helped: 0,
+            blocks_retired: 0,
         }
     }
 
@@ -1721,6 +1741,7 @@ impl StrideScheduler {
         let budget = deficit.saturating_add(FEC_CHASE_HEDGE);
         let stride = STRIDE_LARGE_CONSTANT / u64::from(deficit.max(1));
 
+        let is_new = !self.blocks.contains_key(&block_id);
         let block = self.blocks.entry(block_id).or_insert_with(|| StrideBlock {
             deficit: 0,
             stride,
@@ -1730,6 +1751,9 @@ impl StrideScheduler {
             coded_budget: 0,
             coded_sent: 0,
         });
+        if is_new {
+            self.blocks_helped += 1;
+        }
         block.deficit = deficit;
         block.stride = stride;
         block.coded_budget = budget.max(block.coded_sent);
@@ -1737,7 +1761,9 @@ impl StrideScheduler {
 
     /// Remove a block from the scheduler (terminal deficit=0 feedback).
     fn retire(&mut self, block_id: u64) {
-        self.blocks.remove(&block_id);
+        if self.blocks.remove(&block_id).is_some() {
+            self.blocks_retired += 1;
+        }
     }
 
     /// Returns true when no block has pending coded work.
