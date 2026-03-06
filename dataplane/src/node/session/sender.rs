@@ -293,7 +293,6 @@ struct FecSymbolWorkItem {
     block_id: u64,
     symbol_id: u32,
     payload: Bytes,
-    is_repair: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -375,7 +374,6 @@ enum FecDispatchEnqueueResult {
     },
     Closed {
         tree_id: u16,
-        work_item: FecSymbolWorkItem,
     },
 }
 
@@ -467,13 +465,6 @@ impl FecTreeDispatch {
         Arc::clone(&self.wakeup)
     }
 
-    fn tree_observability_snapshot(&self, tree_id: u16) -> Option<FecTreeObservabilitySnapshot> {
-        self.lanes
-            .iter()
-            .find(|lane| lane.tree_id == tree_id)
-            .map(|lane| lane.counters.snapshot(lane.tree_id))
-    }
-
     fn observability_snapshot(&self) -> Vec<FecTreeObservabilitySnapshot> {
         self.lanes
             .iter()
@@ -486,7 +477,6 @@ impl FecTreeDispatch {
             self.all_lanes_blocked = false;
             return FecDispatchEnqueueResult::Closed {
                 tree_id: lossless_session::LosslessSessionFecData::DEFAULT_TREE_ID,
-                work_item,
             };
         }
 
@@ -513,11 +503,10 @@ impl FecTreeDispatch {
                     blocked_tree_ids.push(lane.tree_id);
                     work_item = returned;
                 }
-                Err(mpsc::error::TrySendError::Closed(returned)) => {
+                Err(mpsc::error::TrySendError::Closed(_returned)) => {
                     self.all_lanes_blocked = false;
                     return FecDispatchEnqueueResult::Closed {
                         tree_id: lane.tree_id,
-                        work_item: returned,
                     };
                 }
             }
@@ -995,7 +984,7 @@ impl SenderState {
                     );
                     return progressed;
                 }
-                FecDispatchEnqueueResult::Closed { tree_id, work_item: _ } => {
+                FecDispatchEnqueueResult::Closed { tree_id } => {
                     self.abort_fec_preflight(format!(
                         "FEC dispatch lane for tree {tree_id} closed unexpectedly"
                     ));
@@ -1015,7 +1004,6 @@ impl SenderState {
                     block_id,
                     symbol_id: esi,
                     payload: chunk.data,
-                    is_repair: false,
                 });
 
                 let next_block = block_id + 1;
@@ -1077,7 +1065,7 @@ impl SenderState {
                 );
                 progressed
             }
-            FecDispatchEnqueueResult::Closed { tree_id, work_item: _ } => {
+            FecDispatchEnqueueResult::Closed { tree_id } => {
                 self.abort_fec_preflight(format!(
                     "FEC dispatch lane for tree {tree_id} closed unexpectedly"
                 ));
@@ -1826,7 +1814,6 @@ impl StrideScheduler {
             block_id,
             symbol_id: esi,
             payload: Bytes::from(payload),
-            is_repair: true,
         })
     }
 }
@@ -1972,7 +1959,6 @@ mod tests {
             block_id: 0,
             symbol_id,
             payload: Bytes::from_static(b"x"),
-            is_repair: false,
         }
     }
 
@@ -2325,7 +2311,6 @@ mod tests {
         let coded = sched.next_coded().expect("should produce a coded symbol");
         assert_eq!(coded.block_id, 0);
         assert_eq!(coded.symbol_id, k as u32, "first coded ESI should be K");
-        assert!(coded.is_repair);
         assert_eq!(coded.payload.len(), symbol_size as usize);
     }
 
