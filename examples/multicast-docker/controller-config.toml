@@ -3,11 +3,34 @@ multicast_pool_base = "239.255.0.0"
 multicast_pool_mask = "255.255.0.0"
 
 [topology]
-type = "full_mesh"
-full_mesh_config = { n_nodes = 3 }
+# Branched topology (5 nodes) with two distinct shortest-path multicast trees from 1 to 4/5.
+# Undirected links: (1,2), (1,3), (2,4), (3,4), (2,5), (3,5)
+n_nodes = 5
+edges = [[1, 2], [1, 3], [2, 4], [3, 4], [2, 5], [3, 5]]
 
 [routing]
 protocol = "shortest_path"
+
+# Tree routing (deterministic tie-breaking in multicast_node.py):
+# - tree 0 (even) => neighbor_order="asc" => 1->2->{4,5}  [slow tree]
+# - tree 1 (odd)  => neighbor_order="desc" => 1->3->{4,5}  [fast tree]
+#
+# Link rates -- source egress only:
+# - 1->2 : 12_500_000 B/s  (~100 Mbps)  [slow tree]
+# - 1->3 : 37_500_000 B/s  (~300 Mbps)  [fast tree]
+#
+# Speed ratio r = 300/100 = 3.
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 2
+rate = 12_500_000
+bucket_size = 200_000
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 3
+rate = 37_500_000
+bucket_size = 200_000
 
 [db]
 host = "postgres"

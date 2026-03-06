@@ -1,19 +1,10 @@
 controller_addr = "ws://controller:3000"
 private_network_interface = "eth0"
 private_network_name = "multicast_demo"
-node_id = 4
+node_id = 2
 num_tun_queues = 1
 num_packet_processors = 4
 channel_capacity = 3000
 queue_capacity = 4000
 feature = "sequential"
 channel_backpressure = true
-
-[lossless_runtime_config]
-default_chunk_size = 8500
-fec_enabled = true
-fec_collaborative_multitree_enabled = true
-fec_tree_ids_source = "config"
-fec_default_tree_ids = [0, 1]
-fec_tree_lane_depth = 16
-fec_default_symbols_per_block = 32

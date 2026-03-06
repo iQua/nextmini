@@ -6,7 +6,7 @@ config_path="${2:-}"
 shift 2 || true
 
 if [[ -z "${role}" || -z "${config_path}" ]]; then
-  echo "Usage: run_multicast_node.sh <source|receiver> <config-path> [extra args...]" >&2
+  echo "Usage: run_multicast_node.sh <source|receiver|router> <config-path> [extra args...]" >&2
   exit 2
 fi
 
@@ -56,9 +56,9 @@ fi
 
 source "${CONTAINER_VENV}/bin/activate"
 
-uv pip install "psycopg[binary]" >/dev/null
-uv pip install numpy >/dev/null
-uv pip install torch --index-url https://download.pytorch.org/whl/cpu >/dev/null
+if [[ "${role}" == "source" ]]; then
+  uv pip install torch --index-url https://download.pytorch.org/whl/cpu >/dev/null
+fi
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   uv pip install maturin >/dev/null
