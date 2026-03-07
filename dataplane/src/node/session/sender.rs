@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
@@ -189,6 +189,10 @@ pub async fn run(
                     progressed = true;
                 }
             }
+        }
+
+        if state.try_emit_fec_cancel(&processors).await {
+            progressed = true;
         }
 
         if !progressed && state.try_emit_eot(&processors).await {
@@ -395,6 +399,7 @@ struct FecTreeDispatch {
     next_rr_idx: usize,
     wakeup: Arc<Notify>,
     outstanding_symbols: Arc<AtomicUsize>,
+    cancel_before_block_id: Arc<AtomicU64>,
     all_lanes_blocked: bool,
 }
 
@@ -407,6 +412,7 @@ impl FecTreeDispatch {
     ) -> Self {
         let wakeup = Arc::new(Notify::new());
         let outstanding_symbols = Arc::new(AtomicUsize::new(0));
+        let cancel_before_block_id = Arc::new(AtomicU64::new(0));
         let mut lanes = Vec::with_capacity(tree_ids.len());
         let lane_depth = lane_depth.max(1);
 
@@ -414,6 +420,7 @@ impl FecTreeDispatch {
             let (tx, mut rx) = mpsc::channel::<FecSymbolWorkItem>(lane_depth);
             let wakeup = Arc::clone(&wakeup);
             let outstanding_symbols = Arc::clone(&outstanding_symbols);
+            let cancel_before_block_id = Arc::clone(&cancel_before_block_id);
             let processors = processors.clone();
             let counters = Arc::new(FecTreeObservability::default());
             let worker_counters = Arc::clone(&counters);
@@ -424,6 +431,13 @@ impl FecTreeDispatch {
                     // Slot freed: wake dispatchers waiting on lane capacity.
                     worker_counters.note_wakeup();
                     wakeup.notify_waiters();
+
+                    if symbol.block_id < cancel_before_block_id.load(Ordering::Relaxed) {
+                        outstanding_symbols.fetch_sub(1, Ordering::Relaxed);
+                        worker_counters.note_wakeup();
+                        wakeup.notify_waiters();
+                        continue;
+                    }
 
                     let frame = Bytes::from(lossless_session::encode_fec_data(
                         session.session_id,
@@ -461,6 +475,7 @@ impl FecTreeDispatch {
             next_rr_idx: 0,
             wakeup,
             outstanding_symbols,
+            cancel_before_block_id,
             all_lanes_blocked: false,
         }
     }
@@ -475,6 +490,21 @@ impl FecTreeDispatch {
 
     fn wakeup_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.wakeup)
+    }
+
+    fn set_cancel_before_block_id(&self, cancel_before_block_id: u64) {
+        let mut current = self.cancel_before_block_id.load(Ordering::Relaxed);
+        while cancel_before_block_id > current {
+            match self.cancel_before_block_id.compare_exchange(
+                current,
+                cancel_before_block_id,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
     }
 
     fn observability_snapshot(&self) -> Vec<FecTreeObservabilitySnapshot> {
@@ -532,7 +562,6 @@ impl FecTreeDispatch {
     }
 }
 
-
 /// Encapsulates all mutable sender-side state (window, inflight accounting,
 /// pacing, manifest timing, etc.). Keeping the logic centralized makes the event
 /// loop above easier to read and test.
@@ -551,6 +580,11 @@ struct SenderState {
     receiver_completed_fec_blocks: BTreeMap<usize, BTreeSet<u64>>,
     fec_capabilities: BTreeMap<usize, FecCapabilities>,
     fec_incompatible_peers: HashSet<usize>,
+    // Shared retired prefix across session modes:
+    // - non-FEC: chunks with index < retired_up_to have been cumulatively ACKed by every receiver
+    // - FEC: blocks with block_id < retired_up_to have been completed by every receiver
+    //
+    // In FEC mode this is also the local/explicit cancel cutoff.
     retired_up_to: u64,
     ready_nodes: HashSet<usize>,
     topology_gate_open: bool,
@@ -569,6 +603,7 @@ struct SenderState {
     fec_blocks_sent: u64,
     fec_pending_symbol: Option<FecSymbolWorkItem>,
     fec_pending_coded: Option<FecSymbolWorkItem>,
+    pending_fec_cancel_before: Option<u64>,
     coded_symbols_sent: u64,
     stride_scheduler: Option<StrideScheduler>,
     fec_dispatch: Option<FecTreeDispatch>,
@@ -651,10 +686,10 @@ impl SenderState {
             fec_blocks_sent: 0,
             fec_pending_symbol: None,
             fec_pending_coded: None,
+            pending_fec_cancel_before: None,
             coded_symbols_sent: 0,
-            stride_scheduler: fec_manifest.map(|m| {
-                StrideScheduler::new(cfg.source_buffer.clone(), session_id, m)
-            }),
+            stride_scheduler: fec_manifest
+                .map(|m| StrideScheduler::new(cfg.source_buffer.clone(), session_id, m)),
             fec_dispatch: None,
             bytes_sent: 0,
             src_ip,
@@ -720,7 +755,10 @@ impl SenderState {
     fn has_scheduler_pending_fec_symbols(&self) -> bool {
         self.fec_pending_symbol.is_some()
             || self.fec_pending_coded.is_some()
-            || self.stride_scheduler.as_ref().map_or(false, |s| !s.is_idle())
+            || self
+                .stride_scheduler
+                .as_ref()
+                .map_or(false, |s| !s.is_idle())
     }
 
     fn has_pending_fec_lane_symbols(&self) -> bool {
@@ -774,7 +812,8 @@ impl SenderState {
     /// Returns the number of chunks or blocks currently outside of the retired window.
     fn outstanding_units(&self) -> u64 {
         if self.is_fec_session() {
-            self.fec_blocks_planned().saturating_sub(self.retired_up_to)
+            self.fec_blocks_planned()
+                .saturating_sub(self.retired_up_to)
         } else {
             self.primary_chunks.saturating_sub(self.retired_up_to)
         }
@@ -921,6 +960,63 @@ impl SenderState {
             .unwrap_or_default()
     }
 
+    fn should_drop_retired_fec_block(&self, block_id: u64) -> bool {
+        self.receiver_count > 0 && self.is_fec_session() && block_id < self.retired_up_to
+    }
+
+    fn queue_fec_cancel(&mut self, cancel_before_block_id: u64) {
+        if cancel_before_block_id == 0 {
+            return;
+        }
+        self.pending_fec_cancel_before = Some(
+            self.pending_fec_cancel_before
+                .map_or(cancel_before_block_id, |current| {
+                    current.max(cancel_before_block_id)
+                }),
+        );
+    }
+
+    fn prune_retired_fec_state(&mut self, cancel_before_block_id: u64) {
+        if cancel_before_block_id == 0 {
+            return;
+        }
+        if let Some(dispatch) = self.fec_dispatch.as_ref() {
+            dispatch.set_cancel_before_block_id(cancel_before_block_id);
+        }
+        if self
+            .fec_pending_symbol
+            .as_ref()
+            .is_some_and(|work_item| work_item.block_id < cancel_before_block_id)
+        {
+            self.fec_pending_symbol = None;
+        }
+        if self
+            .fec_pending_coded
+            .as_ref()
+            .is_some_and(|work_item| work_item.block_id < cancel_before_block_id)
+        {
+            self.fec_pending_coded = None;
+        }
+        if let Some(scheduler) = self.stride_scheduler.as_mut() {
+            scheduler.prune_retired_blocks(cancel_before_block_id);
+        }
+    }
+
+    async fn try_emit_fec_cancel(&mut self, processors: &ProcessorHandle) -> bool {
+        let Some(cancel_before_block_id) = self.pending_fec_cancel_before.take() else {
+            return false;
+        };
+        let control = LosslessSessionControl::FecCancel {
+            cancel_before_block_id,
+        };
+        self.send_control(&control, processors).await;
+        trace!(
+            session_id = self.session_id,
+            cancel_before_block_id, "Lossless sender: emitted FEC cancel watermark"
+        );
+        true
+    }
+
     /// Stream systematic + coded symbols to tree lanes. Coded symbols (from
     /// the stride scheduler) have higher priority — they rescue stuck blocks.
     async fn drive_fec_scheduler(
@@ -949,6 +1045,15 @@ impl SenderState {
             }
         }
         if let Some(coded) = self.fec_pending_coded.take() {
+            if self.should_drop_retired_fec_block(coded.block_id) {
+                trace!(
+                    session_id = self.session_id,
+                    block_id = coded.block_id,
+                    symbol_id = coded.symbol_id,
+                    "Lossless sender: dropping retired coded symbol before dispatch"
+                );
+                return true;
+            }
             data_pacer.wait_for(coded.payload.len()).await;
             let block_id = coded.block_id;
             let symbol_id = coded.symbol_id;
@@ -956,9 +1061,7 @@ impl SenderState {
 
             let enqueue_result = {
                 let Some(dispatch) = self.fec_dispatch.as_mut() else {
-                    self.abort_fec_preflight(
-                        "fec dispatch lanes are unavailable in FEC session",
-                    );
+                    self.abort_fec_preflight("fec dispatch lanes are unavailable in FEC session");
                     return true;
                 };
                 dispatch.try_enqueue(coded)
@@ -1031,6 +1134,16 @@ impl SenderState {
             }
             return progressed;
         };
+
+        if self.should_drop_retired_fec_block(symbol.block_id) {
+            trace!(
+                session_id = self.session_id,
+                block_id = symbol.block_id,
+                symbol_id = symbol.symbol_id,
+                "Lossless sender: dropping retired systematic symbol before dispatch"
+            );
+            return true;
+        }
 
         data_pacer.wait_for(symbol.payload.len()).await;
         let block_id = symbol.block_id;
@@ -1111,8 +1224,12 @@ impl SenderState {
         self.send_frame(&frame, processors).await;
     }
 
-    /// Advance the retired watermark based on the slowest receiver.
+    /// Recompute the retired prefix from receiver progress.
+    ///
+    /// - non-FEC: chunks with index < retired_up_to are done everywhere
+    /// - FEC: blocks with block_id < retired_up_to are done everywhere
     fn update_retired_up_to(&mut self) {
+        let previous_retired_up_to = self.retired_up_to;
         if self.receiver_count == 0 {
             self.retired_up_to = if self.is_fec_session() {
                 self.fec_blocks_planned()
@@ -1137,6 +1254,10 @@ impl SenderState {
         } else {
             min_progress.min(self.total_chunks)
         };
+        if self.is_fec_session() && self.retired_up_to > previous_retired_up_to {
+            self.prune_retired_fec_state(self.retired_up_to);
+            self.queue_fec_cancel(self.retired_up_to);
+        }
     }
 
     fn update_receiver_fec_status(
@@ -1334,6 +1455,7 @@ impl SenderState {
             }
             LosslessSessionControl::Manifest { .. }
             | LosslessSessionControl::FecManifest { .. }
+            | LosslessSessionControl::FecCancel { .. }
             | LosslessSessionControl::Eot { .. } => {
                 // ignores if the sender-originated control frames somehow looped back
             }
@@ -1766,6 +1888,18 @@ impl StrideScheduler {
         }
     }
 
+    fn prune_retired_blocks(&mut self, retired_up_to: u64) {
+        if retired_up_to == 0 || self.blocks.is_empty() {
+            return;
+        }
+        let retired_count = self.blocks.range(..retired_up_to).count() as u64;
+        if retired_count == 0 {
+            return;
+        }
+        self.blocks = self.blocks.split_off(&retired_up_to);
+        self.blocks_retired = self.blocks_retired.saturating_add(retired_count);
+    }
+
     /// Returns true when no block has pending coded work.
     fn is_idle(&self) -> bool {
         !self.blocks.values().any(|b| b.coded_sent < b.coded_budget)
@@ -1781,11 +1915,7 @@ impl StrideScheduler {
             .blocks
             .iter()
             .filter(|(_, b)| b.coded_sent < b.coded_budget)
-            .min_by(|(_, a), (_, b)| {
-                a.pass
-                    .cmp(&b.pass)
-                    .then_with(|| b.deficit.cmp(&a.deficit))
-            })
+            .min_by(|(_, a), (_, b)| a.pass.cmp(&b.pass).then_with(|| b.deficit.cmp(&a.deficit)))
             .map(|(&id, _)| id)?;
 
         let block = self.blocks.get_mut(&block_id)?;
@@ -2003,6 +2133,7 @@ mod tests {
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
+            cancel_before_block_id: Arc::new(AtomicU64::new(0)),
             all_lanes_blocked: false,
         };
 
@@ -2050,6 +2181,7 @@ mod tests {
             next_rr_idx: 1,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
+            cancel_before_block_id: Arc::new(AtomicU64::new(0)),
             all_lanes_blocked: false,
         };
 
@@ -2084,6 +2216,7 @@ mod tests {
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
+            cancel_before_block_id: Arc::new(AtomicU64::new(0)),
             all_lanes_blocked: false,
         };
 
@@ -2114,6 +2247,7 @@ mod tests {
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
+            cancel_before_block_id: Arc::new(AtomicU64::new(0)),
             all_lanes_blocked: false,
         };
 
@@ -2261,6 +2395,116 @@ mod tests {
     }
 
     #[test]
+    fn fec_retirement_prunes_stale_pending_symbols_and_queues_cancel() {
+        let chunk_size = 8usize;
+        let total_chunks = 3u64;
+        let total_bytes = total_chunks * chunk_size as u64;
+        let cfg = fec_sender_cfg(chunk_size, total_bytes, 1, vec![7]);
+        let mut state = SenderState::new(cfg, total_chunks);
+        let cancel_before = Arc::new(AtomicU64::new(0));
+
+        state.fec_blocks_sent = total_chunks;
+        state.fec_pending_symbol = Some(FecSymbolWorkItem {
+            block_id: 1,
+            symbol_id: 0,
+            payload: Bytes::from_static(b"a"),
+        });
+        state.fec_pending_coded = Some(FecSymbolWorkItem {
+            block_id: 0,
+            symbol_id: 1,
+            payload: Bytes::from_static(b"b"),
+        });
+        state.fec_dispatch = Some(FecTreeDispatch {
+            lanes: Vec::new(),
+            next_rr_idx: 0,
+            wakeup: Arc::new(Notify::new()),
+            outstanding_symbols: Arc::new(AtomicUsize::new(0)),
+            cancel_before_block_id: Arc::clone(&cancel_before),
+            all_lanes_blocked: false,
+        });
+        {
+            let scheduler = state
+                .stride_scheduler
+                .as_mut()
+                .expect("FEC state should have a stride scheduler");
+            scheduler.update_deficit(0, 1);
+            scheduler.update_deficit(2, 1);
+        }
+        state.receiver_progress.insert(7, 2);
+
+        state.update_retired_up_to();
+
+        assert_eq!(state.retired_up_to, 2);
+        assert!(state.fec_pending_symbol.is_none());
+        assert!(state.fec_pending_coded.is_none());
+        assert_eq!(state.pending_fec_cancel_before, Some(2));
+        assert_eq!(cancel_before.load(Ordering::Relaxed), 2);
+        let retained_blocks: Vec<u64> = state
+            .stride_scheduler
+            .as_ref()
+            .expect("scheduler should remain available")
+            .blocks
+            .keys()
+            .copied()
+            .collect();
+        assert_eq!(retained_blocks, vec![2]);
+    }
+
+    #[test]
+    fn receiverless_fec_retirement_does_not_queue_cancel_or_prune_pending() {
+        let chunk_size = 8usize;
+        let total_chunks = 2u64;
+        let total_bytes = total_chunks * chunk_size as u64;
+        let cfg = fec_sender_cfg(chunk_size, total_bytes, 1, Vec::new());
+        let mut state = SenderState::new(cfg, total_chunks);
+        let cancel_before = Arc::new(AtomicU64::new(0));
+
+        state.fec_blocks_sent = total_chunks;
+        state.fec_pending_symbol = Some(FecSymbolWorkItem {
+            block_id: 0,
+            symbol_id: 0,
+            payload: Bytes::from_static(b"a"),
+        });
+        state.fec_pending_coded = Some(FecSymbolWorkItem {
+            block_id: 0,
+            symbol_id: 1,
+            payload: Bytes::from_static(b"b"),
+        });
+        state.fec_dispatch = Some(FecTreeDispatch {
+            lanes: Vec::new(),
+            next_rr_idx: 0,
+            wakeup: Arc::new(Notify::new()),
+            outstanding_symbols: Arc::new(AtomicUsize::new(0)),
+            cancel_before_block_id: Arc::clone(&cancel_before),
+            all_lanes_blocked: false,
+        });
+        state
+            .stride_scheduler
+            .as_mut()
+            .expect("FEC state should have a stride scheduler")
+            .update_deficit(0, 1);
+
+        state.update_retired_up_to();
+
+        assert_eq!(state.retired_up_to, total_chunks);
+        assert!(state.fec_pending_symbol.is_some());
+        assert!(state.fec_pending_coded.is_some());
+        assert_eq!(state.pending_fec_cancel_before, None);
+        assert_eq!(cancel_before.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            state
+                .stride_scheduler
+                .as_ref()
+                .expect("scheduler should remain available")
+                .blocks
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+    }
+
+    #[test]
     fn fec_completion_waits_for_lane_drain_under_asymmetric_pressure() {
         let chunk_size = 16usize;
         let total_chunks = 1u64;
@@ -2283,6 +2527,7 @@ mod tests {
             next_rr_idx: 0,
             wakeup: Arc::new(Notify::new()),
             outstanding_symbols: Arc::clone(&outstanding),
+            cancel_before_block_id: Arc::new(AtomicU64::new(0)),
             all_lanes_blocked: false,
         });
 
@@ -2328,7 +2573,10 @@ mod tests {
         assert!(sched.is_idle(), "fresh scheduler should be idle");
 
         sched.update_deficit(0, 2);
-        assert!(!sched.is_idle(), "scheduler should have work after deficit report");
+        assert!(
+            !sched.is_idle(),
+            "scheduler should have work after deficit report"
+        );
 
         let coded = sched.next_coded().expect("should produce a coded symbol");
         assert_eq!(coded.block_id, 0);
@@ -2349,7 +2597,10 @@ mod tests {
 
         // First coded symbol should come from block 1 (higher deficit → lower stride → lower pass).
         let first = sched.next_coded().expect("should produce coded");
-        assert_eq!(first.block_id, 1, "higher-deficit block should be served first");
+        assert_eq!(
+            first.block_id, 1,
+            "higher-deficit block should be served first"
+        );
     }
 
     #[test]
@@ -2384,7 +2635,10 @@ mod tests {
             count += 1;
             assert!(count <= budget + 1, "runaway coded generation");
         }
-        assert_eq!(count, budget, "should emit exactly deficit + hedge coded symbols");
+        assert_eq!(
+            count, budget,
+            "should emit exactly deficit + hedge coded symbols"
+        );
         assert!(sched.is_idle());
     }
 }
