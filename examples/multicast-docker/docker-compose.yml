@@ -64,13 +64,15 @@ services:
       SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
+      GROUP_TIMEOUT: "300"
     command:
       - bash
       - -lc
       - >
         examples/multicast-docker/scripts/run_multicast_node.sh source
         examples/multicast-docker/configs/node-source.toml
-        --receiver-ids ${RECEIVER_IDS:-2,3}
+        --controller-config examples/multicast-docker/controller-config.toml
+        --receiver-ids ${RECEIVER_IDS:-4,5}
         --group-label ${GROUP_LABEL:-demo-multicast}
     networks:
       multicast:
@@ -95,7 +97,7 @@ services:
       SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
-      RECEIVE_TIMEOUT_MS: "90000"
+      RECEIVE_TIMEOUT_MS: "300000"
     command:
       - bash
       - -lc
@@ -103,7 +105,7 @@ services:
         examples/multicast-docker/scripts/run_multicast_node.sh receiver
         examples/multicast-docker/configs/node-receiver-a.toml
         --group-label ${GROUP_LABEL:-demo-multicast}
-        --node-id 2
+        --node-id 4
         --source-node-id ${SOURCE_NODE_ID:-1}
     networks:
       multicast:
@@ -128,7 +130,7 @@ services:
       SKIP_BUILD: "${SKIP_BUILD:-0}"
       NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
       ARTIFACT_DIR: "/artifacts"
-      RECEIVE_TIMEOUT_MS: "90000"
+      RECEIVE_TIMEOUT_MS: "300000"
     command:
       - bash
       - -lc
@@ -136,11 +138,67 @@ services:
         examples/multicast-docker/scripts/run_multicast_node.sh receiver
         examples/multicast-docker/configs/node-receiver-b.toml
         --group-label ${GROUP_LABEL:-demo-multicast}
-        --node-id 3
+        --node-id 5
         --source-node-id ${SOURCE_NODE_ID:-1}
     networks:
       multicast:
         ipv4_address: 172.31.1.12
+
+  router_2:
+    build:
+      context: ../../
+      dockerfile: examples/multicast-docker/Dockerfile
+    image: nextmini_python
+    container_name: multicast-router-2
+    hostname: router-2
+    depends_on:
+      controller:
+        condition: service_started
+    volumes:
+      - ../../:/workspace:cached
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+    command:
+      - bash
+      - -lc
+      - >
+        examples/multicast-docker/scripts/run_multicast_node.sh router
+        examples/multicast-docker/configs/node-router-2.toml
+        --group-label ${GROUP_LABEL:-demo-multicast}
+    networks:
+      multicast:
+        ipv4_address: 172.31.1.13
+
+  router_3:
+    build:
+      context: ../../
+      dockerfile: examples/multicast-docker/Dockerfile
+    image: nextmini_python
+    container_name: multicast-router-3
+    hostname: router-3
+    depends_on:
+      controller:
+        condition: service_started
+    volumes:
+      - ../../:/workspace:cached
+    working_dir: /workspace
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      SKIP_BUILD: "${SKIP_BUILD:-0}"
+      NEXTMINI_PY_WHEEL: "/workspace/target/wheels/nextmini_py-0.1.0-cp313-abi3-manylinux_2_38_x86_64.whl"
+    command:
+      - bash
+      - -lc
+      - >
+        examples/multicast-docker/scripts/run_multicast_node.sh router
+        examples/multicast-docker/configs/node-router-3.toml
+        --group-label ${GROUP_LABEL:-demo-multicast}
+    networks:
+      multicast:
+        ipv4_address: 172.31.1.14
 
 networks:
   multicast:

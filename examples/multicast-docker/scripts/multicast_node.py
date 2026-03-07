@@ -6,10 +6,9 @@ import json
 import os
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import List, Tuple
-
-import torch
 
 try:
     import nextmini_py as nm
@@ -33,8 +32,14 @@ def atomic_write_json(path: Path, payload: dict) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lossless session demo")
-    parser.add_argument("--role", choices=("source", "receiver"), required=True)
+    parser.add_argument("--role", choices=("source", "receiver", "router"), required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument(
+        "--controller-config",
+        type=Path,
+        default=None,
+        help="Path to the controller config TOML (needed for multi-tree route computation).",
+    )
     parser.add_argument("--group-label", required=True)
     parser.add_argument("--chunk-size", type=int, default=8500)
     parser.add_argument(
@@ -90,6 +95,79 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sink-path", type=Path, default=None)
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
+
+
+def load_toml(path: Path) -> dict:
+    """Load a TOML file, using tomllib (3.11+) or tomli fallback."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[no-redef]
+    return tomllib.loads(path.read_text())
+
+
+def read_controller_topology_edges(controller_config: Path) -> List[Tuple[int, int]]:
+    """Read undirected edges from the controller config."""
+    cfg = load_toml(controller_config)
+    topo = cfg.get("topology", {})
+    raw_edges = topo.get("edges", [])
+    return [(int(e[0]), int(e[1])) for e in raw_edges]
+
+
+def read_fec_tree_ids(node_config: Path) -> List[int]:
+    """Read fec_default_tree_ids from a node config."""
+    cfg = load_toml(node_config)
+    lrc = cfg.get("lossless_runtime_config", {})
+    return [int(t) for t in lrc.get("fec_default_tree_ids", [0])]
+
+
+def compute_shortest_path_tree_edges(
+    undirected_edges: List[Tuple[int, int]],
+    src: int,
+    destinations: List[int],
+    neighbor_order: str = "asc",
+) -> List[Tuple[int, int]]:
+    """BFS shortest-path multicast tree. neighbor_order controls tie-breaking."""
+    adj: dict[int, list[int]] = {}
+    for u, v in undirected_edges:
+        adj.setdefault(u, []).append(v)
+        adj.setdefault(v, []).append(u)
+
+    reverse = neighbor_order == "desc"
+    for node in adj:
+        adj[node] = sorted(set(adj[node]), reverse=reverse)
+
+    remaining = set(d for d in destinations if d != src)
+    if not remaining:
+        return []
+
+    parents: dict[int, int | None] = {src: None}
+    q: deque[int] = deque([src])
+
+    while q and remaining:
+        u = q.popleft()
+        for v in adj.get(u, []):
+            if v in parents:
+                continue
+            parents[v] = u
+            remaining.discard(v)
+            if not remaining:
+                break
+            q.append(v)
+
+    if remaining:
+        raise RuntimeError(f"Unreachable destinations from src={src}: {sorted(remaining)}")
+
+    edges: set[Tuple[int, int]] = set()
+    for d in destinations:
+        if d == src:
+            continue
+        cur = d
+        while cur != src:
+            parent = parents[cur]
+            edges.add((parent, cur))
+            cur = parent
+    return sorted(edges)
 
 
 def parse_receiver_ids(value: str) -> List[int]:
@@ -224,6 +302,8 @@ def generate_tensor_if_needed(args: argparse.Namespace) -> None:
     if not args.generate_tensor:
         return
 
+    import torch
+
     if args.tensor_path is None:
         tensor_dir = Path("/workspace/tensors")
         tensor_dir.mkdir(parents=True, exist_ok=True)
@@ -275,11 +355,31 @@ def run_source(args: argparse.Namespace) -> None:
         args.quiet,
     )
 
-    edges = build_star_edges(source_node_id, receiver_ids)
-    if not edges:
-        raise SystemExit("No multicast DAG edges computed; check receiver IDs.")
-    log(f"Installing multicast DAG edges={edges}", args.quiet)
-    dataplane.set_group_routes(group_id, edges)
+    tree_ids = read_fec_tree_ids(args.config) if args.controller_config else []
+
+    if args.controller_config and len(tree_ids) > 1:
+        # Multi-tree: compute per-tree shortest-path DAGs from controller topology.
+        topo_edges = read_controller_topology_edges(args.controller_config)
+        trees: list[tuple[int, list[tuple[int, int]]]] = []
+        for tid in tree_ids:
+            order = "asc" if tid % 2 == 0 else "desc"
+            tedges = compute_shortest_path_tree_edges(
+                topo_edges, src=source_node_id, destinations=receiver_ids,
+                neighbor_order=order,
+            )
+            if not tedges:
+                raise SystemExit(f"No shortest-path edges for tree_id={tid}; check topology.")
+            trees.append((tid, tedges))
+        log(f"Installing multicast trees={trees}", args.quiet)
+        dataplane.set_group_routes_multi(group_id, trees)
+    else:
+        # Single-tree or no controller config: use star topology.
+        edges = build_star_edges(source_node_id, receiver_ids)
+        if not edges:
+            raise SystemExit("No multicast DAG edges computed; check receiver IDs.")
+        log(f"Installing multicast DAG edges={edges}", args.quiet)
+        dataplane.set_group_routes(group_id, edges)
+
     if not dataplane.wait_for_group_routes(
         group_id,
         source_node_id,
@@ -416,8 +516,14 @@ def main() -> int:
         if args.role == "source":
             generate_tensor_if_needed(args)
             run_source(args)
-        else:
+        elif args.role == "receiver":
             run_receiver(args)
+        else:
+            dataplane = nm.Dataplane(str(args.config))
+            local_node_id = dataplane.node_id
+            log(f"Router node started (node_id={local_node_id}).", args.quiet)
+            if not dataplane.wait_for_topology_ready(timeout_ms=args.group_timeout * 1000):
+                raise TimeoutError("Timed out waiting for topology readiness.")
     except TimeoutError as exc:
         log(f"ERROR: {exc}", quiet=False)
         return 1

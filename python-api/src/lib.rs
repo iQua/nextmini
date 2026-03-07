@@ -696,6 +696,33 @@ impl Dataplane {
         Ok(())
     }
 
+    /// Set multiple multicast trees for a group.
+    ///
+    /// Each tree is described as `(tree_id, edges)` where `edges` is a list of directed edges
+    /// `(from_node_id, to_node_id)`.
+    #[pyo3(signature = (group_id, trees))]
+    fn set_group_routes_multi(
+        &self,
+        group_id: usize,
+        trees: Vec<(usize, Vec<(u32, u32)>)>,
+    ) -> PyResult<()> {
+        let trees = trees
+            .into_iter()
+            .map(|(tree_id, edges)| nextmini_messages::GroupRouteTree {
+                tree_id,
+                weight: None,
+                edges,
+            })
+            .collect();
+
+        rt().block_on(async {
+            self.controller
+                .send(DataplaneToController::SetGroupRoutesMulti { group_id, trees })
+                .await;
+        });
+        Ok(())
+    }
+
     #[pyo3(signature = (timeout_ms=None))]
     fn group_is_ready(&self, timeout_ms: Option<u64>) -> PyResult<Option<(usize, String, usize)>> {
         let timeout = timeout_ms.map(Duration::from_millis);

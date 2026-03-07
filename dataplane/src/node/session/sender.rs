@@ -439,7 +439,7 @@ impl FecTreeDispatch {
                         session.dst_port,
                         &frame,
                     );
-                    processors.process_packet_blocking(packet);
+                    processors.process_packet(packet).await;
                     worker_counters.note_sent();
                     outstanding_symbols.fetch_sub(1, Ordering::Relaxed);
                     worker_counters.note_wakeup();
