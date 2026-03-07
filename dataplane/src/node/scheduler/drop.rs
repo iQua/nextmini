@@ -1,7 +1,6 @@
 //! Implements packet drop strategies for the scheduler.
 
 use clap::ValueEnum;
-use rand::SeedableRng;
 use rand::distr::Distribution;
 use rand::distr::Uniform;
 use rand::rngs::SmallRng;
@@ -71,7 +70,7 @@ impl Red {
         max_threshold: f64,
         max_probability: f64,
     ) -> Red {
-        let rng = SmallRng::from_os_rng();
+        let rng: SmallRng = rand::make_rng();
 
         Red {
             capacity,

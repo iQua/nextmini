@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
-use rand::Rng;
 use tokio::net::TcpStream;
 #[cfg(feature = "python-extension")]
 use tokio::sync::Mutex;
@@ -192,7 +191,7 @@ impl ControllerInterfaceHandle {
             }
 
             // Linear backoff with small jitter (0 - 500ms)
-            let jitter_ms = rand::rng().random_range(0..500);
+            let jitter_ms = rand::random_range(0..500);
             let backoff = Duration::from_secs(2) + Duration::from_millis(jitter_ms);
 
             tokio::time::sleep(backoff).await;

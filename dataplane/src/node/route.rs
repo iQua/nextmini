@@ -1,6 +1,5 @@
 use ahash::AHashMap;
 use jumphash::JumpHasher;
-use rand::Rng;
 use smallvec::SmallVec;
 use std::net::Ipv4Addr;
 use tracing::debug;
@@ -487,7 +486,7 @@ impl RoutingTable {
         match next_hops.len() {
             0 => Err("No next hop(s) available.".to_string()),
             1 => Ok(next_hops[0]),
-            len => Ok(next_hops[rand::rng().random_range(0..len)]),
+            len => Ok(next_hops[rand::random_range(0..len)]),
         }
     }
 
