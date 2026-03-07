@@ -25,6 +25,10 @@ pub enum SchedulerReaderMessage {
 pub enum SchedulerWriterMessage {
     RateLimit(TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    SetFecCancelBefore {
+        session_id: u64,
+        cancel_before_block_id: u64,
+    },
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
@@ -85,6 +89,21 @@ impl SchedulerHandle {
         {
             error!(
                 "SchedulerHandle: Error sending a flow weight to the scheduler: {}.",
+                e
+            );
+        }
+    }
+
+    pub fn set_fec_cancel_before(&self, session_id: u64, cancel_before_block_id: u64) {
+        if let Err(e) = self
+            .writer_sender
+            .send(SchedulerWriterMessage::SetFecCancelBefore {
+                session_id,
+                cancel_before_block_id,
+            })
+        {
+            error!(
+                "SchedulerHandle: Error sending FEC cancel watermark to the scheduler: {}.",
                 e
             );
         }

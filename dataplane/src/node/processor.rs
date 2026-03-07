@@ -999,6 +999,7 @@ impl Processor {
     async fn process_packet(&mut self, packet: Packet) {
         let packet_flow_id = packet.flow_id;
         let fec_tree_id = packet.lossless_fec_tree_id();
+        self.apply_lossless_fec_cancel(&packet);
 
         let reporter = self.flowstats_reporter.as_ref();
         match self.routing_table.get_next_hops_by_flow_and_tree(
@@ -1044,6 +1045,25 @@ impl Processor {
                 }
                 error!("Error resolving route for flow {}: {}", packet_flow_id, e);
             }
+        }
+    }
+
+    fn apply_lossless_fec_cancel(&self, packet: &Packet) {
+        let Some(payload) = packet.tcp_payload() else {
+            return;
+        };
+        let Some((hdr, control)) = lossless_session::decode_control(payload) else {
+            return;
+        };
+        let lossless_session::LosslessSessionControl::FecCancel {
+            cancel_before_block_id,
+        } = control
+        else {
+            return;
+        };
+
+        for scheduler in self.schedulers.values() {
+            scheduler.set_fec_cancel_before(hdr.session_id, cancel_before_block_id);
         }
     }
 

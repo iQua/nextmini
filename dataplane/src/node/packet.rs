@@ -255,6 +255,13 @@ impl Packet {
         Some(fec_data.tree_id)
     }
 
+    /// Returns `(session_id, block_id)` when this packet carries a lossless-session FEC data frame.
+    pub fn lossless_fec_session_and_block(&self) -> Option<(u64, u64)> {
+        let payload = self.tcp_payload()?;
+        let (hdr, fec_data, _) = lossless_session::decode_fec_data(payload)?;
+        Some((hdr.session_id, fec_data.block_id))
+    }
+
     #[cfg(feature = "python-extension")]
     pub fn into_bytes(self) -> Bytes {
         let packet_size = self.packet_size;
@@ -501,5 +508,33 @@ mod tests {
         );
 
         assert_eq!(packet.lossless_fec_tree_id(), None);
+    }
+
+    #[test]
+    fn extracts_lossless_fec_session_and_block_from_tcp_payload() {
+        let fec_payload = lossless_session::encode_fec_data(42, 7, 3, 1, b"data");
+        let packet = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            &fec_payload,
+        );
+
+        assert_eq!(packet.lossless_fec_session_and_block(), Some((42, 7)));
+    }
+
+    #[test]
+    fn returns_none_for_non_fec_session_and_block() {
+        let payload = lossless_session::encode_data(17, 1, b"data");
+        let packet = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            &payload,
+        );
+
+        assert_eq!(packet.lossless_fec_session_and_block(), None);
     }
 }
