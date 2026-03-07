@@ -84,7 +84,7 @@ impl BlockPlan {
         }
     }
 
-    pub fn block_span(&self, block_id: u64) -> Option<BlockSpan> {
+    pub(crate) fn block_span(&self, block_id: u64) -> Option<BlockSpan> {
         let offset = self.block_offset(block_id)?;
         let len = self.block_len(block_id)?;
 
@@ -98,17 +98,17 @@ impl BlockPlan {
 
 /// Absolute object span for a single block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockSpan {
+pub(crate) struct BlockSpan {
     offset: u64,
     len: usize,
 }
 
 impl BlockSpan {
-    pub const fn offset(&self) -> u64 {
+    pub(crate) const fn offset(&self) -> u64 {
         self.offset
     }
 
-    pub const fn len(&self) -> usize {
+    pub(crate) const fn len(&self) -> usize {
         self.len
     }
 }

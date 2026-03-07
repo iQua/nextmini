@@ -450,11 +450,14 @@ impl SessionSender {
     async fn send_manifest(&mut self) {
         control::send_control(
             &self.processors,
-            self.common.session_id,
-            self.src_ip,
-            self.common.src_port,
-            self.common.dest_ip,
-            self.common.dst_port,
+            control::FrameRoute {
+                session_id: self.common.session_id,
+                tree_id: None,
+                src_ip: self.src_ip,
+                src_port: self.common.src_port,
+                dst_ip: self.common.dest_ip,
+                dst_port: self.common.dst_port,
+            },
             &LosslessSessionControl::Manifest {
                 manifest: self.manifest.clone(),
             },
@@ -465,11 +468,14 @@ impl SessionSender {
     async fn send_eot(&mut self) {
         control::send_control(
             &self.processors,
-            self.common.session_id,
-            self.src_ip,
-            self.common.src_port,
-            self.common.dest_ip,
-            self.common.dst_port,
+            control::FrameRoute {
+                session_id: self.common.session_id,
+                tree_id: None,
+                src_ip: self.src_ip,
+                src_port: self.common.src_port,
+                dst_ip: self.common.dest_ip,
+                dst_port: self.common.dst_port,
+            },
             &LosslessSessionControl::Eot,
         )
         .await;
@@ -484,12 +490,14 @@ impl SessionSender {
         self.pace(frame.len()).await;
         control::send_frame(
             &self.processors,
-            self.common.session_id,
-            None,
-            self.src_ip,
-            self.common.src_port,
-            self.common.dest_ip,
-            self.common.dst_port,
+            control::FrameRoute {
+                session_id: self.common.session_id,
+                tree_id: None,
+                src_ip: self.src_ip,
+                src_port: self.common.src_port,
+                dst_ip: self.common.dest_ip,
+                dst_port: self.common.dst_port,
+            },
             &frame,
         )
         .await;
@@ -551,12 +559,14 @@ impl SessionSender {
             );
             let submission = control::try_send_frame(
                 &self.processors,
-                self.common.session_id,
-                Some(tree_id),
-                self.src_ip,
-                self.common.src_port,
-                self.common.dest_ip,
-                self.common.dst_port,
+                control::FrameRoute {
+                    session_id: self.common.session_id,
+                    tree_id: Some(tree_id),
+                    src_ip: self.src_ip,
+                    src_port: self.common.src_port,
+                    dst_ip: self.common.dest_ip,
+                    dst_port: self.common.dst_port,
+                },
                 &frame,
             );
             match submission.outcome {
@@ -587,9 +597,7 @@ impl SessionSender {
     }
 
     fn extra_symbol_payload(&mut self, block_id: u64, symbol_id: u32) -> Option<Vec<u8>> {
-        let Some(fec_state) = self.fec.as_ref() else {
-            return None;
-        };
+        let fec_state = self.fec.as_ref()?;
         let geometry = fec_state.geometry;
         let symbols_per_block = fec_state.symbols_per_block;
 
