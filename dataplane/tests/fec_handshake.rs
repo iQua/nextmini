@@ -53,27 +53,18 @@ async fn start_runtime_sender(
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn start_sender_surfaces_preflight_error_to_caller() {
-    let cfg = LocalConfig {
-        node_id: 1,
-        n_nodes: 2,
-        num_packet_processors: 1,
-        channel_capacity: 512,
-        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
-        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ..Default::default()
-    };
+async fn start_sender_with_runtime_config(
+    cfg: LocalConfig,
+    runtime_cfg: nextmini::node::config::LosslessConfig,
+    session_id: u64,
+) -> Result<u64, PreflightError> {
     let processors = ProcessorHandle::new(cfg.clone());
-    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
-    runtime_cfg.fec_enabled = true;
-    runtime_cfg.fec_default_tree_ids.clear();
     let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
 
-    let started = runtime
+    runtime
         .start_sender(SenderRequest {
             common: CommonConfig {
-                session_id: 0x0FEC_2001,
+                session_id,
                 dest_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
                 block_size: 16,
                 src_port: 4410,
@@ -88,11 +79,80 @@ async fn start_sender_surfaces_preflight_error_to_caller() {
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
             ready_grace_ms: 1,
         })
-        .await;
+        .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_surfaces_preflight_error_to_caller() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_tree_ids.clear();
+
+    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2001).await;
 
     assert!(
         matches!(started, Err(PreflightError::MissingTreeIds)),
         "caller should get a typed preflight error"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_rejects_zero_symbols_per_block_without_clamping() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_symbols_per_block = 0;
+    runtime_cfg.fec_default_tree_ids = vec![1];
+
+    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2002).await;
+
+    assert!(
+        matches!(started, Err(PreflightError::ZeroSymbolsPerBlock)),
+        "zero configured symbols_per_block should be rejected directly"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_rejects_unsorted_duplicate_fec_tree_ids() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_symbols_per_block = 4;
+    runtime_cfg.fec_default_tree_ids = vec![3, 1, 3];
+
+    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2003).await;
+
+    assert!(
+        matches!(
+            started,
+            Err(PreflightError::TreeIdsMustBeSortedUnique { .. })
+        ),
+        "tree ids should be validated, not canonicalized"
     );
 }
 

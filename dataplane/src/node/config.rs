@@ -42,17 +42,6 @@ pub enum Feature {
     Concurrent,
 }
 
-/// Source for sender FEC tree-id allowlists when callers do not provide explicit IDs.
-#[derive(Clone, Default, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FecTreeIdsSource {
-    /// Use `fec_default_tree_ids` from runtime config.
-    #[default]
-    Config,
-    /// Use runtime route-installed tree IDs.
-    InstalledRoutes,
-}
-
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
@@ -698,14 +687,6 @@ pub struct LosslessConfig {
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
 
-    /// Upper bound on explicit `fec_tree_ids` accepted at runtime preflight.
-    #[serde(default = "default_fec_max_tree_lanes")]
-    pub fec_max_tree_lanes: usize,
-
-    /// On/off gate for collaborative multi-tree FEC sessions.
-    #[serde(default = "default_fec_collaborative_multitree_enabled")]
-    pub fec_collaborative_multitree_enabled: bool,
-
     /// Global kill-switch for FEC sessions. When false, all FEC session requests are rejected.
     #[serde(default = "default_fec_enabled")]
     pub fec_enabled: bool,
@@ -714,21 +695,9 @@ pub struct LosslessConfig {
     #[serde(default = "default_fec_default_symbols_per_block")]
     pub fec_default_symbols_per_block: u16,
 
-    /// Source used to derive sender FEC tree-id allowlist when runtime internalizes FEC policy.
-    #[serde(default = "default_fec_tree_ids_source")]
-    pub fec_tree_ids_source: FecTreeIdsSource,
-
-    /// Config-driven fallback tree IDs used when `fec_tree_ids_source=config`.
+    /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
-
-    /// Lower bound for `FecManifest.symbols_per_block` accepted by runtime preflight.
-    #[serde(default = "default_fec_symbols_per_block_min")]
-    pub fec_symbols_per_block_min: u16,
-
-    /// Upper bound for `FecManifest.symbols_per_block` accepted by runtime preflight.
-    #[serde(default = "default_fec_symbols_per_block_max")]
-    pub fec_symbols_per_block_max: u16,
 
     /// Effective processor ingress policy copied from `LocalConfig.feature`.
     /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
@@ -741,44 +710,15 @@ pub struct LosslessConfig {
     pub ingress_channel_backpressure: bool,
 }
 
-impl LosslessConfig {
-    /// Returns an ordered `(min, max)` range for `symbols_per_block`.
-    pub fn fec_symbols_per_block_bounds(&self) -> (u16, u16) {
-        ordered_u16_bounds(
-            self.fec_symbols_per_block_min,
-            self.fec_symbols_per_block_max,
-        )
-    }
-
-    /// Returns default `symbols_per_block` clamped into configured bounds.
-    pub fn canonical_fec_default_symbols_per_block(&self) -> u16 {
-        let (min, max) = self.fec_symbols_per_block_bounds();
-        self.fec_default_symbols_per_block.clamp(min, max)
-    }
-
-    /// Returns sorted, unique default tree IDs from config.
-    pub fn canonical_fec_default_tree_ids(&self) -> Vec<u16> {
-        let mut tree_ids = self.fec_default_tree_ids.clone();
-        tree_ids.sort_unstable();
-        tree_ids.dedup();
-        tree_ids
-    }
-}
-
 impl Default for LosslessConfig {
     fn default() -> Self {
         Self {
             default_block_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
-            fec_max_tree_lanes: 64,
-            fec_collaborative_multitree_enabled: true,
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
-            fec_tree_ids_source: FecTreeIdsSource::Config,
             fec_default_tree_ids: vec![0],
-            fec_symbols_per_block_min: 1,
-            fec_symbols_per_block_max: 1024,
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
         }
@@ -789,14 +729,6 @@ const fn default_ready_grace_ms() -> u64 {
     1500
 }
 
-const fn default_fec_max_tree_lanes() -> usize {
-    64
-}
-
-const fn default_fec_collaborative_multitree_enabled() -> bool {
-    true
-}
-
 const fn default_fec_enabled() -> bool {
     false
 }
@@ -805,24 +737,8 @@ const fn default_fec_default_symbols_per_block() -> u16 {
     32
 }
 
-const fn default_fec_tree_ids_source() -> FecTreeIdsSource {
-    FecTreeIdsSource::Config
-}
-
 fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
-}
-
-const fn default_fec_symbols_per_block_min() -> u16 {
-    1
-}
-
-const fn default_fec_symbols_per_block_max() -> u16 {
-    1024
-}
-
-const fn ordered_u16_bounds(a: u16, b: u16) -> (u16, u16) {
-    if a <= b { (a, b) } else { (b, a) }
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -857,7 +773,7 @@ fn default_netmask() -> Ipv4Addr {
 
 #[cfg(test)]
 mod tests {
-    use super::{FecTreeIdsSource, LocalConfig, LosslessConfig};
+    use super::{LocalConfig, LosslessConfig};
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
@@ -929,29 +845,22 @@ mod tests {
     }
 
     #[test]
-    fn lossless_defaults_keep_fec_opt_in_and_strict() {
+    fn lossless_defaults_keep_fec_opt_in_and_explicit() {
         let cfg = LocalConfig::default();
         let lossless = cfg.lossless_runtime_config;
 
         assert_eq!(lossless.default_block_size, 8500);
-        assert_eq!(lossless.fec_max_tree_lanes, 64);
-        assert!(
-            lossless.fec_collaborative_multitree_enabled,
-            "collaborative multi-tree mode should be enabled by default"
-        );
         assert!(
             !lossless.fec_enabled,
             "FEC must be explicit opt-in by default"
         );
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
-        assert_eq!(lossless.fec_tree_ids_source, FecTreeIdsSource::Config);
-        assert_eq!(lossless.canonical_fec_default_tree_ids(), vec![0]);
+        assert_eq!(lossless.fec_default_tree_ids, vec![0]);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,
             "lossless defaults should assume backpressured ingress unless synced from LocalConfig"
         );
-        assert_eq!(lossless.fec_symbols_per_block_bounds(), (1, 1024));
     }
 
     #[test]
@@ -975,28 +884,14 @@ mod tests {
     }
 
     #[test]
-    fn lossless_bounds_are_normalized_when_reversed() {
-        let cfg = LosslessConfig {
-            fec_symbols_per_block_min: 96,
-            fec_symbols_per_block_max: 8,
-            ..Default::default()
-        };
-
-        assert_eq!(cfg.fec_symbols_per_block_bounds(), (8, 96));
-    }
-
-    #[test]
-    fn lossless_fec_defaults_are_canonicalized_to_bounds_and_unique_tree_ids() {
+    fn lossless_fec_defaults_are_not_canonicalized() {
         let cfg = LosslessConfig {
             fec_default_symbols_per_block: 0,
-            fec_symbols_per_block_min: 8,
-            fec_symbols_per_block_max: 64,
-            fec_tree_ids_source: FecTreeIdsSource::Config,
             fec_default_tree_ids: vec![5, 1, 5, 3],
             ..Default::default()
         };
 
-        assert_eq!(cfg.canonical_fec_default_symbols_per_block(), 8);
-        assert_eq!(cfg.canonical_fec_default_tree_ids(), vec![1, 3, 5]);
+        assert_eq!(cfg.fec_default_symbols_per_block, 0);
+        assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
     }
 }

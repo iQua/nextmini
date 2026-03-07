@@ -92,10 +92,6 @@ pub enum DataplaneToController {
         group_id: GroupId,
         trees: Vec<GroupRouteTree>,
     },
-    /// Periodic lossless session stats from dataplane (feature-gated at source).
-    LosslessStats {
-        stats: LosslessStats,
-    },
 }
 
 /// The new app flow message reported to controller from a src node to dest node.
@@ -130,21 +126,6 @@ pub struct RouteAssignment {
     pub flow_id: [u8; 16],
     pub route_id: usize,
     pub time: i64,
-}
-
-/// Lossless session metrics (optional)
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LosslessStats {
-    pub session_id: u64,
-    pub node_id: usize,
-    /// "sender" | "receiver"
-    pub role: String,
-    pub bytes: u64,
-    pub chunks: u64,
-    pub resends: u64,
-    pub repairs: u64,
-    pub fec_used: u64,
-    pub ts_ms: i64,
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.

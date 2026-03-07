@@ -1,6 +1,6 @@
 ---
 title: "Lossless Session Configuration"
-description: "Defines block-first lossless session defaults, limits, and runtime preflight behavior."
+description: "Defines block-first lossless session defaults and runtime preflight behavior."
 ---
 
 `LosslessConfig` in `dataplane/src/node/config.rs` owns the runtime defaults for
@@ -31,14 +31,9 @@ The design reference for the rewrite lives in
 | `default_block_size` | `8500` | Default transfer block size in bytes. |
 | `data_bucket` | `None` | Optional token bucket for sender pacing. |
 | `ready_grace_ms` | `1500` | Grace window before the sender opens the data gate when not all receivers have sent `Ready`. |
-| `fec_max_tree_lanes` | `64` | Upper bound on configured FEC tree IDs accepted at sender preflight. |
-| `fec_collaborative_multitree_enabled` | `true` | Rollout gate for multi-tree FEC sessions. |
 | `fec_enabled` | `false` | Global FEC enable switch. Plain mode remains the default. |
-| `fec_default_symbols_per_block` | `32` | Default `symbols_per_block` for runtime-derived FEC manifests. |
-| `fec_tree_ids_source` | `"config"` | Source of sender tree IDs (`config` or `installed_routes`). |
-| `fec_default_tree_ids` | `[0]` | Fallback tree ID list when `fec_tree_ids_source="config"`. |
-| `fec_symbols_per_block_min` | `1` | Lower bound enforced for `symbols_per_block`. |
-| `fec_symbols_per_block_max` | `1024` | Upper bound enforced for `symbols_per_block`. |
+| `fec_default_symbols_per_block` | `32` | Default `symbols_per_block` for runtime-derived FEC manifests. Must be greater than zero. |
+| `fec_default_tree_ids` | `[0]` | Ordered unique tree ID list used for FEC symbol striping. Must be non-empty. |
 
 ## Runtime Behavior
 
@@ -74,7 +69,7 @@ not part of the design.
 
 For FEC senders:
 
-- tree IDs are canonicalized into a sorted unique set
+- tree IDs must already be configured as a sorted unique set
 - multi-tree mode requires `Feature::Sequential`
 - multi-tree mode requires `channel_backpressure=true`
 - backpressure is observed at processor ingress via non-blocking submission
@@ -89,14 +84,9 @@ tree.
 [lossless_runtime_config]
 default_block_size = 8500
 ready_grace_ms = 1500
-fec_max_tree_lanes = 64
-fec_collaborative_multitree_enabled = true
 fec_enabled = false
 fec_default_symbols_per_block = 32
-fec_tree_ids_source = "config"
 fec_default_tree_ids = [0]
-fec_symbols_per_block_min = 1
-fec_symbols_per_block_max = 1024
 
 # Optional pacing
 # [lossless_runtime_config.data_bucket]

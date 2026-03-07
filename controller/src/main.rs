@@ -1014,20 +1014,6 @@ async fn handle_connection(
                             );
                         }
                     }
-                    DataplaneToController::LosslessStats { stats } => {
-                        info!(
-                            "LosslessStats: sid={} node={} role={} bytes={} chunks={} resends={} repairs={} fec_used={} ts_ms={}",
-                            stats.session_id,
-                            stats.node_id,
-                            stats.role,
-                            stats.bytes,
-                            stats.chunks,
-                            stats.resends,
-                            stats.repairs,
-                            stats.fec_used,
-                            stats.ts_ms
-                        );
-                    }
                 }
             }
             Ok(Message::Ping(_)) => {
