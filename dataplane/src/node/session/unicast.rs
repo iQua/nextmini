@@ -89,15 +89,15 @@ impl LosslessUnicastFlowManager {
             }
 
             // We currently inject a fixed pattern; higher-level APIs fill the
-            // buffer before the flow is scheduled. Reuse a single chunk-sized
+            // buffer before the flow is scheduled. Reuse a single block-sized
             // template instead of allocating the entire payload up front.
-            let template_len = runtime_config.default_chunk_size.max(1);
+            let template_len = runtime_config.default_block_size.max(1);
             let source_buffer = Bytes::from(vec![0xAAu8; template_len]);
 
             let common = CommonConfig {
                 session_id,
                 dest_ip: dst_ip,
-                chunk_size: runtime_config.default_chunk_size,
+                block_size: runtime_config.default_block_size,
                 src_port,
                 dst_port,
                 data_bucket,
@@ -190,7 +190,7 @@ impl LosslessUnicastFlowManager {
             let common = CommonConfig {
                 session_id,
                 dest_ip,
-                chunk_size: runtime_config.default_chunk_size,
+                block_size: runtime_config.default_block_size,
                 src_port,
                 dst_port,
                 data_bucket,

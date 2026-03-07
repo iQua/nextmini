@@ -4,7 +4,6 @@ use std::sync::Mutex;
 
 use byteorder::{BigEndian, ByteOrder};
 use bytes::{Bytes, BytesMut};
-use nextmini_messages::lossless_session;
 use once_cell::sync::Lazy;
 
 use crate::node::flow;
@@ -142,7 +141,18 @@ pub struct Packet {
     buffer: PacketBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LosslessTransportMeta {
+    pub session_id: u64,
+    pub tree_id: Option<u16>,
+}
+
 impl Packet {
+    const IP_HLEN: usize = 20;
+    const TCP_BASE_HLEN: usize = 20;
+    const LOSSLESS_META_OPTION_KIND: u8 = 30;
+    const LOSSLESS_META_OPTION_LEN: usize = 16;
+
     pub fn new(packet_size: usize, mut buffer: PacketBuf) -> Self {
         if buffer.len() > packet_size {
             buffer.truncate(packet_size);
@@ -250,9 +260,11 @@ impl Packet {
 
     /// Returns the FEC tree id when this packet carries a lossless-session FEC data frame.
     pub fn lossless_fec_tree_id(&self) -> Option<u16> {
-        let payload = self.tcp_payload()?;
-        let (_, fec_data, _) = lossless_session::decode_fec_data(payload)?;
-        Some(fec_data.tree_id)
+        self.lossless_transport_meta()?.tree_id
+    }
+
+    pub fn lossless_session_id(&self) -> Option<u64> {
+        Some(self.lossless_transport_meta()?.session_id)
     }
 
     #[cfg(feature = "python-extension")]
@@ -335,10 +347,27 @@ impl Packet {
         dst_port: u16,
         payload: &[u8],
     ) -> Self {
-        const IP_HLEN: usize = 20;
-        const TCP_HLEN: usize = 20;
+        Self::build_ipv4_tcp_packet_with_lossless_meta(
+            src_ip, src_port, dst_ip, dst_port, None, payload,
+        )
+    }
 
-        let total_len = IP_HLEN + TCP_HLEN + payload.len();
+    pub fn build_ipv4_tcp_packet_with_lossless_meta(
+        src_ip: Ipv4Addr,
+        src_port: u16,
+        dst_ip: Ipv4Addr,
+        dst_port: u16,
+        lossless_meta: Option<LosslessTransportMeta>,
+        payload: &[u8],
+    ) -> Self {
+        let tcp_hlen = Self::TCP_BASE_HLEN
+            + if lossless_meta.is_some() {
+                Self::LOSSLESS_META_OPTION_LEN
+            } else {
+                0
+            };
+
+        let total_len = Self::IP_HLEN + tcp_hlen + payload.len();
         let mut buf = vec![0u8; total_len];
 
         // IPv4 header
@@ -349,15 +378,26 @@ impl Packet {
         buf[12..16].copy_from_slice(&src_ip.octets());
         buf[16..20].copy_from_slice(&dst_ip.octets());
 
-        // TCP header (no options)
-        let tcp_off = IP_HLEN;
+        let tcp_off = Self::IP_HLEN;
         BigEndian::write_u16(&mut buf[tcp_off..tcp_off + 2], src_port);
         BigEndian::write_u16(&mut buf[tcp_off + 2..tcp_off + 4], dst_port);
-        buf[tcp_off + 12] = 0x50; // data offset = 5 (20 bytes), reserved bits = 0
+        buf[tcp_off + 12] = ((tcp_hlen / 4) as u8) << 4;
         buf[tcp_off + 13] = 0x18; // PSH + ACK to mark data frame
 
+        if let Some(meta) = lossless_meta {
+            let options_off = tcp_off + Self::TCP_BASE_HLEN;
+            let option = &mut buf[options_off..options_off + Self::LOSSLESS_META_OPTION_LEN];
+            option[0] = Self::LOSSLESS_META_OPTION_KIND;
+            option[1] = Self::LOSSLESS_META_OPTION_LEN as u8;
+            option[2] = u8::from(meta.tree_id.is_some());
+            option[3] = 0;
+            option[4..12].copy_from_slice(&meta.session_id.to_be_bytes());
+            option[12..14].copy_from_slice(&meta.tree_id.unwrap_or_default().to_be_bytes());
+            option[14..16].copy_from_slice(&0u16.to_be_bytes());
+        }
+
         // Payload
-        buf[IP_HLEN + TCP_HLEN..].copy_from_slice(payload);
+        buf[Self::IP_HLEN + tcp_hlen..].copy_from_slice(payload);
 
         Packet::from_vec(buf)
     }
@@ -378,6 +418,63 @@ impl Packet {
         let src_dst_port = BigEndian::read_u32(&buf[ip_header_len..ip_header_len + 4]);
 
         (src_dst_ip as u128) << 64 | (src_dst_port as u128) << 32
+    }
+
+    fn lossless_transport_meta(&self) -> Option<LosslessTransportMeta> {
+        let buf = self.bytes();
+        if self.packet_size < Self::IP_HLEN || (buf[0] >> 4) != 4 || buf[9] != 6 {
+            return None;
+        }
+
+        let ip_header_len = usize::from(buf[0] & 0x0F) * 4;
+        if self.packet_size < ip_header_len + Self::TCP_BASE_HLEN {
+            return None;
+        }
+
+        let tcp_off = ip_header_len;
+        let tcp_header_len = usize::from((buf[tcp_off + 12] >> 4) & 0x0F) * 4;
+        if tcp_header_len < Self::TCP_BASE_HLEN || self.packet_size < tcp_off + tcp_header_len {
+            return None;
+        }
+
+        let mut pos = tcp_off + Self::TCP_BASE_HLEN;
+        let end = tcp_off + tcp_header_len;
+        while pos < end {
+            match buf[pos] {
+                0 => break,
+                1 => pos += 1,
+                kind => {
+                    if pos + 1 >= end {
+                        return None;
+                    }
+                    let len = usize::from(buf[pos + 1]);
+                    if len < 2 || pos + len > end {
+                        return None;
+                    }
+
+                    if kind == Self::LOSSLESS_META_OPTION_KIND
+                        && len == Self::LOSSLESS_META_OPTION_LEN
+                    {
+                        let flags = buf[pos + 2];
+                        let session_id =
+                            u64::from_be_bytes(buf[pos + 4..pos + 12].try_into().ok()?);
+                        let tree_id =
+                            u16::from_be_bytes(buf[pos + 12..pos + 14].try_into().ok()?);
+                        return Some(LosslessTransportMeta {
+                            session_id,
+                            tree_id: if (flags & 0x01) != 0 {
+                                Some(tree_id)
+                            } else {
+                                None
+                            },
+                        });
+                    }
+                    pos += len;
+                }
+            }
+        }
+
+        None
     }
 
     #[cfg(target_os = "linux")]
@@ -476,30 +573,34 @@ mod tests {
     }
 
     #[test]
-    fn extracts_lossless_fec_tree_id_from_tcp_payload() {
-        let fec_payload = lossless_session::encode_fec_data(17, 3, 9, 4, b"fec");
-        let packet = Packet::build_ipv4_tcp_packet(
+    fn extracts_lossless_transport_metadata_from_tcp_header() {
+        let packet = Packet::build_ipv4_tcp_packet_with_lossless_meta(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
-            &fec_payload,
+            Some(LosslessTransportMeta {
+                session_id: 17,
+                tree_id: Some(4),
+            }),
+            b"fec",
         );
 
+        assert_eq!(packet.lossless_session_id(), Some(17));
         assert_eq!(packet.lossless_fec_tree_id(), Some(4));
     }
 
     #[test]
-    fn returns_none_for_non_fec_lossless_payload() {
-        let payload = lossless_session::encode_data(17, 1, b"data");
+    fn returns_none_when_lossless_transport_metadata_is_absent() {
         let packet = Packet::build_ipv4_tcp_packet(
             Ipv4Addr::new(10, 0, 0, 1),
             4000,
             Ipv4Addr::new(10, 0, 0, 2),
             5000,
-            &payload,
+            b"data",
         );
 
+        assert_eq!(packet.lossless_session_id(), None);
         assert_eq!(packet.lossless_fec_tree_id(), None);
     }
 }

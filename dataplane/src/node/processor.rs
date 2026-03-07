@@ -16,7 +16,7 @@ use tracing::{error, warn};
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
-    RoutingTableEntry, TokenBucketSpec, lossless_session,
+    RoutingTableEntry, TokenBucketSpec,
 };
 
 use crate::node::config::{Feature, LocalConfig};
@@ -1196,16 +1196,10 @@ impl Processor {
         let Some(handle) = self.lossless_handle.clone() else {
             return false;
         };
-        let Some(payload) = packet.tcp_payload() else {
+        let Some(session_id) = packet.lossless_session_id() else {
             return false;
         };
-        let session_id = if let Some((hdr, _, _)) = lossless_session::decode_data(payload) {
-            hdr.session_id
-        } else if let Some((hdr, _)) = lossless_session::decode_control(payload) {
-            hdr.session_id
-        } else if let Some((hdr, _, _)) = lossless_session::decode_fec_data(payload) {
-            hdr.session_id
-        } else {
+        let Some(payload) = packet.tcp_payload() else {
             return false;
         };
 
@@ -1252,8 +1246,17 @@ mod tests {
     }
 
     fn make_fec_packet(dst_ip: Ipv4Addr, tree_id: u16) -> Packet {
-        let payload = lossless_session::encode_fec_data(17, 3, 9, tree_id, b"x");
-        Packet::build_ipv4_tcp_packet(Ipv4Addr::new(10, 0, 0, 9), 4000, dst_ip, 5000, &payload)
+        Packet::build_ipv4_tcp_packet_with_lossless_meta(
+            Ipv4Addr::new(10, 0, 0, 9),
+            4000,
+            dst_ip,
+            5000,
+            Some(crate::node::packet::LosslessTransportMeta {
+                session_id: 17,
+                tree_id: Some(tree_id),
+            }),
+            b"x",
+        )
     }
 
     fn make_sequential_handle_with_lanes(

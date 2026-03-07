@@ -237,10 +237,7 @@ impl Decoder {
     /// Builds a source symbol in decoder input format.
     #[must_use]
     pub fn source_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
-        assert!(
-            (esi as usize) < self.k,
-            "source ESI must be less than K"
-        );
+        assert!((esi as usize) < self.k, "source ESI must be less than K");
         ReceivedSymbol { esi, payload }
     }
 
@@ -275,8 +272,7 @@ impl Decoder {
                         source_syms.push(flat_data[start..end].to_vec());
                     } else if start < flat_data.len() {
                         let mut sym = vec![0u8; self.symbol_size];
-                        sym[..flat_data.len() - start]
-                            .copy_from_slice(&flat_data[start..]);
+                        sym[..flat_data.len() - start].copy_from_slice(&flat_data[start..]);
                         source_syms.push(sym);
                     } else {
                         source_syms.push(vec![0u8; self.symbol_size]);

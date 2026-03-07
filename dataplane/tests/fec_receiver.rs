@@ -1,8 +1,7 @@
+use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
@@ -10,64 +9,45 @@ use nextmini::node::NodeIdExt;
 use nextmini::node::config::LocalConfig;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::session::api::{InboundFrame, LosslessRuntimeHandle};
-use nextmini::node::session::fec::{BlockParams, Encoder, block_seed};
+use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::receiver;
-use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig, ReceiverRequest};
-use nextmini_messages::TokenBucketSpec;
+use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig};
 use nextmini_messages::lossless_session::{
-    self, FecCapabilities, FecManifest, LosslessSessionControl,
+    self, BlockStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
 const SESSION_ID: u64 = 0xA55A;
 const SOURCE_NODE_ID: usize = 11;
 const RECEIVER_NODE_ID: usize = 12;
-const SYMBOLS_PER_BLOCK: usize = 32;
-const SYMBOL_SIZE: usize = 4096;
-const REPAIR_PER_BLOCK: usize = 64;
-const IID_LOSS_RATE: f64 = 0.10;
-const PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+const SRC_PORT: u16 = 4500;
+const DST_PORT: u16 = 4600;
 
-fn test_processor_handle() -> ProcessorHandle {
-    let cfg = LocalConfig {
-        node_id: RECEIVER_NODE_ID,
-        num_packet_processors: 1,
-        channel_capacity: 1024,
-        ..Default::default()
-    };
-    ProcessorHandle::new(cfg)
+struct ReceiverHarness {
+    tx: mpsc::Sender<InboundFrame>,
+    packet_rx: mpsc::Receiver<Packet>,
+    receiver_task: tokio::task::JoinHandle<()>,
+    sink: Arc<Mutex<Vec<u8>>>,
 }
 
-fn build_payload(size: usize) -> Vec<u8> {
-    let mut payload = vec![0u8; size];
-    for (idx, byte) in payload.iter_mut().enumerate() {
-        *byte = ((idx as u64 * 31 + 17) & 0xFF) as u8;
-    }
-    payload
-}
-
-async fn runtime_advertised_capabilities(fec_enabled: bool) -> FecCapabilities {
+async fn build_receiver_harness(expected_bytes: u64) -> ReceiverHarness {
     let cfg = LocalConfig {
         node_id: RECEIVER_NODE_ID,
         n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
         num_packet_processors: 1,
         channel_capacity: 1024,
-        user_space_base_addr: std::net::Ipv4Addr::new(10, 0, 0, 0),
-        local_netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
         ..Default::default()
     };
     let processors = ProcessorHandle::new(cfg.clone());
 
-    let src_ip = cfg
-        .node_id
-        .ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+    let src_ip = RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
     let dst_ip = SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
-    let src_port = 4700;
-    let dst_port = 5700;
     processors
         .update_routing_table(vec![RoutingTableEntry {
-            route_id: if fec_enabled { 88 } else { 89 },
+            route_id: 88,
             next_hops: vec![cfg.node_id],
             src_node_id: cfg.node_id,
             dst_node_id: SOURCE_NODE_ID,
@@ -75,219 +55,181 @@ async fn runtime_advertised_capabilities(fec_enabled: bool) -> FecCapabilities {
         }])
         .await;
 
-    let flow_id = Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port);
-    let (packet_tx, mut packet_rx) = mpsc::channel(512);
+    let flow_id = Packet::flow_id_from_parts(src_ip, SRC_PORT, dst_ip, DST_PORT);
+    let (packet_tx, packet_rx) = mpsc::channel(512);
     processors.connect_user_space_sender(flow_id, packet_tx);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
-    runtime_cfg.fec_enabled = fec_enabled;
-    let runtime = LosslessRuntimeHandle::new(processors.clone(), runtime_cfg);
-
-    let session_id = if fec_enabled { 0xA55B } else { 0xA55C };
-    let receiver_sid = runtime
-        .start_receiver(ReceiverRequest {
-            common: CommonConfig {
-                session_id,
-                dest_ip: src_ip,
-                chunk_size: 16,
-                src_port,
-                dst_port,
-                data_bucket: None,
-                local_node_id: cfg.node_id,
-                user_space_base_addr: cfg.user_space_base_addr,
-                local_netmask: cfg.local_netmask,
-            },
-            source_node_id: SOURCE_NODE_ID,
-            expected_bytes: 16,
-            sink_buffer: None,
-        })
-        .await;
-    assert_eq!(
-        receiver_sid, session_id,
-        "runtime should preserve receiver session ID"
-    );
-
-    runtime.deliver(
-        receiver_sid,
-        InboundFrame {
-            bytes: lossless_session::encode_control(
-                receiver_sid,
-                &LosslessSessionControl::FecManifest {
-                    chunk_size: 16,
-                    total_bytes: 16,
-                    fec: FecManifest::new_raptorq(4, 16),
-                },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let receiver_cfg = ReceiverConfig {
+        common: CommonConfig {
+            session_id: SESSION_ID,
+            dest_ip: dst_ip,
+            block_size: 8,
+            src_port: SRC_PORT,
+            dst_port: DST_PORT,
+            data_bucket: None,
+            local_node_id: RECEIVER_NODE_ID,
+            user_space_base_addr: cfg.user_space_base_addr,
+            local_netmask: cfg.local_netmask,
         },
-    );
+        source_node_id: SOURCE_NODE_ID,
+        expected_bytes,
+        sink_buffer: Some(sink.clone()),
+        fec_enabled: true,
+    };
 
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let mut observed = None;
-    while Instant::now() < deadline {
-        let packet = match timeout(Duration::from_millis(100), packet_rx.recv()).await {
-            Ok(Some(packet)) => packet,
-            Ok(None) => break,
-            Err(_) => continue,
-        };
-        let Some(payload) = packet.tcp_payload() else {
-            continue;
-        };
-        let Some((_, control)) = lossless_session::decode_control(payload) else {
-            continue;
-        };
-        if let LosslessSessionControl::FecCapabilities { capabilities, .. } = control {
-            observed = Some(capabilities);
-            break;
-        }
+    let (tx, rx) = mpsc::channel::<InboundFrame>(128);
+    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, processors));
+
+    ReceiverHarness {
+        tx,
+        packet_rx,
+        receiver_task,
+        sink,
     }
-
-    runtime.stop(receiver_sid);
-    observed.expect("receiver should advertise FEC capabilities after FEC manifest")
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn receiver_recovers_under_10pct_loss() {
-    let payload = build_payload(PAYLOAD_BYTES);
-    let sink = Arc::new(Mutex::new(Vec::with_capacity(payload.len())));
-    let manifest = FecManifest::new_raptorq(SYMBOLS_PER_BLOCK as u16, SYMBOL_SIZE as u16);
+fn manifest(total_bytes: u64) -> LosslessSessionManifest {
+    LosslessSessionManifest {
+        block_size: 8,
+        total_bytes,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![0, 1])),
+    }
+}
 
-    let common_cfg = CommonConfig {
-        session_id: SESSION_ID,
-        dest_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
-        chunk_size: SYMBOL_SIZE,
-        src_port: 4500,
-        dst_port: 4600,
-        data_bucket: Some(TokenBucketSpec {
-            rate: PAYLOAD_BYTES,
-            bucket_size: PAYLOAD_BYTES,
-        }),
-        local_node_id: RECEIVER_NODE_ID,
-        user_space_base_addr: std::net::Ipv4Addr::new(10, 0, 0, 0),
-        local_netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
-    };
-    let receiver_cfg = ReceiverConfig {
-        common: common_cfg,
-        source_node_id: SOURCE_NODE_ID,
-        expected_bytes: payload.len() as u64,
-        sink_buffer: Some(sink.clone()),
-        fec_capabilities: FecCapabilities::default(),
-    };
-
-    let (tx, rx) = mpsc::channel::<InboundFrame>(2048);
-    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, test_processor_handle()));
-
-    let manifest_frame = lossless_session::encode_control(
-        SESSION_ID,
-        &LosslessSessionControl::FecManifest {
-            chunk_size: SYMBOL_SIZE as u32,
-            total_bytes: payload.len() as u64,
-            fec: manifest,
-        },
-    );
+async fn send_frame(tx: &mpsc::Sender<InboundFrame>, bytes: Vec<u8>) {
     tx.send(InboundFrame {
-        bytes: manifest_frame,
+        bytes,
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
-    .expect("manifest frame should be delivered");
+    .expect("frame should be delivered to receiver");
+}
 
-    let total_chunks = (payload.len() as u64).div_ceil(SYMBOL_SIZE as u64);
-    let total_blocks = total_chunks.div_ceil(SYMBOLS_PER_BLOCK as u64);
-    let mut rng = SmallRng::seed_from_u64(0x5EED);
-
-    for block_id in 0..total_blocks {
-        let mut source_symbols = Vec::with_capacity(SYMBOLS_PER_BLOCK);
-        let block_base_chunk = block_id as usize * SYMBOLS_PER_BLOCK;
-        for esi in 0..SYMBOLS_PER_BLOCK {
-            let chunk_zero = block_base_chunk + esi;
-            let byte_start = chunk_zero * SYMBOL_SIZE;
-
-            let mut symbol = vec![0u8; SYMBOL_SIZE];
-            if byte_start < payload.len() {
-                let byte_end = (byte_start + SYMBOL_SIZE).min(payload.len());
-                symbol[..byte_end - byte_start].copy_from_slice(&payload[byte_start..byte_end]);
-            }
-            source_symbols.push(symbol);
-        }
-
-        let params = BlockParams::new(
-            SYMBOLS_PER_BLOCK,
-            SYMBOL_SIZE,
-            block_seed(SESSION_ID, block_id),
-        );
-        let mut encoder =
-            Encoder::from_block(params, &source_symbols).expect("encoder should build for block");
-
-        let mut symbols = encoder.emit_systematic();
-        symbols.extend(encoder.emit_coded(REPAIR_PER_BLOCK));
-
-        for symbol in symbols {
-            if rng.random::<f64>() < IID_LOSS_RATE {
-                continue;
-            }
-            let frame = lossless_session::encode_fec_data_default_tree(
-                SESSION_ID,
-                block_id,
-                symbol.esi,
-                &symbol.payload,
-            );
-            tx.send(InboundFrame {
-                bytes: frame,
-                peer_id: Some(SOURCE_NODE_ID),
-            })
+async fn recv_control(
+    packet_rx: &mut mpsc::Receiver<Packet>,
+) -> (Packet, LosslessSessionControl) {
+    loop {
+        let packet = timeout(Duration::from_secs(2), packet_rx.recv())
             .await
-            .expect("fec frame should be delivered");
+            .expect("timed out waiting for receiver output")
+            .expect("receiver output channel closed");
+        let payload = packet.tcp_payload().expect("receiver output should carry TCP payload");
+        if let Some((_, control)) = lossless_session::decode_control(payload) {
+            return (packet, control);
         }
     }
-
-    let eot_frame = lossless_session::encode_control(
-        SESSION_ID,
-        &LosslessSessionControl::Eot {
-            last_index: total_chunks,
-        },
-    );
-    tx.send(InboundFrame {
-        bytes: eot_frame,
-        peer_id: Some(SOURCE_NODE_ID),
-    })
-    .await
-    .expect("eot frame should be delivered");
-
-    drop(tx);
-
-    tokio::time::timeout(Duration::from_secs(30), receiver_task)
-        .await
-        .expect("receiver should finish")
-        .expect("receiver task should not panic");
-
-    let recovered = sink.lock().await;
-    assert_eq!(
-        recovered.len(),
-        payload.len(),
-        "recovered payload length must match expected object length"
-    );
-    assert_eq!(
-        recovered.as_slice(),
-        payload.as_slice(),
-        "recovered payload content must match source object under configured IID loss"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn runtime_receiver_derives_capabilities_from_runtime_config() {
-    let enabled = runtime_advertised_capabilities(true).await;
+async fn receiver_acks_decoded_block_and_writes_sink() {
+    let mut harness = build_receiver_harness(8).await;
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_control(
+            SESSION_ID,
+            &LosslessSessionControl::Manifest {
+                manifest: manifest(8),
+            },
+        ),
+    )
+    .await;
+
+    let (_, ready) = recv_control(&mut harness.packet_rx).await;
     assert_eq!(
-        enabled,
-        FecCapabilities::default(),
-        "fec_enabled=true should advertise default runtime capabilities without caller input"
+        ready,
+        LosslessSessionControl::Ready {
+            node_id: RECEIVER_NODE_ID as u64,
+        }
     );
 
-    let disabled = runtime_advertised_capabilities(false).await;
+    let payload = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    for (symbol_id, chunk) in payload.chunks(2).enumerate() {
+        let tree_id = if symbol_id % 2 == 0 { 0 } else { 1 };
+        send_frame(
+            &harness.tx,
+            lossless_session::encode_block_symbol(
+                SESSION_ID,
+                0,
+                symbol_id as u32,
+                tree_id,
+                chunk,
+            ),
+        )
+        .await;
+    }
+
+    let (ack_packet, ack) = recv_control(&mut harness.packet_rx).await;
+    assert_eq!(ack_packet.lossless_session_id(), Some(SESSION_ID));
     assert_eq!(
-        disabled,
-        FecCapabilities::empty(),
-        "fec_enabled=false should advertise empty capabilities without caller input"
+        ack,
+        LosslessSessionControl::BlockAck { block_id: 0 },
+        "receiver should ack the completed block after decoding it"
     );
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+    )
+    .await;
+    drop(harness.tx);
+
+    timeout(Duration::from_secs(2), harness.receiver_task)
+        .await
+        .expect("receiver task should stop after EOT and completion")
+        .expect("receiver task should exit cleanly");
+
+    let sink = harness.sink.lock().await.clone();
+    assert_eq!(sink[..payload.len()], payload);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn receiver_requests_missing_symbols_after_eot_for_incomplete_block() {
+    let mut harness = build_receiver_harness(8).await;
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_control(
+            SESSION_ID,
+            &LosslessSessionControl::Manifest {
+                manifest: manifest(8),
+            },
+        ),
+    )
+    .await;
+
+    let (_, ready) = recv_control(&mut harness.packet_rx).await;
+    assert!(matches!(ready, LosslessSessionControl::Ready { .. }));
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_block_symbol(SESSION_ID, 0, 0, 0, &[1u8, 2]),
+    )
+    .await;
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+    )
+    .await;
+    drop(harness.tx);
+
+    let (_, status) = recv_control(&mut harness.packet_rx).await;
+    assert_eq!(
+        status,
+        LosslessSessionControl::BlockStatus {
+            status: BlockStatus {
+                block_id: 0,
+                deficit_symbols: 3,
+            },
+        },
+        "receiver should request the remaining source symbols first"
+    );
+
+    timeout(Duration::from_secs(2), harness.receiver_task)
+        .await
+        .expect("receiver task should drain once input closes")
+        .expect("receiver task should exit cleanly");
 }

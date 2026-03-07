@@ -1,178 +1,113 @@
-use std::net::Ipv4Addr;
-use std::time::{Duration, Instant};
+mod common;
+
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use nextmini::node::NodeIdExt;
-use nextmini::node::config::{FecSymbolSizePolicy, LocalConfig};
-use nextmini::node::packet::Packet;
-use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::session::api::LosslessRuntimeHandle;
-use nextmini::node::session::runtime::{CommonConfig, SenderRequest};
-use nextmini_messages::lossless_session::{self, FecManifest, LosslessSessionControl};
-use nextmini_messages::{RouteForwardingMode, RoutingTableEntry, TokenBucketSpec};
+use nextmini::node::session::sender;
+use nextmini::node::session::runtime::SenderConfig;
+use nextmini_messages::lossless_session::{
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sender_emits_repairs_with_budget() {
-    let cfg = LocalConfig {
-        node_id: 1,
-        n_nodes: 2,
-        num_packet_processors: 1,
-        channel_capacity: 2048,
-        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
-        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ..Default::default()
+async fn sender_prioritizes_source_symbols_before_extra_symbols() {
+    let mut harness = common::packet_capture(1, 2, 4100, 5200, 1, 2048).await;
+
+    let session_id = 0xFEC5_0001;
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
     };
-    let processors = ProcessorHandle::new(cfg.clone());
-
-    let src_ip = (cfg.node_id).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
-    let dst_ip = 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
-    let src_port = 4100;
-    let dst_port = 5200;
-
-    processors
-        .update_routing_table(vec![RoutingTableEntry {
-            route_id: 7,
-            next_hops: vec![cfg.node_id],
-            src_node_id: cfg.node_id,
-            dst_node_id: 2,
-            forward_mode: RouteForwardingMode::Unicast,
-        }])
-        .await;
-
-    let flow_id = Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port);
-    let (packet_tx, mut packet_rx) = mpsc::channel(512);
-    processors.connect_user_space_sender(flow_id, packet_tx);
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
-    runtime_cfg.fec_enabled = true;
-    runtime_cfg.fec_require_capability = true;
-    runtime_cfg.fec_default_symbols_per_block = 4;
-    runtime_cfg.fec_symbol_size_policy = FecSymbolSizePolicy::Fixed;
-    runtime_cfg.fec_default_symbol_size = 16;
-    runtime_cfg.fec_symbol_size_min = 1;
-    runtime_cfg.fec_symbol_size_max = 16_384;
-    runtime_cfg.ready_grace_ms = 1;
-    let runtime = LosslessRuntimeHandle::new(processors.clone(), runtime_cfg);
-    runtime.set_topology_ready(true);
-
-    let session_id = 55;
-    let sender_cfg = SenderRequest {
-        common: CommonConfig {
-            session_id,
-            dest_ip: dst_ip,
-            chunk_size: 16,
-            src_port,
-            dst_port,
-            data_bucket: Some(TokenBucketSpec {
-                rate: 160,
-                bucket_size: 16,
-            }),
-            local_node_id: cfg.node_id,
-            user_space_base_addr: cfg.user_space_base_addr,
-            local_netmask: cfg.local_netmask,
-        },
-        receiver_ids: vec![],
-        total_bytes: 64,
-        source_buffer: Bytes::from(vec![0xAB; 16]),
-        ready_grace_ms: 1,
+    let sender_cfg = SenderConfig {
+        common: harness.common_config(session_id, 16),
+        receiver_ids: vec![2],
+        total_bytes: 16,
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest: manifest.clone(),
+        ready_grace_ms: 200,
+        topology_ready: None,
     };
-    let started_sid = runtime
-        .start_sender(sender_cfg)
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
         .await
-        .expect("runtime should derive sender FEC policy from internal config");
-    assert_eq!(
-        started_sid, session_id,
-        "runtime should preserve caller-provided session ID"
-    );
+        .expect("ready frame should enqueue");
 
-    let mut observed_manifest = None;
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    let mut saw_manifest = false;
     let mut saw_eot = false;
-    let mut symbols: Vec<(u64, u32, usize)> = Vec::new();
-    let mut first_symbol_at: Option<Instant> = None;
-    let mut last_symbol_at: Option<Instant> = None;
+    let mut all_symbol_ids = Vec::new();
+    let mut extra_symbol_ids = Vec::new();
+    let mut status_sent = false;
 
-    while !saw_eot {
-        let packet = timeout(Duration::from_secs(5), packet_rx.recv())
-            .await
-            .expect("timed out waiting for sender output")
-            .expect("sender output channel closed");
+    while extra_symbol_ids.len() < 2 {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        assert_eq!(packet.lossless_session_id(), Some(session_id));
 
         let payload = packet
             .tcp_payload()
             .expect("captured packet should include TCP payload");
 
-        if let Some((_, fec_data, body)) = lossless_session::decode_fec_data(payload) {
-            let now = Instant::now();
-            first_symbol_at.get_or_insert(now);
-            last_symbol_at = Some(now);
-            symbols.push((fec_data.block_id, fec_data.symbol_id, body.len()));
+        if let Some((_, control)) = lossless_session::decode_control(payload) {
+            match control {
+                LosslessSessionControl::Manifest {
+                    manifest: observed_manifest,
+                } => {
+                    assert_eq!(observed_manifest, manifest);
+                    saw_manifest = true;
+                }
+                LosslessSessionControl::Eot => saw_eot = true,
+                other => panic!("unexpected control frame: {other:?}"),
+            }
             continue;
         }
 
-        if let Some((_, control)) = lossless_session::decode_control(payload) {
-            match control {
-                LosslessSessionControl::FecManifest { fec, .. } => {
-                    observed_manifest = Some(fec);
-                }
-                LosslessSessionControl::Eot { .. } => {
-                    saw_eot = true;
-                }
-                _ => {}
-            }
+        let (_, symbol, body) =
+            lossless_session::decode_block_symbol(payload).expect("expected block symbol");
+        assert_eq!(packet.lossless_fec_tree_id(), Some(symbol.tree_id));
+        assert_eq!(body.len(), 4, "one 16-byte block with K=4 yields 4-byte symbols");
+
+        all_symbol_ids.push(symbol.symbol_id);
+        if symbol.symbol_id == 0 && !status_sent {
+            ctrl_tx
+                .send(common::block_status_frame(session_id, 2, 0, 2))
+                .await
+                .expect("block status should enqueue");
+            status_sent = true;
+        }
+        if symbol.symbol_id >= 4 {
+            assert!(saw_eot, "extra symbols must not appear before EOT");
+            extra_symbol_ids.push(symbol.symbol_id);
         }
     }
 
-    let completed = timeout(Duration::from_secs(5), runtime.wait_completion(session_id))
+    assert!(saw_manifest, "sender should advertise its manifest");
+    assert_eq!(
+        &all_symbol_ids[..4],
+        &[0, 1, 2, 3],
+        "source symbols must be sent before any extra fountain symbols"
+    );
+    assert_eq!(
+        extra_symbol_ids,
+        vec![4, 5],
+        "extra symbols should continue from the first fountain symbol id"
+    );
+
+    ctrl_tx
+        .send(common::block_ack_frame(session_id, 2, 0))
         .await
-        .expect("sender runtime wait should not time out");
-    assert!(completed, "sender task should report completion");
+        .expect("block ack should enqueue");
 
-    let manifest = observed_manifest.expect("sender should emit a runtime-derived FEC manifest");
-    assert_eq!(
-        manifest,
-        FecManifest::new_raptorq(4, 16),
-        "manifest values should come from runtime config defaults, not caller-provided fields"
-    );
-    assert!(saw_eot, "sender should emit EOT after draining symbols");
-    assert!(!symbols.is_empty(), "sender should emit FEC symbols");
-    assert!(
-        symbols.iter().all(|(block_id, _, _)| *block_id == 0),
-        "single-block transfer should stay within block 0"
-    );
-    assert!(
-        symbols.iter().all(|(_, _, payload_len)| *payload_len == 16),
-        "all emitted symbols should match manifest symbol_size"
-    );
-
-    let mut source_ids: Vec<u32> = symbols
-        .iter()
-        .filter_map(|(_, symbol_id, _)| (*symbol_id < 4).then_some(*symbol_id))
-        .collect();
-    source_ids.sort_unstable();
-    assert_eq!(
-        source_ids,
-        vec![0, 1, 2, 3],
-        "sender should emit systematic symbols for the full block"
-    );
-
-    let repair_count = symbols
-        .iter()
-        .filter(|(_, symbol_id, _)| *symbol_id >= 4)
-        .count();
-    assert_eq!(
-        repair_count, 2,
-        "repair symbols must respect per-block budget"
-    );
-
-    let first = first_symbol_at.expect("expected first symbol timestamp");
-    let last = last_symbol_at.expect("expected last symbol timestamp");
-    assert!(
-        last.duration_since(first) >= Duration::from_millis(350),
-        "token-bucket pacing should apply across systematic and repair emission"
-    );
+    timeout(Duration::from_secs(5), sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
 }
