@@ -1,523 +1,358 @@
-# Current Lossless Session Design
+# Lossless Session Rewrite Design
 
 **Generated**: March 7, 2026  
 **Repo**: `/Users/bli/Playground/nextmini`  
-**Scope**: current implementation in `dataplane/src/node/session` and `messages/src/lossless_session.rs`
+**Scope**: target design for the rewritten lossless session subsystem
 
 ## Purpose
 
-This document describes the current lossless session subsystem as it exists today.
+This document describes the intended design for the rewritten lossless session
+subsystem.
 
-It is primarily a description of the current design. It also records the rewrite
-direction discussed on March 7, 2026 so the current implementation and the
-desired target do not drift apart in separate notes.
+It is a forward-looking design document. It does not describe the existing
+codebase.
 
-## High-Level Summary
+## Design Goals
 
-The current subsystem supports two transfer modes:
+- One canonical transfer unit: `block`.
+- Plain lossless mode is the default.
+- Plain mode sends on one tree.
+- FEC mode is optional and is the only mode that sends across multiple trees.
+- Plain and FEC share one session shell and one completion model.
+- ACKs are per-block, not cumulative.
+- The protocol is for bulk transfer, not streaming, so there is no sliding
+  window.
+- The sender does not wait on ACK timeouts.
+- Fountain-code output uses the same `BlockSymbol` frame shape as source symbols;
+  there is no separate repair frame.
 
-- Plain lossless mode
-- FEC mode
+## Terminology
 
-Both modes share the same session runtime and some control-plane behavior, but they do not share a single canonical transfer unit.
+- **Session**: one end-to-end transfer identified by `session_id`
+- **Block**: the canonical ordered unit of transfer and acknowledgement
+- **Symbol**: one FEC payload unit within a block
+- **Tree**: a multicast tree chosen by `tree_id`
+- **Manifest**: session metadata sent before data transmission begins
+- **BlockAck**: receiver confirmation that one block is complete
+- **BlockStatus**: receiver feedback that one FEC block needs additional symbols
 
-The current design is:
+There is no `chunk` concept in this design.
 
-- plain mode is chunk-based
-- FEC mode is symbol-based, with blocks layered on top of chunks
-- completion is chunk-oriented in plain mode
-- completion becomes block-oriented inside sender-side FEC retirement logic, but still chunk-oriented at `EOT`
+## Transfer Model
 
-This mixed model is the main conceptual source of complexity.
+The sender splits the object into ordered blocks:
 
-## Main Code Locations
+- `block_id` starts at `0`
+- `total_blocks = ceil(total_bytes / block_size)`
+- each block maps to an absolute byte range using `block_id * block_size`
+- the final block may be shorter than `block_size`
 
-- Wire protocol: `messages/src/lossless_session.rs`
-- Session runtime: `dataplane/src/node/session/runtime.rs`
-- Public session API shim: `dataplane/src/node/session/api.rs`
-- Sender: `dataplane/src/node/session/sender.rs`
-- Receiver: `dataplane/src/node/session/receiver.rs`
-- FEC adapter: `dataplane/src/node/session/fec.rs`
-- FEC runtime policy: `dataplane/src/node/session/fec_policy.rs`
-- Control helpers: `dataplane/src/node/session/control.rs`
-- Flow integration: `dataplane/src/node/session/unicast.rs`
-- Packet ingress/routing interaction: `dataplane/src/node/processor.rs`, `dataplane/src/node/route.rs`
+The canonical delivery rule is:
 
-## Current Terminology
+- plain mode delivers one full block directly
+- FEC mode delivers one block by transmitting symbols for that block
+- completion is always tracked at block granularity
 
-The current implementation uses several different units:
+The receiver writes a completed block directly to its final byte offset. There is
+no contiguous-drain or cumulative-retirement rule in the protocol.
 
-- **Session**: the runtime-scoped transfer instance, keyed by `session_id`
-- **Chunk**: the canonical plain-mode payload unit; `LosslessSessionData.index` is a chunk index
-- **FEC block**: a group of `symbols_per_block` chunks in FEC mode
-- **Symbol**: one source or coded FEC payload within a FEC block
-- **Tree**: multicast tree selected by `tree_id` on FEC data packets
-- **Tree lane**: a sender-local bounded queue and worker task for a particular `tree_id`
-
-Important: the current code does **not** use a single canonical "block" abstraction across both modes.
-
-## Wire Protocol
-
-The wire protocol is defined in `messages/src/lossless_session.rs`.
-
-### Common Header
-
-Every frame carries:
-
-- magic
-- version
-- kind (`Data` or `Control`)
-- `session_id`
-- `body_len`
-
-There are two protocol versions:
-
-- `LOSSLESS_SESSION_BASE_VERSION = 1`
-- `LOSSLESS_SESSION_FEC_VERSION = 2`
-
-### Plain Data Frame
-
-Plain-mode data uses:
-
-- `LosslessSessionData { index, payload_len }`
-- payload bytes
-
-The sender emits these with `encode_data(session_id, index, payload)`.
-
-This is a chunk-indexed protocol.
-
-### FEC Data Frame
-
-FEC-mode data uses:
-
-- `LosslessSessionFecData { block_id, symbol_id, tree_id, payload_len }`
-- payload bytes
-
-The sender emits these with `encode_fec_data(session_id, block_id, symbol_id, tree_id, payload)`.
-
-This is a block/symbol protocol.
-
-### Control Frames
-
-Current control frames are:
-
-- `Manifest { chunk_size, total_bytes }`
-- `FecManifest { chunk_size, total_bytes, fec }`
-- `Ready { node_id }`
-- `FecCapabilities { node_id, capabilities }`
-- `Ack { up_to }`
-- `FecStatus { block_id, deficit_symbols }`
-- `Eot { last_index }`
-
-Notable current properties:
-
-- plain mode uses cumulative `Ack { up_to }`
-- FEC mode uses `FecStatus` for per-block progress/deficit signaling
-- `Eot` is still chunk-index based in both modes
-- control frames do not carry `tree_id`
-
-## Session Runtime
-
-The session runtime in `dataplane/src/node/session/runtime.rs` is an actor that:
-
-- starts sender and receiver tasks
-- routes inbound frames by `session_id`
-- tracks task handles and per-session input channels
-- exposes `start_sender`, `start_receiver`, `deliver`, `wait_completion`, and `stop`
-- maintains a topology-ready watch channel for senders
-
-Current runtime behavior:
-
-- sender configuration is post-processed through `fec_policy`
-- receiver configuration derives local `fec_capabilities`
-- topology readiness is held outside the sender task and exposed through `watch`
-
-The `api.rs` module is not a true standalone boundary. It mostly re-exports runtime-facing pieces and defines `InboundFrame`.
-
-## Sender Design
-
-The sender lives in `dataplane/src/node/session/sender.rs`.
-
-### Main Loop
-
-The top-level sender loop currently does all of the following in one place:
-
-- transfer timeout checks
-- control-frame polling
-- topology gate release
-- ready gate release
-- manifest emission and re-emission
-- source drain detection
-- plain-mode data sending
-- FEC-mode scheduling
-- `EOT` emission
-- blocked-lane waiting
-- completion logging
-
-### Shared Sender State
-
-`SenderState` is the central mutable object.
-
-It currently holds:
-
-- plain-mode state
-- FEC-mode state
-- control/ready/topology state
-- pacing state
-- completion accounting
-- observability counters
-- addressing information
-
-This means the sender is implemented as one large state machine with many mode branches rather than as a shared core plus optional mode component.
+## Modes
 
 ### Plain Mode
 
-In plain mode, the sender:
+Plain mode is the default.
 
-1. builds a `ChunkSource`
-2. reads the next chunk in strict chunk-index order
-3. sends `DATA(index, payload)`
-4. tracks `primary_chunks`
-5. retires progress via cumulative `Ack { up_to }`
-6. sends `Eot { last_index = total_chunks }` once source is drained and in-flight work is retired
+- the sender emits uncoded block payloads
+- only one tree is used
+- completion is `BlockAck { block_id }`
 
-Additional plain-mode details:
-
-- a sliding window is computed from `DEFAULT_WINDOW` and the token bucket
-- progress is receiver-minimum cumulative chunk progress
-- `Ack` handling is cumulative and monotonic
+Plain mode exists to provide the simplest possible lossless bulk-transfer path.
 
 ### FEC Mode
 
-In FEC mode, the sender still starts from the chunk stream, but remaps chunks into FEC blocks and symbols.
+FEC mode is optional.
 
-For each chunk:
+- the sender emits symbols inside each block
+- `symbols_per_block` is configurable
+- source symbols are sent first
+- additional fountain symbols are sent only when a receiver asks for more
+- `tree_id` is carried on FEC symbol packets
+- FEC mode is the only mode that can stripe traffic across multiple trees
 
-- `zero_based = chunk.index - 1`
-- `block_id = zero_based / symbols_per_block`
-- `symbol_id = zero_based % symbols_per_block`
+The important point is that FEC changes encoding, not the top-level transfer
+unit. The top-level unit remains the block.
 
-These are treated as **systematic** symbols.
+## Wire Protocol
 
-The sender can also emit extra **coded** symbols using the stride scheduler.
+### Common Session Metadata
 
-Current FEC behavior:
+Each session begins with a manifest that defines:
 
-- manifest is `FecManifest`
-- sender waits for `Ready` and `FecCapabilities`
-- sender validates receiver compatibility before sending FEC data
-- FEC retirement is based on completed blocks, not cumulative chunk `Ack`
-- coded symbols are driven by receiver `FecStatus.deficit_symbols`
+- `session_id`
+- `total_bytes`
+- `block_size`
+- `total_blocks`
+- `mode`
 
-### Stride Scheduler
+When `mode = Fec`, the manifest also defines:
 
-The current FEC coded-symbol scheduler is `StrideScheduler`.
+- `symbols_per_block`
+- the configured `tree_ids` set, or an equivalent tree-selection policy
 
-It tracks active blocks with:
+The manifest is the contract for the whole transfer. Both plain and FEC modes
+use the same block numbering and object geometry.
 
-- current deficit
-- stride
-- pass
-- lazy-created encoder
-- next coded ESI
-- coded budget
-
-Its design assumes:
-
-- coded work is generated on demand from deficit reports
-- higher-deficit blocks should receive more coded symbols
-- coded symbols may be prioritized ahead of newly streamed source symbols
-
-### Tree IDs And Tree Lanes
-
-FEC mode supports multiple trees.
-
-Current sender behavior:
-
-- each FEC packet carries a `tree_id`
-- the sender creates one local lane per configured tree
-- each lane is a bounded `mpsc` queue plus a worker task
-- the main sender loop round-robins symbols across those lanes
-- if every lane queue is full, the sender enters an all-lanes-blocked wait
-
-Important current distinction:
-
-- `tree_id` is part of the packet/routing model
-- tree lanes are only a sender-local implementation strategy
-
-The sender does not observe network-tree backpressure directly. It only observes
-whether its own local per-tree lane queue is full. In the current design, that
-lane eventually stays full because the tree worker sending through
-`ProcessorHandle::process_packet(...).await` stops draining when processor ingress
-backpressures.
-
-### Current Sender Completion Semantics
-
-Plain mode:
-
-- completion unit is chunk progress
-
-FEC mode:
-
-- internal retirement unit is contiguous completed FEC blocks
-- `EOT` still uses the final chunk index
-
-So FEC sender completion is internally block-based but externally still chunk-anchored.
-
-## Receiver Design
-
-The receiver lives in `dataplane/src/node/session/receiver.rs`.
-
-### Common Receiver Behavior
-
-The receiver:
-
-- emits `Ready` immediately on start
-- receives inbound frames through a per-session channel
-- decodes plain data, FEC data, or control frames
-- writes recovered bytes into the sink buffer if one exists
-
-### Plain Mode Receiver
-
-In plain mode, the receiver:
-
-1. decodes `DATA(index, payload)`
-2. stores payloads in a `pending` map keyed by chunk index
-3. drains contiguous chunks starting at `expected`
-4. appends drained bytes to the sink
-5. sends batched cumulative `Ack { up_to }`
-6. stops when `Eot.last_index` has been reached contiguously
-
-This is a standard chunk-reorder plus cumulative-ack design.
-
-### FEC Mode Receiver
-
-In FEC mode, the receiver:
-
-1. waits for `FecManifest`
-2. validates that local `FecCapabilities` support the manifest
-3. groups incoming symbols by `block_id`
-4. stores symbols in `FecBlockState`
-5. attempts decode when enough symbols appear to be available
-6. converts decoded source symbols back into chunk-indexed payloads
-7. feeds those decoded chunks into the same chunk-ordering path used by plain mode
-
-This means the current receiver does not use one block delivery path. Instead, FEC decode is translated back into chunks so the plain receiver path can be reused.
-
-### FEC Feedback
-
-The receiver sends `FecStatus { block_id, deficit_symbols }`.
-
-Current meaning:
-
-- `deficit_symbols > 0`: more symbols needed for that block
-- `deficit_symbols == 0`: block completed
-
-The receiver also periodically re-sends terminal zero-deficit statuses for recently completed blocks.
-
-So FEC receiver behavior includes:
-
-- bounded/jittered feedback timing
-- terminal zero-deficit re-advertisement
-- separate decoded-block history tracking
-
-## ACK And Completion Path
-
-### How ACKs Are Sent Today
-
-The receiver uses `ControlEmitter` to:
-
-- encode a control frame
-- wrap it in an IPv4/TCP packet
-- inject it through `ProcessorHandle::process_packet`
-
-The sender receives it through the normal packet path:
-
-- processor detects a lossless session packet
-- extracts `session_id`
-- derives `peer_id` from the source node
-- delivers the payload into the session runtime
-
-### Current Plain ACK Semantics
+### Data Frames
 
 Plain mode uses:
 
-- `Ack { up_to }`
-- cumulative progress
-- monotonic chunk retirement
+- `BlockData { block_id, payload }`
 
-### Current FEC Completion Semantics
+FEC mode uses:
 
-FEC mode does **not** use cumulative chunk `Ack` for retirement.
+- `BlockSymbol { block_id, symbol_id, tree_id, payload }`
 
-Instead:
+There is no separate `BlockRepair` frame.
 
-- `FecStatus { block_id, deficit_symbols == 0 }` means a block is complete
-- sender advances contiguous per-receiver completed-block progress
-- sender retires work by the minimum completed contiguous block across receivers
+In FEC mode:
 
-But receiver-side object completion is still checked against chunk continuity and `Eot.last_index`.
+- `symbol_id < symbols_per_block` means a source symbol
+- `symbol_id >= symbols_per_block` means an additional fountain symbol
 
-## Routing And Trees
+Extra coded output is just more `BlockSymbol` for the same `block_id`.
 
-`tree_id` is only present on FEC data frames.
+### Control Frames
 
-Current lower-layer use:
+The control surface is:
 
-- `Packet::lossless_fec_tree_id()` parses `tree_id` from FEC payloads
-- processor ingress sharding hashes `(flow_id, tree_id)` for FEC packets
-- route selection uses `tree_id` to choose the multicast tree route
+- `Manifest`
+- `Ready`
+- `BlockAck { block_id }`
+- `BlockStatus { block_id, deficit_symbols }` for FEC mode
+- `Eot`
 
-Control frames do not carry `tree_id`, so they rely on control-tree selection behavior in the routing layer.
+`BlockStatus` is receiver-driven FEC feedback. It does not change the completion
+model. Completion is still `BlockAck`.
 
-## Flow Integration
+`Eot` means the sender has emitted the initial source pass for all blocks. It is
+not a cumulative completion marker.
 
-`dataplane/src/node/session/unicast.rs` currently integrates lossless sessions with controller-assigned flows.
+## Session Lifecycle
 
-Current behavior:
+1. The sender creates a session and sends `Manifest`.
+2. The receiver validates the manifest and replies `Ready`.
+3. If the session uses FEC, the receiver must also confirm that FEC mode is
+   supported before FEC transmission begins.
+4. The sender emits block data or block symbols.
+5. The receiver sends `BlockAck` whenever a block is complete.
+6. In FEC mode, the receiver sends `BlockStatus` when additional symbols are
+   needed for a block.
+7. After the sender has emitted the initial source pass for all blocks, it sends
+   `Eot`.
+8. The session completes when every receiver has acknowledged every block.
 
-- computes deterministic `session_id` and client port from the flow
-- spawns sender and receiver wrapper tasks
-- constructs `SenderRequest` and `ReceiverRequest`
-- uses a template source buffer for sender-side data generation
-- waits for completion and reports flow-finished state
+Because there is no sender-side ACK timeout, the receiver should be willing to
+re-emit `BlockAck` for a completed block while the session remains open. A
+duplicate `BlockData`, duplicate `BlockSymbol`, or post-`Eot` session activity
+may all be used as triggers for re-advertising completion.
 
-This module is orchestration around the session runtime rather than part of the core transport protocol.
+## Sender Design
 
-## Current Design Consequences
+### Shared Sender Core
 
-The current design has several important consequences:
+The shared sender core is responsible for:
 
-### 1. Two Different Transfer Models
+- manifest emission
+- session readiness
+- block geometry
+- per-block completion tracking
+- session completion detection
+- control-frame handling
 
-The subsystem is not implemented as one protocol with an optional FEC encoding layer.
+The shared sender core does not care whether a block is encoded directly or via
+FEC symbols.
 
-It is currently:
+### Plain Sender
 
-- a chunk protocol in plain mode
-- a block/symbol protocol overlaid on top of that chunk model in FEC mode
+The plain sender is minimal:
 
-### 2. FEC Changes More Than Encoding
+- choose the next unsent block
+- emit `BlockData { block_id, payload }`
+- track `BlockAck { block_id }` until each receiver has acknowledged the block
+- mark the block complete for each receiver that acknowledges it
 
-FEC mode changes:
+Plain mode uses the default single tree and does not carry `tree_id` in its data
+frame.
 
-- wire data shape
-- sender retirement semantics
-- receiver feedback semantics
-- completion accounting
-- routing use of `tree_id`
-- sender scheduling model
+### FEC Sender
 
-So FEC is not a small optional plugin in the current design.
+The FEC sender owns only:
 
-### 3. Sender And Receiver Carry Mixed Responsibilities
+- symbol generation
+- tree selection
+- FEC feedback handling
 
-Both sender and receiver currently combine:
+The FEC sender keeps per-block state:
 
-- shared session shell behavior
-- plain-mode logic
-- FEC-specific logic
-- control/progress policy
-- transport packet emission/parsing
+- `next_source_symbol`
+- `next_fountain_symbol`
+- outstanding extra-symbol demand
+- per-receiver acknowledgement status
 
-### 4. Blocks Are Not Canonical
+## Sender Scheduling Rules
 
-The current code uses:
+The FEC sender scheduler is source-first.
 
-- chunks as the canonical unit for plain transfer
-- blocks only inside FEC
-- symbols only inside FEC
+The next block is chosen by this priority:
 
-There is no single transfer unit shared by both modes.
+1. the lowest `block_id` with an unsent source symbol
+2. if every source symbol for every block has been emitted, the lowest
+   `block_id` with outstanding extra-symbol demand
+3. otherwise nothing is ready to send
 
-## Short Current-State Summary
+This implies:
 
-The current lossless session subsystem is a hybrid design:
+- source symbols are always prioritized ahead of extra fountain symbols
+- there is no repair-first policy
+- extra symbols are strictly receiver-driven
+- there is no sender ACK timeout
 
-- plain mode sends ordered chunks and uses cumulative ACKs
-- FEC mode groups chunks into blocks, sends symbols across trees, and uses per-block FEC status
-- receiver-side delivery is still ultimately chunk-based
-- tree lanes are a sender-local dispatch mechanism, not a wire-level requirement
+There is also no protocol sliding window.
 
-This design works, but it is conceptually split between chunk-oriented plain transfer and block/symbol-oriented FEC transfer.
+## Receiver Design
 
-## Rewrite Direction Under Discussion
+### Shared Receiver Core
 
-The intended refactor is a substantial rewrite, not a small cleanup. The goal is
-to remove the chunk-first / FEC-overlay split and replace it with one canonical
-transfer model.
+The shared receiver core is responsible for:
 
-### Canonical Transfer Unit
+- manifest validation
+- block ledger management
+- block completion tracking
+- writing completed blocks into the destination buffer
+- sending `BlockAck`
+- final session completion detection
 
-The rewrite should make `block` the only top-level transfer unit.
+Completion is block-based in both modes.
 
-- current plain-mode `chunk` should be renamed to `block`
-- plain mode should send whole blocks without coding
-- FEC mode should send symbols within a block
-- `symbols_per_block` remains configurable, but it applies to one canonical block abstraction rather than to a separate FEC-only block layer
+### Plain Receiver
 
-This means the current distinction between "plain chunks" and "FEC blocks" should
-disappear.
+The plain receiver:
 
-### Target Wire Shape
+- accepts `BlockData`
+- validates `block_id` and payload size
+- writes the completed block at its final byte offset
+- sends `BlockAck { block_id }`
 
-The intended protocol shape is:
+There is no cumulative acknowledgement and no contiguous-drain path.
 
-- plain mode: `BlockData { block_id, payload }`
-- FEC mode: `BlockSymbol { block_id, symbol_id, tree_id, payload }`
-- completion: `BlockAck { block_id }`
-- optional FEC deficit/status feedback remains block-scoped
+### FEC Receiver
 
-There should be no separate `BlockRepair` frame. In a fountain-code design,
-additional coded output is just more `BlockSymbol` for the same `block_id` with
-higher `symbol_id` values.
+The FEC receiver:
 
-### Target Completion Model
+- groups symbols by `block_id`
+- attempts decode when enough symbols are available
+- writes the completed block at its final byte offset once decode succeeds
+- sends `BlockAck { block_id }`
+- sends `BlockStatus { block_id, deficit_symbols }` when more symbols are needed
 
-The target control/completion rules are:
+The receiver does not acknowledge symbols. It acknowledges completed blocks.
 
-- ACKs are per block, not cumulative
-- there is no sliding window
-- sender progress is not a moving cumulative watermark
-- transfer completion is defined by block completion, not by contiguous chunk retirement
+## Tree Selection And Backpressure
 
-This is intended to fit bulk transfer rather than streaming semantics.
+`tree_id` is a real protocol field in FEC mode because lower layers use it for
+routing and ingress placement.
 
-### Target Sender Scheduling
+Tree lanes are not part of this design.
 
-The target sender scheduler is source-first:
+The sender should have one FEC scheduler, not one worker per tree. Tree choice
+is a scheduling decision, not a protocol abstraction.
 
-- always prioritize the next unsent source symbol before any extra fountain symbol
-- do not prioritize additional coded symbols ahead of new source data
-- do not use sender-side ACK timeouts
-- emit extra fountain symbols only after the initial source pass and only in response to receiver block-scoped feedback
+### Tree Choice
 
-So the sender should not have a separate "repair phase" packet type or a
-repair-first priority rule. Extra output is only a scheduling decision over
-`BlockSymbol`.
+For each selected `(block_id, symbol_id)`, the sender chooses a candidate tree
+from the configured `tree_ids` set in deterministic round-robin order.
 
-### Trees And Backpressure In The Rewrite
+The scheduling rule is:
 
-`tree_id` remains part of the FEC packet model because lower layers use it for
-ingress sharding and multicast route lookup.
+- pick the next symbol to send
+- try the next candidate `tree_id`
+- if that tree accepts the symbol, advance sender state
+- if that tree is backpressured, try the next tree without advancing symbol state
 
-Tree lanes, however, are not protocol elements and should not survive the
-rewrite as a required design concept.
+### Backpressure Boundary
 
-The preferred backpressure boundary is processor ingress:
+Backpressure should be observed at processor ingress.
 
-- the sender should send asynchronously via a non-blocking processor API
-- if sending a symbol for a selected `tree_id` returns a full queue / `WouldBlock`, that tree should be treated as immediately backpressured for that scheduling attempt
-- this backpressure signal is meaningful only when ingress is tree-visible, which today means sequential processor mode with per-lane queues hashed by `(flow_id, tree_id)`
-- a shared ingress queue only provides global backpressure, not tree-specific backpressure
+The sender uses asynchronous, non-blocking submission to processor ingress and
+interprets the result immediately:
 
-### ACK Path In The Rewrite
+- `Queued`: the symbol was accepted
+- `WouldBlock`: that tree is backpressured right now
+- `Closed`: that tree/path is unavailable
 
-Block acknowledgements should continue to return over the control-frame path:
+On `WouldBlock`:
 
-- receiver encodes the control frame and injects it through the processor handle
-- sender receives it through normal session delivery
-- control frames still do not need `tree_id`; they rely on the existing control-tree selection behavior in the routing layer
+- the sender treats that `tree_id` as immediately backpressured for the current
+  scheduling pass
+- the sender does not advance `symbol_id`
+- the sender tries another tree
 
-This keeps control routing separate from the FEC data-tree selection path while
-still allowing block-scoped completion.
+If every configured tree is backpressured, the sender yields and waits for the
+next opportunity to send.
+
+### Requirement For Tree-Visible Ingress
+
+Per-tree backpressure only makes sense if processor ingress is tree-visible.
+
+That means multi-tree FEC requires an ingress mode where:
+
+- the sender can submit work without blocking
+- full/not-full is observable immediately
+- different trees do not collapse onto one indistinguishable shared queue
+
+If all trees share one queue, the sender can only observe global pressure, not
+tree-specific pressure.
+
+## ACK Path
+
+`BlockAck` is a control frame from receiver to sender.
+
+The receiver sends it through the normal control path:
+
+- encode the control frame
+- inject it into the dataplane packet path
+- route it back to the sender
+- deliver it to the session runtime
+
+Control frames do not need to carry `tree_id`.
+
+## Shared Component Boundaries
+
+The rewritten subsystem should be split into small components with clear
+ownership:
+
+- `wire`: frame types and encoding/decoding
+- `plan`: block geometry and offsets
+- `ledger`: shared per-block session state
+- `runtime`: session registry and typed frame dispatch
+- `sender/plain`: plain block emission
+- `sender/fec`: symbol generation, FEC feedback, and tree scheduling
+- `receiver/plain`: plain block receive/acknowledge
+- `receiver/fec`: symbol collection, decode, and block acknowledgement
+
+The shared pieces own block/session semantics. FEC owns only FEC-specific
+encoding and scheduling behavior.
+
+## Invariants
+
+- The canonical unit is always `block`.
+- Plain mode is the default.
+- Plain mode uses one tree.
+- FEC mode is optional.
+- FEC mode may use multiple trees.
+- ACKs are per-block.
+- There are no cumulative ACKs.
+- There is no protocol sliding window.
+- There is no `BlockRepair` frame.
+- Extra fountain output is still `BlockSymbol`.
+- Tree lanes are not part of the protocol design.
