@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 mod ip_ser;
 pub mod lossless_session;
 pub use lossless_session::{
-    BlockStatus, FecScheme, LosslessSessionBlockData, LosslessSessionBlockSymbol,
-    LosslessSessionFecMode, LosslessSessionManifest, LosslessSessionMode, LOSSLESS_SESSION_VERSION,
+    BlockStatus, FecScheme, LOSSLESS_SESSION_VERSION, LosslessSessionBlockData,
+    LosslessSessionBlockSymbol, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode,
 };
 
 /// Used to indicate that an integer value is invalid.

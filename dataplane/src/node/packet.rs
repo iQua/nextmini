@@ -459,8 +459,7 @@ impl Packet {
                         let flags = buf[pos + 2];
                         let session_id =
                             u64::from_be_bytes(buf[pos + 4..pos + 12].try_into().ok()?);
-                        let tree_id =
-                            u16::from_be_bytes(buf[pos + 12..pos + 14].try_into().ok()?);
+                        let tree_id = u16::from_be_bytes(buf[pos + 12..pos + 14].try_into().ok()?);
                         return Some(LosslessTransportMeta {
                             session_id,
                             tree_id: if (flags & 0x01) != 0 {

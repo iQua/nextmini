@@ -11,9 +11,7 @@ use nextmini::node::config::LocalConfig;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::LosslessRuntimeHandle;
 use nextmini::node::session::runtime::{CommonConfig, PreflightError, SenderRequest};
-use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionMode,
-};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionMode};
 
 struct RuntimeHarness {
     runtime: LosslessRuntimeHandle,
@@ -103,7 +101,10 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
     let mut harness = start_runtime_sender(false, 400, 0x0FEC_0001).await;
 
     let manifest_packet = common::recv_packet(&mut harness.capture.packet_rx).await;
-    assert_eq!(manifest_packet.lossless_session_id(), Some(harness.session_id));
+    assert_eq!(
+        manifest_packet.lossless_session_id(),
+        Some(harness.session_id)
+    );
     let manifest_payload = manifest_packet
         .tcp_payload()
         .expect("manifest packet should include payload");
@@ -118,7 +119,9 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
 
     let quiet_deadline = Instant::now() + Duration::from_millis(100);
     while Instant::now() < quiet_deadline {
-        if let Ok(Some(packet)) = timeout(Duration::from_millis(20), harness.capture.packet_rx.recv()).await {
+        if let Ok(Some(packet)) =
+            timeout(Duration::from_millis(20), harness.capture.packet_rx.recv()).await
+        {
             let payload = packet
                 .tcp_payload()
                 .expect("captured packet should include payload");
@@ -129,9 +132,10 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         }
     }
 
-    harness
-        .runtime
-        .deliver(harness.session_id, common::ready_frame(harness.session_id, 2));
+    harness.runtime.deliver(
+        harness.session_id,
+        common::ready_frame(harness.session_id, 2),
+    );
 
     let mut saw_block_data = false;
     let mut saw_eot = false;
@@ -149,9 +153,10 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         }
     }
 
-    harness
-        .runtime
-        .deliver(harness.session_id, common::block_ack_frame(harness.session_id, 2, 0));
+    harness.runtime.deliver(
+        harness.session_id,
+        common::block_ack_frame(harness.session_id, 2, 0),
+    );
     let completed = timeout(
         Duration::from_secs(5),
         harness.runtime.wait_completion(harness.session_id),
@@ -166,7 +171,10 @@ async fn runtime_sender_derives_fec_manifest_from_runtime_config() {
     let mut harness = start_runtime_sender(true, 400, 0x0FEC_0002).await;
 
     let manifest_packet = common::recv_packet(&mut harness.capture.packet_rx).await;
-    assert_eq!(manifest_packet.lossless_session_id(), Some(harness.session_id));
+    assert_eq!(
+        manifest_packet.lossless_session_id(),
+        Some(harness.session_id)
+    );
     let manifest_payload = manifest_packet
         .tcp_payload()
         .expect("manifest packet should include payload");

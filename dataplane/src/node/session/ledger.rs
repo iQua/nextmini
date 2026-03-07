@@ -116,23 +116,8 @@ impl SessionLedger {
         })
     }
 
-    #[cfg(test)]
-    pub const fn total_blocks(&self) -> u64 {
-        self.total_blocks
-    }
-
-    #[cfg(test)]
-    pub fn receiver_ids(&self) -> &[usize] {
-        &self.receiver_ids
-    }
-
     pub fn receiver_count(&self) -> usize {
         self.receiver_ids.len()
-    }
-
-    #[cfg(test)]
-    pub fn complete_blocks(&self) -> u64 {
-        self.complete_blocks
     }
 
     pub fn is_complete(&self) -> bool {
@@ -148,13 +133,6 @@ impl SessionLedger {
         })
     }
 
-    #[cfg(test)]
-    pub fn block_acked_receivers(&self, block_id: u64) -> Option<usize> {
-        self.blocks
-            .get(usize::try_from(block_id).ok()?)
-            .map(|block| block.acked_receivers)
-    }
-
     pub fn receiver_has_acked(
         &self,
         receiver_id: usize,
@@ -163,17 +141,6 @@ impl SessionLedger {
         let receiver_pos = self.receiver_pos(receiver_id)?;
         let block = self.block_ref(block_id)?;
         Ok(block.acked_by[receiver_pos])
-    }
-
-    #[cfg(test)]
-    pub fn receiver_acked_blocks(&self, receiver_id: usize) -> Result<u64, LedgerError> {
-        let receiver_pos = self.receiver_pos(receiver_id)?;
-        Ok(self.acked_blocks_per_receiver[receiver_pos])
-    }
-
-    #[cfg(test)]
-    pub fn receiver_is_complete(&self, receiver_id: usize) -> Result<bool, LedgerError> {
-        Ok(self.receiver_acked_blocks(receiver_id)? == self.total_blocks)
     }
 
     pub fn ack_block(
@@ -257,13 +224,14 @@ mod tests {
     #[test]
     fn duplicate_ack_is_idempotent() {
         let mut ledger = SessionLedger::new(2, [7usize, 9usize]).expect("valid ledger");
+        let receiver_pos = ledger.receiver_positions[&7];
 
         let first = ledger.ack_block(7, 0).expect("first ack should apply");
         assert!(first.changed);
         assert!(!first.block_complete);
         assert!(!first.session_complete);
         assert_eq!(ledger.block_state(0), Some(BlockState::Pending));
-        assert_eq!(ledger.receiver_acked_blocks(7), Ok(1));
+        assert_eq!(ledger.acked_blocks_per_receiver[receiver_pos], 1);
 
         let duplicate = ledger
             .ack_block(7, 0)
@@ -271,8 +239,8 @@ mod tests {
         assert!(!duplicate.changed);
         assert!(!duplicate.block_completed_now);
         assert!(!duplicate.session_completed_now);
-        assert_eq!(ledger.block_acked_receivers(0), Some(1));
-        assert_eq!(ledger.receiver_acked_blocks(7), Ok(1));
+        assert_eq!(ledger.blocks[0].acked_receivers, 1);
+        assert_eq!(ledger.acked_blocks_per_receiver[receiver_pos], 1);
     }
 
     #[test]
@@ -302,9 +270,17 @@ mod tests {
         assert!(session_done.session_complete);
         assert!(session_done.session_completed_now);
         assert!(ledger.is_complete());
-        assert_eq!(ledger.complete_blocks(), 2);
-        assert_eq!(ledger.receiver_is_complete(11), Ok(true));
-        assert_eq!(ledger.receiver_is_complete(13), Ok(true));
+        assert_eq!(ledger.complete_blocks, 2);
+        let receiver_pos_11 = ledger.receiver_positions[&11];
+        let receiver_pos_13 = ledger.receiver_positions[&13];
+        assert_eq!(
+            ledger.acked_blocks_per_receiver[receiver_pos_11],
+            ledger.total_blocks
+        );
+        assert_eq!(
+            ledger.acked_blocks_per_receiver[receiver_pos_13],
+            ledger.total_blocks
+        );
     }
 
     #[test]
@@ -312,7 +288,7 @@ mod tests {
         let ledger = SessionLedger::new(3, []).expect("ledger without receivers should be valid");
 
         assert!(ledger.is_complete());
-        assert_eq!(ledger.complete_blocks(), 3);
+        assert_eq!(ledger.complete_blocks, 3);
         assert_eq!(ledger.block_state(0), Some(BlockState::Complete));
     }
 

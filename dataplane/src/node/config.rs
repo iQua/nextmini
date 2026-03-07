@@ -999,5 +999,4 @@ mod tests {
         assert_eq!(cfg.canonical_fec_default_symbols_per_block(), 8);
         assert_eq!(cfg.canonical_fec_default_tree_ids(), vec![1, 3, 5]);
     }
-
 }

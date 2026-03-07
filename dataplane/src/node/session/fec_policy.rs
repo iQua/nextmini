@@ -116,7 +116,10 @@ impl Display for PreflightError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RuntimeChannelClosed => {
-                write!(f, "lossless runtime channel closed before session start completed")
+                write!(
+                    f,
+                    "lossless runtime channel closed before session start completed"
+                )
             }
             Self::InvalidBlockSize { value } => {
                 write!(f, "block_size must be >= 1 (got {value})")
@@ -135,7 +138,10 @@ impl Display for PreflightError {
                 "fec_tree_ids_source=installed_routes is not implemented; set fec_tree_ids_source=config with fec_default_tree_ids"
             ),
             Self::MissingTreeIds => {
-                write!(f, "fec_default_tree_ids must be non-empty for fec sender sessions")
+                write!(
+                    f,
+                    "fec_default_tree_ids must be non-empty for fec sender sessions"
+                )
             }
             Self::TreeIdsMustBeSortedUnique { tree_ids } => write!(
                 f,

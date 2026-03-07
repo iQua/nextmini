@@ -108,15 +108,15 @@ async fn send_frame(tx: &mpsc::Sender<InboundFrame>, bytes: Vec<u8>) {
     .expect("frame should be delivered to receiver");
 }
 
-async fn recv_control(
-    packet_rx: &mut mpsc::Receiver<Packet>,
-) -> (Packet, LosslessSessionControl) {
+async fn recv_control(packet_rx: &mut mpsc::Receiver<Packet>) -> (Packet, LosslessSessionControl) {
     loop {
         let packet = timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for receiver output")
             .expect("receiver output channel closed");
-        let payload = packet.tcp_payload().expect("receiver output should carry TCP payload");
+        let payload = packet
+            .tcp_payload()
+            .expect("receiver output should carry TCP payload");
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             return (packet, control);
         }
@@ -151,13 +151,7 @@ async fn receiver_acks_decoded_block_and_writes_sink() {
         let tree_id = if symbol_id % 2 == 0 { 0 } else { 1 };
         send_frame(
             &harness.tx,
-            lossless_session::encode_block_symbol(
-                SESSION_ID,
-                0,
-                symbol_id as u32,
-                tree_id,
-                chunk,
-            ),
+            lossless_session::encode_block_symbol(SESSION_ID, 0, symbol_id as u32, tree_id, chunk),
         )
         .await;
     }

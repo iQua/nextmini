@@ -44,10 +44,10 @@ struct FecBlockState {
 
 impl SessionReceiver {
     fn new(cfg: ReceiverConfig, processors: ProcessorHandle) -> Self {
-        let src_ip =
-            (cfg.common.local_node_id as NodeId).ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
-        let dst_ip =
-            (cfg.source_node_id as NodeId).ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
+        let src_ip = (cfg.common.local_node_id as NodeId)
+            .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
+        let dst_ip = (cfg.source_node_id as NodeId)
+            .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
 
         Self {
             cfg,
@@ -113,8 +113,10 @@ impl SessionReceiver {
             LosslessSessionControl::Eot => {
                 self.eot_seen = true;
                 self.reemit_completed_acks().await;
-                if matches!(self.manifest.as_ref().map(|m| &m.mode), Some(LosslessSessionMode::Fec(_)))
-                {
+                if matches!(
+                    self.manifest.as_ref().map(|m| &m.mode),
+                    Some(LosslessSessionMode::Fec(_))
+                ) {
                     self.send_status_for_incomplete_blocks().await;
                 }
             }
@@ -438,7 +440,9 @@ mod tests {
                 ),
             }),
             plan: BlockPlan::new(16, 8).ok(),
-            geometry: BlockPlan::new(16, 8).ok().and_then(|plan| plan.symbol_geometry(4).ok()),
+            geometry: BlockPlan::new(16, 8)
+                .ok()
+                .and_then(|plan| plan.symbol_geometry(4).ok()),
             complete_blocks: BTreeSet::new(),
             fec_blocks: BTreeMap::from([(
                 0,

@@ -33,10 +33,6 @@ pub(super) enum Command {
         session: SessionId,
         reply: oneshot::Sender<bool>,
     },
-    #[allow(dead_code)]
-    AllocateSession {
-        reply: oneshot::Sender<SessionId>,
-    },
     SetTopologyReady {
         ready: bool,
     },

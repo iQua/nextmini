@@ -46,23 +46,8 @@ impl BlockPlan {
         })
     }
 
-    #[cfg(test)]
-    pub const fn total_bytes(&self) -> u64 {
-        self.total_bytes
-    }
-
-    #[cfg(test)]
-    pub const fn block_size(&self) -> usize {
-        self.block_size
-    }
-
     pub const fn total_blocks(&self) -> u64 {
         self.total_blocks
-    }
-
-    #[cfg(test)]
-    pub const fn is_empty(&self) -> bool {
-        self.total_blocks == 0
     }
 
     pub fn contains_block(&self, block_id: u64) -> bool {
@@ -103,12 +88,7 @@ impl BlockPlan {
         let offset = self.block_offset(block_id)?;
         let len = self.block_len(block_id)?;
 
-        Some(BlockSpan {
-            block_id,
-            offset,
-            len,
-            is_final: Some(block_id) == self.last_block_id(),
-        })
+        Some(BlockSpan { offset, len })
     }
 
     pub fn symbol_geometry(&self, symbols_per_block: u16) -> Result<SymbolGeometry, PlanError> {
@@ -119,34 +99,17 @@ impl BlockPlan {
 /// Absolute object span for a single block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockSpan {
-    block_id: u64,
     offset: u64,
     len: usize,
-    is_final: bool,
 }
 
 impl BlockSpan {
-    #[cfg(test)]
-    pub const fn block_id(&self) -> u64 {
-        self.block_id
-    }
-
     pub const fn offset(&self) -> u64 {
         self.offset
     }
 
     pub const fn len(&self) -> usize {
         self.len
-    }
-
-    #[cfg(test)]
-    pub const fn is_final(&self) -> bool {
-        self.is_final
-    }
-
-    #[cfg(test)]
-    pub fn end_offset(&self) -> u64 {
-        self.offset + self.len as u64
     }
 }
 
@@ -175,55 +138,12 @@ impl SymbolGeometry {
         })
     }
 
-    #[cfg(test)]
-    pub const fn symbols_per_block(&self) -> u16 {
-        self.symbols_per_block
-    }
-
     pub fn source_symbols(&self) -> usize {
         usize::from(self.symbols_per_block)
     }
 
     pub const fn symbol_size(&self) -> usize {
         self.symbol_size
-    }
-
-    #[cfg(test)]
-    pub fn populated_source_symbols(&self, block_len: usize) -> usize {
-        if block_len == 0 {
-            0
-        } else {
-            block_len
-                .div_ceil(self.symbol_size)
-                .min(self.source_symbols())
-        }
-    }
-
-    #[cfg(test)]
-    pub fn source_symbol_offset(&self, symbol_id: u32) -> Option<usize> {
-        let symbol_id = usize::try_from(symbol_id).ok()?;
-        if symbol_id >= self.source_symbols() {
-            return None;
-        }
-
-        Some(symbol_id * self.symbol_size)
-    }
-
-    #[cfg(test)]
-    pub fn source_symbol_len(&self, block_len: usize, symbol_id: u32) -> Option<usize> {
-        let offset = self.source_symbol_offset(symbol_id)?;
-        Some(block_len.saturating_sub(offset).min(self.symbol_size))
-    }
-
-    #[cfg(test)]
-    pub fn source_symbol_absolute_offset(
-        &self,
-        plan: &BlockPlan,
-        block_id: u64,
-        symbol_id: u32,
-    ) -> Option<u64> {
-        let block = plan.block_span(block_id)?;
-        Some(block.offset() + self.source_symbol_offset(symbol_id)? as u64)
     }
 }
 
@@ -254,8 +174,8 @@ mod tests {
         let exact = BlockPlan::new(24, 8).expect("exact fit plan");
         let final_block = exact.block_span(2).expect("final block should exist");
         assert_eq!(final_block.len(), 8);
-        assert!(final_block.is_final());
-        assert_eq!(final_block.end_offset(), 24);
+        assert_eq!(exact.last_block_id(), Some(2));
+        assert_eq!(final_block.offset + final_block.len as u64, 24);
     }
 
     #[test]
@@ -264,20 +184,31 @@ mod tests {
         let symbols = plan.symbol_geometry(4).expect("valid symbol geometry");
 
         assert_eq!(symbols.symbol_size(), 3);
-        assert_eq!(symbols.populated_source_symbols(10), 4);
-        assert_eq!(symbols.populated_source_symbols(5), 2);
+        let populated = |block_len: usize| {
+            block_len
+                .div_ceil(symbols.symbol_size())
+                .min(symbols.source_symbols())
+        };
+        let source_symbol_len = |block_len: usize, symbol_id: usize| {
+            let offset = symbol_id * symbols.symbol_size();
+            block_len.saturating_sub(offset).min(symbols.symbol_size())
+        };
 
-        assert_eq!(symbols.source_symbol_len(10, 0), Some(3));
-        assert_eq!(symbols.source_symbol_len(10, 1), Some(3));
-        assert_eq!(symbols.source_symbol_len(10, 2), Some(3));
-        assert_eq!(symbols.source_symbol_len(10, 3), Some(1));
+        assert_eq!(populated(10), 4);
+        assert_eq!(populated(5), 2);
 
-        assert_eq!(symbols.source_symbol_len(5, 0), Some(3));
-        assert_eq!(symbols.source_symbol_len(5, 1), Some(2));
-        assert_eq!(symbols.source_symbol_len(5, 2), Some(0));
-        assert_eq!(symbols.source_symbol_len(5, 3), Some(0));
+        assert_eq!(source_symbol_len(10, 0), 3);
+        assert_eq!(source_symbol_len(10, 1), 3);
+        assert_eq!(source_symbol_len(10, 2), 3);
+        assert_eq!(source_symbol_len(10, 3), 1);
 
-        assert_eq!(symbols.source_symbol_absolute_offset(&plan, 2, 1), Some(23));
+        assert_eq!(source_symbol_len(5, 0), 3);
+        assert_eq!(source_symbol_len(5, 1), 2);
+        assert_eq!(source_symbol_len(5, 2), 0);
+        assert_eq!(source_symbol_len(5, 3), 0);
+
+        let block = plan.block_span(2).expect("final block should exist");
+        assert_eq!(block.offset + symbols.symbol_size() as u64, 23);
     }
 
     #[test]

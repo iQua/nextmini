@@ -130,8 +130,8 @@ impl SessionSender {
             .map_err(|_| "invalid block plan for sender")?;
         let ledger = SessionLedger::new(plan.total_blocks(), cfg.receiver_ids.iter().copied())
             .map_err(|_| "unable to allocate sender ledger")?;
-        let src_ip =
-            (cfg.common.local_node_id as NodeId).ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
+        let src_ip = (cfg.common.local_node_id as NodeId)
+            .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
         let pacer = cfg.common.data_bucket.clone().map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
         let source = BlockSource::new(cfg.source_buffer.clone(), cfg.total_bytes);
@@ -283,7 +283,11 @@ impl SessionSender {
                 continue;
             }
 
-            let round_eot_sent = self.fec.as_ref().map(|state| state.round_eot_sent).unwrap_or(true);
+            let round_eot_sent = self
+                .fec
+                .as_ref()
+                .map(|state| state.round_eot_sent)
+                .unwrap_or(true);
             if !round_eot_sent {
                 self.send_eot().await;
                 if let Some(fec) = self.fec.as_mut() {
@@ -636,7 +640,8 @@ fn build_fec_state(
     let geometry = plan
         .symbol_geometry(fec.symbols_per_block)
         .map_err(|_| "invalid symbol geometry for fec sender")?;
-    let block_count = usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
+    let block_count =
+        usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
 
     Ok(Some(FecSenderState {
         blocks: (0..block_count)

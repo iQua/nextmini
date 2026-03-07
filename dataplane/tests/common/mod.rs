@@ -10,14 +10,13 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::CommonConfig;
-use nextmini_messages::lossless_session::{self, BlockStatus, LosslessSessionControl};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl};
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
 pub struct PacketCaptureHarness {
     pub cfg: LocalConfig,
     pub processors: ProcessorHandle,
     pub packet_rx: mpsc::Receiver<Packet>,
-    pub src_ip: Ipv4Addr,
     pub dst_ip: Ipv4Addr,
     pub src_port: u16,
     pub dst_port: u16,
@@ -82,7 +81,6 @@ pub async fn packet_capture(
         cfg,
         processors,
         packet_rx,
-        src_ip,
         dst_ip,
         src_port,
         dst_port,
@@ -112,40 +110,6 @@ pub fn block_ack_frame(session_id: u64, peer_id: usize, block_id: u64) -> Inboun
         peer_id,
         LosslessSessionControl::BlockAck { block_id },
     )
-}
-
-pub fn block_status_frame(
-    session_id: u64,
-    peer_id: usize,
-    block_id: u64,
-    deficit_symbols: u16,
-) -> InboundFrame {
-    control_frame(
-        session_id,
-        peer_id,
-        LosslessSessionControl::BlockStatus {
-            status: BlockStatus {
-                block_id,
-                deficit_symbols,
-            },
-        },
-    )
-}
-
-pub fn manifest_frame(
-    session_id: u64,
-    peer_id: usize,
-    manifest: nextmini_messages::lossless_session::LosslessSessionManifest,
-) -> InboundFrame {
-    control_frame(
-        session_id,
-        peer_id,
-        LosslessSessionControl::Manifest { manifest },
-    )
-}
-
-pub fn eot_frame(session_id: u64, peer_id: usize) -> InboundFrame {
-    control_frame(session_id, peer_id, LosslessSessionControl::Eot)
 }
 
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {

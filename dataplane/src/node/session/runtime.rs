@@ -131,15 +131,6 @@ impl LosslessRuntimeHandle {
         reply_rx.await.unwrap_or(false)
     }
 
-    #[allow(dead_code)]
-    pub async fn allocate_session_id(&self) -> SessionId {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
-            .command_tx
-            .send(Command::AllocateSession { reply: reply_tx });
-        reply_rx.await.expect("The session ID.")
-    }
-
     pub fn set_topology_ready(&self, ready: bool) {
         let _ = self.command_tx.send(Command::SetTopologyReady { ready });
     }
@@ -150,7 +141,6 @@ struct LosslessRuntime {
     config: LosslessConfig,
     tasks: AHashMap<SessionId, JoinHandle<()>>,
     inputs: AHashMap<SessionId, mpsc::Sender<InboundFrame>>,
-    next_session_id: SessionId,
     topology_ready_tx: watch::Sender<bool>,
     topology_ready: bool,
     command_rx: mpsc::UnboundedReceiver<Command>,
@@ -169,7 +159,6 @@ impl LosslessRuntime {
             config,
             tasks: AHashMap::default(),
             inputs: AHashMap::default(),
-            next_session_id: 1,
             topology_ready_tx,
             topology_ready: false,
             command_rx,
@@ -195,10 +184,6 @@ impl LosslessRuntime {
                 }
                 Command::Wait { session, reply } => {
                     self.handle_wait(session, reply);
-                }
-                Command::AllocateSession { reply } => {
-                    let sid = self.allocate_session_id();
-                    let _ = reply.send(sid);
                 }
                 Command::SetTopologyReady { ready } => {
                     self.set_topology_ready(ready);
@@ -243,10 +228,11 @@ impl LosslessRuntime {
     fn spawn_sender(&mut self, req: SenderRequest) -> Result<SessionId, PreflightError> {
         let sid = req.common.session_id;
         let block_size = fec_policy::validate_block_size(req.common.block_size)?;
-        let plan = BlockPlan::new(req.total_bytes, req.common.block_size)
-            .map_err(|_| PreflightError::InvalidBlockSize {
+        let plan = BlockPlan::new(req.total_bytes, req.common.block_size).map_err(|_| {
+            PreflightError::InvalidBlockSize {
                 value: req.common.block_size,
-            })?;
+            }
+        })?;
         let policy = fec_policy::derive_sender_policy(&self.config)?;
         let manifest = LosslessSessionManifest {
             block_size,
@@ -310,12 +296,6 @@ impl LosslessRuntime {
 
     fn input_sender(&self, sid: SessionId) -> Option<mpsc::Sender<InboundFrame>> {
         self.inputs.get(&sid).cloned()
-    }
-
-    fn allocate_session_id(&mut self) -> SessionId {
-        let sid = self.next_session_id;
-        self.next_session_id = self.next_session_id.wrapping_add(1).max(1);
-        sid
     }
 
     fn set_topology_ready(&mut self, ready: bool) {

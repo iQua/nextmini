@@ -39,7 +39,9 @@ pub async fn send_frame(
     dst_port: u16,
     payload: &[u8],
 ) {
-    let packet = build_packet(session_id, tree_id, src_ip, src_port, dst_ip, dst_port, payload);
+    let packet = build_packet(
+        session_id, tree_id, src_ip, src_port, dst_ip, dst_port, payload,
+    );
     processors.process_packet(packet).await;
 }
 
@@ -53,7 +55,9 @@ pub fn try_send_frame(
     dst_port: u16,
     payload: &[u8],
 ) -> LosslessIngressSubmission {
-    let packet = build_packet(session_id, tree_id, src_ip, src_port, dst_ip, dst_port, payload);
+    let packet = build_packet(
+        session_id, tree_id, src_ip, src_port, dst_ip, dst_port, payload,
+    );
     processors.try_submit_lossless_packet(packet)
 }
 
@@ -68,14 +72,7 @@ pub async fn send_control(
 ) {
     let frame = lossless_session::encode_control(session_id, control);
     send_frame(
-        processors,
-        session_id,
-        None,
-        src_ip,
-        src_port,
-        dst_ip,
-        dst_port,
-        &frame,
+        processors, session_id, None, src_ip, src_port, dst_ip, dst_port, &frame,
     )
     .await;
 }

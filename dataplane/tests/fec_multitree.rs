@@ -7,8 +7,8 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use nextmini::node::session::sender;
 use nextmini::node::session::runtime::SenderConfig;
+use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
     self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
     LosslessSessionMode,

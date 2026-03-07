@@ -6,10 +6,11 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use nextmini::node::session::sender;
+use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::SenderConfig;
+use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    self, BlockStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
     LosslessSessionMode,
 };
 
@@ -73,12 +74,16 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         let (_, symbol, body) =
             lossless_session::decode_block_symbol(payload).expect("expected block symbol");
         assert_eq!(packet.lossless_fec_tree_id(), Some(symbol.tree_id));
-        assert_eq!(body.len(), 4, "one 16-byte block with K=4 yields 4-byte symbols");
+        assert_eq!(
+            body.len(),
+            4,
+            "one 16-byte block with K=4 yields 4-byte symbols"
+        );
 
         all_symbol_ids.push(symbol.symbol_id);
         if symbol.symbol_id == 0 && !status_sent {
             ctrl_tx
-                .send(common::block_status_frame(session_id, 2, 0, 2))
+                .send(block_status_frame(session_id, 2, 0, 2))
                 .await
                 .expect("block status should enqueue");
             status_sent = true;
@@ -110,4 +115,24 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         .await
         .expect("sender task timed out")
         .expect("sender task failed");
+}
+
+fn block_status_frame(
+    session_id: u64,
+    peer_id: usize,
+    block_id: u64,
+    deficit_symbols: u16,
+) -> InboundFrame {
+    InboundFrame {
+        bytes: lossless_session::encode_control(
+            session_id,
+            &LosslessSessionControl::BlockStatus {
+                status: BlockStatus {
+                    block_id,
+                    deficit_symbols,
+                },
+            },
+        ),
+        peer_id: Some(peer_id),
+    }
 }
