@@ -232,6 +232,7 @@ to `block_size` during the migration.
 
 ### T3 — Rework The Wire Protocol In `messages/`
 - `depends_on: [T1]`
+- `status: completed`
 - Scope:
   - Replace the old wire model with a block-first protocol.
   - Define the frame set:
@@ -256,6 +257,27 @@ to `block_size` during the migration.
 - Validation:
   - unit tests for encode/decode round-trips
   - grep confirms no old chunk/cumulative wire variants remain in the active API
+- Work log:
+  - Rewrote `messages/src/lossless_session.rs` around a single cutover version and
+    block-first frame set: `BlockData`, `BlockSymbol`, and control
+    `{Manifest, Ready, BlockAck, BlockStatus, Eot}`.
+  - Moved mode selection into `LosslessSessionManifest` using
+    `LosslessSessionMode::{Plain, Fec(...)}` instead of split legacy/FEC manifest
+    types.
+  - Added manifest-aware validation helpers for block geometry, FEC tree sets,
+    plain-vs-FEC frame legality, and zero-deficit `BlockStatus` rejection.
+  - Updated `messages/src/lib.rs` re-exports to the new message-surface types.
+- Files modified:
+  - `messages/src/lossless_session.rs`
+  - `messages/src/lib.rs`
+  - `plans/new-lossless-plan.md`
+- Validation performed:
+  - `cargo test -p nextmini-messages`
+  - `rg -n "\\bAck\\b|\\bFecManifest\\b|\\bFecCapabilities\\b|\\bFecStatus\\b|\\bencode_data\\b|\\bdecode_data\\b|\\bencode_fec_data\\b|\\bdecode_fec_data\\b|\\bchunk_size\\b|\\blast_index\\b|\\bLosslessSessionData\\b|\\bLosslessSessionFecData\\b|\\bLOSSLESS_SESSION_BASE_VERSION\\b|\\bLOSSLESS_SESSION_FEC_VERSION\\b" messages/src/lossless_session.rs messages/src/lib.rs`
+- Errors/gotchas:
+  - This task intentionally updates the `messages/` wire surface first. Downstream
+    dataplane/runtime call sites still refer to the old protocol and are expected
+    to be migrated by dependent tasks instead of being redesigned here.
 
 ### T4 — Build Shared Block Geometry And Shared Ledgers
 - `depends_on: [T1]`
