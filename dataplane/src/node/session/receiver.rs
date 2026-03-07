@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -100,7 +100,7 @@ pub async fn run(
 
     // Stream bookkeeping: lossless session chunk indices start at 1.
     let mut expected: u64 = 1;
-    let mut pending: BTreeMap<u64, Bytes> = BTreeMap::new();
+    let mut pending: HashMap<u64, Bytes> = HashMap::new();
     let mut bytes_received: u64 = 0;
     let sink_buffer = cfg.sink_buffer.clone();
 
@@ -294,7 +294,7 @@ async fn process_decoded_data_frame(
     frame_bytes: Vec<u8>,
     payload_range: std::ops::Range<usize>,
     expected: &mut u64,
-    pending: &mut BTreeMap<u64, Bytes>,
+    pending: &mut HashMap<u64, Bytes>,
     bytes_received: &mut u64,
     last_ack_up_to: &mut u64,
     eot_index: Option<u64>,
@@ -358,7 +358,7 @@ async fn process_fec_data_frame(
     payload_range: std::ops::Range<usize>,
     fec_state: &mut FecReceiverState,
     expected: &mut u64,
-    pending: &mut BTreeMap<u64, Bytes>,
+    pending: &mut HashMap<u64, Bytes>,
     bytes_received: &mut u64,
 ) {
     let frame_bytes = Bytes::from(frame_bytes);
@@ -768,7 +768,7 @@ fn feedback_jitter(local_node_id: usize, block_id: u64) -> Duration {
 
 /// Drain contiguous payloads starting at `*expected` from the pending map,
 /// advancing the expected index as chunks are consumed.
-fn drain_contiguous(pending: &mut BTreeMap<u64, Bytes>, expected: &mut u64) -> Vec<Bytes> {
+fn drain_contiguous(pending: &mut HashMap<u64, Bytes>, expected: &mut u64) -> Vec<Bytes> {
     let mut ready = Vec::new();
     while let Some(payload) = pending.remove(expected) {
         ready.push(payload);
@@ -782,7 +782,7 @@ struct FrameCtx<'a> {
     data: &'a lossless_session::LosslessSessionData,
     payload: Bytes,
     expected: &'a mut u64,
-    pending: &'a mut BTreeMap<u64, Bytes>,
+    pending: &'a mut HashMap<u64, Bytes>,
     bytes_received: &'a mut u64,
 }
 
@@ -811,7 +811,7 @@ fn handle_data_frame(ctx: FrameCtx<'_>) -> DataOutcome {
         };
     }
 
-    use std::collections::btree_map::Entry;
+    use std::collections::hash_map::Entry;
     if let Entry::Vacant(e) = pending.entry(idx) {
         e.insert(payload);
         trace!(
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn drain_contiguous_in_order() {
-        let mut pending = BTreeMap::new();
+        let mut pending = HashMap::new();
         let mut expected = 1u64;
 
         for i in 1..=5 {
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn drain_contiguous_gap_then_fill() {
-        let mut pending = BTreeMap::new();
+        let mut pending = HashMap::new();
         let mut expected = 1u64;
 
         pending.insert(10, Bytes::from(vec![10u8; 100]));
@@ -938,7 +938,7 @@ mod tests {
 
     #[test]
     fn pending_accepts_any_offset() {
-        let mut pending = BTreeMap::new();
+        let mut pending = HashMap::new();
         pending.insert(1_000_000u64, Bytes::from(vec![1u8; 100]));
         assert_eq!(pending.len(), 1);
     }
