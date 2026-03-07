@@ -1,65 +1,36 @@
+use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::ops::Range;
 
+/// Construction or derivation failures for shared block geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlockPlanError {
-    ZeroBlockSize,
-    ZeroSymbolsPerBlock,
-    BlockOutOfRange { block_id: u64, total_blocks: u64 },
-    SymbolOutOfRange { symbol_id: u16, symbols_per_block: u16 },
+pub enum PlanError {
+    BlockSizeZero,
+    SymbolsPerBlockZero,
 }
 
-impl Display for BlockPlanError {
+impl Display for PlanError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ZeroBlockSize => write!(f, "block_size must be >= 1"),
-            Self::ZeroSymbolsPerBlock => write!(f, "symbols_per_block must be >= 1"),
-            Self::BlockOutOfRange {
-                block_id,
-                total_blocks,
-            } => write!(
-                f,
-                "block_id {block_id} is out of range for total_blocks={total_blocks}"
-            ),
-            Self::SymbolOutOfRange {
-                symbol_id,
-                symbols_per_block,
-            } => write!(
-                f,
-                "symbol_id {symbol_id} is out of range for symbols_per_block={symbols_per_block}"
-            ),
+            Self::BlockSizeZero => write!(f, "block_size must be >= 1"),
+            Self::SymbolsPerBlockZero => write!(f, "symbols_per_block must be >= 1"),
         }
     }
 }
 
-impl std::error::Error for BlockPlanError {}
+impl Error for PlanError {}
 
+/// Immutable geometry for a block-first session object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockDescriptor {
-    pub block_id: u64,
-    pub offset: u64,
-    pub len: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SymbolDescriptor {
-    pub block_id: u64,
-    pub symbol_id: u16,
-    pub offset_within_block: usize,
-    pub len: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockLayout {
+pub struct BlockPlan {
     total_bytes: u64,
     block_size: usize,
     total_blocks: u64,
 }
 
-impl BlockLayout {
-    pub fn new(total_bytes: u64, block_size: usize) -> Result<Self, BlockPlanError> {
+impl BlockPlan {
+    pub fn new(total_bytes: u64, block_size: usize) -> Result<Self, PlanError> {
         if block_size == 0 {
-            return Err(BlockPlanError::ZeroBlockSize);
+            return Err(PlanError::BlockSizeZero);
         }
 
         let total_blocks = if total_bytes == 0 {
@@ -75,199 +46,235 @@ impl BlockLayout {
         })
     }
 
-    pub fn total_bytes(self) -> u64 {
+    pub const fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
 
-    pub fn block_size(self) -> usize {
+    pub const fn block_size(&self) -> usize {
         self.block_size
     }
 
-    pub fn total_blocks(self) -> u64 {
+    pub const fn total_blocks(&self) -> u64 {
         self.total_blocks
     }
 
-    pub fn is_empty(self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.total_blocks == 0
     }
 
-    pub fn block_offset(self, block_id: u64) -> Result<u64, BlockPlanError> {
-        self.ensure_block(block_id)?;
-        Ok(block_id * self.block_size as u64)
+    pub fn contains_block(&self, block_id: u64) -> bool {
+        block_id < self.total_blocks
     }
 
-    pub fn block_len(self, block_id: u64) -> Result<usize, BlockPlanError> {
-        self.ensure_block(block_id)?;
-        if block_id + 1 < self.total_blocks {
-            return Ok(self.block_size);
+    pub fn last_block_id(&self) -> Option<u64> {
+        self.total_blocks.checked_sub(1)
+    }
+
+    pub fn block_offset(&self, block_id: u64) -> Option<u64> {
+        if !self.contains_block(block_id) {
+            return None;
         }
 
-        let used = block_id * self.block_size as u64;
-        Ok((self.total_bytes - used) as usize)
+        block_id.checked_mul(self.block_size as u64)
     }
 
-    pub fn block_range(self, block_id: u64) -> Result<Range<u64>, BlockPlanError> {
-        let offset = self.block_offset(block_id)?;
-        let len = self.block_len(block_id)? as u64;
-        Ok(offset..offset + len)
-    }
+    pub fn block_len(&self, block_id: u64) -> Option<usize> {
+        if !self.contains_block(block_id) {
+            return None;
+        }
 
-    pub fn block_descriptor(self, block_id: u64) -> Result<BlockDescriptor, BlockPlanError> {
-        Ok(BlockDescriptor {
-            block_id,
-            offset: self.block_offset(block_id)?,
-            len: self.block_len(block_id)?,
-        })
-    }
+        let is_final = Some(block_id) == self.last_block_id();
+        if !is_final {
+            return Some(self.block_size);
+        }
 
-    pub fn blocks(self) -> impl Iterator<Item = BlockDescriptor> {
-        let total_blocks = self.total_blocks;
-        (0..total_blocks).map(move |block_id| BlockDescriptor {
-            block_id,
-            offset: block_id * self.block_size as u64,
-            len: self.block_len(block_id).expect("validated block id"),
-        })
-    }
-
-    fn ensure_block(self, block_id: u64) -> Result<(), BlockPlanError> {
-        if block_id >= self.total_blocks {
-            Err(BlockPlanError::BlockOutOfRange {
-                block_id,
-                total_blocks: self.total_blocks,
-            })
+        let tail = (self.total_bytes % self.block_size as u64) as usize;
+        if tail == 0 {
+            Some(self.block_size)
         } else {
-            Ok(())
+            Some(tail)
         }
+    }
+
+    pub fn block_span(&self, block_id: u64) -> Option<BlockSpan> {
+        let offset = self.block_offset(block_id)?;
+        let len = self.block_len(block_id)?;
+
+        Some(BlockSpan {
+            block_id,
+            offset,
+            len,
+            is_final: Some(block_id) == self.last_block_id(),
+        })
+    }
+
+    pub fn symbol_geometry(&self, symbols_per_block: u16) -> Result<SymbolGeometry, PlanError> {
+        SymbolGeometry::new(self.block_size, symbols_per_block)
     }
 }
 
+/// Absolute object span for a single block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FecSymbolLayout {
-    symbols_per_block: u16,
+pub struct BlockSpan {
+    block_id: u64,
+    offset: u64,
+    len: usize,
+    is_final: bool,
 }
 
-impl FecSymbolLayout {
-    pub fn new(symbols_per_block: u16) -> Result<Self, BlockPlanError> {
-        if symbols_per_block == 0 {
-            return Err(BlockPlanError::ZeroSymbolsPerBlock);
-        }
-        Ok(Self { symbols_per_block })
+impl BlockSpan {
+    pub const fn block_id(&self) -> u64 {
+        self.block_id
     }
 
-    pub fn symbols_per_block(self) -> u16 {
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_final(&self) -> bool {
+        self.is_final
+    }
+
+    pub fn end_offset(&self) -> u64 {
+        self.offset + self.len as u64
+    }
+}
+
+/// Deterministic source-symbol layout derived from the shared block geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SymbolGeometry {
+    symbols_per_block: u16,
+    symbol_size: usize,
+}
+
+impl SymbolGeometry {
+    pub fn new(block_size: usize, symbols_per_block: u16) -> Result<Self, PlanError> {
+        if block_size == 0 {
+            return Err(PlanError::BlockSizeZero);
+        }
+        if symbols_per_block == 0 {
+            return Err(PlanError::SymbolsPerBlockZero);
+        }
+
+        let source_symbols = usize::from(symbols_per_block);
+        let symbol_size = block_size.div_ceil(source_symbols);
+
+        Ok(Self {
+            symbols_per_block,
+            symbol_size,
+        })
+    }
+
+    pub const fn symbols_per_block(&self) -> u16 {
         self.symbols_per_block
     }
 
-    pub fn symbol_size_for_block(self, block_len: usize) -> usize {
+    pub fn source_symbols(&self) -> usize {
+        usize::from(self.symbols_per_block)
+    }
+
+    pub const fn symbol_size(&self) -> usize {
+        self.symbol_size
+    }
+
+    pub fn populated_source_symbols(&self, block_len: usize) -> usize {
         if block_len == 0 {
-            return 0;
+            0
+        } else {
+            block_len
+                .div_ceil(self.symbol_size)
+                .min(self.source_symbols())
         }
-        block_len.div_ceil(self.symbols_per_block as usize)
     }
 
-    pub fn symbol_range_for_block(
-        self,
-        block_len: usize,
-        symbol_id: u16,
-    ) -> Result<Range<usize>, BlockPlanError> {
-        if symbol_id >= self.symbols_per_block {
-            return Err(BlockPlanError::SymbolOutOfRange {
-                symbol_id,
-                symbols_per_block: self.symbols_per_block,
-            });
+    pub fn source_symbol_offset(&self, symbol_id: u32) -> Option<usize> {
+        let symbol_id = usize::try_from(symbol_id).ok()?;
+        if symbol_id >= self.source_symbols() {
+            return None;
         }
 
-        let symbol_size = self.symbol_size_for_block(block_len);
-        let start = symbol_id as usize * symbol_size;
-        let len = block_len.saturating_sub(start).min(symbol_size);
-        Ok(start..start + len)
+        Some(symbol_id * self.symbol_size)
     }
 
-    pub fn symbol_descriptor(
-        self,
-        blocks: BlockLayout,
+    pub fn source_symbol_len(&self, block_len: usize, symbol_id: u32) -> Option<usize> {
+        let offset = self.source_symbol_offset(symbol_id)?;
+        Some(block_len.saturating_sub(offset).min(self.symbol_size))
+    }
+
+    pub fn source_symbol_absolute_offset(
+        &self,
+        plan: &BlockPlan,
         block_id: u64,
-        symbol_id: u16,
-    ) -> Result<SymbolDescriptor, BlockPlanError> {
-        let block_len = blocks.block_len(block_id)?;
-        let range = self.symbol_range_for_block(block_len, symbol_id)?;
-        Ok(SymbolDescriptor {
-            block_id,
-            symbol_id,
-            offset_within_block: range.start,
-            len: range.end - range.start,
-        })
+        symbol_id: u32,
+    ) -> Option<u64> {
+        let block = plan.block_span(block_id)?;
+        Some(block.offset() + self.source_symbol_offset(symbol_id)? as u64)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockLayout, BlockPlanError, FecSymbolLayout};
+    use super::{BlockPlan, PlanError, SymbolGeometry};
 
     #[test]
-    fn computes_block_offsets_and_final_block_length() {
-        let layout = BlockLayout::new(25, 8).expect("layout");
+    fn block_plan_tracks_full_and_final_blocks() {
+        let plan = BlockPlan::new(25, 10).expect("valid block plan");
 
-        assert_eq!(layout.total_blocks(), 4);
-        assert_eq!(layout.block_offset(0).expect("offset"), 0);
-        assert_eq!(layout.block_offset(3).expect("offset"), 24);
-        assert_eq!(layout.block_len(0).expect("len"), 8);
-        assert_eq!(layout.block_len(3).expect("len"), 1);
-        assert_eq!(layout.block_range(2).expect("range"), 16..24);
+        assert_eq!(plan.total_blocks(), 3);
+        assert_eq!(plan.block_offset(0), Some(0));
+        assert_eq!(plan.block_offset(1), Some(10));
+        assert_eq!(plan.block_offset(2), Some(20));
+        assert_eq!(plan.block_len(0), Some(10));
+        assert_eq!(plan.block_len(1), Some(10));
+        assert_eq!(plan.block_len(2), Some(5));
+        assert_eq!(plan.block_len(3), None);
     }
 
     #[test]
-    fn iterates_block_descriptors() {
-        let layout = BlockLayout::new(17, 8).expect("layout");
-        let blocks = layout.blocks().collect::<Vec<_>>();
+    fn block_plan_handles_empty_and_exact_fit_objects() {
+        let empty = BlockPlan::new(0, 8).expect("empty plan should still be valid");
+        assert_eq!(empty.total_blocks(), 0);
+        assert!(empty.block_span(0).is_none());
 
-        assert_eq!(blocks.len(), 3);
-        assert_eq!(blocks[0].offset, 0);
-        assert_eq!(blocks[1].offset, 8);
-        assert_eq!(blocks[2].len, 1);
+        let exact = BlockPlan::new(24, 8).expect("exact fit plan");
+        let final_block = exact.block_span(2).expect("final block should exist");
+        assert_eq!(final_block.len(), 8);
+        assert!(final_block.is_final());
+        assert_eq!(final_block.end_offset(), 24);
     }
 
     #[test]
-    fn rejects_zero_block_size() {
-        assert_eq!(
-            BlockLayout::new(100, 0).expect_err("zero block size should fail"),
-            BlockPlanError::ZeroBlockSize
-        );
+    fn symbol_geometry_derives_ceil_symbol_size_and_tail_lengths() {
+        let plan = BlockPlan::new(25, 10).expect("valid block plan");
+        let symbols = plan.symbol_geometry(4).expect("valid symbol geometry");
+
+        assert_eq!(symbols.symbol_size(), 3);
+        assert_eq!(symbols.populated_source_symbols(10), 4);
+        assert_eq!(symbols.populated_source_symbols(5), 2);
+
+        assert_eq!(symbols.source_symbol_len(10, 0), Some(3));
+        assert_eq!(symbols.source_symbol_len(10, 1), Some(3));
+        assert_eq!(symbols.source_symbol_len(10, 2), Some(3));
+        assert_eq!(symbols.source_symbol_len(10, 3), Some(1));
+
+        assert_eq!(symbols.source_symbol_len(5, 0), Some(3));
+        assert_eq!(symbols.source_symbol_len(5, 1), Some(2));
+        assert_eq!(symbols.source_symbol_len(5, 2), Some(0));
+        assert_eq!(symbols.source_symbol_len(5, 3), Some(0));
+
+        assert_eq!(symbols.source_symbol_absolute_offset(&plan, 2, 1), Some(23));
     }
 
     #[test]
-    fn derives_symbol_ranges_from_block_length() {
-        let layout = BlockLayout::new(25, 8).expect("layout");
-        let symbols = FecSymbolLayout::new(3).expect("symbols");
-
-        assert_eq!(symbols.symbol_size_for_block(8), 3);
+    fn plan_and_symbol_geometry_reject_zero_dimensions() {
+        assert_eq!(BlockPlan::new(4, 0), Err(PlanError::BlockSizeZero));
         assert_eq!(
-            symbols.symbol_descriptor(layout, 0, 0).expect("symbol").len,
-            3
-        );
-        assert_eq!(
-            symbols.symbol_descriptor(layout, 0, 1).expect("symbol").len,
-            3
-        );
-        assert_eq!(
-            symbols.symbol_descriptor(layout, 0, 2).expect("symbol").len,
-            2
-        );
-        assert_eq!(
-            symbols.symbol_descriptor(layout, 3, 0).expect("symbol").len,
-            1
-        );
-        assert_eq!(
-            symbols.symbol_descriptor(layout, 3, 1).expect("symbol").len,
-            0
-        );
-    }
-
-    #[test]
-    fn rejects_zero_symbols_per_block() {
-        assert_eq!(
-            FecSymbolLayout::new(0).expect_err("zero symbols should fail"),
-            BlockPlanError::ZeroSymbolsPerBlock
+            SymbolGeometry::new(16, 0),
+            Err(PlanError::SymbolsPerBlockZero)
         );
     }
 }

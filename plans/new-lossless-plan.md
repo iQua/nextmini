@@ -308,13 +308,22 @@ to `block_size` during the migration.
   - Added `dataplane/src/node/session/ledger.rs` with per-peer per-block ACK
     tracking, duplicate-ACK idempotence, and session-completion bookkeeping.
   - Exported the new modules from `dataplane/src/node/session/mod.rs`.
-- Files modified:
+- Files modified/created:
   - `dataplane/src/node/session/mod.rs`
   - `dataplane/src/node/session/plan.rs`
   - `dataplane/src/node/session/ledger.rs`
+  - `plans/new-lossless-plan.md`
+- Validation performed:
+  - Attempted `cargo test -p nextmini --lib node::session::plan`
+  - `rustc --edition 2024 --test dataplane/src/node/session/plan.rs -o /tmp/nextmini_plan_tests && /tmp/nextmini_plan_tests`
+  - `rustc --edition 2024 --test dataplane/src/node/session/ledger.rs -o /tmp/nextmini_ledger_tests && /tmp/nextmini_ledger_tests`
 - Errors/gotchas:
   - Initial ledger implementation borrowed `self` immutably after taking a
     mutable block borrow; fixed before validation.
+  - The narrow cargo test is currently blocked by parallel protocol rewrite work:
+    `messages/src/lossless_session.rs` has already moved to block-first wire types
+    while legacy session/runtime modules outside T4 still reference the removed
+    chunk/FEC symbols and helpers.
 
 ### T5 — Add Tree-Visible Non-Blocking Processor Ingress Contract
 - `depends_on: [T1]`
