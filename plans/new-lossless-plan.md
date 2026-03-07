@@ -175,6 +175,7 @@ to `block_size` during the migration.
 
 ### T1 — Freeze Protocol Contract, Naming, And Cutover Policy
 - `depends_on: []`
+- `status: completed`
 - Scope:
   - Freeze the implementation contract from `plans/fec-lossless-design.md`.
   - Explicitly ban legacy concepts in the new subsystem: `chunk`,
@@ -188,6 +189,20 @@ to `block_size` during the migration.
   - Explicit migration policy for old callers and configs.
 - Validation:
   - Team signoff on the task graph and invariants before code changes begin.
+- Work log:
+  - Rewrote `plans/fec-lossless-design.md` as a forward-looking spec for the new
+    block-first subsystem.
+  - Removed the `max_active_blocks` / local memory-bound caveat to keep the
+    design simplicity-first.
+  - Locked the cutover policy in this plan: no mixed old/new peer support, no
+    compatibility shim protocol, and explicit removal of chunk/cumulative/window
+    semantics.
+- Files modified:
+  - `plans/fec-lossless-design.md`
+  - `plans/new-lossless-plan.md`
+- Errors/gotchas:
+  - None. This task is documentation/policy freeze only and does not change
+    runtime code.
 
 ### T2 — Define The New Config And Public API Surface
 - `depends_on: [T1]`
