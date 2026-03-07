@@ -721,9 +721,6 @@ mod tests {
                     deficit_symbols: 2,
                 },
             },
-            LosslessSessionControl::FecCancel {
-                cancel_before_block_id: 4,
-            },
             LosslessSessionControl::Eot { last_index: 15 },
         ];
         for ctrl in ctrls {
@@ -733,8 +730,7 @@ mod tests {
             let expected_version = match ctrl {
                 LosslessSessionControl::FecManifest { .. }
                 | LosslessSessionControl::FecCapabilities { .. }
-                | LosslessSessionControl::FecStatus { .. }
-                | LosslessSessionControl::FecCancel { .. } => LOSSLESS_SESSION_FEC_VERSION,
+                | LosslessSessionControl::FecStatus { .. } => LOSSLESS_SESSION_FEC_VERSION,
                 _ => LOSSLESS_SESSION_BASE_VERSION,
             };
             assert_eq!(hdr.version, expected_version);
@@ -783,9 +779,6 @@ mod tests {
                     block_id: 3,
                     deficit_symbols: 1,
                 },
-            },
-            LosslessSessionControl::FecCancel {
-                cancel_before_block_id: 8,
             },
             LosslessSessionControl::Eot { last_index: 15 },
         ];
@@ -882,16 +875,6 @@ mod tests {
         let mut bad_fec_status = fec_status.clone();
         bad_fec_status.truncate(LosslessSessionHeader::LEN + 8);
         assert!(decode_control(&bad_fec_status).is_none());
-
-        let fec_cancel = encode_control(
-            1,
-            &LosslessSessionControl::FecCancel {
-                cancel_before_block_id: 9,
-            },
-        );
-        let mut bad_fec_cancel = fec_cancel.clone();
-        bad_fec_cancel.truncate(LosslessSessionHeader::LEN + 4);
-        assert!(decode_control(&bad_fec_cancel).is_none());
     }
 
     #[test]
@@ -917,29 +900,17 @@ mod tests {
 
     #[test]
     fn fec_controls_force_v2_header_when_requested_with_v1() {
-        let controls = [
-            LosslessSessionControl::FecStatus {
-                status: FecStatus {
-                    block_id: 10,
-                    deficit_symbols: 1,
-                },
+        let control = LosslessSessionControl::FecStatus {
+            status: FecStatus {
+                block_id: 10,
+                deficit_symbols: 1,
             },
-            LosslessSessionControl::FecCancel {
-                cancel_before_block_id: 11,
-            },
-        ];
-
-        for control in controls {
-            let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
-            let frame = encode_control_into_with_version(
-                &mut buf,
-                11,
-                LOSSLESS_SESSION_BASE_VERSION,
-                &control,
-            );
-            let (hdr, decoded) = decode_control(frame).expect("decode control");
-            assert_eq!(hdr.version, LOSSLESS_SESSION_FEC_VERSION);
-            assert_eq!(decoded, control);
-        }
+        };
+        let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
+        let frame =
+            encode_control_into_with_version(&mut buf, 11, LOSSLESS_SESSION_BASE_VERSION, &control);
+        let (hdr, decoded) = decode_control(frame).expect("decode control");
+        assert_eq!(hdr.version, LOSSLESS_SESSION_FEC_VERSION);
+        assert_eq!(decoded, control);
     }
 }
