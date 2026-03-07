@@ -340,6 +340,7 @@ impl Packet {
 
     /// Construct a minimal IPv4/TCP packet that wraps the provided payload.
     /// Checksums are omitted—the overlay stack guarantees integrity.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn build_ipv4_tcp_packet(
         src_ip: Ipv4Addr,
         src_port: u16,

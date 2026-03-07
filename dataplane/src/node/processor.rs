@@ -67,10 +67,12 @@ pub enum LosslessIngressContract {
 }
 
 impl LosslessIngressContract {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn supports_collaborative_multitree(self) -> bool {
         matches!(self, Self::TreeVisibleNonBlocking)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const fn would_block_is_tree_specific(self) -> bool {
         matches!(self, Self::TreeVisibleNonBlocking)
     }
@@ -542,6 +544,7 @@ impl SequentialProcHandle {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_submit_lossless_packet(&self, packet: Packet) -> LosslessIngressSubmission {
         let contract = self.lossless_ingress_contract(&packet);
         let outcome = self.try_process_packet(packet);
@@ -745,6 +748,7 @@ impl ConcurrentProcHandle {
         LosslessIngressContract::SharedQueueNonBlocking
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn try_submit_lossless_packet(&self, packet: Packet) -> LosslessIngressSubmission {
         let contract = self.lossless_ingress_contract(&packet);
         let outcome = self.try_process_packet(packet);

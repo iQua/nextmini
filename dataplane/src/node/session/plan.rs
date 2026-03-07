@@ -46,10 +46,12 @@ impl BlockPlan {
         })
     }
 
+    #[cfg(test)]
     pub const fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
 
+    #[cfg(test)]
     pub const fn block_size(&self) -> usize {
         self.block_size
     }
@@ -58,6 +60,7 @@ impl BlockPlan {
         self.total_blocks
     }
 
+    #[cfg(test)]
     pub const fn is_empty(&self) -> bool {
         self.total_blocks == 0
     }
@@ -123,6 +126,7 @@ pub struct BlockSpan {
 }
 
 impl BlockSpan {
+    #[cfg(test)]
     pub const fn block_id(&self) -> u64 {
         self.block_id
     }
@@ -135,10 +139,12 @@ impl BlockSpan {
         self.len
     }
 
+    #[cfg(test)]
     pub const fn is_final(&self) -> bool {
         self.is_final
     }
 
+    #[cfg(test)]
     pub fn end_offset(&self) -> u64 {
         self.offset + self.len as u64
     }
@@ -169,6 +175,7 @@ impl SymbolGeometry {
         })
     }
 
+    #[cfg(test)]
     pub const fn symbols_per_block(&self) -> u16 {
         self.symbols_per_block
     }
@@ -181,6 +188,7 @@ impl SymbolGeometry {
         self.symbol_size
     }
 
+    #[cfg(test)]
     pub fn populated_source_symbols(&self, block_len: usize) -> usize {
         if block_len == 0 {
             0
@@ -191,6 +199,7 @@ impl SymbolGeometry {
         }
     }
 
+    #[cfg(test)]
     pub fn source_symbol_offset(&self, symbol_id: u32) -> Option<usize> {
         let symbol_id = usize::try_from(symbol_id).ok()?;
         if symbol_id >= self.source_symbols() {
@@ -200,11 +209,13 @@ impl SymbolGeometry {
         Some(symbol_id * self.symbol_size)
     }
 
+    #[cfg(test)]
     pub fn source_symbol_len(&self, block_len: usize, symbol_id: u32) -> Option<usize> {
         let offset = self.source_symbol_offset(symbol_id)?;
         Some(block_len.saturating_sub(offset).min(self.symbol_size))
     }
 
+    #[cfg(test)]
     pub fn source_symbol_absolute_offset(
         &self,
         plan: &BlockPlan,

@@ -116,10 +116,12 @@ impl SessionLedger {
         })
     }
 
+    #[cfg(test)]
     pub const fn total_blocks(&self) -> u64 {
         self.total_blocks
     }
 
+    #[cfg(test)]
     pub fn receiver_ids(&self) -> &[usize] {
         &self.receiver_ids
     }
@@ -128,6 +130,7 @@ impl SessionLedger {
         self.receiver_ids.len()
     }
 
+    #[cfg(test)]
     pub fn complete_blocks(&self) -> u64 {
         self.complete_blocks
     }
@@ -145,6 +148,7 @@ impl SessionLedger {
         })
     }
 
+    #[cfg(test)]
     pub fn block_acked_receivers(&self, block_id: u64) -> Option<usize> {
         self.blocks
             .get(usize::try_from(block_id).ok()?)
@@ -161,11 +165,13 @@ impl SessionLedger {
         Ok(block.acked_by[receiver_pos])
     }
 
+    #[cfg(test)]
     pub fn receiver_acked_blocks(&self, receiver_id: usize) -> Result<u64, LedgerError> {
         let receiver_pos = self.receiver_pos(receiver_id)?;
         Ok(self.acked_blocks_per_receiver[receiver_pos])
     }
 
+    #[cfg(test)]
     pub fn receiver_is_complete(&self, receiver_id: usize) -> Result<bool, LedgerError> {
         Ok(self.receiver_acked_blocks(receiver_id)? == self.total_blocks)
     }
