@@ -15,10 +15,10 @@ If the destination is the local node, routing stays inside the processor path. I
 
 How packets are queued depends on `Feature::Sequential` versus `Feature::Concurrent`:
 
-In sequential mode, packets are hashed into one bounded channel per lane and handled by one task per lane. FEC lossless traffic is also lane-hashed by `(flow_id, tree_id)` so different trees do not contend on one lane by default.  
-In concurrent mode, all packets share one bounded `flume` channel and are processed by multiple workers, with a warning that collaborative FEC trees are not isolated per-worker lane.
+In sequential mode, packets are hashed into one bounded channel per lane and handled by one task per lane. FEC lossless traffic is also lane-hashed by `(flow_id, tree_id)` so different trees do not contend on one lane by default. This is the only current processor mode that exposes a tree-visible ingress surface for multi-tree lossless backpressure.  
+In concurrent mode, all packets share one bounded `flume` channel and are processed by multiple workers, with a warning that collaborative FEC trees are not isolated per-worker lane. A full shared queue in this mode only indicates global ingress pressure, not pressure on any specific tree.
 
-In both modes, `channel_backpressure` decides behavior when queues are full: blocking send for backpressure, immediate drop when not.
+In both modes, `channel_backpressure` decides behavior when queues are full: blocking send for backpressure, immediate drop when not. In the current multi-tree FEC sender, that queue pressure is observed asynchronously: a tree worker blocks in `process_packet(...).await`, its sender-local tree lane stops draining, and the sender eventually treats that lane as blocked. That is why collaborative multi-tree lossless currently depends on sequential ingress with a tree-visible queueing surface.
 
 The processor actors all subscribe to the same broadcast channel, so controller-sourced updates to routes, group directory, and other runtime state are observed consistently across lanes.
 

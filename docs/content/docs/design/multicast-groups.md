@@ -60,6 +60,10 @@ Both caches are refreshed when group routes are installed so stale entries are s
 
 Lossless control frames do not always carry `tree_id`. For those cases, the dataplane uses a deterministic policy: prefer tree `0` when available for that `(src_node_id, group_id)`, otherwise choose the smallest available tree. If no tree exists for the pair, forwarding drops with the same missing-route path used for unicast miss behavior.
 
+This is the current path used by lossless control traffic such as `Ready`,
+plain-mode cumulative `Ack`, and `FecStatus`. Data-tree selection is therefore a
+separate concern from control-frame routing.
+
 This policy is a local control-plane decision only; it does not alter packet formats.
 
 ## Lifecycle at a glance

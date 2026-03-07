@@ -50,7 +50,7 @@ The dataplane configuration file (typically `config.toml` or `node.toml`) define
 | `num_packet_processors` | `usize` | `0` | `--num-packet-processors` | Number of packet processors (0 = use CPU count). |
 | `channel_capacity` | `usize` | `1000` | `--channel-capacity` | Capacity for channels between actors. |
 | `queue_capacity` | `usize` | `1000` | `--queue-capacity` | Capacity of scheduler queues. |
-| `channel_backpressure` | `bool` | `false` | `--channel-backpressure` | Apply backpressure instead of dropping when channels are full. |
+| `channel_backpressure` | `bool` | `false` | `--channel-backpressure` | Apply backpressure instead of dropping when channels are full. This is required for collaborative multi-tree FEC sessions with more than one configured tree id; sender preflight rejects that mode otherwise. |
 
 ## Protocol Configuration
 
