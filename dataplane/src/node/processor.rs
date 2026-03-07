@@ -53,6 +53,37 @@ pub enum SendOutcome {
     Closed,
 }
 
+/// Describes how lossless/FEC senders can interpret non-blocking processor ingress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub enum LosslessIngressContract {
+    /// Non-blocking submission is supported and `WouldBlock` is scoped to the
+    /// tree-selected ingress lane. Collaborative multi-tree FEC is allowed.
+    TreeVisibleNonBlocking,
+    /// Non-blocking submission is supported, but all trees collapse onto one
+    /// shared queue. `WouldBlock` is global and collaborative multi-tree FEC
+    /// must be treated as unsupported on this path.
+    SharedQueueNonBlocking,
+}
+
+impl LosslessIngressContract {
+    pub const fn supports_collaborative_multitree(self) -> bool {
+        matches!(self, Self::TreeVisibleNonBlocking)
+    }
+
+    pub const fn would_block_is_tree_specific(self) -> bool {
+        matches!(self, Self::TreeVisibleNonBlocking)
+    }
+}
+
+/// Result of a non-blocking lossless submission attempt at processor ingress.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct LosslessIngressSubmission {
+    pub contract: LosslessIngressContract,
+    pub outcome: SendOutcome,
+}
+
 #[derive(Debug, Clone)]
 pub enum ProcessorMessage {
     UpdateRoutingTable(Vec<RoutingTableEntry>),
@@ -271,6 +302,26 @@ impl ProcessorHandle {
         }
     }
 
+    /// Returns how a lossless sender should interpret non-blocking submission
+    /// for this packet's ingress path.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn lossless_ingress_contract(&self, packet: &Packet) -> LosslessIngressContract {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.lossless_ingress_contract(packet),
+            ProcessorHandle::Concurrent(handle) => handle.lossless_ingress_contract(packet),
+        }
+    }
+
+    /// Non-blocking packet submission for lossless/FEC senders. The returned
+    /// contract makes it explicit whether `WouldBlock` is tree-specific or a
+    /// shared-queue/global signal for the selected ingress path.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn try_submit_lossless_packet(&self, packet: Packet) -> LosslessIngressSubmission {
+        let contract = self.lossless_ingress_contract(&packet);
+        let outcome = self.try_process_packet(packet);
+        LosslessIngressSubmission { contract, outcome }
+    }
+
     /// For synchronous producers (Python bindings, smoltcp virtual NIC).
     pub fn process_packet_blocking(&self, packet: Packet) {
         match self {
@@ -480,6 +531,23 @@ impl SequentialProcHandle {
         }
     }
 
+    fn lossless_ingress_contract(&self, packet: &Packet) -> LosslessIngressContract {
+        let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
+        if dst_node_id == self.config.node_id
+            || matches!(self.config.operating_mode, OperatingMode::Normal)
+        {
+            LosslessIngressContract::TreeVisibleNonBlocking
+        } else {
+            LosslessIngressContract::SharedQueueNonBlocking
+        }
+    }
+
+    fn try_submit_lossless_packet(&self, packet: Packet) -> LosslessIngressSubmission {
+        let contract = self.lossless_ingress_contract(&packet);
+        let outcome = self.try_process_packet(packet);
+        LosslessIngressSubmission { contract, outcome }
+    }
+
     fn select_processor_ingress_lane(&self, packet: &Packet) -> usize {
         let lane_count = self.packet_senders.len();
         if let Some(tree_id) = packet.lossless_fec_tree_id() {
@@ -671,6 +739,16 @@ impl ConcurrentProcHandle {
                 OperatingMode::Max => self.try_send_to_connector(packet),
             }
         }
+    }
+
+    fn lossless_ingress_contract(&self, _packet: &Packet) -> LosslessIngressContract {
+        LosslessIngressContract::SharedQueueNonBlocking
+    }
+
+    fn try_submit_lossless_packet(&self, packet: Packet) -> LosslessIngressSubmission {
+        let contract = self.lossless_ingress_contract(&packet);
+        let outcome = self.try_process_packet(packet);
+        LosslessIngressSubmission { contract, outcome }
     }
 
     pub fn process_packet_blocking(&self, packet: Packet) {
@@ -1313,6 +1391,39 @@ mod tests {
     }
 
     #[test]
+    fn sequential_lossless_ingress_contract_is_tree_visible_in_normal_mode() {
+        let mut config = base_config(OperatingMode::Normal);
+        config.num_packet_processors = 4;
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let mut processor_senders = Vec::new();
+        for _ in 0..config.num_packet_processors {
+            let (sender, receiver) = mpsc::channel(1);
+            drop(receiver);
+            processor_senders.push(sender);
+        }
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+        let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
+        let packet = make_fec_packet(remote_ip, 7);
+
+        assert_eq!(
+            handle.lossless_ingress_contract(&packet),
+            LosslessIngressContract::TreeVisibleNonBlocking
+        );
+        assert!(
+            handle
+                .lossless_ingress_contract(&packet)
+                .supports_collaborative_multitree()
+        );
+        assert!(
+            handle
+                .lossless_ingress_contract(&packet)
+                .would_block_is_tree_specific()
+        );
+    }
+
+    #[test]
     fn sequential_try_process_packet_exposes_per_tree_backpressure_domains() {
         let mut config = base_config(OperatingMode::Normal);
         config.num_packet_processors = 4;
@@ -1336,14 +1447,21 @@ mod tests {
             .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
             .expect("failed to fill selected tree lane");
 
+        let blocked_attempt =
+            handle.try_submit_lossless_packet(make_fec_packet(remote_ip, blocked_tree));
         assert_eq!(
-            handle.try_process_packet(make_fec_packet(remote_ip, blocked_tree)),
-            SendOutcome::WouldBlock
+            blocked_attempt.contract,
+            LosslessIngressContract::TreeVisibleNonBlocking
         );
+        assert_eq!(blocked_attempt.outcome, SendOutcome::WouldBlock);
+
+        let writable_attempt =
+            handle.try_submit_lossless_packet(make_fec_packet(remote_ip, writable_tree));
         assert_eq!(
-            handle.try_process_packet(make_fec_packet(remote_ip, writable_tree)),
-            SendOutcome::Queued
+            writable_attempt.contract,
+            LosslessIngressContract::TreeVisibleNonBlocking
         );
+        assert_eq!(writable_attempt.outcome, SendOutcome::Queued);
     }
 
     #[test]
@@ -1384,6 +1502,35 @@ mod tests {
     }
 
     #[test]
+    fn sequential_max_remote_lossless_ingress_contract_uses_shared_queue() {
+        let config = base_config(OperatingMode::Max);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, processor_receiver) = mpsc::channel(1);
+        drop(processor_receiver);
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+        let packet = make_fec_packet(remote_ip, 9);
+
+        assert_eq!(
+            handle.lossless_ingress_contract(&packet),
+            LosslessIngressContract::SharedQueueNonBlocking
+        );
+        assert!(
+            !handle
+                .lossless_ingress_contract(&packet)
+                .supports_collaborative_multitree()
+        );
+        assert!(
+            !handle
+                .lossless_ingress_contract(&packet)
+                .would_block_is_tree_specific()
+        );
+    }
+
+    #[test]
     fn concurrent_try_process_packet_routes_remote_packets_to_connector_in_max_mode() {
         let config = base_config(OperatingMode::Max);
         let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -1420,6 +1567,31 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_try_submit_lossless_packet_reports_shared_queue_backpressure() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (packet_sender, _packet_receiver) = flume::bounded(1);
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+
+        packet_sender
+            .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
+            .expect("failed to fill shared concurrent ingress queue");
+
+        let handle = make_concurrent_handle(config, packet_sender, connector_sender);
+        let attempt = handle.try_submit_lossless_packet(make_fec_packet(remote_ip, 5));
+
+        assert_eq!(
+            attempt.contract,
+            LosslessIngressContract::SharedQueueNonBlocking
+        );
+        assert_eq!(attempt.outcome, SendOutcome::WouldBlock);
+        assert!(!attempt.contract.supports_collaborative_multitree());
+        assert!(!attempt.contract.would_block_is_tree_specific());
+    }
+
+    #[test]
     fn processor_handle_try_process_packet_reports_queued() {
         let config = base_config(OperatingMode::Normal);
         let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -1433,5 +1605,23 @@ mod tests {
             handle.try_process_packet(make_packet(remote_ip)),
             SendOutcome::Queued
         );
+    }
+
+    #[test]
+    fn processor_handle_try_submit_lossless_packet_reports_contract_and_outcome() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+
+        let (processor_sender, _processor_receiver) = mpsc::channel(1);
+        let (connector_sender, _connector_receiver) = mpsc::channel(1);
+        let inner = make_sequential_handle(config, processor_sender, connector_sender);
+        let handle = ProcessorHandle::Sequential(inner);
+
+        let attempt = handle.try_submit_lossless_packet(make_fec_packet(remote_ip, 3));
+        assert_eq!(
+            attempt.contract,
+            LosslessIngressContract::TreeVisibleNonBlocking
+        );
+        assert_eq!(attempt.outcome, SendOutcome::Queued);
     }
 }

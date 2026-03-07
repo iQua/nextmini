@@ -259,6 +259,7 @@ to `block_size` during the migration.
 
 ### T4 — Build Shared Block Geometry And Shared Ledgers
 - `depends_on: [T1]`
+- `status: completed`
 - Scope:
   - Implement `plan.rs` for:
     - `total_blocks`
@@ -279,9 +280,23 @@ to `block_size` during the migration.
 - Validation:
   - unit tests for offset math, final-block boundaries, duplicate ack behavior,
     and completion criteria
+- Work log:
+  - Added `dataplane/src/node/session/plan.rs` with shared block geometry,
+    final-block sizing, and FEC source-symbol range derivation.
+  - Added `dataplane/src/node/session/ledger.rs` with per-peer per-block ACK
+    tracking, duplicate-ACK idempotence, and session-completion bookkeeping.
+  - Exported the new modules from `dataplane/src/node/session/mod.rs`.
+- Files modified:
+  - `dataplane/src/node/session/mod.rs`
+  - `dataplane/src/node/session/plan.rs`
+  - `dataplane/src/node/session/ledger.rs`
+- Errors/gotchas:
+  - Initial ledger implementation borrowed `self` immutably after taking a
+    mutable block borrow; fixed before validation.
 
 ### T5 — Add Tree-Visible Non-Blocking Processor Ingress Contract
 - `depends_on: [T1]`
+- `status: completed`
 - Scope:
   - Make processor ingress the FEC backpressure boundary.
   - Expose non-blocking submission with explicit result values such as:
@@ -301,6 +316,23 @@ to `block_size` during the migration.
   - targeted tests for per-tree backpressure signaling
   - explicit negative test for shared-queue mode if it cannot supply per-tree
     semantics
+- Work log:
+  - Added an explicit lossless-ingress contract surface in
+    `dataplane/src/node/processor.rs`:
+    `LosslessIngressContract`, `LosslessIngressSubmission`, and
+    `ProcessorHandle::try_submit_lossless_packet`.
+  - Verified sequential ingress hashes FEC packets by `(flow_id, tree_id)` and
+    reports `TreeVisibleNonBlocking` semantics.
+  - Verified concurrent ingress reports `SharedQueueNonBlocking` semantics and
+    still warns that collaborative multi-tree FEC cannot treat `WouldBlock` as a
+    tree-specific signal on that path.
+- Files modified:
+  - `dataplane/src/node/processor.rs`
+  - `plans/new-lossless-plan.md`
+- Errors/gotchas:
+  - The repository already had `try_process_packet` and `SendOutcome`; this task
+    narrowed the remaining gap by making the tree-visibility contract explicit
+    for lossless senders.
 
 ### T6 — Rebuild The Session Runtime Around Typed Block-First Frames
 - `depends_on: [T2, T3, T4]`
