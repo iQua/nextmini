@@ -313,26 +313,33 @@ to `block_size` during the migration.
   - sender-usable non-blocking ingress API
   - clear runtime guardrails for sequential/tree-visible ingress
 - Validation:
-  - targeted tests for per-tree backpressure signaling
-  - explicit negative test for shared-queue mode if it cannot supply per-tree
-    semantics
+  - `cargo test -p nextmini processor::tests --lib`
 - Work log:
-  - Added an explicit lossless-ingress contract surface in
-    `dataplane/src/node/processor.rs`:
-    `LosslessIngressContract`, `LosslessIngressSubmission`, and
+  - Confirmed current `HEAD` already contains the explicit lossless-ingress
+    contract surface in `dataplane/src/node/processor.rs`:
+    `LosslessIngressContract`, `LosslessIngressSubmission`,
+    `ProcessorHandle::lossless_ingress_contract`, and
     `ProcessorHandle::try_submit_lossless_packet`.
-  - Verified sequential ingress hashes FEC packets by `(flow_id, tree_id)` and
-    reports `TreeVisibleNonBlocking` semantics.
-  - Verified concurrent ingress reports `SharedQueueNonBlocking` semantics and
-    still warns that collaborative multi-tree FEC cannot treat `WouldBlock` as a
-    tree-specific signal on that path.
+  - Validated that sequential ingress hashes FEC packets by `(flow_id, tree_id)`
+    and reports `TreeVisibleNonBlocking` semantics.
+  - Classified concurrent ingress and remote `OperatingMode::Max` connector
+    routing as `SharedQueueNonBlocking`, making unsupported non-tree-visible
+    paths explicit for later preflight/sender gating.
+  - Confirmed targeted processor tests cover both per-tree backpressure and
+    explicit shared-queue negative behavior.
 - Files modified:
   - `dataplane/src/node/processor.rs`
   - `plans/new-lossless-plan.md`
 - Errors/gotchas:
-  - The repository already had `try_process_packet` and `SendOutcome`; this task
-    narrowed the remaining gap by making the tree-visibility contract explicit
-    for lossless senders.
+  - The repository already had `try_process_packet` and `SendOutcome`; T5 is
+    the additional tree-visibility contract layered on top of that non-blocking
+    result surface.
+  - Sequential processor ingress is tree-visible, but remote
+    `OperatingMode::Max` traffic still enters through the connector's shared
+    queue and must not be treated as collaborative multi-tree capable.
+  - By commit time, the processor-side code for this task had already landed in
+    local `HEAD` as `254388f`, so this task commit only records validation and
+    plan status.
 
 ### T6 — Rebuild The Session Runtime Around Typed Block-First Frames
 - `depends_on: [T2, T3, T4]`
